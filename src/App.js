@@ -2924,20 +2924,23 @@ export default function App() {
   // de flujo de trabajo "admin" ya no controla de rebote el acceso a Contabilidad.
   const canAccessCorte = moduloVisible(userRoleData, "corte", currentUser?.isAdmin);
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
+  const canAccessDiseno = moduloVisible(userRoleData, "diseno", currentUser?.isAdmin);
   const [moduloActivo, setModuloActivo] = useState("diseno");
   const AREAS = [
-    {
-      id: "diseno", icon: "🎨", label: "Diseño",
-      items: [
-        { id: "protos", icon: "⬡", label: "Prototipos" },
-        { id: "capsulas", icon: "⬢", label: "Cápsulas" },
-        { id: "pedidos", icon: "📦", label: "Pedidos" },
-        { id: "pedidos_clientes", icon: "🏢", label: "Clientes" },
-        ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
-        { id: "stats", icon: "📊", label: "Estadísticas" },
-        ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }, { id: "admin", icon: "⚙", label: "Admin Diseño" }] : []),
-      ],
-    },
+    ...(canAccessDiseno
+      ? [{
+          id: "diseno", icon: "🎨", label: "Diseño",
+          items: [
+            { id: "protos", icon: "⬡", label: "Prototipos" },
+            { id: "capsulas", icon: "⬢", label: "Cápsulas" },
+            { id: "pedidos", icon: "📦", label: "Pedidos" },
+            { id: "pedidos_clientes", icon: "🏢", label: "Clientes" },
+            ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
+            { id: "stats", icon: "📊", label: "Estadísticas" },
+            ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }, { id: "admin", icon: "⚙", label: "Admin Diseño" }] : []),
+          ],
+        }]
+      : []),
     ...(canAccessContabilidad
       ? [{ id: "contabilidad_area", icon: "💰", label: "Contabilidad", items: [{ id: "contabilidad_area", icon: "💰", label: "Módulo Contabilidad" }] }]
       : []),
@@ -2959,16 +2962,20 @@ export default function App() {
     setView(itemId);
   }
   const isPlaneadorPuro = canAccessCorte && !perms.editar && !perms.aprobar && !currentUser?.isAdmin;
+  const isContabilidadPura = canAccessContabilidad && !canAccessDiseno && !canAccessCorte;
   if (appState === "loading") return <LoadingScreen message="Conectando con Firebase..." />;
   if (appState === "login" || !currentUser) return <LoginScreen onLogin={(u) => { setCurrentUser(u); setAppState("ready"); }} users={users} />;
   if (isPlaneadorPuro) {
     return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); }} />;
   }
+  if (isContabilidadPura) {
+    return <ModuloContabilidad currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); }} />;
+  }
   if (canAccessCorte && moduloActivo === "corte") {
     return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); }} onVolver={() => setModuloActivo("diseno")} />;
   }
   if (moduloActivo === "contabilidad") {
-    return <ModuloContabilidad currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} />;
+    return <ModuloContabilidad currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); }} />;
   }
   return (
     <div style={{ minHeight: "100vh", background: T.canvas, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,sans-serif" }}>
