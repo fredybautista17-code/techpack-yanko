@@ -2005,15 +2005,31 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
       }),
     });
   }
-  const MODULOS_DEF = [
+  // Prende/apaga TODAS las secciones básicas de Diseño de una sola vez. No
+  // toca "admin_diseno" a propósito: el acceso al panel de Administración de
+  // Diseño se otorga siempre de forma explícita, nunca por el toggle general,
+  // para que marcar/desmarcar "Diseño" no le dé de rebote poderes de admin.
+  function toggleDisenoGroup(roleId) {
+    onUpdateConfig({
+      ...config,
+      roles: config.roles.map((r) => {
+        if (r.id !== roleId) return r;
+        const current = effectiveModulos(r);
+        const todosActivos = DISENO_SUBMODULOS.every((m) => current.includes(m));
+        const resto = current.filter((m) => !DISENO_SUBMODULOS.includes(m));
+        return { ...r, modulos: todosActivos ? resto : [...resto, ...DISENO_SUBMODULOS] };
+      }),
+    });
+  }
+  const DISENO_ITEMS_DEF = [
     ["protos", "⬡ Prototipos"],
     ["capsulas", "⬢ Cápsulas"],
     ["pedidos", "📦 Pedidos"],
     ["pedidos_clientes", "🏢 Clientes"],
     ["corte", "✂ Corte"],
     ["stats", "📊 Estadísticas"],
-    ["contabilidad", "💰 Contabilidad"],
   ];
+  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"]];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
   function ListEditor({ listKey, title }) {
     return (
@@ -2110,8 +2126,43 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                         ))}
                       </div>
                       <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10, marginBottom: 4 }}>Módulos visibles</div>
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {MODULOS_DEF.map(([mod, label]) => {
+                      <div style={{ border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden", maxWidth: 420 }}>
+                        {(() => {
+                          const disenoActivos = DISENO_SUBMODULOS.filter((m) => modulosActivos.includes(m)).length;
+                          const disenoTotal = DISENO_SUBMODULOS.length;
+                          return (
+                            <span onClick={() => toggleDisenoGroup(r.id)}
+                              style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: disenoActivos > 0 ? T.violetBg : T.canvas, cursor: "pointer", fontSize: 12, fontWeight: 700, color: disenoActivos > 0 ? T.violet : T.slate }}
+                            >
+                              <span style={{ flex: 1 }}>🎨 Diseño</span>
+                              <span style={{ fontSize: 10, fontWeight: 600, opacity: 0.75 }}>{disenoActivos}/{disenoTotal} activas</span>
+                            </span>
+                          );
+                        })()}
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "8px 10px 8px 26px", borderTop: `1px solid ${T.border}` }}>
+                          {DISENO_ITEMS_DEF.map(([mod, label]) => {
+                            const activo = modulosActivos.includes(mod);
+                            return (
+                              <span key={mod} onClick={() => toggleModulo(r.id, mod)}
+                                style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: activo ? T.violetBg : "#EDEDF2", color: activo ? T.violet : T.slate, border: `1px solid ${activo ? T.violet : T.border}` }}
+                              >{label}</span>
+                            );
+                          })}
+                        </div>
+                        <div style={{ padding: "8px 10px 8px 26px", borderTop: `1px solid ${T.border}` }}>
+                          {(() => {
+                            const activo = modulosActivos.includes("admin_diseno");
+                            return (
+                              <span onClick={() => toggleModulo(r.id, "admin_diseno")}
+                                title="Acceso al panel de Administración de Diseño (etapas, categorías, roles, usuarios...), independiente de ser Admin general"
+                                style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: activo ? T.amberBg : "#EDEDF2", color: activo ? T.amber : T.slate, border: `1px solid ${activo ? T.amber : T.border}` }}
+                              >⚙ Admin Diseño</span>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                        {OTROS_MODULOS_DEF.map(([mod, label]) => {
                           const activo = modulosActivos.includes(mod);
                           return (
                             <span key={mod} onClick={() => toggleModulo(r.id, mod)}
@@ -2896,7 +2947,16 @@ export default function App() {
     return () => unsubs.forEach((fn) => fn());
   }, []);
   function notify(n) { setToasts((t) => [...t, n]); setTimeout(() => setToasts((t) => t.filter((x) => x.id !== n.id)), 5000); }
-  async function saveUsers(newUsers) { setUsers(newUsers); await fsBatch("users", newUsers); }
+  async function saveUsers(newUsers) {
+    // Antes esto solo escribía los usuarios de newUsers con fsBatch, sin
+    // borrar en Firestore los que ya no estaban en la lista — por eso un
+    // usuario "eliminado" seguía existiendo en la base de datos y volvía a
+    // aparecer en cuanto llegaba la siguiente actualización de onSnapshot.
+    const removedIds = users.filter((u) => !newUsers.some((n) => n.id === u.id)).map((u) => u.id);
+    setUsers(newUsers);
+    await Promise.all(removedIds.map((id) => fsDelete("users", id)));
+    if (newUsers.length) await fsBatch("users", newUsers);
+  }
   async function saveConfig(newConfig) { setConfig(newConfig); await fsSave("config", "main", newConfig); }
   async function savePedidoConfig(cfg) { setPedidoConfig(cfg); await fsSave("pedidos_config", "main", cfg); }
   async function addProto(p) { const updated = [...protos, p]; setProtos(updated); await fsSave("prototipos", p.id, p); notify({ id: uid(), icon: "🧪", title: "Prototipo creado", msg: p.name }); }
@@ -2965,7 +3025,11 @@ export default function App() {
   const canAccessStats = moduloVisible(userRoleData, "stats", currentUser?.isAdmin);
   const canAccessCorte = moduloVisible(userRoleData, "corte", currentUser?.isAdmin);
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
-  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessCorte || !!currentUser?.isAdmin;
+  // "admin_diseno" es un permiso aparte del admin general: da entrada al panel
+  // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
+  // necesidad de marcar al usuario como Admin general del sistema.
+  const canAccessAdminDiseno = moduloVisible(userRoleData, "admin_diseno", currentUser?.isAdmin);
+  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessCorte || canAccessAdminDiseno || !!currentUser?.isAdmin;
   const [moduloActivo, setModuloActivo] = useState("diseno");
   const AREAS = [
     ...(canAccessDiseno
@@ -2978,7 +3042,8 @@ export default function App() {
             ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
             ...(canAccessStats ? [{ id: "stats", icon: "📊", label: "Estadísticas" }] : []),
-            ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }, { id: "admin", icon: "⚙", label: "Admin Diseño" }] : []),
+            ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
+            ...(canAccessAdminDiseno ? [{ id: "admin", icon: "⚙", label: "Admin Diseño" }] : []),
           ],
         }]
       : []),
@@ -3156,12 +3221,12 @@ export default function App() {
             {view === "pedidos_admin" && currentUser?.isAdmin && <AdminPedidosView pedidoConfig={pedidoConfig} onSave={savePedidoConfig} />}
             {view === "pedidos_clientes" && <ClientesPedidosView pedidoConfig={pedidoConfig} pedidos={pedidos} />}
             {view === "stats" && <EstadisticasView protos={protos} capsulas={capsulas} />}
-            {view === "admin" && currentUser?.isAdmin && (
+            {view === "admin" && (currentUser?.isAdmin || canAccessAdminDiseno) && (
               <AdminView config={config} onUpdateConfig={saveConfig} users={users} onUpdateUsers={saveUsers} protos={protos} capsulas={capsulas}
                 onUpdateProto={updateProtoName} onUpdateCapsula={updateCapsulaName} onDeleteProto={deleteProto} onDeleteCapsula={deleteCapsula}
               />
             )}
-            {view === "admin" && !currentUser?.isAdmin && (
+            {view === "admin" && !currentUser?.isAdmin && !canAccessAdminDiseno && (
               <div style={{ textAlign: "center", padding: 64 }}>
                 <div style={{ fontSize: 40, marginBottom: 16 }}>🔒</div>
                 <div style={{ fontSize: 18, fontWeight: 800, color: T.ink, marginBottom: 8 }}>Acceso restringido</div>
