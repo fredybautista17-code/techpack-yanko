@@ -20,7 +20,20 @@
     "typescript": "5.7.2"
   },
   "overrides": {
-    "ajv": "^8.17.1"
+    "terser-webpack-plugin": {
+      "schema-utils": {
+        "ajv": "^8.17.1",
+        "ajv-keywords": "^5.1.0",
+        "ajv-formats": "^2.1.1"
+      }
+    },
+    "eslint-webpack-plugin": {
+      "schema-utils": {
+        "ajv": "^8.17.1",
+        "ajv-keywords": "^5.1.0",
+        "ajv-formats": "^2.1.1"
+      }
+    }
   },
   "scripts": {
     "start": "react-scripts start",
