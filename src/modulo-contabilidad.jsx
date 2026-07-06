@@ -9,7 +9,6 @@ import {
   getDocs,
   onSnapshot,
 } from "firebase/firestore";
-
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -20,14 +19,12 @@ const firebaseConfig = {
 };
 const fbApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
-
 async function fsSave(col, id, data) {
   await setDoc(doc(db, col, id), data, { merge: true });
 }
 async function fsDelete(col, id) {
   await deleteDoc(doc(db, col, id));
 }
-
 // ─── TOKENS ──────────────────────────────────────────────────────────────────
 const C = {
   ink: "#1A1A2E",
@@ -47,7 +44,6 @@ const C = {
   violet: "#7B5EA7",
   violetBg: "#F3EEF9",
 };
-
 function uid() {
   return Math.random().toString(36).slice(2, 9);
 }
@@ -66,7 +62,6 @@ function mesLabel(m, a) {
     year: "numeric",
   });
 }
-
 // ─── UI ATOMS ─────────────────────────────────────────────────────────────────
 function Btn({ children, onClick, variant = "primary", small, disabled }) {
   const S = {
@@ -258,7 +253,6 @@ function KPI({ icon, label, value, color, bg, sub }) {
     </div>
   );
 }
-
 // ─── CATEGORÍAS POR DEFECTO ───────────────────────────────────────────────────
 const CATS_INGRESO = [
   "Ventas",
@@ -278,7 +272,6 @@ const CATS_EGRESO = [
   "Gastos administrativos",
   "Otros egresos",
 ];
-
 // ─── NUEVO MOVIMIENTO MODAL ───────────────────────────────────────────────────
 function NuevoMovimientoModal({ tipo, onSave, onClose }) {
   const [form, setForm] = useState({
@@ -292,7 +285,6 @@ function NuevoMovimientoModal({ tipo, onSave, onClose }) {
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const cats = tipo === "ingreso" ? CATS_INGRESO : CATS_EGRESO;
   const esIngreso = tipo === "ingreso";
-
   function save() {
     if (!form.fecha || !form.categoria || !form.valor) return;
     onSave({
@@ -308,7 +300,6 @@ function NuevoMovimientoModal({ tipo, onSave, onClose }) {
     });
     onClose();
   }
-
   return (
     <Modal
       title={esIngreso ? "Nuevo Ingreso" : "Nuevo Egreso"}
@@ -395,7 +386,6 @@ function NuevoMovimientoModal({ tipo, onSave, onClose }) {
     </Modal>
   );
 }
-
 // ─── FLUJO DE CAJA VIEW ───────────────────────────────────────────────────────
 function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
   const [showModal, setShowModal] = useState(null); // "ingreso" | "egreso"
@@ -404,12 +394,10 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
   const [catFiltro, setCatFiltro] = useState("");
-
   const movMes = movimientos.filter((m) => m.fecha?.slice(0, 7) === mesFiltro);
   const movFiltrados = catFiltro
     ? movMes.filter((m) => m.categoria === catFiltro)
     : movMes;
-
   const totalIngresos = movMes
     .filter((m) => m.tipo === "ingreso")
     .reduce((s, m) => s + m.valor, 0);
@@ -417,7 +405,6 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
     .filter((m) => m.tipo === "egreso")
     .reduce((s, m) => s + m.valor, 0);
   const saldo = totalIngresos - totalEgresos;
-
   // Generar últimos 12 meses para selector
   const meses = [];
   const d = new Date();
@@ -427,7 +414,6 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
     const real = mm <= 0 ? { y: y - 1, m: 12 + mm } : { y, m: mm };
     meses.push(`${real.y}-${String(real.m).padStart(2, "0")}`);
   }
-
   return (
     <div>
       {showModal && (
@@ -437,7 +423,6 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
           onClose={() => setShowModal(null)}
         />
       )}
-
       <div
         style={{
           display: "flex",
@@ -491,7 +476,6 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
           </Btn>
         </div>
       </div>
-
       {/* KPIs */}
       <div
         style={{
@@ -524,7 +508,6 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
           sub={saldo >= 0 ? "✓ Positivo" : "⚠ Negativo"}
         />
       </div>
-
       {/* Barra visual ingresos vs egresos */}
       {(totalIngresos > 0 || totalEgresos > 0) && (
         <div
@@ -576,7 +559,6 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
           </div>
         </div>
       )}
-
       {/* Filtro categoría */}
       <div
         style={{
@@ -614,7 +596,6 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
           {movFiltrados.length} movimiento{movFiltrados.length !== 1 ? "s" : ""}
         </span>
       </div>
-
       {/* Tabla movimientos */}
       {!movFiltrados.length ? (
         <div
@@ -787,7 +768,6 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
     </div>
   );
 }
-
 // ─── HOME CONTABILIDAD ────────────────────────────────────────────────────────
 function HomeContabilidad({ onGoModulo }) {
   const MODULOS = [
@@ -828,7 +808,6 @@ function HomeContabilidad({ onGoModulo }) {
       activo: false,
     },
   ];
-
   return (
     <div>
       <div style={{ marginBottom: 28 }}>
@@ -933,13 +912,11 @@ function HomeContabilidad({ onGoModulo }) {
     </div>
   );
 }
-
 // ─── ROOT MÓDULO CONTABILIDAD ─────────────────────────────────────────────────
-export default function ModuloContabilidad({ currentUser, onVolver }) {
+export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) {
   const [subView, setSubView] = useState("home");
   const [movimientos, setMovimientos] = useState([]);
   const [loading, setLoading] = useState(true);
-
   useEffect(() => {
     const unsub = onSnapshot(
       collection(db, "contabilidad_movimientos"),
@@ -950,24 +927,19 @@ export default function ModuloContabilidad({ currentUser, onVolver }) {
     );
     return () => unsub();
   }, []);
-
   async function addMovimiento(m) {
     setMovimientos((ms) => [...ms, m]);
     await fsSave("contabilidad_movimientos", m.id, m);
   }
-
   async function deleteMovimiento(id) {
     setMovimientos((ms) => ms.filter((m) => m.id !== id));
     await fsDelete("contabilidad_movimientos", id);
   }
-
   const isAdmin = currentUser?.isAdmin;
-
   const NAV = [
     { id: "home", icon: "◉", label: "Inicio" },
     { id: "flujo_caja", icon: "💰", label: "Flujo de Caja" },
   ];
-
   if (loading)
     return (
       <div
@@ -985,7 +957,6 @@ export default function ModuloContabilidad({ currentUser, onVolver }) {
         </div>
       </div>
     );
-
   return (
     <div
       style={{
@@ -996,7 +967,6 @@ export default function ModuloContabilidad({ currentUser, onVolver }) {
       }}
     >
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
-
       {/* Sidebar */}
       <div
         style={{
@@ -1075,7 +1045,6 @@ export default function ModuloContabilidad({ currentUser, onVolver }) {
             </div>
           </div>
         </div>
-
         <nav
           style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}
         >
@@ -1129,9 +1098,31 @@ export default function ModuloContabilidad({ currentUser, onVolver }) {
               ← Volver al Inicio
             </button>
           )}
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                width: "100%",
+                padding: "9px 12px",
+                border: "none",
+                borderRadius: 8,
+                cursor: "pointer",
+                background: "transparent",
+                color: "rgba(232,93,74,0.85)",
+                fontWeight: 700,
+                fontSize: 12,
+                textAlign: "left",
+                marginTop: onVolver ? 2 : 8,
+              }}
+            >
+              ⏏ Cerrar sesión
+            </button>
+          )}
         </nav>
       </div>
-
       {/* Main */}
       <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
         <div style={{ maxWidth: 1100, margin: "0 auto" }}>
