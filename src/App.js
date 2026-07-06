@@ -482,9 +482,10 @@ const INIT_CONFIG = {
   siluetas: ["Slimfit","Regularfit","Silueta Amplia","Oversize","Super Oversize","Estándar"],
   rangos: ["Normal (S,M,L,XL)","Doble Talla (S/M - M/L)","Talla U","Plus","Plus (1XL-2XL-3XL)"],
   roles: [
-    { id: "r1", name: "Equipo Interno", perms: ["editar", "aprobar", "declinar", "admin", "corte"], modulos: ["diseno", "corte", "contabilidad"] },
-    { id: "r2", name: "Cliente", perms: ["aprobar", "declinar"], modulos: ["diseno"] },
-    { id: "r3", name: "Diseñador", perms: ["editar"], modulos: ["diseno"] },
+    { id: "r1", name: "Equipo Interno", perms: ["editar", "aprobar", "declinar", "admin", "corte"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "corte", "stats", "contabilidad"] },
+    { id: "r2", name: "Cliente", perms: ["aprobar", "declinar"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats"] },
+    { id: "r3", name: "Diseñador", perms: ["editar"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats"] },
+    { id: "r4", name: "Planeador", perms: ["corte"], modulos: ["pedidos", "corte"] },
   ],
   clientes: [],
 };
@@ -511,18 +512,29 @@ function isOverdue(item, stages) {
 }
 function today() { return new Date().toISOString().slice(0, 10); }
 function nowISO() { return new Date().toISOString(); }
-// Permisos de módulo (visibilidad Diseño/Corte/Contabilidad), separados de los
-// permisos de flujo de trabajo (editar/aprobar/declinar/admin). Si el rol aún
-// no tiene "modulos" definido (roles creados antes de este cambio), se usa un
-// fallback basado en el comportamiento anterior para no romper accesos ya
-// configurados en Firestore.
+// Permisos de módulo (visibilidad por sección: Prototipos, Cápsulas, Pedidos,
+// Clientes, Corte, Estadísticas, Contabilidad), separados de los permisos de
+// flujo de trabajo (editar/aprobar/declinar/admin). Cada sección se autoriza
+// de forma independiente para poder armar roles como "Planeador" (Pedidos +
+// Corte, sin Prototipos ni Cápsulas).
+// Claves granulares de sección dentro de Diseño (Corte y Contabilidad siempre
+// se gestionan como llaves independientes, nunca implícitas en "diseno").
+const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats"];
 function moduloVisible(roleData, mod, isAdmin) {
   if (isAdmin) return true;
   if (!roleData) return false;
-  if (Array.isArray(roleData.modulos)) return roleData.modulos.includes(mod);
+  if (Array.isArray(roleData.modulos)) {
+    if (roleData.modulos.includes(mod)) return true;
+    // Compatibilidad con roles guardados antes de este cambio, donde "diseno"
+    // era una sola llave que representaba las secciones básicas de Diseño
+    // (Prototipos, Cápsulas, Pedidos, Clientes, Estadísticas) — Corte y
+    // Contabilidad siempre requirieron su propia llave explícita.
+    if (roleData.modulos.includes("diseno") && DISENO_SUBMODULOS.includes(mod)) return true;
+    return false;
+  }
   if (mod === "corte") return !!roleData.perms?.includes("corte");
   if (mod === "contabilidad") return !!roleData.perms?.includes("admin");
-  if (mod === "diseno") return true;
+  if (DISENO_SUBMODULOS.includes(mod)) return true;
   return false;
 }
 
@@ -1411,7 +1423,7 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
   );
 }
 
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, onGoArea, protos, capsulas, pedidos }) {
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessDiseno, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
@@ -1420,7 +1432,10 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, o
     {
       id: "diseno", icon: "🎨", label: "Diseño", desc: "Prototipos, Cápsulas, Pedidos, Corte y seguimiento de producción", color: T.denim, bg: T.denimBg,
       stats: [{ label: "Prototipos activos", value: protosEnProceso }, { label: "Pedidos activos", value: pedidosActivos, alert: pedidosVencidos > 0 }],
-      permiso: perms.editar || perms.aprobar || perms.declinar || currentUser?.isAdmin,
+      // Antes: perms.editar || perms.aprobar || perms.declinar — mezclaba permisos de
+      // flujo de trabajo con visibilidad de módulo. Ahora usa el acceso granular real
+      // (si al menos una sección de Diseño está habilitada para el rol).
+      permiso: canAccessDiseno,
     },
     {
       id: "contabilidad_area", icon: "💰", label: "Contabilidad", desc: "Flujo de caja, informes financieros y control contable", color: T.jade, bg: T.jadeBg,
@@ -1959,27 +1974,46 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   }
   function addRole() {
     if (!newItem.trim()) return;
-    onUpdateConfig({ ...config, roles: [...config.roles, { id: uid(), name: newItem.trim(), perms: ["editar"], modulos: ["diseno"] }] });
+    onUpdateConfig({ ...config, roles: [...config.roles, { id: uid(), name: newItem.trim(), perms: ["editar"], modulos: [...DISENO_SUBMODULOS] }] });
     setNewItem("");
   }
   function removeRole(id) { onUpdateConfig({ ...config, roles: config.roles.filter((r) => r.id !== id) }); }
-  // Módulos visibles por rol (Diseño/Corte/Contabilidad), separado de los
+  // Módulos visibles por rol, por sección independiente (Prototipos, Cápsulas,
+  // Pedidos, Clientes, Corte, Estadísticas, Contabilidad), separado de los
   // permisos de flujo de trabajo. Si el rol no tiene "modulos" aún, se
   // inicializa con el comportamiento previo antes de aplicar el toggle.
   function legacyModulos(r) {
     return ["diseno", ...(r.perms.includes("corte") ? ["corte"] : []), ...(r.perms.includes("admin") ? ["contabilidad"] : [])];
+  }
+  // Expande la llave antigua "diseno" (todo-o-nada) a las secciones
+  // granulares equivalentes, para mostrar/editar roles guardados antes de
+  // este cambio con los mismos checkboxes que los roles nuevos.
+  function effectiveModulos(r) {
+    const base = Array.isArray(r.modulos) ? r.modulos : legacyModulos(r);
+    if (base.includes("diseno")) {
+      return [...new Set([...base.filter((m) => m !== "diseno"), ...DISENO_SUBMODULOS])];
+    }
+    return base;
   }
   function toggleModulo(roleId, mod) {
     onUpdateConfig({
       ...config,
       roles: config.roles.map((r) => {
         if (r.id !== roleId) return r;
-        const current = Array.isArray(r.modulos) ? r.modulos : legacyModulos(r);
+        const current = effectiveModulos(r);
         return { ...r, modulos: current.includes(mod) ? current.filter((m) => m !== mod) : [...current, mod] };
       }),
     });
   }
-  const MODULOS_DEF = [["diseno", "🎨 Diseño"], ["corte", "✂ Corte"], ["contabilidad", "💰 Contabilidad"]];
+  const MODULOS_DEF = [
+    ["protos", "⬡ Prototipos"],
+    ["capsulas", "⬢ Cápsulas"],
+    ["pedidos", "📦 Pedidos"],
+    ["pedidos_clientes", "🏢 Clientes"],
+    ["corte", "✂ Corte"],
+    ["stats", "📊 Estadísticas"],
+    ["contabilidad", "💰 Contabilidad"],
+  ];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
   function ListEditor({ listKey, title }) {
     return (
@@ -2061,7 +2095,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {config.roles.map((r) => {
-                const modulosActivos = Array.isArray(r.modulos) ? r.modulos : legacyModulos(r);
+                const modulosActivos = effectiveModulos(r);
                 return (
                   <div key={r.id} style={{ display: "flex", alignItems: "flex-start", gap: 14, padding: "14px 18px", background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
                     <Avatar name={r.name} size={36} />
@@ -2919,24 +2953,31 @@ export default function App() {
     admin: userRoleData?.perms?.includes("admin") ?? false,
     corte: userRoleData?.perms?.includes("corte") ?? false,
   };
-  // Visibilidad de módulos (Diseño/Corte/Contabilidad), decidida con moduloVisible
-  // en vez de reutilizar directamente perms.corte / perms.admin — así el permiso
-  // de flujo de trabajo "admin" ya no controla de rebote el acceso a Contabilidad.
+  // Visibilidad de módulos, decidida sección por sección con moduloVisible en
+  // vez de reutilizar directamente perms.corte / perms.admin — así cada
+  // sección (Prototipos, Cápsulas, Pedidos, Clientes, Corte, Estadísticas,
+  // Contabilidad) se autoriza de forma independiente. Esto permite roles como
+  // "Planeador": acceso a Pedidos y Corte, sin Prototipos ni Cápsulas.
+  const canAccessProtos = moduloVisible(userRoleData, "protos", currentUser?.isAdmin);
+  const canAccessCapsulas = moduloVisible(userRoleData, "capsulas", currentUser?.isAdmin);
+  const canAccessPedidos = moduloVisible(userRoleData, "pedidos", currentUser?.isAdmin);
+  const canAccessPedidosClientes = moduloVisible(userRoleData, "pedidos_clientes", currentUser?.isAdmin);
+  const canAccessStats = moduloVisible(userRoleData, "stats", currentUser?.isAdmin);
   const canAccessCorte = moduloVisible(userRoleData, "corte", currentUser?.isAdmin);
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
-  const canAccessDiseno = moduloVisible(userRoleData, "diseno", currentUser?.isAdmin);
+  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessCorte || !!currentUser?.isAdmin;
   const [moduloActivo, setModuloActivo] = useState("diseno");
   const AREAS = [
     ...(canAccessDiseno
       ? [{
           id: "diseno", icon: "🎨", label: "Diseño",
           items: [
-            { id: "protos", icon: "⬡", label: "Prototipos" },
-            { id: "capsulas", icon: "⬢", label: "Cápsulas" },
-            { id: "pedidos", icon: "📦", label: "Pedidos" },
-            { id: "pedidos_clientes", icon: "🏢", label: "Clientes" },
+            ...(canAccessProtos ? [{ id: "protos", icon: "⬡", label: "Prototipos" }] : []),
+            ...(canAccessCapsulas ? [{ id: "capsulas", icon: "⬢", label: "Cápsulas" }] : []),
+            ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
+            ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
-            { id: "stats", icon: "📊", label: "Estadísticas" },
+            ...(canAccessStats ? [{ id: "stats", icon: "📊", label: "Estadísticas" }] : []),
             ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }, { id: "admin", icon: "⚙", label: "Admin Diseño" }] : []),
           ],
         }]
@@ -2961,8 +3002,11 @@ export default function App() {
     if (itemId === "contabilidad_area") { setModuloActivo("contabilidad"); return; }
     setView(itemId);
   }
-  const isPlaneadorPuro = canAccessCorte && !perms.editar && !perms.aprobar && !currentUser?.isAdmin;
-  const isContabilidadPura = canAccessContabilidad && !canAccessDiseno && !canAccessCorte;
+  // "Planeador puro": solo tiene Corte y NINGUNA otra sección de Diseño (ni
+  // Pedidos). Si además tiene Pedidos u otra sección, ya no aplica este atajo
+  // de pantalla completa — ve el shell normal con solo esas secciones visibles.
+  const isPlaneadorPuro = canAccessCorte && !canAccessPedidos && !canAccessProtos && !canAccessCapsulas && !canAccessPedidosClientes && !canAccessStats && !perms.editar && !perms.aprobar && !currentUser?.isAdmin;
+  const isContabilidadPura = canAccessContabilidad && !canAccessDiseno;
   if (appState === "loading") return <LoadingScreen message="Conectando con Firebase..." />;
   if (appState === "login" || !currentUser) return <LoginScreen onLogin={(u) => { setCurrentUser(u); setAppState("ready"); }} users={users} />;
   if (isPlaneadorPuro) {
@@ -3047,10 +3091,21 @@ export default function App() {
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
             {view === "dashboard" && (
-              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad}
+              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessDiseno={canAccessDiseno}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
-                  else if (id === "diseno") { setAreaAbierta("diseno"); setView("protos"); }
+                  else if (id === "diseno") {
+                    setAreaAbierta("diseno");
+                    // Entra a la primera sección de Diseño realmente habilitada
+                    // para el rol (un Planeador sin Prototipos/Cápsulas debe
+                    // caer en Pedidos, no en una vista sin permiso).
+                    if (canAccessProtos) setView("protos");
+                    else if (canAccessCapsulas) setView("capsulas");
+                    else if (canAccessPedidos) setView("pedidos");
+                    else if (canAccessPedidosClientes) setView("pedidos_clientes");
+                    else if (canAccessStats) setView("stats");
+                    else if (canAccessCorte) setModuloActivo("corte");
+                  }
                   else { setView(id); }
                 }}
                 protos={protos} capsulas={capsulas} pedidos={pedidos}
