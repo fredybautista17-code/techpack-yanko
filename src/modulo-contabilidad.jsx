@@ -626,6 +626,261 @@ function ImportarExcelModal({ onSave, onClose }) {
     </Modal>
   );
 }
+// ─── IMPORTAR COMPRAS BUSINT (COMPARATIVO POR CONCEPTO) ───────────────────────
+// A diferencia de los egresos manuales, un export de Busint trae MUCHAS filas
+// (una por factura) repitiendo el mismo concepto varias veces dentro del mismo
+// mes. Aquí se agrupan y se suman por Código de Concepto + Mes usando la
+// columna Vbruto (valor bruto, antes de IVA/retenciones), que es la que pidió
+// el usuario para el comparativo — no "Total".
+function fmtMesLargo(mes) {
+  if (!mes) return "";
+  return new Date(mes + "-02").toLocaleDateString("es-CO", { month: "long", year: "numeric" });
+}
+function fmtMesCorto(mes) {
+  if (!mes) return "";
+  return new Date(mes + "-02").toLocaleDateString("es-CO", { month: "short", year: "2-digit" });
+}
+async function parseBusintCompras(file) {
+  const XLSX = await import("xlsx");
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: "", raw: true });
+  const grupos = {};
+  rows.forEach((row) => {
+    const map = {};
+    Object.keys(row).forEach((k) => {
+      map[normalizarEncabezado(k)] = row[k];
+    });
+    const codConcep = String(map["codconcep"] ?? "").trim();
+    const concepto = String(map["concepto"] ?? "").trim();
+    if (!codConcep && !concepto) return;
+    const fechaRaw = map["fechaini"] ?? map["fecha"] ?? "";
+    const fecha = excelValorAFecha(fechaRaw);
+    const mes = fecha ? fecha.slice(0, 7) : "";
+    if (!mes) return;
+    const vbruto = excelValorANumero(map["vbruto"] ?? "");
+    const key = `${mes}__${codConcep}__${concepto}`;
+    if (!grupos[key]) {
+      grupos[key] = { mes, codConcep, concepto, valor: 0, entradas: 0 };
+    }
+    grupos[key].valor += vbruto;
+    grupos[key].entradas += 1;
+  });
+  return Object.values(grupos).sort((a, b) => b.valor - a.valor);
+}
+function ImportarBusintModal({ comprasExistentes, onConfirm, onClose }) {
+  const [paso, setPaso] = useState(1);
+  const [grupos, setGrupos] = useState([]);
+  const [reemplazar, setReemplazar] = useState({});
+  const [error, setError] = useState("");
+  const [cargando, setCargando] = useState(false);
+  async function handleFile(e) {
+    const f = e.target.files[0];
+    if (!f) return;
+    setError("");
+    setCargando(true);
+    try {
+      const parsed = await parseBusintCompras(f);
+      if (!parsed.length) {
+        setError("No se encontraron filas válidas. Verifica que el archivo tenga las columnas CodConcep, Concepto, Fechaini y Vbruto (export de Busint).");
+      } else {
+        setGrupos(parsed.map((g) => ({ ...g, incluir: true })));
+        const mesesPresentes = [...new Set(parsed.map((g) => g.mes))];
+        const init = {};
+        mesesPresentes.forEach((m) => {
+          init[m] = comprasExistentes.some((c) => c.mes === m);
+        });
+        setReemplazar(init);
+        setPaso(2);
+      }
+    } catch (err) {
+      setError("No se pudo leer el archivo. Verifica que sea un Excel válido (.xlsx o .xls) exportado de Busint.");
+    }
+    setCargando(false);
+  }
+  function toggleGrupo(i) {
+    setGrupos((gs) => gs.map((g, idx) => (idx === i ? { ...g, incluir: !g.incluir } : g)));
+  }
+  const mesesPresentes = [...new Set(grupos.map((g) => g.mes))].sort();
+  const seleccionados = grupos.filter((g) => g.incluir);
+  const totalSeleccionado = seleccionados.reduce((s, g) => s + g.valor, 0);
+  function confirmar() {
+    onConfirm(
+      seleccionados.map((g) => ({
+        id: uid(),
+        mes: g.mes,
+        codConcep: g.codConcep,
+        concepto: g.concepto,
+        valor: g.valor,
+        entradas: g.entradas,
+        creadoEn: new Date().toISOString(),
+      })),
+      reemplazar
+    );
+    onClose();
+  }
+  return (
+    <Modal title="Importar compras Busint" onClose={onClose} width={860}>
+      {paso === 1 && (
+        <div>
+          <div
+            style={{
+              padding: "12px 14px",
+              background: C.blueBg,
+              borderRadius: 8,
+              marginBottom: 18,
+              fontSize: 13,
+              color: C.blue,
+              lineHeight: 1.5,
+            }}
+          >
+            Sube el export de Busint del mes (.xlsx). El sistema agrupa automáticamente todas las filas repetidas por <strong>Código de Concepto</strong> y las suma usando la columna <strong>Vbruto</strong>, dentro del mes de cada fecha.
+          </div>
+          <input
+            type="file"
+            accept=".xlsx,.xls"
+            onChange={handleFile}
+            disabled={cargando}
+            style={{
+              width: "100%",
+              padding: "9px 12px",
+              border: `1.5px solid ${C.border}`,
+              borderRadius: 8,
+              fontSize: 14,
+              color: C.ink,
+              background: C.white,
+              fontFamily: "inherit",
+            }}
+          />
+          {cargando && <div style={{ fontSize: 13, color: C.slate, marginTop: 10 }}>Leyendo archivo...</div>}
+          {error && (
+            <div
+              style={{
+                marginTop: 14,
+                padding: "10px 14px",
+                background: C.redBg,
+                borderRadius: 8,
+                fontSize: 13,
+                color: C.red,
+                fontWeight: 600,
+              }}
+            >
+              {error}
+            </div>
+          )}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20 }}>
+            <Btn variant="secondary" onClick={onClose}>
+              Cancelar
+            </Btn>
+          </div>
+        </div>
+      )}
+      {paso === 2 && (
+        <div>
+          <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>
+            Se agruparon en <strong>{grupos.length}</strong> conceptos. Desmarca los que no quieras importar.
+          </div>
+          {mesesPresentes.map((mes) => {
+            const yaExiste = comprasExistentes.some((c) => c.mes === mes);
+            return (
+              <label
+                key={mes}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "8px 12px",
+                  background: yaExiste ? C.amberBg : C.greenBg,
+                  borderRadius: 8,
+                  marginBottom: 8,
+                  fontSize: 12,
+                  color: yaExiste ? C.amber : C.green,
+                  fontWeight: 600,
+                  cursor: yaExiste ? "pointer" : "default",
+                }}
+              >
+                {yaExiste && (
+                  <input
+                    type="checkbox"
+                    checked={!!reemplazar[mes]}
+                    onChange={(e) => setReemplazar((r) => ({ ...r, [mes]: e.target.checked }))}
+                  />
+                )}
+                {fmtMesLargo(mes)} — {yaExiste ? "ya existen datos de este mes; marca para reemplazarlos" : "mes nuevo"}
+              </label>
+            );
+          })}
+          <div
+            style={{
+              maxHeight: 340,
+              overflowY: "auto",
+              border: `1px solid ${C.border}`,
+              borderRadius: 10,
+              margin: "10px 0 16px",
+            }}
+          >
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: C.ink, position: "sticky", top: 0 }}>
+                  {["", "Mes", "Código", "Concepto", "Facturas", "Valor Bruto"].map((h) => (
+                    <th
+                      key={h}
+                      style={{
+                        padding: "8px 10px",
+                        color: C.seam,
+                        textAlign: "left",
+                        fontWeight: 700,
+                        fontSize: 10,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {grupos.map((g, i) => (
+                  <tr
+                    key={i}
+                    style={{
+                      background: g.incluir ? C.white : C.canvas,
+                      opacity: g.incluir ? 1 : 0.5,
+                      borderBottom: `1px solid ${C.border}`,
+                    }}
+                  >
+                    <td style={{ padding: "6px 10px" }}>
+                      <input type="checkbox" checked={g.incluir} onChange={() => toggleGrupo(i)} />
+                    </td>
+                    <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>{fmtMesCorto(g.mes)}</td>
+                    <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>{g.codConcep}</td>
+                    <td style={{ padding: "6px 10px" }}>{g.concepto}</td>
+                    <td style={{ padding: "6px 10px", textAlign: "center" }}>{g.entradas}</td>
+                    <td style={{ padding: "6px 10px", fontWeight: 700, color: C.ink, whiteSpace: "nowrap" }}>
+                      {fmtCOP(g.valor)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <Btn variant="secondary" onClick={() => { setPaso(1); setGrupos([]); }}>
+              ← Volver
+            </Btn>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>
+              Total seleccionado: {fmtCOP(totalSeleccionado)}
+            </div>
+            <Btn variant="danger" onClick={confirmar} disabled={!seleccionados.length}>
+              Importar {seleccionados.length} concepto{seleccionados.length !== 1 ? "s" : ""}
+            </Btn>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
 // ─── FLUJO DE CAJA VIEW ───────────────────────────────────────────────────────
 function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
   const [showModal, setShowModal] = useState(null); // "ingreso" | "egreso" | "importar"
@@ -1017,6 +1272,201 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
     </div>
   );
 }
+// ─── COMPARATIVO POR CONCEPTO (MES A MES) ─────────────────────────────────────
+function ComparativoConceptosView({ compras, onImportar, onDeleteMes, isAdmin }) {
+  const [showImport, setShowImport] = useState(false);
+  const meses = [...new Set(compras.map((c) => c.mes))].sort();
+  const filasMap = {};
+  compras.forEach((c) => {
+    const key = `${c.codConcep}__${c.concepto}`;
+    if (!filasMap[key]) {
+      filasMap[key] = { codConcep: c.codConcep, concepto: c.concepto, porMes: {}, total: 0 };
+    }
+    filasMap[key].porMes[c.mes] = (filasMap[key].porMes[c.mes] || 0) + c.valor;
+    filasMap[key].total += c.valor;
+  });
+  const filas = Object.values(filasMap).sort((a, b) => b.total - a.total);
+  const totalesPorMes = {};
+  meses.forEach((m) => {
+    totalesPorMes[m] = compras.filter((c) => c.mes === m).reduce((s, c) => s + c.valor, 0);
+  });
+  const mesMayor = meses.reduce((max, m) => (max === null || totalesPorMes[m] > totalesPorMes[max] ? m : max), null);
+  const granTotal = Object.values(totalesPorMes).reduce((s, v) => s + v, 0);
+  return (
+    <div>
+      {showImport && (
+        <ImportarBusintModal
+          comprasExistentes={compras}
+          onConfirm={onImportar}
+          onClose={() => setShowImport(false)}
+        />
+      )}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 20,
+        }}
+      >
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>
+            Comparativo por Concepto
+          </h2>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
+            Gasto agrupado por concepto, mes a mes (Valor Bruto Busint)
+          </p>
+        </div>
+        <Btn variant="danger" onClick={() => setShowImport(true)}>
+          📥 Importar Busint
+        </Btn>
+      </div>
+      {!compras.length ? (
+        <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
+          Aún no has importado ningún mes. Usa "Importar Busint" para subir el primer export.
+        </div>
+      ) : (
+        <>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(3,1fr)",
+              gap: 14,
+              marginBottom: 24,
+            }}
+          >
+            <KPI icon="💰" label="Gasto total acumulado" value={fmtCOP(granTotal)} color={C.violet} bg={C.violetBg} />
+            <KPI
+              icon="📅"
+              label="Mes de mayor gasto"
+              value={mesMayor ? fmtMesLargo(mesMayor) : "—"}
+              color={C.amber}
+              bg={C.amberBg}
+              sub={mesMayor ? fmtCOP(totalesPorMes[mesMayor]) : ""}
+            />
+            <KPI
+              icon="🏷"
+              label="Concepto de mayor peso"
+              value={filas[0]?.concepto || "—"}
+              color={C.red}
+              bg={C.redBg}
+              sub={filas[0] ? fmtCOP(filas[0].total) : ""}
+            />
+          </div>
+          <div
+            style={{
+              background: C.white,
+              borderRadius: 14,
+              border: `1px solid ${C.border}`,
+              overflow: "auto",
+            }}
+          >
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: C.ink }}>
+                  <th style={{ padding: "10px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
+                    Código
+                  </th>
+                  <th style={{ padding: "10px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
+                    Concepto
+                  </th>
+                  {meses.map((m) => (
+                    <th
+                      key={m}
+                      style={{
+                        padding: "10px 12px",
+                        color: m === mesMayor ? C.white : C.seam,
+                        background: m === mesMayor ? "rgba(200,184,162,0.15)" : "transparent",
+                        textAlign: "right",
+                        fontWeight: 700,
+                        fontSize: 10,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {fmtMesCorto(m)}
+                      {isAdmin && (
+                        <button
+                          onClick={() => onDeleteMes(m)}
+                          title="Borrar este mes"
+                          style={{
+                            marginLeft: 6,
+                            background: "none",
+                            border: "none",
+                            color: C.red,
+                            cursor: "pointer",
+                            fontSize: 11,
+                          }}
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </th>
+                  ))}
+                  <th style={{ padding: "10px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
+                    Total
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {filas.map((f, i) => {
+                  const mesMax = meses.reduce(
+                    (max, m) => (max === null || (f.porMes[m] || 0) > (f.porMes[max] || 0) ? m : max),
+                    null
+                  );
+                  return (
+                    <tr
+                      key={i}
+                      style={{
+                        background: i % 2 === 0 ? C.canvas : C.white,
+                        borderBottom: `1px solid ${C.border}`,
+                      }}
+                    >
+                      <td style={{ padding: "8px 12px", color: C.slate, whiteSpace: "nowrap" }}>{f.codConcep}</td>
+                      <td style={{ padding: "8px 12px", color: C.ink, fontWeight: 600 }}>{f.concepto}</td>
+                      {meses.map((m) => (
+                        <td
+                          key={m}
+                          style={{
+                            padding: "8px 12px",
+                            textAlign: "right",
+                            whiteSpace: "nowrap",
+                            fontWeight: m === mesMax && f.porMes[m] ? 800 : 500,
+                            color: m === mesMax && f.porMes[m] ? C.red : C.slate,
+                            background: m === mesMax && f.porMes[m] ? C.redBg : "transparent",
+                          }}
+                        >
+                          {f.porMes[m] ? fmtCOP(f.porMes[m]) : "—"}
+                        </td>
+                      ))}
+                      <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800, color: C.ink, whiteSpace: "nowrap" }}>
+                        {fmtCOP(f.total)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr style={{ background: C.ink }}>
+                  <td colSpan={2} style={{ padding: "10px 12px", color: C.seam, fontWeight: 700, fontSize: 12 }}>
+                    TOTAL MES
+                  </td>
+                  {meses.map((m) => (
+                    <td key={m} style={{ padding: "10px 12px", textAlign: "right", fontWeight: 900, color: C.white, whiteSpace: "nowrap" }}>
+                      {fmtCOP(totalesPorMes[m])}
+                    </td>
+                  ))}
+                  <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 900, color: C.white, whiteSpace: "nowrap" }}>
+                    {fmtCOP(granTotal)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 // ─── HOME CONTABILIDAD ────────────────────────────────────────────────────────
 function HomeContabilidad({ onGoModulo }) {
   const MODULOS = [
@@ -1165,6 +1615,7 @@ function HomeContabilidad({ onGoModulo }) {
 export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) {
   const [subView, setSubView] = useState("home");
   const [movimientos, setMovimientos] = useState([]);
+  const [compras, setCompras] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     const unsub = onSnapshot(
@@ -1174,7 +1625,16 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
         setLoading(false);
       }
     );
-    return () => unsub();
+    const unsubCompras = onSnapshot(
+      collection(db, "contabilidad_compras"),
+      (snap) => {
+        setCompras(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      }
+    );
+    return () => {
+      unsub();
+      unsubCompras();
+    };
   }, []);
   async function addMovimiento(m) {
     setMovimientos((ms) => [...ms, m]);
@@ -1184,10 +1644,33 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     setMovimientos((ms) => ms.filter((m) => m.id !== id));
     await fsDelete("contabilidad_movimientos", id);
   }
+  async function addComprasBatch(items) {
+    setCompras((cs) => [...cs, ...items]);
+    await Promise.all(items.map((c) => fsSave("contabilidad_compras", c.id, c)));
+  }
+  async function deleteComprasDeMes(mes) {
+    const aBorrar = compras.filter((c) => c.mes === mes).map((c) => c.id);
+    setCompras((cs) => cs.filter((c) => c.mes !== mes));
+    await Promise.all(aBorrar.map((id) => fsDelete("contabilidad_compras", id)));
+  }
+  async function deleteCompra(id) {
+    setCompras((cs) => cs.filter((c) => c.id !== id));
+    await fsDelete("contabilidad_compras", id);
+  }
+  // Antes de agregar los grupos nuevos, borra los meses que el usuario marcó
+  // para reemplazar (evita duplicar totales si se reimporta el mismo mes).
+  async function onImportarCompras(nuevos, reemplazarMap) {
+    const mesesAReemplazar = Object.keys(reemplazarMap).filter((m) => reemplazarMap[m]);
+    for (const mes of mesesAReemplazar) {
+      await deleteComprasDeMes(mes);
+    }
+    await addComprasBatch(nuevos);
+  }
   const isAdmin = currentUser?.isAdmin;
   const NAV = [
     { id: "home", icon: "◉", label: "Inicio" },
     { id: "flujo_caja", icon: "💰", label: "Flujo de Caja" },
+    { id: "comparativo", icon: "📊", label: "Comparativo por Concepto" },
   ];
   if (loading)
     return (
@@ -1383,6 +1866,14 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               movimientos={movimientos}
               onAdd={addMovimiento}
               onDelete={deleteMovimiento}
+              isAdmin={isAdmin}
+            />
+          )}
+          {subView === "comparativo" && (
+            <ComparativoConceptosView
+              compras={compras}
+              onImportar={onImportarCompras}
+              onDeleteMes={deleteComprasDeMes}
               isAdmin={isAdmin}
             />
           )}
