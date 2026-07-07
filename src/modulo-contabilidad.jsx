@@ -1085,7 +1085,7 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
             Flujo de Caja
           </h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
-            {new Date(mesFiltro + "-01").toLocaleDateString("es-CO", {
+            {new Date(mesFiltro + "-02").toLocaleDateString("es-CO", {
               month: "long",
               year: "numeric",
             })}
@@ -1108,7 +1108,7 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
           >
             {meses.map((m) => (
               <option key={m} value={m}>
-                {new Date(m + "-01").toLocaleDateString("es-CO", {
+                {new Date(m + "-02").toLocaleDateString("es-CO", {
                   month: "long",
                   year: "numeric",
                 })}
