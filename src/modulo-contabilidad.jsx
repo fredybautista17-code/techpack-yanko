@@ -1336,6 +1336,17 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, isAdmin })
   });
   const mesMayor = meses.reduce((max, m) => (max === null || totalesPorMes[m] > totalesPorMes[max] ? m : max), null);
   const granTotal = Object.values(totalesPorMes).reduce((s, v) => s + v, 0);
+  // Tendencia: compara el último mes cargado contra el penúltimo, por rubro.
+  const [ultimoMes, penultimoMes] = [...meses].reverse();
+  filas.forEach((f) => {
+    const actual = ultimoMes ? f.porMes[ultimoMes] || 0 : 0;
+    const anterior = penultimoMes ? f.porMes[penultimoMes] || 0 : 0;
+    f.cambio = actual - anterior;
+    f.cambioPct = anterior > 0 ? (f.cambio / anterior) * 100 : actual > 0 ? 100 : 0;
+  });
+  const conTendencia = penultimoMes ? filas.filter((f) => (f.porMes[ultimoMes] || 0) > 0 || (f.porMes[penultimoMes] || 0) > 0) : [];
+  const subieron = [...conTendencia].filter((f) => f.cambio > 0).sort((a, b) => b.cambio - a.cambio).slice(0, 5);
+  const bajaron = [...conTendencia].filter((f) => f.cambio < 0).sort((a, b) => a.cambio - b.cambio).slice(0, 5);
   return (
     <div>
       {showImport && (
@@ -1449,6 +1460,11 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, isAdmin })
                   <th style={{ padding: "10px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
                     Total
                   </th>
+                  {penultimoMes && (
+                    <th style={{ padding: "10px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
+                      Tendencia
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -1485,6 +1501,24 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, isAdmin })
                       <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800, color: C.ink, whiteSpace: "nowrap" }}>
                         {fmtCOP(f.total)}
                       </td>
+                      {penultimoMes && (
+                        <td style={{ padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
+                          {(f.porMes[ultimoMes] || 0) > 0 || (f.porMes[penultimoMes] || 0) > 0 ? (
+                            <span
+                              style={{
+                                fontSize: 11,
+                                fontWeight: 700,
+                                color: f.cambio > 0 ? C.red : f.cambio < 0 ? C.green : C.slate,
+                              }}
+                            >
+                              {f.cambio > 0 ? "↑" : f.cambio < 0 ? "↓" : "→"}{" "}
+                              {Math.abs(f.cambioPct) >= 999 ? "nuevo" : `${Math.abs(Math.round(f.cambioPct))}%`}
+                            </span>
+                          ) : (
+                            <span style={{ color: C.slate }}>—</span>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
@@ -1502,11 +1536,360 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, isAdmin })
                   <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 900, color: C.white, whiteSpace: "nowrap" }}>
                     {fmtCOP(granTotal)}
                   </td>
+                  {penultimoMes && <td />}
                 </tr>
               </tfoot>
             </table>
           </div>
+          {penultimoMes && (subieron.length > 0 || bajaron.length > 0) && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 20 }}>
+              <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 18 }}>
+                <div style={{ fontWeight: 800, fontSize: 14, color: C.red, marginBottom: 10 }}>
+                  📈 Rubros que más subieron ({fmtMesCorto(penultimoMes)} → {fmtMesCorto(ultimoMes)})
+                </div>
+                {subieron.length ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {subieron.map((f, i) => (
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                        <span style={{ color: C.ink, fontWeight: 600 }}>{f.concepto}</span>
+                        <span style={{ color: C.red, fontWeight: 700, whiteSpace: "nowrap" }}>
+                          +{fmtCOP(f.cambio)} ({Math.abs(f.cambioPct) >= 999 ? "nuevo" : `${Math.round(f.cambioPct)}%`})
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: C.slate }}>Ningún rubro subió.</div>
+                )}
+              </div>
+              <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 18 }}>
+                <div style={{ fontWeight: 800, fontSize: 14, color: C.green, marginBottom: 10 }}>
+                  📉 Rubros que más bajaron ({fmtMesCorto(penultimoMes)} → {fmtMesCorto(ultimoMes)})
+                </div>
+                {bajaron.length ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {bajaron.map((f, i) => (
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                        <span style={{ color: C.ink, fontWeight: 600 }}>{f.concepto}</span>
+                        <span style={{ color: C.green, fontWeight: 700, whiteSpace: "nowrap" }}>
+                          {fmtCOP(f.cambio)} ({Math.round(f.cambioPct)}%)
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: C.slate }}>Ningún rubro bajó.</div>
+                )}
+              </div>
+            </div>
+          )}
         </>
+      )}
+    </div>
+  );
+}
+// ─── PROYECCIÓN DE FLUJO DE CAJA (PRESUPUESTO POR MES) ────────────────────────
+// El "promedio" de cada rubro se calcula en vivo a partir de los meses ya
+// cargados en el Comparativo (contabilidad_compras) — nunca se recalcula
+// retroactivamente sobre un presupuesto ya guardado, así que editar un
+// borrador conserva la selección de rubros y el % de ajuste que tenías.
+function sumarMes(mes, n = 1) {
+  const [y, m] = mes.split("-").map(Number);
+  const d = new Date(y, m - 1 + n, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function ProyeccionForm({ compras, presupuestoExistente, onGuardar, onClose }) {
+  const mesesCompras = [...new Set(compras.map((c) => c.mes))].sort();
+  const baseItems = (() => {
+    const map = {};
+    compras.forEach((c) => {
+      const key = `${c.codConcep}__${c.concepto}`;
+      if (!map[key]) map[key] = { codConcep: c.codConcep, concepto: c.concepto, total: 0 };
+      map[key].total += c.valor;
+    });
+    return Object.values(map)
+      .map((b) => ({ ...b, promedio: mesesCompras.length ? b.total / mesesCompras.length : 0 }))
+      .sort((a, b) => b.promedio - a.promedio);
+  })();
+  const [mesForm, setMesForm] = useState(
+    presupuestoExistente?.mes || (mesesCompras.length ? sumarMes(mesesCompras[mesesCompras.length - 1]) : sumarMes(today().slice(0, 7)))
+  );
+  const [ajustePct, setAjustePct] = useState(presupuestoExistente?.ajustePct ?? 0);
+  const [incluidos, setIncluidos] = useState(() => {
+    const init = {};
+    baseItems.forEach((b) => {
+      const key = `${b.codConcep}__${b.concepto}`;
+      const guardado = presupuestoExistente?.items?.find((i) => i.codConcep === b.codConcep && i.concepto === b.concepto);
+      init[key] = guardado ? !!guardado.incluido : true;
+    });
+    return init;
+  });
+  function toggle(key) {
+    setIncluidos((inc) => ({ ...inc, [key]: !inc[key] }));
+  }
+  const itemsFinal = baseItems.map((b) => {
+    const key = `${b.codConcep}__${b.concepto}`;
+    const incluido = !!incluidos[key];
+    const valorFinal = incluido ? b.promedio * (1 + (parseFloat(ajustePct) || 0) / 100) : 0;
+    return { ...b, key, incluido, valorFinal };
+  });
+  const totalProyectado = itemsFinal.filter((i) => i.incluido).reduce((s, i) => s + i.valorFinal, 0);
+  function guardar() {
+    if (!mesForm) return;
+    onGuardar({
+      id: mesForm,
+      mes: mesForm,
+      ajustePct: parseFloat(ajustePct) || 0,
+      items: itemsFinal.map((i) => ({
+        codConcep: i.codConcep,
+        concepto: i.concepto,
+        promedio: i.promedio,
+        incluido: i.incluido,
+        valorFinal: i.valorFinal,
+      })),
+      totalProyectado,
+      estado: "borrador",
+      creadoEn: presupuestoExistente?.creadoEn || new Date().toISOString(),
+      actualizadoEn: new Date().toISOString(),
+    });
+    onClose();
+  }
+  return (
+    <Modal title={presupuestoExistente ? "Editar Proyección" : "Nueva Proyección"} onClose={onClose} width={820}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <Field label="Mes a proyectar">
+          <FInput
+            type="month"
+            value={mesForm}
+            onChange={setMesForm}
+          />
+        </Field>
+        <Field label="Ajuste % sobre el promedio">
+          <FInput
+            type="number"
+            value={ajustePct}
+            onChange={setAjustePct}
+            placeholder="Ej: 3 (para +3%)"
+          />
+        </Field>
+      </div>
+      {!baseItems.length ? (
+        <div style={{ textAlign: "center", padding: 32, color: C.slate, fontSize: 13 }}>
+          Aún no hay rubros históricos en Comparativo por Concepto para calcular un promedio.
+        </div>
+      ) : (
+        <>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
+            Promedio calculado sobre {mesesCompras.length} mes{mesesCompras.length !== 1 ? "es" : ""} cargado{mesesCompras.length !== 1 ? "s" : ""}. Desmarca los rubros que no quieres incluir en la proyección (ej. los que ya te cubre un cliente).
+          </div>
+          <div
+            style={{
+              maxHeight: 360,
+              overflowY: "auto",
+              border: `1px solid ${C.border}`,
+              borderRadius: 10,
+              marginBottom: 16,
+            }}
+          >
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: C.ink, position: "sticky", top: 0 }}>
+                  {["", "Código", "Concepto", "Promedio", "Con ajuste"].map((h) => (
+                    <th
+                      key={h}
+                      style={{
+                        padding: "8px 10px",
+                        color: C.seam,
+                        textAlign: h === "Promedio" || h === "Con ajuste" ? "right" : "left",
+                        fontWeight: 700,
+                        fontSize: 10,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {itemsFinal.map((i) => (
+                  <tr
+                    key={i.key}
+                    style={{
+                      background: i.incluido ? C.white : C.canvas,
+                      opacity: i.incluido ? 1 : 0.5,
+                      borderBottom: `1px solid ${C.border}`,
+                    }}
+                  >
+                    <td style={{ padding: "6px 10px" }}>
+                      <input type="checkbox" checked={i.incluido} onChange={() => toggle(i.key)} />
+                    </td>
+                    <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>{i.codConcep}</td>
+                    <td style={{ padding: "6px 10px" }}>{i.concepto}</td>
+                    <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate, whiteSpace: "nowrap" }}>
+                      {fmtCOP(i.promedio)}
+                    </td>
+                    <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700, color: C.ink, whiteSpace: "nowrap" }}>
+                      {i.incluido ? fmtCOP(i.valorFinal) : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          padding: "12px 16px",
+          background: C.violetBg,
+          borderRadius: 10,
+          marginBottom: 16,
+        }}
+      >
+        <span style={{ fontSize: 13, fontWeight: 700, color: C.violet }}>Total proyectado para {fmtMesLargo(mesForm)}</span>
+        <span style={{ fontSize: 18, fontWeight: 900, color: C.violet }}>{fmtCOP(totalProyectado)}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <Btn variant="secondary" onClick={onClose}>
+          Cancelar
+        </Btn>
+        <Btn variant="danger" onClick={guardar} disabled={!baseItems.length}>
+          Guardar Proyección
+        </Btn>
+      </div>
+    </Modal>
+  );
+}
+function ProyeccionView({ compras, movimientos, presupuestos, onGuardar, onFinalizar, onDeletePresupuesto, isAdmin }) {
+  const [showForm, setShowForm] = useState(false);
+  const [editando, setEditando] = useState(null);
+  const lista = [...presupuestos].sort((a, b) => b.mes.localeCompare(a.mes));
+  return (
+    <div>
+      {showForm && (
+        <ProyeccionForm
+          compras={compras}
+          presupuestoExistente={editando}
+          onGuardar={onGuardar}
+          onClose={() => {
+            setShowForm(false);
+            setEditando(null);
+          }}
+        />
+      )}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 20,
+        }}
+      >
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Proyección</h2>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
+            Presupuesto mensual estimado a partir del histórico de Comparativo por Concepto
+          </p>
+        </div>
+        <Btn
+          variant="danger"
+          onClick={() => {
+            setEditando(null);
+            setShowForm(true);
+          }}
+        >
+          + Nueva Proyección
+        </Btn>
+      </div>
+      {!lista.length ? (
+        <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
+          Aún no has creado ninguna proyección. Usa "+ Nueva Proyección" para armar el presupuesto del próximo mes.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {lista.map((p) => {
+            const ingresosReales = movimientos
+              .filter((m) => m.tipo === "ingreso" && m.fecha?.slice(0, 7) === p.mes)
+              .reduce((s, m) => s + m.valor, 0);
+            const avancePct = p.totalProyectado > 0 ? Math.min((ingresosReales / p.totalProyectado) * 100, 999) : 0;
+            const terminado = p.estado === "terminado";
+            return (
+              <div key={p.id} style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: terminado ? 14 : 0 }}>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontWeight: 800, fontSize: 16, color: C.ink, textTransform: "capitalize" }}>{fmtMesLargo(p.mes)}</span>
+                      <span
+                        style={{
+                          padding: "2px 10px",
+                          borderRadius: 20,
+                          fontSize: 11,
+                          fontWeight: 700,
+                          background: terminado ? C.greenBg : C.amberBg,
+                          color: terminado ? C.green : C.amber,
+                        }}
+                      >
+                        {terminado ? "✓ Terminado" : "Borrador"}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 13, color: C.slate, marginTop: 4 }}>
+                      Total proyectado: <strong style={{ color: C.ink }}>{fmtCOP(p.totalProyectado)}</strong>
+                      {p.ajustePct ? ` (ajuste ${p.ajustePct > 0 ? "+" : ""}${p.ajustePct}%)` : ""}
+                    </div>
+                  </div>
+                  {isAdmin && (
+                    <div style={{ display: "flex", gap: 8 }}>
+                      {!terminado && (
+                        <>
+                          <Btn
+                            small
+                            variant="secondary"
+                            onClick={() => {
+                              setEditando(p);
+                              setShowForm(true);
+                            }}
+                          >
+                            Editar
+                          </Btn>
+                          <Btn small variant="success" onClick={() => onFinalizar(p.id)}>
+                            Presupuesto Terminado
+                          </Btn>
+                        </>
+                      )}
+                      <Btn small variant="danger" onClick={() => onDeletePresupuesto(p.id)}>
+                        Eliminar
+                      </Btn>
+                    </div>
+                  )}
+                </div>
+                {terminado && (
+                  <div>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.slate, marginBottom: 6 }}>
+                      <span>
+                        Ingresos reales de {fmtMesLargo(p.mes)}: <strong style={{ color: C.green }}>{fmtCOP(ingresosReales)}</strong>
+                      </span>
+                      <span style={{ fontWeight: 700, color: avancePct >= 100 ? C.green : C.amber }}>{Math.round(avancePct)}% del presupuesto</span>
+                    </div>
+                    <div style={{ height: 10, borderRadius: 5, background: C.canvas, overflow: "hidden" }}>
+                      <div
+                        style={{
+                          height: "100%",
+                          width: `${Math.min(avancePct, 100)}%`,
+                          background: avancePct >= 100 ? C.green : C.amber,
+                          borderRadius: 5,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );
@@ -1660,6 +2043,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
   const [subView, setSubView] = useState("home");
   const [movimientos, setMovimientos] = useState([]);
   const [compras, setCompras] = useState([]);
+  const [presupuestos, setPresupuestos] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     const unsub = onSnapshot(
@@ -1675,9 +2059,16 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
         setCompras(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
       }
     );
+    const unsubPresupuestos = onSnapshot(
+      collection(db, "contabilidad_presupuestos"),
+      (snap) => {
+        setPresupuestos(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      }
+    );
     return () => {
       unsub();
       unsubCompras();
+      unsubPresupuestos();
     };
   }, []);
   async function addMovimiento(m) {
@@ -1718,11 +2109,27 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     }
     await addComprasBatch(nuevos);
   }
+  async function guardarPresupuesto(p) {
+    setPresupuestos((ps) => [...ps.filter((x) => x.id !== p.id), p]);
+    await fsSave("contabilidad_presupuestos", p.id, p);
+  }
+  async function finalizarPresupuesto(id) {
+    const p = presupuestos.find((x) => x.id === id);
+    if (!p) return;
+    const actualizado = { ...p, estado: "terminado", terminadoEn: new Date().toISOString() };
+    setPresupuestos((ps) => ps.map((x) => (x.id === id ? actualizado : x)));
+    await fsSave("contabilidad_presupuestos", id, actualizado);
+  }
+  async function deletePresupuesto(id) {
+    setPresupuestos((ps) => ps.filter((x) => x.id !== id));
+    await fsDelete("contabilidad_presupuestos", id);
+  }
   const isAdmin = currentUser?.isAdmin;
   const NAV = [
     { id: "home", icon: "◉", label: "Inicio" },
     { id: "flujo_caja", icon: "💰", label: "Flujo de Caja" },
     { id: "comparativo", icon: "📊", label: "Comparativo por Concepto" },
+    { id: "proyeccion", icon: "🎯", label: "Proyección" },
   ];
   if (loading)
     return (
@@ -1930,8 +2337,20 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               isAdmin={isAdmin}
             />
           )}
+          {subView === "proyeccion" && (
+            <ProyeccionView
+              compras={compras}
+              movimientos={movimientos}
+              presupuestos={presupuestos}
+              onGuardar={guardarPresupuesto}
+              onFinalizar={finalizarPresupuesto}
+              onDeletePresupuesto={deletePresupuesto}
+              isAdmin={isAdmin}
+            />
+          )}
         </div>
       </div>
     </div>
   );
 }
+
