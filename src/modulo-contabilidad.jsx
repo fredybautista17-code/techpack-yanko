@@ -882,8 +882,9 @@ function ImportarBusintModal({ comprasExistentes, onConfirm, onClose }) {
   );
 }
 // ─── FLUJO DE CAJA VIEW ───────────────────────────────────────────────────────
-function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
+function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin }) {
   const [showModal, setShowModal] = useState(null); // "ingreso" | "egreso" | "importar"
+  const [fechaABorrar, setFechaABorrar] = useState("");
   const [mesFiltro, setMesFiltro] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -1099,6 +1100,49 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
         <span style={{ fontSize: 12, color: C.slate }}>
           {movFiltrados.length} movimiento{movFiltrados.length !== 1 ? "s" : ""}
         </span>
+        {isAdmin && onDeleteFecha && (
+          <>
+            <span style={{ flex: 1 }} />
+            <input
+              type="date"
+              value={fechaABorrar}
+              onChange={(e) => setFechaABorrar(e.target.value)}
+              style={{
+                padding: "6px 10px",
+                border: `1px solid ${C.border}`,
+                borderRadius: 6,
+                fontSize: 12,
+                color: C.ink,
+                background: C.white,
+                outline: "none",
+                fontFamily: "inherit",
+              }}
+            />
+            <button
+              onClick={() => {
+                if (!fechaABorrar) return;
+                const cantidad = movimientos.filter((m) => m.fecha === fechaABorrar).length;
+                if (!cantidad) return;
+                if (window.confirm(`¿Borrar los ${cantidad} movimientos con fecha ${fechaABorrar}? Esta acción no se puede deshacer.`)) {
+                  onDeleteFecha(fechaABorrar);
+                  setFechaABorrar("");
+                }
+              }}
+              style={{
+                padding: "6px 12px",
+                background: C.redBg,
+                border: `1px solid ${C.red}44`,
+                borderRadius: 6,
+                color: C.red,
+                fontWeight: 700,
+                fontSize: 12,
+                cursor: "pointer",
+              }}
+            >
+              🗑 Borrar todos de esa fecha
+            </button>
+          </>
+        )}
       </div>
       {/* Tabla movimientos */}
       {!movFiltrados.length ? (
@@ -1644,6 +1688,14 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     setMovimientos((ms) => ms.filter((m) => m.id !== id));
     await fsDelete("contabilidad_movimientos", id);
   }
+  // Limpieza rápida para cuando se importó por el botón equivocado (ej. un
+  // export de Busint importado como egresos genéricos): borra de un golpe
+  // todos los movimientos que quedaron con una fecha específica.
+  async function deleteMovimientosDeFecha(fecha) {
+    const aBorrar = movimientos.filter((m) => m.fecha === fecha).map((m) => m.id);
+    setMovimientos((ms) => ms.filter((m) => m.fecha !== fecha));
+    await Promise.all(aBorrar.map((id) => fsDelete("contabilidad_movimientos", id)));
+  }
   async function addComprasBatch(items) {
     setCompras((cs) => [...cs, ...items]);
     await Promise.all(items.map((c) => fsSave("contabilidad_compras", c.id, c)));
@@ -1866,6 +1918,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               movimientos={movimientos}
               onAdd={addMovimiento}
               onDelete={deleteMovimiento}
+              onDeleteFecha={deleteMovimientosDeFecha}
               isAdmin={isAdmin}
             />
           )}
@@ -1882,3 +1935,4 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     </div>
   );
 }
+
