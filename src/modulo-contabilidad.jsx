@@ -1935,4 +1935,3 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     </div>
   );
 }
-
