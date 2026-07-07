@@ -386,9 +386,249 @@ function NuevoMovimientoModal({ tipo, onSave, onClose }) {
     </Modal>
   );
 }
+// ─── IMPORTAR EGRESOS DESDE EXCEL ─────────────────────────────────────────────
+// Lee la primera hoja de un archivo .xlsx/.xls y detecta columnas por nombre
+// de encabezado (Fecha, Categoría, Descripción, Valor, Proveedor, Referencia),
+// sin importar mayúsculas/tildes ni el orden en que vengan. Filas sin valor,
+// categoría ni descripción se descartan por vacías.
+function normalizarEncabezado(k) {
+  return String(k)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .trim();
+}
+function excelValorAFecha(val) {
+  if (typeof val === "number") {
+    const d = new Date(Math.round((val - 25569) * 86400 * 1000));
+    return d.toISOString().slice(0, 10);
+  }
+  const s = String(val || "").trim();
+  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  if (m) {
+    let [, dd, mm, yy] = m;
+    if (yy.length === 2) yy = "20" + yy;
+    return `${yy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}`;
+  }
+  const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (iso) return `${iso[1]}-${iso[2].padStart(2, "0")}-${iso[3].padStart(2, "0")}`;
+  return s;
+}
+function excelValorANumero(val) {
+  if (typeof val === "number") return val;
+  const s = String(val || "").replace(/[^\d,.-]/g, "");
+  if (!s) return 0;
+  const normalizado = s.includes(",") && s.lastIndexOf(",") > s.lastIndexOf(".")
+    ? s.replace(/\./g, "").replace(",", ".")
+    : s.replace(/,/g, "");
+  return parseFloat(normalizado) || 0;
+}
+async function parseExcelEgresos(file) {
+  const XLSX = await import("xlsx");
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: "", raw: true });
+  const out = [];
+  rows.forEach((row) => {
+    const map = {};
+    Object.keys(row).forEach((k) => {
+      map[normalizarEncabezado(k)] = row[k];
+    });
+    const fechaRaw = map["fecha"] ?? map["date"] ?? "";
+    const categoria = map["categoria"] ?? map["concepto"] ?? map["tipo"] ?? "";
+    const descripcion = map["descripcion"] ?? map["detalle"] ?? map["observacion"] ?? map["observaciones"] ?? "";
+    const valorRaw = map["valor"] ?? map["monto"] ?? map["total"] ?? map["importe"] ?? "";
+    const proveedor = map["proveedor"] ?? map["beneficiario"] ?? map["destino"] ?? map["tercero"] ?? "";
+    const referencia = map["referencia"] ?? map["factura"] ?? map["no factura"] ?? map["numero"] ?? map["no"] ?? map["no."] ?? "";
+    const valor = excelValorANumero(valorRaw);
+    if (!valor && !categoria && !descripcion) return;
+    out.push({
+      fecha: excelValorAFecha(fechaRaw) || today(),
+      categoria: String(categoria || "Otros egresos").trim(),
+      descripcion: String(descripcion || "").trim(),
+      valor,
+      proveedor: String(proveedor || "").trim(),
+      referencia: String(referencia || "").trim(),
+      incluir: true,
+    });
+  });
+  return out;
+}
+function ImportarExcelModal({ onSave, onClose }) {
+  const [paso, setPaso] = useState(1);
+  const [filas, setFilas] = useState([]);
+  const [error, setError] = useState("");
+  const [cargando, setCargando] = useState(false);
+  async function handleFile(e) {
+    const f = e.target.files[0];
+    if (!f) return;
+    setError("");
+    setCargando(true);
+    try {
+      const parsed = await parseExcelEgresos(f);
+      if (!parsed.length) {
+        setError("No se encontraron filas válidas. Revisa que la primera fila tenga encabezados como Fecha, Valor, Categoría.");
+      } else {
+        setFilas(parsed);
+        setPaso(2);
+      }
+    } catch (err) {
+      setError("No se pudo leer el archivo. Verifica que sea un Excel válido (.xlsx o .xls).");
+    }
+    setCargando(false);
+  }
+  function toggleFila(i) {
+    setFilas((fs) => fs.map((f, idx) => (idx === i ? { ...f, incluir: !f.incluir } : f)));
+  }
+  function confirmar() {
+    filas.filter((f) => f.incluir).forEach((f) => {
+      onSave({
+        id: uid(),
+        tipo: "egreso",
+        fecha: f.fecha,
+        categoria: f.categoria,
+        descripcion: f.descripcion,
+        valor: f.valor,
+        referencia: f.referencia,
+        proveedor: f.proveedor,
+        creadoEn: new Date().toISOString(),
+      });
+    });
+    onClose();
+  }
+  const seleccionadas = filas.filter((f) => f.incluir).length;
+  return (
+    <Modal title="Importar egresos desde Excel" onClose={onClose} width={760}>
+      {paso === 1 && (
+        <div>
+          <div
+            style={{
+              padding: "12px 14px",
+              background: C.blueBg,
+              borderRadius: 8,
+              marginBottom: 18,
+              fontSize: 13,
+              color: C.blue,
+              lineHeight: 1.5,
+            }}
+          >
+            Sube un archivo Excel (.xlsx o .xls) con tus egresos. La primera fila debe tener encabezados de columna — por ejemplo <strong>Fecha, Categoría, Descripción, Valor, Proveedor, Referencia</strong>. No importa el orden ni si faltan tildes; el sistema los detecta automáticamente.
+          </div>
+          <input
+            type="file"
+            accept=".xlsx,.xls"
+            onChange={handleFile}
+            disabled={cargando}
+            style={{
+              width: "100%",
+              padding: "9px 12px",
+              border: `1.5px solid ${C.border}`,
+              borderRadius: 8,
+              fontSize: 14,
+              color: C.ink,
+              background: C.white,
+              fontFamily: "inherit",
+            }}
+          />
+          {cargando && <div style={{ fontSize: 13, color: C.slate, marginTop: 10 }}>Leyendo archivo...</div>}
+          {error && (
+            <div
+              style={{
+                marginTop: 14,
+                padding: "10px 14px",
+                background: C.redBg,
+                borderRadius: 8,
+                fontSize: 13,
+                color: C.red,
+                fontWeight: 600,
+              }}
+            >
+              {error}
+            </div>
+          )}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20 }}>
+            <Btn variant="secondary" onClick={onClose}>
+              Cancelar
+            </Btn>
+          </div>
+        </div>
+      )}
+      {paso === 2 && (
+        <div>
+          <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>
+            Se encontraron <strong>{filas.length}</strong> fila{filas.length !== 1 ? "s" : ""}. Desmarca las que no quieras importar.
+          </div>
+          <div
+            style={{
+              maxHeight: 360,
+              overflowY: "auto",
+              border: `1px solid ${C.border}`,
+              borderRadius: 10,
+              marginBottom: 16,
+            }}
+          >
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: C.ink, position: "sticky", top: 0 }}>
+                  {["", "Fecha", "Categoría", "Descripción", "Proveedor", "Valor"].map((h) => (
+                    <th
+                      key={h}
+                      style={{
+                        padding: "8px 10px",
+                        color: C.seam,
+                        textAlign: "left",
+                        fontWeight: 700,
+                        fontSize: 10,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filas.map((f, i) => (
+                  <tr
+                    key={i}
+                    style={{
+                      background: f.incluir ? C.white : C.canvas,
+                      opacity: f.incluir ? 1 : 0.5,
+                      borderBottom: `1px solid ${C.border}`,
+                    }}
+                  >
+                    <td style={{ padding: "6px 10px" }}>
+                      <input type="checkbox" checked={f.incluir} onChange={() => toggleFila(i)} />
+                    </td>
+                    <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>{f.fecha}</td>
+                    <td style={{ padding: "6px 10px" }}>{f.categoria}</td>
+                    <td style={{ padding: "6px 10px" }}>{f.descripcion || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{f.proveedor || "—"}</td>
+                    <td style={{ padding: "6px 10px", fontWeight: 700, color: C.red, whiteSpace: "nowrap" }}>
+                      {fmtCOP(f.valor)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <Btn variant="secondary" onClick={() => { setPaso(1); setFilas([]); }}>
+              ← Volver
+            </Btn>
+            <Btn variant="danger" onClick={confirmar} disabled={!seleccionadas}>
+              Importar {seleccionadas} egreso{seleccionadas !== 1 ? "s" : ""}
+            </Btn>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
 // ─── FLUJO DE CAJA VIEW ───────────────────────────────────────────────────────
 function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
-  const [showModal, setShowModal] = useState(null); // "ingreso" | "egreso"
+  const [showModal, setShowModal] = useState(null); // "ingreso" | "egreso" | "importar"
   const [mesFiltro, setMesFiltro] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -416,9 +656,15 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
   }
   return (
     <div>
-      {showModal && (
+      {(showModal === "ingreso" || showModal === "egreso") && (
         <NuevoMovimientoModal
           tipo={showModal}
+          onSave={(m) => onAdd(m)}
+          onClose={() => setShowModal(null)}
+        />
+      )}
+      {showModal === "importar" && (
+        <ImportarExcelModal
           onSave={(m) => onAdd(m)}
           onClose={() => setShowModal(null)}
         />
@@ -473,6 +719,9 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, isAdmin }) {
           </Btn>
           <Btn variant="danger" onClick={() => setShowModal("egreso")}>
             - Egreso
+          </Btn>
+          <Btn variant="secondary" onClick={() => setShowModal("importar")}>
+            📥 Importar Excel
           </Btn>
         </div>
       </div>
