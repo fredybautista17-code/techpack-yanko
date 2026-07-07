@@ -273,7 +273,7 @@ const CATS_EGRESO = [
   "Otros egresos",
 ];
 // ─── NUEVO MOVIMIENTO MODAL ───────────────────────────────────────────────────
-function NuevoMovimientoModal({ tipo, onSave, onClose }) {
+function NuevoMovimientoModal({ tipo, onSave, onClose, clientesDiseno, rubros }) {
   const [form, setForm] = useState({
     fecha: today(),
     categoria: "",
@@ -282,20 +282,44 @@ function NuevoMovimientoModal({ tipo, onSave, onClose }) {
     referencia: "",
     proveedor: "",
   });
+  // Distribución del ingreso entre rubros (opcional). Lo que no se reparta
+  // queda como "disponible" — caja libre, no comprometida a ningún gasto.
+  const [distribucion, setDistribucion] = useState([]);
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const cats = tipo === "ingreso" ? CATS_INGRESO : CATS_EGRESO;
   const esIngreso = tipo === "ingreso";
+  const valorNum = parseFloat(form.valor) || 0;
+  const distribuido = distribucion.reduce((s, d) => s + (parseFloat(d.monto) || 0), 0);
+  const disponible = valorNum - distribuido;
+  function agregarFilaDistribucion() {
+    setDistribucion((d) => [...d, { codConcep: "", concepto: "", monto: "" }]);
+  }
+  function actualizarFilaDistribucion(i, patch) {
+    setDistribucion((d) => d.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
+  }
+  function quitarFilaDistribucion(i) {
+    setDistribucion((d) => d.filter((_, idx) => idx !== i));
+  }
   function save() {
     if (!form.fecha || !form.categoria || !form.valor) return;
+    if (esIngreso && distribuido > valorNum) return;
     onSave({
       id: uid(),
       tipo,
       fecha: form.fecha,
       categoria: form.categoria,
       descripcion: form.descripcion,
-      valor: parseFloat(form.valor) || 0,
+      valor: valorNum,
       referencia: form.referencia,
       proveedor: form.proveedor,
+      ...(esIngreso
+        ? {
+            cliente: form.proveedor,
+            distribucion: distribucion
+              .filter((d) => d.codConcep && (parseFloat(d.monto) || 0) > 0)
+              .map((d) => ({ codConcep: d.codConcep, concepto: d.concepto, monto: parseFloat(d.monto) || 0 })),
+          }
+        : {}),
       creadoEn: new Date().toISOString(),
     });
     onClose();
@@ -349,12 +373,20 @@ function NuevoMovimientoModal({ tipo, onSave, onClose }) {
         />
       </Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label={esIngreso ? "Cliente / Origen" : "Proveedor / Destino"}>
-          <FInput
-            value={form.proveedor}
-            onChange={set("proveedor")}
-            placeholder={esIngreso ? "Nombre cliente" : "Nombre proveedor"}
-          />
+        <Field label={esIngreso ? "Cliente" : "Proveedor / Destino"}>
+          {esIngreso ? (
+            <FSel
+              value={form.proveedor}
+              onChange={set("proveedor")}
+              options={(clientesDiseno || []).map((c) => c.nombre)}
+            />
+          ) : (
+            <FInput
+              value={form.proveedor}
+              onChange={set("proveedor")}
+              placeholder="Nombre proveedor"
+            />
+          )}
         </Field>
         <Field label="N° Referencia / Factura">
           <FInput
@@ -364,6 +396,117 @@ function NuevoMovimientoModal({ tipo, onSave, onClose }) {
           />
         </Field>
       </div>
+      {esIngreso && (
+        <div style={{ marginTop: 4, marginBottom: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <label
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: C.slate,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+              }}
+            >
+              Distribución por rubro (opcional)
+            </label>
+            <button
+              onClick={agregarFilaDistribucion}
+              style={{
+                background: "none",
+                border: `1px solid ${C.blue}`,
+                borderRadius: 6,
+                padding: "3px 10px",
+                color: C.blue,
+                fontWeight: 700,
+                fontSize: 11,
+                cursor: "pointer",
+              }}
+            >
+              + Agregar rubro
+            </button>
+          </div>
+          {distribucion.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+              {distribucion.map((row, i) => (
+                <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <select
+                    value={row.codConcep}
+                    onChange={(e) => {
+                      const r = (rubros || []).find((x) => x.codConcep === e.target.value);
+                      actualizarFilaDistribucion(i, { codConcep: e.target.value, concepto: r?.concepto || "" });
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: "7px 10px",
+                      border: `1.5px solid ${C.border}`,
+                      borderRadius: 8,
+                      fontSize: 13,
+                      color: C.ink,
+                      background: C.white,
+                      outline: "none",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    <option value="">— Rubro —</option>
+                    {(rubros || []).map((r) => (
+                      <option key={r.codConcep} value={r.codConcep}>
+                        {r.concepto}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="number"
+                    value={row.monto}
+                    onChange={(e) => actualizarFilaDistribucion(i, { monto: e.target.value })}
+                    placeholder="Monto"
+                    style={{
+                      width: 140,
+                      padding: "7px 10px",
+                      border: `1.5px solid ${C.border}`,
+                      borderRadius: 8,
+                      fontSize: 13,
+                      color: C.ink,
+                      background: C.white,
+                      outline: "none",
+                      fontFamily: "inherit",
+                    }}
+                  />
+                  <button
+                    onClick={() => quitarFilaDistribucion(i)}
+                    style={{
+                      background: C.redBg,
+                      border: "none",
+                      borderRadius: 6,
+                      padding: "6px 9px",
+                      color: C.red,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              padding: "8px 12px",
+              background: disponible < 0 ? C.redBg : C.greenBg,
+              borderRadius: 8,
+              fontSize: 12,
+              fontWeight: 700,
+              color: disponible < 0 ? C.red : C.green,
+            }}
+          >
+            <span>Disponible (sin asignar a rubro)</span>
+            <span>{fmtCOP(disponible)}</span>
+          </div>
+        </div>
+      )}
       <div
         style={{
           display: "flex",
@@ -378,7 +521,7 @@ function NuevoMovimientoModal({ tipo, onSave, onClose }) {
         <Btn
           variant={esIngreso ? "success" : "danger"}
           onClick={save}
-          disabled={!form.fecha || !form.categoria || !form.valor}
+          disabled={!form.fecha || !form.categoria || !form.valor || (esIngreso && disponible < 0)}
         >
           {esIngreso ? "+ Registrar Ingreso" : "- Registrar Egreso"}
         </Btn>
@@ -882,7 +1025,7 @@ function ImportarBusintModal({ comprasExistentes, onConfirm, onClose }) {
   );
 }
 // ─── FLUJO DE CAJA VIEW ───────────────────────────────────────────────────────
-function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin }) {
+function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, clientesDiseno, rubros }) {
   const [showModal, setShowModal] = useState(null); // "ingreso" | "egreso" | "importar"
   const [fechaABorrar, setFechaABorrar] = useState("");
   const [mesFiltro, setMesFiltro] = useState(() => {
@@ -917,6 +1060,8 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin })
           tipo={showModal}
           onSave={(m) => onAdd(m)}
           onClose={() => setShowModal(null)}
+          clientesDiseno={clientesDiseno}
+          rubros={rubros}
         />
       )}
       {showModal === "importar" && (
@@ -1812,11 +1957,28 @@ function ProyeccionView({ compras, movimientos, presupuestos, onGuardar, onFinal
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {lista.map((p) => {
-            const ingresosReales = movimientos
-              .filter((m) => m.tipo === "ingreso" && m.fecha?.slice(0, 7) === p.mes)
-              .reduce((s, m) => s + m.valor, 0);
+            const ingresosMes = movimientos.filter((m) => m.tipo === "ingreso" && m.fecha?.slice(0, 7) === p.mes);
+            const ingresosReales = ingresosMes.reduce((s, m) => s + m.valor, 0);
             const avancePct = p.totalProyectado > 0 ? Math.min((ingresosReales / p.totalProyectado) * 100, 999) : 0;
             const terminado = p.estado === "terminado";
+            // Avance por rubro: cuánto de cada rubro presupuestado ya fue cubierto
+            // por distribuciones de ingresos de clientes registradas ese mes.
+            const itemsConAvance = terminado
+              ? (p.items || [])
+                  .filter((i) => i.incluido)
+                  .map((i) => {
+                    const cubierto = ingresosMes.reduce((s, m) => {
+                      const enEsteRubro = (m.distribucion || []).filter((d) => d.codConcep === i.codConcep);
+                      return s + enEsteRubro.reduce((s2, d) => s2 + (parseFloat(d.monto) || 0), 0);
+                    }, 0);
+                    const pct = i.valorFinal > 0 ? Math.min((cubierto / i.valorFinal) * 100, 999) : 0;
+                    return { ...i, cubierto, pct };
+                  })
+              : [];
+            const disponibleSinAsignar = ingresosMes.reduce((s, m) => {
+              const asignado = (m.distribucion || []).reduce((s2, d) => s2 + (parseFloat(d.monto) || 0), 0);
+              return s + (m.valor - asignado);
+            }, 0);
             return (
               <div key={p.id} style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: terminado ? 14 : 0 }}>
@@ -1872,9 +2034,9 @@ function ProyeccionView({ compras, movimientos, presupuestos, onGuardar, onFinal
                       <span>
                         Ingresos reales de {fmtMesLargo(p.mes)}: <strong style={{ color: C.green }}>{fmtCOP(ingresosReales)}</strong>
                       </span>
-                      <span style={{ fontWeight: 700, color: avancePct >= 100 ? C.green : C.amber }}>{Math.round(avancePct)}% del presupuesto</span>
+                      <span style={{ fontWeight: 700, color: avancePct >= 100 ? C.green : C.amber }}>{Math.round(avancePct)}% del presupuesto total</span>
                     </div>
-                    <div style={{ height: 10, borderRadius: 5, background: C.canvas, overflow: "hidden" }}>
+                    <div style={{ height: 10, borderRadius: 5, background: C.canvas, overflow: "hidden", marginBottom: 14 }}>
                       <div
                         style={{
                           height: "100%",
@@ -1883,6 +2045,48 @@ function ProyeccionView({ compras, movimientos, presupuestos, onGuardar, onFinal
                           borderRadius: 5,
                         }}
                       />
+                    </div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 8 }}>Avance por rubro</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
+                      {itemsConAvance.map((i) => (
+                        <div key={i.key || `${i.codConcep}__${i.concepto}`}>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.slate, marginBottom: 3 }}>
+                            <span>
+                              {i.concepto} <span style={{ color: C.slate, fontWeight: 400 }}>({i.codConcep})</span>
+                            </span>
+                            <span style={{ fontWeight: 700, color: i.pct >= 100 ? C.green : C.ink }}>
+                              {fmtCOP(i.cubierto)} / {fmtCOP(i.valorFinal)} · {Math.round(i.pct)}%
+                            </span>
+                          </div>
+                          <div style={{ height: 7, borderRadius: 4, background: C.canvas, overflow: "hidden" }}>
+                            <div
+                              style={{
+                                height: "100%",
+                                width: `${Math.min(i.pct, 100)}%`,
+                                background: i.pct >= 100 ? C.green : C.violet,
+                                borderRadius: 4,
+                              }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        padding: "10px 14px",
+                        borderRadius: 10,
+                        background: disponibleSinAsignar >= 0 ? C.greenBg : C.redBg,
+                      }}
+                    >
+                      <span style={{ fontSize: 12, fontWeight: 700, color: disponibleSinAsignar >= 0 ? C.green : C.red }}>
+                        Disponible sin asignar a rubro
+                      </span>
+                      <span style={{ fontSize: 15, fontWeight: 900, color: disponibleSinAsignar >= 0 ? C.green : C.red }}>
+                        {fmtCOP(disponibleSinAsignar)}
+                      </span>
                     </div>
                   </div>
                 )}
@@ -2044,6 +2248,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
   const [movimientos, setMovimientos] = useState([]);
   const [compras, setCompras] = useState([]);
   const [presupuestos, setPresupuestos] = useState([]);
+  const [clientesDiseno, setClientesDiseno] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     const unsub = onSnapshot(
@@ -2065,10 +2270,17 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
         setPresupuestos(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
       }
     );
+    // Clientes: se leen en vivo del mismo documento de configuración que usa
+    // Diseño (Admin → Clientes). Solo lectura desde Contabilidad — agregar o
+    // borrar clientes se sigue haciendo únicamente desde Diseño.
+    const unsubClientes = onSnapshot(doc(db, "config", "main"), (snap) => {
+      setClientesDiseno(snap.exists() ? snap.data()?.clientes || [] : []);
+    });
     return () => {
       unsub();
       unsubCompras();
       unsubPresupuestos();
+      unsubClientes();
     };
   }, []);
   async function addMovimiento(m) {
@@ -2124,6 +2336,16 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     setPresupuestos((ps) => ps.filter((x) => x.id !== id));
     await fsDelete("contabilidad_presupuestos", id);
   }
+  // Lista única de rubros históricos (código + nombre), para el selector de
+  // distribución de ingresos y para calcular el avance por rubro en Proyección.
+  const rubros = (() => {
+    const map = {};
+    compras.forEach((c) => {
+      const key = `${c.codConcep}__${c.concepto}`;
+      if (!map[key]) map[key] = { codConcep: c.codConcep, concepto: c.concepto };
+    });
+    return Object.values(map).sort((a, b) => a.concepto.localeCompare(b.concepto));
+  })();
   const isAdmin = currentUser?.isAdmin;
   const NAV = [
     { id: "home", icon: "◉", label: "Inicio" },
@@ -2327,6 +2549,8 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               onDelete={deleteMovimiento}
               onDeleteFecha={deleteMovimientosDeFecha}
               isAdmin={isAdmin}
+              clientesDiseno={clientesDiseno}
+              rubros={rubros}
             />
           )}
           {subView === "comparativo" && (
