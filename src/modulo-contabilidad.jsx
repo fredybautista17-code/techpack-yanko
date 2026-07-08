@@ -54,6 +54,17 @@ function ultimoDiaMes(mes) {
   const [y, m] = mes.split("-").map(Number);
   return new Date(y, m, 0).getDate();
 }
+function proximosMeses(n) {
+  const out = [];
+  const d = new Date();
+  for (let i = 0; i < n; i++) {
+    const mm = d.getMonth() + 1 + i;
+    const y = d.getFullYear() + Math.floor((mm - 1) / 12);
+    const m = ((mm - 1) % 12) + 1;
+    out.push(`${y}-${String(m).padStart(2, "0")}`);
+  }
+  return out;
+}
 function fmtCOP(n) {
   return `$${Number(Math.round(n || 0)).toLocaleString("es-CO")}`;
 }
@@ -1241,6 +1252,382 @@ function ImportarBusintModal({ comprasExistentes, onConfirm, onClose }) {
     </Modal>
   );
 }
+// ─── CUENTAS POR PAGAR (IMPORT TNS + MANUAL + CALENDARIO DE PAGO) ─────────────
+// El reporte "Resumen de Cuentas por Pagar por Edades" de TNS agrupa por
+// proveedor en franjas de antigüedad (Por vencer, 0-30, 31-60, 61-90, 91+),
+// no trae facturas individuales con vencimiento. Se lee posicionalmente:
+// nombre en la primera celda de cada fila, seguido de los valores numéricos
+// de cada franja + el total — así evitamos depender de la alineación exacta
+// de columnas del encabezado (que viene desalineada por celdas combinadas
+// distintas entre encabezado y filas de datos en el export real de TNS).
+async function parseCuentasPorPagar(file) {
+  const XLSX = await import("xlsx");
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
+  let fechaCorte = "";
+  for (const row of rows) {
+    for (const cell of row) {
+      if (typeof cell !== "string") continue;
+      const mFecha = cell.match(/fecha\s*:?\s*(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/i);
+      if (mFecha) {
+        fechaCorte = `${mFecha[3]}-${mFecha[1].padStart(2, "0")}-${mFecha[2].padStart(2, "0")}`;
+        break;
+      }
+    }
+    if (fechaCorte) break;
+  }
+  if (!fechaCorte) {
+    for (const row of rows) {
+      for (const cell of row) {
+        if (typeof cell !== "string" || !/corte/i.test(cell)) continue;
+        const m = cell.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+        if (m) {
+          fechaCorte = `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`;
+          break;
+        }
+      }
+      if (fechaCorte) break;
+    }
+  }
+  if (!fechaCorte) fechaCorte = today();
+  const PALABRAS_ENCABEZADO = ["nombre", "totales", "total informe", "facturas por vencer", "facturas vencidas", "resumen", "fec. corte", "fecha"];
+  const proveedores = [];
+  rows.forEach((row) => {
+    const nombreRaw = row[0];
+    if (!nombreRaw || typeof nombreRaw !== "string") return;
+    const nombre = nombreRaw.trim();
+    if (!nombre) return;
+    const nombreNorm = normalizarEncabezado(nombre);
+    if (PALABRAS_ENCABEZADO.some((w) => nombreNorm.includes(w))) return;
+    const numeros = row.slice(1).filter((v) => typeof v === "number");
+    if (numeros.length < 5) return;
+    const ultimos6 = numeros.length >= 6 ? numeros.slice(-6) : [...numeros, numeros.reduce((s, n) => s + n, 0)];
+    const [porVencer, dias0a30, dias31a60, dias61a90, dias91mas, total] = ultimos6;
+    proveedores.push({
+      nombre,
+      porVencer: porVencer || 0,
+      dias0a30: dias0a30 || 0,
+      dias31a60: dias31a60 || 0,
+      dias61a90: dias61a90 || 0,
+      dias91mas: dias91mas || 0,
+      total: total || 0,
+    });
+  });
+  return { fechaCorte, proveedores };
+}
+function ImportarCXPModal({ onConfirm, onClose }) {
+  const [paso, setPaso] = useState(1);
+  const [datos, setDatos] = useState(null);
+  const [error, setError] = useState("");
+  const [cargando, setCargando] = useState(false);
+  async function handleFile(e) {
+    const f = e.target.files[0];
+    if (!f) return;
+    setError("");
+    setCargando(true);
+    try {
+      const parsed = await parseCuentasPorPagar(f);
+      if (!parsed.proveedores.length) {
+        setError("No se encontraron proveedores válidos. Verifica que sea el reporte de Cuentas por Pagar por Edades de TNS.");
+      } else {
+        setDatos(parsed);
+        setPaso(2);
+      }
+    } catch (err) {
+      setError("No se pudo leer el archivo. Verifica que sea un Excel válido (.xlsx o .xls).");
+    }
+    setCargando(false);
+  }
+  function confirmar() {
+    onConfirm({
+      id: uid(),
+      fechaCorte: datos.fechaCorte,
+      proveedores: datos.proveedores,
+      creadoEn: new Date().toISOString(),
+    });
+    onClose();
+  }
+  const total = datos ? datos.proveedores.reduce((s, p) => s + p.total, 0) : 0;
+  return (
+    <Modal title="Importar Cuentas por Pagar (TNS)" onClose={onClose} width={860}>
+      {paso === 1 && (
+        <div>
+          <div
+            style={{
+              padding: "12px 14px",
+              background: C.blueBg,
+              borderRadius: 8,
+              marginBottom: 18,
+              fontSize: 13,
+              color: C.blue,
+              lineHeight: 1.5,
+            }}
+          >
+            Sube el reporte "Resumen de Cuentas por Pagar por Edades" exportado desde TNS (.xlsx). Se agrupa automáticamente por proveedor y se guarda como un corte nuevo — no borra los cortes anteriores, así puedes ver el histórico.
+          </div>
+          <input
+            type="file"
+            accept=".xlsx,.xls"
+            onChange={handleFile}
+            disabled={cargando}
+            style={{
+              width: "100%",
+              padding: "9px 12px",
+              border: `1.5px solid ${C.border}`,
+              borderRadius: 8,
+              fontSize: 14,
+              color: C.ink,
+              background: C.white,
+              fontFamily: "inherit",
+            }}
+          />
+          {cargando && <div style={{ fontSize: 13, color: C.slate, marginTop: 10 }}>Leyendo archivo...</div>}
+          {error && (
+            <div
+              style={{
+                marginTop: 14,
+                padding: "10px 14px",
+                background: C.redBg,
+                borderRadius: 8,
+                fontSize: 13,
+                color: C.red,
+                fontWeight: 600,
+              }}
+            >
+              {error}
+            </div>
+          )}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20 }}>
+            <Btn variant="secondary" onClick={onClose}>
+              Cancelar
+            </Btn>
+          </div>
+        </div>
+      )}
+      {paso === 2 && datos && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 12 }}>
+            <div style={{ fontSize: 13, color: C.slate }}>
+              Se encontraron <strong>{datos.proveedores.length}</strong> proveedores.
+            </div>
+            <div style={{ width: 200 }}>
+              <Field label="Fecha de corte">
+                <FInput type="date" value={datos.fechaCorte} onChange={(v) => setDatos((d) => ({ ...d, fechaCorte: v }))} />
+              </Field>
+            </div>
+          </div>
+          <div style={{ maxHeight: 340, overflowY: "auto", border: `1px solid ${C.border}`, borderRadius: 10, marginBottom: 16 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: C.ink, position: "sticky", top: 0 }}>
+                  {["Proveedor", "Por vencer", "0-30", "31-60", "61-90", "91+", "Total"].map((h) => (
+                    <th
+                      key={h}
+                      style={{
+                        padding: "8px 10px",
+                        color: C.seam,
+                        textAlign: h === "Proveedor" ? "left" : "right",
+                        fontWeight: 700,
+                        fontSize: 10,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {datos.proveedores.map((p, i) => (
+                  <tr key={i} style={{ borderBottom: `1px solid ${C.border}`, background: i % 2 === 0 ? C.canvas : C.white }}>
+                    <td style={{ padding: "6px 10px" }}>{p.nombre}</td>
+                    <td style={{ padding: "6px 10px", textAlign: "right" }}>{fmtCOP(p.porVencer)}</td>
+                    <td style={{ padding: "6px 10px", textAlign: "right" }}>{fmtCOP(p.dias0a30)}</td>
+                    <td style={{ padding: "6px 10px", textAlign: "right" }}>{fmtCOP(p.dias31a60)}</td>
+                    <td style={{ padding: "6px 10px", textAlign: "right" }}>{fmtCOP(p.dias61a90)}</td>
+                    <td style={{ padding: "6px 10px", textAlign: "right", color: p.dias91mas > 0 ? C.red : C.ink, fontWeight: p.dias91mas > 0 ? 700 : 400 }}>
+                      {fmtCOP(p.dias91mas)}
+                    </td>
+                    <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 700 }}>{fmtCOP(p.total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <Btn variant="secondary" onClick={() => { setPaso(1); setDatos(null); }}>
+              ← Volver
+            </Btn>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>Total: {fmtCOP(total)}</div>
+            <Btn variant="danger" onClick={confirmar}>
+              Guardar corte
+            </Btn>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+function AgregarProveedorCXPModal({ onSave, onClose }) {
+  const [nombre, setNombre] = useState("");
+  const [porVencer, setPorVencer] = useState("");
+  const [dias0a30, setDias0a30] = useState("");
+  const [dias31a60, setDias31a60] = useState("");
+  const [dias61a90, setDias61a90] = useState("");
+  const [dias91mas, setDias91mas] = useState("");
+  const total = [porVencer, dias0a30, dias31a60, dias61a90, dias91mas].reduce((s, v) => s + (parseFloat(v) || 0), 0);
+  function guardar() {
+    if (!nombre || total <= 0) return;
+    onSave({
+      id: uid(),
+      nombre,
+      porVencer: parseFloat(porVencer) || 0,
+      dias0a30: parseFloat(dias0a30) || 0,
+      dias31a60: parseFloat(dias31a60) || 0,
+      dias61a90: parseFloat(dias61a90) || 0,
+      dias91mas: parseFloat(dias91mas) || 0,
+      total,
+      creadoEn: new Date().toISOString(),
+    });
+    onClose();
+  }
+  return (
+    <Modal title="Agregar proveedor manualmente" onClose={onClose} width={480}>
+      <Field label="Proveedor">
+        <FInput value={nombre} onChange={setNombre} placeholder="Nombre del proveedor" />
+      </Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Por vencer">
+          <FInput type="number" value={porVencer} onChange={setPorVencer} placeholder="0" />
+        </Field>
+        <Field label="0 - 30 días">
+          <FInput type="number" value={dias0a30} onChange={setDias0a30} placeholder="0" />
+        </Field>
+        <Field label="31 - 60 días">
+          <FInput type="number" value={dias31a60} onChange={setDias31a60} placeholder="0" />
+        </Field>
+        <Field label="61 - 90 días">
+          <FInput type="number" value={dias61a90} onChange={setDias61a90} placeholder="0" />
+        </Field>
+        <Field label="91 o más días">
+          <FInput type="number" value={dias91mas} onChange={setDias91mas} placeholder="0" />
+        </Field>
+      </div>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          padding: "8px 12px",
+          background: C.violetBg,
+          borderRadius: 8,
+          fontSize: 13,
+          fontWeight: 700,
+          color: C.violet,
+          marginBottom: 16,
+        }}
+      >
+        <span>Total</span>
+        <span>{fmtCOP(total)}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <Btn variant="secondary" onClick={onClose}>
+          Cancelar
+        </Btn>
+        <Btn variant="danger" onClick={guardar} disabled={!nombre || total <= 0}>
+          Guardar
+        </Btn>
+      </div>
+    </Modal>
+  );
+}
+// El calendario reparte una deuda en montos por mes, hasta 24 meses adelante,
+// para poder negociar con el proveedor un plan de pago concreto.
+function ProgramarPagoModal({ proveedor, totalAdeudado, entradasExistentes, onGuardar, onClose }) {
+  const meses = proximosMeses(24);
+  const [montos, setMontos] = useState(() => {
+    const init = {};
+    meses.forEach((m) => {
+      init[m] = "";
+    });
+    (entradasExistentes || []).forEach((e) => {
+      if (init[e.mes] !== undefined) init[e.mes] = String(e.monto);
+    });
+    return init;
+  });
+  const programado = Object.values(montos).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+  const sinProgramar = totalAdeudado - programado;
+  function guardar() {
+    const entradas = meses
+      .map((m) => ({ mes: m, monto: parseFloat(montos[m]) || 0 }))
+      .filter((e) => e.monto > 0);
+    onGuardar(proveedor, entradas);
+    onClose();
+  }
+  return (
+    <Modal title={`Programar pago — ${proveedor}`} onClose={onClose} width={560}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3,1fr)",
+          gap: 10,
+          padding: "12px 14px",
+          background: C.blueBg,
+          borderRadius: 8,
+          marginBottom: 18,
+          fontSize: 12,
+          color: C.blue,
+        }}
+      >
+        <div>
+          <div style={{ fontWeight: 700 }}>Total adeudado</div>
+          <div>{fmtCOP(totalAdeudado)}</div>
+        </div>
+        <div>
+          <div style={{ fontWeight: 700 }}>Programado</div>
+          <div>{fmtCOP(programado)}</div>
+        </div>
+        <div>
+          <div style={{ fontWeight: 700 }}>Sin programar</div>
+          <div style={{ color: sinProgramar < 0 ? C.red : C.blue }}>{fmtCOP(sinProgramar)}</div>
+        </div>
+      </div>
+      <div style={{ maxHeight: 360, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
+        {meses.map((m) => (
+          <div key={m} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <span style={{ flex: 1, fontSize: 12, color: C.ink, textTransform: "capitalize" }}>{fmtMesLargo(m)}</span>
+            <input
+              type="number"
+              value={montos[m]}
+              onChange={(e) => setMontos((mm) => ({ ...mm, [m]: e.target.value }))}
+              placeholder="$0"
+              style={{
+                width: 160,
+                padding: "6px 10px",
+                border: `1.5px solid ${C.border}`,
+                borderRadius: 8,
+                fontSize: 13,
+                color: C.ink,
+                background: C.white,
+                outline: "none",
+                fontFamily: "inherit",
+              }}
+            />
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <Btn variant="secondary" onClick={onClose}>
+          Cancelar
+        </Btn>
+        <Btn variant="danger" onClick={guardar}>
+          Guardar calendario
+        </Btn>
+      </div>
+    </Modal>
+  );
+}
 // ─── FLUJO DE CAJA VIEW ───────────────────────────────────────────────────────
 function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, clientesDiseno, rubros, onUpdateDistribucion }) {
   const [showModal, setShowModal] = useState(null); // "ingreso" | "egreso" | "importar"
@@ -2175,7 +2562,7 @@ function ProyeccionForm({ compras, presupuestoExistente, onGuardar, onClose }) {
     </Modal>
   );
 }
-function ProyeccionView({ compras, movimientos, presupuestos, onGuardar, onFinalizar, onDeletePresupuesto, isAdmin }) {
+function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onGuardar, onFinalizar, onDeletePresupuesto, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [editando, setEditando] = useState(null);
   const lista = [...presupuestos].sort((a, b) => b.mes.localeCompare(a.mes));
@@ -2227,6 +2614,8 @@ function ProyeccionView({ compras, movimientos, presupuestos, onGuardar, onFinal
             const ingresosReales = ingresosMes.reduce((s, m) => s + m.valor, 0);
             const avancePct = p.totalProyectado > 0 ? Math.min((ingresosReales / p.totalProyectado) * 100, 999) : 0;
             const terminado = p.estado === "terminado";
+            const pagosCxpMes = (calendarioCxp || []).filter((c) => c.mes === p.mes);
+            const totalPagosCxp = pagosCxpMes.reduce((s, c) => s + c.monto, 0);
             // Avance por rubro: cuánto de cada rubro presupuestado ya fue cubierto
             // por distribuciones de ingresos de clientes registradas ese mes.
             const itemsConAvance = terminado
@@ -2294,6 +2683,22 @@ function ProyeccionView({ compras, movimientos, presupuestos, onGuardar, onFinal
                     </div>
                   )}
                 </div>
+                {totalPagosCxp > 0 && (
+                  <div style={{ marginTop: 10, marginBottom: terminado ? 14 : 0, padding: "10px 14px", background: C.amberBg, borderRadius: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700, color: C.amber, marginBottom: 6 }}>
+                      <span>🧾 Pagos programados (Cuentas por Pagar)</span>
+                      <span>{fmtCOP(totalPagosCxp)}</span>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                      {pagosCxpMes.map((c) => (
+                        <div key={c.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.slate }}>
+                          <span>{c.proveedor}</span>
+                          <span>{fmtCOP(c.monto)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {terminado && (
                   <div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.slate, marginBottom: 6 }}>
@@ -2513,6 +2918,239 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
     </div>
   );
 }
+// ─── CUENTAS POR PAGAR VIEW ─────────────────────────────────────────────────────
+function CuentasPorPagarView({ cortes, manuales, calendario, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onGuardarCalendario, isAdmin }) {
+  const [showImport, setShowImport] = useState(false);
+  const [showManual, setShowManual] = useState(false);
+  const [programando, setProgramando] = useState(null);
+  const [orden, setOrden] = useState("total");
+  const [corteSeleccionado, setCorteSeleccionado] = useState(null);
+  const cortesOrdenados = [...cortes].sort((a, b) => b.fechaCorte.localeCompare(a.fechaCorte));
+  const corteActivo = corteSeleccionado
+    ? cortesOrdenados.find((c) => c.id === corteSeleccionado) || cortesOrdenados[0]
+    : cortesOrdenados[0];
+  const filasCorte = (corteActivo?.proveedores || []).map((p) => ({ ...p, origen: "corte" }));
+  const filasManual = manuales.map((p) => ({ ...p, origen: "manual" }));
+  let filas = [...filasCorte, ...filasManual];
+  filas = [...filas].sort((a, b) => {
+    if (orden === "total") return b.total - a.total;
+    if (orden === "91") return b.dias91mas - a.dias91mas;
+    return a.nombre.localeCompare(b.nombre);
+  });
+  const totalAdeudado = filas.reduce((s, f) => s + f.total, 0);
+  const totalVencido = filas.reduce((s, f) => s + f.dias0a30 + f.dias31a60 + f.dias61a90 + f.dias91mas, 0);
+  const total91 = filas.reduce((s, f) => s + f.dias91mas, 0);
+  function calendarioDe(nombre) {
+    return calendario.filter((c) => c.proveedor === nombre);
+  }
+  return (
+    <div>
+      {showImport && <ImportarCXPModal onConfirm={onImportarCorte} onClose={() => setShowImport(false)} />}
+      {showManual && <AgregarProveedorCXPModal onSave={onAddManual} onClose={() => setShowManual(false)} />}
+      {programando &&
+        (() => {
+          const fila = filas.find((f) => f.nombre === programando);
+          if (!fila) return null;
+          return (
+            <ProgramarPagoModal
+              proveedor={programando}
+              totalAdeudado={fila.total}
+              entradasExistentes={calendarioDe(programando)}
+              onGuardar={onGuardarCalendario}
+              onClose={() => setProgramando(null)}
+            />
+          );
+        })()}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 20,
+        }}
+      >
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Cuentas por Pagar</h2>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
+            {corteActivo ? `Corte al ${corteActivo.fechaCorte}` : "Sin cortes importados aún"}
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          {cortesOrdenados.length > 1 && (
+            <select
+              value={corteActivo?.id || ""}
+              onChange={(e) => setCorteSeleccionado(e.target.value)}
+              style={{
+                padding: "8px 12px",
+                border: `1.5px solid ${C.border}`,
+                borderRadius: 8,
+                fontSize: 13,
+                color: C.ink,
+                background: C.white,
+                outline: "none",
+                fontFamily: "inherit",
+              }}
+            >
+              {cortesOrdenados.map((c) => (
+                <option key={c.id} value={c.id}>
+                  Corte {c.fechaCorte}
+                </option>
+              ))}
+            </select>
+          )}
+          {isAdmin && (
+            <>
+              <Btn variant="secondary" onClick={() => setShowManual(true)}>
+                + Agregar manual
+              </Btn>
+              <Btn variant="danger" onClick={() => setShowImport(true)}>
+                📥 Importar TNS
+              </Btn>
+            </>
+          )}
+        </div>
+      </div>
+      {!filas.length ? (
+        <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
+          Aún no has importado ningún corte de Cuentas por Pagar. Usa "Importar TNS" para subir el primero.
+        </div>
+      ) : (
+        <>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(3,1fr)",
+              gap: 14,
+              marginBottom: 20,
+            }}
+          >
+            <KPI icon="🧾" label="Total adeudado" value={fmtCOP(totalAdeudado)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="⚠" label="Total vencido" value={fmtCOP(totalVencido)} color={C.amber} bg={C.amberBg} />
+            <KPI icon="🔴" label="91+ días (más urgente)" value={fmtCOP(total91)} color={C.red} bg={C.redBg} />
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14 }}>
+            <span style={{ fontSize: 12, color: C.slate, fontWeight: 600 }}>Ordenar por:</span>
+            <select
+              value={orden}
+              onChange={(e) => setOrden(e.target.value)}
+              style={{
+                padding: "6px 10px",
+                border: `1px solid ${C.border}`,
+                borderRadius: 6,
+                fontSize: 12,
+                color: C.ink,
+                background: C.white,
+                outline: "none",
+                fontFamily: "inherit",
+              }}
+            >
+              <option value="total">Total (mayor a menor)</option>
+              <option value="91">Más atrasado (91+ días)</option>
+              <option value="nombre">Nombre</option>
+            </select>
+          </div>
+          <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: C.ink }}>
+                  {["Proveedor", "Por vencer", "0-30", "31-60", "61-90", "91+", "Total", "Programado", ""].map((h) => (
+                    <th
+                      key={h}
+                      style={{
+                        padding: "10px 12px",
+                        color: C.seam,
+                        textAlign: h === "Proveedor" ? "left" : "right",
+                        fontWeight: 700,
+                        fontSize: 10,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filas.map((f, i) => {
+                  const progTotal = calendarioDe(f.nombre).reduce((s, c) => s + c.monto, 0);
+                  return (
+                    <tr
+                      key={`${f.origen}-${f.id || i}`}
+                      style={{
+                        background: f.dias91mas > 0 ? C.redBg : i % 2 === 0 ? C.canvas : C.white,
+                        borderBottom: `1px solid ${C.border}`,
+                      }}
+                    >
+                      <td style={{ padding: "8px 12px", fontWeight: 600, color: C.ink }}>
+                        {f.nombre} {f.origen === "manual" && <span style={{ fontSize: 10, color: C.slate, fontWeight: 400 }}>(manual)</span>}
+                      </td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.porVencer)}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.dias0a30)}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.dias31a60)}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.dias61a90)}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: f.dias91mas > 0 ? 800 : 500, color: f.dias91mas > 0 ? C.red : C.slate }}>
+                        {fmtCOP(f.dias91mas)}
+                      </td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800, color: C.ink }}>{fmtCOP(f.total)}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", color: progTotal > 0 ? C.green : C.slate, fontWeight: progTotal > 0 ? 700 : 400 }}>
+                        {progTotal > 0 ? fmtCOP(progTotal) : "—"}
+                      </td>
+                      <td style={{ padding: "8px 8px", textAlign: "center", whiteSpace: "nowrap" }}>
+                        <button
+                          onClick={() => setProgramando(f.nombre)}
+                          style={{
+                            background: C.blueBg,
+                            border: "none",
+                            borderRadius: 6,
+                            padding: "4px 8px",
+                            color: C.blue,
+                            fontWeight: 700,
+                            fontSize: 10,
+                            cursor: "pointer",
+                            marginRight: 6,
+                          }}
+                        >
+                          📅 Programar pago
+                        </button>
+                        {isAdmin && f.origen === "manual" && (
+                          <button
+                            onClick={() => onDeleteManual(f.id)}
+                            style={{
+                              background: C.redBg,
+                              border: "none",
+                              borderRadius: 6,
+                              padding: "4px 8px",
+                              color: C.red,
+                              fontWeight: 700,
+                              fontSize: 11,
+                              cursor: "pointer",
+                            }}
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {isAdmin && corteActivo && (
+            <div style={{ marginTop: 14, textAlign: "right" }}>
+              <button
+                onClick={() => onDeleteCorte(corteActivo.id)}
+                style={{ background: "none", border: "none", color: C.red, fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+              >
+                🗑 Eliminar este corte
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 // ─── HOME CONTABILIDAD ────────────────────────────────────────────────────────
 function HomeContabilidad({ onGoModulo }) {
   const MODULOS = [
@@ -2664,6 +3302,9 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
   const [compras, setCompras] = useState([]);
   const [presupuestos, setPresupuestos] = useState([]);
   const [presupuestosCliente, setPresupuestosCliente] = useState([]);
+  const [cortesCxp, setCortesCxp] = useState([]);
+  const [manualCxp, setManualCxp] = useState([]);
+  const [calendarioCxp, setCalendarioCxp] = useState([]);
   const [clientesDiseno, setClientesDiseno] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -2694,6 +3335,27 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
         setPresupuestosCliente(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
       }
     );
+    // Cuentas por pagar: cada import de TNS se guarda como un "corte" nuevo
+    // (histórico, nunca se sobreescribe), más una lista de proveedores
+    // agregados a mano, más el calendario de pago programado por proveedor.
+    const unsubCortesCxp = onSnapshot(
+      collection(db, "contabilidad_cxp_cortes"),
+      (snap) => {
+        setCortesCxp(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      }
+    );
+    const unsubManualCxp = onSnapshot(
+      collection(db, "contabilidad_cxp_manual"),
+      (snap) => {
+        setManualCxp(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      }
+    );
+    const unsubCalendarioCxp = onSnapshot(
+      collection(db, "contabilidad_cxp_calendario"),
+      (snap) => {
+        setCalendarioCxp(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      }
+    );
     // Clientes: se leen en vivo del mismo documento de configuración que usa
     // Diseño (Admin → Clientes). Solo lectura desde Contabilidad — agregar o
     // borrar clientes se sigue haciendo únicamente desde Diseño.
@@ -2705,6 +3367,9 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
       unsubCompras();
       unsubPresupuestos();
       unsubPresupuestosCliente();
+      unsubCortesCxp();
+      unsubManualCxp();
+      unsubCalendarioCxp();
       unsubClientes();
     };
   }, []);
@@ -2775,6 +3440,38 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     setPresupuestosCliente((ps) => ps.filter((p) => p.id !== id));
     await fsDelete("contabilidad_presupuestos_cliente", id);
   }
+  async function addCorteCxp(corte) {
+    setCortesCxp((cs) => [...cs, corte]);
+    await fsSave("contabilidad_cxp_cortes", corte.id, corte);
+  }
+  async function deleteCorteCxp(id) {
+    setCortesCxp((cs) => cs.filter((c) => c.id !== id));
+    await fsDelete("contabilidad_cxp_cortes", id);
+  }
+  async function addManualCxp(item) {
+    setManualCxp((ms) => [...ms, item]);
+    await fsSave("contabilidad_cxp_manual", item.id, item);
+  }
+  async function deleteManualCxp(id) {
+    setManualCxp((ms) => ms.filter((m) => m.id !== id));
+    await fsDelete("contabilidad_cxp_manual", id);
+  }
+  // Reemplaza el calendario completo de un proveedor: borra las entradas
+  // anteriores y guarda las nuevas, para que "Programar pago" siempre refleje
+  // exactamente lo que se dejó en el formulario.
+  async function guardarCalendarioProveedor(proveedor, entradas) {
+    const existentes = calendarioCxp.filter((c) => c.proveedor === proveedor);
+    const nuevos = entradas.map((e) => ({
+      id: uid(),
+      proveedor,
+      mes: e.mes,
+      monto: e.monto,
+      creadoEn: new Date().toISOString(),
+    }));
+    setCalendarioCxp((cs) => [...cs.filter((c) => c.proveedor !== proveedor), ...nuevos]);
+    await Promise.all(existentes.map((e) => fsDelete("contabilidad_cxp_calendario", e.id)));
+    await Promise.all(nuevos.map((n) => fsSave("contabilidad_cxp_calendario", n.id, n)));
+  }
   // Lista única de rubros históricos (código + nombre), para el selector de
   // distribución de ingresos y para calcular el avance por rubro en Proyección.
   const rubros = (() => {
@@ -2792,6 +3489,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     { id: "comparativo", icon: "📊", label: "Comparativo por Concepto" },
     { id: "proyeccion", icon: "🎯", label: "Proyección" },
     { id: "clientes", icon: "🤝", label: "Presupuesto Clientes" },
+    { id: "cxp", icon: "🧾", label: "Cuentas por Pagar" },
   ];
   if (loading)
     return (
@@ -3007,6 +3705,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               compras={compras}
               movimientos={movimientos}
               presupuestos={presupuestos}
+              calendarioCxp={calendarioCxp}
               onGuardar={guardarPresupuesto}
               onFinalizar={finalizarPresupuesto}
               onDeletePresupuesto={deletePresupuesto}
@@ -3020,6 +3719,19 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               clientesDiseno={clientesDiseno}
               onGuardar={addPresupuestoCliente}
               onDelete={deletePresupuestoCliente}
+              isAdmin={isAdmin}
+            />
+          )}
+          {subView === "cxp" && (
+            <CuentasPorPagarView
+              cortes={cortesCxp}
+              manuales={manualCxp}
+              calendario={calendarioCxp}
+              onImportarCorte={addCorteCxp}
+              onDeleteCorte={deleteCorteCxp}
+              onAddManual={addManualCxp}
+              onDeleteManual={deleteManualCxp}
+              onGuardarCalendario={guardarCalendarioProveedor}
               isAdmin={isAdmin}
             />
           )}
