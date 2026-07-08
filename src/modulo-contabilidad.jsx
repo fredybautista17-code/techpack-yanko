@@ -1332,7 +1332,7 @@ function ImportarCXPModal({ onConfirm, onClose }) {
       if (!parsed.proveedores.length) {
         setError("No se encontraron proveedores válidos. Verifica que sea el reporte de Cuentas por Pagar por Edades de TNS.");
       } else {
-        setDatos(parsed);
+        setDatos({ ...parsed, proveedores: parsed.proveedores.map((p) => ({ ...p, incluir: true })) });
         setPaso(2);
       }
     } catch (err) {
@@ -1340,16 +1340,24 @@ function ImportarCXPModal({ onConfirm, onClose }) {
     }
     setCargando(false);
   }
+  function toggleProveedor(i) {
+    setDatos((d) => ({
+      ...d,
+      proveedores: d.proveedores.map((p, idx) => (idx === i ? { ...p, incluir: !p.incluir } : p)),
+    }));
+  }
   function confirmar() {
+    const seleccionados = datos.proveedores.filter((p) => p.incluir).map(({ incluir, ...p }) => p);
     onConfirm({
       id: uid(),
       fechaCorte: datos.fechaCorte,
-      proveedores: datos.proveedores,
+      proveedores: seleccionados,
       creadoEn: new Date().toISOString(),
     });
     onClose();
   }
-  const total = datos ? datos.proveedores.reduce((s, p) => s + p.total, 0) : 0;
+  const seleccionados = datos ? datos.proveedores.filter((p) => p.incluir) : [];
+  const total = seleccionados.reduce((s, p) => s + p.total, 0);
   return (
     <Modal title="Importar Cuentas por Pagar (TNS)" onClose={onClose} width={860}>
       {paso === 1 && (
@@ -1410,7 +1418,7 @@ function ImportarCXPModal({ onConfirm, onClose }) {
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 12 }}>
             <div style={{ fontSize: 13, color: C.slate }}>
-              Se encontraron <strong>{datos.proveedores.length}</strong> proveedores.
+              Se encontraron <strong>{datos.proveedores.length}</strong> proveedores. Desmarca los que no quieras incluir en este corte.
             </div>
             <div style={{ width: 200 }}>
               <Field label="Fecha de corte">
@@ -1422,13 +1430,13 @@ function ImportarCXPModal({ onConfirm, onClose }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
                 <tr style={{ background: C.ink, position: "sticky", top: 0 }}>
-                  {["Proveedor", "Por vencer", "0-30", "31-60", "61-90", "91+", "Total"].map((h) => (
+                  {["", "Proveedor", "Por vencer", "0-30", "31-60", "61-90", "91+", "Total"].map((h) => (
                     <th
                       key={h}
                       style={{
                         padding: "8px 10px",
                         color: C.seam,
-                        textAlign: h === "Proveedor" ? "left" : "right",
+                        textAlign: h === "Proveedor" || h === "" ? "left" : "right",
                         fontWeight: 700,
                         fontSize: 10,
                         whiteSpace: "nowrap",
@@ -1441,7 +1449,17 @@ function ImportarCXPModal({ onConfirm, onClose }) {
               </thead>
               <tbody>
                 {datos.proveedores.map((p, i) => (
-                  <tr key={i} style={{ borderBottom: `1px solid ${C.border}`, background: i % 2 === 0 ? C.canvas : C.white }}>
+                  <tr
+                    key={i}
+                    style={{
+                      borderBottom: `1px solid ${C.border}`,
+                      background: p.incluir ? (i % 2 === 0 ? C.canvas : C.white) : C.canvas,
+                      opacity: p.incluir ? 1 : 0.45,
+                    }}
+                  >
+                    <td style={{ padding: "6px 10px" }}>
+                      <input type="checkbox" checked={p.incluir} onChange={() => toggleProveedor(i)} />
+                    </td>
                     <td style={{ padding: "6px 10px" }}>{p.nombre}</td>
                     <td style={{ padding: "6px 10px", textAlign: "right" }}>{fmtCOP(p.porVencer)}</td>
                     <td style={{ padding: "6px 10px", textAlign: "right" }}>{fmtCOP(p.dias0a30)}</td>
@@ -1460,8 +1478,10 @@ function ImportarCXPModal({ onConfirm, onClose }) {
             <Btn variant="secondary" onClick={() => { setPaso(1); setDatos(null); }}>
               ← Volver
             </Btn>
-            <div style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>Total: {fmtCOP(total)}</div>
-            <Btn variant="danger" onClick={confirmar}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>
+              {seleccionados.length} de {datos.proveedores.length} seleccionados — Total: {fmtCOP(total)}
+            </div>
+            <Btn variant="danger" onClick={confirmar} disabled={!seleccionados.length}>
               Guardar corte
             </Btn>
           </div>
@@ -2919,12 +2939,95 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
   );
 }
 // ─── CUENTAS POR PAGAR VIEW ─────────────────────────────────────────────────────
+// Proyecta cómo baja el saldo total de la deuda mes a mes, a partir de lo que
+// ya se dejó programado en el calendario de pago por proveedor. Es una lectura
+// hacia adelante (no depende del histórico de cortes) — si un mes no tiene
+// nada programado, el saldo simplemente no baja ese mes.
+function EstadisticaCxpView({ totalAdeudado, calendario }) {
+  const meses = proximosMeses(24);
+  let saldo = totalAdeudado;
+  const filas = meses.map((m) => {
+    const programado = calendario.filter((c) => c.mes === m).reduce((s, c) => s + c.monto, 0);
+    saldo = saldo - programado;
+    return { mes: m, programado, saldoRestante: saldo };
+  });
+  const totalProgramado24 = filas.reduce((s, f) => s + f.programado, 0);
+  const saldoFinal = filas.length ? filas[filas.length - 1].saldoRestante : totalAdeudado;
+  const pctReduccion = totalAdeudado > 0 ? Math.min(((totalAdeudado - Math.max(saldoFinal, 0)) / totalAdeudado) * 100, 100) : 0;
+  const sinProgramar = Math.max(saldoFinal, 0);
+  return (
+    <div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3,1fr)",
+          gap: 14,
+          marginBottom: 20,
+        }}
+      >
+        <KPI icon="🧾" label="Deuda actual" value={fmtCOP(totalAdeudado)} color={C.violet} bg={C.violetBg} />
+        <KPI icon="📅" label="Programado en 24 meses" value={fmtCOP(totalProgramado24)} color={C.blue} bg={C.blueBg} />
+        <KPI
+          icon={sinProgramar > 0 ? "⚠" : "✓"}
+          label="Saldo sin programar al mes 24"
+          value={fmtCOP(sinProgramar)}
+          color={sinProgramar > 0 ? C.red : C.green}
+          bg={sinProgramar > 0 ? C.redBg : C.greenBg}
+          sub={`${Math.round(pctReduccion)}% de la deuda quedaría cubierta`}
+        />
+      </div>
+      {totalAdeudado <= 0 ? (
+        <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
+          No hay deuda registrada todavía.
+        </div>
+      ) : (
+        <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20 }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 4 }}>Evolución proyectada del saldo</div>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
+            Parte del saldo actual y va restando lo que dejaste programado por mes en "Programar pago" de cada proveedor.
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {filas.map((f, i) => {
+              const pctBar = totalAdeudado > 0 ? Math.max(Math.min((Math.max(f.saldoRestante, 0) / totalAdeudado) * 100, 100), 0) : 0;
+              return (
+                <div key={f.mes}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.slate, marginBottom: 3 }}>
+                    <span style={{ textTransform: "capitalize" }}>{fmtMesLargo(f.mes)}</span>
+                    <span>
+                      {f.programado > 0 && (
+                        <span style={{ color: C.green, fontWeight: 700, marginRight: 10 }}>- {fmtCOP(f.programado)}</span>
+                      )}
+                      <span style={{ fontWeight: 800, color: f.saldoRestante <= 0 ? C.green : C.ink }}>
+                        Saldo: {fmtCOP(Math.max(f.saldoRestante, 0))}
+                      </span>
+                    </span>
+                  </div>
+                  <div style={{ height: 8, borderRadius: 4, background: C.canvas, overflow: "hidden" }}>
+                    <div
+                      style={{
+                        height: "100%",
+                        width: `${pctBar}%`,
+                        background: f.saldoRestante <= 0 ? C.green : i === filas.length - 1 && f.saldoRestante > 0 ? C.red : C.violet,
+                        borderRadius: 4,
+                      }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 function CuentasPorPagarView({ cortes, manuales, calendario, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onGuardarCalendario, isAdmin }) {
   const [showImport, setShowImport] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const [programando, setProgramando] = useState(null);
   const [orden, setOrden] = useState("total");
   const [corteSeleccionado, setCorteSeleccionado] = useState(null);
+  const [vista, setVista] = useState("tabla");
   const cortesOrdenados = [...cortes].sort((a, b) => b.fechaCorte.localeCompare(a.fechaCorte));
   const corteActivo = corteSeleccionado
     ? cortesOrdenados.find((c) => c.id === corteSeleccionado) || cortesOrdenados[0]
@@ -2998,6 +3101,9 @@ function CuentasPorPagarView({ cortes, manuales, calendario, onImportarCorte, on
               ))}
             </select>
           )}
+          <Btn variant="secondary" onClick={() => setVista(vista === "tabla" ? "estadistica" : "tabla")}>
+            {vista === "tabla" ? "📊 Estadística" : "📋 Ver tabla"}
+          </Btn>
           {isAdmin && (
             <>
               <Btn variant="secondary" onClick={() => setShowManual(true)}>
@@ -3010,7 +3116,9 @@ function CuentasPorPagarView({ cortes, manuales, calendario, onImportarCorte, on
           )}
         </div>
       </div>
-      {!filas.length ? (
+      {vista === "estadistica" ? (
+        <EstadisticaCxpView totalAdeudado={totalAdeudado} calendario={calendario} />
+      ) : !filas.length ? (
         <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
           Aún no has importado ningún corte de Cuentas por Pagar. Usa "Importar TNS" para subir el primero.
         </div>
