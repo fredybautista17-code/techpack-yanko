@@ -2798,30 +2798,53 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
   const [mes, setMes] = useState(() => today().slice(0, 7));
   const [showAdd, setShowAdd] = useState(false);
   const [clienteNuevo, setClienteNuevo] = useState("");
+  const [categoriaNueva, setCategoriaNueva] = useState("");
   const [montoNuevo, setMontoNuevo] = useState("");
   const presupuestosMes = presupuestosCliente.filter((p) => p.mes === mes);
-  const clientesConPresupuesto = new Set(presupuestosMes.map((p) => p.cliente));
-  const clientesDisponibles = (clientesDiseno || []).filter((c) => !clientesConPresupuesto.has(c.nombre));
-  function abonadoDe(cliente) {
+  // Un mismo cliente puede tener varias líneas de presupuesto el mismo mes,
+  // una por categoría (Anticipo Nómina, Insumos, Tela, Maquinaria) — así se
+  // sabe cuánto se espera de cada cliente Y de cada categoría por separado.
+  const pairExiste = (cliente, categoria) =>
+    presupuestosMes.some((p) => p.cliente === cliente && p.categoria === categoria);
+  function abonadoDe(cliente, categoria) {
     return movimientos
-      .filter((m) => m.tipo === "ingreso" && m.fecha?.slice(0, 7) === mes && (m.cliente || m.proveedor) === cliente)
+      .filter(
+        (m) =>
+          m.tipo === "ingreso" &&
+          m.fecha?.slice(0, 7) === mes &&
+          (m.cliente || m.proveedor) === cliente &&
+          (!categoria || m.categoria === categoria)
+      )
       .reduce((s, m) => s + m.valor, 0);
   }
   function agregar() {
-    if (!clienteNuevo || !montoNuevo) return;
+    if (!clienteNuevo || !categoriaNueva || !montoNuevo) return;
+    if (pairExiste(clienteNuevo, categoriaNueva)) return;
     onGuardar({
       id: uid(),
       mes,
       cliente: clienteNuevo,
+      categoria: categoriaNueva,
       monto: parseFloat(montoNuevo) || 0,
       creadoEn: new Date().toISOString(),
     });
     setClienteNuevo("");
+    setCategoriaNueva("");
     setMontoNuevo("");
     setShowAdd(false);
   }
   const totalPresupuestado = presupuestosMes.reduce((s, p) => s + p.monto, 0);
-  const totalAbonado = presupuestosMes.reduce((s, p) => s + abonadoDe(p.cliente), 0);
+  const totalAbonado = presupuestosMes.reduce((s, p) => s + abonadoDe(p.cliente, p.categoria), 0);
+  // Resumen agregado por categoría: cuánto se presupuestó vs. cuánto entró
+  // realmente ese mes en cada categoría, sumando todos los clientes.
+  const resumenCategorias = CATS_INGRESO.map((cat) => {
+    const presupuestado = presupuestosMes.filter((p) => p.categoria === cat).reduce((s, p) => s + p.monto, 0);
+    const abonado = movimientos
+      .filter((m) => m.tipo === "ingreso" && m.fecha?.slice(0, 7) === mes && m.categoria === cat)
+      .reduce((s, m) => s + m.valor, 0);
+    return { categoria: cat, presupuestado, abonado };
+  }).filter((r) => r.presupuestado > 0 || r.abonado > 0);
+  const yaExisteDuplicado = clienteNuevo && categoriaNueva && pairExiste(clienteNuevo, categoriaNueva);
   return (
     <div>
       <div
@@ -2835,7 +2858,7 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Presupuesto Clientes</h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
-            Cuánto esperas que abone cada cliente este mes, según sus pedidos
+            Cuánto esperas que abone cada cliente este mes, por categoría, según sus pedidos
           </p>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -2850,16 +2873,34 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
       {showAdd && (
         <Modal title="Agregar presupuesto de cliente" onClose={() => setShowAdd(false)} width={440}>
           <Field label="Cliente">
-            <FSel value={clienteNuevo} onChange={setClienteNuevo} options={clientesDisponibles.map((c) => c.nombre)} />
+            <FSel value={clienteNuevo} onChange={setClienteNuevo} options={(clientesDiseno || []).map((c) => c.nombre)} />
+          </Field>
+          <Field label="Categoría">
+            <FSel value={categoriaNueva} onChange={setCategoriaNueva} options={CATS_INGRESO} />
           </Field>
           <Field label="Monto esperado este mes">
             <FInput type="number" value={montoNuevo} onChange={setMontoNuevo} placeholder="Ej: 20000000" />
           </Field>
+          {yaExisteDuplicado && (
+            <div
+              style={{
+                padding: "8px 12px",
+                background: C.redBg,
+                borderRadius: 8,
+                fontSize: 12,
+                color: C.red,
+                fontWeight: 600,
+                marginBottom: 14,
+              }}
+            >
+              Ya existe un presupuesto para este cliente en esta categoría este mes.
+            </div>
+          )}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
             <Btn variant="secondary" onClick={() => setShowAdd(false)}>
               Cancelar
             </Btn>
-            <Btn variant="danger" onClick={agregar} disabled={!clienteNuevo || !montoNuevo}>
+            <Btn variant="danger" onClick={agregar} disabled={!clienteNuevo || !categoriaNueva || !montoNuevo || yaExisteDuplicado}>
               Guardar
             </Btn>
           </div>
@@ -2876,7 +2917,7 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
               display: "grid",
               gridTemplateColumns: "repeat(2,1fr)",
               gap: 14,
-              marginBottom: 24,
+              marginBottom: resumenCategorias.length ? 16 : 24,
             }}
           >
             <KPI icon="🎯" label="Total presupuestado" value={fmtCOP(totalPresupuestado)} color={C.violet} bg={C.violetBg} />
@@ -2888,14 +2929,53 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
               bg={totalAbonado >= totalPresupuestado ? C.greenBg : C.amberBg}
             />
           </div>
+          {resumenCategorias.length > 0 && (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: `repeat(${resumenCategorias.length},1fr)`,
+                gap: 10,
+                marginBottom: 24,
+              }}
+            >
+              {resumenCategorias.map((r) => {
+                const pct = r.presupuestado > 0 ? Math.min((r.abonado / r.presupuestado) * 100, 999) : 0;
+                return (
+                  <div key={r.categoria} style={{ background: C.white, borderRadius: 10, border: `1px solid ${C.border}`, padding: 12 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, marginBottom: 4 }}>{r.categoria}</div>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: pct >= 100 ? C.green : C.amber }}>
+                      {fmtCOP(r.abonado)} / {fmtCOP(r.presupuestado)}
+                    </div>
+                    <div style={{ fontSize: 10, color: C.slate, fontWeight: 600 }}>{Math.round(pct)}% cumplido</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {presupuestosMes.map((p) => {
-              const abonado = abonadoDe(p.cliente);
+              const abonado = abonadoDe(p.cliente, p.categoria);
               const pct = p.monto > 0 ? Math.min((abonado / p.monto) * 100, 999) : 0;
               return (
                 <div key={p.id} style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 18 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                    <span style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{p.cliente}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{p.cliente}</span>
+                      {p.categoria && (
+                        <span
+                          style={{
+                            padding: "2px 8px",
+                            borderRadius: 20,
+                            fontSize: 10,
+                            fontWeight: 700,
+                            background: C.violetBg,
+                            color: C.violet,
+                          }}
+                        >
+                          {p.categoria}
+                        </span>
+                      )}
+                    </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <span style={{ fontSize: 12, fontWeight: 700, color: pct >= 100 ? C.green : C.amber }}>
                         {fmtCOP(abonado)} / {fmtCOP(p.monto)} · {Math.round(pct)}%
