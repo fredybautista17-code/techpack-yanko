@@ -569,14 +569,22 @@ function AsignarRubroModal({ movimiento, rubros, onUpdate, onClose }) {
   }
   async function exportarExcel() {
     const XLSX = await import("xlsx");
-    const rows = lineas
-      .filter((l) => l.codConcep)
-      .map((l) => ({
-        Código: l.codConcep,
-        Concepto: l.concepto,
-        Fecha: l.fecha,
-        Valor: parseFloat(l.monto) || 0,
-      }));
+    const rows = [
+      {
+        Código: "",
+        Concepto: "ABONO INICIAL",
+        Fecha: movimiento.fecha,
+        Valor: movimiento.valor,
+      },
+      ...lineas
+        .filter((l) => l.codConcep)
+        .map((l) => ({
+          Código: l.codConcep,
+          Concepto: l.concepto,
+          Fecha: l.fecha,
+          Valor: parseFloat(l.monto) || 0,
+        })),
+    ];
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Distribución");
@@ -1543,9 +1551,9 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
                   "Tipo",
                   "Categoría",
                   "Descripción",
-                  "Referencia",
                   "Proveedor/Cliente",
                   "Valor",
+                  "Disponible",
                   "",
                 ].map((h) => (
                   <th
@@ -1612,9 +1620,6 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
                       {m.descripcion || "—"}
                     </td>
                     <td style={{ padding: "10px 12px", color: C.slate }}>
-                      {m.referencia || "—"}
-                    </td>
-                    <td style={{ padding: "10px 12px", color: C.slate }}>
                       {m.proveedor || "—"}
                     </td>
                     <td
@@ -1627,6 +1632,19 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
                     >
                       {m.tipo === "ingreso" ? "+" : "-"}
                       {fmtCOP(m.valor)}
+                    </td>
+                    <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>
+                      {m.tipo === "ingreso"
+                        ? (() => {
+                            const asignadoRow = (m.distribucion || []).reduce((s, dd) => s + (parseFloat(dd.monto) || 0), 0);
+                            const dispRow = m.valor - asignadoRow;
+                            return (
+                              <span style={{ fontWeight: 700, color: dispRow < 0 ? C.red : dispRow === 0 ? C.slate : C.amber }}>
+                                {fmtCOP(dispRow)}
+                              </span>
+                            );
+                          })()
+                        : "—"}
                     </td>
                     <td style={{ padding: "10px 8px", textAlign: "center", whiteSpace: "nowrap" }}>
                       {m.tipo === "ingreso" &&
@@ -1677,7 +1695,7 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
             <tfoot>
               <tr style={{ background: C.ink }}>
                 <td
-                  colSpan={6}
+                  colSpan={5}
                   style={{
                     padding: "10px 12px",
                     color: C.seam,
@@ -1699,6 +1717,7 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
                   {saldo >= 0 ? "+" : ""}
                   {fmtCOP(saldo)}
                 </td>
+                <td />
                 <td />
               </tr>
             </tfoot>
