@@ -50,6 +50,10 @@ function uid() {
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
+function ultimoDiaMes(mes) {
+  const [y, m] = mes.split("-").map(Number);
+  return new Date(y, m, 0).getDate();
+}
 function fmtCOP(n) {
   return `$${Number(Math.round(n || 0)).toLocaleString("es-CO")}`;
 }
@@ -255,11 +259,10 @@ function KPI({ icon, label, value, color, bg, sub }) {
 }
 // ─── CATEGORÍAS POR DEFECTO ───────────────────────────────────────────────────
 const CATS_INGRESO = [
-  "Ventas",
-  "Cobro cartera",
-  "Anticipos",
-  "Préstamos recibidos",
-  "Otros ingresos",
+  "Anticipo Nómina",
+  "Anticipo Insumos",
+  "Anticipo Tela",
+  "Anticipo Maquinaria",
 ];
 const CATS_EGRESO = [
   "Nómina",
@@ -317,7 +320,7 @@ function NuevoMovimientoModal({ tipo, onSave, onClose, clientesDiseno, rubros })
             cliente: form.proveedor,
             distribucion: distribucion
               .filter((d) => d.codConcep && (parseFloat(d.monto) || 0) > 0)
-              .map((d) => ({ codConcep: d.codConcep, concepto: d.concepto, monto: parseFloat(d.monto) || 0 })),
+              .map((d) => ({ codConcep: d.codConcep, concepto: d.concepto, fecha: form.fecha, monto: parseFloat(d.monto) || 0 })),
           }
         : {}),
       creadoEn: new Date().toISOString(),
@@ -525,6 +528,212 @@ function NuevoMovimientoModal({ tipo, onSave, onClose, clientesDiseno, rubros })
         >
           {esIngreso ? "+ Registrar Ingreso" : "- Registrar Egreso"}
         </Btn>
+      </div>
+    </Modal>
+  );
+}
+// ─── ASIGNAR POR RUBRO (POST-INGRESO) ─────────────────────────────────────────
+// Permite, desde la tabla de Flujo de Caja, ir repartiendo un abono ya
+// registrado entre los rubros donde efectivamente se gastó — sin tener que
+// hacerlo todo en el momento de crear el ingreso. Cada línea lleva su propia
+// fecha, siempre dentro del mes en que quedó registrado el abono.
+function AsignarRubroModal({ movimiento, rubros, onUpdate, onClose }) {
+  const mes = movimiento.fecha?.slice(0, 7) || today().slice(0, 7);
+  const minFecha = `${mes}-01`;
+  const maxFecha = `${mes}-${String(ultimoDiaMes(mes)).padStart(2, "0")}`;
+  const [lineas, setLineas] = useState(
+    (movimiento.distribucion || []).map((d) => ({
+      codConcep: d.codConcep,
+      concepto: d.concepto,
+      fecha: d.fecha && d.fecha.slice(0, 7) === mes ? d.fecha : movimiento.fecha,
+      monto: d.monto,
+    }))
+  );
+  const asignado = lineas.reduce((s, l) => s + (parseFloat(l.monto) || 0), 0);
+  const disponible = movimiento.valor - asignado;
+  function agregarLinea() {
+    setLineas((ls) => [...ls, { codConcep: "", concepto: "", fecha: movimiento.fecha, monto: "" }]);
+  }
+  function actualizarLinea(i, patch) {
+    setLineas((ls) => ls.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  }
+  function quitarLinea(i) {
+    setLineas((ls) => ls.filter((_, idx) => idx !== i));
+  }
+  function guardar() {
+    const limpio = lineas
+      .filter((l) => l.codConcep && (parseFloat(l.monto) || 0) > 0)
+      .map((l) => ({ codConcep: l.codConcep, concepto: l.concepto, fecha: l.fecha || movimiento.fecha, monto: parseFloat(l.monto) || 0 }));
+    onUpdate(movimiento.id, limpio);
+    onClose();
+  }
+  async function exportarExcel() {
+    const XLSX = await import("xlsx");
+    const rows = lineas
+      .filter((l) => l.codConcep)
+      .map((l) => ({
+        Código: l.codConcep,
+        Concepto: l.concepto,
+        Fecha: l.fecha,
+        Valor: parseFloat(l.monto) || 0,
+      }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Distribución");
+    XLSX.writeFile(wb, `distribucion_${(movimiento.proveedor || "abono").replace(/\s+/g, "_")}_${mes}.xlsx`);
+  }
+  return (
+    <Modal title="Asignar por rubro" onClose={onClose} width={700}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3,1fr)",
+          gap: 10,
+          padding: "12px 14px",
+          background: C.blueBg,
+          borderRadius: 8,
+          marginBottom: 18,
+          fontSize: 12,
+          color: C.blue,
+        }}
+      >
+        <div>
+          <div style={{ fontWeight: 700 }}>Cliente</div>
+          <div>{movimiento.proveedor || "—"}</div>
+        </div>
+        <div>
+          <div style={{ fontWeight: 700 }}>Abono total</div>
+          <div>{fmtCOP(movimiento.valor)}</div>
+        </div>
+        <div>
+          <div style={{ fontWeight: 700 }}>Disponible</div>
+          <div style={{ color: disponible < 0 ? C.red : C.blue, fontWeight: 700 }}>{fmtCOP(disponible)}</div>
+        </div>
+      </div>
+      {lineas.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+          {lineas.map((l, i) => (
+            <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <select
+                value={l.codConcep}
+                onChange={(e) => {
+                  const r = (rubros || []).find((x) => x.codConcep === e.target.value);
+                  actualizarLinea(i, { codConcep: e.target.value, concepto: r?.concepto || "" });
+                }}
+                style={{
+                  flex: 2,
+                  padding: "7px 10px",
+                  border: `1.5px solid ${C.border}`,
+                  borderRadius: 8,
+                  fontSize: 13,
+                  color: C.ink,
+                  background: C.white,
+                  outline: "none",
+                  fontFamily: "inherit",
+                }}
+              >
+                <option value="">— Rubro —</option>
+                {(rubros || []).map((r) => (
+                  <option key={r.codConcep} value={r.codConcep}>
+                    {r.concepto}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="date"
+                value={l.fecha || ""}
+                min={minFecha}
+                max={maxFecha}
+                onChange={(e) => actualizarLinea(i, { fecha: e.target.value })}
+                style={{
+                  flex: 1,
+                  padding: "7px 10px",
+                  border: `1.5px solid ${C.border}`,
+                  borderRadius: 8,
+                  fontSize: 13,
+                  color: C.ink,
+                  background: C.white,
+                  outline: "none",
+                  fontFamily: "inherit",
+                }}
+              />
+              <input
+                type="number"
+                value={l.monto}
+                onChange={(e) => actualizarLinea(i, { monto: e.target.value })}
+                placeholder="Monto"
+                style={{
+                  flex: 1,
+                  padding: "7px 10px",
+                  border: `1.5px solid ${C.border}`,
+                  borderRadius: 8,
+                  fontSize: 13,
+                  color: C.ink,
+                  background: C.white,
+                  outline: "none",
+                  fontFamily: "inherit",
+                }}
+              />
+              <button
+                onClick={() => quitarLinea(i)}
+                style={{
+                  background: C.redBg,
+                  border: "none",
+                  borderRadius: 6,
+                  padding: "6px 9px",
+                  color: C.red,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <button
+        onClick={agregarLinea}
+        style={{
+          background: "none",
+          border: `1px solid ${C.blue}`,
+          borderRadius: 6,
+          padding: "5px 12px",
+          color: C.blue,
+          fontWeight: 700,
+          fontSize: 12,
+          cursor: "pointer",
+          marginBottom: 18,
+        }}
+      >
+        + Agregar línea
+      </button>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <button
+          onClick={exportarExcel}
+          disabled={!lineas.length}
+          style={{
+            background: C.canvas,
+            border: `1px solid ${C.border}`,
+            borderRadius: 8,
+            padding: "8px 14px",
+            color: C.ink,
+            fontWeight: 700,
+            fontSize: 12,
+            cursor: lineas.length ? "pointer" : "not-allowed",
+            opacity: lineas.length ? 1 : 0.5,
+          }}
+        >
+          📤 Exportar a Excel
+        </button>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Btn variant="secondary" onClick={onClose}>
+            Cancelar
+          </Btn>
+          <Btn variant="danger" onClick={guardar} disabled={disponible < 0}>
+            Guardar
+          </Btn>
+        </div>
       </div>
     </Modal>
   );
@@ -1025,9 +1234,10 @@ function ImportarBusintModal({ comprasExistentes, onConfirm, onClose }) {
   );
 }
 // ─── FLUJO DE CAJA VIEW ───────────────────────────────────────────────────────
-function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, clientesDiseno, rubros }) {
+function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, clientesDiseno, rubros, onUpdateDistribucion }) {
   const [showModal, setShowModal] = useState(null); // "ingreso" | "egreso" | "importar"
   const [fechaABorrar, setFechaABorrar] = useState("");
+  const [asignandoId, setAsignandoId] = useState(null);
   const [mesFiltro, setMesFiltro] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -1070,6 +1280,19 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
           onClose={() => setShowModal(null)}
         />
       )}
+      {asignandoId &&
+        (() => {
+          const m = movimientos.find((x) => x.id === asignandoId);
+          if (!m) return null;
+          return (
+            <AsignarRubroModal
+              movimiento={m}
+              rubros={rubros}
+              onUpdate={(id, distribucion) => onUpdateDistribucion && onUpdateDistribucion(id, distribucion)}
+              onClose={() => setAsignandoId(null)}
+            />
+          );
+        })()}
       <div
         style={{
           display: "flex",
@@ -1405,7 +1628,31 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
                       {m.tipo === "ingreso" ? "+" : "-"}
                       {fmtCOP(m.valor)}
                     </td>
-                    <td style={{ padding: "10px 8px", textAlign: "center" }}>
+                    <td style={{ padding: "10px 8px", textAlign: "center", whiteSpace: "nowrap" }}>
+                      {m.tipo === "ingreso" &&
+                        onUpdateDistribucion &&
+                        (() => {
+                          const asignado = (m.distribucion || []).reduce((s, dd) => s + (parseFloat(dd.monto) || 0), 0);
+                          const completo = asignado >= m.valor - 0.5;
+                          return (
+                            <button
+                              onClick={() => setAsignandoId(m.id)}
+                              style={{
+                                background: completo ? C.greenBg : C.amberBg,
+                                border: "none",
+                                borderRadius: 6,
+                                padding: "4px 8px",
+                                color: completo ? C.green : C.amber,
+                                fontWeight: 700,
+                                fontSize: 10,
+                                cursor: "pointer",
+                                marginRight: 6,
+                              }}
+                            >
+                              {completo ? "✓ Completo" : "Asignar rubro"}
+                            </button>
+                          );
+                        })()}
                       {isAdmin && (
                         <button
                           onClick={() => onDelete(m.id)}
@@ -2098,6 +2345,155 @@ function ProyeccionView({ compras, movimientos, presupuestos, onGuardar, onFinal
     </div>
   );
 }
+// ─── PRESUPUESTO POR CLIENTE ───────────────────────────────────────────────────
+// A diferencia del presupuesto por rubro (Proyección, calculado del histórico
+// de compras), este lo define el usuario a mano: cuánto espera que cada
+// cliente le abone ese mes, según los pedidos que tenga con él. Compara contra
+// lo efectivamente abonado para saber quién va cumpliendo.
+function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDiseno, onGuardar, onDelete, isAdmin }) {
+  const [mes, setMes] = useState(() => today().slice(0, 7));
+  const [showAdd, setShowAdd] = useState(false);
+  const [clienteNuevo, setClienteNuevo] = useState("");
+  const [montoNuevo, setMontoNuevo] = useState("");
+  const presupuestosMes = presupuestosCliente.filter((p) => p.mes === mes);
+  const clientesConPresupuesto = new Set(presupuestosMes.map((p) => p.cliente));
+  const clientesDisponibles = (clientesDiseno || []).filter((c) => !clientesConPresupuesto.has(c.nombre));
+  function abonadoDe(cliente) {
+    return movimientos
+      .filter((m) => m.tipo === "ingreso" && m.fecha?.slice(0, 7) === mes && (m.cliente || m.proveedor) === cliente)
+      .reduce((s, m) => s + m.valor, 0);
+  }
+  function agregar() {
+    if (!clienteNuevo || !montoNuevo) return;
+    onGuardar({
+      id: uid(),
+      mes,
+      cliente: clienteNuevo,
+      monto: parseFloat(montoNuevo) || 0,
+      creadoEn: new Date().toISOString(),
+    });
+    setClienteNuevo("");
+    setMontoNuevo("");
+    setShowAdd(false);
+  }
+  const totalPresupuestado = presupuestosMes.reduce((s, p) => s + p.monto, 0);
+  const totalAbonado = presupuestosMes.reduce((s, p) => s + abonadoDe(p.cliente), 0);
+  return (
+    <div>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 20,
+        }}
+      >
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Presupuesto Clientes</h2>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
+            Cuánto esperas que abone cada cliente este mes, según sus pedidos
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <FInput type="month" value={mes} onChange={setMes} />
+          {isAdmin && (
+            <Btn variant="danger" onClick={() => setShowAdd(true)}>
+              + Agregar cliente
+            </Btn>
+          )}
+        </div>
+      </div>
+      {showAdd && (
+        <Modal title="Agregar presupuesto de cliente" onClose={() => setShowAdd(false)} width={440}>
+          <Field label="Cliente">
+            <FSel value={clienteNuevo} onChange={setClienteNuevo} options={clientesDisponibles.map((c) => c.nombre)} />
+          </Field>
+          <Field label="Monto esperado este mes">
+            <FInput type="number" value={montoNuevo} onChange={setMontoNuevo} placeholder="Ej: 20000000" />
+          </Field>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <Btn variant="secondary" onClick={() => setShowAdd(false)}>
+              Cancelar
+            </Btn>
+            <Btn variant="danger" onClick={agregar} disabled={!clienteNuevo || !montoNuevo}>
+              Guardar
+            </Btn>
+          </div>
+        </Modal>
+      )}
+      {!presupuestosMes.length ? (
+        <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
+          Aún no le has puesto presupuesto a ningún cliente en {fmtMesLargo(mes)}.
+        </div>
+      ) : (
+        <>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(2,1fr)",
+              gap: 14,
+              marginBottom: 24,
+            }}
+          >
+            <KPI icon="🎯" label="Total presupuestado" value={fmtCOP(totalPresupuestado)} color={C.violet} bg={C.violetBg} />
+            <KPI
+              icon="💵"
+              label="Total abonado"
+              value={fmtCOP(totalAbonado)}
+              color={totalAbonado >= totalPresupuestado ? C.green : C.amber}
+              bg={totalAbonado >= totalPresupuestado ? C.greenBg : C.amberBg}
+            />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {presupuestosMes.map((p) => {
+              const abonado = abonadoDe(p.cliente);
+              const pct = p.monto > 0 ? Math.min((abonado / p.monto) * 100, 999) : 0;
+              return (
+                <div key={p.id} style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 18 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <span style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{p.cliente}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: pct >= 100 ? C.green : C.amber }}>
+                        {fmtCOP(abonado)} / {fmtCOP(p.monto)} · {Math.round(pct)}%
+                      </span>
+                      {isAdmin && (
+                        <button
+                          onClick={() => onDelete(p.id)}
+                          style={{
+                            background: C.redBg,
+                            border: "none",
+                            borderRadius: 6,
+                            padding: "4px 8px",
+                            color: C.red,
+                            fontWeight: 700,
+                            fontSize: 11,
+                            cursor: "pointer",
+                          }}
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ height: 9, borderRadius: 5, background: C.canvas, overflow: "hidden" }}>
+                    <div
+                      style={{
+                        height: "100%",
+                        width: `${Math.min(pct, 100)}%`,
+                        background: pct >= 100 ? C.green : C.amber,
+                        borderRadius: 5,
+                      }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 // ─── HOME CONTABILIDAD ────────────────────────────────────────────────────────
 function HomeContabilidad({ onGoModulo }) {
   const MODULOS = [
@@ -2248,6 +2644,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
   const [movimientos, setMovimientos] = useState([]);
   const [compras, setCompras] = useState([]);
   const [presupuestos, setPresupuestos] = useState([]);
+  const [presupuestosCliente, setPresupuestosCliente] = useState([]);
   const [clientesDiseno, setClientesDiseno] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -2270,6 +2667,14 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
         setPresupuestos(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
       }
     );
+    // Presupuesto por cliente: definido a mano por el usuario, mes a mes,
+    // según los pedidos que tenga con cada cliente.
+    const unsubPresupuestosCliente = onSnapshot(
+      collection(db, "contabilidad_presupuestos_cliente"),
+      (snap) => {
+        setPresupuestosCliente(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      }
+    );
     // Clientes: se leen en vivo del mismo documento de configuración que usa
     // Diseño (Admin → Clientes). Solo lectura desde Contabilidad — agregar o
     // borrar clientes se sigue haciendo únicamente desde Diseño.
@@ -2280,6 +2685,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
       unsub();
       unsubCompras();
       unsubPresupuestos();
+      unsubPresupuestosCliente();
       unsubClientes();
     };
   }, []);
@@ -2298,6 +2704,12 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     const aBorrar = movimientos.filter((m) => m.fecha === fecha).map((m) => m.id);
     setMovimientos((ms) => ms.filter((m) => m.fecha !== fecha));
     await Promise.all(aBorrar.map((id) => fsDelete("contabilidad_movimientos", id)));
+  }
+  // Actualiza solo la distribución por rubro de un ingreso ya registrado —
+  // usado por "Asignar por rubro" en la tabla de Flujo de Caja.
+  async function updateDistribucion(id, distribucion) {
+    setMovimientos((ms) => ms.map((m) => (m.id === id ? { ...m, distribucion } : m)));
+    await fsSave("contabilidad_movimientos", id, { distribucion });
   }
   async function addComprasBatch(items) {
     setCompras((cs) => [...cs, ...items]);
@@ -2336,6 +2748,14 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     setPresupuestos((ps) => ps.filter((x) => x.id !== id));
     await fsDelete("contabilidad_presupuestos", id);
   }
+  async function addPresupuestoCliente(p) {
+    setPresupuestosCliente((ps) => [...ps, p]);
+    await fsSave("contabilidad_presupuestos_cliente", p.id, p);
+  }
+  async function deletePresupuestoCliente(id) {
+    setPresupuestosCliente((ps) => ps.filter((p) => p.id !== id));
+    await fsDelete("contabilidad_presupuestos_cliente", id);
+  }
   // Lista única de rubros históricos (código + nombre), para el selector de
   // distribución de ingresos y para calcular el avance por rubro en Proyección.
   const rubros = (() => {
@@ -2352,6 +2772,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     { id: "flujo_caja", icon: "💰", label: "Flujo de Caja" },
     { id: "comparativo", icon: "📊", label: "Comparativo por Concepto" },
     { id: "proyeccion", icon: "🎯", label: "Proyección" },
+    { id: "clientes", icon: "🤝", label: "Presupuesto Clientes" },
   ];
   if (loading)
     return (
@@ -2551,6 +2972,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               isAdmin={isAdmin}
               clientesDiseno={clientesDiseno}
               rubros={rubros}
+              onUpdateDistribucion={updateDistribucion}
             />
           )}
           {subView === "comparativo" && (
@@ -2569,6 +2991,16 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               onGuardar={guardarPresupuesto}
               onFinalizar={finalizarPresupuesto}
               onDeletePresupuesto={deletePresupuesto}
+              isAdmin={isAdmin}
+            />
+          )}
+          {subView === "clientes" && (
+            <PresupuestoClientesView
+              movimientos={movimientos}
+              presupuestosCliente={presupuestosCliente}
+              clientesDiseno={clientesDiseno}
+              onGuardar={addPresupuestoCliente}
+              onDelete={deletePresupuestoCliente}
               isAdmin={isAdmin}
             />
           )}
