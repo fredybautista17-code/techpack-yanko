@@ -3038,12 +3038,14 @@ export default function App() {
           items: [
             ...(canAccessProtos ? [{ id: "protos", icon: "⬡", label: "Prototipos" }] : []),
             ...(canAccessCapsulas ? [{ id: "capsulas", icon: "⬢", label: "Cápsulas" }] : []),
+            ...(canAccessStats ? [{ id: "stats", icon: "📊", label: "Estadísticas Diseño" }] : []),
             ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
             ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
-            ...(canAccessStats ? [{ id: "stats", icon: "📊", label: "Estadísticas" }] : []),
             ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
-            ...(canAccessAdminDiseno ? [{ id: "admin", icon: "⚙", label: "Admin Diseño" }] : []),
+            // "Administrador General" siempre queda al final de la lista, sin
+            // importar qué otras secciones estén visibles para el rol.
+            ...(canAccessAdminDiseno ? [{ id: "admin", icon: "⚙", label: "Administrador General" }] : []),
           ],
         }]
       : []),
