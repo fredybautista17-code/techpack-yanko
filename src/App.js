@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import ModuloCorte from "./modulo-corte";
 import ModuloContabilidad from "./modulo-contabilidad";
+import ModuloPlaneacion from "./modulo-planeacion";
 import { initializeApp } from "firebase/app";
 import {
   getFirestore,
@@ -485,7 +486,7 @@ const INIT_CONFIG = {
     { id: "r1", name: "Equipo Interno", perms: ["editar", "aprobar", "declinar", "admin", "corte"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "corte", "stats", "contabilidad"] },
     { id: "r2", name: "Cliente", perms: ["aprobar", "declinar"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats"] },
     { id: "r3", name: "Diseñador", perms: ["editar"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats"] },
-    { id: "r4", name: "Planeador", perms: ["corte"], modulos: ["pedidos", "corte"] },
+    { id: "r4", name: "Planeador", perms: ["corte"], modulos: ["pedidos", "corte", "planeacion"] },
   ],
   clientes: [],
 };
@@ -1423,7 +1424,7 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
   );
 }
 
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessDiseno, onGoArea, protos, capsulas, pedidos }) {
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessDiseno, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
@@ -1443,6 +1444,11 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
       // Antes: perms.admin || currentUser?.isAdmin — esto mezclaba visibilidad de módulo con
       // permisos de flujo de trabajo en Diseño. Ahora se decide con el permiso de módulo dedicado.
       permiso: canAccessContabilidad,
+    },
+    {
+      id: "planeacion_area", icon: "📋", label: "Planeación", desc: "Informes de producción de planta a partir de Hoja1", color: T.violet, bg: T.violetBg,
+      stats: [],
+      permiso: canAccessPlaneacion,
     },
   ].filter((a) => a.permiso);
   return (
@@ -2029,7 +2035,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     ["corte", "✂ Corte"],
     ["stats", "📊 Estadísticas"],
   ];
-  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"]];
+  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"]];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
   function ListEditor({ listKey, title }) {
     return (
@@ -3025,6 +3031,7 @@ export default function App() {
   const canAccessStats = moduloVisible(userRoleData, "stats", currentUser?.isAdmin);
   const canAccessCorte = moduloVisible(userRoleData, "corte", currentUser?.isAdmin);
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
+  const canAccessPlaneacion = moduloVisible(userRoleData, "planeacion", currentUser?.isAdmin);
   // "admin_diseno" es un permiso aparte del admin general: da entrada al panel
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
@@ -3052,6 +3059,9 @@ export default function App() {
     ...(canAccessContabilidad
       ? [{ id: "contabilidad_area", icon: "💰", label: "Contabilidad", items: [{ id: "contabilidad_area", icon: "💰", label: "Módulo Contabilidad" }] }]
       : []),
+    ...(canAccessPlaneacion
+      ? [{ id: "planeacion_area", icon: "📋", label: "Planeación", items: [{ id: "planeacion_area", icon: "📋", label: "Módulo Planeación" }] }]
+      : []),
   ];
   const [areaAbierta, setAreaAbierta] = useState("diseno");
   function isViewActive(itemId) {
@@ -3062,11 +3072,13 @@ export default function App() {
     if (itemId === "pedidos_clientes") return view === "pedidos_clientes";
     if (itemId === "__corte__") return moduloActivo === "corte";
     if (itemId === "contabilidad_area") return moduloActivo === "contabilidad";
+    if (itemId === "planeacion_area") return moduloActivo === "planeacion";
     return view === itemId;
   }
   function navClick(itemId) {
     if (itemId === "__corte__") { setModuloActivo("corte"); return; }
     if (itemId === "contabilidad_area") { setModuloActivo("contabilidad"); return; }
+    if (itemId === "planeacion_area") { setModuloActivo("planeacion"); return; }
     setView(itemId);
   }
   // "Planeador puro": solo tiene Corte y NINGUNA otra sección de Diseño (ni
@@ -3087,6 +3099,9 @@ export default function App() {
   }
   if (moduloActivo === "contabilidad") {
     return <ModuloContabilidad currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); }} />;
+  }
+  if (moduloActivo === "planeacion") {
+    return <ModuloPlaneacion currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); }} />;
   }
   return (
     <div style={{ minHeight: "100vh", background: T.canvas, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,sans-serif" }}>
@@ -3158,9 +3173,10 @@ export default function App() {
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
             {view === "dashboard" && (
-              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessDiseno={canAccessDiseno}
+              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessDiseno={canAccessDiseno}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
+                  else if (id === "planeacion_area") { setModuloActivo("planeacion"); }
                   else if (id === "diseno") {
                     setAreaAbierta("diseno");
                     // Entra a la primera sección de Diseño realmente habilitada
