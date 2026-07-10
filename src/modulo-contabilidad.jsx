@@ -1564,7 +1564,7 @@ function AgregarProveedorCXPModal({ onSave, onClose }) {
 }
 // El calendario reparte una deuda en montos por mes, hasta 24 meses adelante,
 // para poder negociar con el proveedor un plan de pago concreto.
-function ProgramarPagoModal({ proveedor, totalAdeudado, entradasExistentes, onGuardar, onClose }) {
+function ProgramarPagoModal({ proveedor, totalAdeudado, entradasExistentes, disponiblePorMes = {}, onGuardar, onClose }) {
   const meses = proximosMeses(24);
   const [montos, setMontos] = useState(() => {
     const init = {};
@@ -1614,28 +1614,36 @@ function ProgramarPagoModal({ proveedor, totalAdeudado, entradasExistentes, onGu
         </div>
       </div>
       <div style={{ maxHeight: 360, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
-        {meses.map((m) => (
-          <div key={m} style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <span style={{ flex: 1, fontSize: 12, color: C.ink, textTransform: "capitalize" }}>{fmtMesLargo(m)}</span>
-            <input
-              type="number"
-              value={montos[m]}
-              onChange={(e) => setMontos((mm) => ({ ...mm, [m]: e.target.value }))}
-              placeholder="$0"
-              style={{
-                width: 160,
-                padding: "6px 10px",
-                border: `1.5px solid ${C.border}`,
-                borderRadius: 8,
-                fontSize: 13,
-                color: C.ink,
-                background: C.white,
-                outline: "none",
-                fontFamily: "inherit",
-              }}
-            />
-          </div>
-        ))}
+        {meses.map((m) => {
+          const disp = disponiblePorMes[m]?.saldoAcumulado ?? 0;
+          return (
+            <div key={m} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, color: C.ink, textTransform: "capitalize" }}>{fmtMesLargo(m)}</div>
+                <div style={{ fontSize: 10, color: disp < 0 ? C.red : C.slate }}>
+                  Disponible proyectado: {fmtCOP(disp)}
+                </div>
+              </div>
+              <input
+                type="number"
+                value={montos[m]}
+                onChange={(e) => setMontos((mm) => ({ ...mm, [m]: e.target.value }))}
+                placeholder="$0"
+                style={{
+                  width: 160,
+                  padding: "6px 10px",
+                  border: `1.5px solid ${C.border}`,
+                  borderRadius: 8,
+                  fontSize: 13,
+                  color: C.ink,
+                  background: C.white,
+                  outline: "none",
+                  fontFamily: "inherit",
+                }}
+              />
+            </div>
+          );
+        })}
       </div>
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
         <Btn variant="secondary" onClick={onClose}>
@@ -3142,7 +3150,161 @@ function EstadisticaCxpView({ totalAdeudado, calendario }) {
     </div>
   );
 }
-function CuentasPorPagarView({ cortes, manuales, calendario, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, isAdmin }) {
+// Gráfica SVG (sin librerías externas) del saldo neto acumulado proyectado:
+// a diferencia de EvolucionSaldoChart (que solo baja hacia 0), esta puede
+// mostrar valores negativos (déficit) con una línea base en cero.
+function SaldoNetoChart({ filas }) {
+  const W = 900, H = 300, padL = 90, padR = 24, padT = 20, padB = 40;
+  const chartW = W - padL - padR, chartH = H - padT - padB;
+  const n = filas.length;
+  const vals = filas.map((f) => f.saldoAcumulado);
+  const maxV = Math.max(0, ...vals, 1);
+  const minV = Math.min(0, ...vals);
+  const rango = maxV - minV || 1;
+  const xAt = (i) => padL + (n > 1 ? (i * chartW) / (n - 1) : 0);
+  const yAt = (v) => padT + chartH - ((v - minV) / rango) * chartH;
+  const yZero = yAt(0);
+  const puntos = filas.map((f, i) => ({ x: xAt(i), y: yAt(f.saldoAcumulado), ...f }));
+  const linePath = puntos.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`).join(" ");
+  const areaPath = `${linePath} L ${puntos[puntos.length - 1].x},${yZero} L ${puntos[0].x},${yZero} Z`;
+  const gridFracs = [0, 0.25, 0.5, 0.75, 1];
+  const idxDeficit = filas.findIndex((f) => f.saldoAcumulado < 0);
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}>
+      <defs>
+        <linearGradient id="pgAreaGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={C.violet} stopOpacity="0.3" />
+          <stop offset="100%" stopColor={C.violet} stopOpacity="0.03" />
+        </linearGradient>
+      </defs>
+      {gridFracs.map((fr) => {
+        const v = minV + fr * rango;
+        const y = padT + chartH - fr * chartH;
+        return (
+          <g key={fr}>
+            <line x1={padL} y1={y} x2={W - padR} y2={y} stroke={C.border} strokeWidth="1" />
+            <text x={padL - 8} y={y + 4} textAnchor="end" fontSize="10" fill={C.slate}>
+              {fmtCOP(v)}
+            </text>
+          </g>
+        );
+      })}
+      <line x1={padL} y1={yZero} x2={W - padR} y2={yZero} stroke={C.ink} strokeWidth="1.2" strokeDasharray="3 3" />
+      {idxDeficit >= 0 && (
+        <g>
+          <line
+            x1={puntos[idxDeficit].x}
+            y1={padT}
+            x2={puntos[idxDeficit].x}
+            y2={padT + chartH}
+            stroke={C.red}
+            strokeWidth="1.5"
+            strokeDasharray="4 3"
+          />
+          <text x={puntos[idxDeficit].x} y={padT - 6} textAnchor="middle" fontSize="10" fontWeight="700" fill={C.red}>
+            Déficit desde: {fmtMesCorto(filas[idxDeficit].mes)}
+          </text>
+        </g>
+      )}
+      <path d={areaPath} fill="url(#pgAreaGrad)" stroke="none" />
+      <path d={linePath} fill="none" stroke={C.violet} strokeWidth="2.5" />
+      {puntos.map((p, i) => (
+        <circle key={i} cx={p.x} cy={p.y} r={i === 0 || i === n - 1 ? 3.5 : 2.5} fill={p.saldoAcumulado < 0 ? C.red : C.green}>
+          <title>
+            {fmtMesLargo(p.mes)} — Saldo acumulado: {fmtCOP(p.saldoAcumulado)} (neto del mes: {fmtCOP(p.saldoNeto)})
+          </title>
+        </circle>
+      ))}
+      {puntos.map((p, i) =>
+        i === 0 || i === n - 1 || i % 3 === 0 ? (
+          <text key={i} x={p.x} y={H - padB + 18} textAnchor="middle" fontSize="10" fill={C.slate} style={{ textTransform: "capitalize" }}>
+            {fmtMesCorto(p.mes)}
+          </text>
+        ) : null
+      )}
+    </svg>
+  );
+}
+// ─── PROGRAMACIÓN DE PAGOS ──────────────────────────────────────────────────
+// Cruza, mes a mes, lo que se espera que entre de clientes (Presupuesto
+// Clientes) contra lo que ya está comprometido salir: el presupuesto por
+// rubro de Proyección más los pagos a proveedores programados en Cuentas por
+// Pagar. El saldo neto de cada mes se arrastra (acumulado) para detectar con
+// anticipación en qué mes la caja quedaría en déficit si no se ajusta el
+// calendario de pagos.
+function ProgramacionPagosView({ presupuestosCliente, presupuestos, calendarioCxp }) {
+  const meses = proximosMeses(24);
+  let acumulado = 0;
+  const filas = meses.map((m) => {
+    const ingresosEsperados = (presupuestosCliente || []).filter((p) => p.mes === m).reduce((s, p) => s + (p.monto || 0), 0);
+    const egresosComprometidos = (presupuestos || []).filter((p) => p.mes === m).reduce((s, p) => s + (p.totalProyectado || 0), 0);
+    const pagosCxp = (calendarioCxp || []).filter((c) => c.mes === m).reduce((s, c) => s + (c.monto || 0), 0);
+    const saldoNeto = ingresosEsperados - egresosComprometidos - pagosCxp;
+    acumulado += saldoNeto;
+    return { mes: m, ingresosEsperados, egresosComprometidos, pagosCxp, saldoNeto, saldoAcumulado: acumulado };
+  });
+  const totalIngresos = filas.reduce((s, f) => s + f.ingresosEsperados, 0);
+  const totalEgresos = filas.reduce((s, f) => s + f.egresosComprometidos, 0);
+  const totalPagosCxp = filas.reduce((s, f) => s + f.pagosCxp, 0);
+  const saldoFinal = filas.length ? filas[filas.length - 1].saldoAcumulado : 0;
+  const primerDeficit = filas.find((f) => f.saldoAcumulado < 0);
+  return (
+    <div>
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Programación de Pagos</h2>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
+          Cruza mes a mes lo que esperas que te ingresen los clientes (Presupuesto Clientes) contra lo comprometido en Proyección y en el calendario de Cuentas por Pagar.
+        </p>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 20 }}>
+        <KPI icon="🤝" label="Ingresos esperados (24m)" value={fmtCOP(totalIngresos)} color={C.green} bg={C.greenBg} />
+        <KPI icon="🎯" label="Egresos comprometidos (24m)" value={fmtCOP(totalEgresos)} color={C.blue} bg={C.blueBg} />
+        <KPI icon="🧾" label="Pagos CxP programados (24m)" value={fmtCOP(totalPagosCxp)} color={C.amber} bg={C.amberBg} />
+        <KPI
+          icon={saldoFinal >= 0 ? "✓" : "⚠"}
+          label="Saldo neto acumulado (mes 24)"
+          value={fmtCOP(saldoFinal)}
+          color={saldoFinal >= 0 ? C.green : C.red}
+          bg={saldoFinal >= 0 ? C.greenBg : C.redBg}
+          sub={primerDeficit ? `Déficit desde ${fmtMesCorto(primerDeficit.mes)}` : "Sin déficit proyectado"}
+        />
+      </div>
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20, marginBottom: 24 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 4 }}>Saldo neto acumulado proyectado</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
+          Ingresos esperados de clientes menos egresos comprometidos (Proyección) menos pagos a proveedores programados (Cuentas por Pagar), acumulado mes a mes.
+        </div>
+        <SaldoNetoChart filas={filas} />
+      </div>
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: C.ink }}>
+              {["Mes", "Ingresos esperados", "Egresos comprometidos", "Pagos CxP", "Saldo neto mes", "Saldo acumulado"].map((h) => (
+                <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: h === "Mes" ? "left" : "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filas.map((f, i) => (
+              <tr key={f.mes} style={{ background: f.saldoAcumulado < 0 ? C.redBg : i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                <td style={{ padding: "8px 12px", fontWeight: 600, color: C.ink, textTransform: "capitalize" }}>{fmtMesLargo(f.mes)}</td>
+                <td style={{ padding: "8px 12px", textAlign: "right", color: C.green }}>{fmtCOP(f.ingresosEsperados)}</td>
+                <td style={{ padding: "8px 12px", textAlign: "right", color: C.blue }}>{fmtCOP(f.egresosComprometidos)}</td>
+                <td style={{ padding: "8px 12px", textAlign: "right", color: C.amber }}>{fmtCOP(f.pagosCxp)}</td>
+                <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700, color: f.saldoNeto < 0 ? C.red : C.ink }}>{fmtCOP(f.saldoNeto)}</td>
+                <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800, color: f.saldoAcumulado < 0 ? C.red : C.green }}>{fmtCOP(f.saldoAcumulado)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente, presupuestos, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, isAdmin }) {
   const [showImport, setShowImport] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const [programando, setProgramando] = useState(null);
@@ -3167,6 +3329,21 @@ function CuentasPorPagarView({ cortes, manuales, calendario, onImportarCorte, on
   function calendarioDe(nombre) {
     return calendario.filter((c) => c.proveedor === nombre);
   }
+  // Cruce mes a mes (Ingresos esperados de clientes − Egresos comprometidos
+  // de Proyección − Pagos a proveedores ya programados) usado como referencia
+  // dentro de "Programar pago", para que al asignar un monto a un proveedor
+  // se vea si ese mes realmente tiene holgura proyectada.
+  const mesesProgramacion = proximosMeses(24);
+  const disponiblePorMes = {};
+  let acumuladoProgramacion = 0;
+  mesesProgramacion.forEach((m) => {
+    const ingresosEsperados = (presupuestosCliente || []).filter((p) => p.mes === m).reduce((s, p) => s + (p.monto || 0), 0);
+    const egresosComprometidos = (presupuestos || []).filter((p) => p.mes === m).reduce((s, p) => s + (p.totalProyectado || 0), 0);
+    const pagosCxpMes = calendario.filter((c) => c.mes === m).reduce((s, c) => s + (c.monto || 0), 0);
+    const saldoNeto = ingresosEsperados - egresosComprometidos - pagosCxpMes;
+    acumuladoProgramacion += saldoNeto;
+    disponiblePorMes[m] = { saldoNeto, saldoAcumulado: acumuladoProgramacion };
+  });
   return (
     <div>
       {showImport && <ImportarCXPModal onConfirm={onImportarCorte} onClose={() => setShowImport(false)} />}
@@ -3180,6 +3357,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, onImportarCorte, on
               proveedor={programando}
               totalAdeudado={fila.total}
               entradasExistentes={calendarioDe(programando)}
+              disponiblePorMes={disponiblePorMes}
               onGuardar={onGuardarCalendario}
               onClose={() => setProgramando(null)}
             />
@@ -3734,6 +3912,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     { id: "proyeccion", icon: "🎯", label: "Proyección" },
     { id: "clientes", icon: "🤝", label: "Presupuesto Clientes" },
     { id: "cxp", icon: "🧾", label: "Cuentas por Pagar" },
+    { id: "programacion_pagos", icon: "🧭", label: "Programación de Pagos" },
   ];
   if (loading)
     return (
@@ -3971,6 +4150,8 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               cortes={cortesCxp}
               manuales={manualCxp}
               calendario={calendarioCxp}
+              presupuestosCliente={presupuestosCliente}
+              presupuestos={presupuestos}
               onImportarCorte={addCorteCxp}
               onDeleteCorte={deleteCorteCxp}
               onAddManual={addManualCxp}
@@ -3978,6 +4159,13 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               onDeleteProveedorCorte={eliminarProveedorDeCorte}
               onGuardarCalendario={guardarCalendarioProveedor}
               isAdmin={isAdmin}
+            />
+          )}
+          {subView === "programacion_pagos" && (
+            <ProgramacionPagosView
+              presupuestosCliente={presupuestosCliente}
+              presupuestos={presupuestos}
+              calendarioCxp={calendarioCxp}
             />
           )}
         </div>
