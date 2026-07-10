@@ -3023,6 +3023,76 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
 // ya se dejó programado en el calendario de pago por proveedor. Es una lectura
 // hacia adelante (no depende del histórico de cortes) — si un mes no tiene
 // nada programado, el saldo simplemente no baja ese mes.
+// Gráfica de línea/área SVG (sin librerías externas) para mostrar la
+// evolución proyectada del saldo mes a mes de forma más visual que una
+// lista de barras de progreso.
+function EvolucionSaldoChart({ filas, totalAdeudado }) {
+  const W = 900, H = 300, padL = 90, padR = 24, padT = 20, padB = 40;
+  const chartW = W - padL - padR, chartH = H - padT - padB;
+  const n = filas.length;
+  const maxY = Math.max(totalAdeudado, ...filas.map((f) => Math.max(f.saldoRestante, 0)), 1);
+  const xAt = (i) => padL + (n > 1 ? (i * chartW) / (n - 1) : 0);
+  const yAt = (v) => padT + chartH - (Math.max(v, 0) / maxY) * chartH;
+  const puntos = filas.map((f, i) => ({ x: xAt(i), y: yAt(f.saldoRestante), ...f }));
+  const linePath = puntos.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`).join(" ");
+  const areaPath = `${linePath} L ${puntos[puntos.length - 1].x},${padT + chartH} L ${puntos[0].x},${padT + chartH} Z`;
+  const gridFracs = [0, 0.25, 0.5, 0.75, 1];
+  const idxCubierto = filas.findIndex((f) => f.saldoRestante <= 0);
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}>
+      <defs>
+        <linearGradient id="cxpAreaGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={C.violet} stopOpacity="0.35" />
+          <stop offset="100%" stopColor={C.violet} stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+      {gridFracs.map((fr) => {
+        const y = padT + chartH - fr * chartH;
+        return (
+          <g key={fr}>
+            <line x1={padL} y1={y} x2={W - padR} y2={y} stroke={C.border} strokeWidth="1" />
+            <text x={padL - 8} y={y + 4} textAnchor="end" fontSize="10" fill={C.slate}>
+              {fmtCOP(maxY * fr)}
+            </text>
+          </g>
+        );
+      })}
+      {idxCubierto >= 0 && (
+        <g>
+          <line
+            x1={puntos[idxCubierto].x}
+            y1={padT}
+            x2={puntos[idxCubierto].x}
+            y2={padT + chartH}
+            stroke={C.green}
+            strokeWidth="1.5"
+            strokeDasharray="4 3"
+          />
+          <text x={puntos[idxCubierto].x} y={padT - 6} textAnchor="middle" fontSize="10" fontWeight="700" fill={C.green}>
+            Cubierto: {fmtMesCorto(filas[idxCubierto].mes)}
+          </text>
+        </g>
+      )}
+      <path d={areaPath} fill="url(#cxpAreaGrad)" stroke="none" />
+      <path d={linePath} fill="none" stroke={C.violet} strokeWidth="2.5" />
+      {puntos.map((p, i) => (
+        <circle key={i} cx={p.x} cy={p.y} r={i === 0 || i === n - 1 ? 3.5 : 2.5} fill={p.saldoRestante <= 0 ? C.green : C.violet}>
+          <title>
+            {fmtMesLargo(p.mes)} — Saldo: {fmtCOP(Math.max(p.saldoRestante, 0))}
+            {p.programado > 0 ? ` (pagado ese mes: ${fmtCOP(p.programado)})` : ""}
+          </title>
+        </circle>
+      ))}
+      {puntos.map((p, i) =>
+        i === 0 || i === n - 1 || i % 3 === 0 ? (
+          <text key={i} x={p.x} y={H - padB + 18} textAnchor="middle" fontSize="10" fill={C.slate} style={{ textTransform: "capitalize" }}>
+            {fmtMesCorto(p.mes)}
+          </text>
+        ) : null
+      )}
+    </svg>
+  );
+}
 function EstadisticaCxpView({ totalAdeudado, calendario }) {
   const meses = proximosMeses(24);
   let saldo = totalAdeudado;
@@ -3066,42 +3136,13 @@ function EstadisticaCxpView({ totalAdeudado, calendario }) {
           <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
             Parte del saldo actual y va restando lo que dejaste programado por mes en "Programar pago" de cada proveedor.
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {filas.map((f, i) => {
-              const pctBar = totalAdeudado > 0 ? Math.max(Math.min((Math.max(f.saldoRestante, 0) / totalAdeudado) * 100, 100), 0) : 0;
-              return (
-                <div key={f.mes}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.slate, marginBottom: 3 }}>
-                    <span style={{ textTransform: "capitalize" }}>{fmtMesLargo(f.mes)}</span>
-                    <span>
-                      {f.programado > 0 && (
-                        <span style={{ color: C.green, fontWeight: 700, marginRight: 10 }}>- {fmtCOP(f.programado)}</span>
-                      )}
-                      <span style={{ fontWeight: 800, color: f.saldoRestante <= 0 ? C.green : C.ink }}>
-                        Saldo: {fmtCOP(Math.max(f.saldoRestante, 0))}
-                      </span>
-                    </span>
-                  </div>
-                  <div style={{ height: 8, borderRadius: 4, background: C.canvas, overflow: "hidden" }}>
-                    <div
-                      style={{
-                        height: "100%",
-                        width: `${pctBar}%`,
-                        background: f.saldoRestante <= 0 ? C.green : i === filas.length - 1 && f.saldoRestante > 0 ? C.red : C.violet,
-                        borderRadius: 4,
-                      }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <EvolucionSaldoChart filas={filas} totalAdeudado={totalAdeudado} />
         </div>
       )}
     </div>
   );
 }
-function CuentasPorPagarView({ cortes, manuales, calendario, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onGuardarCalendario, isAdmin }) {
+function CuentasPorPagarView({ cortes, manuales, calendario, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, isAdmin }) {
   const [showImport, setShowImport] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const [programando, setProgramando] = useState(null);
@@ -3300,9 +3341,14 @@ function CuentasPorPagarView({ cortes, manuales, calendario, onImportarCorte, on
                         >
                           📅 Programar pago
                         </button>
-                        {isAdmin && f.origen === "manual" && (
+                        {isAdmin && (
                           <button
-                            onClick={() => onDeleteManual(f.id)}
+                            onClick={() =>
+                              f.origen === "manual"
+                                ? onDeleteManual(f.id)
+                                : onDeleteProveedorCorte(corteActivo.id, f.nombre)
+                            }
+                            title="Eliminar proveedor"
                             style={{
                               background: C.redBg,
                               border: "none",
@@ -3636,6 +3682,16 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     setCortesCxp((cs) => cs.filter((c) => c.id !== id));
     await fsDelete("contabilidad_cxp_cortes", id);
   }
+  // Borra un solo proveedor dentro de un corte ya importado (a diferencia de
+  // deleteCorteCxp, que borra el corte completo). Reescribe el corte sin ese
+  // proveedor y lo guarda de nuevo en Firestore.
+  async function eliminarProveedorDeCorte(corteId, nombreProveedor) {
+    const corte = cortesCxp.find((c) => c.id === corteId);
+    if (!corte) return;
+    const actualizado = { ...corte, proveedores: (corte.proveedores || []).filter((p) => p.nombre !== nombreProveedor) };
+    setCortesCxp((cs) => cs.map((c) => (c.id === corteId ? actualizado : c)));
+    await fsSave("contabilidad_cxp_cortes", corteId, actualizado);
+  }
   async function addManualCxp(item) {
     setManualCxp((ms) => [...ms, item]);
     await fsSave("contabilidad_cxp_manual", item.id, item);
@@ -3919,6 +3975,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               onDeleteCorte={deleteCorteCxp}
               onAddManual={addManualCxp}
               onDeleteManual={deleteManualCxp}
+              onDeleteProveedorCorte={eliminarProveedorDeCorte}
               onGuardarCalendario={guardarCalendarioProveedor}
               isAdmin={isAdmin}
             />
