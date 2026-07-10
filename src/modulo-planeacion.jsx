@@ -493,64 +493,34 @@ function SubirHoja1Modal({ onConfirm, onClose }) {
   );
 }
 // ─── TABLA GENÉRICA ─────────────────────────────────────────────────────────────
-function Tabla({ columnas, filas, vacio, paginar = false, porPagina = 50 }) {
-  const [pagina, setPagina] = useState(1);
+function Tabla({ columnas, filas, vacio }) {
   if (!filas.length) {
     return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>{vacio || "Sin datos."}</div>;
   }
-  const totalPaginas = paginar ? Math.max(1, Math.ceil(filas.length / porPagina)) : 1;
-  const paginaActual = Math.min(pagina, totalPaginas);
-  const filasVisibles = paginar ? filas.slice((paginaActual - 1) * porPagina, paginaActual * porPagina) : filas;
   return (
-    <div>
-      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-          <thead>
-            <tr style={{ background: C.ink, position: "sticky", top: 0 }}>
+    <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+        <thead>
+          <tr style={{ background: C.ink, position: "sticky", top: 0 }}>
+            {columnas.map((c) => (
+              <th key={c.key} style={{ padding: "9px 12px", color: C.seam, textAlign: c.align || "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
+                {c.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {filas.map((f, i) => (
+            <tr key={i} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
               {columnas.map((c) => (
-                <th key={c.key} style={{ padding: "9px 12px", color: C.seam, textAlign: c.align || "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
-                  {c.label}
-                </th>
+                <td key={c.key} style={{ padding: "7px 12px", textAlign: c.align || "left", whiteSpace: "nowrap", color: c.color ? c.color(f) : C.ink }}>
+                  {c.render ? c.render(f) : f[c.key]}
+                </td>
               ))}
             </tr>
-          </thead>
-          <tbody>
-            {filasVisibles.map((f, i) => (
-              <tr key={i} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                {columnas.map((c) => (
-                  <td key={c.key} style={{ padding: "7px 12px", textAlign: c.align || "left", whiteSpace: "nowrap", color: c.color ? c.color(f) : C.ink }}>
-                    {c.render ? c.render(f) : f[c.key]}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {paginar && totalPaginas > 1 && (
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, fontSize: 12, color: C.slate }}>
-          <div>
-            Mostrando {(paginaActual - 1) * porPagina + 1}–{Math.min(paginaActual * porPagina, filas.length)} de {filas.length}
-          </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <button
-              onClick={() => setPagina((p) => Math.max(1, p - 1))}
-              disabled={paginaActual === 1}
-              style={{ padding: "6px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, background: C.white, color: paginaActual === 1 ? C.slate : C.ink, fontWeight: 700, fontSize: 12, cursor: paginaActual === 1 ? "default" : "pointer", opacity: paginaActual === 1 ? 0.5 : 1 }}
-            >
-              ‹ Anterior
-            </button>
-            <span style={{ fontWeight: 700, color: C.ink }}>Página {paginaActual} de {totalPaginas}</span>
-            <button
-              onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))}
-              disabled={paginaActual === totalPaginas}
-              style={{ padding: "6px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, background: C.white, color: paginaActual === totalPaginas ? C.slate : C.ink, fontWeight: 700, fontSize: 12, cursor: paginaActual === totalPaginas ? "default" : "pointer", opacity: paginaActual === totalPaginas ? 0.5 : 1 }}
-            >
-              Siguiente ›
-            </button>
-          </div>
-        </div>
-      )}
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -932,8 +902,6 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
             <div>
               <Tabla
                 vacio="Sin lotes en Industrias Yanko Módulo Centro."
-                paginar
-                porPagina={50}
                 columnas={[
                   { key: "categoria", label: "Categoría" },
                   { key: "numPedido", label: "Num Pedido" },
