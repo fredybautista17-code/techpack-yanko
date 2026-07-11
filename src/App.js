@@ -2419,7 +2419,7 @@ function fmtCOP(n) { return `$${fmtNum(Math.round(n || 0))}`; }
 function refsAprobadasPendientesDePedido(capsulas, pedidos) { return []; }
 function capsulasPendientesDePedido(capsulas, pedidos) { return []; }
 
-function SubirPedidoModal2({ onSave, onClose, pedidoConfig, pedidos }) {
+function SubirPedidoModal2({ onSave, onClose, pedidoConfig, pedidos, clientes }) {
   const [paso, setPaso] = useState(1);
   const [pedido, setPedido] = useState(null);
   const [error, setError] = useState("");
@@ -2494,10 +2494,10 @@ function SubirPedidoModal2({ onSave, onClose, pedidoConfig, pedidos }) {
             <Field label="Cliente">
               <select value={pedido.cliente} onChange={(e) => setPedido((p) => ({ ...p, cliente: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
                 <option value="">— Seleccionar cliente —</option>
-                {(pedidoConfig?.clientes || []).map((c) => <option key={c.id} value={c.nombre}>{c.nombre}</option>)}
-                <option value={pedido.cliente && !(pedidoConfig?.clientes || []).find((c) => c.nombre === pedido.cliente) ? pedido.cliente : "__otro__"}>Otro (texto libre)</option>
+                {(clientes || []).map((c) => <option key={c.id} value={c.nombre}>{c.nombre}</option>)}
+                <option value={pedido.cliente && !(clientes || []).find((c) => c.nombre === pedido.cliente) ? pedido.cliente : "__otro__"}>Otro (texto libre)</option>
               </select>
-              {!pedidoConfig?.clientes?.find((c) => c.nombre === pedido.cliente) && pedido.cliente !== "" && (
+              {!(clientes || []).find((c) => c.nombre === pedido.cliente) && pedido.cliente !== "" && (
                 <FInput value={pedido.cliente} onChange={(v) => setPedido((p) => ({ ...p, cliente: v }))} placeholder="Nombre del cliente" />
               )}
             </Field>
@@ -2742,9 +2742,9 @@ function EditPedidoModal({ pedido, onSave, onClose }) {
   );
 }
 
-function ClientesPedidosView({ pedidoConfig, pedidos }) {
+function ClientesPedidosView({ clientes: clientesProp, pedidos }) {
   const [buscar, setBuscar] = useState("");
-  const clientes = pedidoConfig.clientes || [];
+  const clientes = clientesProp || [];
   const filtrados = buscar ? clientes.filter((c) => c.nombre?.toLowerCase().includes(buscar.toLowerCase()) || c.empresa?.toLowerCase().includes(buscar.toLowerCase()) || c.contacto?.toLowerCase().includes(buscar.toLowerCase())) : clientes;
   function pedidosDelCliente(nombre) { return pedidos.filter((p) => p.cliente === nombre); }
   return (
@@ -2757,7 +2757,7 @@ function ClientesPedidosView({ pedidoConfig, pedidos }) {
         <div style={{ textAlign: "center", padding: 48, color: T.slate }}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>🏢</div>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 8 }}>Sin clientes registrados</div>
-          <div style={{ fontSize: 13 }}>Ve a <strong>Administración</strong> en el menú para agregar clientes.</div>
+          <div style={{ fontSize: 13 }}>Ve a <strong>Administrador General → Clientes</strong> en el menú para agregar clientes.</div>
         </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 14 }}>
@@ -2804,22 +2804,26 @@ function ClientesPedidosView({ pedidoConfig, pedidos }) {
   );
 }
 
-function AdminPedidosView({ pedidoConfig, onSave }) {
+function AdminPedidosView({ pedidoConfig, onSave, config, onSaveConfig }) {
   const [tab, setTab] = useState("clientes");
-  const [newCliente, setNewCliente] = useState({ nombre: "", empresa: "", contacto: "", email: "" });
+  const [newCliente, setNewCliente] = useState({ nombre: "", contacto: "", email: "", telefono: "" });
   const [newVendedor, setNewVendedor] = useState("");
   const [editIdx, setEditIdx] = useState(null);
-  const clientes = pedidoConfig.clientes || [];
+  // Los clientes (a diferencia de los vendedores) ya no son propios de
+  // Pedidos: se gestionan sobre la misma lista que Administrador General →
+  // Clientes (config.clientes), para que ambas pantallas siempre muestren
+  // los mismos clientes.
+  const clientes = config.clientes || [];
   const vendedores = pedidoConfig.vendedores || [];
   function addCliente() {
     if (!newCliente.nombre.trim()) return;
     const updated = editIdx !== null ? clientes.map((c, i) => (i === editIdx ? { ...newCliente } : c)) : [...clientes, { ...newCliente, id: uid() }];
-    onSave({ ...pedidoConfig, clientes: updated });
-    setNewCliente({ nombre: "", empresa: "", contacto: "", email: "" });
+    onSaveConfig({ ...config, clientes: updated });
+    setNewCliente({ nombre: "", contacto: "", email: "", telefono: "" });
     setEditIdx(null);
   }
   function editCliente(i) { setNewCliente({ ...clientes[i] }); setEditIdx(i); }
-  function delCliente(i) { onSave({ ...pedidoConfig, clientes: clientes.filter((_, idx) => idx !== i) }); }
+  function delCliente(i) { onSaveConfig({ ...config, clientes: clientes.filter((_, idx) => idx !== i) }); }
   function addVendedor() {
     if (!newVendedor.trim()) return;
     onSave({ ...pedidoConfig, vendedores: [...vendedores, { id: uid(), nombre: newVendedor.trim() }] });
@@ -2840,12 +2844,12 @@ function AdminPedidosView({ pedidoConfig, onSave }) {
             <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 14 }}>{editIdx !== null ? "Editar Cliente" : "Nuevo Cliente"}</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <Field label="Nombre / Empresa"><FInput value={newCliente.nombre} onChange={(v) => setNewCliente((c) => ({ ...c, nombre: v }))} placeholder="Ej: INVERSIONES CONBOT SAS" /></Field>
-              <Field label="Código / Alias"><FInput value={newCliente.empresa} onChange={(v) => setNewCliente((c) => ({ ...c, empresa: v }))} placeholder="Ej: CONBOT" /></Field>
+              <Field label="Teléfono"><FInput value={newCliente.telefono} onChange={(v) => setNewCliente((c) => ({ ...c, telefono: v }))} placeholder="+57 300 000 0000" /></Field>
               <Field label="Contacto"><FInput value={newCliente.contacto} onChange={(v) => setNewCliente((c) => ({ ...c, contacto: v }))} placeholder="Nombre contacto" /></Field>
               <Field label="Email"><FInput value={newCliente.email} onChange={(v) => setNewCliente((c) => ({ ...c, email: v }))} placeholder="correo@ejemplo.com" /></Field>
             </div>
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 12 }}>
-              {editIdx !== null && <Btn variant="secondary" onClick={() => { setNewCliente({ nombre: "", empresa: "", contacto: "", email: "" }); setEditIdx(null); }}>Cancelar</Btn>}
+              {editIdx !== null && <Btn variant="secondary" onClick={() => { setNewCliente({ nombre: "", contacto: "", email: "", telefono: "" }); setEditIdx(null); }}>Cancelar</Btn>}
               <Btn onClick={addCliente}>{editIdx !== null ? "Guardar cambios" : "+ Agregar Cliente"}</Btn>
             </div>
           </div>
@@ -2859,7 +2863,7 @@ function AdminPedidosView({ pedidoConfig, onSave }) {
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 800, color: T.ink }}>{c.nombre}</div>
-                  <div style={{ fontSize: 12, color: T.slate }}>{[c.empresa, c.contacto, c.email].filter(Boolean).join(" · ")}</div>
+                  <div style={{ fontSize: 12, color: T.slate }}>{[c.telefono, c.contacto, c.email].filter(Boolean).join(" · ")}</div>
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <button onClick={() => editCliente(i)} style={{ padding: "5px 10px", background: T.denimBg, border: `1px solid ${T.denim}44`, borderRadius: 6, color: T.denim, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>✏</button>
@@ -3195,13 +3199,15 @@ export default function App() {
     const updated = [...pedidos, p];
     setPedidos(updated);
     await fsSave("pedidos", p.id, p);
+    // Los clientes de Pedidos usan la misma lista que Administrador General →
+    // Clientes (config.clientes) — un cliente nuevo cargado desde un pedido
+    // se registra ahí, no en una lista aparte (pedidoConfig ya no guarda
+    // clientes, solo vendedores).
     if (p.cliente && p.cliente.trim()) {
-      const yaExiste = (pedidoConfig.clientes || []).some((c) => c.nombre?.toLowerCase() === p.cliente.toLowerCase());
+      const yaExiste = (config.clientes || []).some((c) => c.nombre?.toLowerCase() === p.cliente.toLowerCase());
       if (!yaExiste) {
-        const nuevoCliente = { id: uid(), nombre: p.cliente.trim(), empresa: "", contacto: "", email: "" };
-        const cfgActualizada = { ...pedidoConfig, clientes: [...(pedidoConfig.clientes || []), nuevoCliente] };
-        setPedidoConfig(cfgActualizada);
-        await fsSave("pedidos_config", "main", cfgActualizada);
+        const nuevoCliente = { id: uid(), nombre: p.cliente.trim(), contacto: "", email: "", telefono: "" };
+        await saveConfig({ ...config, clientes: [...(config.clientes || []), nuevoCliente] });
       }
     }
     notify({ id: uid(), icon: "📦", title: "Pedido creado", msg: p.cliente || p.numero });
@@ -3328,7 +3334,7 @@ export default function App() {
       {modal === "new-capsula" && <NewCapsulaModal onSave={addCapsula} onClose={() => setModal(null)} />}
       {modal === "new-ref" && newRefCap && <NewRefModal capsula={newRefCap} onSave={addRef} onClose={() => { setModal(null); setNewRefCap(null); }} config={config} />}
       {modal === "promote" && promoteProto && <PromoteModal proto={promoteProto} capsulas={capsulas} onSave={promoteToCapsula} onClose={() => { setModal(null); setPromoteProto(null); }} config={config} />}
-      {modal === "new-pedido" && <SubirPedidoModal2 onSave={addPedido} onClose={() => setModal(null)} pedidoConfig={pedidoConfig} pedidos={pedidos} />}
+      {modal === "new-pedido" && <SubirPedidoModal2 onSave={addPedido} onClose={() => setModal(null)} pedidoConfig={pedidoConfig} pedidos={pedidos} clientes={config.clientes} />}
       <div style={{ display: "flex", minHeight: "100vh" }}>
         <div style={{ width: 230, background: T.ink, color: T.white, padding: "20px 12px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
           <div style={{ marginBottom: 16, padding: "0 4px" }}>
@@ -3447,8 +3453,8 @@ export default function App() {
               />
             )}
             {view === "pedido-detail" && selPedido && <PedidoDetailView pedido={selPedido} onBack={() => setView("pedidos")} onUpdatePedido={updatePedido} />}
-            {view === "pedidos_admin" && currentUser?.isAdmin && <AdminPedidosView pedidoConfig={pedidoConfig} onSave={savePedidoConfig} />}
-            {view === "pedidos_clientes" && <ClientesPedidosView pedidoConfig={pedidoConfig} pedidos={pedidos} />}
+            {view === "pedidos_admin" && currentUser?.isAdmin && <AdminPedidosView pedidoConfig={pedidoConfig} onSave={savePedidoConfig} config={config} onSaveConfig={saveConfig} />}
+            {view === "pedidos_clientes" && <ClientesPedidosView clientes={config.clientes} pedidos={pedidos} />}
             {view === "stats" && <EstadisticasView protos={protos} capsulas={capsulas} />}
             {view === "historial" && <HistorialDisenoView historial={historial} protos={protos} capsulas={capsulas} isAdmin={currentUser?.isAdmin} onBackfill={backfillHistorial} />}
             {view === "admin" && (currentUser?.isAdmin || canAccessAdminDiseno) && (
