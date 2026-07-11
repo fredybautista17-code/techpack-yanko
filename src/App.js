@@ -2419,7 +2419,7 @@ function fmtCOP(n) { return `$${fmtNum(Math.round(n || 0))}`; }
 function refsAprobadasPendientesDePedido(capsulas, pedidos) { return []; }
 function capsulasPendientesDePedido(capsulas, pedidos) { return []; }
 
-function SubirPedidoModal2({ onSave, onClose, pedidoConfig }) {
+function SubirPedidoModal2({ onSave, onClose, pedidoConfig, pedidos }) {
   const [paso, setPaso] = useState(1);
   const [pedido, setPedido] = useState(null);
   const [error, setError] = useState("");
@@ -2457,7 +2457,13 @@ function SubirPedidoModal2({ onSave, onClose, pedidoConfig }) {
     });
   }
   function save() {
-    if (!pedido.cliente || !pedido.referencias.length) { setError("Completa el cliente y al menos una referencia."); return; }
+    if (!pedido.numero?.trim() || !pedido.cliente || !pedido.referencias.length) { setError("Completa el N° de Pedido, el cliente y al menos una referencia."); return; }
+    // Evita que un mismo N° de Pedido quede cargado dos veces (crearía un
+    // pedido duplicado para el cliente) — se compara contra TODOS los
+    // pedidos existentes, sin importar si están Activos, Terminados o en
+    // Histórico.
+    const yaExiste = (pedidos || []).some((p) => String(p.numero).trim().toLowerCase() === pedido.numero.trim().toLowerCase());
+    if (yaExiste) { setError(`El N° de Pedido "${pedido.numero.trim()}" ya existe. Usa un número diferente para no duplicar el pedido.`); return; }
     onSave(pedido);
     onClose();
   }
@@ -3091,8 +3097,20 @@ export default function App() {
         unsubs.push(unsubHistorial);
         const unsubPedidos = onSnapshot(collection(db, "pedidos"), (snap) => { setPedidos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubs.push(unsubPedidos);
-        const dbPedidoConfig = await fsGet("pedidos_config");
-        if (dbPedidoConfig.length) setPedidoConfig((c) => ({ ...c, ...dbPedidoConfig[0] })); else await fsSave("pedidos_config", "main", { clientes: [], vendedores: [] });
+        // Mismo motivo que "config": pedidoConfig (clientes/vendedores de
+        // Pedidos) se sincroniza en vivo en vez de leerse una sola vez con
+        // fsGet, para que una pestaña vieja no pueda pisar con una copia
+        // desactualizada los clientes/vendedores agregados desde otra sesión.
+        let pedidoConfigSeeded = false;
+        const unsubPedidoConfig = onSnapshot(collection(db, "pedidos_config"), async (snap) => {
+          if (!snap.docs.length) {
+            if (!pedidoConfigSeeded) { pedidoConfigSeeded = true; await fsSave("pedidos_config", "main", { clientes: [], vendedores: [] }); }
+            return;
+          }
+          const mainDoc = snap.docs.find((d) => d.id === "main") || snap.docs[0];
+          setPedidoConfig((c) => ({ ...c, ...mainDoc.data() }));
+        });
+        unsubs.push(unsubPedidoConfig);
         setAppState("login");
       } catch (e) { console.error("Firebase error:", e); setAppState("login"); }
     }
@@ -3310,7 +3328,7 @@ export default function App() {
       {modal === "new-capsula" && <NewCapsulaModal onSave={addCapsula} onClose={() => setModal(null)} />}
       {modal === "new-ref" && newRefCap && <NewRefModal capsula={newRefCap} onSave={addRef} onClose={() => { setModal(null); setNewRefCap(null); }} config={config} />}
       {modal === "promote" && promoteProto && <PromoteModal proto={promoteProto} capsulas={capsulas} onSave={promoteToCapsula} onClose={() => { setModal(null); setPromoteProto(null); }} config={config} />}
-      {modal === "new-pedido" && <SubirPedidoModal2 onSave={addPedido} onClose={() => setModal(null)} pedidoConfig={pedidoConfig} />}
+      {modal === "new-pedido" && <SubirPedidoModal2 onSave={addPedido} onClose={() => setModal(null)} pedidoConfig={pedidoConfig} pedidos={pedidos} />}
       <div style={{ display: "flex", minHeight: "100vh" }}>
         <div style={{ width: 230, background: T.ink, color: T.white, padding: "20px 12px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
           <div style={{ marginBottom: 16, padding: "0 4px" }}>
