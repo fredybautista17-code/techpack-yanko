@@ -2189,6 +2189,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     ["pedidos", "📦 Pedidos"],
     ["pedidos_clientes", "🏢 Clientes"],
     ["corte", "✂ Corte"],
+    ["historial", "🕘 Historial"],
     ["stats", "📊 Estadísticas"],
   ];
   const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"]];
