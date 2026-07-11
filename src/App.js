@@ -483,9 +483,9 @@ const INIT_CONFIG = {
   siluetas: ["Slimfit","Regularfit","Silueta Amplia","Oversize","Super Oversize","Estándar"],
   rangos: ["Normal (S,M,L,XL)","Doble Talla (S/M - M/L)","Talla U","Plus","Plus (1XL-2XL-3XL)"],
   roles: [
-    { id: "r1", name: "Equipo Interno", perms: ["editar", "aprobar", "declinar", "admin", "corte"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "corte", "stats", "contabilidad"] },
-    { id: "r2", name: "Cliente", perms: ["aprobar", "declinar"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats"] },
-    { id: "r3", name: "Diseñador", perms: ["editar"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats"] },
+    { id: "r1", name: "Equipo Interno", perms: ["editar", "aprobar", "declinar", "admin", "corte"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "corte", "stats", "historial", "contabilidad"] },
+    { id: "r2", name: "Cliente", perms: ["aprobar", "declinar"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial"] },
+    { id: "r3", name: "Diseñador", perms: ["editar"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial"] },
     { id: "r4", name: "Planeador", perms: ["corte"], modulos: ["pedidos", "corte", "planeacion"] },
   ],
   clientes: [],
@@ -508,6 +508,13 @@ const STATUS = {
 function uid() { return Math.random().toString(36).slice(2, 9); }
 function daysAgo(d) { return Math.floor((Date.now() - new Date(d)) / 86400000); }
 function isOverdue(item, stages) {
+  // Una vez el ítem salió del pipeline interno de producción (cotización
+  // enviada, enviado al cliente, recibido, aprobado o declinado), la Ruta
+  // Crítica ya no debe marcarse como "vencida" — esos días ya no dependen de
+  // producción interna. Antes esto no se revisaba y un ítem podía verse
+  // "Vencido" en la etapa aunque ya estuviera Enviado, porque el status y la
+  // etapa (currentStage) se actualizan por separado.
+  if (["enviado_cotizacion", "enviar_cliente", "enviado", "recibido_cliente", "aprobado", "declinado"].includes(item.status)) return false;
   const s = stages.find((x) => x.id === item.currentStage);
   return s ? daysAgo(item.stageStartedAt) > s.days : false;
 }
@@ -520,7 +527,7 @@ function nowISO() { return new Date().toISOString(); }
 // Corte, sin Prototipos ni Cápsulas).
 // Claves granulares de sección dentro de Diseño (Corte y Contabilidad siempre
 // se gestionan como llaves independientes, nunca implícitas en "diseno").
-const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats"];
+const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial"];
 function moduloVisible(roleData, mod, isAdmin) {
   if (isAdmin) return true;
   if (!roleData) return false;
@@ -1057,7 +1064,7 @@ function PromoteModal({ proto, capsulas, onSave, onClose, config }) {
   );
 }
 
-function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, onPromote, notify, capsula, stages, currentUser, config }) {
+function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, onPromote, notify, onLogHistorial, capsula, stages, currentUser, config }) {
   const [tab, setTab] = useState("overview");
   const [showEdit, setShowEdit] = useState(false);
   const [showEnviado, setShowEnviado] = useState(false);
@@ -1071,6 +1078,24 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
     const obs = { id: uid(), user: currentUser, role, text: `Estado → "${STATUS[s]?.label}".`, date: nowISO(), type: "update", done: false };
     patch({ status: s, ...(extraData || {}), observations: [...item.observations, obs] });
     if (s === "aprobado") notify({ id: uid(), icon: "✅", title: "Aprobado", msg: item.name });
+    // Historial por cliente/mes: un prototipo se registra al Aprobarse (se
+    // promueva o no después a una cápsula); una referencia de cápsula se
+    // registra tanto al Aprobarse como al Declinarse.
+    const debeRegistrar = kind === "proto" ? s === "aprobado" : s === "aprobado" || s === "declinado";
+    if (onLogHistorial && debeRegistrar) {
+      onLogHistorial({
+        tipo: kind === "proto" ? "proto" : "capsula_ref",
+        itemId: item.id,
+        capsulaId: kind === "ref" ? capsula?.id : null,
+        capsulaName: kind === "ref" ? capsula?.name : null,
+        nombre: item.name,
+        referencia: item.reference,
+        cliente: item.cliente || item.colores?.[0] || "(Sin cliente)",
+        resultado: s,
+        mes: today().slice(0, 7),
+        fecha: nowISO(),
+      });
+    }
   }
   function handleCotizacion() { changeStatus("enviado_cotizacion"); }
   function handleEnviado(transporteData) {
@@ -1367,7 +1392,7 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
         </div>
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
-        {[["todos", "Todos"], ["aprobado", "Aprobados"], ["declinado", "Declinados"], ["en_proceso", "En proceso"], ["en_revision", "En revisión"]].map(([v, label]) => (
+        {[["todos", "Todos"], ["aprobado", "Aprobados"], ["declinado", "Declinados"], ["en_proceso", "En proceso"], ["en_revision", "En revisión"], ["enviado_cotizacion", "En cotización"], ["enviar_cliente", "Enviar al Cliente"], ["enviado", "Enviado"]].map(([v, label]) => (
           <button key={v} onClick={() => setFilter(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filter === v ? T.ink : T.border}`, background: filter === v ? T.ink : T.white, color: filter === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
@@ -1424,6 +1449,83 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
   );
 }
 
+// Historial de aprobaciones/declinaciones, agrupado por cliente y luego por
+// mes: un prototipo se registra al llegar a "Aprobado" (se promueva o no
+// después a una cápsula) y una referencia de cápsula se registra tanto al
+// llegar a "Aprobado" como a "Declinado" (ver changeStatus en DetailView).
+function HistorialDisenoView({ historial, protos, capsulas }) {
+  const [clienteFiltro, setClienteFiltro] = useState("");
+  const clientesDisponibles = [...new Set(historial.map((h) => h.cliente))].sort((a, b) => a.localeCompare(b));
+  const filtrado = clienteFiltro ? historial.filter((h) => h.cliente === clienteFiltro) : historial;
+  const porCliente = {};
+  filtrado.forEach((h) => {
+    if (!porCliente[h.cliente]) porCliente[h.cliente] = {};
+    if (!porCliente[h.cliente][h.mes]) porCliente[h.cliente][h.mes] = [];
+    porCliente[h.cliente][h.mes].push(h);
+  });
+  const clientesOrdenados = Object.keys(porCliente).sort((a, b) => a.localeCompare(b));
+  function promocionInfo(h) {
+    if (h.tipo !== "proto") return null;
+    const p = protos.find((x) => x.id === h.itemId);
+    if (!p) return null;
+    if (!p.promotedTo) return "Sin promover";
+    const cap = capsulas.find((c) => c.id === p.promotedTo);
+    return `Promovido a ${cap?.name || "cápsula"}`;
+  }
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Historial</h2>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Prototipos aprobados y referencias de cápsula aprobadas/declinadas, por cliente y mes</p>
+        </div>
+        <select value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
+          <option value="">Todos los clientes</option>
+          {clientesDisponibles.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
+      {!clientesOrdenados.length ? (
+        <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Aún no hay historial registrado.</div>
+      ) : (
+        clientesOrdenados.map((cliente) => {
+          const meses = Object.keys(porCliente[cliente]).sort((a, b) => b.localeCompare(a));
+          return (
+            <div key={cliente} style={{ marginBottom: 28 }}>
+              <div style={{ fontWeight: 800, fontSize: 16, color: T.ink, marginBottom: 12 }}>{cliente}</div>
+              {meses.map((mes) => {
+                const items = [...porCliente[cliente][mes]].sort((a, b) => b.fecha.localeCompare(a.fecha));
+                return (
+                  <div key={mes} style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "capitalize", marginBottom: 8 }}>
+                      {new Date(mes + "-02").toLocaleDateString("es-CO", { month: "long", year: "numeric" })}
+                    </div>
+                    <div style={{ background: T.white, borderRadius: 12, border: `1px solid ${T.border}`, overflow: "hidden" }}>
+                      {items.map((h, i) => (
+                        <div key={h.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderBottom: i < items.length - 1 ? `1px solid ${T.border}` : "none" }}>
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{h.nombre} <span style={{ fontSize: 11, color: T.slate, fontWeight: 400 }}>{h.referencia}</span></div>
+                            <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>
+                              {h.tipo === "proto" ? "Prototipo" : `Cápsula: ${h.capsulaName || "—"}`}
+                              {h.tipo === "proto" && promocionInfo(h) ? ` · ${promocionInfo(h)}` : ""}
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <span style={{ fontSize: 11, color: T.slate }}>{new Date(h.fecha).toLocaleDateString("es-CO")}</span>
+                            <Badge status={h.resultado} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
 function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessDiseno, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
@@ -2908,6 +3010,7 @@ export default function App() {
   const [config, setConfig] = useState(INIT_CONFIG);
   const [protos, setProtos] = useState([]);
   const [capsulas, setCapsulas] = useState([]);
+  const [historial, setHistorial] = useState([]);
   const [pedidos, setPedidos] = useState([]);
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
   const [view, setView] = useState("dashboard");
@@ -2942,6 +3045,8 @@ export default function App() {
         unsubs.push(unsubProtos);
         const unsubCapsulas = onSnapshot(collection(db, "capsulas"), (snap) => { setCapsulas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubs.push(unsubCapsulas);
+        const unsubHistorial = onSnapshot(collection(db, "historial_diseno"), (snap) => { setHistorial(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubs.push(unsubHistorial);
         const unsubPedidos = onSnapshot(collection(db, "pedidos"), (snap) => { setPedidos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubs.push(unsubPedidos);
         const dbPedidoConfig = await fsGet("pedidos_config");
@@ -2975,6 +3080,11 @@ export default function App() {
     await updateCapsulasAndSave(updated);
     const cap = updated.find((c) => c.id === capId);
     await fsSave("capsulas", capId, cap);
+  }
+  async function logHistorial(entry) {
+    const withId = { ...entry, id: uid() };
+    setHistorial((h) => [...h, withId]);
+    await fsSave("historial_diseno", withId.id, withId);
   }
   async function promoteToCapsula(capId, ref, protoId) {
     await addRef(capId, ref);
@@ -3029,6 +3139,7 @@ export default function App() {
   const canAccessPedidos = moduloVisible(userRoleData, "pedidos", currentUser?.isAdmin);
   const canAccessPedidosClientes = moduloVisible(userRoleData, "pedidos_clientes", currentUser?.isAdmin);
   const canAccessStats = moduloVisible(userRoleData, "stats", currentUser?.isAdmin);
+  const canAccessHistorial = moduloVisible(userRoleData, "historial", currentUser?.isAdmin);
   const canAccessCorte = moduloVisible(userRoleData, "corte", currentUser?.isAdmin);
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
   const canAccessPlaneacion = moduloVisible(userRoleData, "planeacion", currentUser?.isAdmin);
@@ -3036,7 +3147,7 @@ export default function App() {
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
   const canAccessAdminDiseno = moduloVisible(userRoleData, "admin_diseno", currentUser?.isAdmin);
-  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessCorte || canAccessAdminDiseno || !!currentUser?.isAdmin;
+  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessHistorial || canAccessCorte || canAccessAdminDiseno || !!currentUser?.isAdmin;
   const [moduloActivo, setModuloActivo] = useState("diseno");
   const AREAS = [
     ...(canAccessDiseno
@@ -3048,6 +3159,7 @@ export default function App() {
             ...(canAccessStats ? [{ id: "stats", icon: "📊", label: "Estadísticas Diseño" }] : []),
             ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
             ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
+            ...(canAccessHistorial ? [{ id: "historial", icon: "🕘", label: "Historial" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
             ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
             // "Administrador General" siempre queda al final de la lista, sin
@@ -3187,6 +3299,7 @@ export default function App() {
                     else if (canAccessPedidos) setView("pedidos");
                     else if (canAccessPedidosClientes) setView("pedidos_clientes");
                     else if (canAccessStats) setView("stats");
+                    else if (canAccessHistorial) setView("historial");
                     else if (canAccessCorte) setModuloActivo("corte");
                   }
                   else { setView(id); }
@@ -3215,6 +3328,7 @@ export default function App() {
                 onBack={() => setView("protos")}
                 onUpdateItem={(p) => updateProto(selProto.id, p)}
                 onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
+                onLogHistorial={logHistorial}
                 notify={notify} stages={config.stages} currentUser={currentUser.name} config={config}
               />
             )}
@@ -3222,6 +3336,7 @@ export default function App() {
               <DetailView item={selRef} kind="ref" role={role} perms={perms} capsulas={capsulas} capsula={selCap}
                 onBack={() => setView("capsulas")}
                 onUpdateItem={(p) => updateRef(selCap.id, selRef.id, p)}
+                onLogHistorial={logHistorial}
                 notify={notify} stages={config.stages} currentUser={currentUser.name} config={config}
               />
             )}
@@ -3239,6 +3354,7 @@ export default function App() {
             {view === "pedidos_admin" && currentUser?.isAdmin && <AdminPedidosView pedidoConfig={pedidoConfig} onSave={savePedidoConfig} />}
             {view === "pedidos_clientes" && <ClientesPedidosView pedidoConfig={pedidoConfig} pedidos={pedidos} />}
             {view === "stats" && <EstadisticasView protos={protos} capsulas={capsulas} />}
+            {view === "historial" && <HistorialDisenoView historial={historial} protos={protos} capsulas={capsulas} />}
             {view === "admin" && (currentUser?.isAdmin || canAccessAdminDiseno) && (
               <AdminView config={config} onUpdateConfig={saveConfig} users={users} onUpdateUsers={saveUsers} protos={protos} capsulas={capsulas}
                 onUpdateProto={updateProtoName} onUpdateCapsula={updateCapsulaName} onDeleteProto={deleteProto} onDeleteCapsula={deleteCapsula}
