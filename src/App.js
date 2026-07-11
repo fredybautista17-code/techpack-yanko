@@ -904,7 +904,7 @@ function NewProtoModal({ onSave, onClose, config }) {
   );
 }
 function EditRefModal({ ref: refItem, onSave, onClose, config }) {
-  const [form, setForm] = useState({ name: refItem.name || "", reference: refItem.reference || "", assignedTo: refItem.assignedTo || "", categoria: refItem.categoria || "", silueta: refItem.silueta || "", colores: refItem.colores?.[0] || "", tallas: refItem.tallas?.[0] || "", tipoTela: refItem.tipoTela || "", baseMolderia: refItem.baseMolderia || "" });
+  const [form, setForm] = useState({ name: refItem?.name || "", reference: refItem?.reference || "", assignedTo: refItem?.assignedTo || "", categoria: refItem?.categoria || "", silueta: refItem?.silueta || "", colores: refItem?.colores?.[0] || "", tallas: refItem?.tallas?.[0] || "", tipoTela: refItem?.tipoTela || "", baseMolderia: refItem?.baseMolderia || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function save() {
     if (!form.name || !form.reference) return;
@@ -938,7 +938,7 @@ function EditRefModal({ ref: refItem, onSave, onClose, config }) {
   );
 }
 function EditProtoModal({ proto, onSave, onClose, config }) {
-  const [form, setForm] = useState({ name: proto.name || "", categoria: proto.categoria || "", silueta: proto.silueta || "", rango: proto.rango || "", reference: proto.reference || "", assignedTo: proto.assignedTo || "", cliente: proto.cliente || "", tipoTela: proto.tipoTela || "", baseMolderia: proto.baseMolderia || "" });
+  const [form, setForm] = useState({ name: proto?.name || "", categoria: proto?.categoria || "", silueta: proto?.silueta || "", rango: proto?.rango || "", reference: proto?.reference || "", assignedTo: proto?.assignedTo || "", cliente: proto?.cliente || "", tipoTela: proto?.tipoTela || "", baseMolderia: proto?.baseMolderia || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function save() { if (!form.name || !form.reference) return; onSave(form); onClose(); }
   return (
@@ -1947,8 +1947,8 @@ function CambiarClaveModal({ currentUser, onSave, onClose }) {
   );
 }
 function EditNombreModal({ item, tipo, onSave, onClose }) {
-  const [nombre, setNombre] = useState(item.name || "");
-  const [season, setSeason] = useState(item.season || "");
+  const [nombre, setNombre] = useState(item?.name || "");
+  const [season, setSeason] = useState(item?.season || "");
   function save() { if (!nombre.trim()) return; onSave({ name: nombre.trim(), ...(tipo === "capsula" ? { season: season.trim() } : {}) }); onClose(); }
   return (
     <Modal title={`Editar ${tipo === "capsula" ? "Cápsula" : "Prototipo"}`} onClose={onClose} width={420}>
