@@ -903,7 +903,7 @@ function NewProtoModal({ onSave, onClose, config }) {
     </Modal>
   );
 }
-function EditRefModal({ ref: refItem, onSave, onClose, config }) {
+function EditRefModal({ refData: refItem, onSave, onClose, config }) {
   const [form, setForm] = useState({ name: refItem?.name || "", reference: refItem?.reference || "", assignedTo: refItem?.assignedTo || "", categoria: refItem?.categoria || "", silueta: refItem?.silueta || "", colores: refItem?.colores?.[0] || "", tallas: refItem?.tallas?.[0] || "", tipoTela: refItem?.tipoTela || "", baseMolderia: refItem?.baseMolderia || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function save() {
@@ -912,7 +912,7 @@ function EditRefModal({ ref: refItem, onSave, onClose, config }) {
     onClose();
   }
   return (
-    <Modal title={`Editar Referencia — ${refItem.reference}`} onClose={onClose} width={560}>
+    <Modal title={`Editar Referencia — ${refItem?.reference}`} onClose={onClose} width={560}>
       <Field label="Nombre"><FInput value={form.name} onChange={set("name")} placeholder="Nombre de la referencia" /></Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Categoría"><FSel value={form.categoria} onChange={set("categoria")} options={config.categorias} /></Field>
@@ -1148,7 +1148,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
   return (
     <div>
       {showEdit && kind === "proto" && <EditProtoModal proto={item} config={config} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
-      {showEdit && kind === "ref" && <EditRefModal ref={item} config={config} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
+      {showEdit && kind === "ref" && <EditRefModal refData={item} config={config} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
       {showEnviado && <EnviadoModal onSave={handleEnviado} onClose={() => setShowEnviado(false)} />}
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
         <button onClick={onBack} style={{ background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, color: T.ink }}>← Volver</button>
