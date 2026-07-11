@@ -9,6 +9,7 @@ import {
   doc,
   getDocs,
   setDoc,
+  updateDoc,
   deleteDoc,
   writeBatch,
   onSnapshot,
@@ -29,6 +30,23 @@ async function fsGet(col) {
 }
 async function fsSave(col, id, data) {
   await setDoc(doc(db, col, id), data, { merge: true });
+}
+// A diferencia de fsSave (que espera el documento COMPLETO y por eso, si
+// quien llama tiene una copia local desactualizada de campos que no está
+// tocando, esos campos viejos pisan los datos reales de Firestore), fsUpdate
+// solo escribe las llaves presentes en `patch` — el resto del documento
+// (p.ej. "clientes" cuando solo se está cambiando "roles") queda intacto sin
+// importar qué tan vieja esté la copia local del resto. Esto es lo que evita
+// que guardar un cambio de roles/etapas/categorías borre la lista de
+// clientes por una condición de carrera con otra pestaña/usuario.
+async function fsUpdate(col, id, patch) {
+  try {
+    await updateDoc(doc(db, col, id), patch);
+  } catch (e) {
+    // El documento aún no existe (p.ej. antes de que termine de sembrarse) —
+    // se crea con merge como respaldo, sin arriesgar el resto del documento.
+    await setDoc(doc(db, col, id), patch, { merge: true });
+  }
 }
 async function fsDelete(col, id) {
   await deleteDoc(doc(db, col, id));
@@ -2079,10 +2097,10 @@ function ClientesTab({ config, onUpdateConfig }) {
   function save() {
     if (!form.nombre.trim()) return;
     const updated = editIdx !== null ? clientes.map((c, i) => (i === editIdx ? { ...form } : c)) : [...clientes, { ...form, id: uid() }];
-    onUpdateConfig({ ...config, clientes: updated });
+    onUpdateConfig({ clientes: updated });
     setShowForm(false);
   }
-  function del(i) { onUpdateConfig({ ...config, clientes: clientes.filter((_, idx) => idx !== i) }); }
+  function del(i) { onUpdateConfig({ clientes: clientes.filter((_, idx) => idx !== i) }); }
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
@@ -2129,17 +2147,17 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   const [newItem, setNewItem] = useState("");
   const [editItem, setEditItem] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
-  function addToList(key) { if (!newItem.trim()) return; onUpdateConfig({ ...config, [key]: [...config[key], newItem.trim()] }); setNewItem(""); }
-  function removeFromList(key, val) { onUpdateConfig({ ...config, [key]: config[key].filter((x) => x !== val) }); }
+  function addToList(key) { if (!newItem.trim()) return; onUpdateConfig({ [key]: [...config[key], newItem.trim()] }); setNewItem(""); }
+  function removeFromList(key, val) { onUpdateConfig({ [key]: config[key].filter((x) => x !== val) }); }
   function updateStageDays(id, days) {
-    onUpdateConfig({ ...config, stages: config.stages.map((s) => (s.id === id ? { ...s, days: Math.max(1, parseInt(days) || 1) } : s)) });
+    onUpdateConfig({ stages: config.stages.map((s) => (s.id === id ? { ...s, days: Math.max(1, parseInt(days) || 1) } : s)) });
   }
   function addRole() {
     if (!newItem.trim()) return;
-    onUpdateConfig({ ...config, roles: [...config.roles, { id: uid(), name: newItem.trim(), perms: ["editar"], modulos: [...DISENO_SUBMODULOS] }] });
+    onUpdateConfig({ roles: [...config.roles, { id: uid(), name: newItem.trim(), perms: ["editar"], modulos: [...DISENO_SUBMODULOS] }] });
     setNewItem("");
   }
-  function removeRole(id) { onUpdateConfig({ ...config, roles: config.roles.filter((r) => r.id !== id) }); }
+  function removeRole(id) { onUpdateConfig({ roles: config.roles.filter((r) => r.id !== id) }); }
   // Módulos visibles por rol, por sección independiente (Prototipos, Cápsulas,
   // Pedidos, Clientes, Corte, Estadísticas, Contabilidad), separado de los
   // permisos de flujo de trabajo. Si el rol no tiene "modulos" aún, se
@@ -2159,7 +2177,6 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   }
   function toggleModulo(roleId, mod) {
     onUpdateConfig({
-      ...config,
       roles: config.roles.map((r) => {
         if (r.id !== roleId) return r;
         const current = effectiveModulos(r);
@@ -2173,7 +2190,6 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // para que marcar/desmarcar "Diseño" no le dé de rebote poderes de admin.
   function toggleDisenoGroup(roleId) {
     onUpdateConfig({
-      ...config,
       roles: config.roles.map((r) => {
         if (r.id !== roleId) return r;
         const current = effectiveModulos(r);
@@ -2283,7 +2299,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                       <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10, marginBottom: 4 }}>Permisos de flujo de trabajo</div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                         {["editar", "aprobar", "declinar", "admin", "corte"].map((perm) => (
-                          <span key={perm} onClick={() => onUpdateConfig({ ...config, roles: config.roles.map((x) => (x.id !== r.id ? x : { ...x, perms: x.perms.includes(perm) ? x.perms.filter((p) => p !== perm) : [...x.perms, perm] })) })}
+                          <span key={perm} onClick={() => onUpdateConfig({ roles: config.roles.map((x) => (x.id !== r.id ? x : { ...x, perms: x.perms.includes(perm) ? x.perms.filter((p) => p !== perm) : [...x.perms, perm] })) })}
                             style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: r.perms.includes(perm) ? T.jadeBg : "#EDEDF2", color: r.perms.includes(perm) ? T.jade : T.slate, border: `1px solid ${r.perms.includes(perm) ? T.jade : T.border}` }}
                           >{perm}</span>
                         ))}
@@ -2849,18 +2865,18 @@ function AdminPedidosView({ pedidoConfig, onSave, config, onSaveConfig }) {
   function addCliente() {
     if (!newCliente.nombre.trim()) return;
     const updated = editIdx !== null ? clientes.map((c, i) => (i === editIdx ? { ...newCliente } : c)) : [...clientes, { ...newCliente, id: uid() }];
-    onSaveConfig({ ...config, clientes: updated });
+    onSaveConfig({ clientes: updated });
     setNewCliente({ nombre: "", contacto: "", email: "", telefono: "" });
     setEditIdx(null);
   }
   function editCliente(i) { setNewCliente({ ...clientes[i] }); setEditIdx(i); }
-  function delCliente(i) { onSaveConfig({ ...config, clientes: clientes.filter((_, idx) => idx !== i) }); }
+  function delCliente(i) { onSaveConfig({ clientes: clientes.filter((_, idx) => idx !== i) }); }
   function addVendedor() {
     if (!newVendedor.trim()) return;
-    onSave({ ...pedidoConfig, vendedores: [...vendedores, { id: uid(), nombre: newVendedor.trim() }] });
+    onSave({ vendedores: [...vendedores, { id: uid(), nombre: newVendedor.trim() }] });
     setNewVendedor("");
   }
-  function delVendedor(id) { onSave({ ...pedidoConfig, vendedores: vendedores.filter((v) => v.id !== id) }); }
+  function delVendedor(id) { onSave({ vendedores: vendedores.filter((v) => v.id !== id) }); }
   return (
     <div>
       <h2 style={{ margin: "0 0 20px", fontSize: 20, fontWeight: 800, color: T.ink }}>Admin Pedidos</h2>
@@ -3163,8 +3179,21 @@ export default function App() {
     await Promise.all(removedIds.map((id) => fsDelete("users", id)));
     if (newUsers.length) await fsBatch("users", newUsers);
   }
-  async function saveConfig(newConfig) { setConfig(newConfig); await fsSave("config", "main", newConfig); }
-  async function savePedidoConfig(cfg) { setPedidoConfig(cfg); await fsSave("pedidos_config", "main", cfg); }
+  // Recibe solo los campos que cambiaron (p.ej. { roles: [...] }), nunca el
+  // config completo — así una escritura de roles/etapas/categorías nunca
+  // puede pisar "clientes" (u otro campo) con una copia local vieja. Ver
+  // fsUpdate.
+  async function saveConfig(partial) {
+    setConfig((c) => ({ ...c, ...partial }));
+    await fsUpdate("config", "main", partial);
+  }
+  // Igual que saveConfig: recibe solo los campos que cambiaron (p.ej.
+  // { vendedores: [...] }), nunca el objeto completo, para no arriesgar
+  // pisar otros campos con una copia local vieja.
+  async function savePedidoConfig(partial) {
+    setPedidoConfig((c) => ({ ...c, ...partial }));
+    await fsUpdate("pedidos_config", "main", partial);
+  }
   async function addProto(p) { const updated = [...protos, p]; setProtos(updated); await fsSave("prototipos", p.id, p); notify({ id: uid(), icon: "🧪", title: "Prototipo creado", msg: p.name }); }
   async function updateProto(id, patch) { const updated = protos.map((x) => (x.id === id ? { ...x, ...patch } : x)); setProtos(updated); const item = updated.find((x) => x.id === id); await fsSave("prototipos", id, item); }
   async function addCapsula(c) { const updated = [...capsulas, c]; setCapsulas(updated); await fsSave("capsulas", c.id, c); notify({ id: uid(), icon: "🗂", title: "Cápsula creada", msg: c.name }); }
@@ -3238,7 +3267,7 @@ export default function App() {
       const yaExiste = (config.clientes || []).some((c) => c.nombre?.toLowerCase() === p.cliente.toLowerCase());
       if (!yaExiste) {
         const nuevoCliente = { id: uid(), nombre: p.cliente.trim(), contacto: "", email: "", telefono: "" };
-        await saveConfig({ ...config, clientes: [...(config.clientes || []), nuevoCliente] });
+        await saveConfig({ clientes: [...(config.clientes || []), nuevoCliente] });
       }
     }
     notify({ id: uid(), icon: "📦", title: "Pedido creado", msg: p.cliente || p.numero });
