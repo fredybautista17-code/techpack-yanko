@@ -505,6 +505,17 @@ const STATUS = {
   declinado: { label: "Declinado", color: T.coral, bg: T.coralBg },
   bloqueado: { label: "Bloqueado", color: "#888", bg: "#F0F0F0" },
 };
+// Busca en las observaciones de un ítem la fecha real en la que pasó a un
+// estado dado (ej. "Aprobado"), usada por el backfill de Historial para
+// reconstruir fechas reales en vez de usar "hoy" para ítems que ya estaban
+// aprobados/declinados antes de que existiera el registro de Historial.
+function buscarFechaEstado(item, status) {
+  const label = STATUS[status]?.label;
+  if (!label) return null;
+  const texto = `Estado → "${label}".`;
+  const obs = (item.observations || []).filter((o) => o.type === "update" && o.text === texto);
+  return obs.length ? obs[obs.length - 1].date : null;
+}
 function uid() { return Math.random().toString(36).slice(2, 9); }
 function daysAgo(d) { return Math.floor((Date.now() - new Date(d)) / 86400000); }
 function isOverdue(item, stages) {
@@ -1453,8 +1464,14 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
 // mes: un prototipo se registra al llegar a "Aprobado" (se promueva o no
 // después a una cápsula) y una referencia de cápsula se registra tanto al
 // llegar a "Aprobado" como a "Declinado" (ver changeStatus en DetailView).
-function HistorialDisenoView({ historial, protos, capsulas }) {
+function HistorialDisenoView({ historial, protos, capsulas, isAdmin, onBackfill }) {
   const [clienteFiltro, setClienteFiltro] = useState("");
+  const [backfilling, setBackfilling] = useState(false);
+  async function handleBackfill() {
+    setBackfilling(true);
+    await onBackfill();
+    setBackfilling(false);
+  }
   const clientesDisponibles = [...new Set(historial.map((h) => h.cliente))].sort((a, b) => a.localeCompare(b));
   const filtrado = clienteFiltro ? historial.filter((h) => h.cliente === clienteFiltro) : historial;
   const porCliente = {};
@@ -1479,10 +1496,17 @@ function HistorialDisenoView({ historial, protos, capsulas }) {
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Historial</h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Prototipos aprobados y referencias de cápsula aprobadas/declinadas, por cliente y mes</p>
         </div>
-        <select value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
-          <option value="">Todos los clientes</option>
-          {clientesDisponibles.map((c) => <option key={c} value={c}>{c}</option>)}
-        </select>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          {isAdmin && (
+            <Btn variant="ghost" small onClick={handleBackfill} disabled={backfilling}>
+              {backfilling ? "Completando..." : "↻ Completar con aprobados/declinados existentes"}
+            </Btn>
+          )}
+          <select value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
+            <option value="">Todos los clientes</option>
+            {clientesDisponibles.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
       </div>
       {!clientesOrdenados.length ? (
         <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Aún no hay historial registrado.</div>
@@ -3039,8 +3063,26 @@ export default function App() {
           });
         });
         unsubs.push(unsubUsers);
-        let dbConfig = await fsGet("config");
-        if (!dbConfig.length) { await fsSave("config", "main", INIT_CONFIG); setConfig(INIT_CONFIG); } else { setConfig({ ...INIT_CONFIG, ...dbConfig[0] }); }
+        // "config" se sincroniza en vivo (igual que users/protos/capsulas/pedidos)
+        // en vez de leerse una sola vez con fsGet al abrir la app. Antes, una
+        // pestaña vieja con una copia local desactualizada de config podía, al
+        // guardar cualquier ajuste (roles, etapas, categorías...), reescribir
+        // TODO el documento con esa copia vieja — incluyendo un `clientes`
+        // vacío si esa pestaña se había cargado antes de que se agregaran
+        // clientes en otra sesión. Con onSnapshot, config siempre está al día
+        // antes de guardar, así que ese guardado ya no puede pisar cambios
+        // más recientes de otra sesión.
+        let configSeeded = false;
+        const unsubConfig = onSnapshot(collection(db, "config"), async (snap) => {
+          if (!snap.docs.length) {
+            if (!configSeeded) { configSeeded = true; await fsSave("config", "main", INIT_CONFIG); }
+            setConfig(INIT_CONFIG);
+            return;
+          }
+          const mainDoc = snap.docs.find((d) => d.id === "main") || snap.docs[0];
+          setConfig({ ...INIT_CONFIG, ...mainDoc.data() });
+        });
+        unsubs.push(unsubConfig);
         const unsubProtos = onSnapshot(collection(db, "prototipos"), (snap) => { setProtos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubs.push(unsubProtos);
         const unsubCapsulas = onSnapshot(collection(db, "capsulas"), (snap) => { setCapsulas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
@@ -3085,6 +3127,42 @@ export default function App() {
     const withId = { ...entry, id: uid() };
     setHistorial((h) => [...h, withId]);
     await fsSave("historial_diseno", withId.id, withId);
+  }
+  // Backfill de un solo uso: agrega al Historial los prototipos y referencias
+  // de cápsula que YA estaban en Aprobado/Declinado antes de que existiera
+  // esta función (el registro automático solo captura transiciones nuevas).
+  // Reconstruye la fecha real desde las observaciones del ítem cuando existe.
+  async function backfillHistorial() {
+    const existentes = new Set(historial.map((h) => `${h.tipo}__${h.itemId}__${h.resultado}`));
+    const nuevos = [];
+    protos.forEach((p) => {
+      if (p.status !== "aprobado") return;
+      const key = `proto__${p.id}__aprobado`;
+      if (existentes.has(key)) return;
+      const fecha = buscarFechaEstado(p, "aprobado") || p.createdAt || nowISO();
+      nuevos.push({
+        id: uid(), tipo: "proto", itemId: p.id, capsulaId: null, capsulaName: null,
+        nombre: p.name, referencia: p.reference, cliente: p.cliente || p.colores?.[0] || "(Sin cliente)",
+        resultado: "aprobado", mes: String(fecha).slice(0, 7), fecha,
+      });
+    });
+    capsulas.forEach((cap) => {
+      (cap.referencias || []).forEach((r) => {
+        if (r.status !== "aprobado" && r.status !== "declinado") return;
+        const key = `capsula_ref__${r.id}__${r.status}`;
+        if (existentes.has(key)) return;
+        const fecha = buscarFechaEstado(r, r.status) || cap.createdAt || nowISO();
+        nuevos.push({
+          id: uid(), tipo: "capsula_ref", itemId: r.id, capsulaId: cap.id, capsulaName: cap.name,
+          nombre: r.name, referencia: r.reference, cliente: r.cliente || r.colores?.[0] || "(Sin cliente)",
+          resultado: r.status, mes: String(fecha).slice(0, 7), fecha,
+        });
+      });
+    });
+    if (!nuevos.length) { notify({ id: uid(), icon: "ℹ", title: "Historial", msg: "No había ítems pendientes por agregar." }); return; }
+    setHistorial((h) => [...h, ...nuevos]);
+    await Promise.all(nuevos.map((n) => fsSave("historial_diseno", n.id, n)));
+    notify({ id: uid(), icon: "🕘", title: "Historial completado", msg: `${nuevos.length} ítem(s) agregado(s) al historial.` });
   }
   async function promoteToCapsula(capId, ref, protoId) {
     await addRef(capId, ref);
@@ -3354,7 +3432,7 @@ export default function App() {
             {view === "pedidos_admin" && currentUser?.isAdmin && <AdminPedidosView pedidoConfig={pedidoConfig} onSave={savePedidoConfig} />}
             {view === "pedidos_clientes" && <ClientesPedidosView pedidoConfig={pedidoConfig} pedidos={pedidos} />}
             {view === "stats" && <EstadisticasView protos={protos} capsulas={capsulas} />}
-            {view === "historial" && <HistorialDisenoView historial={historial} protos={protos} capsulas={capsulas} />}
+            {view === "historial" && <HistorialDisenoView historial={historial} protos={protos} capsulas={capsulas} isAdmin={currentUser?.isAdmin} onBackfill={backfillHistorial} />}
             {view === "admin" && (currentUser?.isAdmin || canAccessAdminDiseno) && (
               <AdminView config={config} onUpdateConfig={saveConfig} users={users} onUpdateUsers={saveUsers} protos={protos} capsulas={capsulas}
                 onUpdateProto={updateProtoName} onUpdateCapsula={updateCapsulaName} onDeleteProto={deleteProto} onDeleteCapsula={deleteCapsula}
