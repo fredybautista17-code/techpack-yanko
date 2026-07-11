@@ -1389,7 +1389,10 @@ function Card({ item, kind, onClick, onPromote, role, perms, stages }) {
 }
 function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas, stages }) {
   const [filter, setFilter] = useState("todos");
-  const filtered = filter === "todos" ? protos : protos.filter((p) => p.status === filter);
+  // "Todos" oculta Aprobados/Promovidos/Declinados para no saturar el tablero
+  // (un prototipo promovido sigue con status "aprobado", así que basta con
+  // excluir aprobado/declinado). Siguen disponibles en sus propias pestañas.
+  const filtered = filter === "todos" ? protos.filter((p) => !["aprobado", "declinado"].includes(p.status)) : protos.filter((p) => p.status === filter);
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
@@ -1414,13 +1417,23 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
     </div>
   );
 }
-function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewRef, stages }) {
+function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages }) {
   const [filter, setFilter] = useState("todos");
+  const [editCap, setEditCap] = useState(null);
   const FILTERS = [["todos", "Todos"], ["aprobado", "Aprobadas"], ["declinado", "Declinadas"], ["en_proceso", "En proceso"], ["en_revision", "En revisión"], ["enviado_cotizacion", "En cotización"], ["enviar_cliente", "Enviar al Cliente"], ["enviado", "Enviado"]];
-  const visibleCapsulas = filter === "todos" ? capsulas : capsulas.filter((cap) => cap.referencias.some((r) => r.status === filter));
-  function filteredRefs(cap) { return filter === "todos" ? cap.referencias : cap.referencias.filter((r) => r.status === filter); }
+  // "Todos" oculta referencias Aprobadas/Declinadas (y cápsulas que solo
+  // tengan referencias en esos estados) para no saturar el tablero. Siguen
+  // disponibles en las pestañas "Aprobadas"/"Declinadas".
+  const visibleCapsulas = filter === "todos" ? capsulas.filter((cap) => cap.referencias.some((r) => !["aprobado", "declinado"].includes(r.status))) : capsulas.filter((cap) => cap.referencias.some((r) => r.status === filter));
+  function filteredRefs(cap) { return filter === "todos" ? cap.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status)) : cap.referencias.filter((r) => r.status === filter); }
   return (
     <div>
+      {editCap && (
+        <EditNombreModal item={editCap} tipo="capsula"
+          onSave={(p) => { onEditCapsula(editCap.id, p); setEditCap(null); }}
+          onClose={() => setEditCap(null)}
+        />
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Cápsulas</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Colecciones con múltiples referencias</p></div>
         {perms.editar && <Btn onClick={onNewCapsula}>+ Nueva Cápsula</Btn>}
@@ -1443,6 +1456,7 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
               </div>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                 {od > 0 && <span style={{ padding: "3px 10px", background: T.coralBg, color: T.coral, borderRadius: 6, fontSize: 12, fontWeight: 700 }}>⚑ {od}</span>}
+                {perms.editar && <Btn small variant="ghost" onClick={() => setEditCap(cap)}>✏ Editar</Btn>}
                 {perms.editar && <Btn small onClick={() => onNewRef(cap)}>+ Referencia</Btn>}
               </div>
             </div>
@@ -1460,92 +1474,108 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
   );
 }
 
-// Historial de aprobaciones/declinaciones, agrupado por cliente y luego por
-// mes: un prototipo se registra al llegar a "Aprobado" (se promueva o no
-// después a una cápsula) y una referencia de cápsula se registra tanto al
-// llegar a "Aprobado" como a "Declinado" (ver changeStatus en DetailView).
-function HistorialDisenoView({ historial, protos, capsulas, isAdmin, onBackfill }) {
-  const [clienteFiltro, setClienteFiltro] = useState("");
+// Historial de aprobaciones/declinaciones. Un prototipo se registra al
+// llegar a "Aprobado" (se promueva o no después a una cápsula) y una
+// referencia de cápsula se registra tanto al llegar a "Aprobado" como a
+// "Declinado" (ver changeStatus en DetailView). Se muestra con la misma
+// Card visual que Prototipos/Cápsulas, buscando el ítem vivo detrás de cada
+// entrada — sin agrupar por mes (las estadísticas mensuales viven en
+// Estadísticas). Modo "Clientes": selector de cliente → sus tarjetas. Modo
+// "Todos": todas las tarjetas, seccionadas por cliente.
+function HistorialDisenoView({ historial, protos, capsulas, role, perms, stages, isAdmin, onBackfill, onSelectProto, onSelectRef, onPromote }) {
+  const [modo, setModo] = useState("todos");
+  const [clienteSel, setClienteSel] = useState("");
+  const [resultado, setResultado] = useState("todos");
   const [backfilling, setBackfilling] = useState(false);
   async function handleBackfill() {
     setBackfilling(true);
     await onBackfill();
     setBackfilling(false);
   }
-  const clientesDisponibles = [...new Set(historial.map((h) => h.cliente))].sort((a, b) => a.localeCompare(b));
-  const filtrado = clienteFiltro ? historial.filter((h) => h.cliente === clienteFiltro) : historial;
-  const porCliente = {};
-  filtrado.forEach((h) => {
-    if (!porCliente[h.cliente]) porCliente[h.cliente] = {};
-    if (!porCliente[h.cliente][h.mes]) porCliente[h.cliente][h.mes] = [];
-    porCliente[h.cliente][h.mes].push(h);
-  });
-  const clientesOrdenados = Object.keys(porCliente).sort((a, b) => a.localeCompare(b));
-  function promocionInfo(h) {
-    if (h.tipo !== "proto") return null;
-    const p = protos.find((x) => x.id === h.itemId);
-    if (!p) return null;
-    if (!p.promotedTo) return "Sin promover";
-    const cap = capsulas.find((c) => c.id === p.promotedTo);
-    return `Promovido a ${cap?.name || "cápsula"}`;
+  function liveItem(h) {
+    if (h.tipo === "proto") return protos.find((p) => p.id === h.itemId);
+    const cap = capsulas.find((c) => c.id === h.capsulaId);
+    return cap?.referencias.find((r) => r.id === h.itemId);
   }
+  // Une cada entrada de historial con su ítem vivo (omite las que ya no
+  // tienen ítem, p.ej. si se eliminó), dedupe por itemId quedándose con la
+  // entrada más reciente, y ordena por fecha descendente.
+  function itemsFor(lista) {
+    const porItem = new Map();
+    lista.forEach((h) => {
+      const item = liveItem(h);
+      if (!item) return;
+      const prev = porItem.get(h.itemId);
+      if (!prev || h.fecha > prev.h.fecha) porItem.set(h.itemId, { h, item });
+    });
+    return [...porItem.values()].sort((a, b) => b.h.fecha.localeCompare(a.h.fecha));
+  }
+  function renderCards(lista) {
+    if (!lista.length) return <div style={{ textAlign: "center", padding: 32, color: T.slate, fontSize: 13 }}>Sin resultados.</div>;
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 14 }}>
+        {lista.map(({ h, item }) => (
+          <Card key={h.id} item={item} kind={h.tipo === "proto" ? "proto" : "ref"}
+            onClick={() => (h.tipo === "proto" ? onSelectProto(item.id) : onSelectRef(h.capsulaId, item.id))}
+            onPromote={onPromote} role={role} perms={perms} stages={stages}
+          />
+        ))}
+      </div>
+    );
+  }
+  const filtradoResultado = resultado === "todos" ? historial : historial.filter((h) => h.resultado === resultado);
+  const clientesDisponibles = [...new Set(historial.map((h) => h.cliente))].sort((a, b) => a.localeCompare(b));
+  const clienteItems = clienteSel ? itemsFor(filtradoResultado.filter((h) => h.cliente === clienteSel)) : [];
+  const porClienteTodos = {};
+  filtradoResultado.forEach((h) => {
+    if (!porClienteTodos[h.cliente]) porClienteTodos[h.cliente] = [];
+    porClienteTodos[h.cliente].push(h);
+  });
+  const clientesOrdenadosTodos = Object.keys(porClienteTodos).sort((a, b) => a.localeCompare(b));
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Historial</h2>
-          <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Prototipos aprobados y referencias de cápsula aprobadas/declinadas, por cliente y mes</p>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Prototipos y referencias que llegaron a Aprobado o Declinado</p>
         </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          {isAdmin && (
-            <Btn variant="ghost" small onClick={handleBackfill} disabled={backfilling}>
-              {backfilling ? "Completando..." : "↻ Completar con aprobados/declinados existentes"}
-            </Btn>
-          )}
-          <select value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
-            <option value="">Todos los clientes</option>
+        {isAdmin && (
+          <Btn variant="ghost" small onClick={handleBackfill} disabled={backfilling}>
+            {backfilling ? "Completando..." : "↻ Completar con aprobados/declinados existentes"}
+          </Btn>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+        {[["todos", "Todos"], ["clientes", "Clientes"]].map(([v, label]) => (
+          <button key={v} onClick={() => setModo(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${modo === v ? T.denim : T.border}`, background: modo === v ? T.denimBg : T.white, color: modo === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[["todos", "Todos"], ["aprobado", "Aprobados"], ["declinado", "Declinados"]].map(([v, label]) => (
+            <button key={v} onClick={() => setResultado(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${resultado === v ? T.ink : T.border}`, background: resultado === v ? T.ink : T.white, color: resultado === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
+          ))}
+        </div>
+        {modo === "clientes" && (
+          <select value={clienteSel} onChange={(e) => setClienteSel(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
+            <option value="">Selecciona un cliente...</option>
             {clientesDisponibles.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
-        </div>
+        )}
       </div>
-      {!clientesOrdenados.length ? (
+      {modo === "clientes" ? (
+        !clienteSel ? (
+          <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Selecciona un cliente para ver su historial.</div>
+        ) : renderCards(clienteItems)
+      ) : !clientesOrdenadosTodos.length ? (
         <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Aún no hay historial registrado.</div>
       ) : (
-        clientesOrdenados.map((cliente) => {
-          const meses = Object.keys(porCliente[cliente]).sort((a, b) => b.localeCompare(a));
-          return (
-            <div key={cliente} style={{ marginBottom: 28 }}>
-              <div style={{ fontWeight: 800, fontSize: 16, color: T.ink, marginBottom: 12 }}>{cliente}</div>
-              {meses.map((mes) => {
-                const items = [...porCliente[cliente][mes]].sort((a, b) => b.fecha.localeCompare(a.fecha));
-                return (
-                  <div key={mes} style={{ marginBottom: 16 }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "capitalize", marginBottom: 8 }}>
-                      {new Date(mes + "-02").toLocaleDateString("es-CO", { month: "long", year: "numeric" })}
-                    </div>
-                    <div style={{ background: T.white, borderRadius: 12, border: `1px solid ${T.border}`, overflow: "hidden" }}>
-                      {items.map((h, i) => (
-                        <div key={h.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderBottom: i < items.length - 1 ? `1px solid ${T.border}` : "none" }}>
-                          <div>
-                            <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{h.nombre} <span style={{ fontSize: 11, color: T.slate, fontWeight: 400 }}>{h.referencia}</span></div>
-                            <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>
-                              {h.tipo === "proto" ? "Prototipo" : `Cápsula: ${h.capsulaName || "—"}`}
-                              {h.tipo === "proto" && promocionInfo(h) ? ` · ${promocionInfo(h)}` : ""}
-                            </div>
-                          </div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                            <span style={{ fontSize: 11, color: T.slate }}>{new Date(h.fecha).toLocaleDateString("es-CO")}</span>
-                            <Badge status={h.resultado} />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })
+        clientesOrdenadosTodos.map((cliente) => (
+          <div key={cliente} style={{ marginBottom: 28 }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.ink, marginBottom: 12 }}>{cliente}</div>
+            {renderCards(itemsFor(porClienteTodos[cliente]))}
+          </div>
+        ))
       )}
     </div>
   );
@@ -3422,6 +3452,7 @@ export default function App() {
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
                 onNewCapsula={() => setModal("new-capsula")}
                 onNewRef={(cap) => { setNewRefCap(cap); setModal("new-ref"); }}
+                onEditCapsula={updateCapsulaName}
                 stages={config.stages}
               />
             )}
@@ -3456,7 +3487,14 @@ export default function App() {
             {view === "pedidos_admin" && currentUser?.isAdmin && <AdminPedidosView pedidoConfig={pedidoConfig} onSave={savePedidoConfig} config={config} onSaveConfig={saveConfig} />}
             {view === "pedidos_clientes" && <ClientesPedidosView clientes={config.clientes} pedidos={pedidos} />}
             {view === "stats" && <EstadisticasView protos={protos} capsulas={capsulas} />}
-            {view === "historial" && <HistorialDisenoView historial={historial} protos={protos} capsulas={capsulas} isAdmin={currentUser?.isAdmin} onBackfill={backfillHistorial} />}
+            {view === "historial" && (
+              <HistorialDisenoView historial={historial} protos={protos} capsulas={capsulas} role={role} perms={perms} stages={config.stages}
+                isAdmin={currentUser?.isAdmin} onBackfill={backfillHistorial}
+                onSelectProto={(id) => { setSelProtoId(id); setView("proto-detail"); }}
+                onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
+                onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
+              />
+            )}
             {view === "admin" && (currentUser?.isAdmin || canAccessAdminDiseno) && (
               <AdminView config={config} onUpdateConfig={saveConfig} users={users} onUpdateUsers={saveUsers} protos={protos} capsulas={capsulas}
                 onUpdateProto={updateProtoName} onUpdateCapsula={updateCapsulaName} onDeleteProto={deleteProto} onDeleteCapsula={deleteCapsula}
