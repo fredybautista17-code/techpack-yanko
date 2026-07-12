@@ -1410,11 +1410,13 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [confirmDel, setConfirmDel] = useState(null);
-  // Cuántos prototipos tiene cada cliente (todos los estados, no solo los
-  // visibles con el filtro de estado actual) — así se ve de un vistazo el
-  // volumen que se está manejando por cliente.
+  // Cuántos prototipos ACTIVOS tiene cada cliente — igual criterio que la
+  // pestaña "Todos" de estado (excluye Aprobados/Declinados), para que el
+  // número refleje la carga de trabajo pendiente y no arrastre prototipos
+  // ya cerrados hace tiempo.
+  const protosActivos = protos.filter((p) => !["aprobado", "declinado"].includes(p.status));
   const conteoPorCliente = {};
-  protos.forEach((p) => {
+  protosActivos.forEach((p) => {
     const c = p.cliente || p.colores?.[0];
     if (!c) return;
     conteoPorCliente[c] = (conteoPorCliente[c] || 0) + 1;
@@ -1457,7 +1459,7 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
       <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: T.slate }}>🏢 Clientes</span>
         <select value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)} style={{ padding: "7px 12px", border: `1.5px solid ${clienteFiltro !== "todos" ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: clienteFiltro !== "todos" ? T.denim : T.ink, background: clienteFiltro !== "todos" ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer" }}>
-          <option value="todos">Todos ({protos.length})</option>
+          <option value="todos">Todos ({protosActivos.length})</option>
           {clientesDisponibles.map((c) => <option key={c} value={c}>{c} ({conteoPorCliente[c] || 0})</option>)}
         </select>
       </div>
@@ -1499,10 +1501,15 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
     const conRef = cap.referencias.find((r) => r.cliente || r.colores?.[0]);
     return conRef ? (conRef.cliente || conRef.colores?.[0]) : null;
   }
-  // Cuántas cápsulas tiene cada cliente — mismo criterio que "Todos (N)" en
-  // Prototipos, para poder comparar volumen de un vistazo.
+  // Una cápsula cuenta como "activa" si le queda al menos una referencia sin
+  // resolver (o si todavía no tiene ninguna referencia cargada) — igual
+  // criterio que la pestaña "Todos" de estado. Las cápsulas 100% Aprobadas o
+  // Declinadas ya no suman aquí, para que el número refleje trabajo
+  // pendiente y no arrastre cápsulas cerradas hace tiempo.
+  const capsulasActivas = capsulas.filter((cap) => cap.referencias.length === 0 || cap.referencias.some((r) => !["aprobado", "declinado"].includes(r.status)));
+  // Cuántas cápsulas activas tiene cada cliente.
   const conteoPorCliente = {};
-  capsulas.forEach((cap) => {
+  capsulasActivas.forEach((cap) => {
     const c = capCliente(cap);
     if (!c) return;
     conteoPorCliente[c] = (conteoPorCliente[c] || 0) + 1;
@@ -1553,7 +1560,7 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
       <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: T.slate }}>🏢 Clientes</span>
         <select value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)} style={{ padding: "7px 12px", border: `1.5px solid ${clienteFiltro !== "todos" ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: clienteFiltro !== "todos" ? T.denim : T.ink, background: clienteFiltro !== "todos" ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer" }}>
-          <option value="todos">Todos ({capsulas.length})</option>
+          <option value="todos">Todos ({capsulasActivas.length})</option>
           {clientesDisponibles.map((c) => <option key={c} value={c}>{c} ({conteoPorCliente[c] || 0})</option>)}
         </select>
       </div>
