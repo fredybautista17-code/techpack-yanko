@@ -1406,20 +1406,25 @@ function Card({ item, kind, onClick, onPromote, role, perms, stages }) {
     </div>
   );
 }
-function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas, stages, isAdmin, onDeleteProto }) {
+function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas, stages, isAdmin, onDeleteProto, config }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [confirmDel, setConfirmDel] = useState(null);
-  // Listado de clientes con cuántos prototipos tiene cada uno (todos los
-  // estados, no solo los visibles con el filtro de estado actual) — así se ve
-  // de un vistazo el volumen que se está manejando por cliente.
+  // Cuántos prototipos tiene cada cliente (todos los estados, no solo los
+  // visibles con el filtro de estado actual) — así se ve de un vistazo el
+  // volumen que se está manejando por cliente.
   const conteoPorCliente = {};
   protos.forEach((p) => {
     const c = p.cliente || p.colores?.[0];
     if (!c) return;
     conteoPorCliente[c] = (conteoPorCliente[c] || 0) + 1;
   });
-  const clientesDisponibles = Object.keys(conteoPorCliente).sort((a, b) => a.localeCompare(b));
+  // El desplegable incluye TODOS los clientes registrados en el maestro de
+  // Clientes (Administrador General), no solo los que ya tienen un
+  // prototipo — así un cliente recién creado no falta en la lista, y se
+  // suman también nombres sueltos que ya existan en los datos aunque no
+  // estén en el maestro (compatibilidad con datos viejos).
+  const clientesDisponibles = [...new Set([...(config?.clientes || []).map((c) => c.nombre), ...Object.keys(conteoPorCliente)])].sort((a, b) => a.localeCompare(b));
   // "Todos" oculta Aprobados/Promovidos/Declinados para no saturar el tablero
   // (un prototipo promovido sigue con status "aprobado", así que basta con
   // excluir aprobado/declinado). Siguen disponibles en sus propias pestañas.
@@ -1449,11 +1454,12 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
           {perms.editar && <Btn onClick={onNew}>+ Nuevo Prototipo</Btn>}
         </div>
       </div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-        <button onClick={() => setClienteFiltro("todos")} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${clienteFiltro === "todos" ? T.denim : T.border}`, background: clienteFiltro === "todos" ? T.denimBg : T.white, color: clienteFiltro === "todos" ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Todos ({protos.length})</button>
-        {clientesDisponibles.map((c) => (
-          <button key={c} onClick={() => setClienteFiltro(c)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${clienteFiltro === c ? T.denim : T.border}`, background: clienteFiltro === c ? T.denimBg : T.white, color: clienteFiltro === c ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{c} ({conteoPorCliente[c]})</button>
-        ))}
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: T.slate }}>🏢 Clientes</span>
+        <select value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)} style={{ padding: "7px 12px", border: `1.5px solid ${clienteFiltro !== "todos" ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: clienteFiltro !== "todos" ? T.denim : T.ink, background: clienteFiltro !== "todos" ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer" }}>
+          <option value="todos">Todos ({protos.length})</option>
+          {clientesDisponibles.map((c) => <option key={c} value={c}>{c} ({conteoPorCliente[c] || 0})</option>)}
+        </select>
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
         {[["todos", "Todos"], ["aprobado", "Aprobados"], ["declinado", "Declinados"], ["en_proceso", "En proceso"], ["en_revision", "En revisión"], ["enviado_cotizacion", "En cotización"], ["enviar_cliente", "Enviar al Cliente"], ["enviado", "Enviado"]].map(([v, label]) => (
@@ -1476,7 +1482,7 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
     </div>
   );
 }
-function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula }) {
+function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, config }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [editCap, setEditCap] = useState(null);
@@ -1486,18 +1492,25 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
   // suelto de cada referencia — así toda la cápsula queda atribuida a un solo
   // cliente aunque alguna referencia vieja no tenga el suyo propio bien puesto.
   function refCliente(cap, r) { return cap.cliente || r.cliente || r.colores?.[0]; }
-  // Listado de clientes con cuántas referencias tiene cada uno (todos los
-  // estados, no solo las visibles con el filtro de estado actual) — así se ve
-  // de un vistazo el volumen que se está manejando por cliente.
+  // Cliente de la cápsula completa: el propio si lo tiene, si no se infiere
+  // de la primera de sus referencias que tenga uno (dato viejo).
+  function capCliente(cap) {
+    if (cap.cliente) return cap.cliente;
+    const conRef = cap.referencias.find((r) => r.cliente || r.colores?.[0]);
+    return conRef ? (conRef.cliente || conRef.colores?.[0]) : null;
+  }
+  // Cuántas cápsulas tiene cada cliente — mismo criterio que "Todos (N)" en
+  // Prototipos, para poder comparar volumen de un vistazo.
   const conteoPorCliente = {};
-  let totalRefs = 0;
-  capsulas.forEach((cap) => cap.referencias.forEach((r) => {
-    totalRefs++;
-    const c = refCliente(cap, r);
+  capsulas.forEach((cap) => {
+    const c = capCliente(cap);
     if (!c) return;
     conteoPorCliente[c] = (conteoPorCliente[c] || 0) + 1;
-  }));
-  const clientesDisponibles = Object.keys(conteoPorCliente).sort((a, b) => a.localeCompare(b));
+  });
+  // El desplegable incluye TODOS los clientes registrados en el maestro de
+  // Clientes (Administrador General), no solo los que ya tienen una cápsula
+  // — así un cliente/cápsula recién creada no falta en la lista.
+  const clientesDisponibles = [...new Set([...(config?.clientes || []).map((c) => c.nombre), ...Object.keys(conteoPorCliente)])].sort((a, b) => a.localeCompare(b));
   // "Todos" oculta referencias Aprobadas/Declinadas (y cápsulas que solo
   // tengan referencias en esos estados) para no saturar el tablero. Siguen
   // disponibles en las pestañas "Aprobadas"/"Declinadas". El filtro de
@@ -1537,11 +1550,12 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
         <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Cápsulas</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Colecciones con múltiples referencias</p></div>
         {perms.editar && <Btn onClick={onNewCapsula}>+ Nueva Cápsula</Btn>}
       </div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-        <button onClick={() => setClienteFiltro("todos")} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${clienteFiltro === "todos" ? T.denim : T.border}`, background: clienteFiltro === "todos" ? T.denimBg : T.white, color: clienteFiltro === "todos" ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Todos ({totalRefs})</button>
-        {clientesDisponibles.map((c) => (
-          <button key={c} onClick={() => setClienteFiltro(c)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${clienteFiltro === c ? T.denim : T.border}`, background: clienteFiltro === c ? T.denimBg : T.white, color: clienteFiltro === c ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{c} ({conteoPorCliente[c]})</button>
-        ))}
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: T.slate }}>🏢 Clientes</span>
+        <select value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)} style={{ padding: "7px 12px", border: `1.5px solid ${clienteFiltro !== "todos" ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: clienteFiltro !== "todos" ? T.denim : T.ink, background: clienteFiltro !== "todos" ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer" }}>
+          <option value="todos">Todos ({capsulas.length})</option>
+          {clientesDisponibles.map((c) => <option key={c} value={c}>{c} ({conteoPorCliente[c] || 0})</option>)}
+        </select>
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
         {FILTERS.map(([v, label]) => (
@@ -3822,7 +3836,7 @@ export default function App() {
                 onNew={() => setModal("new-proto")}
                 onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
                 stages={config.stages}
-                isAdmin={currentUser?.isAdmin} onDeleteProto={deleteProto}
+                isAdmin={currentUser?.isAdmin} onDeleteProto={deleteProto} config={config}
               />
             )}
             {view === "capsulas" && (
@@ -3832,7 +3846,7 @@ export default function App() {
                 onNewRef={(cap) => { setNewRefCap(cap); setModal("new-ref"); }}
                 onEditCapsula={updateCapsulaName}
                 stages={config.stages}
-                isAdmin={currentUser?.isAdmin} onDeleteCapsula={deleteCapsula}
+                isAdmin={currentUser?.isAdmin} onDeleteCapsula={deleteCapsula} config={config}
               />
             )}
             {view === "proto-detail" && selProto && (
