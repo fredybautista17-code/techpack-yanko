@@ -985,14 +985,15 @@ function EditProtoModal({ proto, onSave, onClose, config }) {
     </Modal>
   );
 }
-function NewCapsulaModal({ onSave, onClose }) {
-  const [form, setForm] = useState({ name: "", season: "" });
+function NewCapsulaModal({ onSave, onClose, config }) {
+  const [form, setForm] = useState({ name: "", season: "", cliente: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function save() { if (!form.name) return; onSave({ id: uid(), ...form, createdAt: today(), referencias: [] }); onClose(); }
   return (
     <Modal title="Nueva Cápsula" onClose={onClose}>
       <Field label="Nombre"><FInput value={form.name} onChange={set("name")} placeholder="Ej: Cápsula Otoño 2025" /></Field>
       <Field label="Temporada / Código"><FInput value={form.season} onChange={set("season")} placeholder="Ej: AW25 o C0127" /></Field>
+      <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config?.clientes || []).map((c) => c.nombre)} /></Field>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn onClick={save}>Crear Cápsula</Btn>
@@ -1405,9 +1406,10 @@ function Card({ item, kind, onClick, onPromote, role, perms, stages }) {
     </div>
   );
 }
-function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas, stages }) {
+function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas, stages, isAdmin, onDeleteProto }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
+  const [confirmDel, setConfirmDel] = useState(null);
   // Listado de clientes con cuántos prototipos tiene cada uno (todos los
   // estados, no solo los visibles con el filtro de estado actual) — así se ve
   // de un vistazo el volumen que se está manejando por cliente.
@@ -1425,6 +1427,18 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
   const filtered = clienteFiltro === "todos" ? porEstado : porEstado.filter((p) => (p.cliente || p.colores?.[0]) === clienteFiltro);
   return (
     <div>
+      {confirmDel && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar el prototipo <strong>"{confirmDel.name}"</strong>? Esta acción no se puede deshacer.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={() => { onDeleteProto(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+            </div>
+          </div>
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Prototipos</h2>
@@ -1448,17 +1462,30 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
       </div>
       {!filtered.length && <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>No hay prototipos con este filtro.</div>}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 14 }}>
-        {filtered.map((p) => <Card key={p.id} item={p} kind="proto" onClick={() => onSelect(p.id)} onPromote={onPromote} role={role} perms={perms} stages={stages} />)}
+        {filtered.map((p) => (
+          <div key={p.id} style={{ position: "relative" }}>
+            {isAdmin && (
+              <button onClick={(e) => { e.stopPropagation(); setConfirmDel(p); }} title="Borrar prototipo (solo administrador)"
+                style={{ position: "absolute", top: 8, right: 8, zIndex: 2, width: 26, height: 26, borderRadius: "50%", background: T.white, border: `1.5px solid ${T.coral}`, color: T.coral, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 6px rgba(26,26,46,0.12)" }}
+              >🗑</button>
+            )}
+            <Card item={p} kind="proto" onClick={() => onSelect(p.id)} onPromote={onPromote} role={role} perms={perms} stages={stages} />
+          </div>
+        ))}
       </div>
     </div>
   );
 }
-function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages }) {
+function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [editCap, setEditCap] = useState(null);
+  const [confirmDel, setConfirmDel] = useState(null);
   const FILTERS = [["todos", "Todos"], ["aprobado", "Aprobadas"], ["declinado", "Declinadas"], ["en_proceso", "En proceso"], ["en_revision", "En revisión"], ["enviado_cotizacion", "En cotización"], ["enviar_cliente", "Enviar al Cliente"], ["enviado", "Enviado"]];
-  function refCliente(r) { return r.cliente || r.colores?.[0]; }
+  // El cliente de la cápsula (elegido al crearla) manda sobre el cliente
+  // suelto de cada referencia — así toda la cápsula queda atribuida a un solo
+  // cliente aunque alguna referencia vieja no tenga el suyo propio bien puesto.
+  function refCliente(cap, r) { return cap.cliente || r.cliente || r.colores?.[0]; }
   // Listado de clientes con cuántas referencias tiene cada uno (todos los
   // estados, no solo las visibles con el filtro de estado actual) — así se ve
   // de un vistazo el volumen que se está manejando por cliente.
@@ -1466,7 +1493,7 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
   let totalRefs = 0;
   capsulas.forEach((cap) => cap.referencias.forEach((r) => {
     totalRefs++;
-    const c = refCliente(r);
+    const c = refCliente(cap, r);
     if (!c) return;
     conteoPorCliente[c] = (conteoPorCliente[c] || 0) + 1;
   }));
@@ -1477,7 +1504,7 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
   // cliente se combina (AND) con el de estado.
   function filteredRefs(cap) {
     let refs = filter === "todos" ? cap.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status)) : cap.referencias.filter((r) => r.status === filter);
-    if (clienteFiltro !== "todos") refs = refs.filter((r) => refCliente(r) === clienteFiltro);
+    if (clienteFiltro !== "todos") refs = refs.filter((r) => refCliente(cap, r) === clienteFiltro);
     return refs;
   }
   // Una cápsula recién creada empieza con referencias: [] — sin este OR
@@ -1493,6 +1520,18 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
           onSave={(p) => { onEditCapsula(editCap.id, p); setEditCap(null); }}
           onClose={() => setEditCap(null)}
         />
+      )}
+      {confirmDel && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar la cápsula <strong>"{confirmDel.name}"</strong> y sus {confirmDel.referencias?.length || 0} referencia{confirmDel.referencias?.length !== 1 ? "s" : ""}? Esta acción no se puede deshacer.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={() => { onDeleteCapsula(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+            </div>
+          </div>
+        </div>
       )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Cápsulas</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Colecciones con múltiples referencias</p></div>
@@ -1518,12 +1557,13 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
             <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: 20 }}>🗂</span>
-                <div><div style={{ fontWeight: 800, fontSize: 16, color: T.ink }}>{cap.name}</div><div style={{ fontSize: 12, color: T.slate }}>{cap.season} · {cap.referencias.length} ref · {cap.createdAt}</div></div>
+                <div><div style={{ fontWeight: 800, fontSize: 16, color: T.ink }}>{cap.name}</div><div style={{ fontSize: 12, color: T.slate }}>{cap.cliente ? `${cap.cliente} · ` : ""}{cap.season} · {cap.referencias.length} ref · {cap.createdAt}</div></div>
               </div>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                 {od > 0 && <span style={{ padding: "3px 10px", background: T.coralBg, color: T.coral, borderRadius: 6, fontSize: 12, fontWeight: 700 }}>⚑ {od}</span>}
                 {perms.editar && <Btn small variant="ghost" onClick={() => setEditCap(cap)}>✏ Editar</Btn>}
                 {perms.editar && <Btn small onClick={() => onNewRef(cap)}>+ Referencia</Btn>}
+                {isAdmin && <Btn small variant="danger" onClick={() => setConfirmDel(cap)}>🗑 Borrar</Btn>}
               </div>
             </div>
             {!refs.length ? (
@@ -2449,7 +2489,7 @@ function ClientesTab({ config, onUpdateConfig }) {
   );
 }
 
-function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula }) {
+function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula, isAdmin }) {
   const [tab, setTab] = useState("etapas");
   const [newItem, setNewItem] = useState("");
   const [editItem, setEditItem] = useState(null);
@@ -2682,7 +2722,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                       <div style={{ fontSize: 11, color: T.slate }}>{p.reference} · {p.categoria} · <span style={{ color: STATUS[p.status]?.color, fontWeight: 700 }}>{STATUS[p.status]?.label}</span></div>
                     </div>
                     <button onClick={() => setEditItem({ item: p, tipo: "proto" })} style={{ padding: "5px 10px", background: T.denimBg, border: `1px solid ${T.denim}44`, borderRadius: 6, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>✏ Editar</button>
-                    <button onClick={() => setConfirmDel({ id: p.id, tipo: "proto", name: p.name })} style={{ padding: "5px 10px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 6, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>🗑 Borrar</button>
+                    {isAdmin && <button onClick={() => setConfirmDel({ id: p.id, tipo: "proto", name: p.name })} style={{ padding: "5px 10px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 6, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>🗑 Borrar</button>}
                   </div>
                 ))}
                 {!protos.length && <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin prototipos.</div>}
@@ -2698,7 +2738,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                       <div style={{ fontSize: 11, color: T.slate }}>{c.season} · {c.referencias.length} referencia{c.referencias.length !== 1 ? "s" : ""}</div>
                     </div>
                     <button onClick={() => setEditItem({ item: c, tipo: "capsula" })} style={{ padding: "5px 10px", background: T.denimBg, border: `1px solid ${T.denim}44`, borderRadius: 6, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>✏ Editar</button>
-                    <button onClick={() => setConfirmDel({ id: c.id, tipo: "capsula", name: c.name })} style={{ padding: "5px 10px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 6, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>🗑 Borrar</button>
+                    {isAdmin && <button onClick={() => setConfirmDel({ id: c.id, tipo: "capsula", name: c.name })} style={{ padding: "5px 10px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 6, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>🗑 Borrar</button>}
                   </div>
                 ))}
                 {!capsulas.length && <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin cápsulas.</div>}
@@ -3698,7 +3738,7 @@ export default function App() {
         />
       )}
       {modal === "new-proto" && <NewProtoModal onSave={addProto} onClose={() => setModal(null)} config={config} />}
-      {modal === "new-capsula" && <NewCapsulaModal onSave={addCapsula} onClose={() => setModal(null)} />}
+      {modal === "new-capsula" && <NewCapsulaModal onSave={addCapsula} onClose={() => setModal(null)} config={config} />}
       {modal === "new-ref" && newRefCap && <NewRefModal capsula={newRefCap} onSave={addRef} onClose={() => { setModal(null); setNewRefCap(null); }} config={config} />}
       {modal === "promote" && promoteProto && <PromoteModal proto={promoteProto} capsulas={capsulas} onSave={promoteToCapsula} onClose={() => { setModal(null); setPromoteProto(null); }} config={config} />}
       {modal === "new-pedido" && <SubirPedidoModal2 onSave={addPedido} onClose={() => setModal(null)} pedidoConfig={pedidoConfig} pedidos={pedidos} clientes={config.clientes} />}
@@ -3782,6 +3822,7 @@ export default function App() {
                 onNew={() => setModal("new-proto")}
                 onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
                 stages={config.stages}
+                isAdmin={currentUser?.isAdmin} onDeleteProto={deleteProto}
               />
             )}
             {view === "capsulas" && (
@@ -3791,6 +3832,7 @@ export default function App() {
                 onNewRef={(cap) => { setNewRefCap(cap); setModal("new-ref"); }}
                 onEditCapsula={updateCapsulaName}
                 stages={config.stages}
+                isAdmin={currentUser?.isAdmin} onDeleteCapsula={deleteCapsula}
               />
             )}
             {view === "proto-detail" && selProto && (
@@ -3835,6 +3877,7 @@ export default function App() {
             {view === "admin" && (currentUser?.isAdmin || canAccessAdminDiseno) && (
               <AdminView config={config} onUpdateConfig={saveConfig} users={users} onUpdateUsers={saveUsers} protos={protos} capsulas={capsulas}
                 onUpdateProto={updateProtoName} onUpdateCapsula={updateCapsulaName} onDeleteProto={deleteProto} onDeleteCapsula={deleteCapsula}
+                isAdmin={currentUser?.isAdmin}
               />
             )}
             {view === "admin" && !currentUser?.isAdmin && !canAccessAdminDiseno && (
