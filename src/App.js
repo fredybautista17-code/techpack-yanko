@@ -1480,7 +1480,12 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
     if (clienteFiltro !== "todos") refs = refs.filter((r) => refCliente(r) === clienteFiltro);
     return refs;
   }
-  const visibleCapsulas = capsulas.filter((cap) => filteredRefs(cap).length > 0);
+  // Una cápsula recién creada empieza con referencias: [] — sin este OR
+  // quedaba oculta en TODAS las pestañas de filtro (nunca cumple
+  // filteredRefs(cap).length > 0) y el usuario no podía volver a encontrarla
+  // para agregarle referencias. Una cápsula vacía siempre se muestra, sin
+  // importar el filtro de estado/cliente activo.
+  const visibleCapsulas = capsulas.filter((cap) => cap.referencias.length === 0 || filteredRefs(cap).length > 0);
   return (
     <div>
       {editCap && (
