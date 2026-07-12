@@ -1814,6 +1814,15 @@ function EstadisticasView({ protos, capsulas, stages }) {
   const capsulasConDeclinaciones = capsulasFiltradas.filter((c) => estadoCapsula(c) === "con_declinaciones").length;
   const capsulasTotalFiltradas = capsulasFiltradas.length;
   const pctCumplCapsulas = capsulasTotalFiltradas ? Math.round((capsulasCumplidas / capsulasTotalFiltradas) * 100) : 0;
+  // Puntaje de Diseño (0-100): combina tres cosas que ya se calculan arriba
+  // — Certeza 40% (qué tan seguido acierta con lo que propone), Cumplimiento
+  // de cápsulas 35% (colecciones que llegan completas al 100% aprobadas, no
+  // solo piezas sueltas) y Cumplimiento de plazos 25% (qué tanto de lo
+  // activo NO está vencido). El volumen (cuánto se produjo) queda fuera a
+  // propósito: sin una meta/cuota definida, "hacer más" no es comparable de
+  // forma justa entre períodos o personas.
+  const pctPlazoGlobal = 100 - pctVencidos;
+  const puntajeDiseno = certezaGlobal === null ? null : Math.round(certezaGlobal * 0.4 + pctCumplCapsulas * 0.35 + pctPlazoGlobal * 0.25);
   // Revisa si el ítem alguna vez llegó a la etapa de cotización/envío al
   // cliente (aunque hoy ya esté Aprobado o Declinado y su status actual ya
   // no lo muestre), buscando el registro exacto en su Hoja de Vida.
@@ -1849,7 +1858,16 @@ function EstadisticasView({ protos, capsulas, stages }) {
       const enviados = items.filter((x) => pasoPorCotizacion(x)).length;
       const activosP = items.filter((x) => !["aprobado", "declinado"].includes(x.status));
       const vencidos = activosP.filter((x) => isOverdue(x, stages)).length;
-      return { name: p, t, ap, dec, en, enviados, vencidos, pctAp: t ? Math.round((ap / t) * 100) : 0, pctDec: t ? Math.round((dec / t) * 100) : 0, certeza: resueltos ? Math.round((ap / resueltos) * 100) : null };
+      const certeza = resueltos ? Math.round((ap / resueltos) * 100) : null;
+      const pctPlazoP = activosP.length ? Math.round(((activosP.length - vencidos) / activosP.length) * 100) : 100;
+      // Mismo puntaje que a nivel de área (Certeza + Cumplimiento de plazos),
+      // pero sin el componente de "cápsulas cumplidas": una cápsula es un
+      // trabajo compartido entre varias personas, así que no se le puede
+      // atribuir en justicia a un solo diseñador. Los dos pesos que quedan
+      // (Certeza 40 y Plazos 25) se reescalan para que sigan sumando 100%,
+      // conservando la misma importancia relativa entre ellos.
+      const puntaje = certeza === null ? null : Math.round((certeza * 40 + pctPlazoP * 25) / 65);
+      return { name: p, t, ap, dec, en, enviados, vencidos, puntaje, pctAp: t ? Math.round((ap / t) * 100) : 0, pctDec: t ? Math.round((dec / t) * 100) : 0, certeza };
     }).filter((x) => x.t > 0).sort((a, b) => b.t - a.t);
   }
   const protosPorResp = porResponsable(protos);
@@ -1864,6 +1882,19 @@ function EstadisticasView({ protos, capsulas, stages }) {
     }).filter((x) => x.refsTotal > 0).sort((a, b) => b.refsTotal - a.refsTotal);
   }
   const clienteStats = porCliente();
+  // Igual que porCliente(), pero para Prototipos — que usan un solo campo
+  // "cliente" (texto) en vez del arreglo "colores" que usan las referencias.
+  const clientesUnicosProtos = [...new Set(protos.map((p) => p.cliente).filter(Boolean))].sort();
+  function porClienteProtos() {
+    const base = protos.filter((x) => (!yearFilter || x.createdAt?.slice(0, 4) === yearFilter) && (monthFilter === "todos" || parseInt(x.createdAt?.slice(5, 7)) - 1 === parseInt(monthFilter)));
+    return clientesUnicosProtos.map((cli) => {
+      const items = base.filter((p) => p.cliente === cli);
+      const t = items.length, ap = items.filter((x) => x.status === "aprobado").length, dec = items.filter((x) => x.status === "declinado").length, en = t - ap - dec;
+      const promovidos = items.filter((x) => x.status === "aprobado" && x.promotedTo).length;
+      return { name: cli, total: t, ap, dec, en, promovidos, pctAp: t ? Math.round((ap / t) * 100) : 0 };
+    }).filter((x) => x.total > 0).sort((a, b) => b.total - a.total);
+  }
+  const clienteProtoStats = porClienteProtos();
   function PersonBlock({ data, label }) {
     return !data.length ? (
       <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin datos de {label.toLowerCase()}.</div>
@@ -1880,6 +1911,7 @@ function EstadisticasView({ protos, capsulas, stages }) {
             <span style={{ padding: "2px 8px", borderRadius: 20, background: T.denimBg, color: T.denim, fontWeight: 700 }}>⚙ {p.en}</span>
             <span style={{ padding: "2px 8px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700 }}>✕ {p.dec}</span>
             <span title="Certeza: aprobados sobre lo ya resuelto (aprobado+declinado)" style={{ padding: "2px 8px", borderRadius: 20, background: T.violetBg, color: T.violet, fontWeight: 700 }}>🎯 {p.certeza === null ? "—" : `${p.certeza}%`}</span>
+            <span title="Puntaje individual: Certeza + Cumplimiento de plazos" style={{ padding: "2px 8px", borderRadius: 20, background: T.ink, color: T.white, fontWeight: 700 }}>⭐ {p.puntaje === null ? "—" : p.puntaje}</span>
           </div>
         </div>
       ))
@@ -1895,6 +1927,18 @@ function EstadisticasView({ protos, capsulas, stages }) {
         {(monthFilter !== "todos" || personFilter !== "todos") && (
           <button onClick={() => { setMonthFilter("todos"); setPersonFilter("todos"); }} style={{ padding: "9px 14px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 8, color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>✕ Limpiar</button>
         )}
+      </div>
+      <div style={{ background: T.ink, borderRadius: 16, padding: "24px 28px", marginBottom: 24, display: "flex", alignItems: "center", gap: 28, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.6)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>⭐ Puntaje de Diseño</div>
+          <div style={{ fontSize: 44, fontWeight: 900, color: T.white, lineHeight: 1, marginTop: 4 }}>{puntajeDiseno === null ? "—" : puntajeDiseno}</div>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", marginTop: 4 }}>{periodLabel}</div>
+        </div>
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap", fontSize: 12, color: "rgba(255,255,255,0.85)" }}>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>{certezaGlobal === null ? "—" : `${certezaGlobal}%`}</div><div style={{ color: "rgba(255,255,255,0.55)" }}>Certeza (40%)</div></div>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>{pctCumplCapsulas}%</div><div style={{ color: "rgba(255,255,255,0.55)" }}>Cápsulas cumplidas (35%)</div></div>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>{pctPlazoGlobal}%</div><div style={{ color: "rgba(255,255,255,0.55)" }}>Cumplimiento de plazos (25%)</div></div>
+        </div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 14, marginBottom: 24 }}>
         {[
@@ -1987,6 +2031,25 @@ function EstadisticasView({ protos, capsulas, stages }) {
               </div>
             );
           })
+        )}
+      </div>
+      <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 24, marginBottom: 24 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 4 }}>🧪 Por Cliente — Prototipos</div>
+        <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>{periodLabel}</div>
+        {!clienteProtoStats.length ? (
+          <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 24 }}>Sin datos de clientes para este período. Asigna un cliente a tus prototipos.</div>
+        ) : (
+          clienteProtoStats.map((c) => (
+            <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 0", borderBottom: `1px solid ${T.border}` }}>
+              <Avatar name={c.name} size={38} />
+              <div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{c.name}</div><div style={{ fontSize: 12, color: T.slate }}>{c.total} prototipo{c.total !== 1 ? "s" : ""}{c.promovidos > 0 ? ` · ${c.promovidos} promovido${c.promovidos !== 1 ? "s" : ""} a cápsula` : ""}</div></div>
+              <div style={{ display: "flex", gap: 8, fontSize: 12, flexWrap: "wrap" }}>
+                <span style={{ padding: "3px 10px", borderRadius: 20, background: T.jadeBg, color: T.jade, fontWeight: 700 }}>✓ {c.ap} ({c.pctAp}%)</span>
+                <span style={{ padding: "3px 10px", borderRadius: 20, background: T.denimBg, color: T.denim, fontWeight: 700 }}>⚙ {c.en}</span>
+                <span style={{ padding: "3px 10px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700 }}>✕ {c.dec}</span>
+              </div>
+            </div>
+          ))
         )}
       </div>
       <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 24 }}>
