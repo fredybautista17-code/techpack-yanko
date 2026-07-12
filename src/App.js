@@ -1761,7 +1761,7 @@ function DashboardView({ protos, capsulas, pedidos, onGoProtos, onGoCapsulas, on
   );
 }
 
-function EstadisticasView({ protos, capsulas }) {
+function EstadisticasView({ protos, capsulas, stages }) {
   const currentYear = new Date().getFullYear().toString();
   const [yearFilter, setYearFilter] = useState(currentYear);
   const [monthFilter, setMonthFilter] = useState("todos");
@@ -1783,6 +1783,44 @@ function EstadisticasView({ protos, capsulas }) {
   const total = filtered.length, aprobados = filtered.filter((x) => x.status === "aprobado").length, declinados = filtered.filter((x) => x.status === "declinado").length,
     enProceso = filtered.filter((x) => ["en_proceso", "en_revision", "borrador"].includes(x.status)).length;
   const pctAp = total ? Math.round((aprobados / total) * 100) : 0, pctDec = total ? Math.round((declinados / total) * 100) : 0;
+  // "Certeza": a diferencia de pctAp (que divide por el total, incluyendo lo
+  // que aún está en proceso y todavía no tiene un resultado), esto solo
+  // compara aprobados contra lo que YA se resolvió (aprobado o declinado).
+  // Es la métrica que responde "de lo que se definió, qué tan certero fue".
+  const resueltosGlobal = aprobados + declinados;
+  const certezaGlobal = resueltosGlobal ? Math.round((aprobados / resueltosGlobal) * 100) : null;
+  const protosFiltered = applyFilters(protos), refsFiltered = applyFilters(allRefs);
+  const activosFiltered = filtered.filter((x) => !["aprobado", "declinado"].includes(x.status));
+  const vencidosActuales = activosFiltered.filter((x) => isOverdue(x, stages)).length;
+  const pctVencidos = activosFiltered.length ? Math.round((vencidosActuales / activosFiltered.length) * 100) : 0;
+  // Una cápsula se considera "cumplida" solo si el 100% de sus referencias
+  // quedó Aprobada (ninguna Declinada, ninguna pendiente). Si tiene
+  // referencias sin resolver, está "en curso"; si ya se resolvieron todas
+  // pero al menos una quedó Declinada, nunca puede llegar a cumplida.
+  function estadoCapsula(c) {
+    if (!c.referencias.length) return "sin_referencias";
+    const pendientes = c.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status)).length;
+    if (pendientes > 0) return "en_curso";
+    return c.referencias.some((r) => r.status === "declinado") ? "con_declinaciones" : "cumplida";
+  }
+  const capsulasFiltradas = capsulas.filter((c) => {
+    const byYear = !yearFilter || c.createdAt?.slice(0, 4) === yearFilter;
+    const byMonth = monthFilter === "todos" || parseInt(c.createdAt?.slice(5, 7)) - 1 === parseInt(monthFilter);
+    const byPerson = personFilter === "todos" || c.referencias.some((r) => r.assignedTo === personFilter);
+    return byYear && byMonth && byPerson;
+  });
+  const capsulasCumplidas = capsulasFiltradas.filter((c) => estadoCapsula(c) === "cumplida").length;
+  const capsulasEnCurso = capsulasFiltradas.filter((c) => estadoCapsula(c) === "en_curso").length;
+  const capsulasConDeclinaciones = capsulasFiltradas.filter((c) => estadoCapsula(c) === "con_declinaciones").length;
+  const capsulasTotalFiltradas = capsulasFiltradas.length;
+  const pctCumplCapsulas = capsulasTotalFiltradas ? Math.round((capsulasCumplidas / capsulasTotalFiltradas) * 100) : 0;
+  // Revisa si el ítem alguna vez llegó a la etapa de cotización/envío al
+  // cliente (aunque hoy ya esté Aprobado o Declinado y su status actual ya
+  // no lo muestre), buscando el registro exacto en su Hoja de Vida.
+  function pasoPorCotizacion(item) {
+    if (["enviado_cotizacion", "enviar_cliente", "enviado", "recibido_cliente"].includes(item.status)) return true;
+    return !!buscarFechaEstado(item, "enviado_cotizacion");
+  }
   function monthlyData() {
     const base = allItems.filter((x) => (!yearFilter || x.createdAt?.slice(0, 4) === yearFilter) && (personFilter === "todos" || x.assignedTo === personFilter));
     return MONTHS_SHORT.map((m, i) => {
@@ -1807,7 +1845,11 @@ function EstadisticasView({ protos, capsulas }) {
     return responsables.map((p) => {
       const items = base.filter((x) => x.assignedTo === p);
       const t = items.length, ap = items.filter((x) => x.status === "aprobado").length, dec = items.filter((x) => x.status === "declinado").length, en = t - ap - dec;
-      return { name: p, t, ap, dec, en, pctAp: t ? Math.round((ap / t) * 100) : 0, pctDec: t ? Math.round((dec / t) * 100) : 0 };
+      const resueltos = ap + dec;
+      const enviados = items.filter((x) => pasoPorCotizacion(x)).length;
+      const activosP = items.filter((x) => !["aprobado", "declinado"].includes(x.status));
+      const vencidos = activosP.filter((x) => isOverdue(x, stages)).length;
+      return { name: p, t, ap, dec, en, enviados, vencidos, pctAp: t ? Math.round((ap / t) * 100) : 0, pctDec: t ? Math.round((dec / t) * 100) : 0, certeza: resueltos ? Math.round((ap / resueltos) * 100) : null };
     }).filter((x) => x.t > 0).sort((a, b) => b.t - a.t);
   }
   const protosPorResp = porResponsable(protos);
@@ -1829,11 +1871,15 @@ function EstadisticasView({ protos, capsulas }) {
       data.map((p) => (
         <div key={p.name} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 0", borderBottom: `1px solid ${T.border}` }}>
           <Avatar name={p.name} size={34} />
-          <div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{p.name}</div><div style={{ fontSize: 11, color: T.slate }}>{p.t} {label.toLowerCase()}</div></div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{p.name}</div>
+            <div style={{ fontSize: 11, color: T.slate }}>{p.t} {label.toLowerCase()} · {p.enviados} enviado{p.enviados !== 1 ? "s" : ""} a cotización/cliente{p.vencidos > 0 ? ` · ⚑ ${p.vencidos} vencido${p.vencidos !== 1 ? "s" : ""}` : ""}</div>
+          </div>
           <div style={{ display: "flex", gap: 6, fontSize: 11, flexWrap: "wrap" }}>
-            <span style={{ padding: "2px 8px", borderRadius: 20, background: T.jadeBg, color: T.jade, fontWeight: 700 }}>✓ {p.ap} ({p.pctAp}%)</span>
+            <span style={{ padding: "2px 8px", borderRadius: 20, background: T.jadeBg, color: T.jade, fontWeight: 700 }}>✓ {p.ap}</span>
             <span style={{ padding: "2px 8px", borderRadius: 20, background: T.denimBg, color: T.denim, fontWeight: 700 }}>⚙ {p.en}</span>
-            <span style={{ padding: "2px 8px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700 }}>✕ {p.dec} ({p.pctDec}%)</span>
+            <span style={{ padding: "2px 8px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700 }}>✕ {p.dec}</span>
+            <span title="Certeza: aprobados sobre lo ya resuelto (aprobado+declinado)" style={{ padding: "2px 8px", borderRadius: 20, background: T.violetBg, color: T.violet, fontWeight: 700 }}>🎯 {p.certeza === null ? "—" : `${p.certeza}%`}</span>
           </div>
         </div>
       ))
@@ -1850,13 +1896,14 @@ function EstadisticasView({ protos, capsulas }) {
           <button onClick={() => { setMonthFilter("todos"); setPersonFilter("todos"); }} style={{ padding: "9px 14px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 8, color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>✕ Limpiar</button>
         )}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 14, marginBottom: 24 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 14, marginBottom: 24 }}>
         {[
-          { label: "Total", value: total, icon: "📦", color: T.slate, bg: "#EDEDF2" },
-          { label: "En proceso", value: enProceso, icon: "⚙", color: T.denim, bg: T.denimBg },
-          { label: "Aprobados", value: aprobados, icon: "✓", color: T.jade, bg: T.jadeBg },
-          { label: "Declinados", value: declinados, icon: "✕", color: T.coral, bg: T.coralBg },
-          { label: "% Aprobación", value: `${pctAp}%`, icon: "📈", color: T.violet, bg: T.violetBg },
+          { label: "Prototipos hechos", value: protosFiltered.length, icon: "🧪", color: T.denim, bg: T.denimBg },
+          { label: "Referencias hechas", value: refsFiltered.length, icon: "📋", color: T.denim, bg: T.denimBg },
+          { label: "Cápsulas cumplidas", value: `${capsulasCumplidas}/${capsulasTotalFiltradas}`, icon: "🗂", color: T.jade, bg: T.jadeBg },
+          { label: "% Cumplimiento cápsulas", value: `${pctCumplCapsulas}%`, icon: "✅", color: T.jade, bg: T.jadeBg },
+          { label: "% Certeza (de lo resuelto)", value: certezaGlobal === null ? "—" : `${certezaGlobal}%`, icon: "🎯", color: T.violet, bg: T.violetBg },
+          { label: "% Vencidas (activas)", value: `${pctVencidos}%`, icon: "⚑", color: T.coral, bg: T.coralBg },
         ].map((k) => (
           <div key={k.label} style={{ background: k.bg, borderRadius: 12, padding: "16px 18px", border: `1px solid ${k.color}22` }}>
             <div style={{ fontSize: 22, marginBottom: 4 }}>{k.icon}</div>
@@ -1867,7 +1914,7 @@ function EstadisticasView({ protos, capsulas }) {
       </div>
       {total > 0 && (
         <div style={{ marginBottom: 20, padding: "10px 16px", background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}`, fontSize: 13, color: T.slate }}>
-          Período: <strong style={{ color: T.ink }}>{periodLabel}</strong> · <span style={{ color: T.jade, fontWeight: 700 }}>{pctAp}% aprobación</span> · <span style={{ color: T.coral, fontWeight: 700 }}>{pctDec}% declinados</span>
+          Período: <strong style={{ color: T.ink }}>{periodLabel}</strong> · <span style={{ color: T.violet, fontWeight: 700 }}>{certezaGlobal === null ? "—" : `${certezaGlobal}%`} certeza</span> (de {resueltosGlobal} ya resuelto{resueltosGlobal !== 1 ? "s" : ""}) · <span style={{ color: T.slate }}>{enProceso} aún en proceso</span>
         </div>
       )}
       <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 24, marginBottom: 24 }}>
@@ -1908,6 +1955,39 @@ function EstadisticasView({ protos, capsulas }) {
           <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>{periodLabel}</div>
           <PersonBlock data={refsPorResp} label="Referencias" />
         </div>
+      </div>
+      <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 24, marginBottom: 24 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 4 }}>🗂 Cápsulas — Cumplimiento</div>
+        <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>{periodLabel} · Cumplida = 100% de sus referencias Aprobadas</div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+          <span style={{ padding: "3px 10px", borderRadius: 20, background: T.jadeBg, color: T.jade, fontWeight: 700, fontSize: 12 }}>✓ {capsulasCumplidas} cumplida{capsulasCumplidas !== 1 ? "s" : ""}</span>
+          <span style={{ padding: "3px 10px", borderRadius: 20, background: T.denimBg, color: T.denim, fontWeight: 700, fontSize: 12 }}>⚙ {capsulasEnCurso} en curso</span>
+          <span style={{ padding: "3px 10px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700, fontSize: 12 }}>✕ {capsulasConDeclinaciones} con declinaciones</span>
+        </div>
+        {!capsulasFiltradas.length ? (
+          <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin cápsulas para este período.</div>
+        ) : (
+          capsulasFiltradas.map((c) => {
+            const est = estadoCapsula(c);
+            const ap = c.referencias.filter((r) => r.status === "aprobado").length;
+            const badge = est === "cumplida"
+              ? { label: "✓ Cumplida", color: T.jade, bg: T.jadeBg }
+              : est === "en_curso"
+                ? { label: "⚙ En curso", color: T.denim, bg: T.denimBg }
+                : est === "con_declinaciones"
+                  ? { label: "✕ Con declinaciones", color: T.coral, bg: T.coralBg }
+                  : { label: "— Sin referencias", color: T.slate, bg: "#EDEDF2" };
+            return (
+              <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 0", borderBottom: `1px solid ${T.border}` }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{c.name}</div>
+                  <div style={{ fontSize: 11, color: T.slate }}>{c.season} · {ap}/{c.referencias.length} referencias aprobadas</div>
+                </div>
+                <span style={{ padding: "3px 10px", borderRadius: 20, background: badge.bg, color: badge.color, fontWeight: 700, fontSize: 11 }}>{badge.label}</span>
+              </div>
+            );
+          })
+        )}
       </div>
       <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 24 }}>
         <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 4 }}>🏢 Por Cliente — Cápsulas y Referencias</div>
@@ -3516,7 +3596,7 @@ export default function App() {
             {view === "pedido-detail" && selPedido && <PedidoDetailView pedido={selPedido} onBack={() => setView("pedidos")} onUpdatePedido={updatePedido} />}
             {view === "pedidos_admin" && currentUser?.isAdmin && <AdminPedidosView pedidoConfig={pedidoConfig} onSave={savePedidoConfig} config={config} onSaveConfig={saveConfig} />}
             {view === "pedidos_clientes" && <ClientesPedidosView clientes={config.clientes} pedidos={pedidos} />}
-            {view === "stats" && <EstadisticasView protos={protos} capsulas={capsulas} />}
+            {view === "stats" && <EstadisticasView protos={protos} capsulas={capsulas} stages={config.stages} />}
             {view === "historial" && (
               <HistorialDisenoView historial={historial} protos={protos} capsulas={capsulas} role={role} perms={perms} stages={config.stages}
                 isAdmin={currentUser?.isAdmin} onBackfill={backfillHistorial}
