@@ -1407,10 +1407,22 @@ function Card({ item, kind, onClick, onPromote, role, perms, stages }) {
 }
 function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas, stages }) {
   const [filter, setFilter] = useState("todos");
+  const [clienteFiltro, setClienteFiltro] = useState("todos");
+  // Listado de clientes con cuántos prototipos tiene cada uno (todos los
+  // estados, no solo los visibles con el filtro de estado actual) — así se ve
+  // de un vistazo el volumen que se está manejando por cliente.
+  const conteoPorCliente = {};
+  protos.forEach((p) => {
+    const c = p.cliente || p.colores?.[0];
+    if (!c) return;
+    conteoPorCliente[c] = (conteoPorCliente[c] || 0) + 1;
+  });
+  const clientesDisponibles = Object.keys(conteoPorCliente).sort((a, b) => a.localeCompare(b));
   // "Todos" oculta Aprobados/Promovidos/Declinados para no saturar el tablero
   // (un prototipo promovido sigue con status "aprobado", así que basta con
   // excluir aprobado/declinado). Siguen disponibles en sus propias pestañas.
-  const filtered = filter === "todos" ? protos.filter((p) => !["aprobado", "declinado"].includes(p.status)) : protos.filter((p) => p.status === filter);
+  const porEstado = filter === "todos" ? protos.filter((p) => !["aprobado", "declinado"].includes(p.status)) : protos.filter((p) => p.status === filter);
+  const filtered = clienteFiltro === "todos" ? porEstado : porEstado.filter((p) => (p.cliente || p.colores?.[0]) === clienteFiltro);
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
@@ -1422,6 +1434,12 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
           <button onClick={() => exportToExcel(protos, capsulas)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", background: "#217346", color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>📊 Exportar</button>
           {perms.editar && <Btn onClick={onNew}>+ Nuevo Prototipo</Btn>}
         </div>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+        <button onClick={() => setClienteFiltro("todos")} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${clienteFiltro === "todos" ? T.denim : T.border}`, background: clienteFiltro === "todos" ? T.denimBg : T.white, color: clienteFiltro === "todos" ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Todos ({protos.length})</button>
+        {clientesDisponibles.map((c) => (
+          <button key={c} onClick={() => setClienteFiltro(c)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${clienteFiltro === c ? T.denim : T.border}`, background: clienteFiltro === c ? T.denimBg : T.white, color: clienteFiltro === c ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{c} ({conteoPorCliente[c]})</button>
+        ))}
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
         {[["todos", "Todos"], ["aprobado", "Aprobados"], ["declinado", "Declinados"], ["en_proceso", "En proceso"], ["en_revision", "En revisión"], ["enviado_cotizacion", "En cotización"], ["enviar_cliente", "Enviar al Cliente"], ["enviado", "Enviado"]].map(([v, label]) => (
