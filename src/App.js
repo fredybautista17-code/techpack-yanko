@@ -1498,12 +1498,18 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
 // "Declinado" (ver changeStatus en DetailView). Se muestra con la misma
 // Card visual que Prototipos/Cápsulas, buscando el ítem vivo detrás de cada
 // entrada — sin agrupar por mes (las estadísticas mensuales viven en
-// Estadísticas). Modo "Clientes": selector de cliente → sus tarjetas. Modo
-// "Todos": todas las tarjetas, seccionadas por cliente.
-function HistorialDisenoView({ historial, protos, capsulas, role, perms, stages, isAdmin, onBackfill, onSelectProto, onSelectRef, onPromote }) {
+// Estadísticas), pero sí se puede FILTRAR por mes. Modo "Clientes": selector
+// de cliente → sus tarjetas. Modo "Todos": todas las tarjetas, seccionadas
+// por cliente. Además marca (🚫 Sin pedido) las piezas Aprobadas cuyo código
+// de referencia nunca apareció en ningún Pedido cargado — para detectar
+// diseño aprobado que nunca se llegó a producir.
+function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms, stages, isAdmin, onBackfill, onSelectProto, onSelectRef, onPromote }) {
   const [modo, setModo] = useState("todos");
   const [clienteSel, setClienteSel] = useState("");
   const [resultado, setResultado] = useState("todos");
+  const [tipoFiltro, setTipoFiltro] = useState("todos");
+  const [mesFiltro, setMesFiltro] = useState("");
+  const [soloSinPedido, setSoloSinPedido] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
   async function handleBackfill() {
     setBackfilling(true);
@@ -1515,9 +1521,18 @@ function HistorialDisenoView({ historial, protos, capsulas, role, perms, stages,
     const cap = capsulas.find((c) => c.id === h.capsulaId);
     return cap?.referencias.find((r) => r.id === h.itemId);
   }
+  // ¿El código de referencia de esta pieza aparece en algún Pedido ya
+  // cargado (de cualquier cliente)? Comparación por texto, sin mayúsculas ni
+  // espacios extra.
+  function usedInPedido(refCode) {
+    if (!refCode) return false;
+    const target = String(refCode).trim().toLowerCase();
+    return (pedidos || []).some((p) => (p.referencias || []).some((r) => String(r.ref || "").trim().toLowerCase() === target));
+  }
   // Une cada entrada de historial con su ítem vivo (omite las que ya no
   // tienen ítem, p.ej. si se eliminó), dedupe por itemId quedándose con la
-  // entrada más reciente, y ordena por fecha descendente.
+  // entrada más reciente, filtra "sin pedido" si el toggle está activo, y
+  // ordena por fecha descendente.
   function itemsFor(lista) {
     const porItem = new Map();
     lista.forEach((h) => {
@@ -1526,23 +1541,38 @@ function HistorialDisenoView({ historial, protos, capsulas, role, perms, stages,
       const prev = porItem.get(h.itemId);
       if (!prev || h.fecha > prev.h.fecha) porItem.set(h.itemId, { h, item });
     });
-    return [...porItem.values()].sort((a, b) => b.h.fecha.localeCompare(a.h.fecha));
+    let arr = [...porItem.values()];
+    if (soloSinPedido) arr = arr.filter(({ h, item }) => h.resultado === "aprobado" && !usedInPedido(item.reference));
+    return arr.sort((a, b) => b.h.fecha.localeCompare(a.h.fecha));
   }
   function renderCards(lista) {
     if (!lista.length) return <div style={{ textAlign: "center", padding: 32, color: T.slate, fontSize: 13 }}>Sin resultados.</div>;
     return (
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 14 }}>
-        {lista.map(({ h, item }) => (
-          <Card key={h.id} item={item} kind={h.tipo === "proto" ? "proto" : "ref"}
-            onClick={() => (h.tipo === "proto" ? onSelectProto(item.id) : onSelectRef(h.capsulaId, item.id))}
-            onPromote={onPromote} role={role} perms={perms} stages={stages}
-          />
-        ))}
+        {lista.map(({ h, item }) => {
+          const sinPedido = h.resultado === "aprobado" && !usedInPedido(item.reference);
+          return (
+            <div key={h.id} style={{ position: "relative" }}>
+              {sinPedido && <div style={{ position: "absolute", top: 8, right: 8, zIndex: 2, padding: "2px 8px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700, fontSize: 10, border: `1px solid ${T.coral}44` }}>🚫 Sin pedido</div>}
+              <Card item={item} kind={h.tipo === "proto" ? "proto" : "ref"}
+                onClick={() => (h.tipo === "proto" ? onSelectProto(item.id) : onSelectRef(h.capsulaId, item.id))}
+                onPromote={onPromote} role={role} perms={perms} stages={stages}
+              />
+            </div>
+          );
+        })}
       </div>
     );
   }
-  const filtradoResultado = resultado === "todos" ? historial : historial.filter((h) => h.resultado === resultado);
+  const filtradoResultado = historial.filter((h) => {
+    if (resultado !== "todos" && h.resultado !== resultado) return false;
+    if (tipoFiltro !== "todos" && h.tipo !== tipoFiltro) return false;
+    if (mesFiltro && h.mes !== mesFiltro) return false;
+    return true;
+  });
   const clientesDisponibles = [...new Set(historial.map((h) => h.cliente))].sort((a, b) => a.localeCompare(b));
+  const mesesDisponibles = [...new Set(historial.map((h) => h.mes).filter(Boolean))].sort((a, b) => b.localeCompare(a));
+  function labelMes(m) { return new Date(m + "-02").toLocaleDateString("es-CO", { month: "long", year: "numeric" }); }
   const clienteItems = clienteSel ? itemsFor(filtradoResultado.filter((h) => h.cliente === clienteSel)) : [];
   const porClienteTodos = {};
   filtradoResultado.forEach((h) => {
@@ -1568,25 +1598,35 @@ function HistorialDisenoView({ historial, protos, capsulas, role, perms, stages,
           <button key={v} onClick={() => setModo(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${modo === v ? T.denim : T.border}`, background: modo === v ? T.denimBg : T.white, color: modo === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        {[["todos", "Todos"], ["aprobado", "Aprobados"], ["declinado", "Declinados"]].map(([v, label]) => (
+          <button key={v} onClick={() => setResultado(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${resultado === v ? T.ink : T.border}`, background: resultado === v ? T.ink : T.white, color: resultado === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
+        ))}
+      </div>
       <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {[["todos", "Todos"], ["aprobado", "Aprobados"], ["declinado", "Declinados"]].map(([v, label]) => (
-            <button key={v} onClick={() => setResultado(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${resultado === v ? T.ink : T.border}`, background: resultado === v ? T.ink : T.white, color: resultado === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
+          {[["todos", "Todos"], ["proto", "Prototipos"], ["capsula_ref", "Cápsulas"]].map(([v, label]) => (
+            <button key={v} onClick={() => setTipoFiltro(v)} style={{ padding: "5px 12px", borderRadius: 6, border: `1.5px solid ${tipoFiltro === v ? T.denim : T.border}`, background: tipoFiltro === v ? T.denimBg : T.white, color: tipoFiltro === v ? T.denim : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
           ))}
         </div>
+        <select value={mesFiltro} onChange={(e) => setMesFiltro(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", textTransform: "capitalize" }}>
+          <option value="">Todos los meses</option>
+          {mesesDisponibles.map((m) => <option key={m} value={m}>{labelMes(m)}</option>)}
+        </select>
         {modo === "clientes" && (
           <select value={clienteSel} onChange={(e) => setClienteSel(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
             <option value="">Selecciona un cliente...</option>
             {clientesDisponibles.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         )}
+        <button onClick={() => setSoloSinPedido((v) => !v)} title="Aprobados cuyo código de referencia nunca apareció en un Pedido cargado" style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${soloSinPedido ? T.coral : T.border}`, background: soloSinPedido ? T.coralBg : T.white, color: soloSinPedido ? T.coral : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>🚫 Sin usar en pedido</button>
       </div>
       {modo === "clientes" ? (
         !clienteSel ? (
           <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Selecciona un cliente para ver su historial.</div>
         ) : renderCards(clienteItems)
       ) : !clientesOrdenadosTodos.length ? (
-        <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Aún no hay historial registrado.</div>
+        <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>{historial.length ? "Sin resultados para estos filtros." : "Aún no hay historial registrado."}</div>
       ) : (
         clientesOrdenadosTodos.map((cliente) => (
           <div key={cliente} style={{ marginBottom: 28 }}>
@@ -3661,7 +3701,7 @@ export default function App() {
             {view === "pedidos_clientes" && <ClientesPedidosView clientes={config.clientes} pedidos={pedidos} />}
             {view === "stats" && <EstadisticasView protos={protos} capsulas={capsulas} stages={config.stages} />}
             {view === "historial" && (
-              <HistorialDisenoView historial={historial} protos={protos} capsulas={capsulas} role={role} perms={perms} stages={config.stages}
+              <HistorialDisenoView historial={historial} protos={protos} capsulas={capsulas} pedidos={pedidos} role={role} perms={perms} stages={config.stages}
                 isAdmin={currentUser?.isAdmin} onBackfill={backfillHistorial}
                 onSelectProto={(id) => { setSelProtoId(id); setView("proto-detail"); }}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
