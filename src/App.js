@@ -1455,13 +1455,32 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
 }
 function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages }) {
   const [filter, setFilter] = useState("todos");
+  const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [editCap, setEditCap] = useState(null);
   const FILTERS = [["todos", "Todos"], ["aprobado", "Aprobadas"], ["declinado", "Declinadas"], ["en_proceso", "En proceso"], ["en_revision", "En revisión"], ["enviado_cotizacion", "En cotización"], ["enviar_cliente", "Enviar al Cliente"], ["enviado", "Enviado"]];
+  function refCliente(r) { return r.cliente || r.colores?.[0]; }
+  // Listado de clientes con cuántas referencias tiene cada uno (todos los
+  // estados, no solo las visibles con el filtro de estado actual) — así se ve
+  // de un vistazo el volumen que se está manejando por cliente.
+  const conteoPorCliente = {};
+  let totalRefs = 0;
+  capsulas.forEach((cap) => cap.referencias.forEach((r) => {
+    totalRefs++;
+    const c = refCliente(r);
+    if (!c) return;
+    conteoPorCliente[c] = (conteoPorCliente[c] || 0) + 1;
+  }));
+  const clientesDisponibles = Object.keys(conteoPorCliente).sort((a, b) => a.localeCompare(b));
   // "Todos" oculta referencias Aprobadas/Declinadas (y cápsulas que solo
   // tengan referencias en esos estados) para no saturar el tablero. Siguen
-  // disponibles en las pestañas "Aprobadas"/"Declinadas".
-  const visibleCapsulas = filter === "todos" ? capsulas.filter((cap) => cap.referencias.some((r) => !["aprobado", "declinado"].includes(r.status))) : capsulas.filter((cap) => cap.referencias.some((r) => r.status === filter));
-  function filteredRefs(cap) { return filter === "todos" ? cap.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status)) : cap.referencias.filter((r) => r.status === filter); }
+  // disponibles en las pestañas "Aprobadas"/"Declinadas". El filtro de
+  // cliente se combina (AND) con el de estado.
+  function filteredRefs(cap) {
+    let refs = filter === "todos" ? cap.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status)) : cap.referencias.filter((r) => r.status === filter);
+    if (clienteFiltro !== "todos") refs = refs.filter((r) => refCliente(r) === clienteFiltro);
+    return refs;
+  }
+  const visibleCapsulas = capsulas.filter((cap) => filteredRefs(cap).length > 0);
   return (
     <div>
       {editCap && (
@@ -1473,6 +1492,12 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Cápsulas</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Colecciones con múltiples referencias</p></div>
         {perms.editar && <Btn onClick={onNewCapsula}>+ Nueva Cápsula</Btn>}
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+        <button onClick={() => setClienteFiltro("todos")} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${clienteFiltro === "todos" ? T.denim : T.border}`, background: clienteFiltro === "todos" ? T.denimBg : T.white, color: clienteFiltro === "todos" ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Todos ({totalRefs})</button>
+        {clientesDisponibles.map((c) => (
+          <button key={c} onClick={() => setClienteFiltro(c)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${clienteFiltro === c ? T.denim : T.border}`, background: clienteFiltro === c ? T.denimBg : T.white, color: clienteFiltro === c ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{c} ({conteoPorCliente[c]})</button>
+        ))}
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
         {FILTERS.map(([v, label]) => (
