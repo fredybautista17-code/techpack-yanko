@@ -1511,6 +1511,18 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
   const [mesFiltro, setMesFiltro] = useState("");
   const [soloSinPedido, setSoloSinPedido] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
+  // Cápsulas expandidas en la vista de lista (solo aplica cuando el filtro
+  // de tipo es "capsula_ref"): en vez de listar cada referencia suelta, se
+  // agrupan por cápsula y solo se despliegan las referencias de la cápsula
+  // que el usuario selecciona.
+  const [expandedCaps, setExpandedCaps] = useState(() => new Set());
+  function toggleCap(capId) {
+    setExpandedCaps((prev) => {
+      const next = new Set(prev);
+      if (next.has(capId)) next.delete(capId); else next.add(capId);
+      return next;
+    });
+  }
   async function handleBackfill() {
     setBackfilling(true);
     await onBackfill();
@@ -1545,36 +1557,86 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     if (soloSinPedido) arr = arr.filter(({ h, item }) => h.resultado === "aprobado" && !usedInPedido(item.reference));
     return arr.sort((a, b) => b.h.fecha.localeCompare(a.h.fecha));
   }
-  // Lista compacta (sin imagen) en vez de la grilla de tarjetas: cada fila
-  // muestra nombre, referencia, cliente/fecha y estado; al hacer clic se abre
-  // el detalle completo del prototipo/referencia (ahí sí aparece la imagen).
-  // Esto evita que el Historial quede muy largo cuando hay muchos resultados.
+  // Fila compacta de un ítem (sin imagen): nombre, referencia, cliente/fecha
+  // y estado. Al hacer clic se abre el detalle completo (ahí sí aparece la
+  // imagen). Se reutiliza tanto en la lista plana como dentro de cada
+  // cápsula desplegada.
+  function renderRow(h, item) {
+    const sinPedido = h.resultado === "aprobado" && !usedInPedido(item.reference);
+    return (
+      <div key={h.id} onClick={() => (h.tipo === "proto" ? onSelectProto(item.id) : onSelectRef(h.capsulaId, item.id))}
+        style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: T.white, cursor: "pointer" }}
+        onMouseEnter={(e) => (e.currentTarget.style.background = T.canvas)}
+        onMouseLeave={(e) => (e.currentTarget.style.background = T.white)}
+      >
+        <span style={{ fontSize: 16, width: 20, textAlign: "center", flexShrink: 0 }}>{h.tipo === "proto" ? "🧪" : "📋"}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{item.name}</span>
+            <span style={{ fontSize: 11, color: T.slate }}>{item.reference}</span>
+            {sinPedido && <span style={{ padding: "1px 7px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700, fontSize: 10, border: `1px solid ${T.coral}44` }}>🚫 Sin pedido</span>}
+          </div>
+          <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{h.cliente}{h.fecha ? ` · ${h.fecha}` : ""}</div>
+        </div>
+        <Badge status={item.status} />
+        <span style={{ color: T.slate, fontSize: 14, flexShrink: 0 }}>›</span>
+      </div>
+    );
+  }
+  // Lista compacta (sin imagen) en vez de la grilla de tarjetas: evita que el
+  // Historial quede muy largo. Cuando el filtro de tipo es "Cápsulas", en vez
+  // de listar cada referencia suelta se agrupa por cápsula: primero aparece
+  // el listado de cápsulas, y solo al seleccionar una se despliegan sus
+  // referencias (cada una llevando al detalle con la imagen al hacer clic).
   function renderList(lista) {
     if (!lista.length) return <div style={{ textAlign: "center", padding: 32, color: T.slate, fontSize: 13 }}>Sin resultados.</div>;
+    if (tipoFiltro === "capsula_ref") {
+      const porCap = new Map();
+      lista.forEach(({ h, item }) => {
+        if (!porCap.has(h.capsulaId)) porCap.set(h.capsulaId, []);
+        porCap.get(h.capsulaId).push({ h, item });
+      });
+      const capIds = [...porCap.keys()].sort((a, b) => {
+        const nameA = capsulas.find((c) => c.id === a)?.name || "";
+        const nameB = capsulas.find((c) => c.id === b)?.name || "";
+        return nameA.localeCompare(nameB);
+      });
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {capIds.map((capId) => {
+            const cap = capsulas.find((c) => c.id === capId);
+            const refs = porCap.get(capId);
+            const expanded = expandedCaps.has(capId);
+            const sinPedidoCount = refs.filter(({ h, item }) => h.resultado === "aprobado" && !usedInPedido(item.reference)).length;
+            return (
+              <div key={capId} style={{ background: T.white, borderRadius: 10, border: `1px solid ${T.border}`, overflow: "hidden" }}>
+                <div onClick={() => toggleCap(capId)}
+                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", cursor: "pointer", background: expanded ? T.canvas : T.white }}
+                >
+                  <span style={{ fontSize: 16, width: 20, textAlign: "center", flexShrink: 0 }}>🗂</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>{cap?.name || "Cápsula"}</div>
+                    <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>
+                      {cap?.season ? `${cap.season} · ` : ""}{refs.length} referencia{refs.length !== 1 ? "s" : ""}
+                      {sinPedidoCount > 0 ? ` · 🚫 ${sinPedidoCount} sin pedido` : ""}
+                    </div>
+                  </div>
+                  <span style={{ color: T.slate, fontSize: 14, flexShrink: 0, transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>›</span>
+                </div>
+                {expanded && (
+                  <div style={{ borderTop: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 1, background: T.border }}>
+                    {refs.map(({ h, item }) => renderRow(h, item))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, borderRadius: 10, overflow: "hidden", border: `1px solid ${T.border}` }}>
-        {lista.map(({ h, item }) => {
-          const sinPedido = h.resultado === "aprobado" && !usedInPedido(item.reference);
-          return (
-            <div key={h.id} onClick={() => (h.tipo === "proto" ? onSelectProto(item.id) : onSelectRef(h.capsulaId, item.id))}
-              style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: T.white, cursor: "pointer" }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = T.canvas)}
-              onMouseLeave={(e) => (e.currentTarget.style.background = T.white)}
-            >
-              <span style={{ fontSize: 16, width: 20, textAlign: "center", flexShrink: 0 }}>{h.tipo === "proto" ? "🧪" : "📋"}</span>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                  <span style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{item.name}</span>
-                  <span style={{ fontSize: 11, color: T.slate }}>{item.reference}</span>
-                  {sinPedido && <span style={{ padding: "1px 7px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700, fontSize: 10, border: `1px solid ${T.coral}44` }}>🚫 Sin pedido</span>}
-                </div>
-                <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{h.cliente}{h.fecha ? ` · ${h.fecha}` : ""}</div>
-              </div>
-              <Badge status={item.status} />
-              <span style={{ color: T.slate, fontSize: 14, flexShrink: 0 }}>›</span>
-            </div>
-          );
-        })}
+        {lista.map(({ h, item }) => renderRow(h, item))}
       </div>
     );
   }
