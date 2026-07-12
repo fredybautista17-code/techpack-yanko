@@ -1545,19 +1545,33 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     if (soloSinPedido) arr = arr.filter(({ h, item }) => h.resultado === "aprobado" && !usedInPedido(item.reference));
     return arr.sort((a, b) => b.h.fecha.localeCompare(a.h.fecha));
   }
-  function renderCards(lista) {
+  // Lista compacta (sin imagen) en vez de la grilla de tarjetas: cada fila
+  // muestra nombre, referencia, cliente/fecha y estado; al hacer clic se abre
+  // el detalle completo del prototipo/referencia (ahí sí aparece la imagen).
+  // Esto evita que el Historial quede muy largo cuando hay muchos resultados.
+  function renderList(lista) {
     if (!lista.length) return <div style={{ textAlign: "center", padding: 32, color: T.slate, fontSize: 13 }}>Sin resultados.</div>;
     return (
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 14 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, borderRadius: 10, overflow: "hidden", border: `1px solid ${T.border}` }}>
         {lista.map(({ h, item }) => {
           const sinPedido = h.resultado === "aprobado" && !usedInPedido(item.reference);
           return (
-            <div key={h.id} style={{ position: "relative" }}>
-              {sinPedido && <div style={{ position: "absolute", top: 8, right: 8, zIndex: 2, padding: "2px 8px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700, fontSize: 10, border: `1px solid ${T.coral}44` }}>🚫 Sin pedido</div>}
-              <Card item={item} kind={h.tipo === "proto" ? "proto" : "ref"}
-                onClick={() => (h.tipo === "proto" ? onSelectProto(item.id) : onSelectRef(h.capsulaId, item.id))}
-                onPromote={onPromote} role={role} perms={perms} stages={stages}
-              />
+            <div key={h.id} onClick={() => (h.tipo === "proto" ? onSelectProto(item.id) : onSelectRef(h.capsulaId, item.id))}
+              style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: T.white, cursor: "pointer" }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = T.canvas)}
+              onMouseLeave={(e) => (e.currentTarget.style.background = T.white)}
+            >
+              <span style={{ fontSize: 16, width: 20, textAlign: "center", flexShrink: 0 }}>{h.tipo === "proto" ? "🧪" : "📋"}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{item.name}</span>
+                  <span style={{ fontSize: 11, color: T.slate }}>{item.reference}</span>
+                  {sinPedido && <span style={{ padding: "1px 7px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700, fontSize: 10, border: `1px solid ${T.coral}44` }}>🚫 Sin pedido</span>}
+                </div>
+                <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{h.cliente}{h.fecha ? ` · ${h.fecha}` : ""}</div>
+              </div>
+              <Badge status={item.status} />
+              <span style={{ color: T.slate, fontSize: 14, flexShrink: 0 }}>›</span>
             </div>
           );
         })}
@@ -1624,14 +1638,14 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
       {modo === "clientes" ? (
         !clienteSel ? (
           <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Selecciona un cliente para ver su historial.</div>
-        ) : renderCards(clienteItems)
+        ) : renderList(clienteItems)
       ) : !clientesOrdenadosTodos.length ? (
         <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>{historial.length ? "Sin resultados para estos filtros." : "Aún no hay historial registrado."}</div>
       ) : (
         clientesOrdenadosTodos.map((cliente) => (
           <div key={cliente} style={{ marginBottom: 28 }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: T.ink, marginBottom: 12 }}>{cliente}</div>
-            {renderCards(itemsFor(porClienteTodos[cliente]))}
+            {renderList(itemsFor(porClienteTodos[cliente]))}
           </div>
         ))
       )}
