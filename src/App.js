@@ -502,6 +502,7 @@ const INIT_CONFIG = {
   rangos: ["Normal (S,M,L,XL)","Doble Talla (S/M - M/L)","Talla U","Plus","Plus (1XL-2XL-3XL)"],
   disenadores: [],
   talleresMuestra: [],
+  prioridadesMuestra: ["Media", "Urgente", "Súper urgente", "Espera", "Modificación"],
   roles: [
     { id: "r1", name: "Equipo Interno", perms: ["editar", "aprobar", "declinar", "admin", "corte"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "corte", "stats", "historial", "contabilidad"] },
     { id: "r2", name: "Cliente", perms: ["aprobar", "declinar"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial"] },
@@ -537,7 +538,11 @@ const ESTADO_MUESTRA = {
   modificar: { label: "Modificar", color: T.coral, bg: T.coralBg },
   enviado: { label: "Enviado", color: "#0369A1", bg: "#EFF6FF" },
 };
-const PRIORIDAD_MUESTRA = ["Media", "Urgente", "Súper urgente", "Espera", "Modificación"];
+// La lista de prioridades (Media, Urgente, etc.) ahora vive en
+// config.prioridadesMuestra — editable en Administrador General, igual que
+// Diseñadores y Talleres de Muestra — en vez de quedar fija en el código.
+// Este mapa de colores es solo una guía visual: una prioridad agregada desde
+// Admin que no esté aquí simplemente se ve con el color neutro (T.border).
 const PRIORIDAD_MUESTRA_COLOR = { "Media": T.denim, "Urgente": T.amber, "Súper urgente": T.coral, "Espera": T.slate, "Modificación": T.violet };
 const TIPO_GENERO_MUESTRA = ["Dama", "Caballero", "Niña", "Niño"];
 const TIPO_DESARROLLO_MUESTRA = ["Cápsula nueva", "Contramuestra para producción", "Tela nueva"];
@@ -1124,10 +1129,17 @@ function EnviarTallerModal({ item, existing, config, onSave, onClose }) {
     prioridad: existing?.prioridad || "Media",
     tipo: existing?.tipo || "",
     tipoDesarrollo: existing?.tipoDesarrollo || "",
+    estado: existing?.estado || "pendiente",
+    notaModificar: existing?.notaModificar || "",
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  // Si elige "Modificar", tiene que quedar escrito qué sucedió o qué hay que
+  // cambiar — ese texto se guarda en la entrada del cronograma y, si el
+  // ítem existe en el aplicativo, también queda como Observación ahí mismo.
+  const necesitaNota = form.estado === "modificar";
   function save() {
     if (!form.taller) return;
+    if (necesitaNota && !form.notaModificar.trim()) return;
     onSave(form);
     onClose();
   }
@@ -1139,15 +1151,27 @@ function EnviarTallerModal({ item, existing, config, onSave, onClose }) {
         <Field label="Fecha de Entrega Esperada">
           <input type="date" value={form.fechaEntrega} onChange={(e) => set("fechaEntrega")(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
         </Field>
-        <Field label="Prioridad"><FSel value={form.prioridad} onChange={set("prioridad")} options={PRIORIDAD_MUESTRA} /></Field>
+        <Field label="Prioridad"><FSel value={form.prioridad} onChange={set("prioridad")} options={config?.prioridadesMuestra || []} /></Field>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Tipo"><FSel value={form.tipo} onChange={set("tipo")} options={TIPO_GENERO_MUESTRA} /></Field>
         <Field label="Tipo de Desarrollo"><FSel value={form.tipoDesarrollo} onChange={set("tipoDesarrollo")} options={TIPO_DESARROLLO_MUESTRA} /></Field>
       </div>
+      <Field label="Estado">
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {Object.entries(ESTADO_MUESTRA).map(([v, def]) => (
+            <button key={v} type="button" onClick={() => set("estado")(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${form.estado === v ? def.color : T.border}`, background: form.estado === v ? def.bg : T.white, color: form.estado === v ? def.color : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{def.label}</button>
+          ))}
+        </div>
+      </Field>
+      {necesitaNota && (
+        <Field label="¿Qué sucedió o qué hay que modificar?">
+          <textarea value={form.notaModificar} onChange={(e) => set("notaModificar")(e.target.value)} rows={3} placeholder="Escribe el detalle de la modificación..." style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.coral}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical" }} />
+        </Field>
+      )}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn onClick={save} disabled={!form.taller}>{existing ? "Guardar cambios" : "🧵 Enviar a Taller"}</Btn>
+        <Btn onClick={save} disabled={!form.taller || (necesitaNota && !form.notaModificar.trim())}>{existing ? "Guardar cambios" : "🧵 Enviar a Taller"}</Btn>
       </div>
     </Modal>
   );
@@ -1202,6 +1226,14 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
   // edita; si no, crea uno nuevo con los datos del prototipo/referencia
   // (cliente, categoría, silueta, tela, foto) copiados automáticamente.
   function handleGuardarTaller(data) {
+    // Si marcan "Modificar", la nota que escriben queda como Observación de
+    // este ítem (Hoja de Vida) y la vista salta directo a la pestaña
+    // Observaciones — así queda registrado qué pasó, no solo el estado.
+    if (data.estado === "modificar" && data.notaModificar?.trim()) {
+      const obs = { id: uid(), user: currentUser, role, text: `🧵 Modificar (Taller de Muestra): ${data.notaModificar.trim()}`, date: nowISO(), type: "info", done: false };
+      patch({ observations: [...item.observations, obs] });
+      setTab("chat");
+    }
     if (tallerMasReciente && tallerMasReciente.estado !== "enviado") {
       onUpdateTaller(tallerMasReciente.id, data);
       return;
@@ -1330,7 +1362,10 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
               {tallerMasReciente.estado !== "enviado" && (
                 <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
                   <button onClick={() => onUpdateTaller(tallerMasReciente.id, { estado: "aprobado" })} style={{ padding: "4px 10px", background: T.jade, color: T.white, border: "none", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✓ Aprobar muestra</button>
-                  <button onClick={() => onUpdateTaller(tallerMasReciente.id, { estado: "modificar" })} style={{ padding: "4px 10px", background: T.coral, color: T.white, border: "none", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✕ Modificar</button>
+                  {/* "Modificar" siempre pasa por el modal (botón de arriba) porque
+                      exige escribir qué sucedió — no es un cambio de un solo clic
+                      como Aprobar, para no perder ese detalle. */}
+                  <button onClick={() => setShowTaller(true)} style={{ padding: "4px 10px", background: T.coral, color: T.white, border: "none", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✕ Modificar</button>
                 </div>
               )}
             </div>
@@ -1742,7 +1777,7 @@ function NuevoCronogramaLibreModal({ config, onSave, onClose }) {
         <Field label="Fecha de Entrega Esperada">
           <input type="date" value={form.fechaEntrega} onChange={(e) => set("fechaEntrega")(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
         </Field>
-        <Field label="Prioridad"><FSel value={form.prioridad} onChange={set("prioridad")} options={PRIORIDAD_MUESTRA} /></Field>
+        <Field label="Prioridad"><FSel value={form.prioridad} onChange={set("prioridad")} options={config?.prioridadesMuestra || []} /></Field>
       </div>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
@@ -1754,10 +1789,20 @@ function NuevoCronogramaLibreModal({ config, onSave, onClose }) {
 // Detalle/edición rápida de una entrada del Cronograma de Muestras: cambiar
 // taller/fecha/prioridad, marcar Aprobado/Modificar, ir al prototipo o
 // referencia vinculado (si lo tiene), o borrarla (solo administrador).
-function CronogramaDetalleModal({ entry, config, isAdmin, onUpdate, onDelete, onGoToItem, onClose }) {
-  const [form, setForm] = useState({ taller: entry.taller || "", fechaEntrega: entry.fechaEntrega || "", prioridad: entry.prioridad || "Media" });
+function CronogramaDetalleModal({ entry, config, isAdmin, onUpdate, onDelete, onGoToItem, onModificarNota, onClose }) {
+  const [form, setForm] = useState({ taller: entry.taller || "", fechaEntrega: entry.fechaEntrega || "", prioridad: entry.prioridad || "Media", estado: entry.estado || "pendiente", notaModificar: entry.notaModificar || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const est = ESTADO_MUESTRA[entry.estado] || ESTADO_MUESTRA.pendiente;
+  // Igual que en "Enviar a Taller": si elige "Modificar" tiene que escribir
+  // qué sucedió — y si esta entrada está vinculada a un prototipo/referencia,
+  // esa nota también queda como Observación ahí (onModificarNota).
+  const necesitaNota = form.estado === "modificar";
+  function guardar() {
+    if (necesitaNota && !form.notaModificar.trim()) return;
+    onUpdate(entry.id, form);
+    if (necesitaNota && form.notaModificar.trim() && entry.itemId && onModificarNota) onModificarNota(entry, form.notaModificar.trim());
+    onClose();
+  }
   return (
     <Modal title={entry.nombre || entry.referencia || "Muestra"} onClose={onClose} width={480}>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
@@ -1771,13 +1816,21 @@ function CronogramaDetalleModal({ entry, config, isAdmin, onUpdate, onDelete, on
         <Field label="Fecha de Entrega Esperada">
           <input type="date" value={form.fechaEntrega} onChange={(e) => set("fechaEntrega")(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
         </Field>
-        <Field label="Prioridad"><FSel value={form.prioridad} onChange={set("prioridad")} options={PRIORIDAD_MUESTRA} /></Field>
+        <Field label="Prioridad"><FSel value={form.prioridad} onChange={set("prioridad")} options={config?.prioridadesMuestra || []} /></Field>
       </div>
       {entry.estado !== "enviado" && (
-        <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
-          <Btn variant={entry.estado === "aprobado" ? "success" : "secondary"} onClick={() => onUpdate(entry.id, { estado: "aprobado" })}>✓ Aprobado</Btn>
-          <Btn variant={entry.estado === "modificar" ? "danger" : "secondary"} onClick={() => onUpdate(entry.id, { estado: "modificar" })}>✕ Modificar</Btn>
-        </div>
+        <Field label="Estado">
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {Object.entries(ESTADO_MUESTRA).map(([v, def]) => (
+              <button key={v} type="button" onClick={() => set("estado")(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${form.estado === v ? def.color : T.border}`, background: form.estado === v ? def.bg : T.white, color: form.estado === v ? def.color : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{def.label}</button>
+            ))}
+          </div>
+        </Field>
+      )}
+      {necesitaNota && (
+        <Field label="¿Qué sucedió o qué hay que modificar?">
+          <textarea value={form.notaModificar} onChange={(e) => set("notaModificar")(e.target.value)} rows={3} placeholder="Escribe el detalle de la modificación..." style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.coral}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical" }} />
+        </Field>
       )}
       <div style={{ display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
         <div style={{ display: "flex", gap: 8 }}>
@@ -1786,7 +1839,7 @@ function CronogramaDetalleModal({ entry, config, isAdmin, onUpdate, onDelete, on
         </div>
         <div style={{ display: "flex", gap: 10 }}>
           <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
-          <Btn onClick={() => { onUpdate(entry.id, form); onClose(); }}>Guardar</Btn>
+          <Btn onClick={guardar} disabled={necesitaNota && !form.notaModificar.trim()}>Guardar</Btn>
         </div>
       </div>
     </Modal>
@@ -1798,7 +1851,7 @@ function CronogramaDetalleModal({ entry, config, isAdmin, onUpdate, onDelete, on
 // entradas "Aprobadas" se separan a su propia pestaña (funcionan como
 // historial de muestras ya resueltas); "Sin fecha" agrupa lo que aún no
 // tiene fecha de entrega asignada, para que nada quede invisible.
-function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, onUpdate, onDelete, onGoToItem }) {
+function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, onUpdate, onDelete, onGoToItem, onModificarNota }) {
   const [vista, setVista] = useState("semana");
   const [weekOffset, setWeekOffset] = useState(0);
   const [monthOffset, setMonthOffset] = useState(0);
@@ -1869,7 +1922,7 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
   return (
     <div>
       {showNuevo && <NuevoCronogramaLibreModal config={config} onSave={onAdd} onClose={() => setShowNuevo(false)} />}
-      {detalle && <CronogramaDetalleModal entry={detalle} config={config} isAdmin={isAdmin} onUpdate={onUpdate} onDelete={onDelete} onGoToItem={onGoToItem} onClose={() => setDetalle(null)} />}
+      {detalle && <CronogramaDetalleModal entry={detalle} config={config} isAdmin={isAdmin} onUpdate={onUpdate} onDelete={onDelete} onGoToItem={onGoToItem} onModificarNota={onModificarNota} onClose={() => setDetalle(null)} />}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Cronograma de Muestras</h2>
@@ -2890,7 +2943,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     ["stats", "📊 Estadísticas"],
   ];
   const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"]];
-  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["disenadores", "🎨 Diseñadores"], ["talleres", "🧵 Talleres de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
+  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["disenadores", "🎨 Diseñadores"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
   function ListEditor({ listKey, title }) {
     return (
       <div>
@@ -2964,6 +3017,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
         {tab === "rangos" && <ListEditor listKey="rangos" title="Rangos" />}
         {tab === "disenadores" && <ListEditor listKey="disenadores" title="Diseñadores" />}
         {tab === "talleres" && <ListEditor listKey="talleresMuestra" title="Talleres de Muestra" />}
+        {tab === "prioridades" && <ListEditor listKey="prioridadesMuestra" title="Prioridades de Muestra" />}
         {tab === "roles" && (
           <div>
             <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 16 }}>Roles</div>
@@ -3916,6 +3970,21 @@ export default function App() {
     const activa = cronogramaMuestras.find((c) => c.itemId === itemId && c.estado !== "enviado");
     if (activa) updateCronogramaMuestra(activa.id, { estado: "enviado" });
   }
+  // Cuando desde el Cronograma (no desde el detalle del prototipo/capsula)
+  // marcan una entrada vinculada como "Modificar", la nota también se deja
+  // como Observación en el prototipo/referencia — mismo formato que
+  // DetailView.handleGuardarTaller, para que quede en un solo lugar.
+  function addObservacionCronograma(entry, texto) {
+    const obs = { id: uid(), user: currentUser, role, text: `🧵 Modificar (Taller de Muestra): ${texto}`, date: nowISO(), type: "info", done: false };
+    if (entry.kind === "proto") {
+      const item = protos.find((p) => p.id === entry.itemId);
+      if (item) updateProto(item.id, { observations: [...(item.observations || []), obs] });
+    } else if (entry.kind === "ref") {
+      const cap = capsulas.find((c) => c.id === entry.capsulaId);
+      const ref = cap?.referencias.find((r) => r.id === entry.itemId);
+      if (cap && ref) updateRef(cap.id, ref.id, { observations: [...(ref.observations || []), obs] });
+    }
+  }
   async function logHistorial(entry) {
     const withId = { ...entry, id: uid() };
     setHistorial((h) => [...h, withId]);
@@ -4246,6 +4315,7 @@ export default function App() {
             {view === "cronograma_muestras" && (
               <CronogramaMuestrasView cronogramaMuestras={cronogramaMuestras} config={config} isAdmin={currentUser?.isAdmin}
                 onAdd={addCronogramaMuestra} onUpdate={updateCronogramaMuestra} onDelete={deleteCronogramaMuestra}
+                onModificarNota={addObservacionCronograma}
                 onGoToItem={(entry) => {
                   if (entry.kind === "proto") { setSelProtoId(entry.itemId); setView("proto-detail"); }
                   else if (entry.kind === "ref") { setSelCapId(entry.capsulaId); setSelRefId(entry.itemId); setView("ref-detail"); }
