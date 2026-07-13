@@ -501,6 +501,7 @@ const INIT_CONFIG = {
   siluetas: ["Slimfit","Regularfit","Silueta Amplia","Oversize","Super Oversize","Estándar"],
   rangos: ["Normal (S,M,L,XL)","Doble Talla (S/M - M/L)","Talla U","Plus","Plus (1XL-2XL-3XL)"],
   disenadores: [],
+  talleresMuestra: [],
   roles: [
     { id: "r1", name: "Equipo Interno", perms: ["editar", "aprobar", "declinar", "admin", "corte"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "corte", "stats", "historial", "contabilidad"] },
     { id: "r2", name: "Cliente", perms: ["aprobar", "declinar"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial"] },
@@ -524,6 +525,22 @@ const STATUS = {
   declinado: { label: "Declinado", color: T.coral, bg: T.coralBg },
   bloqueado: { label: "Bloqueado", color: "#888", bg: "#F0F0F0" },
 };
+// --- Cronograma de Muestras ---
+// Estado propio de cada envío a taller de muestra (independiente del status
+// del prototipo/referencia en Diseño): arranca "pendiente" (sin resultado
+// todavía), el usuario lo pasa a "aprobado" o "modificar" según lo que
+// vuelva del taller, y "enviado" se pone solo cuando el prototipo/referencia
+// pasa a status "enviado" (ver syncCronogramaEnviado).
+const ESTADO_MUESTRA = {
+  pendiente: { label: "Sin asignar", color: T.amber, bg: T.amberBg },
+  aprobado: { label: "Aprobado", color: T.jade, bg: T.jadeBg },
+  modificar: { label: "Modificar", color: T.coral, bg: T.coralBg },
+  enviado: { label: "Enviado", color: "#0369A1", bg: "#EFF6FF" },
+};
+const PRIORIDAD_MUESTRA = ["Media", "Urgente", "Súper urgente", "Espera", "Modificación"];
+const PRIORIDAD_MUESTRA_COLOR = { "Media": T.denim, "Urgente": T.amber, "Súper urgente": T.coral, "Espera": T.slate, "Modificación": T.violet };
+const TIPO_GENERO_MUESTRA = ["Dama", "Caballero", "Niña", "Niño"];
+const TIPO_DESARROLLO_MUESTRA = ["Cápsula nueva", "Contramuestra para producción", "Tela nueva"];
 // Busca en las observaciones de un ítem la fecha real en la que pasó a un
 // estado dado (ej. "Aprobado"), usada por el backfill de Historial para
 // reconstruir fechas reales en vez de usar "hoy" para ítems que ya estaban
@@ -557,7 +574,7 @@ function nowISO() { return new Date().toISOString(); }
 // Corte, sin Prototipos ni Cápsulas).
 // Claves granulares de sección dentro de Diseño (Corte y Contabilidad siempre
 // se gestionan como llaves independientes, nunca implícitas en "diseno").
-const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial"];
+const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial", "cronograma_muestras"];
 function moduloVisible(roleData, mod, isAdmin) {
   if (isAdmin) return true;
   if (!roleData) return false;
@@ -1095,10 +1112,57 @@ function PromoteModal({ proto, capsulas, onSave, onClose, config }) {
   );
 }
 
-function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, onPromote, notify, onLogHistorial, capsula, stages, currentUser, config }) {
+// Envía (o actualiza) el registro de este prototipo/referencia en el
+// Cronograma de Muestras: taller asignado, fecha de entrega esperada,
+// prioridad, tipo (género) y tipo de desarrollo. Si ya existe un registro
+// activo para este ítem (`existing`), edita esos datos en vez de crear uno
+// nuevo.
+function EnviarTallerModal({ item, existing, config, onSave, onClose }) {
+  const [form, setForm] = useState({
+    taller: existing?.taller || "",
+    fechaEntrega: existing?.fechaEntrega || "",
+    prioridad: existing?.prioridad || "Media",
+    tipo: existing?.tipo || "",
+    tipoDesarrollo: existing?.tipoDesarrollo || "",
+  });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  function save() {
+    if (!form.taller) return;
+    onSave(form);
+    onClose();
+  }
+  return (
+    <Modal title={existing ? "Actualizar Taller de Muestra" : "Enviar a Taller de Muestra"} onClose={onClose} width={480}>
+      <div style={{ padding: "10px 14px", background: T.denimBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.denim, fontWeight: 600 }}>🧵 {item.name} — {item.reference}</div>
+      <Field label="Taller de Muestra"><FSel value={form.taller} onChange={set("taller")} options={config?.talleresMuestra || []} /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Fecha de Entrega Esperada">
+          <input type="date" value={form.fechaEntrega} onChange={(e) => set("fechaEntrega")(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+        </Field>
+        <Field label="Prioridad"><FSel value={form.prioridad} onChange={set("prioridad")} options={PRIORIDAD_MUESTRA} /></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Tipo"><FSel value={form.tipo} onChange={set("tipo")} options={TIPO_GENERO_MUESTRA} /></Field>
+        <Field label="Tipo de Desarrollo"><FSel value={form.tipoDesarrollo} onChange={set("tipoDesarrollo")} options={TIPO_DESARROLLO_MUESTRA} /></Field>
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={save} disabled={!form.taller}>{existing ? "Guardar cambios" : "🧵 Enviar a Taller"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, onPromote, notify, onLogHistorial, capsula, stages, currentUser, config, cronogramaMuestras, onSendTaller, onUpdateTaller }) {
   const [tab, setTab] = useState("overview");
   const [showEdit, setShowEdit] = useState(false);
   const [showEnviado, setShowEnviado] = useState(false);
+  const [showTaller, setShowTaller] = useState(false);
+  // Registro más reciente de este ítem en el Cronograma de Muestras (si
+  // existe). Se usa para mostrar su estado aquí mismo y para que el botón
+  // "Enviar a Taller de Muestra" edite ese registro en vez de duplicarlo.
+  const tallerMasReciente = (cronogramaMuestras || [])
+    .filter((c) => c.itemId === item.id)
+    .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0] || null;
   const overdue = isOverdue(item, stages);
   const canEdit = perms.editar;
   const canAprobar = perms.aprobar;
@@ -1133,6 +1197,29 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
     const obs = { id: uid(), user: currentUser, role, text: `Enviado — Empresa: ${transporteData.empresa} · Guía: ${transporteData.guia || "N/A"} · Fecha: ${transporteData.fecha}`, date: nowISO(), type: "update", done: false };
     patch({ status: "enviado", envioEmpresa: transporteData.empresa, envioFecha: transporteData.fecha, envioGuia: transporteData.guia || "", observations: [...item.observations, obs] });
     notify({ id: uid(), icon: "📦", title: "Enviado al Cliente", msg: `${item.reference} — ${transporteData.empresa}` });
+  }
+  // Si ya hay un registro de taller activo (no "enviado") para este ítem, lo
+  // edita; si no, crea uno nuevo con los datos del prototipo/referencia
+  // (cliente, categoría, silueta, tela, foto) copiados automáticamente.
+  function handleGuardarTaller(data) {
+    if (tallerMasReciente && tallerMasReciente.estado !== "enviado") {
+      onUpdateTaller(tallerMasReciente.id, data);
+      return;
+    }
+    onSendTaller({
+      itemId: item.id,
+      kind,
+      capsulaId: kind === "ref" ? capsula?.id : null,
+      nombre: item.name,
+      referencia: item.reference,
+      cliente: item.cliente || item.colores?.[0] || "",
+      categoria: item.categoria || "",
+      silueta: item.silueta || "",
+      rango: item.rango || item.tallas?.[0] || "",
+      tela: item.tipoTela || "",
+      image: item.image || null,
+      ...data,
+    });
   }
   const canAdmin = currentUser?.isAdmin || perms.admin;
   function advanceStage() {
@@ -1170,6 +1257,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
       {showEdit && kind === "proto" && <EditProtoModal proto={item} config={config} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
       {showEdit && kind === "ref" && <EditRefModal refData={item} config={config} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
       {showEnviado && <EnviadoModal onSave={handleEnviado} onClose={() => setShowEnviado(false)} />}
+      {showTaller && <EnviarTallerModal item={item} existing={tallerMasReciente?.estado !== "enviado" ? tallerMasReciente : null} config={config} onSave={handleGuardarTaller} onClose={() => setShowTaller(false)} />}
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
         <button onClick={onBack} style={{ background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, color: T.ink }}>← Volver</button>
         <div style={{ flex: 1 }}>
@@ -1232,7 +1320,21 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
             )}
             {!canAdmin && canEdit && kind === "proto" && item.status === "aprobado" && !item.promotedTo && capsulas.length > 0 && <Btn variant="success" onClick={() => onPromote(item)}>⬆ Promover</Btn>}
             {kind === "proto" && item.promotedTo && <span style={{ padding: "6px 12px", background: T.jadeBg, color: T.jade, borderRadius: 8, fontSize: 12, fontWeight: 700 }}>✓ Promovido</span>}
+            {canEdit && <Btn variant="ghost" onClick={() => setShowTaller(true)}>🧵 {tallerMasReciente && tallerMasReciente.estado !== "enviado" ? "Actualizar Taller de Muestra" : "Enviar a Taller de Muestra"}</Btn>}
           </div>
+          {tallerMasReciente && (
+            <div style={{ marginTop: 10, padding: "10px 14px", background: ESTADO_MUESTRA[tallerMasReciente.estado]?.bg, borderRadius: 8, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: ESTADO_MUESTRA[tallerMasReciente.estado]?.color }}>🧵 {ESTADO_MUESTRA[tallerMasReciente.estado]?.label}</span>
+              <span style={{ fontSize: 12, color: T.slate }}>Taller: <strong style={{ color: T.ink }}>{tallerMasReciente.taller}</strong></span>
+              {tallerMasReciente.fechaEntrega && <span style={{ fontSize: 12, color: T.slate }}>Entrega: <strong style={{ color: T.ink }}>{tallerMasReciente.fechaEntrega}</strong></span>}
+              {tallerMasReciente.estado !== "enviado" && (
+                <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+                  <button onClick={() => onUpdateTaller(tallerMasReciente.id, { estado: "aprobado" })} style={{ padding: "4px 10px", background: T.jade, color: T.white, border: "none", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✓ Aprobar muestra</button>
+                  <button onClick={() => onUpdateTaller(tallerMasReciente.id, { estado: "modificar" })} style={{ padding: "4px 10px", background: T.coral, color: T.white, border: "none", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✕ Modificar</button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
       {kind === "ref" && (item.colores?.length > 0 || item.tallas?.length > 0) && (
@@ -1598,6 +1700,210 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// Alta manual al Cronograma de Muestras de un producto que el cliente todavía
+// no ha mandado en foto/físico (no existe aún como Prototipo/Referencia en el
+// aplicativo) — mismos campos descriptivos que se usan en el resto del
+// aplicativo (categoría, silueta, rango, cliente), más los propios del
+// cronograma (taller, fecha de entrega, prioridad, tipo, tipo de desarrollo).
+function NuevoCronogramaLibreModal({ config, onSave, onClose }) {
+  const [form, setForm] = useState({ nombre: "", referencia: "", cliente: "", categoria: "", silueta: "", rango: "", tela: "", tipo: "", tipoDesarrollo: "", taller: "", fechaEntrega: "", prioridad: "Media" });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  function save() {
+    if (!form.nombre.trim() || !form.taller) return;
+    onSave({ ...form, itemId: null, kind: null, capsulaId: null });
+    onClose();
+  }
+  return (
+    <Modal title="Agregar al Cronograma de Muestras" onClose={onClose} width={580}>
+      <div style={{ padding: "10px 14px", background: T.amberBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.amber, fontWeight: 600 }}>🧵 Para productos que el cliente aún no envió en foto o físico</div>
+      <Field label="Nombre"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Pantaloneta Bloques" /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Categoría"><FSel value={form.categoria} onChange={set("categoria")} options={config?.categorias || []} /></Field>
+        <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config?.siluetas || []} /></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Referencia"><FInput value={form.referencia} onChange={set("referencia")} placeholder="Ej: PTGM160" /></Field>
+        <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config?.clientes || []).map((c) => c.nombre)} /></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Rango de Tallas"><FSel value={form.rango} onChange={set("rango")} options={config?.rangos || []} /></Field>
+        <Field label="Tela"><FInput value={form.tela} onChange={set("tela")} placeholder="Ej: Four Way" /></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Tipo"><FSel value={form.tipo} onChange={set("tipo")} options={TIPO_GENERO_MUESTRA} /></Field>
+        <Field label="Tipo de Desarrollo"><FSel value={form.tipoDesarrollo} onChange={set("tipoDesarrollo")} options={TIPO_DESARROLLO_MUESTRA} /></Field>
+      </div>
+      <Field label="Taller de Muestra"><FSel value={form.taller} onChange={set("taller")} options={config?.talleresMuestra || []} /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Fecha de Entrega Esperada">
+          <input type="date" value={form.fechaEntrega} onChange={(e) => set("fechaEntrega")(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+        </Field>
+        <Field label="Prioridad"><FSel value={form.prioridad} onChange={set("prioridad")} options={PRIORIDAD_MUESTRA} /></Field>
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={save} disabled={!form.nombre.trim() || !form.taller}>🧵 Agregar</Btn>
+      </div>
+    </Modal>
+  );
+}
+// Detalle/edición rápida de una entrada del Cronograma de Muestras: cambiar
+// taller/fecha/prioridad, marcar Aprobado/Modificar, ir al prototipo o
+// referencia vinculado (si lo tiene), o borrarla (solo administrador).
+function CronogramaDetalleModal({ entry, config, isAdmin, onUpdate, onDelete, onGoToItem, onClose }) {
+  const [form, setForm] = useState({ taller: entry.taller || "", fechaEntrega: entry.fechaEntrega || "", prioridad: entry.prioridad || "Media" });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  const est = ESTADO_MUESTRA[entry.estado] || ESTADO_MUESTRA.pendiente;
+  return (
+    <Modal title={entry.nombre || entry.referencia || "Muestra"} onClose={onClose} width={480}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+        {entry.categoria && <CatTag text={entry.categoria} />}
+        {entry.referencia && <span style={{ fontSize: 12, color: T.slate }}>{entry.referencia}</span>}
+        {entry.cliente && <span style={{ padding: "2px 8px", borderRadius: 3, background: T.violetBg, color: T.violet, fontSize: 10, fontWeight: 800 }}>{entry.cliente}</span>}
+        <span style={{ padding: "2px 8px", borderRadius: 3, background: est.bg, color: est.color, fontSize: 10, fontWeight: 800 }}>{est.label}</span>
+      </div>
+      <Field label="Taller de Muestra"><FSel value={form.taller} onChange={set("taller")} options={config?.talleresMuestra || []} /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Fecha de Entrega Esperada">
+          <input type="date" value={form.fechaEntrega} onChange={(e) => set("fechaEntrega")(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+        </Field>
+        <Field label="Prioridad"><FSel value={form.prioridad} onChange={set("prioridad")} options={PRIORIDAD_MUESTRA} /></Field>
+      </div>
+      {entry.estado !== "enviado" && (
+        <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+          <Btn variant={entry.estado === "aprobado" ? "success" : "secondary"} onClick={() => onUpdate(entry.id, { estado: "aprobado" })}>✓ Aprobado</Btn>
+          <Btn variant={entry.estado === "modificar" ? "danger" : "secondary"} onClick={() => onUpdate(entry.id, { estado: "modificar" })}>✕ Modificar</Btn>
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
+        <div style={{ display: "flex", gap: 8 }}>
+          {entry.itemId && <Btn variant="ghost" small onClick={() => { onGoToItem(entry); onClose(); }}>→ Ver prototipo/referencia</Btn>}
+          {isAdmin && <Btn variant="danger" small onClick={() => { onDelete(entry.id); onClose(); }}>🗑 Borrar</Btn>}
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
+          <Btn onClick={() => { onUpdate(entry.id, form); onClose(); }}>Guardar</Btn>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+// Cronograma de Muestras: tablero visual por semana (lunes a sábado, igual al
+// calendario de taller que ya manejaban en Excel), con navegación
+// anterior/siguiente y una vista por mes (varias semanas apiladas). Las
+// entradas "Aprobadas" se separan a su propia pestaña (funcionan como
+// historial de muestras ya resueltas); "Sin fecha" agrupa lo que aún no
+// tiene fecha de entrega asignada, para que nada quede invisible.
+function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, onUpdate, onDelete, onGoToItem }) {
+  const [vista, setVista] = useState("semana");
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [monthOffset, setMonthOffset] = useState(0);
+  const [tab, setTab] = useState("activas");
+  const [showNuevo, setShowNuevo] = useState(false);
+  const [detalle, setDetalle] = useState(null);
+  const DIA_LABELS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+  function mondayOf(d) {
+    const x = new Date(d);
+    const day = x.getDay();
+    x.setDate(x.getDate() + (day === 0 ? -6 : 1 - day));
+    x.setHours(0, 0, 0, 0);
+    return x;
+  }
+  function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+  function isoDate(d) { return d.toISOString().slice(0, 10); }
+  const hoy = new Date();
+  const hoyIso = isoDate(hoy);
+  const visibles = cronogramaMuestras.filter((c) => (tab === "activas" ? c.estado !== "aprobado" : c.estado === "aprobado"));
+  function itemsForDay(ds) { return visibles.filter((c) => c.fechaEntrega === ds).sort((a, b) => (a.prioridad || "").localeCompare(b.prioridad || "")); }
+  const sinFecha = visibles.filter((c) => !c.fechaEntrega);
+  function renderCard(c) {
+    const est = ESTADO_MUESTRA[c.estado] || ESTADO_MUESTRA.pendiente;
+    const colorPrioridad = PRIORIDAD_MUESTRA_COLOR[c.prioridad] || T.border;
+    return (
+      <div key={c.id} onClick={() => setDetalle(c)}
+        style={{ background: T.white, border: `1.5px solid ${colorPrioridad}`, borderRadius: 8, padding: "8px 10px", marginBottom: 6, cursor: "pointer" }}
+        onMouseEnter={(e) => (e.currentTarget.style.boxShadow = "0 2px 8px rgba(26,26,46,0.1)")}
+        onMouseLeave={(e) => (e.currentTarget.style.boxShadow = "none")}
+      >
+        <div style={{ fontSize: 11, fontWeight: 800, color: T.ink, lineHeight: 1.3 }}>{c.nombre}</div>
+        <div style={{ fontSize: 10, color: T.slate, marginTop: 1 }}>{c.referencia}{c.cliente ? ` · ${c.cliente}` : ""}</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 5, gap: 6 }}>
+          <span style={{ fontSize: 9, fontWeight: 800, color: est.color, background: est.bg, padding: "1px 6px", borderRadius: 10 }}>{est.label}</span>
+          {c.taller && <span style={{ fontSize: 9, color: T.slate, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>🧵 {c.taller}</span>}
+        </div>
+      </div>
+    );
+  }
+  function renderWeekRow(monday, key) {
+    const dias = Array.from({ length: 6 }, (_, i) => addDays(monday, i));
+    return (
+      <div key={key} style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 10, marginBottom: 14 }}>
+        {dias.map((d, i) => {
+          const ds = isoDate(d);
+          const items = itemsForDay(ds);
+          const esHoy = ds === hoyIso;
+          return (
+            <div key={ds} style={{ background: T.canvas, borderRadius: 10, padding: 10, minHeight: 100, border: esHoy ? `1.5px solid ${T.denim}` : `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: esHoy ? T.denim : T.slate, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>{DIA_LABELS[i]} {d.getDate()}</div>
+              {items.map(renderCard)}
+              {!items.length && <div style={{ fontSize: 10, color: T.border }}>—</div>}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+  const semanaMonday = addDays(mondayOf(hoy), weekOffset * 7);
+  const mesBase = new Date(hoy.getFullYear(), hoy.getMonth() + monthOffset, 1);
+  const mesInicioLunes = mondayOf(mesBase);
+  const mesFin = new Date(mesBase.getFullYear(), mesBase.getMonth() + 1, 0);
+  const semanasDelMes = [];
+  { let cur = mesInicioLunes; let guard = 0; while (cur <= mesFin && guard < 8) { semanasDelMes.push(new Date(cur)); cur = addDays(cur, 7); guard++; } }
+  const rangoLabel = vista === "semana"
+    ? `${semanaMonday.getDate()} ${MONTHS_SHORT[semanaMonday.getMonth()]} — ${addDays(semanaMonday, 5).getDate()} ${MONTHS_SHORT[addDays(semanaMonday, 5).getMonth()]} ${addDays(semanaMonday, 5).getFullYear()}`
+    : mesBase.toLocaleDateString("es-CO", { month: "long", year: "numeric" });
+  return (
+    <div>
+      {showNuevo && <NuevoCronogramaLibreModal config={config} onSave={onAdd} onClose={() => setShowNuevo(false)} />}
+      {detalle && <CronogramaDetalleModal entry={detalle} config={config} isAdmin={isAdmin} onUpdate={onUpdate} onDelete={onDelete} onGoToItem={onGoToItem} onClose={() => setDetalle(null)} />}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Cronograma de Muestras</h2>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Prototipos y referencias enviados a taller de muestra</p>
+        </div>
+        <Btn onClick={() => setShowNuevo(true)}>🧵 + Agregar al Cronograma</Btn>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["activas", "Activas"], ["aprobadas", "✓ Aprobadas (Historial)"]].map(([v, label]) => (
+            <button key={v} onClick={() => setTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${tab === v ? T.denim : T.border}`, background: tab === v ? T.denimBg : T.white, color: tab === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["semana", "Semana"], ["mes", "Mes"]].map(([v, label]) => (
+            <button key={v} onClick={() => setVista(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${vista === v ? T.ink : T.border}`, background: vista === v ? T.ink : T.white, color: vista === v ? T.white : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
+          ))}
+        </div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o - 1) : setMonthOffset((o) => o - 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>← Anterior</button>
+        <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, textTransform: "capitalize" }}>{rangoLabel}</div>
+        <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o + 1) : setMonthOffset((o) => o + 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>Siguiente →</button>
+      </div>
+      {vista === "semana" ? renderWeekRow(semanaMonday, "w") : semanasDelMes.map((m, i) => renderWeekRow(m, i))}
+      {sinFecha.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <div style={{ fontWeight: 800, fontSize: 13, color: T.slate, marginBottom: 10 }}>🗓 Sin fecha de entrega asignada ({sinFecha.length})</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10 }}>
+            {sinFecha.map(renderCard)}
+          </div>
+        </div>
+      )}
+      {!visibles.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>{tab === "activas" ? "No hay muestras activas." : "Todavía no hay muestras aprobadas."}</div>}
     </div>
   );
 }
@@ -2580,10 +2886,11 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     ["pedidos_clientes", "🏢 Clientes"],
     ["corte", "✂ Corte"],
     ["historial", "🕘 Historial"],
+    ["cronograma_muestras", "🧵 Cronograma de Muestras"],
     ["stats", "📊 Estadísticas"],
   ];
   const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"]];
-  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["disenadores", "🎨 Diseñadores"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
+  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["disenadores", "🎨 Diseñadores"], ["talleres", "🧵 Talleres de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
   function ListEditor({ listKey, title }) {
     return (
       <div>
@@ -2656,6 +2963,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
         {tab === "siluetas" && <ListEditor listKey="siluetas" title="Siluetas" />}
         {tab === "rangos" && <ListEditor listKey="rangos" title="Rangos" />}
         {tab === "disenadores" && <ListEditor listKey="disenadores" title="Diseñadores" />}
+        {tab === "talleres" && <ListEditor listKey="talleresMuestra" title="Talleres de Muestra" />}
         {tab === "roles" && (
           <div>
             <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 16 }}>Roles</div>
@@ -3467,6 +3775,7 @@ export default function App() {
   const [protos, setProtos] = useState([]);
   const [capsulas, setCapsulas] = useState([]);
   const [historial, setHistorial] = useState([]);
+  const [cronogramaMuestras, setCronogramaMuestras] = useState([]);
   const [pedidos, setPedidos] = useState([]);
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
   const [view, setView] = useState("dashboard");
@@ -3521,6 +3830,8 @@ export default function App() {
         unsubs.push(unsubCapsulas);
         const unsubHistorial = onSnapshot(collection(db, "historial_diseno"), (snap) => { setHistorial(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubs.push(unsubHistorial);
+        const unsubCronogramaMuestras = onSnapshot(collection(db, "cronograma_muestras"), (snap) => { setCronogramaMuestras(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubs.push(unsubCronogramaMuestras);
         const unsubPedidos = onSnapshot(collection(db, "pedidos"), (snap) => { setPedidos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubs.push(unsubPedidos);
         // Mismo motivo que "config": pedidoConfig (clientes/vendedores de
@@ -3570,7 +3881,7 @@ export default function App() {
     await fsUpdate("pedidos_config", "main", partial);
   }
   async function addProto(p) { const updated = [...protos, p]; setProtos(updated); await fsSave("prototipos", p.id, p); notify({ id: uid(), icon: "🧪", title: "Prototipo creado", msg: p.name }); }
-  async function updateProto(id, patch) { const updated = protos.map((x) => (x.id === id ? { ...x, ...patch } : x)); setProtos(updated); const item = updated.find((x) => x.id === id); await fsSave("prototipos", id, item); }
+  async function updateProto(id, patch) { const updated = protos.map((x) => (x.id === id ? { ...x, ...patch } : x)); setProtos(updated); const item = updated.find((x) => x.id === id); await fsSave("prototipos", id, item); if (patch.status === "enviado") syncCronogramaEnviado(id); }
   async function addCapsula(c) { const updated = [...capsulas, c]; setCapsulas(updated); await fsSave("capsulas", c.id, c); notify({ id: uid(), icon: "🗂", title: "Cápsula creada", msg: c.name }); }
   async function updateCapsulasAndSave(newCapsulas) { setCapsulas(newCapsulas); await fsBatch("capsulas", newCapsulas); }
   async function addRef(capId, ref) { const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, referencias: [...c.referencias, ref] })); await updateCapsulasAndSave(updated); }
@@ -3579,6 +3890,31 @@ export default function App() {
     await updateCapsulasAndSave(updated);
     const cap = updated.find((c) => c.id === capId);
     await fsSave("capsulas", capId, cap);
+    if (patch.status === "enviado") syncCronogramaEnviado(refId);
+  }
+  // --- Cronograma de Muestras ---
+  async function addCronogramaMuestra(entry) {
+    const withId = { ...entry, id: uid(), estado: entry.estado || "pendiente", createdAt: today() };
+    setCronogramaMuestras((cs) => [...cs, withId]);
+    await fsSave("cronograma_muestras", withId.id, withId);
+    notify({ id: uid(), icon: "🧵", title: "Enviado a taller de muestra", msg: withId.nombre || withId.taller });
+    return withId;
+  }
+  async function updateCronogramaMuestra(id, patch) {
+    setCronogramaMuestras((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+    await fsUpdate("cronograma_muestras", id, patch);
+  }
+  async function deleteCronogramaMuestra(id) {
+    setCronogramaMuestras((cs) => cs.filter((c) => c.id !== id));
+    await fsDelete("cronograma_muestras", id);
+  }
+  // Cuando un prototipo/referencia pasa a status "enviado", su entrada activa
+  // en el Cronograma de Muestras (si tiene una y todavía no está en
+  // "enviado") se actualiza sola — sin tener que ir a cambiarla a mano en
+  // las dos pantallas.
+  function syncCronogramaEnviado(itemId) {
+    const activa = cronogramaMuestras.find((c) => c.itemId === itemId && c.estado !== "enviado");
+    if (activa) updateCronogramaMuestra(activa.id, { estado: "enviado" });
   }
   async function logHistorial(entry) {
     const withId = { ...entry, id: uid() };
@@ -3677,6 +4013,7 @@ export default function App() {
   const canAccessPedidosClientes = moduloVisible(userRoleData, "pedidos_clientes", currentUser?.isAdmin);
   const canAccessStats = moduloVisible(userRoleData, "stats", currentUser?.isAdmin);
   const canAccessHistorial = moduloVisible(userRoleData, "historial", currentUser?.isAdmin);
+  const canAccessCronograma = moduloVisible(userRoleData, "cronograma_muestras", currentUser?.isAdmin);
   const canAccessCorte = moduloVisible(userRoleData, "corte", currentUser?.isAdmin);
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
   const canAccessPlaneacion = moduloVisible(userRoleData, "planeacion", currentUser?.isAdmin);
@@ -3684,7 +4021,7 @@ export default function App() {
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
   const canAccessAdminDiseno = moduloVisible(userRoleData, "admin_diseno", currentUser?.isAdmin);
-  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessHistorial || canAccessCorte || canAccessAdminDiseno || !!currentUser?.isAdmin;
+  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessHistorial || canAccessCronograma || canAccessCorte || canAccessAdminDiseno || !!currentUser?.isAdmin;
   const [moduloActivo, setModuloActivo] = useState("diseno");
   const AREAS = [
     ...(canAccessDiseno
@@ -3697,6 +4034,7 @@ export default function App() {
             ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
             ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
             ...(canAccessHistorial ? [{ id: "historial", icon: "🕘", label: "Historial" }] : []),
+            ...(canAccessCronograma ? [{ id: "cronograma_muestras", icon: "🧵", label: "Cronograma de Muestras" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
             ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
             // "Administrador General" siempre queda al final de la lista, sin
@@ -3837,6 +4175,7 @@ export default function App() {
                     else if (canAccessPedidosClientes) setView("pedidos_clientes");
                     else if (canAccessStats) setView("stats");
                     else if (canAccessHistorial) setView("historial");
+                    else if (canAccessCronograma) setView("cronograma_muestras");
                     else if (canAccessCorte) setModuloActivo("corte");
                   }
                   else { setView(id); }
@@ -3870,6 +4209,7 @@ export default function App() {
                 onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
                 onLogHistorial={logHistorial}
                 notify={notify} stages={config.stages} currentUser={currentUser.name} config={config}
+                cronogramaMuestras={cronogramaMuestras} onSendTaller={addCronogramaMuestra} onUpdateTaller={updateCronogramaMuestra}
               />
             )}
             {view === "ref-detail" && selRef && selCap && (
@@ -3878,6 +4218,7 @@ export default function App() {
                 onUpdateItem={(p) => updateRef(selCap.id, selRef.id, p)}
                 onLogHistorial={logHistorial}
                 notify={notify} stages={config.stages} currentUser={currentUser.name} config={config}
+                cronogramaMuestras={cronogramaMuestras} onSendTaller={addCronogramaMuestra} onUpdateTaller={updateCronogramaMuestra}
               />
             )}
             {view === "pedidos" && (
@@ -3900,6 +4241,15 @@ export default function App() {
                 onSelectProto={(id) => { setSelProtoId(id); setView("proto-detail"); }}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
                 onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
+              />
+            )}
+            {view === "cronograma_muestras" && (
+              <CronogramaMuestrasView cronogramaMuestras={cronogramaMuestras} config={config} isAdmin={currentUser?.isAdmin}
+                onAdd={addCronogramaMuestra} onUpdate={updateCronogramaMuestra} onDelete={deleteCronogramaMuestra}
+                onGoToItem={(entry) => {
+                  if (entry.kind === "proto") { setSelProtoId(entry.itemId); setView("proto-detail"); }
+                  else if (entry.kind === "ref") { setSelCapId(entry.capsulaId); setSelRefId(entry.itemId); setView("ref-detail"); }
+                }}
               />
             )}
             {view === "admin" && (currentUser?.isAdmin || canAccessAdminDiseno) && (
