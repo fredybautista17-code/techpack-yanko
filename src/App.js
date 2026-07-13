@@ -1987,7 +1987,7 @@ function DashboardView({ protos, capsulas, pedidos, onGoProtos, onGoCapsulas, on
   );
 }
 
-function EstadisticasView({ protos, capsulas, stages }) {
+function EstadisticasView({ protos, capsulas, stages, config }) {
   const currentYear = new Date().getFullYear().toString();
   const [yearFilter, setYearFilter] = useState(currentYear);
   const [monthFilter, setMonthFilter] = useState("todos");
@@ -1995,7 +1995,12 @@ function EstadisticasView({ protos, capsulas, stages }) {
   const allRefs = capsulas.flatMap((c) => c.referencias);
   const allItems = [...protos, ...allRefs];
   const years = [...new Set(allItems.map((x) => x.createdAt?.slice(0, 4)).filter(Boolean))].sort().reverse();
-  const responsables = [...new Set(allItems.map((x) => x.assignedTo).filter(Boolean))].sort();
+  // El filtro de Responsable sale del maestro de Diseñadores (Administrador
+  // General), no solo de los nombres que ya aparecen en prototipos/referencias
+  // — así un diseñador recién agregado aparece aunque todavía no tenga nada
+  // asignado. Se suman también nombres sueltos que ya existan en los datos
+  // aunque no estén en el maestro (compatibilidad con datos viejos).
+  const responsables = [...new Set([...(config?.disenadores || []), ...allItems.map((x) => x.assignedTo).filter(Boolean)])].sort((a, b) => a.localeCompare(b));
   const clientesUnicos = [...new Set(allRefs.flatMap((r) => r.colores || []).filter(Boolean))].sort();
   function applyFilters(arr) {
     return arr.filter((x) => {
@@ -3888,7 +3893,7 @@ export default function App() {
             {view === "pedido-detail" && selPedido && <PedidoDetailView pedido={selPedido} onBack={() => setView("pedidos")} onUpdatePedido={updatePedido} />}
             {view === "pedidos_admin" && currentUser?.isAdmin && <AdminPedidosView pedidoConfig={pedidoConfig} onSave={savePedidoConfig} config={config} onSaveConfig={saveConfig} />}
             {view === "pedidos_clientes" && <ClientesPedidosView clientes={config.clientes} pedidos={pedidos} />}
-            {view === "stats" && <EstadisticasView protos={protos} capsulas={capsulas} stages={config.stages} />}
+            {view === "stats" && <EstadisticasView protos={protos} capsulas={capsulas} stages={config.stages} config={config} />}
             {view === "historial" && (
               <HistorialDisenoView historial={historial} protos={protos} capsulas={capsulas} pedidos={pedidos} role={role} perms={perms} stages={config.stages}
                 isAdmin={currentUser?.isAdmin} onBackfill={backfillHistorial}
