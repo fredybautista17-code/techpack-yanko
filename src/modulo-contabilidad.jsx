@@ -3320,12 +3320,30 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   let filas = [...filasCorte, ...filasManual];
   filas = [...filas].sort((a, b) => {
     if (orden === "total") return b.total - a.total;
+    if (orden === "0-30") return b.dias0a30 - a.dias0a30;
+    if (orden === "31-60") return b.dias31a60 - a.dias31a60;
+    if (orden === "61-90") return b.dias61a90 - a.dias61a90;
     if (orden === "91") return b.dias91mas - a.dias91mas;
     return a.nombre.localeCompare(b.nombre);
   });
   const totalAdeudado = filas.reduce((s, f) => s + f.total, 0);
   const totalVencido = filas.reduce((s, f) => s + f.dias0a30 + f.dias31a60 + f.dias61a90 + f.dias91mas, 0);
+  const total0a30 = filas.reduce((s, f) => s + f.dias0a30, 0);
+  const total31a60 = filas.reduce((s, f) => s + f.dias31a60, 0);
+  const total61a90 = filas.reduce((s, f) => s + f.dias61a90, 0);
   const total91 = filas.reduce((s, f) => s + f.dias91mas, 0);
+  // Monto correspondiente a lo que esté elegido en "Ordenar por" — así al
+  // seleccionar una franja de vencimiento (30/60/90/91+) se ve de una vez
+  // cuánto suma esa franja entre todos los proveedores, sin tener que ir a
+  // buscarlo en la tabla.
+  const ORDEN_INFO = {
+    total: { label: "Total adeudado", monto: totalAdeudado, color: C.violet },
+    "0-30": { label: "0-30 días", monto: total0a30, color: C.amber },
+    "31-60": { label: "31-60 días", monto: total31a60, color: C.amber },
+    "61-90": { label: "61-90 días", monto: total61a90, color: C.red },
+    "91": { label: "91+ días (más urgente)", monto: total91, color: C.red },
+    nombre: { label: "Total adeudado", monto: totalAdeudado, color: C.violet },
+  };
   function calendarioDe(nombre) {
     return calendario.filter((c) => c.proveedor === nombre);
   }
@@ -3452,9 +3470,18 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
               }}
             >
               <option value="total">Total (mayor a menor)</option>
+              <option value="0-30">0-30 días</option>
+              <option value="31-60">31-60 días</option>
+              <option value="61-90">61-90 días</option>
               <option value="91">Más atrasado (91+ días)</option>
               <option value="nombre">Nombre</option>
             </select>
+            <span style={{ fontSize: 13, fontWeight: 800, color: ORDEN_INFO[orden]?.color || C.ink }}>
+              {fmtCOP(ORDEN_INFO[orden]?.monto || 0)}
+            </span>
+            <span style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>
+              {ORDEN_INFO[orden]?.label}
+            </span>
           </div>
           <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -4173,4 +4200,3 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     </div>
   );
 }
-
