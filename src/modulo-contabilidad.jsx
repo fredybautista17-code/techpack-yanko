@@ -2922,8 +2922,16 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
     setMontoNuevo("");
     setShowAdd(false);
   }
-  const totalPresupuestado = presupuestosMes.reduce((s, p) => s + p.monto, 0);
-  const totalAbonado = presupuestosMes.reduce((s, p) => s + abonadoDe(p.cliente, p.categoria), 0);
+  // Tela no cuenta para el presupuesto final: hoy se puede llevar abono de
+  // Nómina, Insumos, Tela y Maquinaria, pero solo las primeras tres (menos
+  // Tela) sirven para el total que se compara contra lo abonado.
+  const CATEGORIA_NO_CUENTA = "Anticipo Tela";
+  const totalPresupuestado = presupuestosMes
+    .filter((p) => p.categoria !== CATEGORIA_NO_CUENTA)
+    .reduce((s, p) => s + p.monto, 0);
+  const totalAbonado = presupuestosMes
+    .filter((p) => p.categoria !== CATEGORIA_NO_CUENTA)
+    .reduce((s, p) => s + abonadoDe(p.cliente, p.categoria), 0);
   // Resumen agregado por categoría: cuánto se presupuestó vs. cuánto entró
   // realmente ese mes en cada categoría, sumando todos los clientes.
   const resumenCategorias = CATS_INGRESO.map((cat) => {
@@ -2933,6 +2941,12 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
       .reduce((s, m) => s + m.valor, 0);
     return { categoria: cat, presupuestado, abonado };
   }).filter((r) => r.presupuestado > 0 || r.abonado > 0);
+  // Agrupación por cliente: cada cliente muestra las 4 ramificaciones
+  // (Nómina, Tela, Insumos, Maquinaria) por las que se puede llevar abono,
+  // aunque no todas tengan presupuesto asignado todavía.
+  const clientesConPresupuesto = Array.from(new Set(presupuestosMes.map((p) => p.cliente))).sort((a, b) =>
+    a.localeCompare(b)
+  );
   const yaExisteDuplicado = clienteNuevo && categoriaNueva && pairExiste(clienteNuevo, categoriaNueva);
   return (
     <div>
@@ -3041,85 +3055,128 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
               })}
             </div>
           )}
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {presupuestosMes.map((p) => {
-              const abonado = abonadoDe(p.cliente, p.categoria);
-              const pct = p.monto > 0 ? Math.min((abonado / p.monto) * 100, 999) : 0;
-              const tono = pct >= 100 ? C.green : pct >= 50 ? C.amber : C.red;
-              const tonoBg = pct >= 100 ? C.greenBg : pct >= 50 ? C.amberBg : C.redBg;
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {clientesConPresupuesto.map((cliente) => {
+              const ramas = CATS_INGRESO.map((cat) => {
+                const p = presupuestosMes.find((x) => x.cliente === cliente && x.categoria === cat);
+                const monto = p ? p.monto : 0;
+                const abonado = abonadoDe(cliente, cat);
+                const pct = monto > 0 ? Math.min((abonado / monto) * 100, 999) : 0;
+                return { cat, p, monto, abonado, pct, cuenta: cat !== CATEGORIA_NO_CUENTA };
+              });
+              const clienteTotalPresupuestado = ramas.filter((r) => r.cuenta).reduce((s, r) => s + r.monto, 0);
+              const clienteTotalAbonado = ramas.filter((r) => r.cuenta).reduce((s, r) => s + r.abonado, 0);
+              const clientePct =
+                clienteTotalPresupuestado > 0 ? Math.min((clienteTotalAbonado / clienteTotalPresupuestado) * 100, 999) : 0;
+              const tonoCliente =
+                clienteTotalPresupuestado === 0 ? C.slate : clientePct >= 100 ? C.green : clientePct >= 50 ? C.amber : C.red;
+              const tonoClienteBg =
+                clienteTotalPresupuestado === 0 ? C.canvas : clientePct >= 100 ? C.greenBg : clientePct >= 50 ? C.amberBg : C.redBg;
               return (
                 <div
-                  key={p.id}
+                  key={cliente}
                   style={{
                     background: C.white,
                     borderRadius: 16,
                     border: `1px solid ${C.border}`,
-                    borderLeft: `4px solid ${tono}`,
+                    borderLeft: `4px solid ${tonoCliente}`,
                     padding: "18px 22px",
                     boxShadow: "0 1px 3px rgba(26,26,46,0.06), 0 1px 2px rgba(26,26,46,0.04)",
                   }}
                 >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <Avatar name={p.cliente} size={32} />
-                      <span style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{p.cliente}</span>
-                      {p.categoria && (
-                        <span
-                          style={{
-                            padding: "2px 8px",
-                            borderRadius: 20,
-                            fontSize: 10,
-                            fontWeight: 700,
-                            background: C.violetBg,
-                            color: C.violet,
-                          }}
-                        >
-                          {p.categoria}
-                        </span>
-                      )}
+                      <Avatar name={cliente} size={32} />
+                      <span style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{cliente}</span>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <span
-                        style={{
-                          fontSize: 12,
-                          fontWeight: 800,
-                          color: tono,
-                          background: tonoBg,
-                          padding: "4px 10px",
-                          borderRadius: 20,
-                        }}
-                      >
-                        {fmtCOP(abonado)} / {fmtCOP(p.monto)} · {Math.round(pct)}%
-                      </span>
-                      {isAdmin && (
-                        <button
-                          onClick={() => onDelete(p.id)}
-                          style={{
-                            background: C.redBg,
-                            border: "none",
-                            borderRadius: 6,
-                            padding: "4px 8px",
-                            color: C.red,
-                            fontWeight: 700,
-                            fontSize: 11,
-                            cursor: "pointer",
-                          }}
-                        >
-                          ✕
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ height: 10, borderRadius: 20, background: C.canvas, overflow: "hidden" }}>
-                    <div
+                    <span
                       style={{
-                        height: "100%",
-                        width: `${Math.min(pct, 100)}%`,
-                        background: tono,
+                        fontSize: 12,
+                        fontWeight: 800,
+                        color: tonoCliente,
+                        background: tonoClienteBg,
+                        padding: "4px 10px",
                         borderRadius: 20,
-                        transition: "width 0.3s ease",
                       }}
-                    />
+                    >
+                      {fmtCOP(clienteTotalAbonado)} / {fmtCOP(clienteTotalPresupuestado)} · {Math.round(clientePct)}%
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {ramas.map((r) => {
+                      const tonoRama = !r.p ? C.slate : r.pct >= 100 ? C.green : r.pct >= 50 ? C.amber : C.red;
+                      return (
+                        <div key={r.cat} style={{ background: C.canvas, borderRadius: 10, padding: "10px 14px" }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              marginBottom: r.p ? 6 : 0,
+                            }}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <span style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>{r.cat}</span>
+                              {!r.cuenta && (
+                                <span
+                                  style={{
+                                    fontSize: 9,
+                                    fontWeight: 700,
+                                    color: C.slate,
+                                    background: C.border,
+                                    padding: "1px 6px",
+                                    borderRadius: 20,
+                                  }}
+                                >
+                                  No cuenta en el total
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              {r.p ? (
+                                <span style={{ fontSize: 11, fontWeight: 700, color: tonoRama }}>
+                                  {fmtCOP(r.abonado)} / {fmtCOP(r.monto)} · {Math.round(r.pct)}%
+                                </span>
+                              ) : (
+                                <span style={{ fontSize: 11, fontWeight: 600, color: C.slate, fontStyle: "italic" }}>
+                                  Sin presupuesto asignado
+                                </span>
+                              )}
+                              {isAdmin && r.p && (
+                                <button
+                                  onClick={() => onDelete(r.p.id)}
+                                  style={{
+                                    background: C.redBg,
+                                    border: "none",
+                                    borderRadius: 6,
+                                    padding: "3px 7px",
+                                    color: C.red,
+                                    fontWeight: 700,
+                                    fontSize: 10,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  ✕
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          {r.p && (
+                            <div style={{ height: 7, borderRadius: 20, background: C.border, overflow: "hidden" }}>
+                              <div
+                                style={{
+                                  height: "100%",
+                                  width: `${Math.min(r.pct, 100)}%`,
+                                  background: tonoRama,
+                                  borderRadius: 20,
+                                  transition: "width 0.3s ease",
+                                }}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               );
