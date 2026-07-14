@@ -2717,7 +2717,7 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
                       <span>🧾 Pagos programados (Cuentas por Pagar)</span>
                       <span>{fmtCOP(totalPagosCxp)}</span>
                     </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 180, overflowY: "auto", paddingRight: 4 }}>
                       {pagosCxpMes.map((c) => (
                         <div key={c.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.slate }}>
                           <span>{c.proveedor}</span>
@@ -2746,7 +2746,7 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
                       />
                     </div>
                     <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 8 }}>Avance por rubro</div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14, maxHeight: 260, overflowY: "auto", paddingRight: 4 }}>
                       {itemsConAvance.map((i) => (
                         <div key={i.key || `${i.codConcep}__${i.concepto}`}>
                           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.slate, marginBottom: 3 }}>
