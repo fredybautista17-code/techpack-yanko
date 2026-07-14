@@ -1336,6 +1336,10 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
     });
   }
   const canAdmin = currentUser?.isAdmin || perms.admin;
+  // Igual que canAdminIlustracion en CapsulasView: permiso dedicado para
+  // aprobar/devolver ilustración, independiente de "admin", pensado para un
+  // rol tipo "Directora Creativa". El dueño del sistema conserva respaldo.
+  const canRevisarIlustracion = currentUser?.isAdmin || perms.ilustracion;
   function advanceStage() {
     if (!canAdmin) return;
     if (stageIdx >= stages.length - 1) return;
@@ -1424,7 +1428,9 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
                 {noFinalState && !["enviado_cotizacion", "enviar_cliente", "enviado"].includes(st) && (
                   <>
                     <Btn variant="ghost" onClick={() => changeStatus("en_proceso")}>En proceso</Btn>
-                    <Btn variant="amber" onClick={() => (item.currentStage === "ilustracion" ? setShowRevision(true) : changeStatus("en_revision"))}>En revisión</Btn>
+                    {item.currentStage !== "ilustracion" && (
+                      <Btn variant="amber" onClick={() => changeStatus("en_revision")}>En revisión</Btn>
+                    )}
                   </>
                 )}
                 {noFinalState && st !== "enviado_cotizacion" && st !== "enviar_cliente" && st !== "enviado" && <Btn variant="ghost" onClick={handleCotizacion}>📤 Cotización</Btn>}
@@ -1432,6 +1438,13 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
                 {st === "enviar_cliente" && <button onClick={() => setShowEnviado(true)} style={{ padding: "9px 18px", background: "#EFF6FF", color: "#0369A1", border: "1.5px solid #0369A1", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>📦 Registrar Envío</button>}
                 {kind === "proto" && item.status === "aprobado" && !item.promotedTo && capsulas.length > 0 && <Btn variant="success" onClick={() => onPromote(item)}>⬆ Promover</Btn>}
               </>
+            )}
+            {/* Botón "En revisión" para etapa Ilustración: independiente del
+                bloque de canAdmin de arriba, gated por canRevisarIlustracion
+                (permiso dedicado "ilustracion" o dueño del sistema), para que
+                una Directora Creativa sin permiso "admin" general igual lo vea. */}
+            {canRevisarIlustracion && item.currentStage === "ilustracion" && noFinalState && !["enviado_cotizacion", "enviar_cliente", "enviado"].includes(st) && (
+              <Btn variant="amber" onClick={() => setShowRevision(true)}>En revisión</Btn>
             )}
             {!canAdmin && canEdit && kind === "proto" && item.status === "aprobado" && !item.promotedTo && capsulas.length > 0 && <Btn variant="success" onClick={() => onPromote(item)}>⬆ Promover</Btn>}
             {kind === "proto" && item.promotedTo && <span style={{ padding: "6px 12px", background: T.jadeBg, color: T.jade, borderRadius: 8, fontSize: 12, fontWeight: 700 }}>✓ Promovido</span>}
@@ -1712,9 +1725,12 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
   const [confirmDel, setConfirmDel] = useState(null);
   const [revisionCap, setRevisionCap] = useState(null);
   const [obsCapsula, setObsCapsula] = useState(null);
-  // Mismo permiso admin que ya se usa para aprobar/devolver "En revisión" en
-  // Prototipos (canAdmin en DetailView) — no se crea un rol nuevo.
-  const canAdminIlustracion = isAdmin || perms.admin;
+  // Permiso dedicado "ilustracion" (pensado para un rol tipo "Directora
+  // Creativa"), separado del permiso general "admin" — así se puede limitar
+  // quién aprueba/devuelve ilustración sin darle todos los demás permisos de
+  // administrador. El dueño del sistema (isAdmin) siempre conserva acceso de
+  // respaldo por si la Directora Creativa no está disponible.
+  const canAdminIlustracion = isAdmin || perms.ilustracion;
   const FILTERS = [["todos", "Todos"], ["aprobado", "Aprobadas"], ["declinado", "Declinadas"], ["en_proceso", "En proceso"], ["en_revision", "En revisión"], ["enviado_cotizacion", "En cotización"], ["enviar_cliente", "Enviar al Cliente"], ["enviado", "Enviado"]];
   // El cliente de la cápsula (elegido al crearla) manda sobre el cliente
   // suelto de cada referencia — así toda la cápsula queda atribuida a un solo
@@ -3180,7 +3196,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                       <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{r.name}</div>
                       <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10, marginBottom: 4 }}>Permisos de flujo de trabajo</div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {["editar", "aprobar", "declinar", "admin", "corte"].map((perm) => (
+                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion"].map((perm) => (
                           <span key={perm} onClick={() => onUpdateConfig({ roles: config.roles.map((x) => (x.id !== r.id ? x : { ...x, perms: x.perms.includes(perm) ? x.perms.filter((p) => p !== perm) : [...x.perms, perm] })) })}
                             style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: r.perms.includes(perm) ? T.jadeBg : "#EDEDF2", color: r.perms.includes(perm) ? T.jade : T.slate, border: `1px solid ${r.perms.includes(perm) ? T.jade : T.border}` }}
                           >{perm}</span>
@@ -4255,6 +4271,10 @@ function AppInner() {
     declinar: userRoleData?.perms?.includes("declinar") ?? false,
     admin: userRoleData?.perms?.includes("admin") ?? false,
     corte: userRoleData?.perms?.includes("corte") ?? false,
+    // Permiso dedicado para aprobar/devolver ilustración (Cápsulas y
+    // Prototipos/Referencias en etapa Ilustración), pensado para un rol tipo
+    // "Directora Creativa" sin darle el resto de permisos de "admin".
+    ilustracion: userRoleData?.perms?.includes("ilustracion") ?? false,
   };
   // Visibilidad de módulos, decidida sección por sección con moduloVisible en
   // vez de reutilizar directamente perms.corte / perms.admin — así cada
