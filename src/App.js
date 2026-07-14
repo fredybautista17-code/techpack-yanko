@@ -1813,7 +1813,11 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
                 {!aprobada && canAdminIlustracion && (
                   <>
                     <Btn small variant="success" onClick={() => onSetIlustracion(cap.id, "aprobado", null)}>✓ Aprobar Ilustración</Btn>
-                    {cap.ilustracionEstado !== "en_revision" && <Btn small variant="danger" onClick={() => setRevisionCap(cap)}>✕ En revisión</Btn>}
+                    {/* Disponible aunque ya esté "en_revision": permite dejar una
+                        NUEVA ronda de revisión (con su propia nota) si al volver a
+                        mirar la ilustración corregida todavía hay que pedir más
+                        cambios — no solo la primera vez. */}
+                    <Btn small variant="danger" onClick={() => setRevisionCap(cap)}>✕ En revisión</Btn>
                   </>
                 )}
                 {perms.editar && <Btn small variant="ghost" onClick={() => setEditCap(cap)}>✏ Editar</Btn>}
@@ -2518,6 +2522,13 @@ function EstadisticasView({ protos, capsulas, stages, config }) {
   const capsulasConDeclinaciones = capsulasFiltradas.filter((c) => estadoCapsula(c) === "con_declinaciones").length;
   const capsulasTotalFiltradas = capsulasFiltradas.length;
   const pctCumplCapsulas = capsulasTotalFiltradas ? Math.round((capsulasCumplidas / capsulasTotalFiltradas) * 100) : 0;
+  // Rondas de revisión de Ilustración a nivel de Cápsula: cuántas veces la
+  // Dirección Creativa devolvió la ilustración/concepto de una cápsula antes
+  // de aprobarla. Es aparte del Puntaje (no se le atribuye a un solo
+  // diseñador, igual criterio que el resto de métricas de Cápsulas).
+  const rondasIlustracionTotal = capsulasFiltradas.reduce((sum, c) => sum + (c.observacionesIlustracion || []).filter((o) => o.type === "revision_ilustracion_capsula").length, 0);
+  const promRondasIlustracion = capsulasTotalFiltradas ? Math.round((rondasIlustracionTotal / capsulasTotalFiltradas) * 10) / 10 : 0;
+  const capsulasPendientesIlustracion = capsulasFiltradas.filter((c) => !ilustracionAprobada(c)).length;
   // Puntaje de Diseño (0-100): combina tres cosas que ya se calculan arriba
   // — Certeza 40% (qué tan seguido acierta con lo que propone), Cumplimiento
   // de cápsulas 35% (colecciones que llegan completas al 100% aprobadas, no
@@ -2719,6 +2730,7 @@ function EstadisticasView({ protos, capsulas, stages, config }) {
           <span style={{ padding: "3px 10px", borderRadius: 20, background: T.jadeBg, color: T.jade, fontWeight: 700, fontSize: 12 }}>✓ {capsulasCumplidas} cumplida{capsulasCumplidas !== 1 ? "s" : ""}</span>
           <span style={{ padding: "3px 10px", borderRadius: 20, background: T.denimBg, color: T.denim, fontWeight: 700, fontSize: 12 }}>⚙ {capsulasEnCurso} en curso</span>
           <span style={{ padding: "3px 10px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700, fontSize: 12 }}>✕ {capsulasConDeclinaciones} con declinaciones</span>
+          <span title="Veces que la Dirección Creativa devolvió la ilustración/concepto de una cápsula antes de aprobarla · promedio por cápsula" style={{ padding: "3px 10px", borderRadius: 20, background: T.amberBg, color: T.amber, fontWeight: 700, fontSize: 12 }}>🎨 {rondasIlustracionTotal} revisión{rondasIlustracionTotal !== 1 ? "es" : ""} de ilustración ({promRondasIlustracion}/cápsula){capsulasPendientesIlustracion > 0 ? ` · ${capsulasPendientesIlustracion} pendiente${capsulasPendientesIlustracion !== 1 ? "s" : ""} de aprobar` : ""}</span>
         </div>
         {!capsulasFiltradas.length ? (
           <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin cápsulas para este período.</div>
@@ -2733,13 +2745,18 @@ function EstadisticasView({ protos, capsulas, stages, config }) {
                 : est === "con_declinaciones"
                   ? { label: "✕ Con declinaciones", color: T.coral, bg: T.coralBg }
                   : { label: "— Sin referencias", color: T.slate, bg: "#EDEDF2" };
+            const estIlustracion = ILUSTRACION_CAPSULA_ESTADO[c.ilustracionEstado] || ILUSTRACION_CAPSULA_ESTADO.aprobado;
+            const rondasIlustracionCap = (c.observacionesIlustracion || []).filter((o) => o.type === "revision_ilustracion_capsula").length;
             return (
               <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 0", borderBottom: `1px solid ${T.border}` }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{c.name}</div>
                   <div style={{ fontSize: 11, color: T.slate }}>{c.season} · {ap}/{c.referencias.length} referencias aprobadas</div>
                 </div>
-                <span style={{ padding: "3px 10px", borderRadius: 20, background: badge.bg, color: badge.color, fontWeight: 700, fontSize: 11 }}>{badge.label}</span>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {!ilustracionAprobada(c) && <span style={{ padding: "3px 10px", borderRadius: 20, background: estIlustracion.bg, color: estIlustracion.color, fontWeight: 700, fontSize: 11 }}>🎨 {estIlustracion.label}{rondasIlustracionCap > 0 ? ` · ${rondasIlustracionCap}` : ""}</span>}
+                  <span style={{ padding: "3px 10px", borderRadius: 20, background: badge.bg, color: badge.color, fontWeight: 700, fontSize: 11 }}>{badge.label}</span>
+                </div>
               </div>
             );
           })
