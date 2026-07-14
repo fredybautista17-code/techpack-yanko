@@ -4012,13 +4012,19 @@ function AppInner() {
         // clientes en otra sesión. Con onSnapshot, config siempre está al día
         // antes de guardar, así que ese guardado ya no puede pisar cambios
         // más recientes de otra sesión.
-        let configSeeded = false;
-        const unsubConfig = onSnapshot(collection(db, "config"), async (snap) => {
-          if (!snap.docs.length) {
-            if (!configSeeded) { configSeeded = true; await fsSave("config", "main", INIT_CONFIG); }
-            setConfig(INIT_CONFIG);
-            return;
-          }
+        // La comprobación de "¿existe el documento?" se hace UNA sola vez con
+        // fsGet (igual que "users" arriba), ANTES de abrir el listener en
+        // vivo — nunca dentro de él. Antes, esa comprobación vivía dentro del
+        // propio onSnapshot y sembraba INIT_CONFIG (clientes: [], etc.) cada
+        // vez que una lectura llegaba vacía, incluida una lectura transitoria
+        // de caché offline o una reconexión — lo que podía borrar "clientes"
+        // aunque el documento real en el servidor sí tuviera datos. Con el
+        // chequeo fuera del listener, este solo siembra una vez, al arrancar,
+        // y de ahí en adelante el listener SOLO lee, nunca vuelve a escribir.
+        let dbConfig = await fsGet("config");
+        if (!dbConfig.length) { await fsSave("config", "main", INIT_CONFIG); }
+        const unsubConfig = onSnapshot(collection(db, "config"), (snap) => {
+          if (!snap.docs.length) { setConfig(INIT_CONFIG); return; }
           const mainDoc = snap.docs.find((d) => d.id === "main") || snap.docs[0];
           setConfig({ ...INIT_CONFIG, ...mainDoc.data() });
         });
@@ -4037,12 +4043,13 @@ function AppInner() {
         // Pedidos) se sincroniza en vivo en vez de leerse una sola vez con
         // fsGet, para que una pestaña vieja no pueda pisar con una copia
         // desactualizada los clientes/vendedores agregados desde otra sesión.
-        let pedidoConfigSeeded = false;
-        const unsubPedidoConfig = onSnapshot(collection(db, "pedidos_config"), async (snap) => {
-          if (!snap.docs.length) {
-            if (!pedidoConfigSeeded) { pedidoConfigSeeded = true; await fsSave("pedidos_config", "main", { clientes: [], vendedores: [] }); }
-            return;
-          }
+        // Igual que "config" arriba: el chequeo de "¿existe?" se hace una
+        // sola vez con fsGet antes de abrir el listener, que de ahí en
+        // adelante solo lee y nunca vuelve a sembrar/escribir.
+        let dbPedidoConfig = await fsGet("pedidos_config");
+        if (!dbPedidoConfig.length) { await fsSave("pedidos_config", "main", { clientes: [], vendedores: [] }); }
+        const unsubPedidoConfig = onSnapshot(collection(db, "pedidos_config"), (snap) => {
+          if (!snap.docs.length) { return; }
           const mainDoc = snap.docs.find((d) => d.id === "main") || snap.docs[0];
           setPedidoConfig((c) => ({ ...c, ...mainDoc.data() }));
         });
