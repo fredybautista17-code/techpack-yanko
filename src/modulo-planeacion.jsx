@@ -303,17 +303,40 @@ async function parsePlantaInformes(file) {
   return agruparLotes(rows);
 }
 // ─── GENERADORES DE INFORMES ───────────────────────────────────────────────────
-function generarSemiterminado(lotes) {
-  return lotes
+// Dashboard "Informe de Seguimiento": además del detalle plano por lote,
+// agrupa por "Proceso Donde Quedó" para dar un resumen con lotes/unidades/%
+// de unidades por proceso, y los totales generales — igual al formato que se
+// arma a mano en la hoja de cálculo (dashboard de seguimiento semiterminado).
+function generarSeguimientoSemiterminado(lotes) {
+  const filas = lotes
     .filter((l) => l.invSemiterminado > 0)
     .map((l) => ({
       numLote: l.numLote,
       referencia: l.referencia,
       categoria: l.categoria,
-      cantSemiterminado: l.invSemiterminado,
-      procesoDondeQuedo: l.procesoDondeQuedo,
+      unidades: l.invSemiterminado,
+      procesoDondeQuedo: l.procesoDondeQuedo || "(Sin proceso)",
       ultimaSalida: l.ultimaSalidaTexto,
-    }));
+    }))
+    .sort((a, b) => a.procesoDondeQuedo.localeCompare(b.procesoDondeQuedo) || a.numLote - b.numLote);
+  const totalLotes = filas.length;
+  const totalUnidades = filas.reduce((s, f) => s + f.unidades, 0);
+  const grupos = new Map();
+  filas.forEach((f) => {
+    if (!grupos.has(f.procesoDondeQuedo)) grupos.set(f.procesoDondeQuedo, { lotes: 0, unidades: 0 });
+    const g = grupos.get(f.procesoDondeQuedo);
+    g.lotes += 1;
+    g.unidades += f.unidades;
+  });
+  const resumen = [...grupos.entries()]
+    .map(([proceso, g]) => ({
+      proceso,
+      lotes: g.lotes,
+      unidades: g.unidades,
+      pct: totalUnidades > 0 ? g.unidades / totalUnidades : 0,
+    }))
+    .sort((a, b) => b.unidades - a.unidades);
+  return { filas, resumen, totalLotes, totalUnidades, procesosDistintos: resumen.length };
 }
 // Compartido por En Planta / Por Cliente / Cliente Agrupado — solo cambia el
 // campo por el que se agrupa (planta, cliente, o cliente agrupado KAMILA).
@@ -573,6 +596,68 @@ function BloqueAgrupado({ titulo, primeraColLabel, data }) {
     </div>
   );
 }
+// Dashboard de "Informe de Seguimiento": KPIs + resumen por proceso (con %
+// de unidades) + detalle de lotes agrupado por proceso, en vez de la tabla
+// plana que tenía antes el reporte de Semiterminado.
+function BloqueSeguimientoSemiterminado({ data }) {
+  const { filas, resumen, totalLotes, totalUnidades, procesosDistintos } = data;
+  if (!totalLotes) {
+    return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Sin lotes en semiterminado.</div>;
+  }
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 20 }}>
+        <KPI icon="📦" label="Total Lotes" value={fmtNum(totalLotes)} color={C.ink} bg={C.canvas} />
+        <KPI icon="🧶" label="Total Unidades" value={fmtNum(totalUnidades)} color={C.violet} bg={C.violetBg} />
+        <KPI icon="🔀" label="Procesos Distintos" value={fmtNum(procesosDistintos)} color={C.blue} bg={C.blueBg} />
+      </div>
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>RESUMEN POR PROCESO</div>
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 24 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: C.ink }}>
+              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Proceso Donde Quedó</th>
+              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
+              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
+              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
+            </tr>
+          </thead>
+          <tbody>
+            {resumen.map((r, i) => (
+              <tr key={r.proceso} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                <td style={{ padding: "7px 12px" }}>{r.proceso}</td>
+                <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
+                <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
+                <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr style={{ background: "#FFF2CC" }}>
+              <td style={{ padding: "8px 12px", fontWeight: 800, color: C.ink }}>TOTAL</td>
+              <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalLotes)}</td>
+              <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalUnidades)}</td>
+              <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>100%</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>DETALLE DE LOTES POR PROCESO</div>
+      <Tabla
+        vacio="Sin lotes en semiterminado."
+        columnas={[
+          { key: "procesoDondeQuedo", label: "Proceso Donde Quedó" },
+          { key: "numLote", label: "Num Lote", align: "right" },
+          { key: "referencia", label: "Referencia" },
+          { key: "categoria", label: "Categoría" },
+          { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
+          { key: "ultimaSalida", label: "Última Salida (sin entrega)" },
+        ]}
+        filas={filas}
+      />
+    </div>
+  );
+}
 function BloqueCronograma({ data }) {
   const { filas, semanas, sinSemana } = data;
   if (!filas.length) return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Sin lotes en planta con fecha de entrega confirmada.</div>;
@@ -653,7 +738,7 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
   const cargasOrdenadas = [...cargas].sort((a, b) => b.fecha.localeCompare(a.fecha));
   const cargaActiva = cargaId ? cargasOrdenadas.find((c) => c.id === cargaId) || cargasOrdenadas[0] : cargasOrdenadas[0];
   const lotes = useMemo(() => cargaActiva?.lotes || [], [cargaActiva]);
-  const reporteSemiterminado = useMemo(() => generarSemiterminado(lotes), [lotes]);
+  const reporteSemiterminado = useMemo(() => generarSeguimientoSemiterminado(lotes), [lotes]);
   const reportePlanta = useMemo(() => generarAgrupadoPlanta(lotes, "nombrePlanta"), [lotes]);
   const reporteCliente = useMemo(() => generarAgrupadoPlanta(lotes, "nombreCliente"), [lotes]);
   const reporteClienteAgrupado = useMemo(() => generarAgrupadoPlanta(lotes, "clienteAgrupado"), [lotes]);
@@ -674,14 +759,42 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
   async function exportarExcel() {
     const XLSX = await import("xlsx");
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(
-      wb,
-      XLSX.utils.aoa_to_sheet([
-        ["Num Lote", "Referencia", "Categoría", "Cant. Semiterminado", "Proceso Donde Quedó", "Última Salida (sin entrega)"],
-        ...reporteSemiterminado.map((r) => [r.numLote, r.referencia, r.categoria, r.cantSemiterminado, r.procesoDondeQuedo, r.ultimaSalida]),
-      ]),
-      "Informe Semiterminado"
-    );
+    // "Informe de Seguimiento": dashboard con KPIs + resumen por proceso (con
+    // % de unidades) + detalle de lotes lado a lado, en vez de la antigua
+    // hoja plana "Informe Semiterminado".
+    {
+      const { filas: segFilas, resumen: segResumen, totalLotes: segTotalLotes, totalUnidades: segTotalUnidades, procesosDistintos: segProcesos } = reporteSemiterminado;
+      const resumenRows = [
+        ["Proceso Donde Quedó", "Lotes", "Unidades", "% Unidades"],
+        ...segResumen.map((r) => [r.proceso, r.lotes, r.unidades, `${Math.round(r.pct * 100)}%`]),
+        ["TOTAL", segTotalLotes, segTotalUnidades, "100%"],
+      ];
+      const detalleRows = [
+        ["Proceso Donde Quedó", "Num Lote", "Referencia", "Categoría", "Unidades", "Última Salida"],
+        ...segFilas.map((f) => [f.procesoDondeQuedo, f.numLote, f.referencia, f.categoria, f.unidades, f.ultimaSalida]),
+      ];
+      const maxRows = Math.max(resumenRows.length, detalleRows.length);
+      const combined = [];
+      for (let i = 0; i < maxRows; i++) {
+        const left = resumenRows[i] || ["", "", "", ""];
+        const right = detalleRows[i] || ["", "", "", "", "", ""];
+        combined.push([...left, "", ...right]);
+      }
+      XLSX.utils.book_append_sheet(
+        wb,
+        XLSX.utils.aoa_to_sheet([
+          ["DASHBOARD DE SEGUIMIENTO — SEMITERMINADO POR PROCESO"],
+          ["Lotes en semiterminado agrupados por el proceso donde quedaron (Hoja1)"],
+          [],
+          ["Total Lotes", "Total Unidades", "Procesos Distintos"],
+          [segTotalLotes, segTotalUnidades, segProcesos],
+          [],
+          ["RESUMEN POR PROCESO", "", "", "", "", "DETALLE DE LOTES POR PROCESO"],
+          ...combined,
+        ]),
+        "Informe de Seguimiento"
+      );
+    }
     function hojaAgrupada(nombreHoja, primeraCol, data) {
       const filas = [
         [primeraCol, "Categoría", "Num Lote", "Referencia", "Cant. en Planta"],
@@ -844,20 +957,7 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
               </button>
             ))}
           </div>
-          {tab === "semiterminado" && (
-            <Tabla
-              vacio="Sin lotes en semiterminado."
-              columnas={[
-                { key: "numLote", label: "Num Lote" },
-                { key: "referencia", label: "Referencia" },
-                { key: "categoria", label: "Categoría" },
-                { key: "cantSemiterminado", label: "Cant. Semiterminado", align: "right", render: (f) => fmtNum(f.cantSemiterminado) },
-                { key: "procesoDondeQuedo", label: "Proceso Donde Quedó" },
-                { key: "ultimaSalida", label: "Última Salida (sin entrega)" },
-              ]}
-              filas={reporteSemiterminado}
-            />
-          )}
+          {tab === "semiterminado" && <BloqueSeguimientoSemiterminado data={reporteSemiterminado} />}
           {tab === "en_planta" && <BloqueAgrupado titulo="Planta" primeraColLabel="Nombre Planta" data={reportePlanta} />}
           {tab === "por_cliente" && <BloqueAgrupado titulo="Cliente" primeraColLabel="Nombre Cliente" data={reporteCliente} />}
           {tab === "cliente_agrupado" && <BloqueAgrupado titulo="Cliente Agrupado" primeraColLabel="Cliente Agrupado" data={reporteClienteAgrupado} />}
