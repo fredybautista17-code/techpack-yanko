@@ -1024,13 +1024,16 @@ function EditProtoModal({ proto, onSave, onClose, config }) {
   );
 }
 function NewCapsulaModal({ onSave, onClose, config }) {
-  const [form, setForm] = useState({ name: "", season: "", cliente: "" });
+  const [form, setForm] = useState({ name: "", season: "", cliente: "", assignedTo: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function save() { if (!form.name) return; onSave({ id: uid(), ...form, createdAt: today(), referencias: [], ilustracionEstado: "pendiente", observacionesIlustracion: [] }); onClose(); }
   return (
     <Modal title="Nueva Cápsula" onClose={onClose}>
       <Field label="Nombre"><FInput value={form.name} onChange={set("name")} placeholder="Ej: Cápsula Otoño 2025" /></Field>
-      <Field label="Temporada / Código"><FInput value={form.season} onChange={set("season")} placeholder="Ej: AW25 o C0127" /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Temporada / Código"><FInput value={form.season} onChange={set("season")} placeholder="Ej: AW25 o C0127" /></Field>
+        <Field label="Responsable"><FSel value={form.assignedTo} onChange={set("assignedTo")} options={config?.disenadores || []} /></Field>
+      </div>
       <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config?.clientes || []).map((c) => c.nombre)} /></Field>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
@@ -1759,7 +1762,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
   return (
     <div>
       {editCap && (
-        <EditNombreModal item={editCap} tipo="capsula"
+        <EditNombreModal item={editCap} tipo="capsula" config={config}
           onSave={(p) => { onEditCapsula(editCap.id, p); setEditCap(null); }}
           onClose={() => setEditCap(null)}
         />
@@ -1804,7 +1807,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
             <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, flexWrap: "wrap", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: 20 }}>🗂</span>
-                <div><div style={{ fontWeight: 800, fontSize: 16, color: T.ink }}>{cap.name}</div><div style={{ fontSize: 12, color: T.slate }}>{cap.cliente ? `${cap.cliente} · ` : ""}{cap.season} · {cap.referencias.length} ref · {cap.createdAt}</div></div>
+                <div><div style={{ fontWeight: 800, fontSize: 16, color: T.ink }}>{cap.name}</div><div style={{ fontSize: 12, color: T.slate }}>{cap.cliente ? `${cap.cliente} · ` : ""}{cap.season} · {cap.referencias.length} ref · {cap.createdAt}{cap.assignedTo ? ` · 👤 ${cap.assignedTo}` : ""}</div></div>
               </div>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 {od > 0 && <span style={{ padding: "3px 10px", background: T.coralBg, color: T.coral, borderRadius: 6, fontSize: 12, fontWeight: 700 }}>⚑ {od}</span>}
@@ -2837,14 +2840,16 @@ function CambiarClaveModal({ currentUser, onSave, onClose }) {
     </Modal>
   );
 }
-function EditNombreModal({ item, tipo, onSave, onClose }) {
+function EditNombreModal({ item, tipo, config, onSave, onClose }) {
   const [nombre, setNombre] = useState(item?.name || "");
   const [season, setSeason] = useState(item?.season || "");
-  function save() { if (!nombre.trim()) return; onSave({ name: nombre.trim(), ...(tipo === "capsula" ? { season: season.trim() } : {}) }); onClose(); }
+  const [assignedTo, setAssignedTo] = useState(item?.assignedTo || "");
+  function save() { if (!nombre.trim()) return; onSave({ name: nombre.trim(), ...(tipo === "capsula" ? { season: season.trim(), assignedTo } : {}) }); onClose(); }
   return (
     <Modal title={`Editar ${tipo === "capsula" ? "Cápsula" : "Prototipo"}`} onClose={onClose} width={420}>
       <Field label="Nombre"><input value={nombre} onChange={(e) => setNombre(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} /></Field>
       {tipo === "capsula" && <Field label="Temporada / Código"><input value={season} onChange={(e) => setSeason(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} /></Field>}
+      {tipo === "capsula" && <Field label="Responsable"><FSel value={assignedTo} onChange={setAssignedTo} options={config?.disenadores || []} /></Field>}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn onClick={save}>Guardar cambios</Btn>
@@ -3106,7 +3111,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   return (
     <div>
       {editItem && (
-        <EditNombreModal item={editItem.item} tipo={editItem.tipo}
+        <EditNombreModal item={editItem.item} tipo={editItem.tipo} config={config}
           onSave={(p) => { if (editItem.tipo === "proto") onUpdateProto(editItem.item.id, p); else onUpdateCapsula(editItem.item.id, p); setEditItem(null); }}
           onClose={() => setEditItem(null)}
         />
