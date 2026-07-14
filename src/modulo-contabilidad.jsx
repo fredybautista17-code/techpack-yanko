@@ -2636,6 +2636,31 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
           Aún no has creado ninguna proyección. Usa "+ Nueva Proyección" para armar el presupuesto del próximo mes.
         </div>
       ) : (
+        <>
+          {/* Selector de mes: todos los meses quedan a la vista como chips —
+              al hacer clic en uno, la página se desplaza directo a esa
+              tarjeta, sin tener que bajar buscando entre todas. */}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
+            {lista.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => document.getElementById(`proy-${p.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 20,
+                  border: `1.5px solid ${p.estado === "terminado" ? C.green : C.amber}`,
+                  background: p.estado === "terminado" ? C.greenBg : C.amberBg,
+                  color: p.estado === "terminado" ? C.green : C.amber,
+                  fontWeight: 700,
+                  fontSize: 12,
+                  cursor: "pointer",
+                  textTransform: "capitalize",
+                }}
+              >
+                {fmtMesLargo(p.mes)}
+              </button>
+            ))}
+          </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {lista.map((p) => {
             const ingresosMes = movimientos.filter((m) => m.tipo === "ingreso" && m.fecha?.slice(0, 7) === p.mes);
@@ -2663,7 +2688,7 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
               return s + (m.valor - asignado);
             }, 0);
             return (
-              <div key={p.id} style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20 }}>
+              <div key={p.id} id={`proy-${p.id}`} style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20, scrollMarginTop: 20 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: terminado ? 14 : 0 }}>
                   <div>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -2793,6 +2818,7 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
             );
           })}
         </div>
+        </>
       )}
     </div>
   );
