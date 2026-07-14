@@ -1122,13 +1122,18 @@ function PromoteModal({ proto, capsulas, onSave, onClose, config }) {
 // prioridad, tipo (género) y tipo de desarrollo. Si ya existe un registro
 // activo para este ítem (`existing`), edita esos datos en vez de crear uno
 // nuevo.
-function EnviarTallerModal({ item, existing, config, onSave, onClose }) {
+function EnviarTallerModal({ item, existing, ultimoTaller, config, onSave, onClose }) {
+  // "existing" es null cuando el registro anterior ya quedó en "Enviado"
+  // (se va a crear una ronda nueva). Aun así, el Taller/Prioridad/Tipo se
+  // rellenan con lo último conocido (ultimoTaller) para no dejar el campo
+  // Taller vacío y bloquear el botón Guardar solo por eso — sobre todo
+  // cuando lo único que se quiere es dejar una nota de Modificar.
   const [form, setForm] = useState({
-    taller: existing?.taller || "",
+    taller: existing?.taller || ultimoTaller?.taller || "",
     fechaEntrega: existing?.fechaEntrega || "",
-    prioridad: existing?.prioridad || "Media",
-    tipo: existing?.tipo || "",
-    tipoDesarrollo: existing?.tipoDesarrollo || "",
+    prioridad: existing?.prioridad || ultimoTaller?.prioridad || "Media",
+    tipo: existing?.tipo || ultimoTaller?.tipo || "",
+    tipoDesarrollo: existing?.tipoDesarrollo || ultimoTaller?.tipoDesarrollo || "",
     estado: existing?.estado || "pendiente",
     notaModificar: existing?.notaModificar || "",
   });
@@ -1176,11 +1181,35 @@ function EnviarTallerModal({ item, existing, config, onSave, onClose }) {
     </Modal>
   );
 }
+// Nota obligatoria al devolver una pieza "En revisión" mientras está en la
+// etapa de Ilustración — permite medir por diseñador cuántas veces la
+// Dirección Creativa le pidió cambios a la propuesta inicial (Estadísticas).
+function NotaRevisionModal({ onSave, onClose }) {
+  const [nota, setNota] = useState("");
+  function save() {
+    if (!nota.trim()) return;
+    onSave(nota.trim());
+    onClose();
+  }
+  return (
+    <Modal title="Enviar a Revisión — Ilustración" onClose={onClose} width={460}>
+      <div style={{ padding: "10px 14px", background: T.amberBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.amber, fontWeight: 600 }}>🎨 Registra qué hay que cambiar en la propuesta — queda en Observaciones y cuenta para las Estadísticas del diseñador.</div>
+      <Field label="¿Qué hay que cambiar?">
+        <textarea value={nota} onChange={(e) => setNota(e.target.value)} rows={4} placeholder="Ej: ajustar proporción de manga, cambiar tono de color, revisar cuello..." style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.coral}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical" }} />
+      </Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn variant="amber" onClick={save} disabled={!nota.trim()}>Enviar a Revisión</Btn>
+      </div>
+    </Modal>
+  );
+}
 function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, onPromote, notify, onLogHistorial, capsula, stages, currentUser, config, cronogramaMuestras, onSendTaller, onUpdateTaller }) {
   const [tab, setTab] = useState("overview");
   const [showEdit, setShowEdit] = useState(false);
   const [showEnviado, setShowEnviado] = useState(false);
   const [showTaller, setShowTaller] = useState(false);
+  const [showRevision, setShowRevision] = useState(false);
   // Registro más reciente de este ítem en el Cronograma de Muestras (si
   // existe). Se usa para mostrar su estado aquí mismo y para que el botón
   // "Enviar a Taller de Muestra" edite ese registro en vez de duplicarlo.
@@ -1193,9 +1222,12 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
   const canDeclinar = perms.declinar;
   const stageIdx = stages.findIndex((s) => s.id === item.currentStage);
   function patch(p) { onUpdateItem(p); }
-  function changeStatus(s, extraData) {
+  // extraObs: observaciones adicionales a insertar en la Hoja de Vida en el
+  // MISMO patch que el cambio de estado (para no perder ninguna de las dos
+  // por escribir el estado local desactualizado en dos llamadas seguidas).
+  function changeStatus(s, extraData, extraObs) {
     const obs = { id: uid(), user: currentUser, role, text: `Estado → "${STATUS[s]?.label}".`, date: nowISO(), type: "update", done: false };
-    patch({ status: s, ...(extraData || {}), observations: [...item.observations, obs] });
+    patch({ status: s, ...(extraData || {}), observations: [...item.observations, ...(extraObs || []), obs] });
     if (s === "aprobado") notify({ id: uid(), icon: "✅", title: "Aprobado", msg: item.name });
     // Historial por cliente/mes: un prototipo se registra al Aprobarse (se
     // promueva o no después a una cápsula); una referencia de cápsula se
@@ -1217,6 +1249,16 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
     }
   }
   function handleCotizacion() { changeStatus("enviado_cotizacion"); }
+  // Cuando la Dirección Creativa devuelve una pieza que está en la etapa de
+  // Ilustración, se exige escribir qué hay que cambiar — queda como
+  // Observación (Hoja de Vida) y con un "type" propio (revision_ilustracion)
+  // para poder contar en Estadísticas cuántas rondas de revisión tuvo cada
+  // diseñador en esa etapa, sin depender de leer el texto.
+  function handleMarcarRevision(nota) {
+    const obsNota = { id: uid(), user: currentUser, role, text: `🎨 Revisión de Ilustración: ${nota}`, date: nowISO(), type: "revision_ilustracion", done: false };
+    changeStatus("en_revision", {}, [obsNota]);
+    setTab("chat");
+  }
   function handleEnviado(transporteData) {
     const obs = { id: uid(), user: currentUser, role, text: `Enviado — Empresa: ${transporteData.empresa} · Guía: ${transporteData.guia || "N/A"} · Fecha: ${transporteData.fecha}`, date: nowISO(), type: "update", done: false };
     patch({ status: "enviado", envioEmpresa: transporteData.empresa, envioFecha: transporteData.fecha, envioGuia: transporteData.guia || "", observations: [...item.observations, obs] });
@@ -1289,7 +1331,8 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
       {showEdit && kind === "proto" && <EditProtoModal proto={item} config={config} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
       {showEdit && kind === "ref" && <EditRefModal refData={item} config={config} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
       {showEnviado && <EnviadoModal onSave={handleEnviado} onClose={() => setShowEnviado(false)} />}
-      {showTaller && <EnviarTallerModal item={item} existing={tallerMasReciente?.estado !== "enviado" ? tallerMasReciente : null} config={config} onSave={handleGuardarTaller} onClose={() => setShowTaller(false)} />}
+      {showTaller && <EnviarTallerModal item={item} existing={tallerMasReciente?.estado !== "enviado" ? tallerMasReciente : null} ultimoTaller={tallerMasReciente} config={config} onSave={handleGuardarTaller} onClose={() => setShowTaller(false)} />}
+      {showRevision && <NotaRevisionModal onSave={handleMarcarRevision} onClose={() => setShowRevision(false)} />}
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
         <button onClick={onBack} style={{ background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, color: T.ink }}>← Volver</button>
         <div style={{ flex: 1 }}>
@@ -1341,7 +1384,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
                 {noFinalState && !["enviado_cotizacion", "enviar_cliente", "enviado"].includes(st) && (
                   <>
                     <Btn variant="ghost" onClick={() => changeStatus("en_proceso")}>En proceso</Btn>
-                    <Btn variant="amber" onClick={() => changeStatus("en_revision")}>En revisión</Btn>
+                    <Btn variant="amber" onClick={() => (item.currentStage === "ilustracion" ? setShowRevision(true) : changeStatus("en_revision"))}>En revisión</Btn>
                   </>
                 )}
                 {noFinalState && st !== "enviado_cotizacion" && st !== "enviar_cliente" && st !== "enviado" && <Btn variant="ghost" onClick={handleCotizacion}>📤 Cotización</Btn>}
@@ -2457,7 +2500,14 @@ function EstadisticasView({ protos, capsulas, stages, config }) {
       // (Certeza 40 y Plazos 25) se reescalan para que sigan sumando 100%,
       // conservando la misma importancia relativa entre ellos.
       const puntaje = certeza === null ? null : Math.round((certeza * 40 + pctPlazoP * 25) / 65);
-      return { name: p, t, ap, dec, en, enviados, vencidos, puntaje, pctAp: t ? Math.round((ap / t) * 100) : 0, pctDec: t ? Math.round((dec / t) * 100) : 0, certeza };
+      // Rondas de revisión en Ilustración: cuántas veces la Dirección
+      // Creativa devolvió una propuesta de este diseñador con cambios,
+      // pedidos desde el botón "En revisión" mientras la pieza estaba en
+      // esa etapa. Es aparte del Puntaje (no lo penaliza) — es una señal de
+      // proceso, no de resultado final.
+      const rondasRevision = items.reduce((sum, x) => sum + (x.observations || []).filter((o) => o.type === "revision_ilustracion").length, 0);
+      const promRevision = t ? Math.round((rondasRevision / t) * 10) / 10 : 0;
+      return { name: p, t, ap, dec, en, enviados, vencidos, puntaje, pctAp: t ? Math.round((ap / t) * 100) : 0, pctDec: t ? Math.round((dec / t) * 100) : 0, certeza, rondasRevision, promRevision };
     }).filter((x) => x.t > 0).sort((a, b) => b.t - a.t);
   }
   const protosPorResp = porResponsable(protos);
@@ -2501,6 +2551,7 @@ function EstadisticasView({ protos, capsulas, stages, config }) {
             <span style={{ padding: "2px 8px", borderRadius: 20, background: T.denimBg, color: T.denim, fontWeight: 700 }}>⚙ {p.en}</span>
             <span style={{ padding: "2px 8px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700 }}>✕ {p.dec}</span>
             <span title="Certeza: aprobados sobre lo ya resuelto (aprobado+declinado)" style={{ padding: "2px 8px", borderRadius: 20, background: T.violetBg, color: T.violet, fontWeight: 700 }}>🎯 {p.certeza === null ? "—" : `${p.certeza}%`}</span>
+            <span title="Rondas de revisión en Ilustración: veces que la Dirección Creativa devolvió una propuesta con cambios · promedio por pieza" style={{ padding: "2px 8px", borderRadius: 20, background: T.amberBg, color: T.amber, fontWeight: 700 }}>🎨 {p.rondasRevision} ({p.promRevision}/pieza)</span>
             <span title="Puntaje individual: Certeza + Cumplimiento de plazos" style={{ padding: "2px 8px", borderRadius: 20, background: T.ink, color: T.white, fontWeight: 700 }}>⭐ {p.puntaje === null ? "—" : p.puntaje}</span>
           </div>
         </div>
