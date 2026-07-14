@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import ModuloCorte from "./modulo-corte";
 import ModuloContabilidad from "./modulo-contabilidad";
 import ModuloPlaneacion from "./modulo-planeacion";
@@ -2506,15 +2506,16 @@ function EstadisticasView({ protos, capsulas, stages, config }) {
   // referencias sin resolver, está "en curso"; si ya se resolvieron todas
   // pero al menos una quedó Declinada, nunca puede llegar a cumplida.
   function estadoCapsula(c) {
-    if (!c.referencias.length) return "sin_referencias";
-    const pendientes = c.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status)).length;
+    const refs = c.referencias || [];
+    if (!refs.length) return "sin_referencias";
+    const pendientes = refs.filter((r) => !["aprobado", "declinado"].includes(r.status)).length;
     if (pendientes > 0) return "en_curso";
-    return c.referencias.some((r) => r.status === "declinado") ? "con_declinaciones" : "cumplida";
+    return refs.some((r) => r.status === "declinado") ? "con_declinaciones" : "cumplida";
   }
   const capsulasFiltradas = capsulas.filter((c) => {
     const byYear = !yearFilter || c.createdAt?.slice(0, 4) === yearFilter;
     const byMonth = monthFilter === "todos" || parseInt(c.createdAt?.slice(5, 7)) - 1 === parseInt(monthFilter);
-    const byPerson = personFilter === "todos" || c.referencias.some((r) => r.assignedTo === personFilter);
+    const byPerson = personFilter === "todos" || (c.referencias || []).some((r) => r.assignedTo === personFilter);
     return byYear && byMonth && byPerson;
   });
   const capsulasCumplidas = capsulasFiltradas.filter((c) => estadoCapsula(c) === "cumplida").length;
@@ -3960,7 +3961,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   );
 }
 
-export default function App() {
+function AppInner() {
   const [appState, setAppState] = useState("loading");
   const [currentUser, setCurrentUser] = useState(null);
   const [users, setUsers] = useState([]);
@@ -4514,5 +4515,43 @@ export default function App() {
         </div>
       </div>
     </div>
+  );
+}
+// Red de seguridad: si algo lanza un error inesperado durante el render (por
+// ejemplo una extensión del navegador tipo Google Translate o un bloqueador
+// de anuncios que modifica el HTML por fuera de React, lo que después hace
+// que React no pueda actualizar ese mismo nodo y lance errores como "Failed
+// to execute 'removeChild'"), esto evita que TODA la aplicación se quede en
+// blanco — en vez de eso muestra un mensaje con un botón para recargar.
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(error, info) {
+    console.error("TechPack — error capturado por ErrorBoundary:", error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16, padding: 24, fontFamily: "system-ui, sans-serif", textAlign: "center", background: "#FAF7F2" }}>
+          <div style={{ fontSize: 40 }}>⚠️</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: "#1A1A2E" }}>Algo salió mal al mostrar esta pantalla</div>
+          <div style={{ fontSize: 14, color: "#5C5C70", maxWidth: 420 }}>Esto a veces lo causa una extensión del navegador (como Google Translate o un bloqueador de anuncios). Prueba recargar la página; si sigue pasando, avísale a soporte.</div>
+          <button onClick={() => window.location.reload()} style={{ padding: "10px 20px", background: "#1A1A2E", color: "#fff", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 14, cursor: "pointer" }}>Recargar</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
   );
 }
