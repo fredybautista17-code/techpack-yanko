@@ -3045,11 +3045,23 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
             {presupuestosMes.map((p) => {
               const abonado = abonadoDe(p.cliente, p.categoria);
               const pct = p.monto > 0 ? Math.min((abonado / p.monto) * 100, 999) : 0;
+              const tono = pct >= 100 ? C.green : pct >= 50 ? C.amber : C.red;
+              const tonoBg = pct >= 100 ? C.greenBg : pct >= 50 ? C.amberBg : C.redBg;
               return (
-                <div key={p.id} style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 18 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <Avatar name={p.cliente} size={30} />
+                <div
+                  key={p.id}
+                  style={{
+                    background: C.white,
+                    borderRadius: 16,
+                    border: `1px solid ${C.border}`,
+                    borderLeft: `4px solid ${tono}`,
+                    padding: "18px 22px",
+                    boxShadow: "0 1px 3px rgba(26,26,46,0.06), 0 1px 2px rgba(26,26,46,0.04)",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <Avatar name={p.cliente} size={32} />
                       <span style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{p.cliente}</span>
                       {p.categoria && (
                         <span
@@ -3067,7 +3079,16 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
                       )}
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <span style={{ fontSize: 12, fontWeight: 700, color: pct >= 100 ? C.green : C.amber }}>
+                      <span
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 800,
+                          color: tono,
+                          background: tonoBg,
+                          padding: "4px 10px",
+                          borderRadius: 20,
+                        }}
+                      >
                         {fmtCOP(abonado)} / {fmtCOP(p.monto)} · {Math.round(pct)}%
                       </span>
                       {isAdmin && (
@@ -3089,13 +3110,14 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
                       )}
                     </div>
                   </div>
-                  <div style={{ height: 9, borderRadius: 5, background: C.canvas, overflow: "hidden" }}>
+                  <div style={{ height: 10, borderRadius: 20, background: C.canvas, overflow: "hidden" }}>
                     <div
                       style={{
                         height: "100%",
                         width: `${Math.min(pct, 100)}%`,
-                        background: pct >= 100 ? C.green : C.amber,
-                        borderRadius: 5,
+                        background: tono,
+                        borderRadius: 20,
+                        transition: "width 0.3s ease",
                       }}
                     />
                   </div>
