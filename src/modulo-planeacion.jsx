@@ -371,6 +371,9 @@ function generarCronograma(lotes) {
       categoria: l.categoria,
       unidades: l.invPlanta,
       semana: l.semanaEntregaISO,
+      // Fecha Entrega Conf exacta del lote (no solo el lunes de su semana) —
+      // se usa en el detalle emergente al hacer clic en una semana.
+      fechaEntregaConf: l.fechaEntregaConfISO,
     }))
     .sort((a, b) => a.planta.localeCompare(b.planta) || a.categoria.localeCompare(b.categoria) || a.numLote - b.numLote);
   const sinSemana = enPlanta.filter((l) => !l.semanaEntregaISO);
@@ -660,15 +663,36 @@ function BloqueSeguimientoSemiterminado({ data }) {
 }
 function BloqueCronograma({ data }) {
   const { filas, semanas, sinSemana } = data;
+  const [semanaSel, setSemanaSel] = useState(null);
   if (!filas.length) return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Sin lotes en planta con fecha de entrega confirmada.</div>;
   const totalPorSemana = semanas.map((s) => filas.filter((f) => f.semana === s).reduce((sum, f) => sum + f.unidades, 0));
   const lotesPorSemana = semanas.map((s) => filas.filter((f) => f.semana === s).length);
+  const filasSemanaSel = semanaSel ? filas.filter((f) => f.semana === semanaSel).sort((a, b) => (a.fechaEntregaConf || "").localeCompare(b.fechaEntregaConf || "") || a.numLote - b.numLote) : [];
   return (
     <div>
       {sinSemana.length > 0 && (
         <div style={{ padding: "8px 14px", background: C.amberBg, borderRadius: 8, marginBottom: 12, fontSize: 12, color: C.amber, fontWeight: 600 }}>
           {sinSemana.length} lote{sinSemana.length !== 1 ? "s" : ""} en planta sin fecha de entrega confirmada — no aparece{sinSemana.length !== 1 ? "n" : ""} agrupado{sinSemana.length !== 1 ? "s" : ""} por semana.
         </div>
+      )}
+      {semanaSel && (
+        <Modal title={`Lotes que llegan la semana del ${fmtFechaISO(semanaSel)}`} onClose={() => setSemanaSel(null)} width={720}>
+          <div style={{ marginBottom: 14, fontSize: 12, color: C.slate }}>
+            {filasSemanaSel.length} lote{filasSemanaSel.length !== 1 ? "s" : ""} · {fmtNum(filasSemanaSel.reduce((s, f) => s + f.unidades, 0))} unidades en total
+          </div>
+          <Tabla
+            vacio="Sin lotes en esta semana."
+            columnas={[
+              { key: "numLote", label: "Num Lote" },
+              { key: "referencia", label: "Referencia" },
+              { key: "planta", label: "Planta" },
+              { key: "categoria", label: "Categoría" },
+              { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
+              { key: "fechaEntregaConf", label: "Fecha Entrega Conf.", render: (f) => fmtFechaISO(f.fechaEntregaConf) },
+            ]}
+            filas={filasSemanaSel}
+          />
+        </Modal>
       )}
       <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto", maxHeight: 560 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
@@ -678,7 +702,14 @@ function BloqueCronograma({ data }) {
                 <th key={h} style={{ padding: "8px 10px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
               ))}
               {semanas.map((s) => (
-                <th key={s} style={{ padding: "8px 10px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{fmtFechaISO(s)}</th>
+                <th
+                  key={s}
+                  onClick={() => setSemanaSel(s)}
+                  title="Ver lotes de esta semana"
+                  style={{ padding: "8px 10px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap", cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }}
+                >
+                  {fmtFechaISO(s)}
+                </th>
               ))}
               <th style={{ padding: "8px 10px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>Total Unid.</th>
             </tr>
@@ -1193,4 +1224,3 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     </div>
   );
 }
-
