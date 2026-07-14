@@ -546,6 +546,21 @@ const ESTADO_MUESTRA = {
 const PRIORIDAD_MUESTRA_COLOR = { "Media": T.denim, "Urgente": T.amber, "Súper urgente": T.coral, "Espera": T.slate, "Modificación": T.violet };
 const TIPO_GENERO_MUESTRA = ["Dama", "Caballero", "Niña", "Niño"];
 const TIPO_DESARROLLO_MUESTRA = ["Cápsula nueva", "Contramuestra para producción", "Tela nueva"];
+// Aprobación de Ilustración a nivel de Cápsula: una cápsula se puede crear
+// libremente (nombre/temporada/cliente, sin referencias), pero para
+// agregarle referencias — sea creando una nueva o promoviendo un prototipo —
+// la Dirección Creativa debe aprobar primero la ilustración/concepto de la
+// cápsula completa. Empieza "pendiente", puede ir a "en_revision" (con nota
+// obligatoria) y finalmente "aprobado".
+const ILUSTRACION_CAPSULA_ESTADO = {
+  pendiente: { label: "Ilustración pendiente de aprobación", color: T.amber, bg: T.amberBg },
+  en_revision: { label: "Ilustración en revisión", color: T.coral, bg: T.coralBg },
+  aprobado: { label: "Ilustración aprobada", color: T.jade, bg: T.jadeBg },
+};
+// Compatibilidad con cápsulas creadas antes de este control: si nunca se le
+// asignó "ilustracionEstado", se trata como ya aprobada (no se le retiene
+// retroactivamente la posibilidad de agregar referencias).
+function ilustracionAprobada(cap) { return !cap.ilustracionEstado || cap.ilustracionEstado === "aprobado"; }
 // Busca en las observaciones de un ítem la fecha real en la que pasó a un
 // estado dado (ej. "Aprobado"), usada por el backfill de Historial para
 // reconstruir fechas reales en vez de usar "hoy" para ítems que ya estaban
@@ -1011,7 +1026,7 @@ function EditProtoModal({ proto, onSave, onClose, config }) {
 function NewCapsulaModal({ onSave, onClose, config }) {
   const [form, setForm] = useState({ name: "", season: "", cliente: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
-  function save() { if (!form.name) return; onSave({ id: uid(), ...form, createdAt: today(), referencias: [] }); onClose(); }
+  function save() { if (!form.name) return; onSave({ id: uid(), ...form, createdAt: today(), referencias: [], ilustracionEstado: "pendiente", observacionesIlustracion: [] }); onClose(); }
   return (
     <Modal title="Nueva Cápsula" onClose={onClose}>
       <Field label="Nombre"><FInput value={form.name} onChange={set("name")} placeholder="Ej: Cápsula Otoño 2025" /></Field>
@@ -1082,7 +1097,11 @@ function EnviadoModal({ onSave, onClose }) {
   );
 }
 function PromoteModal({ proto, capsulas, onSave, onClose, config }) {
-  const [capId, setCapId] = useState(capsulas[0]?.id || "");
+  // Solo se puede promover a una cápsula cuya ilustración/concepto ya haya
+  // sido aprobado por la Dirección Creativa (las creadas antes de este
+  // control se tratan como aprobadas, ver ilustracionAprobada).
+  const capsulasDisponibles = capsulas.filter(ilustracionAprobada);
+  const [capId, setCapId] = useState(capsulasDisponibles[0]?.id || "");
   const [refName, setRefName] = useState(proto.name);
   const [refCode, setRefCode] = useState("");
   const [cliente, setCliente] = useState("");
@@ -1098,11 +1117,15 @@ function PromoteModal({ proto, capsulas, onSave, onClose, config }) {
   return (
     <Modal title={`Promover "${proto.name}" → Referencia`} onClose={onClose} width={520}>
       <div style={{ padding: "10px 14px", background: T.jadeBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.jade, fontWeight: 600 }}>✓ BOM, POM, Categoría y Silueta se copiarán automáticamente</div>
-      <Field label="Cápsula destino">
-        <select value={capId} onChange={(e) => setCapId(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
-          {capsulas.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.season})</option>)}
-        </select>
-      </Field>
+      {!capsulasDisponibles.length ? (
+        <div style={{ padding: "10px 14px", background: T.coralBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.coral, fontWeight: 600 }}>⚠ No hay cápsulas con ilustración aprobada todavía. Pide a la Dirección Creativa que apruebe una cápsula antes de promover.</div>
+      ) : (
+        <Field label="Cápsula destino">
+          <select value={capId} onChange={(e) => setCapId(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
+            {capsulasDisponibles.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.season})</option>)}
+          </select>
+        </Field>
+      )}
       <Field label="Nombre de la referencia"><FInput value={refName} onChange={setRefName} placeholder="Nombre final" /></Field>
       <Field label="Código de referencia"><FInput value={refCode} onChange={setRefCode} placeholder="Ej: BC-002" /></Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -1111,7 +1134,7 @@ function PromoteModal({ proto, capsulas, onSave, onClose, config }) {
       </div>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn variant="success" onClick={save}>⬆ Promover</Btn>
+        <Btn variant="success" onClick={save} disabled={!capsulasDisponibles.length}>⬆ Promover</Btn>
       </div>
     </Modal>
   );
@@ -1184,7 +1207,7 @@ function EnviarTallerModal({ item, existing, ultimoTaller, config, onSave, onClo
 // Nota obligatoria al devolver una pieza "En revisión" mientras está en la
 // etapa de Ilustración — permite medir por diseñador cuántas veces la
 // Dirección Creativa le pidió cambios a la propuesta inicial (Estadísticas).
-function NotaRevisionModal({ onSave, onClose }) {
+function NotaRevisionModal({ title, hint, onSave, onClose }) {
   const [nota, setNota] = useState("");
   function save() {
     if (!nota.trim()) return;
@@ -1192,8 +1215,8 @@ function NotaRevisionModal({ onSave, onClose }) {
     onClose();
   }
   return (
-    <Modal title="Enviar a Revisión — Ilustración" onClose={onClose} width={460}>
-      <div style={{ padding: "10px 14px", background: T.amberBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.amber, fontWeight: 600 }}>🎨 Registra qué hay que cambiar en la propuesta — queda en Observaciones y cuenta para las Estadísticas del diseñador.</div>
+    <Modal title={title || "Enviar a Revisión — Ilustración"} onClose={onClose} width={460}>
+      <div style={{ padding: "10px 14px", background: T.amberBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.amber, fontWeight: 600 }}>{hint || "🎨 Registra qué hay que cambiar en la propuesta — queda en Observaciones y cuenta para las Estadísticas del diseñador."}</div>
       <Field label="¿Qué hay que cambiar?">
         <textarea value={nota} onChange={(e) => setNota(e.target.value)} rows={4} placeholder="Ej: ajustar proporción de manga, cambiar tono de color, revisar cuello..." style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.coral}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical" }} />
       </Field>
@@ -1201,6 +1224,20 @@ function NotaRevisionModal({ onSave, onClose }) {
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn variant="amber" onClick={save} disabled={!nota.trim()}>Enviar a Revisión</Btn>
       </div>
+    </Modal>
+  );
+}
+// Hilo de Observaciones propio de la Cápsula (no de cada referencia): queda
+// aquí el ida y vuelta de aprobación de la ilustración/concepto completo —
+// separado de la Hoja de Vida de las referencias individuales. Reutiliza el
+// mismo ChatPanel que ya se usa para observaciones de Prototipos/Referencias.
+function ObservacionesCapsulaModal({ capsula, currentUser, role, onSend, onMarkDone, onClose }) {
+  return (
+    <Modal title={`Observaciones de Ilustración — ${capsula.name}`} onClose={onClose} width={520}>
+      <ChatPanel observations={capsula.observacionesIlustracion || []} currentUser={currentUser} role={role}
+        onSend={(texto) => onSend(capsula.id, texto)}
+        onMarkDone={(obsId) => onMarkDone(capsula.id, obsId)}
+      />
     </Modal>
   );
 }
@@ -1665,11 +1702,16 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
     </div>
   );
 }
-function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, config }) {
+function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [editCap, setEditCap] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
+  const [revisionCap, setRevisionCap] = useState(null);
+  const [obsCapsula, setObsCapsula] = useState(null);
+  // Mismo permiso admin que ya se usa para aprobar/devolver "En revisión" en
+  // Prototipos (canAdmin en DetailView) — no se crea un rol nuevo.
+  const canAdminIlustracion = isAdmin || perms.admin;
   const FILTERS = [["todos", "Todos"], ["aprobado", "Aprobadas"], ["declinado", "Declinadas"], ["en_proceso", "En proceso"], ["en_revision", "En revisión"], ["enviado_cotizacion", "En cotización"], ["enviar_cliente", "Enviar al Cliente"], ["enviado", "Enviado"]];
   // El cliente de la cápsula (elegido al crearla) manda sobre el cliente
   // suelto de cada referencia — así toda la cápsula queda atribuida a un solo
@@ -1754,17 +1796,28 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
       {visibleCapsulas.map((cap) => {
         const refs = filteredRefs(cap);
         const od = cap.referencias.filter((r) => isOverdue(r, stages)).length;
+        const aprobada = ilustracionAprobada(cap);
+        const estadoIlustracion = ILUSTRACION_CAPSULA_ESTADO[cap.ilustracionEstado] || ILUSTRACION_CAPSULA_ESTADO.aprobado;
+        const rondasIlustracion = (cap.observacionesIlustracion || []).filter((o) => o.type === "revision_ilustracion_capsula").length;
         return (
           <div key={cap.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 20, overflow: "hidden" }}>
-            <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas }}>
+            <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, flexWrap: "wrap", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: 20 }}>🗂</span>
                 <div><div style={{ fontWeight: 800, fontSize: 16, color: T.ink }}>{cap.name}</div><div style={{ fontSize: 12, color: T.slate }}>{cap.cliente ? `${cap.cliente} · ` : ""}{cap.season} · {cap.referencias.length} ref · {cap.createdAt}</div></div>
               </div>
-              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 {od > 0 && <span style={{ padding: "3px 10px", background: T.coralBg, color: T.coral, borderRadius: 6, fontSize: 12, fontWeight: 700 }}>⚑ {od}</span>}
+                {!aprobada && <span title="La ilustración/concepto de la cápsula debe ser aprobado antes de poder agregarle referencias" style={{ padding: "3px 10px", background: estadoIlustracion.bg, color: estadoIlustracion.color, borderRadius: 6, fontSize: 11, fontWeight: 700 }}>🎨 {estadoIlustracion.label}{rondasIlustracion > 0 ? ` · ${rondasIlustracion} revisión${rondasIlustracion !== 1 ? "es" : ""}` : ""}</span>}
+                <Btn small variant="ghost" onClick={() => setObsCapsula(cap)}>💬 Observaciones{cap.observacionesIlustracion?.length ? ` (${cap.observacionesIlustracion.length})` : ""}</Btn>
+                {!aprobada && canAdminIlustracion && (
+                  <>
+                    <Btn small variant="success" onClick={() => onSetIlustracion(cap.id, "aprobado", null)}>✓ Aprobar Ilustración</Btn>
+                    {cap.ilustracionEstado !== "en_revision" && <Btn small variant="danger" onClick={() => setRevisionCap(cap)}>✕ En revisión</Btn>}
+                  </>
+                )}
                 {perms.editar && <Btn small variant="ghost" onClick={() => setEditCap(cap)}>✏ Editar</Btn>}
-                {perms.editar && <Btn small onClick={() => onNewRef(cap)}>+ Referencia</Btn>}
+                {perms.editar && (aprobada ? <Btn small onClick={() => onNewRef(cap)}>+ Referencia</Btn> : <span title="Requiere aprobación de Ilustración de la Dirección Creativa"><Btn small disabled>+ Referencia</Btn></span>)}
                 {isAdmin && <Btn small variant="danger" onClick={() => setConfirmDel(cap)}>🗑 Borrar</Btn>}
               </div>
             </div>
@@ -1778,6 +1831,24 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
           </div>
         );
       })}
+      {revisionCap && (
+        <NotaRevisionModal
+          title={`Ilustración en revisión — ${revisionCap.name}`}
+          hint="🎨 Registra qué hay que cambiar en la ilustración/concepto de la cápsula — queda en sus Observaciones de Ilustración."
+          onSave={(nota) => onSetIlustracion(revisionCap.id, "en_revision", nota)}
+          onClose={() => setRevisionCap(null)}
+        />
+      )}
+      {obsCapsula && (
+        <ObservacionesCapsulaModal
+          capsula={capsulas.find((c) => c.id === obsCapsula.id) || obsCapsula}
+          currentUser={currentUser}
+          role={role}
+          onSend={onSendObsCapsula}
+          onMarkDone={onMarkDoneObsCapsula}
+          onClose={() => setObsCapsula(null)}
+        />
+      )}
     </div>
   );
 }
@@ -4026,7 +4097,7 @@ export default function App() {
   // como Observación en el prototipo/referencia — mismo formato que
   // DetailView.handleGuardarTaller, para que quede en un solo lugar.
   function addObservacionCronograma(entry, texto) {
-    const obs = { id: uid(), user: currentUser, role, text: `🧵 Modificar (Taller de Muestra): ${texto}`, date: nowISO(), type: "info", done: false };
+    const obs = { id: uid(), user: currentUser?.name, role, text: `🧵 Modificar (Taller de Muestra): ${texto}`, date: nowISO(), type: "info", done: false };
     if (entry.kind === "proto") {
       const item = protos.find((p) => p.id === entry.itemId);
       if (item) updateProto(item.id, { observations: [...(item.observations || []), obs] });
@@ -4035,6 +4106,39 @@ export default function App() {
       const ref = cap?.referencias.find((r) => r.id === entry.itemId);
       if (cap && ref) updateRef(cap.id, ref.id, { observations: [...(ref.observations || []), obs] });
     }
+  }
+  // --- Aprobación de Ilustración en Cápsulas ---
+  // Antes de poder agregarle referencias a una cápsula (crear una nueva o
+  // promover un prototipo), la Dirección Creativa aprueba primero la
+  // ilustración/concepto de la cápsula completa. Cambia cap.ilustracionEstado
+  // Y agrega la observación correspondiente en UN solo patch (evita perder
+  // uno de los dos cambios por closures desactualizados si se llamaran por
+  // separado).
+  async function setIlustracionCapsula(capId, estado, nota) {
+    const obsCap = {
+      id: uid(), user: currentUser?.name, role,
+      text: `${estado === "aprobado" ? "✓ Ilustración aprobada" : "🎨 Ilustración en revisión"}${nota ? `: ${nota}` : ""}`,
+      date: nowISO(), type: estado === "en_revision" ? "revision_ilustracion_capsula" : "info", done: false,
+    };
+    const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, ilustracionEstado: estado, observacionesIlustracion: [...(c.observacionesIlustracion || []), obsCap] }));
+    await updateCapsulasAndSave(updated);
+    const cap = updated.find((c) => c.id === capId);
+    await fsSave("capsulas", capId, cap);
+  }
+  // Comentario libre (no ligado a aprobar/devolver) en el hilo de
+  // Observaciones de Ilustración de la cápsula.
+  async function sendObservacionCapsula(capId, texto) {
+    const obs = { id: uid(), user: currentUser?.name, role, text: texto, date: nowISO(), type: "info", done: false };
+    const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, observacionesIlustracion: [...(c.observacionesIlustracion || []), obs] }));
+    await updateCapsulasAndSave(updated);
+    const cap = updated.find((c) => c.id === capId);
+    await fsSave("capsulas", capId, cap);
+  }
+  async function markDoneObservacionCapsula(capId, obsId) {
+    const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, observacionesIlustracion: (c.observacionesIlustracion || []).map((o) => (o.id === obsId ? { ...o, done: true } : o)) }));
+    await updateCapsulasAndSave(updated);
+    const cap = updated.find((c) => c.id === capId);
+    await fsSave("capsulas", capId, cap);
   }
   async function logHistorial(entry) {
     const withId = { ...entry, id: uid() };
@@ -4313,13 +4417,16 @@ export default function App() {
               />
             )}
             {view === "capsulas" && (
-              <CapsulasView capsulas={capsulas} role={role} perms={perms}
+              <CapsulasView capsulas={capsulas} role={role} perms={perms} currentUser={currentUser?.name}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
                 onNewCapsula={() => setModal("new-capsula")}
                 onNewRef={(cap) => { setNewRefCap(cap); setModal("new-ref"); }}
                 onEditCapsula={updateCapsulaName}
                 stages={config.stages}
                 isAdmin={currentUser?.isAdmin} onDeleteCapsula={deleteCapsula} config={config}
+                onSetIlustracion={setIlustracionCapsula}
+                onSendObsCapsula={sendObservacionCapsula}
+                onMarkDoneObsCapsula={markDoneObservacionCapsula}
               />
             )}
             {view === "proto-detail" && selProto && (
