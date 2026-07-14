@@ -2593,6 +2593,18 @@ function ProyeccionForm({ compras, presupuestoExistente, onGuardar, onClose }) {
 function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onGuardar, onFinalizar, onDeletePresupuesto, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [editando, setEditando] = useState(null);
+  // Cada mes arranca colapsado (como una fila de lista) — se despliega solo
+  // al hacer clic, para no tener que desplazarse por todos los meses
+  // acumulados con su detalle completo abierto de una vez.
+  const [expandidos, setExpandidos] = useState(new Set());
+  function toggleExpand(id) {
+    setExpandidos((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
   const lista = [...presupuestos].sort((a, b) => b.mes.localeCompare(a.mes));
   return (
     <div>
@@ -2644,7 +2656,10 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
             {lista.map((p) => (
               <button
                 key={p.id}
-                onClick={() => document.getElementById(`proy-${p.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                onClick={() => {
+                  setExpandidos((s) => new Set(s).add(p.id));
+                  setTimeout(() => document.getElementById(`proy-${p.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+                }}
                 style={{
                   padding: "6px 14px",
                   borderRadius: 20,
@@ -2687,9 +2702,13 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
               const asignado = (m.distribucion || []).reduce((s2, d) => s2 + (parseFloat(d.monto) || 0), 0);
               return s + (m.valor - asignado);
             }, 0);
+            const expandido = expandidos.has(p.id);
             return (
-              <div key={p.id} id={`proy-${p.id}`} style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20, scrollMarginTop: 20 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: terminado ? 14 : 0 }}>
+              <div key={p.id} id={`proy-${p.id}`} style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", scrollMarginTop: 20 }}>
+                <div
+                  onClick={() => toggleExpand(p.id)}
+                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: 20, cursor: "pointer" }}
+                >
                   <div>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <span style={{ fontWeight: 800, fontSize: 16, color: C.ink, textTransform: "capitalize" }}>{fmtMesLargo(p.mes)}</span>
@@ -2709,109 +2728,117 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
                     <div style={{ fontSize: 13, color: C.slate, marginTop: 4 }}>
                       Total proyectado: <strong style={{ color: C.ink }}>{fmtCOP(p.totalProyectado)}</strong>
                       {p.ajustePct ? ` (ajuste ${p.ajustePct > 0 ? "+" : ""}${p.ajustePct}%)` : ""}
+                      {totalPagosCxp > 0 ? ` · 🧾 ${fmtCOP(totalPagosCxp)} programados` : ""}
                     </div>
                   </div>
-                  {isAdmin && (
-                    <div style={{ display: "flex", gap: 8 }}>
-                      {!terminado && (
-                        <>
-                          <Btn
-                            small
-                            variant="secondary"
-                            onClick={() => {
-                              setEditando(p);
-                              setShowForm(true);
-                            }}
-                          >
-                            Editar
-                          </Btn>
-                          <Btn small variant="success" onClick={() => onFinalizar(p.id)}>
-                            Presupuesto Terminado
-                          </Btn>
-                        </>
-                      )}
-                      <Btn small variant="danger" onClick={() => onDeletePresupuesto(p.id)}>
-                        Eliminar
-                      </Btn>
-                    </div>
-                  )}
+                  <span style={{ fontSize: 20, color: C.slate, transform: expandido ? "rotate(90deg)" : "none", transition: "transform 0.15s", flexShrink: 0, marginLeft: 12 }}>
+                    ›
+                  </span>
                 </div>
-                {totalPagosCxp > 0 && (
-                  <div style={{ marginTop: 10, marginBottom: terminado ? 14 : 0, padding: "10px 14px", background: C.amberBg, borderRadius: 10 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700, color: C.amber, marginBottom: 6 }}>
-                      <span>🧾 Pagos programados (Cuentas por Pagar)</span>
-                      <span>{fmtCOP(totalPagosCxp)}</span>
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 180, overflowY: "auto", paddingRight: 4 }}>
-                      {pagosCxpMes.map((c) => (
-                        <div key={c.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.slate }}>
-                          <span>{c.proveedor}</span>
-                          <span>{fmtCOP(c.monto)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {terminado && (
-                  <div>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.slate, marginBottom: 6 }}>
-                      <span>
-                        Ingresos reales de {fmtMesLargo(p.mes)}: <strong style={{ color: C.green }}>{fmtCOP(ingresosReales)}</strong>
-                      </span>
-                      <span style={{ fontWeight: 700, color: avancePct >= 100 ? C.green : C.amber }}>{Math.round(avancePct)}% del presupuesto total</span>
-                    </div>
-                    <div style={{ height: 10, borderRadius: 5, background: C.canvas, overflow: "hidden", marginBottom: 14 }}>
-                      <div
-                        style={{
-                          height: "100%",
-                          width: `${Math.min(avancePct, 100)}%`,
-                          background: avancePct >= 100 ? C.green : C.amber,
-                          borderRadius: 5,
-                        }}
-                      />
-                    </div>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 8 }}>Avance por rubro</div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14, maxHeight: 260, overflowY: "auto", paddingRight: 4 }}>
-                      {itemsConAvance.map((i) => (
-                        <div key={i.key || `${i.codConcep}__${i.concepto}`}>
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.slate, marginBottom: 3 }}>
-                            <span>
-                              {i.concepto} <span style={{ color: C.slate, fontWeight: 400 }}>({i.codConcep})</span>
-                            </span>
-                            <span style={{ fontWeight: 700, color: i.pct >= 100 ? C.green : C.ink }}>
-                              {fmtCOP(i.cubierto)} / {fmtCOP(i.valorFinal)} · {Math.round(i.pct)}%
-                            </span>
-                          </div>
-                          <div style={{ height: 7, borderRadius: 4, background: C.canvas, overflow: "hidden" }}>
-                            <div
-                              style={{
-                                height: "100%",
-                                width: `${Math.min(i.pct, 100)}%`,
-                                background: i.pct >= 100 ? C.green : C.violet,
-                                borderRadius: 4,
+                {expandido && (
+                  <div style={{ padding: "0 20px 20px" }}>
+                    {isAdmin && (
+                      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                        {!terminado && (
+                          <>
+                            <Btn
+                              small
+                              variant="secondary"
+                              onClick={() => {
+                                setEditando(p);
+                                setShowForm(true);
                               }}
-                            />
-                          </div>
+                            >
+                              Editar
+                            </Btn>
+                            <Btn small variant="success" onClick={() => onFinalizar(p.id)}>
+                              Presupuesto Terminado
+                            </Btn>
+                          </>
+                        )}
+                        <Btn small variant="danger" onClick={() => onDeletePresupuesto(p.id)}>
+                          Eliminar
+                        </Btn>
+                      </div>
+                    )}
+                    {totalPagosCxp > 0 && (
+                      <div style={{ marginTop: 0, marginBottom: terminado ? 14 : 0, padding: "10px 14px", background: C.amberBg, borderRadius: 10 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700, color: C.amber, marginBottom: 6 }}>
+                          <span>🧾 Pagos programados (Cuentas por Pagar)</span>
+                          <span>{fmtCOP(totalPagosCxp)}</span>
                         </div>
-                      ))}
-                    </div>
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        padding: "10px 14px",
-                        borderRadius: 10,
-                        background: disponibleSinAsignar >= 0 ? C.greenBg : C.redBg,
-                      }}
-                    >
-                      <span style={{ fontSize: 12, fontWeight: 700, color: disponibleSinAsignar >= 0 ? C.green : C.red }}>
-                        Disponible sin asignar a rubro
-                      </span>
-                      <span style={{ fontSize: 15, fontWeight: 900, color: disponibleSinAsignar >= 0 ? C.green : C.red }}>
-                        {fmtCOP(disponibleSinAsignar)}
-                      </span>
-                    </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 180, overflowY: "auto", paddingRight: 4 }}>
+                          {pagosCxpMes.map((c) => (
+                            <div key={c.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.slate }}>
+                              <span>{c.proveedor}</span>
+                              <span>{fmtCOP(c.monto)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {terminado && (
+                      <div>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.slate, marginBottom: 6 }}>
+                          <span>
+                            Ingresos reales de {fmtMesLargo(p.mes)}: <strong style={{ color: C.green }}>{fmtCOP(ingresosReales)}</strong>
+                          </span>
+                          <span style={{ fontWeight: 700, color: avancePct >= 100 ? C.green : C.amber }}>{Math.round(avancePct)}% del presupuesto total</span>
+                        </div>
+                        <div style={{ height: 10, borderRadius: 5, background: C.canvas, overflow: "hidden", marginBottom: 14 }}>
+                          <div
+                            style={{
+                              height: "100%",
+                              width: `${Math.min(avancePct, 100)}%`,
+                              background: avancePct >= 100 ? C.green : C.amber,
+                              borderRadius: 5,
+                            }}
+                          />
+                        </div>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 8 }}>Avance por rubro</div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14, maxHeight: 260, overflowY: "auto", paddingRight: 4 }}>
+                          {itemsConAvance.map((i) => (
+                            <div key={i.key || `${i.codConcep}__${i.concepto}`}>
+                              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.slate, marginBottom: 3 }}>
+                                <span>
+                                  {i.concepto} <span style={{ color: C.slate, fontWeight: 400 }}>({i.codConcep})</span>
+                                </span>
+                                <span style={{ fontWeight: 700, color: i.pct >= 100 ? C.green : C.ink }}>
+                                  {fmtCOP(i.cubierto)} / {fmtCOP(i.valorFinal)} · {Math.round(i.pct)}%
+                                </span>
+                              </div>
+                              <div style={{ height: 7, borderRadius: 4, background: C.canvas, overflow: "hidden" }}>
+                                <div
+                                  style={{
+                                    height: "100%",
+                                    width: `${Math.min(i.pct, 100)}%`,
+                                    background: i.pct >= 100 ? C.green : C.violet,
+                                    borderRadius: 4,
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            padding: "10px 14px",
+                            borderRadius: 10,
+                            background: disponibleSinAsignar >= 0 ? C.greenBg : C.redBg,
+                          }}
+                        >
+                          <span style={{ fontSize: 12, fontWeight: 700, color: disponibleSinAsignar >= 0 ? C.green : C.red }}>
+                            Disponible sin asignar a rubro
+                          </span>
+                          <span style={{ fontSize: 15, fontWeight: 900, color: disponibleSinAsignar >= 0 ? C.green : C.red }}>
+                            {fmtCOP(disponibleSinAsignar)}
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
