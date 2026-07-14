@@ -114,6 +114,34 @@ function Btn({ children, onClick, variant = "primary", small, disabled }) {
     </button>
   );
 }
+function Avatar({ name, size = 30 }) {
+  const cols = [C.violet, C.green, C.amber, C.red, C.blue];
+  const bg = cols[(name || "?").charCodeAt(0) % cols.length];
+  return (
+    <div
+      style={{
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        background: bg,
+        color: C.white,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: size * 0.36,
+        fontWeight: 800,
+        flexShrink: 0,
+      }}
+    >
+      {(name || "?")
+        .split(" ")
+        .map((w) => w[0])
+        .join("")
+        .slice(0, 2)
+        .toUpperCase()}
+    </div>
+  );
+}
 function Field({ label, children }) {
   return (
     <div style={{ marginBottom: 14 }}>
@@ -3021,6 +3049,7 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
                 <div key={p.id} style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 18 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <Avatar name={p.cliente} size={30} />
                       <span style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{p.cliente}</span>
                       {p.categoria && (
                         <span
