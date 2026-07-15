@@ -594,7 +594,7 @@ function nowISO() { return new Date().toISOString(); }
 // Corte, sin Prototipos ni Cápsulas).
 // Claves granulares de sección dentro de Diseño (Corte y Contabilidad siempre
 // se gestionan como llaves independientes, nunca implícitas en "diseno").
-const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial", "cronograma_muestras"];
+const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial", "cronograma_muestras", "bitacora"];
 function moduloVisible(roleData, mod, isAdmin) {
   if (isAdmin) return true;
   if (!roleData) return false;
@@ -1095,6 +1095,104 @@ function EnviadoModal({ onSave, onClose }) {
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn variant="success" onClick={save} disabled={!form.empresa.trim()}>✓ Registrar Envío</Btn>
+      </div>
+    </Modal>
+  );
+}
+// Modal para crear un ENVÍO agrupado (varias referencias/prototipos juntos,
+// p.ej. toda una colección) desde Prototipos/Cápsulas cuando ya están listos
+// para el cliente. A diferencia de EnviadoModal (que solo pide datos de
+// transporte para UNA referencia), este arma el registro completo que
+// después se puede exportar como el ANEXO que se manda al cliente:
+// encabezado (colección, cliente, n° pedido, fechas, carta de colores) + por
+// cada ítem seleccionado, las cantidades/precio/observaciones que no se
+// guardan en la referencia misma. No reemplaza "Registrar Envío" — es un
+// flujo adicional pensado para cuando se manda un lote/colección completa.
+function NuevoEnvioModal({ items, config, onSave, onClose }) {
+  const primero = items[0];
+  const [header, setHeader] = useState({
+    coleccion: primero?.capsulaNombre || "",
+    cliente: primero?.cliente || primero?.colores?.[0] || "",
+    numPedido: "",
+    fechaEnviado: today(),
+    empresaTransporte: "",
+    guia: "",
+    cartaColores: null,
+  });
+  const [filas, setFilas] = useState(
+    items.map((it) => ({
+      id: it.id,
+      _consumo: "",
+      _tipo: "",
+      _colombiaCurva: "",
+      _colombiaCantidad: "",
+      _venezuelaCurva: "",
+      _venezuelaCantidad: "",
+      _precio: "",
+      _observacionesCliente: "",
+    }))
+  );
+  const setH = (k) => (v) => setHeader((h) => ({ ...h, [k]: v }));
+  function setFila(id, campo, val) {
+    setFilas((fs) => fs.map((f) => (f.id === id ? { ...f, [campo]: val } : f)));
+  }
+  function save() {
+    const itemsConDatos = items.map((it) => ({ ...it, ...filas.find((f) => f.id === it.id) }));
+    onSave(header, itemsConDatos);
+    onClose();
+  }
+  return (
+    <Modal title={`Crear Envío — ${items.length} referencia${items.length !== 1 ? "s" : ""}`} onClose={onClose} width={860}>
+      <div style={{ padding: "10px 14px", background: T.denimBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.denim, fontWeight: 600 }}>
+        📜 Esto arma el registro de Bitácora (encabezado + tabla por referencia) y marca cada ítem como "Enviado".
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Colección / Nombre del Envío"><FInput value={header.coleccion} onChange={setH("coleccion")} placeholder="Ej: Colección Kamila Girls N°2" /></Field>
+        <Field label="Cliente"><FSel value={header.cliente} onChange={setH("cliente")} options={(config?.clientes || []).map((c) => c.nombre)} /></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="N° Pedido"><FInput value={header.numPedido} onChange={setH("numPedido")} placeholder="Ej: 4521" /></Field>
+        <Field label="Fecha de Envío">
+          <input type="date" value={header.fechaEnviado} onChange={(e) => setHeader((h) => ({ ...h, fechaEnviado: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+        </Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Empresa de Transporte (opcional)"><FInput value={header.empresaTransporte} onChange={setH("empresaTransporte")} placeholder="Ej: Servientrega" /></Field>
+        <Field label="Número de Guía (opcional)"><FInput value={header.guia} onChange={setH("guia")} placeholder="Ej: 9234567890" /></Field>
+      </div>
+      <ImageUploader image={header.cartaColores} onImage={(img) => setHeader((h) => ({ ...h, cartaColores: img }))} />
+      <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, letterSpacing: "0.06em", textTransform: "uppercase", marginTop: 8, marginBottom: 10 }}>Referencias en este envío</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14, maxHeight: 420, overflowY: "auto", paddingRight: 4 }}>
+        {items.map((it) => {
+          const f = filas.find((x) => x.id === it.id);
+          return (
+            <div key={it.id} style={{ border: `1.5px solid ${T.border}`, borderRadius: 10, padding: 14 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10 }}>
+                {it.image && <img src={it.image} alt="" style={{ width: 40, height: 40, borderRadius: 6, objectFit: "cover" }} />}
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: 13, color: T.ink }}>{it.reference} — {it.name}</div>
+                  <div style={{ fontSize: 11, color: T.slate }}>{it.categoria || "—"} · {it.silueta || "—"} · {it.rango || it.tallas?.[0] || "—"} · {it.tipoTela || "—"}</div>
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <Field label="Tipo"><FInput value={f._tipo} onChange={(v) => setFila(it.id, "_tipo", v)} placeholder="Niña, Niño..." /></Field>
+                <Field label="Consumo"><FInput value={f._consumo} onChange={(v) => setFila(it.id, "_consumo", v)} placeholder="Ej: 0.45 kg" /></Field>
+                <Field label="Precio $"><FInput value={f._precio} onChange={(v) => setFila(it.id, "_precio", v)} placeholder="Ej: 18950" /></Field>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8 }}>
+                <Field label="Curva Colombia"><FInput value={f._colombiaCurva} onChange={(v) => setFila(it.id, "_colombiaCurva", v)} placeholder="Ej: 8-10-12-14" /></Field>
+                <Field label="Cantidad Colombia"><FInput value={f._colombiaCantidad} onChange={(v) => setFila(it.id, "_colombiaCantidad", v)} placeholder="Ej: 24" /></Field>
+                <Field label="Curva Venezuela"><FInput value={f._venezuelaCurva} onChange={(v) => setFila(it.id, "_venezuelaCurva", v)} placeholder="Ej: 8-10-12-14" /></Field>
+                <Field label="Cantidad Venezuela"><FInput value={f._venezuelaCantidad} onChange={(v) => setFila(it.id, "_venezuelaCantidad", v)} placeholder="Ej: 12" /></Field>
+              </div>
+              <Field label="Observaciones Cliente"><FInput value={f._observacionesCliente} onChange={(v) => setFila(it.id, "_observacionesCliente", v)} placeholder="Ej: Ajuste en laterales" /></Field>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn variant="success" onClick={save}>✓ Crear Envío</Btn>
       </div>
     </Modal>
   );
@@ -1640,10 +1738,17 @@ function Card({ item, kind, onClick, onPromote, role, perms, stages }) {
     </div>
   );
 }
-function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas, stages, isAdmin, onDeleteProto, config }) {
+function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas, stages, isAdmin, onDeleteProto, config, onCrearEnvio }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [confirmDel, setConfirmDel] = useState(null);
+  // Selección múltiple para armar un envío/bitácora agrupado — solo tiene
+  // sentido en la pestaña "Enviar al Cliente". Se limpia al cambiar de
+  // pestaña para no arrastrar selección de un filtro a otro.
+  const [seleccionados, setSeleccionados] = useState([]);
+  const [showNuevoEnvio, setShowNuevoEnvio] = useState(false);
+  function cambiarFiltro(v) { setFilter(v); setSeleccionados([]); }
+  function toggleSel(id) { setSeleccionados((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id])); }
   // Cuántos prototipos ACTIVOS tiene cada cliente — igual criterio que la
   // pestaña "Todos" de estado (excluye Aprobados/Declinados), para que el
   // número refleje la carga de trabajo pendiente y no arrastre prototipos
@@ -1680,6 +1785,14 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
           </div>
         </div>
       )}
+      {showNuevoEnvio && (
+        <NuevoEnvioModal
+          items={protos.filter((p) => seleccionados.includes(p.id)).map((p) => ({ ...p, kind: "proto" }))}
+          config={config}
+          onSave={onCrearEnvio}
+          onClose={() => { setShowNuevoEnvio(false); setSeleccionados([]); }}
+        />
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Prototipos</h2>
@@ -1697,10 +1810,15 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
           {clientesDisponibles.map((c) => <option key={c} value={c}>{c} ({conteoPorCliente[c] || 0})</option>)}
         </select>
       </div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
         {[["todos", "Todos"], ["aprobado", "Aprobados"], ["declinado", "Declinados"], ["en_proceso", "En proceso"], ["en_revision", "En revisión"], ["enviado_cotizacion", "En cotización"], ["enviar_cliente", "Enviar al Cliente"], ["enviado", "Enviado"]].map(([v, label]) => (
-          <button key={v} onClick={() => setFilter(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filter === v ? T.ink : T.border}`, background: filter === v ? T.ink : T.white, color: filter === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
+          <button key={v} onClick={() => cambiarFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filter === v ? T.ink : T.border}`, background: filter === v ? T.ink : T.white, color: filter === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
+        {filter === "enviar_cliente" && seleccionados.length > 0 && (
+          <button onClick={() => setShowNuevoEnvio(true)} style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: "#0E7490", color: T.white, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+            📜 Crear Envío ({seleccionados.length})
+          </button>
+        )}
       </div>
       {!filtered.length && <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>No hay prototipos con este filtro.</div>}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 14 }}>
@@ -1711,6 +1829,16 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
                 style={{ position: "absolute", top: 8, right: 8, zIndex: 2, width: 26, height: 26, borderRadius: "50%", background: T.white, border: `1.5px solid ${T.coral}`, color: T.coral, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 6px rgba(26,26,46,0.12)" }}
               >🗑</button>
             )}
+            {filter === "enviar_cliente" && (
+              <input
+                type="checkbox"
+                checked={seleccionados.includes(p.id)}
+                onChange={(e) => { e.stopPropagation(); toggleSel(p.id); }}
+                onClick={(e) => e.stopPropagation()}
+                title="Seleccionar para envío"
+                style={{ position: "absolute", top: 8, left: 8, zIndex: 2, width: 20, height: 20, cursor: "pointer" }}
+              />
+            )}
             <Card item={p} kind="proto" onClick={() => onSelect(p.id)} onPromote={onPromote} role={role} perms={perms} stages={stages} />
           </div>
         ))}
@@ -1718,13 +1846,28 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
     </div>
   );
 }
-function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula }) {
+function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [editCap, setEditCap] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
   const [revisionCap, setRevisionCap] = useState(null);
   const [obsCapsula, setObsCapsula] = useState(null);
+  // Selección múltiple para armar un envío/bitácora agrupado — una selección
+  // por cápsula (cada cápsula es su propia "colección"), solo tiene sentido
+  // en la pestaña "Enviar al Cliente". `envioCapsula` guarda la cápsula para
+  // la que se está armando el envío (para saber qué referencias mostrar en
+  // el modal).
+  const [seleccionados, setSeleccionados] = useState({});
+  const [envioCapsula, setEnvioCapsula] = useState(null);
+  function cambiarFiltro(v) { setFilter(v); setSeleccionados({}); }
+  function toggleSel(capId, refId) {
+    setSeleccionados((s) => {
+      const actual = s[capId] || [];
+      const nuevo = actual.includes(refId) ? actual.filter((x) => x !== refId) : [...actual, refId];
+      return { ...s, [capId]: nuevo };
+    });
+  }
   // Permiso dedicado "ilustracion" (pensado para un rol tipo "Directora
   // Creativa"), separado del permiso general "admin" — así se puede limitar
   // quién aprueba/devuelve ilustración sin darle todos los demás permisos de
@@ -1808,9 +1951,19 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
         {FILTERS.map(([v, label]) => (
-          <button key={v} onClick={() => setFilter(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filter === v ? T.ink : T.border}`, background: filter === v ? T.ink : T.white, color: filter === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
+          <button key={v} onClick={() => cambiarFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filter === v ? T.ink : T.border}`, background: filter === v ? T.ink : T.white, color: filter === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
+      {envioCapsula && (
+        <NuevoEnvioModal
+          items={envioCapsula.referencias
+            .filter((r) => (seleccionados[envioCapsula.id] || []).includes(r.id))
+            .map((r) => ({ ...r, kind: "ref", capsulaId: envioCapsula.id, capsulaNombre: envioCapsula.name, cliente: refCliente(envioCapsula, r) }))}
+          config={config}
+          onSave={onCrearEnvio}
+          onClose={() => { setEnvioCapsula(null); setSeleccionados((s) => ({ ...s, [envioCapsula.id]: [] })); }}
+        />
+      )}
       {!visibleCapsulas.length && <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>No hay cápsulas con este filtro.</div>}
       {visibleCapsulas.map((cap) => {
         const refs = filteredRefs(cap);
@@ -1841,6 +1994,11 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
                 )}
                 {perms.editar && <Btn small variant="ghost" onClick={() => setEditCap(cap)}>✏ Editar</Btn>}
                 {perms.editar && (aprobada ? <Btn small onClick={() => onNewRef(cap)}>+ Referencia</Btn> : <span title="Requiere aprobación de Ilustración de la Dirección Creativa"><Btn small disabled>+ Referencia</Btn></span>)}
+                {filter === "enviar_cliente" && (seleccionados[cap.id] || []).length > 0 && (
+                  <button onClick={() => setEnvioCapsula(cap)} style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: "#0E7490", color: T.white, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+                    📜 Crear Envío ({(seleccionados[cap.id] || []).length})
+                  </button>
+                )}
                 {isAdmin && <Btn small variant="danger" onClick={() => setConfirmDel(cap)}>🗑 Borrar</Btn>}
               </div>
             </div>
@@ -1848,7 +2006,21 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
               <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>Sin referencias con este filtro.</div>
             ) : (
               <div style={{ padding: 16, display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 12 }}>
-                {refs.map((r) => <Card key={r.id} item={r} kind="ref" onClick={() => onSelectRef(cap.id, r.id)} role={role} perms={perms} stages={stages} />)}
+                {refs.map((r) => (
+                  <div key={r.id} style={{ position: "relative" }}>
+                    {filter === "enviar_cliente" && (
+                      <input
+                        type="checkbox"
+                        checked={(seleccionados[cap.id] || []).includes(r.id)}
+                        onChange={(e) => { e.stopPropagation(); toggleSel(cap.id, r.id); }}
+                        onClick={(e) => e.stopPropagation()}
+                        title="Seleccionar para envío"
+                        style={{ position: "absolute", top: 8, left: 8, zIndex: 2, width: 20, height: 20, cursor: "pointer" }}
+                      />
+                    )}
+                    <Card item={r} kind="ref" onClick={() => onSelectRef(cap.id, r.id)} role={role} perms={perms} stages={stages} />
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -2109,6 +2281,149 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
 // por cliente. Además marca (🚫 Sin pedido) las piezas Aprobadas cuyo código
 // de referencia nunca apareció en ningún Pedido cargado — para detectar
 // diseño aprobado que nunca se llegó a producir.
+// Exporta un envío de la Bitácora a Excel con el mismo formato del ANEXO
+// que se manda al cliente: encabezado (colección/cliente/pedido/fechas) y
+// una fila por referencia con las mismas columnas del archivo original
+// (Ref, Estado, Consumo, Tipo, Categoría, Silueta, Rango, Tela, Curva y
+// Cantidad por país, Precio, Observaciones). La librería "xlsx" (SheetJS,
+// edición community) que ya usa el resto de la app no soporta incrustar
+// imágenes en el archivo, así que Foto/Carta de Colores quedan como nota de
+// texto — la imagen real se sigue viendo dentro de la app.
+async function exportBitacoraEnvioToExcel(envio) {
+  const XLSX = await import("xlsx");
+  const wsData = [
+    ["ANEXO — ENVÍO A CLIENTE", "", "", "", "", "", ""],
+    ["COLECCIÓN (NOMBRE)", envio.coleccion || "", "", "", "", "", ""],
+    ["FECHA ENVIADO", envio.fechaEnviado || "", "", "FECHA RECIBIDO CLIENTE", envio.fechaRecibidoCliente || "(pendiente)", "", ""],
+    ["MARCA / CLIENTE", envio.cliente || "", "", "N° PEDIDO", envio.numPedido || "", "", ""],
+    ["EMPRESA TRANSPORTE", envio.empresaTransporte || "—", "", "N° GUÍA", envio.guia || "—", "", ""],
+    ["CARTA DE COLORES", envio.cartaColores ? "(adjunta en la app)" : "—", "", "", "", "", ""],
+    [],
+    ["FOTO", "REF", "NOMBRE", "ESTADO", "CONSUMO", "TIPO", "CATEGORIA", "SILUETA", "RANGO (TALLA)", "TELA", "CURVA COLOMBIA", "CANTIDAD COLOMBIA", "CURVA VENEZUELA", "CANTIDAD VENEZUELA", "PRECIO $", "OBSERVACIONES CLIENTE"],
+    ...envio.items.map((it) => [
+      it.foto ? "(ver en la app)" : "",
+      it.referencia, it.nombre, it.estado, it.consumo, it.tipo, it.categoria, it.silueta, it.rango, it.tela,
+      it.colombiaCurva, it.colombiaCantidad, it.venezuelaCurva, it.venezuelaCantidad, it.precio, it.observacionesCliente,
+    ]),
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  ws["!cols"] = [{ wch: 14 }, { wch: 12 }, { wch: 20 }, { wch: 14 }, { wch: 12 }, { wch: 10 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 10 }, { wch: 26 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "ANEXO");
+  const nombreArchivo = `Envio_${(envio.coleccion || envio.cliente || "bitacora").replace(/[^a-zA-Z0-9]+/g, "_")}_${envio.fechaEnviado || today()}.xlsx`;
+  XLSX.writeFile(wb, nombreArchivo);
+}
+function BitacoraEnviosView({ envios, onUpdateEnvio }) {
+  const [expandido, setExpandido] = useState(null);
+  const [busqueda, setBusqueda] = useState("");
+  const q = busqueda.trim().toLowerCase();
+  const filtrados = [...envios]
+    .filter((e) => !q || (e.coleccion || "").toLowerCase().includes(q) || (e.cliente || "").toLowerCase().includes(q) || (e.numPedido || "").toLowerCase?.().includes(q))
+    .sort((a, b) => (b.fechaEnviado || "").localeCompare(a.fechaEnviado || "") || (b.createdAt || "").localeCompare(a.createdAt || ""));
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Bitácora de Envíos</h2>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Historial de colecciones/lotes enviados al cliente</p>
+        </div>
+        <input
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="Buscar por colección, cliente o N° pedido..."
+          style={{ padding: "9px 14px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, minWidth: 260, outline: "none", fontFamily: "inherit" }}
+        />
+      </div>
+      {!filtrados.length && (
+        <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
+          {envios.length ? "Ningún envío coincide con la búsqueda." : "Todavía no hay envíos registrados. Se crean desde Prototipos/Cápsulas, pestaña \"Enviar al Cliente\", seleccionando referencias y usando \"Crear Envío\"."}
+        </div>
+      )}
+      {filtrados.map((envio) => {
+        const abierto = expandido === envio.id;
+        const totalUnidades = envio.items.reduce((s, it) => s + (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0), 0);
+        return (
+          <div key={envio.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
+            <div
+              onClick={() => setExpandido(abierto ? null : envio.id)}
+              style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, cursor: "pointer", flexWrap: "wrap", gap: 10 }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 20 }}>{abierto ? "📂" : "📁"}</span>
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: T.ink }}>{envio.coleccion || "(Sin nombre de colección)"}</div>
+                  <div style={{ fontSize: 12, color: T.slate }}>{envio.cliente || "Sin cliente"} · {envio.items.length} ref · {fmtNum(totalUnidades)} unid. · Enviado {envio.fechaEnviado}{envio.numPedido ? ` · Pedido ${envio.numPedido}` : ""}</div>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: envio.fechaRecibidoCliente ? T.jadeBg : T.amberBg, color: envio.fechaRecibidoCliente ? T.jade : T.amber }}>
+                  {envio.fechaRecibidoCliente ? `✓ Recibido ${envio.fechaRecibidoCliente}` : "⏳ Sin confirmar recibido"}
+                </span>
+                <button onClick={(e) => { e.stopPropagation(); exportBitacoraEnvioToExcel(envio); }} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", background: "#217346", color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>📊 Exportar</button>
+              </div>
+            </div>
+            {abierto && (
+              <div style={{ padding: 20 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12, marginBottom: 20 }}>
+                  <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Empresa Transporte</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{envio.empresaTransporte || "—"}</div></div>
+                  <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>N° Guía</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{envio.guia || "—"}</div></div>
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Fecha Recibido Cliente</div>
+                    <input
+                      type="date"
+                      value={envio.fechaRecibidoCliente || ""}
+                      onChange={(e) => onUpdateEnvio(envio.id, { fechaRecibidoCliente: e.target.value })}
+                      style={{ padding: "6px 10px", border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit" }}
+                    />
+                  </div>
+                  {envio.cartaColores && (
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Carta de Colores</div>
+                      <img src={envio.cartaColores} alt="Carta de colores" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, border: `1px solid ${T.border}` }} />
+                    </div>
+                  )}
+                </div>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ background: T.ink }}>
+                        {["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Obs. Cliente"].map((h) => (
+                          <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {envio.items.map((it, i) => (
+                        <tr key={it.itemId} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
+                          <td style={{ padding: "6px 10px" }}>{it.foto ? <img src={it.foto} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
+                          <td style={{ padding: "6px 10px", fontWeight: 700 }}>{it.referencia}</td>
+                          <td style={{ padding: "6px 10px" }}>{it.nombre}</td>
+                          <td style={{ padding: "6px 10px" }}>{it.estado}</td>
+                          <td style={{ padding: "6px 10px" }}>{it.consumo || "—"}</td>
+                          <td style={{ padding: "6px 10px" }}>{it.tipo || "—"}</td>
+                          <td style={{ padding: "6px 10px" }}>{it.categoria || "—"}</td>
+                          <td style={{ padding: "6px 10px" }}>{it.silueta || "—"}</td>
+                          <td style={{ padding: "6px 10px" }}>{it.rango || "—"}</td>
+                          <td style={{ padding: "6px 10px" }}>{it.tela || "—"}</td>
+                          <td style={{ padding: "6px 10px" }}>{it.colombiaCurva || "—"}</td>
+                          <td style={{ padding: "6px 10px" }}>{it.colombiaCantidad || "—"}</td>
+                          <td style={{ padding: "6px 10px" }}>{it.venezuelaCurva || "—"}</td>
+                          <td style={{ padding: "6px 10px" }}>{it.venezuelaCantidad || "—"}</td>
+                          <td style={{ padding: "6px 10px" }}>{it.precio || "—"}</td>
+                          <td style={{ padding: "6px 10px" }}>{it.observacionesCliente || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms, stages, isAdmin, onBackfill, onSelectProto, onSelectRef, onPromote }) {
   const [modo, setModo] = useState("todos");
   const [clienteSel, setClienteSel] = useState("");
@@ -3101,6 +3416,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     ["corte", "✂ Corte"],
     ["historial", "🕘 Historial"],
     ["cronograma_muestras", "🧵 Cronograma de Muestras"],
+    ["bitacora", "📜 Bitácora de Envíos"],
     ["stats", "📊 Estadísticas"],
   ];
   const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"]];
@@ -3993,6 +4309,7 @@ function AppInner() {
   const [cronogramaMuestras, setCronogramaMuestras] = useState([]);
   const [pedidos, setPedidos] = useState([]);
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
+  const [bitacoraEnvios, setBitacoraEnvios] = useState([]);
   const [view, setView] = useState("dashboard");
   const [selProtoId, setSelProtoId] = useState(null);
   const [selCapId, setSelCapId] = useState(null);
@@ -4070,6 +4387,8 @@ function AppInner() {
           setPedidoConfig((c) => ({ ...c, ...mainDoc.data() }));
         });
         unsubs.push(unsubPedidoConfig);
+        const unsubBitacora = onSnapshot(collection(db, "bitacora_envios"), (snap) => { setBitacoraEnvios(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubs.push(unsubBitacora);
         setAppState("login");
       } catch (e) { console.error("Firebase error:", e); setAppState("login"); }
     }
@@ -4113,6 +4432,81 @@ function AppInner() {
     const cap = updated.find((c) => c.id === capId);
     await fsSave("capsulas", capId, cap);
     if (patch.status === "enviado") syncCronogramaEnviado(refId);
+  }
+  // --- Bitácora de Envíos ---
+  // Un registro de bitácora agrupa VARIAS referencias/prototipos enviados
+  // juntos en un solo envío al cliente (p.ej. una colección completa), con
+  // los datos comerciales que pide el ANEXO que manda el cliente: cantidades
+  // por país, precio, observaciones, carta de colores. Es adicional al
+  // "Registrar Envío" de una sola referencia (que sigue existiendo tal cual,
+  // solo para datos de transporte) — este flujo además arma la bitácora.
+  async function addBitacoraEnvio(envio) {
+    const updated = [...bitacoraEnvios, envio];
+    setBitacoraEnvios(updated);
+    await fsSave("bitacora_envios", envio.id, envio);
+  }
+  async function updateBitacoraEnvio(id, patch) {
+    const updated = bitacoraEnvios.map((e) => (e.id === id ? { ...e, ...patch } : e));
+    setBitacoraEnvios(updated);
+    const item = updated.find((e) => e.id === id);
+    await fsSave("bitacora_envios", id, item);
+  }
+  // items: arreglo de prototipos/referencias seleccionados (cada uno ya trae
+  // kind:"proto"|"ref" y, si es "ref", capsulaId — ver NuevoEnvioModal). Crea
+  // UN registro de bitácora con todos, y marca cada ítem como "enviado" con
+  // los mismos campos de transporte que usa EnviadoModal (para que
+  // isOverdue/Cronograma de Muestras y todo lo demás que ya lee
+  // envioEmpresa/envioFecha/envioGuia siga funcionando igual).
+  async function crearEnvioBitacora(header, items) {
+    const envio = {
+      id: uid(),
+      coleccion: header.coleccion || "",
+      cliente: header.cliente || "",
+      numPedido: header.numPedido || "",
+      fechaEnviado: header.fechaEnviado,
+      fechaRecibidoCliente: "",
+      empresaTransporte: header.empresaTransporte || "",
+      guia: header.guia || "",
+      cartaColores: header.cartaColores || null,
+      items: items.map((it) => ({
+        itemId: it.id,
+        kind: it.kind,
+        capsulaId: it.capsulaId || null,
+        referencia: it.reference || "",
+        nombre: it.name || "",
+        foto: it.image || null,
+        estado: STATUS[it.status]?.label || it.status || "",
+        categoria: it.categoria || "",
+        silueta: it.silueta || "",
+        rango: it.rango || it.tallas?.[0] || "",
+        tela: it.tipoTela || "",
+        consumo: it._consumo || "",
+        tipo: it._tipo || "",
+        colombiaCurva: it._colombiaCurva || "",
+        colombiaCantidad: it._colombiaCantidad || "",
+        venezuelaCurva: it._venezuelaCurva || "",
+        venezuelaCantidad: it._venezuelaCantidad || "",
+        precio: it._precio || "",
+        observacionesCliente: it._observacionesCliente || "",
+      })),
+      createdAt: nowISO(),
+      createdBy: currentUser?.name || "",
+    };
+    await addBitacoraEnvio(envio);
+    const obsTexto = `Enviado — Colección: ${envio.coleccion || "N/A"}${envio.numPedido ? ` · N° Pedido: ${envio.numPedido}` : ""}${envio.empresaTransporte ? ` · Empresa: ${envio.empresaTransporte}` : ""}${envio.guia ? ` · Guía: ${envio.guia}` : ""}`;
+    for (const it of items) {
+      const patchData = {
+        status: "enviado",
+        envioEmpresa: envio.empresaTransporte,
+        envioFecha: envio.fechaEnviado,
+        envioGuia: envio.guia,
+        envioBitacoraId: envio.id,
+        observations: [...(it.observations || []), { id: uid(), user: currentUser?.name, role, text: obsTexto, date: nowISO(), type: "update", done: false }],
+      };
+      if (it.kind === "proto") await updateProto(it.id, patchData);
+      else await updateRef(it.capsulaId, it.id, patchData);
+    }
+    notify({ id: uid(), icon: "📦", title: "Envío registrado en Bitácora", msg: `${items.length} referencia${items.length !== 1 ? "s" : ""} — ${envio.coleccion || envio.cliente}` });
   }
   // --- Cronograma de Muestras ---
   async function addCronogramaMuestra(entry) {
@@ -4288,6 +4682,7 @@ function AppInner() {
   const canAccessStats = moduloVisible(userRoleData, "stats", currentUser?.isAdmin);
   const canAccessHistorial = moduloVisible(userRoleData, "historial", currentUser?.isAdmin);
   const canAccessCronograma = moduloVisible(userRoleData, "cronograma_muestras", currentUser?.isAdmin);
+  const canAccessBitacora = moduloVisible(userRoleData, "bitacora", currentUser?.isAdmin);
   const canAccessCorte = moduloVisible(userRoleData, "corte", currentUser?.isAdmin);
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
   const canAccessPlaneacion = moduloVisible(userRoleData, "planeacion", currentUser?.isAdmin);
@@ -4295,7 +4690,7 @@ function AppInner() {
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
   const canAccessAdminDiseno = moduloVisible(userRoleData, "admin_diseno", currentUser?.isAdmin);
-  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessHistorial || canAccessCronograma || canAccessCorte || canAccessAdminDiseno || !!currentUser?.isAdmin;
+  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessHistorial || canAccessCronograma || canAccessBitacora || canAccessCorte || canAccessAdminDiseno || !!currentUser?.isAdmin;
   const [moduloActivo, setModuloActivo] = useState("diseno");
   const AREAS = [
     ...(canAccessDiseno
@@ -4308,6 +4703,7 @@ function AppInner() {
             ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
             ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
             ...(canAccessHistorial ? [{ id: "historial", icon: "🕘", label: "Historial" }] : []),
+            ...(canAccessBitacora ? [{ id: "bitacora", icon: "📜", label: "Bitácora de Envíos" }] : []),
             ...(canAccessCronograma ? [{ id: "cronograma_muestras", icon: "🧵", label: "Cronograma de Muestras" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
             ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
@@ -4449,6 +4845,7 @@ function AppInner() {
                     else if (canAccessPedidosClientes) setView("pedidos_clientes");
                     else if (canAccessStats) setView("stats");
                     else if (canAccessHistorial) setView("historial");
+                    else if (canAccessBitacora) setView("bitacora");
                     else if (canAccessCronograma) setView("cronograma_muestras");
                     else if (canAccessCorte) setModuloActivo("corte");
                   }
@@ -4464,6 +4861,7 @@ function AppInner() {
                 onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
                 stages={config.stages}
                 isAdmin={currentUser?.isAdmin} onDeleteProto={deleteProto} config={config}
+                onCrearEnvio={crearEnvioBitacora}
               />
             )}
             {view === "capsulas" && (
@@ -4477,7 +4875,11 @@ function AppInner() {
                 onSetIlustracion={setIlustracionCapsula}
                 onSendObsCapsula={sendObservacionCapsula}
                 onMarkDoneObsCapsula={markDoneObservacionCapsula}
+                onCrearEnvio={crearEnvioBitacora}
               />
+            )}
+            {view === "bitacora" && (
+              <BitacoraEnviosView envios={bitacoraEnvios} onUpdateEnvio={updateBitacoraEnvio} />
             )}
             {view === "proto-detail" && selProto && (
               <DetailView item={selProto} kind="proto" role={role} perms={perms} capsulas={capsulas}
