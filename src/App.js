@@ -1086,7 +1086,7 @@ function EnviadoModal({ onSave, onClose }) {
   function save() { if (!form.empresa.trim()) return; onSave(form); onClose(); }
   return (
     <Modal title="Registrar Envío" onClose={onClose} width={420}>
-      <div style={{ padding: "10px 14px", background: T.denimBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.denim, fontWeight: 600 }}>📦 Registra los datos del envío al cliente</div>
+      <div style={{ padding: "10px 14px", background: T.denimBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.denim, fontWeight: 600 }}>📦 Registra los datos del envío al cliente — esto también queda guardado en la Bitácora de Envíos</div>
       <Field label="Empresa de Transporte"><FInput value={form.empresa} onChange={set("empresa")} placeholder="Ej: Servientrega, Deprisa, TCC" /></Field>
       <Field label="Fecha de Envío">
         <input type="date" value={form.fecha} onChange={(e) => setForm((f) => ({ ...f, fecha: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
@@ -1342,7 +1342,7 @@ function ObservacionesCapsulaModal({ capsula, currentUser, role, onSend, onMarkD
     </Modal>
   );
 }
-function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, onPromote, notify, onLogHistorial, capsula, stages, currentUser, config, cronogramaMuestras, onSendTaller, onUpdateTaller }) {
+function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, onPromote, notify, onLogHistorial, capsula, stages, currentUser, config, cronogramaMuestras, onSendTaller, onUpdateTaller, onCrearEnvio }) {
   const [tab, setTab] = useState("overview");
   const [showEdit, setShowEdit] = useState(false);
   const [showEnviado, setShowEnviado] = useState(false);
@@ -1397,10 +1397,23 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
     changeStatus("en_revision", {}, [obsNota]);
     setTab("chat");
   }
+  // Enviar UNA sola referencia desde el Detalle pasa por el MISMO mecanismo
+  // que el envío por casillas (crearEnvioBitacora) — así cualquier envío,
+  // individual o agrupado, siempre queda registrado en la Bitácora, sin dos
+  // caminos distintos que confundan (antes esto solo cambiaba el estado
+  // localmente y no dejaba nada en la Bitácora).
   function handleEnviado(transporteData) {
-    const obs = { id: uid(), user: currentUser, role, text: `Enviado — Empresa: ${transporteData.empresa} · Guía: ${transporteData.guia || "N/A"} · Fecha: ${transporteData.fecha}`, date: nowISO(), type: "update", done: false };
-    patch({ status: "enviado", envioEmpresa: transporteData.empresa, envioFecha: transporteData.fecha, envioGuia: transporteData.guia || "", observations: [...item.observations, obs] });
-    notify({ id: uid(), icon: "📦", title: "Enviado al Cliente", msg: `${item.reference} — ${transporteData.empresa}` });
+    const header = {
+      coleccion: kind === "ref" ? capsula?.name || "" : item.name || "",
+      cliente: item.cliente || item.colores?.[0] || "",
+      numPedido: "",
+      fechaEnviado: transporteData.fecha,
+      empresaTransporte: transporteData.empresa,
+      guia: transporteData.guia || "",
+      cartaColores: null,
+    };
+    const itemConDatos = { ...item, kind, capsulaId: kind === "ref" ? capsula?.id : null };
+    onCrearEnvio(header, [itemConDatos]);
   }
   // Si ya hay un registro de taller activo (no "enviado") para este ítem, lo
   // edita; si no, crea uno nuevo con los datos del prototipo/referencia
@@ -4889,6 +4902,7 @@ function AppInner() {
                 onLogHistorial={logHistorial}
                 notify={notify} stages={config.stages} currentUser={currentUser.name} config={config}
                 cronogramaMuestras={cronogramaMuestras} onSendTaller={addCronogramaMuestra} onUpdateTaller={updateCronogramaMuestra}
+                onCrearEnvio={crearEnvioBitacora}
               />
             )}
             {view === "ref-detail" && selRef && selCap && (
@@ -4898,6 +4912,7 @@ function AppInner() {
                 onLogHistorial={logHistorial}
                 notify={notify} stages={config.stages} currentUser={currentUser.name} config={config}
                 cronogramaMuestras={cronogramaMuestras} onSendTaller={addCronogramaMuestra} onUpdateTaller={updateCronogramaMuestra}
+                onCrearEnvio={crearEnvioBitacora}
               />
             )}
             {view === "pedidos" && (
