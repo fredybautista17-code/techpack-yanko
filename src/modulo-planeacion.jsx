@@ -329,6 +329,7 @@ function generarSeguimientoSemiterminado(lotes) {
       unidades: l.invSemiterminado,
       procesoDondeQuedo: l.procesoDondeQuedo || "(Sin proceso)",
       ultimaSalida: l.ultimaSalidaTexto,
+      nombreCliente: l.nombreCliente || "(Sin cliente)",
     }))
     .sort((a, b) => a.procesoDondeQuedo.localeCompare(b.procesoDondeQuedo) || a.numLote - b.numLote);
   const totalLotes = filas.length;
@@ -348,7 +349,24 @@ function generarSeguimientoSemiterminado(lotes) {
       pct: totalUnidades > 0 ? g.unidades / totalUnidades : 0,
     }))
     .sort((a, b) => b.unidades - a.unidades);
-  return { filas, resumen, totalLotes, totalUnidades, procesosDistintos: resumen.length };
+  // Resumen por Cliente + Proceso Donde Quedó: mismas métricas que el
+  // resumen por proceso (lotes/unidades/% de unidades), pero desglosado
+  // también por cliente — para ver, por ejemplo, cuántas unidades de KAMILA
+  // están detenidas en TERMINACION vs. las de otro cliente.
+  const gruposCliente = new Map();
+  filas.forEach((f) => {
+    const clave = `${f.nombreCliente}||${f.procesoDondeQuedo}`;
+    if (!gruposCliente.has(clave)) {
+      gruposCliente.set(clave, { cliente: f.nombreCliente, proceso: f.procesoDondeQuedo, lotes: 0, unidades: 0 });
+    }
+    const g = gruposCliente.get(clave);
+    g.lotes += 1;
+    g.unidades += f.unidades;
+  });
+  const resumenPorCliente = [...gruposCliente.values()]
+    .map((g) => ({ ...g, pct: totalUnidades > 0 ? g.unidades / totalUnidades : 0 }))
+    .sort((a, b) => a.cliente.localeCompare(b.cliente) || b.unidades - a.unidades);
+  return { filas, resumen, resumenPorCliente, totalLotes, totalUnidades, procesosDistintos: resumen.length };
 }
 // Compartido por En Planta / Por Cliente / Cliente Agrupado — solo cambia el
 // campo por el que se agrupa (planta, cliente, o cliente agrupado KAMILA).
@@ -361,6 +379,7 @@ function generarAgrupadoPlanta(lotes, campoAgrupador) {
       numLote: l.numLote,
       referencia: l.referencia,
       cantidad: l.invPlanta,
+      fechaEntregaConf: l.fechaEntregaConfISO,
     }))
     .sort((a, b) => a.grupo.localeCompare(b.grupo) || a.categoria.localeCompare(b.categoria));
   const gruposUnicos = [...new Set(filas.map((f) => f.grupo))].sort((a, b) => a.localeCompare(b));
@@ -562,20 +581,40 @@ function Tabla({ columnas, filas, vacio }) {
     </div>
   );
 }
-function BloqueAgrupado({ titulo, primeraColLabel, data }) {
+function BloqueAgrupado({ titulo, primeraColLabel, data, mostrarFechaEntrega }) {
+  const [grupoSel, setGrupoSel] = useState(null);
+  const filasGrupoSel = grupoSel ? data.filas.filter((f) => f.grupo === grupoSel) : [];
+  const columnasDetalle = [
+    { key: "grupo", label: primeraColLabel },
+    { key: "categoria", label: "Categoría" },
+    { key: "numLote", label: "Num Lote", align: "right" },
+    { key: "referencia", label: "Referencia" },
+    { key: "cantidad", label: "Cant. en Planta", align: "right", render: (f) => fmtNum(f.cantidad) },
+  ];
+  if (mostrarFechaEntrega) {
+    columnasDetalle.push({ key: "fechaEntregaConf", label: "Fecha Entrega Conf.", render: (f) => fmtFechaISO(f.fechaEntregaConf) });
+  }
   return (
     <div>
-      <Tabla
-        vacio="Sin lotes en planta."
-        columnas={[
-          { key: "grupo", label: primeraColLabel },
-          { key: "categoria", label: "Categoría" },
-          { key: "numLote", label: "Num Lote", align: "right" },
-          { key: "referencia", label: "Referencia" },
-          { key: "cantidad", label: "Cant. en Planta", align: "right", render: (f) => fmtNum(f.cantidad) },
-        ]}
-        filas={data.filas}
-      />
+      {grupoSel && (
+        <Modal title={`Lotes de ${grupoSel}`} onClose={() => setGrupoSel(null)} width={720}>
+          <div style={{ marginBottom: 14, fontSize: 12, color: C.slate }}>
+            {filasGrupoSel.length} lote{filasGrupoSel.length !== 1 ? "s" : ""} · {fmtNum(filasGrupoSel.reduce((s, f) => s + f.cantidad, 0))} unidades en total
+          </div>
+          <Tabla
+            vacio="Sin lotes."
+            columnas={[
+              { key: "numLote", label: "Num Lote" },
+              { key: "referencia", label: "Referencia" },
+              { key: "categoria", label: "Categoría" },
+              { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
+              { key: "fechaEntregaConf", label: "Fecha Entrega Conf.", render: (f) => fmtFechaISO(f.fechaEntregaConf) },
+            ]}
+            filas={filasGrupoSel}
+          />
+        </Modal>
+      )}
+      <Tabla vacio="Sin lotes en planta." columnas={columnasDetalle} filas={data.filas} />
       {data.resumen.length > 0 && (
         <div style={{ marginTop: 20 }}>
           <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>RESUMEN POR {titulo.toUpperCase()}</div>
@@ -591,7 +630,13 @@ function BloqueAgrupado({ titulo, primeraColLabel, data }) {
               <tbody>
                 {data.resumen.map((r, i) => (
                   <tr key={r.grupo} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                    <td style={{ padding: "7px 12px" }}>{r.grupo}</td>
+                    <td
+                      onClick={() => setGrupoSel(r.grupo)}
+                      title="Ver lotes"
+                      style={{ padding: "7px 12px", cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3, color: C.blue, fontWeight: 600 }}
+                    >
+                      {r.grupo}
+                    </td>
                     <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
                     <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
                   </tr>
@@ -615,7 +660,7 @@ function BloqueAgrupado({ titulo, primeraColLabel, data }) {
 // de unidades) + detalle de lotes agrupado por proceso, en vez de la tabla
 // plana que tenía antes el reporte de Semiterminado.
 function BloqueSeguimientoSemiterminado({ data }) {
-  const { filas, resumen, totalLotes, totalUnidades, procesosDistintos } = data;
+  const { filas, resumen, resumenPorCliente, totalLotes, totalUnidades, procesosDistintos } = data;
   if (!totalLotes) {
     return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Sin lotes en semiterminado.</div>;
   }
@@ -655,6 +700,31 @@ function BloqueSeguimientoSemiterminado({ data }) {
               <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>100%</td>
             </tr>
           </tfoot>
+        </table>
+      </div>
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>RESUMEN POR CLIENTE</div>
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 24 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: C.ink }}>
+              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Cliente</th>
+              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Proceso Donde Quedó</th>
+              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
+              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
+              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
+            </tr>
+          </thead>
+          <tbody>
+            {resumenPorCliente.map((r, i) => (
+              <tr key={`${r.cliente}-${r.proceso}`} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                <td style={{ padding: "7px 12px" }}>{r.cliente}</td>
+                <td style={{ padding: "7px 12px" }}>{r.proceso}</td>
+                <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
+                <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
+                <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
+              </tr>
+            ))}
+          </tbody>
         </table>
       </div>
       <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>DETALLE DE LOTES POR PROCESO</div>
@@ -1012,7 +1082,7 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
             ))}
           </div>
           {tab === "semiterminado" && <BloqueSeguimientoSemiterminado data={reporteSemiterminado} />}
-          {tab === "en_planta" && <BloqueAgrupado titulo="Planta" primeraColLabel="Nombre Planta" data={reportePlanta} />}
+          {tab === "en_planta" && <BloqueAgrupado titulo="Planta" primeraColLabel="Nombre Planta" data={reportePlanta} mostrarFechaEntrega />}
           {tab === "por_cliente" && <BloqueAgrupado titulo="Cliente" primeraColLabel="Nombre Cliente" data={reporteCliente} />}
           {tab === "cliente_agrupado" && <BloqueAgrupado titulo="Cliente Agrupado" primeraColLabel="Cliente Agrupado" data={reporteClienteAgrupado} />}
           {tab === "cronograma" && <BloqueCronograma data={reporteCronograma} />}
