@@ -1293,4 +1293,162 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
                             <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.bmpLotes)}</td>
                             <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 700 }}>{fmtNum(r.total)}</td>
                           </tr>
-                       
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr style={{ background: "#FFF2CC" }}>
+                          <td style={{ padding: "8px 12px", fontWeight: 800 }}>TOTAL KAMILA</td>
+                          <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right" }}>
+                            {fmtNum(reporteYanko.comparacion.reduce((s, r) => s + r.plantaUnid, 0))}
+                          </td>
+                          <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right" }}>
+                            {fmtNum(reporteYanko.comparacion.reduce((s, r) => s + r.plantaLotes, 0))}
+                          </td>
+                          <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right" }}>
+                            {fmtNum(reporteYanko.comparacion.reduce((s, r) => s + r.bmpUnid, 0))}
+                          </td>
+                          <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right" }}>
+                            {fmtNum(reporteYanko.comparacion.reduce((s, r) => s + r.bmpLotes, 0))}
+                          </td>
+                          <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right" }}>
+                            {fmtNum(reporteYanko.comparacion.reduce((s, r) => s + r.total, 0))}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+// ─── HOME PLANEACIÓN ────────────────────────────────────────────────────────────
+function HomePlaneacion({ onGoInformes }) {
+  return (
+    <div>
+      <div style={{ marginBottom: 28 }}>
+        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>📋 Planeación</h2>
+        <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>Informes de producción de Industrias Yanko</p>
+      </div>
+      <div
+        onClick={onGoInformes}
+        style={{ background: C.white, borderRadius: 14, padding: 22, border: `1.5px solid ${C.border}`, cursor: "pointer", maxWidth: 320, transition: "all 0.2s" }}
+        onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.borderColor = C.blue; }}
+        onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.borderColor = C.border; }}
+      >
+        <div style={{ width: 46, height: 46, borderRadius: 12, background: C.blueBg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, marginBottom: 14 }}>📊</div>
+        <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 6 }}>Informes</div>
+        <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5, marginBottom: 12 }}>
+          Sube la Hoja1 y genera Semiterminado, En Planta, Por Cliente, Cronograma de Entrega, Por Pedido, BMP y Programación Yanko.
+        </div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.blue }}>Entrar →</div>
+      </div>
+    </div>
+  );
+}
+// ─── ROOT MÓDULO PLANEACIÓN ─────────────────────────────────────────────────────
+export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
+  const [subView, setSubView] = useState("informes");
+  const [cargas, setCargas] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_cargas"), (snap) => {
+      setCargas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+  async function addCarga(carga) {
+    setCargas((cs) => [...cs, carga]);
+    await fsSave("planeacion_cargas", carga.id, carga);
+  }
+  async function deleteCarga(id) {
+    setCargas((cs) => cs.filter((c) => c.id !== id));
+    await fsDelete("planeacion_cargas", id);
+  }
+  const isAdmin = currentUser?.isAdmin;
+  const NAV = [
+    { id: "home", icon: "◉", label: "Inicio" },
+    { id: "informes", icon: "📊", label: "Informes" },
+  ];
+  if (loading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.canvas }}>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>📋</div>
+          <div style={{ color: C.slate }}>Cargando Planeación...</div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif", display: "flex" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
+      <div style={{ width: 220, background: C.ink, padding: "24px 14px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 15, fontWeight: 900, color: C.white }}>📋 Planeación</div>
+          <div style={{ fontSize: 10, color: C.seam, marginTop: 2, letterSpacing: "0.1em", textTransform: "uppercase" }}>Industrias Yanko</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "#2A2A45", borderRadius: 10, marginBottom: 16 }}>
+          <div
+            style={{
+              width: 32, height: 32, borderRadius: "50%", background: `linear-gradient(135deg,${C.seam},#9E8870)`,
+              display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, color: C.ink, flexShrink: 0,
+            }}
+          >
+            {(currentUser?.name || "U").split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.white, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{currentUser?.name}</div>
+            <div style={{ fontSize: 10, color: C.seam }}>{currentUser?.role}</div>
+          </div>
+        </div>
+        <nav style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+          {NAV.map((item) => {
+            const active = subView === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setSubView(item.id)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer",
+                  background: active ? "#C8B8A2" : "transparent", color: active ? C.ink : "#8888AA", fontWeight: active ? 800 : 500, fontSize: 13, textAlign: "left",
+                }}
+              >
+                <span style={{ fontSize: 14 }}>{item.icon}</span>
+                {item.label}
+              </button>
+            );
+          })}
+          {onVolver && (
+            <button
+              onClick={onVolver}
+              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: "transparent", color: "rgba(200,184,162,0.5)", fontWeight: 500, fontSize: 12, textAlign: "left", marginTop: 8 }}
+            >
+              ← Volver al Inicio
+            </button>
+          )}
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: "transparent", color: "rgba(232,93,74,0.85)", fontWeight: 700, fontSize: 12, textAlign: "left", marginTop: onVolver ? 2 : 8 }}
+            >
+              ⏏ Cerrar sesión
+            </button>
+          )}
+        </nav>
+      </div>
+      <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
+        <div style={{ maxWidth: 1400, margin: "0 auto" }}>
+          {subView === "home" && <HomePlaneacion onGoInformes={() => setSubView("informes")} />}
+          {subView === "informes" && <InformesView cargas={cargas} onAddCarga={addCarga} onDeleteCarga={deleteCarga} isAdmin={isAdmin} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
