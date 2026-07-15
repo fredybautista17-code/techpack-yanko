@@ -2294,33 +2294,79 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
 // por cliente. Además marca (🚫 Sin pedido) las piezas Aprobadas cuyo código
 // de referencia nunca apareció en ningún Pedido cargado — para detectar
 // diseño aprobado que nunca se llegó a producir.
-// Exporta un envío de la Bitácora a Excel con el mismo formato del ANEXO
-// que se manda al cliente: encabezado (colección/cliente/pedido/fechas) y
-// una fila por referencia con las mismas columnas del archivo original
-// (Ref, Estado, Consumo, Tipo, Categoría, Silueta, Rango, Tela, Curva y
-// Cantidad por país, Precio, Observaciones). La librería "xlsx" (SheetJS,
-// edición community) que ya usa el resto de la app no soporta incrustar
-// imágenes en el archivo, así que Foto/Carta de Colores quedan como nota de
-// texto — la imagen real se sigue viendo dentro de la app.
+// Exporta un envío de la Bitácora a Excel reproduciendo EXACTAMENTE el
+// layout del ANEXO que el cliente ya conoce (el archivo de ejemplo que
+// subieron: "COLECCIÓN KAMILA GIRLS N°2..."): 4 filas de encabezado (nombre
+// de colección; fecha enviado/recibido y marca/n° pedido; encabezados de
+// columna; sub-encabezados CURVA/CANTIDAD bajo COLOMBIA y VENEZUELA) y luego
+// una fila por referencia, en las mismas 17 columnas (A-Q) y en el mismo
+// orden que ese archivo. La librería "xlsx" (SheetJS, edición community) que
+// ya usa el resto de la app no soporta incrustar imágenes, así que
+// Foto/Carta de Colores quedan como nota de texto en vez de la imagen real
+// (que sí se ve dentro de la app, en la Bitácora).
 async function exportBitacoraEnvioToExcel(envio) {
   const XLSX = await import("xlsx");
   const wsData = [
-    ["ANEXO — ENVÍO A CLIENTE", "", "", "", "", "", ""],
-    ["COLECCIÓN (NOMBRE)", envio.coleccion || "", "", "", "", "", ""],
-    ["FECHA ENVIADO", envio.fechaEnviado || "", "", "FECHA RECIBIDO CLIENTE", envio.fechaRecibidoCliente || "(pendiente)", "", ""],
-    ["MARCA / CLIENTE", envio.cliente || "", "", "N° PEDIDO", envio.numPedido || "", "", ""],
-    ["EMPRESA TRANSPORTE", envio.empresaTransporte || "—", "", "N° GUÍA", envio.guia || "—", "", ""],
-    ["CARTA DE COLORES", envio.cartaColores ? "(adjunta en la app)" : "—", "", "", "", "", ""],
-    [],
-    ["FOTO", "REF", "NOMBRE", "ESTADO", "CONSUMO", "TIPO", "CATEGORIA", "SILUETA", "RANGO (TALLA)", "TELA", "CURVA COLOMBIA", "CANTIDAD COLOMBIA", "CURVA VENEZUELA", "CANTIDAD VENEZUELA", "PRECIO $", "OBSERVACIONES CLIENTE"],
+    ["COLECCIÓN (NOMBRE)", envio.coleccion || "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["FECHA ENVIADO", envio.fechaEnviado || "", "", "", "FECHA RECIBIDO CLIENTE", envio.fechaRecibidoCliente || "", "", "", "", "MARCA", envio.cliente || "", "", "", "N° PEDIDO", envio.numPedido || "", "", ""],
+    ["FOTO", "REF", "ESTADO", "CONSUMO", "TIPO", "CATEGORIA", "SILUETA", "RANGO (TALLA)", "TELA", "COLOMBIA", "", "VENEZUELA", "", "PRECIO $", "OBSERVACIONES CLIENTE", "", "CARTA DE COLORES"],
+    ["", "", "", "", "", "", "", "", "", "CURVA ", "CANTIDAD", "CURVA", "CANTIDAD", "", "", "", ""],
     ...envio.items.map((it) => [
       it.foto ? "(ver en la app)" : "",
-      it.referencia, it.nombre, it.estado, it.consumo, it.tipo, it.categoria, it.silueta, it.rango, it.tela,
-      it.colombiaCurva, it.colombiaCantidad, it.venezuelaCurva, it.venezuelaCantidad, it.precio, it.observacionesCliente,
+      it.referencia || "",
+      it.estado || "",
+      it.consumo || "",
+      it.tipo || "",
+      it.categoria || "",
+      it.silueta || "",
+      it.rango || "",
+      it.tela || "",
+      it.colombiaCurva || "",
+      it.colombiaCantidad || "",
+      it.venezuelaCurva || "",
+      it.venezuelaCantidad || "",
+      it.precio || "",
+      it.observacionesCliente || "",
+      "",
+      envio.cartaColores ? "(ver en la app)" : "",
     ]),
   ];
   const ws = XLSX.utils.aoa_to_sheet(wsData);
-  ws["!cols"] = [{ wch: 14 }, { wch: 12 }, { wch: 20 }, { wch: 14 }, { wch: 12 }, { wch: 10 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 10 }, { wch: 26 }];
+  // Réplica exacta de las fusiones de celdas del archivo de ejemplo: las
+  // celdas de VALOR de la fila 1-2 (colección, fecha enviado, fecha
+  // recibido, marca, n° pedido) se fusionan para dar espacio al texto;
+  // COLOMBIA/VENEZUELA/OBSERVACIONES CLIENTE ocupan 2 columnas en la fila de
+  // encabezado; las columnas de un solo valor (Foto, Ref, Estado...) quedan
+  // fusionadas verticalmente entre la fila de encabezado y la de
+  // sub-encabezado (CURVA/CANTIDAD); y Observaciones Cliente sigue
+  // ocupando 2 columnas en cada fila de datos, igual que en el original.
+  ws["!merges"] = [
+    { s: { r: 0, c: 1 }, e: { r: 0, c: 16 } }, // valor Colección
+    { s: { r: 1, c: 1 }, e: { r: 1, c: 3 } }, // valor Fecha Enviado
+    { s: { r: 1, c: 4 }, e: { r: 1, c: 5 } }, // etiqueta Fecha Recibido Cliente
+    { s: { r: 1, c: 6 }, e: { r: 1, c: 8 } }, // valor Fecha Recibido Cliente
+    { s: { r: 1, c: 10 }, e: { r: 1, c: 12 } }, // valor Marca
+    { s: { r: 1, c: 14 }, e: { r: 1, c: 16 } }, // valor N° Pedido
+    { s: { r: 2, c: 0 }, e: { r: 3, c: 0 } },
+    { s: { r: 2, c: 1 }, e: { r: 3, c: 1 } },
+    { s: { r: 2, c: 2 }, e: { r: 3, c: 2 } },
+    { s: { r: 2, c: 3 }, e: { r: 3, c: 3 } },
+    { s: { r: 2, c: 4 }, e: { r: 3, c: 4 } },
+    { s: { r: 2, c: 5 }, e: { r: 3, c: 5 } },
+    { s: { r: 2, c: 6 }, e: { r: 3, c: 6 } },
+    { s: { r: 2, c: 7 }, e: { r: 3, c: 7 } },
+    { s: { r: 2, c: 8 }, e: { r: 3, c: 8 } },
+    { s: { r: 2, c: 9 }, e: { r: 2, c: 10 } },
+    { s: { r: 2, c: 11 }, e: { r: 2, c: 12 } },
+    { s: { r: 2, c: 13 }, e: { r: 3, c: 13 } },
+    { s: { r: 2, c: 14 }, e: { r: 3, c: 15 } },
+    { s: { r: 2, c: 16 }, e: { r: 3, c: 16 } },
+    ...envio.items.map((_, i) => ({ s: { r: 4 + i, c: 14 }, e: { r: 4 + i, c: 15 } })),
+  ];
+  ws["!cols"] = [
+    { wch: 10 }, { wch: 12 }, { wch: 14 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 11 }, { wch: 13 },
+    { wch: 10 }, { wch: 10 }, { wch: 11 }, { wch: 10 }, { wch: 11 }, { wch: 10 }, { wch: 24 }, { wch: 4 }, { wch: 14 },
+  ];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "ANEXO");
   const nombreArchivo = `Envio_${(envio.coleccion || envio.cliente || "bitacora").replace(/[^a-zA-Z0-9]+/g, "_")}_${envio.fechaEnviado || today()}.xlsx`;
