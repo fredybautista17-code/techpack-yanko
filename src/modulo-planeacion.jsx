@@ -156,6 +156,18 @@ function fmtFechaISO(iso) {
   const [y, m, d] = iso.split("-");
   return `${d}/${m}/${y}`;
 }
+// Fecha + hora de actualización de una carga (a partir de su `creadoEn`,
+// timestamp ISO completo con hora, a diferencia de `fecha` que solo trae el
+// día). Si por alguna razón una carga vieja no tiene `creadoEn`, no rompe —
+// simplemente no muestra hora.
+function fmtFechaHora(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const fecha = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+  const hora = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return `${fecha} ${hora}`;
+}
 function lunesDeSemana(fecha) {
   if (!esFechaValida(fecha)) return null;
   const d = new Date(fecha.getFullYear(), fecha.getMonth(), fecha.getDate());
@@ -766,7 +778,13 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
   const [showUpload, setShowUpload] = useState(false);
   const [cargaId, setCargaId] = useState(null);
   const [tab, setTab] = useState("en_planta");
-  const cargasOrdenadas = [...cargas].sort((a, b) => b.fecha.localeCompare(a.fecha));
+  // Ordena por `creadoEn` (timestamp completo con hora) cuando existe, para
+  // que dos cargas del mismo día queden en el orden real en que se subieron
+  // — antes solo se ordenaba por `fecha` (solo día), así que el orden entre
+  // cargas del mismo día no era confiable.
+  const cargasOrdenadas = [...cargas].sort(
+    (a, b) => (b.creadoEn || b.fecha).localeCompare(a.creadoEn || a.fecha)
+  );
   const cargaActiva = cargaId ? cargasOrdenadas.find((c) => c.id === cargaId) || cargasOrdenadas[0] : cargasOrdenadas[0];
   const lotes = useMemo(() => cargaActiva?.lotes || [], [cargaActiva]);
   const reporteSemiterminado = useMemo(() => generarSeguimientoSemiterminado(lotes), [lotes]);
@@ -924,7 +942,9 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Informes</h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
-            {cargaActiva ? `Carga del ${cargaActiva.fecha}` : "Sin cargas de Hoja1 todavía"}
+            {cargaActiva
+              ? `Carga del ${cargaActiva.fecha}${cargaActiva.creadoEn ? ` · Actualizado ${fmtFechaHora(cargaActiva.creadoEn)}` : ""}`
+              : "Sin cargas de Hoja1 todavía"}
           </p>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -935,7 +955,10 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
               style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
             >
               {cargasOrdenadas.map((c) => (
-                <option key={c.id} value={c.id}>Carga {c.fecha}</option>
+                <option key={c.id} value={c.id}>
+                  Carga {c.fecha}
+                  {c.creadoEn ? ` · ${fmtFechaHora(c.creadoEn).split(" ")[1]}` : ""}
+                </option>
               ))}
             </select>
           )}
