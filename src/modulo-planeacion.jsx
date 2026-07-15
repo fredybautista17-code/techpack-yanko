@@ -614,9 +614,8 @@ function BloqueAgrupado({ titulo, primeraColLabel, data, mostrarFechaEntrega }) 
           />
         </Modal>
       )}
-      <Tabla vacio="Sin lotes en planta." columnas={columnasDetalle} filas={data.filas} />
       {data.resumen.length > 0 && (
-        <div style={{ marginTop: 20 }}>
+        <div style={{ marginBottom: 20 }}>
           <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>RESUMEN POR {titulo.toUpperCase()}</div>
           <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -653,6 +652,8 @@ function BloqueAgrupado({ titulo, primeraColLabel, data, mostrarFechaEntrega }) 
           </div>
         </div>
       )}
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>DETALLE POR LOTE</div>
+      <Tabla vacio="Sin lotes en planta." columnas={columnasDetalle} filas={data.filas} />
     </div>
   );
 }
@@ -671,61 +672,67 @@ function BloqueSeguimientoSemiterminado({ data }) {
         <KPI icon="🧶" label="Total Unidades" value={fmtNum(totalUnidades)} color={C.violet} bg={C.violetBg} />
         <KPI icon="🔀" label="Procesos Distintos" value={fmtNum(procesosDistintos)} color={C.blue} bg={C.blueBg} />
       </div>
-      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>RESUMEN POR PROCESO</div>
-      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 24 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-          <thead>
-            <tr style={{ background: C.ink }}>
-              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Proceso Donde Quedó</th>
-              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
-              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
-              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
-            </tr>
-          </thead>
-          <tbody>
-            {resumen.map((r, i) => (
-              <tr key={r.proceso} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                <td style={{ padding: "7px 12px" }}>{r.proceso}</td>
-                <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
-                <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
-                <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr style={{ background: "#FFF2CC" }}>
-              <td style={{ padding: "8px 12px", fontWeight: 800, color: C.ink }}>TOTAL</td>
-              <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalLotes)}</td>
-              <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalUnidades)}</td>
-              <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>100%</td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>RESUMEN POR CLIENTE</div>
-      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 24 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-          <thead>
-            <tr style={{ background: C.ink }}>
-              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Cliente</th>
-              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Proceso Donde Quedó</th>
-              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
-              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
-              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
-            </tr>
-          </thead>
-          <tbody>
-            {resumenPorCliente.map((r, i) => (
-              <tr key={`${r.cliente}-${r.proceso}`} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                <td style={{ padding: "7px 12px" }}>{r.cliente}</td>
-                <td style={{ padding: "7px 12px" }}>{r.proceso}</td>
-                <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
-                <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
-                <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 24 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>RESUMEN POR PROCESO</div>
+          <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: C.ink }}>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Proceso Donde Quedó</th>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
+                </tr>
+              </thead>
+              <tbody>
+                {resumen.map((r, i) => (
+                  <tr key={r.proceso} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                    <td style={{ padding: "7px 12px" }}>{r.proceso}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr style={{ background: "#FFF2CC" }}>
+                  <td style={{ padding: "8px 12px", fontWeight: 800, color: C.ink }}>TOTAL</td>
+                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalLotes)}</td>
+                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalUnidades)}</td>
+                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>100%</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>RESUMEN POR CLIENTE</div>
+          <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: C.ink }}>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Cliente</th>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Proceso Donde Quedó</th>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
+                </tr>
+              </thead>
+              <tbody>
+                {resumenPorCliente.map((r, i) => (
+                  <tr key={`${r.cliente}-${r.proceso}`} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                    <td style={{ padding: "7px 12px" }}>{r.cliente}</td>
+                    <td style={{ padding: "7px 12px" }}>{r.proceso}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
       <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>DETALLE DE LOTES POR PROCESO</div>
       <Tabla
@@ -1317,3 +1324,4 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     </div>
   );
 }
+
