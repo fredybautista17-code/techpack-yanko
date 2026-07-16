@@ -2305,7 +2305,21 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
 // Foto/Carta de Colores quedan como nota de texto en vez de la imagen real
 // (que sí se ve dentro de la app, en la Bitácora).
 async function exportBitacoraEnvioToExcel(envio) {
-  const XLSX = await import("xlsx");
+  // "xlsx-js-style" es un fork de SheetJS (mismo núcleo 0.18.5 que ya usa el
+  // resto de la app, mismo API) que además soporta escribir estilos de
+  // celda (relleno, fuente, bordes) — la librería "xlsx" normal (edición
+  // community) no permite esto al generar el archivo. Se usa SOLO aquí, sin
+  // tocar los demás exportadores de la app, que siguen igual con "xlsx".
+  const XLSX = await import("xlsx-js-style");
+  // Los campos de cantidad/precio se escriben como número (no texto) cuando
+  // se puede — así el numFmt de moneda de más abajo realmente se ve en
+  // Excel (un numFmt sobre una celda de texto no tiene efecto visual), y de
+  // paso el cliente puede sumarlos directamente en la hoja si quiere.
+  function numOTexto(v) {
+    if (v === "" || v === null || v === undefined) return "";
+    const n = Number(v);
+    return Number.isNaN(n) ? v : n;
+  }
   const wsData = [
     ["COLECCIÓN (NOMBRE)", envio.coleccion || "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
     ["FECHA ENVIADO", envio.fechaEnviado || "", "", "", "FECHA RECIBIDO CLIENTE", envio.fechaRecibidoCliente || "", "", "", "", "MARCA", envio.cliente || "", "", "", "N° PEDIDO", envio.numPedido || "", "", ""],
@@ -2322,10 +2336,10 @@ async function exportBitacoraEnvioToExcel(envio) {
       it.rango || "",
       it.tela || "",
       it.colombiaCurva || "",
-      it.colombiaCantidad || "",
+      numOTexto(it.colombiaCantidad),
       it.venezuelaCurva || "",
-      it.venezuelaCantidad || "",
-      it.precio || "",
+      numOTexto(it.venezuelaCantidad),
+      numOTexto(it.precio),
       it.observacionesCliente || "",
       "",
       envio.cartaColores ? "(ver en la app)" : "",
@@ -2367,6 +2381,51 @@ async function exportBitacoraEnvioToExcel(envio) {
     { wch: 10 }, { wch: 12 }, { wch: 14 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 11 }, { wch: 13 },
     { wch: 10 }, { wch: 10 }, { wch: 11 }, { wch: 10 }, { wch: 11 }, { wch: 10 }, { wch: 24 }, { wch: 4 }, { wch: 14 },
   ];
+  ws["!rows"] = [{ hpt: 24 }, { hpt: 20 }, { hpt: 24 }, { hpt: 20 }, ...envio.items.map(() => ({ hpt: 36 }))];
+  // Colores de marca de TechPack (mismos tokens T.* que usa el resto de la
+  // app): fondo oscuro + texto beige en los encabezados, filas de datos
+  // alternadas para que sea más fácil seguir cada referencia, y un borde
+  // fino en toda la tabla — igual a como se ve el "Informe de Seguimiento" y
+  // los demás informes dentro de la app, pero ahora también en el Excel.
+  const COLOR_INK = "1A1A2E";
+  const COLOR_SEAM = "C8B8A2";
+  const COLOR_CANVAS = "F7F4F0";
+  const COLOR_BORDER = "E8E2DB";
+  const THIN = { style: "thin", color: { rgb: COLOR_BORDER } };
+  const BOX = { top: THIN, bottom: THIN, left: THIN, right: THIN };
+  const COLS_CENTRADAS = new Set([0, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 16]);
+  const totalCols = 17;
+  const totalRows = wsData.length;
+  for (let r = 0; r < totalRows; r++) {
+    for (let c = 0; c < totalCols; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (!ws[addr]) ws[addr] = { t: "s", v: "" };
+      const centrada = COLS_CENTRADAS.has(c);
+      let style = { border: BOX, alignment: { vertical: "center", horizontal: centrada ? "center" : "left", wrapText: true } };
+      if (r === 0) {
+        // Título — nombre de la colección.
+        style.font = { bold: true, sz: 13, color: { rgb: COLOR_INK } };
+        style.fill = { patternType: "solid", fgColor: { rgb: COLOR_CANVAS } };
+      } else if (r === 1) {
+        // Fila de etiquetas (Fecha Enviado / Recibido, Marca, N° Pedido).
+        const esEtiqueta = c === 0 || c === 4 || c === 9 || c === 13;
+        style.font = { bold: esEtiqueta, sz: 11, color: { rgb: COLOR_INK } };
+        if (esEtiqueta) style.fill = { patternType: "solid", fgColor: { rgb: COLOR_CANVAS } };
+      } else if (r === 2 || r === 3) {
+        // Encabezados de columna (FOTO/REF/...) y sub-encabezados (CURVA/CANTIDAD).
+        style.fill = { patternType: "solid", fgColor: { rgb: COLOR_INK } };
+        style.font = { bold: true, sz: 10, color: { rgb: COLOR_SEAM } };
+        style.alignment = { vertical: "center", horizontal: "center", wrapText: true };
+      } else {
+        // Filas de datos, alternadas.
+        const filaDato = r - 4;
+        style.fill = { patternType: "solid", fgColor: { rgb: filaDato % 2 === 0 ? "FFFFFF" : COLOR_CANVAS } };
+        style.font = { sz: 10, color: { rgb: COLOR_INK } };
+        if (c === 13 && ws[addr].v !== "") style.numFmt = "$#,##0";
+      }
+      ws[addr].s = style;
+    }
+  }
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "ANEXO");
   const nombreArchivo = `Envio_${(envio.coleccion || envio.cliente || "bitacora").replace(/[^a-zA-Z0-9]+/g, "_")}_${envio.fechaEnviado || today()}.xlsx`;
