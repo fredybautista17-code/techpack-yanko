@@ -2171,8 +2171,9 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
   );
 }
 // ─── COMPARATIVO POR CONCEPTO (MES A MES) ─────────────────────────────────────
-function ComparativoConceptosView({ compras, onImportar, onDeleteMes, isAdmin }) {
+function ComparativoConceptosView({ compras, onImportar, onDeleteMes, onUpdateCompra, isAdmin }) {
   const [showImport, setShowImport] = useState(false);
+  const [cuadrando, setCuadrando] = useState(null); // { codConcep, concepto, mes } — celda que se está cuadrando
   const meses = [...new Set(compras.map((c) => c.mes))].sort();
   const filasMap = {};
   compras.forEach((c) => {
@@ -2201,6 +2202,12 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, isAdmin })
   const conTendencia = penultimoMes ? filas.filter((f) => (f.porMes[ultimoMes] || 0) > 0 || (f.porMes[penultimoMes] || 0) > 0) : [];
   const subieron = [...conTendencia].filter((f) => f.cambio > 0).sort((a, b) => b.cambio - a.cambio).slice(0, 5);
   const bajaron = [...conTendencia].filter((f) => f.cambio < 0).sort((a, b) => a.cambio - b.cambio).slice(0, 5);
+  // Celdas (mes + concepto) que ya tienen IVA/Retención cuadrados manualmente.
+  const cuadradasSet = new Set(
+    compras.filter((c) => c.iva !== undefined || c.retencion !== undefined).map((c) => `${c.mes}__${c.codConcep}__${c.concepto}`)
+  );
+  const registrosDeCelda = (codConcep, concepto, mes) =>
+    compras.filter((c) => c.mes === mes && c.codConcep === codConcep && c.concepto === concepto);
   return (
     <div>
       {showImport && (
@@ -2208,6 +2215,16 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, isAdmin })
           comprasExistentes={compras}
           onConfirm={onImportar}
           onClose={() => setShowImport(false)}
+        />
+      )}
+      {cuadrando && (
+        <CuadrarPagoModal
+          concepto={cuadrando.concepto}
+          codConcep={cuadrando.codConcep}
+          mes={cuadrando.mes}
+          registros={registrosDeCelda(cuadrando.codConcep, cuadrando.concepto, cuadrando.mes)}
+          onUpdateCompra={onUpdateCompra}
+          onClose={() => setCuadrando(null)}
         />
       )}
       <div
@@ -2223,7 +2240,7 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, isAdmin })
             Comparativo por Concepto
           </h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
-            Gasto agrupado por concepto, mes a mes (Valor Bruto Busint)
+            Gasto agrupado por concepto, mes a mes (Valor Bruto Busint). Haz clic en un valor para cuadrar IVA / Retención y ver el neto a pagar.
           </p>
         </div>
         <Btn variant="danger" onClick={() => setShowImport(true)}>
@@ -2337,21 +2354,35 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, isAdmin })
                     >
                       <td style={{ padding: "8px 12px", color: C.slate, whiteSpace: "nowrap" }}>{f.codConcep}</td>
                       <td style={{ padding: "8px 12px", color: C.ink, fontWeight: 600 }}>{f.concepto}</td>
-                      {meses.map((m) => (
-                        <td
-                          key={m}
-                          style={{
-                            padding: "8px 12px",
-                            textAlign: "right",
-                            whiteSpace: "nowrap",
-                            fontWeight: m === mesMax && f.porMes[m] ? 800 : 500,
-                            color: m === mesMax && f.porMes[m] ? C.red : C.slate,
-                            background: m === mesMax && f.porMes[m] ? C.redBg : "transparent",
-                          }}
-                        >
-                          {f.porMes[m] ? fmtCOP(f.porMes[m]) : "—"}
-                        </td>
-                      ))}
+                      {meses.map((m) => {
+                        const tieneValor = !!f.porMes[m];
+                        const cuadrada = cuadradasSet.has(`${m}__${f.codConcep}__${f.concepto}`);
+                        return (
+                          <td
+                            key={m}
+                            onClick={() => tieneValor && setCuadrando({ codConcep: f.codConcep, concepto: f.concepto, mes: m })}
+                            title={tieneValor ? "Clic para cuadrar IVA / Retención" : ""}
+                            style={{
+                              padding: "8px 12px",
+                              textAlign: "right",
+                              whiteSpace: "nowrap",
+                              fontWeight: m === mesMax && f.porMes[m] ? 800 : 500,
+                              color: m === mesMax && f.porMes[m] ? C.red : C.slate,
+                              background: m === mesMax && f.porMes[m] ? C.redBg : "transparent",
+                              cursor: tieneValor ? "pointer" : "default",
+                            }}
+                          >
+                            {tieneValor ? (
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                                {cuadrada && <span title="Cuadrado con IVA/Retención" style={{ fontSize: 10, color: C.green }}>●</span>}
+                                {fmtCOP(f.porMes[m])}
+                              </span>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                        );
+                      })}
                       <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800, color: C.ink, whiteSpace: "nowrap" }}>
                         {fmtCOP(f.total)}
                       </td>
@@ -2440,6 +2471,115 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, isAdmin })
         </>
       )}
     </div>
+  );
+}
+// ─── CUADRE MANUAL DE IVA / RETENCIÓN (por celda mes + concepto) ─────────────
+// El usuario escribe IVA y Retención a mano (no se calculan con %); el Valor
+// Neto a Pagar = Vbruto (Busint) + IVA - Retención. Si la celda agrupa más de
+// un registro (p. ej. se importó el mismo mes dos veces sin reemplazar), se
+// edita cada registro por separado y también se muestra el total combinado.
+function CuadrarPagoModal({ concepto, codConcep, mes, registros, onUpdateCompra, onClose }) {
+  const [valores, setValores] = useState(() => {
+    const init = {};
+    registros.forEach((r) => {
+      init[r.id] = { iva: r.iva ?? "", retencion: r.retencion ?? "" };
+    });
+    return init;
+  });
+  function setCampo(id, campo, val) {
+    setValores((v) => ({ ...v, [id]: { ...v[id], [campo]: val } }));
+  }
+  function netoDe(r) {
+    const iva = parseFloat(valores[r.id]?.iva) || 0;
+    const retencion = parseFloat(valores[r.id]?.retencion) || 0;
+    return r.valor + iva - retencion;
+  }
+  const totalBruto = registros.reduce((s, r) => s + r.valor, 0);
+  const totalIva = registros.reduce((s, r) => s + (parseFloat(valores[r.id]?.iva) || 0), 0);
+  const totalRetencion = registros.reduce((s, r) => s + (parseFloat(valores[r.id]?.retencion) || 0), 0);
+  const totalNeto = totalBruto + totalIva - totalRetencion;
+  async function guardar() {
+    await Promise.all(
+      registros.map((r) =>
+        onUpdateCompra(r.id, {
+          iva: parseFloat(valores[r.id]?.iva) || 0,
+          retencion: parseFloat(valores[r.id]?.retencion) || 0,
+        })
+      )
+    );
+    onClose();
+  }
+  return (
+    <Modal title={`Cuadrar pago — ${concepto}`} onClose={onClose} width={520}>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, lineHeight: 1.5 }}>
+        {fmtMesLargo(mes)} · Código {codConcep}. El Valor Bruto viene del import de Busint (antes de IVA y retenciones). Escribe el IVA y la Retención de la factura para calcular el Valor Neto a Pagar y compararlo con lo que realmente pagaste.
+      </div>
+      {registros.map((r, i) => (
+        <div
+          key={r.id}
+          style={{
+            border: `1px solid ${C.border}`,
+            borderRadius: 10,
+            padding: 14,
+            marginBottom: 14,
+            background: C.canvas,
+          }}
+        >
+          {registros.length > 1 && (
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, marginBottom: 8 }}>
+              Registro {i + 1} de {registros.length} ({r.entradas} factura{r.entradas !== 1 ? "s" : ""} agrupadas)
+            </div>
+          )}
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 10 }}>
+            <span style={{ color: C.slate }}>Valor Bruto (Busint)</span>
+            <span style={{ fontWeight: 800, color: C.ink }}>{fmtCOP(r.valor)}</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="IVA">
+              <FInput type="number" value={valores[r.id]?.iva} onChange={(v) => setCampo(r.id, "iva", v)} placeholder="0" />
+            </Field>
+            <Field label="Retención">
+              <FInput type="number" value={valores[r.id]?.retencion} onChange={(v) => setCampo(r.id, "retencion", v)} placeholder="0" />
+            </Field>
+          </div>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              fontSize: 13,
+              paddingTop: 10,
+              marginTop: 4,
+              borderTop: `1px dashed ${C.border}`,
+            }}
+          >
+            <span style={{ color: C.ink, fontWeight: 700 }}>Valor Neto a Pagar</span>
+            <span style={{ fontWeight: 900, color: C.violet }}>{fmtCOP(netoDe(r))}</span>
+          </div>
+        </div>
+      ))}
+      {registros.length > 1 && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            fontSize: 13,
+            padding: "10px 14px",
+            background: C.violetBg,
+            borderRadius: 8,
+            marginBottom: 16,
+          }}
+        >
+          <span style={{ color: C.violet, fontWeight: 800 }}>Total combinado (Neto)</span>
+          <span style={{ color: C.violet, fontWeight: 900 }}>{fmtCOP(totalNeto)}</span>
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>
+          Cancelar
+        </Btn>
+        <Btn onClick={guardar}>Guardar</Btn>
+      </div>
+    </Modal>
   );
 }
 // ─── PROYECCIÓN DE FLUJO DE CAJA (PRESUPUESTO POR MES) ────────────────────────
@@ -4008,6 +4148,13 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     setCompras((cs) => cs.filter((c) => c.id !== id));
     await fsDelete("contabilidad_compras", id);
   }
+  // Cuadre manual de IVA/Retención sobre un registro ya importado de Busint
+  // (Comparativo por Concepto). El usuario escribe los valores a mano; el
+  // Valor Neto a Pagar se calcula como Vbruto + IVA - Retención.
+  async function updateCompra(id, patch) {
+    setCompras((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+    await fsSave("contabilidad_compras", id, patch);
+  }
   // Antes de agregar los grupos nuevos, borra los meses que el usuario marcó
   // para reemplazar (evita duplicar totales si se reimporta el mismo mes).
   async function onImportarCompras(nuevos, reemplazarMap) {
@@ -4308,6 +4455,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               compras={compras}
               onImportar={onImportarCompras}
               onDeleteMes={deleteComprasDeMes}
+              onUpdateCompra={updateCompra}
               isAdmin={isAdmin}
             />
           )}
