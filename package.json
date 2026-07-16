@@ -11,7 +11,8 @@
     "firebase": "12.15.0",
     "formdata-polyfill": "4.0.10",
     "@babel/plugin-bugfix-firefox-class-in-computed-class-key": "8.0.1",
-    "xlsx": "0.18.5"
+    "xlsx": "0.18.5",
+    "xlsx-js-style": "1.2.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",
