@@ -2584,30 +2584,36 @@ function CuadrarPagoModal({ concepto, codConcep, mes, registros, onUpdateCompra,
 }
 // ─── PROYECCIÓN DE FLUJO DE CAJA (PRESUPUESTO POR MES) ────────────────────────
 // El "promedio" de cada rubro se calcula en vivo a partir de los meses ya
-// cargados en el Comparativo (contabilidad_compras) — nunca se recalcula
-// retroactivamente sobre un presupuesto ya guardado, así que editar un
-// borrador conserva la selección de rubros y el % de ajuste que tenías.
+// cargados en el Comparativo (contabilidad_compras). Un presupuesto guardado
+// NO se recalcula solo al importar más meses — hay que pulsar "Recalcular"
+// a propósito (p. ej. después de cuadrar IVA/Retención de una compra), para
+// no cambiar cifras ya usadas sin que el usuario lo pida explícitamente.
 function sumarMes(mes, n = 1) {
   const [y, m] = mes.split("-").map(Number);
   const d = new Date(y, m - 1 + n, 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
+// Promedio de gasto por rubro (codConcep+concepto), sobre todos los meses
+// cargados en el Comparativo. Si una compra ya tiene IVA/Retención cuadrados
+// manualmente, se usa su Valor Neto (Vbruto + IVA - Retención); si no, se usa
+// el Vbruto de Busint tal cual. Se usa tanto al crear una Proyección nueva
+// como al Recalcular una ya existente (botón "🔄 Recalcular" en la tarjeta).
+function calcularBaseItemsPromedio(compras) {
+  const mesesCompras = [...new Set(compras.map((c) => c.mes))].sort();
+  const map = {};
+  compras.forEach((c) => {
+    const key = `${c.codConcep}__${c.concepto}`;
+    if (!map[key]) map[key] = { codConcep: c.codConcep, concepto: c.concepto, total: 0 };
+    const neto = c.valor + (c.iva || 0) - (c.retencion || 0);
+    map[key].total += neto;
+  });
+  return Object.values(map)
+    .map((b) => ({ ...b, promedio: mesesCompras.length ? b.total / mesesCompras.length : 0 }))
+    .sort((a, b) => b.promedio - a.promedio);
+}
 function ProyeccionForm({ compras, presupuestoExistente, onGuardar, onClose }) {
   const mesesCompras = [...new Set(compras.map((c) => c.mes))].sort();
-  const baseItems = (() => {
-    const map = {};
-    compras.forEach((c) => {
-      const key = `${c.codConcep}__${c.concepto}`;
-      if (!map[key]) map[key] = { codConcep: c.codConcep, concepto: c.concepto, total: 0 };
-      // Si ya se cuadró el IVA/Retención de esta compra, se proyecta con el
-      // Valor Neto (lo que realmente toca pagar) en vez del Vbruto de Busint.
-      const neto = c.valor + (c.iva || 0) - (c.retencion || 0);
-      map[key].total += neto;
-    });
-    return Object.values(map)
-      .map((b) => ({ ...b, promedio: mesesCompras.length ? b.total / mesesCompras.length : 0 }))
-      .sort((a, b) => b.promedio - a.promedio);
-  })();
+  const baseItems = calcularBaseItemsPromedio(compras);
   const [mesForm, setMesForm] = useState(
     presupuestoExistente?.mes || (mesesCompras.length ? sumarMes(mesesCompras[mesesCompras.length - 1]) : sumarMes(today().slice(0, 7)))
   );
@@ -2761,7 +2767,7 @@ function ProyeccionForm({ compras, presupuestoExistente, onGuardar, onClose }) {
     </Modal>
   );
 }
-function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onGuardar, onFinalizar, onDeletePresupuesto, isAdmin }) {
+function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onGuardar, onFinalizar, onDeletePresupuesto, onRecalcular, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [editando, setEditando] = useState(null);
   // Cada mes arranca colapsado (como una fila de lista) — se despliega solo
@@ -2801,7 +2807,7 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Proyección</h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
-            Presupuesto mensual estimado a partir del histórico de Comparativo por Concepto
+            Presupuesto mensual estimado a partir del histórico de Comparativo por Concepto. Si cuadras IVA/Retención de una compra después de crear un presupuesto, usa "🔄 Recalcular" en esa tarjeta para actualizarlo.
           </p>
         </div>
         <Btn
@@ -2939,6 +2945,9 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
                             </Btn>
                           </>
                         )}
+                        <Btn small variant="secondary" onClick={() => onRecalcular(p.id)}>
+                          🔄 Recalcular
+                        </Btn>
                         <Btn small variant="danger" onClick={() => onDeletePresupuesto(p.id)}>
                           Eliminar
                         </Btn>
@@ -4195,6 +4204,26 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     setPresupuestos((ps) => ps.map((x) => (x.id === id ? actualizado : x)));
     await fsSave("contabilidad_presupuestos", id, actualizado);
   }
+  // Recalcula los valores de un presupuesto ya guardado (borrador o terminado)
+  // usando el promedio Neto actual de cada rubro (Vbruto + IVA - Retención de
+  // las compras ya cuadradas). Se dispara solo cuando el usuario pulsa
+  // "Recalcular" — nunca automáticamente — y conserva qué rubros estaban
+  // incluidos y el % de ajuste que ya tenía guardado ese presupuesto.
+  async function recalcularPresupuesto(id) {
+    const p = presupuestos.find((x) => x.id === id);
+    if (!p) return;
+    const baseItems = calcularBaseItemsPromedio(compras);
+    const itemsNuevos = baseItems.map((b) => {
+      const anterior = (p.items || []).find((i) => i.codConcep === b.codConcep && i.concepto === b.concepto);
+      const incluido = anterior ? !!anterior.incluido : true;
+      const valorFinal = incluido ? b.promedio * (1 + (parseFloat(p.ajustePct) || 0) / 100) : 0;
+      return { codConcep: b.codConcep, concepto: b.concepto, promedio: b.promedio, incluido, valorFinal };
+    });
+    const totalProyectado = itemsNuevos.filter((i) => i.incluido).reduce((s, i) => s + i.valorFinal, 0);
+    const patch = { items: itemsNuevos, totalProyectado, recalculadoEn: new Date().toISOString() };
+    setPresupuestos((ps) => ps.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+    await fsSave("contabilidad_presupuestos", id, patch);
+  }
   async function deletePresupuesto(id) {
     setPresupuestos((ps) => ps.filter((x) => x.id !== id));
     await fsDelete("contabilidad_presupuestos", id);
@@ -4488,6 +4517,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               onGuardar={guardarPresupuesto}
               onFinalizar={finalizarPresupuesto}
               onDeletePresupuesto={deletePresupuesto}
+              onRecalcular={recalcularPresupuesto}
               isAdmin={isAdmin}
             />
           )}
