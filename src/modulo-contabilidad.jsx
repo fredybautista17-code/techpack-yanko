@@ -2599,7 +2599,10 @@ function ProyeccionForm({ compras, presupuestoExistente, onGuardar, onClose }) {
     compras.forEach((c) => {
       const key = `${c.codConcep}__${c.concepto}`;
       if (!map[key]) map[key] = { codConcep: c.codConcep, concepto: c.concepto, total: 0 };
-      map[key].total += c.valor;
+      // Si ya se cuadró el IVA/Retención de esta compra, se proyecta con el
+      // Valor Neto (lo que realmente toca pagar) en vez del Vbruto de Busint.
+      const neto = c.valor + (c.iva || 0) - (c.retencion || 0);
+      map[key].total += neto;
     });
     return Object.values(map)
       .map((b) => ({ ...b, promedio: mesesCompras.length ? b.total / mesesCompras.length : 0 }))
@@ -2862,8 +2865,20 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
                       const enEsteRubro = (m.distribucion || []).filter((d) => d.codConcep === i.codConcep);
                       return s + enEsteRubro.reduce((s2, d) => s2 + (parseFloat(d.monto) || 0), 0);
                     }, 0);
-                    const pct = i.valorFinal > 0 ? Math.min((cubierto / i.valorFinal) * 100, 999) : 0;
-                    return { ...i, cubierto, pct };
+                    // Si ya se cuadró el IVA/Retención de la compra real de ESTE
+                    // mes (en Comparativo por Concepto), el avance se compara
+                    // contra ese Valor Neto real en vez del promedio proyectado
+                    // — así no se ve "pagado de más" solo porque el proyectado
+                    // no incluía IVA.
+                    const registroReal = compras.find(
+                      (c) => c.mes === p.mes && c.codConcep === i.codConcep && c.concepto === i.concepto
+                    );
+                    const cuadrado = !!registroReal && (registroReal.iva !== undefined || registroReal.retencion !== undefined);
+                    const objetivo = cuadrado
+                      ? registroReal.valor + (registroReal.iva || 0) - (registroReal.retencion || 0)
+                      : i.valorFinal;
+                    const pct = objetivo > 0 ? Math.min((cubierto / objetivo) * 100, 999) : 0;
+                    return { ...i, cubierto, objetivo, cuadrado, pct };
                   })
               : [];
             const disponibleSinAsignar = ingresosMes.reduce((s, m) => {
@@ -2970,9 +2985,14 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
                               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.slate, marginBottom: 3 }}>
                                 <span>
                                   {i.concepto} <span style={{ color: C.slate, fontWeight: 400 }}>({i.codConcep})</span>
+                                  {i.cuadrado && (
+                                    <span title="Objetivo ajustado con IVA/Retención cuadrados" style={{ marginLeft: 6, fontSize: 10, color: C.green, fontWeight: 700 }}>
+                                      ● Neto cuadrado
+                                    </span>
+                                  )}
                                 </span>
                                 <span style={{ fontWeight: 700, color: i.pct >= 100 ? C.green : C.ink }}>
-                                  {fmtCOP(i.cubierto)} / {fmtCOP(i.valorFinal)} · {Math.round(i.pct)}%
+                                  {fmtCOP(i.cubierto)} / {fmtCOP(i.objetivo)} · {Math.round(i.pct)}%
                                 </span>
                               </div>
                               <div style={{ height: 7, borderRadius: 4, background: C.canvas, overflow: "hidden" }}>
