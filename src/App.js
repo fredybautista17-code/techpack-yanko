@@ -4358,7 +4358,7 @@ function InformeVigentesBusintView() {
         </Btn>
       </div>
       <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>
-        Consulta la API de Busint en vivo (no la base de datos local) y muestra solo los pedidos cuya fecha de despacho es hoy o está en el futuro.
+        Consulta la API de Busint en vivo (no la base de datos local) y muestra los pedidos que aún no están 100% cortados (según lo registrado en el módulo Corte). Los que ya vencieron su fecha de despacho sin terminar de cortar aparecen primero, marcados como <strong style={{ color: T.coral }}>vencidos</strong>.
       </div>
       {error && (
         <div style={{ padding: "12px 16px", background: T.coralBg, borderRadius: 10, border: `1px solid ${T.coral}44`, color: T.coral, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
@@ -4367,10 +4367,16 @@ function InformeVigentesBusintView() {
       )}
       {resultado && (
         <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 20 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 20 }}>
             <div style={{ background: T.denimBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.denim}22` }}>
               <div style={{ fontSize: 22, fontWeight: 900, color: T.denim }}>{resultado.totalPedidos}</div>
               <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>Pedidos vigentes</div>
+            </div>
+            <div style={{ background: T.coralBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.coral}22` }}>
+              <div style={{ fontSize: 22, fontWeight: 900, color: T.coral }}>
+                {resultado.porCliente.reduce((s, g) => s + g.pedidos.filter((p) => p.vencido).length, 0)}
+              </div>
+              <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>Vencidos sin cortar</div>
             </div>
             <div style={{ background: T.violetBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.violet}22` }}>
               <div style={{ fontSize: 22, fontWeight: 900, color: T.violet }}>{resultado.totalClientes}</div>
@@ -4385,7 +4391,7 @@ function InformeVigentesBusintView() {
           </div>
           {!resultado.porCliente.length ? (
             <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
-              No hay pedidos vigentes (sin despachar) de Busint en ese rango de fechas.
+              No hay pedidos vigentes (todos ya están 100% cortados o no hay pedidos de Busint en ese rango de fechas).
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -4412,7 +4418,7 @@ function InformeVigentesBusintView() {
                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                           <thead>
                             <tr style={{ background: T.canvas }}>
-                              {["N° Pedido", "Fecha Pedido", "Referencias", "Unidades"].map((h) => (
+                              {["N° Pedido", "Fecha Pedido", "Fecha Despacho", "Referencias", "Unidades", "Corte"].map((h) => (
                                 <th
                                   key={h}
                                   style={{
@@ -4431,13 +4437,45 @@ function InformeVigentesBusintView() {
                           </thead>
                           <tbody>
                             {g.pedidos.map((p) => (
-                              <tr key={p.numero} style={{ borderBottom: `1px solid ${T.border}` }}>
+                              <tr
+                                key={p.numero}
+                                style={{
+                                  borderBottom: `1px solid ${T.border}`,
+                                  background: p.vencido ? T.coralBg : "transparent",
+                                }}
+                              >
                                 <td style={{ padding: "8px 10px", fontWeight: 800, color: T.denim }}>#{p.numero}</td>
                                 <td style={{ padding: "8px 10px", color: T.ink }}>{p.fechaPedido || "—"}</td>
+                                <td style={{ padding: "8px 10px", color: p.vencido ? T.coral : T.ink, fontWeight: p.vencido ? 800 : 400 }}>
+                                  {p.fechaDespacho || "—"}
+                                  {p.vencido && (
+                                    <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, color: T.coral }}>🚨 VENCIDO</span>
+                                  )}
+                                </td>
                                 <td style={{ padding: "8px 10px", color: T.slate }}>
                                   {p.referencias.map((r) => r.ref).filter(Boolean).join(", ") || "—"}
                                 </td>
                                 <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, color: T.ink }}>{fmtNum(p.totalUnidades)}</td>
+                                <td style={{ padding: "8px 10px", color: T.slate, minWidth: 120 }}>
+                                  {p.pctCortado === null ? (
+                                    <span style={{ fontSize: 11, fontStyle: "italic" }}>sin dato</span>
+                                  ) : (
+                                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                      <div style={{ flex: 1, height: 6, background: T.border, borderRadius: 4, overflow: "hidden" }}>
+                                        <div
+                                          style={{
+                                            width: `${Math.min(100, p.pctCortado)}%`,
+                                            height: "100%",
+                                            background: p.pctCortado >= 100 ? T.jade : p.pctCortado > 0 ? T.amber : T.coral,
+                                          }}
+                                        />
+                                      </div>
+                                      <span style={{ fontSize: 11, fontWeight: 700, color: T.ink, minWidth: 32, textAlign: "right" }}>
+                                        {p.pctCortado}%
+                                      </span>
+                                    </div>
+                                  )}
+                                </td>
                               </tr>
                             ))}
                           </tbody>
