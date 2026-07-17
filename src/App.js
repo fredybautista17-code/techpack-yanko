@@ -14,6 +14,7 @@ import {
   writeBatch,
   onSnapshot,
 } from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -24,6 +25,9 @@ const firebaseConfig = {
 };
 const fbApp = initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
+// Cliente de Cloud Functions — usado por el Informe de Pedidos Vigentes por
+// Cliente para llamar getPedidosVigentesBusint (consulta Busint en vivo).
+const functionsClient = getFunctions(fbApp);
 async function fsGet(col) {
   const snap = await getDocs(collection(db, col));
   return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
@@ -4274,6 +4278,183 @@ function AdminPedidosView({ pedidoConfig, onSave, config, onSaveConfig }) {
   );
 }
 
+// ─── INFORME DE PEDIDOS VIGENTES POR CLIENTE (Busint en vivo) ────────────────
+// A diferencia del resto de "Pedidos" (que lee la colección `pedidos` ya
+// sincronizada en Firestore), este informe consulta la API de Busint EN VIVO
+// cada vez que el usuario pulsa "Consultar Busint", para el rango de fechas
+// exacto que escoja — no depende de lo que ya esté guardado localmente.
+// Solo muestra los pedidos que Busint todavía no marca con fecha de
+// despacho (es decir, los que siguen vigentes / pendientes de entrega),
+// agrupados por cliente. Requiere que la Cloud Function
+// `getPedidosVigentesBusint` esté desplegada y los secrets BUSINT_TOKEN /
+// BUSINT_BASE_URL ya configurados (los mismos que usa la sincronización
+// automática cada 6 horas) — ver README_BUSINT_SYNC.md.
+function InformeVigentesBusintView() {
+  const [fechaInicio, setFechaInicio] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().slice(0, 10);
+  });
+  const [fechaFin, setFechaFin] = useState(today());
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState("");
+  const [resultado, setResultado] = useState(null);
+  const [expandidos, setExpandidos] = useState(new Set());
+
+  function toggleExpand(cliente) {
+    setExpandidos((s) => {
+      const next = new Set(s);
+      if (next.has(cliente)) next.delete(cliente);
+      else next.add(cliente);
+      return next;
+    });
+  }
+
+  async function consultar() {
+    setError("");
+    setCargando(true);
+    setResultado(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getPedidosVigentesBusint");
+      const resp = await llamar({ fechaInicio, fechaFin });
+      setResultado(resp.data);
+      setExpandidos(new Set((resp.data.porCliente || []).map((g) => g.cliente)));
+    } catch (err) {
+      setError(
+        err?.message ||
+          "No se pudo consultar la API de Busint. Verifica que la función getPedidosVigentesBusint esté desplegada y las credenciales configuradas."
+      );
+    }
+    setCargando(false);
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 10, flexWrap: "wrap" }}>
+        <div>
+          <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+            Fecha Inicio
+          </label>
+          <input
+            type="date"
+            value={fechaInicio}
+            onChange={(e) => setFechaInicio(e.target.value)}
+            style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, fontFamily: "inherit" }}
+          />
+        </div>
+        <div>
+          <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+            Fecha Fin
+          </label>
+          <input
+            type="date"
+            value={fechaFin}
+            onChange={(e) => setFechaFin(e.target.value)}
+            style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, fontFamily: "inherit" }}
+          />
+        </div>
+        <Btn onClick={consultar} disabled={cargando}>
+          {cargando ? "Consultando…" : "📡 Consultar Busint"}
+        </Btn>
+      </div>
+      <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>
+        Consulta la API de Busint en vivo (no la base de datos local) y muestra solo los pedidos del rango que aún no tienen fecha de despacho registrada.
+      </div>
+      {error && (
+        <div style={{ padding: "12px 16px", background: T.coralBg, borderRadius: 10, border: `1px solid ${T.coral}44`, color: T.coral, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
+          {error}
+        </div>
+      )}
+      {resultado && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 20 }}>
+            <div style={{ background: T.denimBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.denim}22` }}>
+              <div style={{ fontSize: 22, fontWeight: 900, color: T.denim }}>{resultado.totalPedidos}</div>
+              <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>Pedidos vigentes</div>
+            </div>
+            <div style={{ background: T.violetBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.violet}22` }}>
+              <div style={{ fontSize: 22, fontWeight: 900, color: T.violet }}>{resultado.totalClientes}</div>
+              <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>Clientes</div>
+            </div>
+            <div style={{ background: T.jadeBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.jade}22` }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: T.jade }}>
+                {resultado.fechaInicio} → {resultado.fechaFin}
+              </div>
+              <div style={{ fontSize: 11, color: T.slate, fontWeight: 600, marginTop: 4 }}>Rango consultado</div>
+            </div>
+          </div>
+          {!resultado.porCliente.length ? (
+            <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
+              No hay pedidos vigentes (sin despachar) de Busint en ese rango de fechas.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {resultado.porCliente.map((g) => {
+                const expandido = expandidos.has(g.cliente);
+                return (
+                  <div key={g.cliente} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, overflow: "hidden" }}>
+                    <div
+                      onClick={() => toggleExpand(g.cliente)}
+                      style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: 18, cursor: "pointer" }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 800, fontSize: 15, color: T.ink }}>{g.cliente}</div>
+                        <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>
+                          {g.totalPedidos} pedido{g.totalPedidos !== 1 ? "s" : ""} · {fmtNum(g.totalUnidades)} unidades
+                        </div>
+                      </div>
+                      <span style={{ fontSize: 18, color: T.slate, transform: expandido ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>
+                        ›
+                      </span>
+                    </div>
+                    {expandido && (
+                      <div style={{ padding: "0 18px 18px" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                          <thead>
+                            <tr style={{ background: T.canvas }}>
+                              {["N° Pedido", "Fecha Pedido", "Referencias", "Unidades"].map((h) => (
+                                <th
+                                  key={h}
+                                  style={{
+                                    padding: "8px 10px",
+                                    textAlign: h === "Unidades" ? "right" : "left",
+                                    fontWeight: 700,
+                                    fontSize: 10,
+                                    color: T.slate,
+                                    textTransform: "uppercase",
+                                  }}
+                                >
+                                  {h}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {g.pedidos.map((p) => (
+                              <tr key={p.numero} style={{ borderBottom: `1px solid ${T.border}` }}>
+                                <td style={{ padding: "8px 10px", fontWeight: 800, color: T.denim }}>#{p.numero}</td>
+                                <td style={{ padding: "8px 10px", color: T.ink }}>{p.fechaPedido || "—"}</td>
+                                <td style={{ padding: "8px 10px", color: T.slate }}>
+                                  {p.referencias.map((r) => r.ref).filter(Boolean).join(", ") || "—"}
+                                </td>
+                                <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, color: T.ink }}>{fmtNum(p.totalUnidades)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, pedidoConfig, onSavePedidoConfig, isAdmin }) {
   const [filtro, setFiltro] = useState("activos");
   const [editPedido, setEditPedido] = useState(null);
@@ -4334,10 +4515,11 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
         </div>
       )}
       <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
-        {[["activos", `Activos (${activos.length})`], ["historico", `Histórico (${historico.length})`]].map(([v, label]) => (
+        {[["activos", `Activos (${activos.length})`], ["historico", `Histórico (${historico.length})`], ["vigentes_busint", "📡 Vigentes por Cliente (Busint)"]].map(([v, label]) => (
           <button key={v} onClick={() => setFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filtro === v ? T.ink : T.border}`, background: filtro === v ? T.ink : T.white, color: filtro === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
+      {filtro === "vigentes_busint" && <InformeVigentesBusintView />}
       {filtro === "activos" && lista.length > 0 && (
         <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, overflow: "hidden", marginBottom: 16 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
