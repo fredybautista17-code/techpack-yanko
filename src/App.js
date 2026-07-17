@@ -4283,8 +4283,8 @@ function AdminPedidosView({ pedidoConfig, onSave, config, onSaveConfig }) {
 // sincronizada en Firestore), este informe consulta la API de Busint EN VIVO
 // cada vez que el usuario pulsa "Consultar Busint", para el rango de fechas
 // exacto que escoja — no depende de lo que ya esté guardado localmente.
-// Solo muestra los pedidos que Busint todavía no marca con fecha de
-// despacho (es decir, los que siguen vigentes / pendientes de entrega),
+// Solo muestra los pedidos cuya fecha de despacho es hoy o está en el
+// futuro (es decir, los que siguen vigentes / pendientes de entrega),
 // agrupados por cliente. Requiere que la Cloud Function
 // `getPedidosVigentesBusint` esté desplegada y los secrets BUSINT_TOKEN /
 // BUSINT_BASE_URL ya configurados (los mismos que usa la sincronización
@@ -4358,7 +4358,7 @@ function InformeVigentesBusintView() {
         </Btn>
       </div>
       <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>
-        Consulta la API de Busint en vivo (no la base de datos local) y muestra solo los pedidos del rango que aún no tienen fecha de despacho registrada.
+        Consulta la API de Busint en vivo (no la base de datos local) y muestra solo los pedidos cuya fecha de despacho es hoy o está en el futuro.
       </div>
       {error && (
         <div style={{ padding: "12px 16px", background: T.coralBg, borderRadius: 10, border: `1px solid ${T.coral}44`, color: T.coral, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
