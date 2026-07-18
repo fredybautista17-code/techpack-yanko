@@ -509,8 +509,8 @@ const INIT_CONFIG = {
     { id: "pds", label: "PDS", short: "PDS", days: 2 },
     { id: "corte", label: "Corte", short: "CORT", days: 4 },
     { id: "confeccion", label: "Confección", short: "CONF", days: 5 },
-    { id: "por_enviar", label: "Por Enviar", short: "P.ENV", days: 2 },
     { id: "cotizacion", label: "Cotización", short: "COT", days: 1 },
+    { id: "por_enviar", label: "Por Enviar", short: "P.ENV", days: 2 },
   ],
   categorias: ["Cachetero","Byker","Capry","Leggins","Camiseta","Sisa","Top","Buso","Short","Enterizo","Body","Conjunto","Vestido","Blusa","Pantaloneta","Jogger","Traje de Baño","Bóxer","Pantys"],
   siluetas: ["Slimfit","Regularfit","Silueta Amplia","Oversize","Super Oversize","Estándar"],
@@ -1347,6 +1347,31 @@ function NotaRevisionModal({ title, hint, onSave, onClose }) {
     </Modal>
   );
 }
+// Precio de cotización de una referencia/prototipo — se pide al mandarlo a
+// "En cotización" (botón 📤 Cotización), y también se puede editar después
+// mientras siga en ese tramo del flujo de envío (clic sobre la píldora del
+// precio). Queda guardado en el propio ítem (`precioCotizacion`).
+function PrecioCotizacionModal({ item, onSave, onClose }) {
+  const [precio, setPrecio] = useState(item.precioCotizacion != null ? String(item.precioCotizacion) : "");
+  const num = Number(precio);
+  const valido = precio !== "" && !isNaN(num) && num > 0;
+  function save() {
+    if (!valido) return;
+    onSave(num);
+  }
+  return (
+    <Modal title="Precio de Cotización" onClose={onClose} width={400}>
+      <div style={{ padding: "10px 14px", background: T.violetBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.violet, fontWeight: 600 }}>💲 Precio cotizado para {item.reference || item.name}</div>
+      <Field label="Precio (COP)">
+        <FInput type="number" value={precio} onChange={setPrecio} placeholder="Ej: 45000" />
+      </Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={save} disabled={!valido}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
 // Hilo de Observaciones propio de la Cápsula (no de cada referencia): queda
 // aquí el ida y vuelta de aprobación de la ilustración/concepto completo —
 // separado de la Hoja de Vida de las referencias individuales. Reutiliza el
@@ -1367,6 +1392,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
   const [showEnviado, setShowEnviado] = useState(false);
   const [showTaller, setShowTaller] = useState(false);
   const [showRevision, setShowRevision] = useState(false);
+  const [showPrecioCotizacion, setShowPrecioCotizacion] = useState(false);
   // Registro más reciente de este ítem en el Cronograma de Muestras (si
   // existe). Se usa para mostrar su estado aquí mismo y para que el botón
   // "Enviar a Taller de Muestra" edite ese registro en vez de duplicarlo.
@@ -1405,7 +1431,10 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
       });
     }
   }
-  function handleCotizacion() { changeStatus("enviado_cotizacion"); }
+  // Al mandar a "En cotización" se pide el precio en un modal (ver
+  // PrecioCotizacionModal) y queda guardado en el mismo patch que el cambio
+  // de estado — no en dos escrituras separadas.
+  function handleCotizacion(precio) { changeStatus("enviado_cotizacion", { precioCotizacion: precio }); }
   // Solo para referencias de cápsula (kind === "ref"): marca la referencia
   // como lista para enviar SIN crear todavía el envío/bitácora — eso se
   // registra en conjunto, una sola vez, cuando TODAS las referencias de la
@@ -1531,6 +1560,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
       {showEnviado && <EnviadoModal onSave={handleEnviado} onClose={() => setShowEnviado(false)} />}
       {showTaller && <EnviarTallerModal item={item} existing={tallerMasReciente?.estado !== "enviado" ? tallerMasReciente : null} ultimoTaller={tallerMasReciente} config={config} onSave={handleGuardarTaller} onClose={() => setShowTaller(false)} />}
       {showRevision && <NotaRevisionModal onSave={handleMarcarRevision} onClose={() => setShowRevision(false)} />}
+      {showPrecioCotizacion && <PrecioCotizacionModal item={item} onSave={(precio) => { handleCotizacion(precio); setShowPrecioCotizacion(false); }} onClose={() => setShowPrecioCotizacion(false)} />}
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
         <button onClick={onBack} style={{ background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, color: T.ink }}>← Volver</button>
         <div style={{ flex: 1 }}>
@@ -1587,7 +1617,18 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
                     )}
                   </>
                 )}
-                {noFinalState && st !== "enviado_cotizacion" && st !== "enviar_cliente" && st !== "preparada_para_enviar" && st !== "enviado" && <Btn variant="ghost" onClick={handleCotizacion}>📤 Cotización</Btn>}
+                {noFinalState && st !== "enviado_cotizacion" && st !== "enviar_cliente" && st !== "preparada_para_enviar" && st !== "enviado" && <Btn variant="ghost" onClick={() => setShowPrecioCotizacion(true)}>📤 Cotización</Btn>}
+                {/* Píldora del precio cotizado: visible desde que se manda a
+                    cotización en adelante (todo el tramo de envío), y
+                    editable con un clic mientras no esté ya Enviado. */}
+                {item.precioCotizacion != null && ["enviado_cotizacion", "enviar_cliente", "preparada_para_enviar", "enviado"].includes(st) && (
+                  <button
+                    onClick={() => st !== "enviado" && setShowPrecioCotizacion(true)}
+                    style={{ padding: "9px 18px", background: T.violetBg, color: T.violet, border: `1.5px solid ${T.violet}`, borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: st !== "enviado" ? "pointer" : "default" }}
+                  >
+                    💲 {fmtCOP(item.precioCotizacion)}
+                  </button>
+                )}
                 {st === "enviado_cotizacion" && <button onClick={() => changeStatus("enviar_cliente")} style={{ padding: "9px 18px", background: "#ECFEFF", color: "#0E7490", border: "1.5px solid #0E7490", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>✈ Enviar al Cliente</button>}
                 {/* Un prototipo suelto sigue enviándose solo (abre el modal de
                     Registrar Envío de una vez). Una referencia DENTRO de una
@@ -4846,19 +4887,32 @@ function AppInner() {
           // Migración una sola vez: a los "config" ya guardados antes de que
           // existiera la etapa "Por Enviar" les falta ese ítem en `stages`
           // (INIT_CONFIG solo siembra un config nuevo — nunca actualiza uno
-          // que ya existe). Si falta, se inserta justo después de
-          // "confeccion" y se guarda con merge (fsSave), sin tocar el resto
-          // del documento (roles, clientes, etc.).
+          // que ya existe). "Por Enviar" debe quedar DESPUÉS de "Cotización"
+          // (primero se cotiza, y solo después queda lista para enviar). Si
+          // falta, se inserta ahí; si ya existe pero quedó mal ubicada (una
+          // versión anterior de esta migración la insertaba ANTES de
+          // Cotización, por error), se reubica sin perder los "días" que el
+          // admin le haya configurado. Se guarda con merge (fsSave), sin
+          // tocar el resto del documento (roles, clientes, etc.).
           const existente = dbConfig.find((c) => c.id === "main") || dbConfig[0];
           const stagesActuales = existente?.stages || [];
-          if (existente && !stagesActuales.some((s) => s.id === "por_enviar")) {
-            const idxConfeccion = stagesActuales.findIndex((s) => s.id === "confeccion");
+          const idxPorEnviar = stagesActuales.findIndex((s) => s.id === "por_enviar");
+          const idxCotizacion = stagesActuales.findIndex((s) => s.id === "cotizacion");
+          let stagesCorregidas = null;
+          if (idxPorEnviar === -1) {
             const nuevaEtapa = { id: "por_enviar", label: "Por Enviar", short: "P.ENV", days: 2 };
-            const stagesConNuevaEtapa =
-              idxConfeccion >= 0
-                ? [...stagesActuales.slice(0, idxConfeccion + 1), nuevaEtapa, ...stagesActuales.slice(idxConfeccion + 1)]
+            stagesCorregidas =
+              idxCotizacion >= 0
+                ? [...stagesActuales.slice(0, idxCotizacion + 1), nuevaEtapa, ...stagesActuales.slice(idxCotizacion + 1)]
                 : [...stagesActuales, nuevaEtapa];
-            await fsSave("config", "main", { stages: stagesConNuevaEtapa });
+          } else if (idxCotizacion >= 0 && idxPorEnviar < idxCotizacion) {
+            const etapaExistente = stagesActuales[idxPorEnviar];
+            const sinEsa = stagesActuales.filter((s) => s.id !== "por_enviar");
+            const nuevoIdxCot = sinEsa.findIndex((s) => s.id === "cotizacion");
+            stagesCorregidas = [...sinEsa.slice(0, nuevoIdxCot + 1), etapaExistente, ...sinEsa.slice(nuevoIdxCot + 1)];
+          }
+          if (existente && stagesCorregidas) {
+            await fsSave("config", "main", { stages: stagesCorregidas });
           }
         }
         const unsubConfig = onSnapshot(collection(db, "config"), (snap) => {
