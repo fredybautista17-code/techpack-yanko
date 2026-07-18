@@ -1419,6 +1419,17 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
     const extra = targetIdx >= 0 && targetIdx > curIdx ? { currentStage: "por_enviar", stageStartedAt: today() } : {};
     changeStatus("preparada_para_enviar", extra);
   }
+  // Deshacer un "Marcar Preparada para Enviar" hecho por error: regresa a
+  // "Enviar al Cliente" y, si la etapa había avanzado automáticamente a "Por
+  // Enviar", la retrocede a la etapa anterior (simétrico a handleMarcarPreparada).
+  function handleDesmarcarPreparada() {
+    const porEnviarIdx = stages.findIndex((s) => s.id === "por_enviar");
+    const extra =
+      porEnviarIdx > 0 && item.currentStage === "por_enviar"
+        ? { currentStage: stages[porEnviarIdx - 1].id, stageStartedAt: today() }
+        : {};
+    changeStatus("enviar_cliente", extra);
+  }
   // Cuando la Dirección Creativa devuelve una pieza que está en la etapa de
   // Ilustración, se exige escribir qué hay que cambiar — queda como
   // Observación (Hoja de Vida) y con un "type" propio (revision_ilustracion)
@@ -1586,7 +1597,12 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
                     referencias lleguen a ese estado. */}
                 {st === "enviar_cliente" && kind === "proto" && <button onClick={() => setShowEnviado(true)} style={{ padding: "9px 18px", background: "#EFF6FF", color: "#0369A1", border: "1.5px solid #0369A1", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>📦 Registrar Envío</button>}
                 {st === "enviar_cliente" && kind === "ref" && <button onClick={handleMarcarPreparada} style={{ padding: "9px 18px", background: T.jadeBg, color: T.jade, border: `1.5px solid ${T.jade}`, borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>✅ Marcar Preparada para Enviar</button>}
-                {st === "preparada_para_enviar" && kind === "ref" && <span style={{ padding: "9px 18px", background: T.jadeBg, color: T.jade, border: `1.5px solid ${T.jade}`, borderRadius: 8, fontWeight: 700, fontSize: 13 }}>✅ Preparada — se envía junto con la cápsula</span>}
+                {st === "preparada_para_enviar" && kind === "ref" && (
+                  <>
+                    <span style={{ padding: "9px 18px", background: T.jadeBg, color: T.jade, border: `1.5px solid ${T.jade}`, borderRadius: 8, fontWeight: 700, fontSize: 13 }}>✅ Preparada — se envía junto con la cápsula</span>
+                    <Btn variant="ghost" onClick={handleDesmarcarPreparada}>← Deshacer</Btn>
+                  </>
+                )}
                 {kind === "proto" && item.status === "aprobado" && !item.promotedTo && capsulas.length > 0 && <Btn variant="success" onClick={() => onPromote(item)}>⬆ Promover</Btn>}
               </>
             )}
