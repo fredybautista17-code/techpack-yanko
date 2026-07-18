@@ -76,6 +76,7 @@ async function exportHojaDeVidaXLSX(item, kind, capsulaName) {
     en_revision: "En revisión",
     enviado_cotizacion: "En cotización",
     enviar_cliente: "Enviar al Cliente",
+    preparada_para_enviar: "Preparada para Enviar",
     enviado: "Enviado",
     recibido_cliente: "Recibido por Cliente",
     borrador: "Borrador",
@@ -250,6 +251,9 @@ function exportHojaDeVidaHTML(item, kind, capsulaName) {
     en_proceso: "#3D6B9E",
     en_revision: "#C47C1A",
     enviado_cotizacion: "#7B5EA7",
+    enviar_cliente: "#0E7490",
+    preparada_para_enviar: "#2D9E6B",
+    enviado: "#0369A1",
     borrador: "#5A5A7A",
   };
   const statusLabel = {
@@ -258,6 +262,9 @@ function exportHojaDeVidaHTML(item, kind, capsulaName) {
     en_proceso: "En proceso",
     en_revision: "En revisión",
     enviado_cotizacion: "En cotización",
+    enviar_cliente: "Enviar al Cliente",
+    preparada_para_enviar: "Preparada para Enviar",
+    enviado: "Enviado",
     borrador: "Borrador",
   };
   const stColor = statusColors[item.status] || "#5A5A7A";
@@ -397,6 +404,9 @@ function exportToExcel(protos, capsulas) {
     en_revision: "En revisión",
     aprobado: "Aprobado",
     enviado_cotizacion: "En cotización",
+    enviar_cliente: "Enviar al Cliente",
+    preparada_para_enviar: "Preparada para Enviar",
+    enviado: "Enviado",
     declinado: "Declinado",
     bloqueado: "Bloqueado",
   };
@@ -499,6 +509,7 @@ const INIT_CONFIG = {
     { id: "pds", label: "PDS", short: "PDS", days: 2 },
     { id: "corte", label: "Corte", short: "CORT", days: 4 },
     { id: "confeccion", label: "Confección", short: "CONF", days: 5 },
+    { id: "por_enviar", label: "Por Enviar", short: "P.ENV", days: 2 },
     { id: "cotizacion", label: "Cotización", short: "COT", days: 1 },
   ],
   categorias: ["Cachetero","Byker","Capry","Leggins","Camiseta","Sisa","Top","Buso","Short","Enterizo","Body","Conjunto","Vestido","Blusa","Pantaloneta","Jogger","Traje de Baño","Bóxer","Pantys"],
@@ -525,6 +536,10 @@ const STATUS = {
   aprobado: { label: "Aprobado", color: T.jade, bg: T.jadeBg },
   enviado_cotizacion: { label: "En cotización", color: T.violet, bg: T.violetBg },
   enviar_cliente: { label: "Enviar al Cliente", color: "#0E7490", bg: "#ECFEFF" },
+  // Solo aplica a referencias DENTRO de una cápsula: en vez de registrar su
+  // envío individual, queda "en espera" hasta que toda la cápsula esté lista
+  // y se registre un solo envío agrupado (ver CapsulasView).
+  preparada_para_enviar: { label: "Preparada para Enviar", color: T.jade, bg: T.jadeBg },
   enviado: { label: "Enviado", color: "#0369A1", bg: "#EFF6FF" },
   recibido_cliente: { label: "Recibido por Cliente", color: T.jade, bg: T.jadeBg },
   declinado: { label: "Declinado", color: T.coral, bg: T.coralBg },
@@ -1391,6 +1406,19 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
     }
   }
   function handleCotizacion() { changeStatus("enviado_cotizacion"); }
+  // Solo para referencias de cápsula (kind === "ref"): marca la referencia
+  // como lista para enviar SIN crear todavía el envío/bitácora — eso se
+  // registra en conjunto, una sola vez, cuando TODAS las referencias de la
+  // cápsula lleguen a este estado (ver CapsulasView). De paso, si existe la
+  // etapa "Por Enviar" en la barra de etapas y esta referencia todavía no
+  // llegó ahí, la avanza — así la barra refleja visualmente que ya está en
+  // la recta final, después de Confección.
+  function handleMarcarPreparada() {
+    const targetIdx = stages.findIndex((s) => s.id === "por_enviar");
+    const curIdx = stages.findIndex((s) => s.id === item.currentStage);
+    const extra = targetIdx >= 0 && targetIdx > curIdx ? { currentStage: "por_enviar", stageStartedAt: today() } : {};
+    changeStatus("preparada_para_enviar", extra);
+  }
   // Cuando la Dirección Creativa devuelve una pieza que está en la etapa de
   // Ilustración, se exige escribir qué hay que cambiar — queda como
   // Observación (Hoja de Vida) y con un "type" propio (revision_ilustracion)
@@ -1540,7 +1568,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
             {noFinalState && canDeclinar && <Btn variant="danger" onClick={() => changeStatus("declinado")}>✕ Declinar</Btn>}
             {canAdmin && (
               <>
-                {noFinalState && !["enviado_cotizacion", "enviar_cliente", "enviado"].includes(st) && (
+                {noFinalState && !["enviado_cotizacion", "enviar_cliente", "preparada_para_enviar", "enviado"].includes(st) && (
                   <>
                     <Btn variant="ghost" onClick={() => changeStatus("en_proceso")}>En proceso</Btn>
                     {item.currentStage !== "ilustracion" && (
@@ -1548,9 +1576,17 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
                     )}
                   </>
                 )}
-                {noFinalState && st !== "enviado_cotizacion" && st !== "enviar_cliente" && st !== "enviado" && <Btn variant="ghost" onClick={handleCotizacion}>📤 Cotización</Btn>}
+                {noFinalState && st !== "enviado_cotizacion" && st !== "enviar_cliente" && st !== "preparada_para_enviar" && st !== "enviado" && <Btn variant="ghost" onClick={handleCotizacion}>📤 Cotización</Btn>}
                 {st === "enviado_cotizacion" && <button onClick={() => changeStatus("enviar_cliente")} style={{ padding: "9px 18px", background: "#ECFEFF", color: "#0E7490", border: "1.5px solid #0E7490", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>✈ Enviar al Cliente</button>}
-                {st === "enviar_cliente" && <button onClick={() => setShowEnviado(true)} style={{ padding: "9px 18px", background: "#EFF6FF", color: "#0369A1", border: "1.5px solid #0369A1", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>📦 Registrar Envío</button>}
+                {/* Un prototipo suelto sigue enviándose solo (abre el modal de
+                    Registrar Envío de una vez). Una referencia DENTRO de una
+                    cápsula, en cambio, no se envía sola: el clic solo la deja
+                    "preparada para enviar" — el envío real de la cápsula se
+                    registra en conjunto desde CapsulasView cuando TODAS sus
+                    referencias lleguen a ese estado. */}
+                {st === "enviar_cliente" && kind === "proto" && <button onClick={() => setShowEnviado(true)} style={{ padding: "9px 18px", background: "#EFF6FF", color: "#0369A1", border: "1.5px solid #0369A1", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>📦 Registrar Envío</button>}
+                {st === "enviar_cliente" && kind === "ref" && <button onClick={handleMarcarPreparada} style={{ padding: "9px 18px", background: T.jadeBg, color: T.jade, border: `1.5px solid ${T.jade}`, borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>✅ Marcar Preparada para Enviar</button>}
+                {st === "preparada_para_enviar" && kind === "ref" && <span style={{ padding: "9px 18px", background: T.jadeBg, color: T.jade, border: `1.5px solid ${T.jade}`, borderRadius: 8, fontWeight: 700, fontSize: 13 }}>✅ Preparada — se envía junto con la cápsula</span>}
                 {kind === "proto" && item.status === "aprobado" && !item.promotedTo && capsulas.length > 0 && <Btn variant="success" onClick={() => onPromote(item)}>⬆ Promover</Btn>}
               </>
             )}
@@ -1895,6 +1931,26 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
   // El cliente de la cápsula (elegido al crearla) manda sobre el cliente
   // suelto de cada referencia — así toda la cápsula queda atribuida a un solo
   // cliente aunque alguna referencia vieja no tenga el suyo propio bien puesto.
+  // Referencias de la cápsula que van "rumbo a envío" — se ignoran las que ya
+  // quedaron Aprobadas o Declinadas, porque esas nunca pasan por el flujo de
+  // envío al cliente. La cápsula se considera lista para un envío agrupado
+  // cuando TODAS esas referencias relevantes llegaron a "preparada_para_enviar".
+  function refsRumboAEnvio(cap) {
+    return cap.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status));
+  }
+  function capsulaListaParaEnviar(cap) {
+    const relevantes = refsRumboAEnvio(cap);
+    return relevantes.length > 0 && relevantes.every((r) => r.status === "preparada_para_enviar");
+  }
+  // Preselecciona automáticamente TODAS las referencias "preparada_para_enviar"
+  // de la cápsula (sin que el usuario tenga que ir a la pestaña "Enviar al
+  // Cliente" a marcarlas una por una) y abre el mismo modal de envío agrupado
+  // que ya existe.
+  function enviarCapsulaCompleta(cap) {
+    const ids = cap.referencias.filter((r) => r.status === "preparada_para_enviar").map((r) => r.id);
+    setSeleccionados((s) => ({ ...s, [cap.id]: ids }));
+    setEnvioCapsula(cap);
+  }
   function refCliente(cap, r) { return cap.cliente || r.cliente || r.colores?.[0]; }
   // Cliente de la cápsula completa: el propio si lo tiene, si no se infiere
   // de la primera de sus referencias que tenga uno (dato viejo).
@@ -1998,7 +2054,19 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 {od > 0 && <span style={{ padding: "3px 10px", background: T.coralBg, color: T.coral, borderRadius: 6, fontSize: 12, fontWeight: 700 }}>⚑ {od}</span>}
                 {!aprobada && <span title="La ilustración/concepto de la cápsula debe ser aprobado antes de poder agregarle referencias" style={{ padding: "3px 10px", background: estadoIlustracion.bg, color: estadoIlustracion.color, borderRadius: 6, fontSize: 11, fontWeight: 700 }}>🎨 {estadoIlustracion.label}{rondasIlustracion > 0 ? ` · ${rondasIlustracion} revisión${rondasIlustracion !== 1 ? "es" : ""}` : ""}</span>}
-                <Btn small variant="ghost" onClick={() => setObsCapsula(cap)}>💬 Observaciones{cap.observacionesIlustracion?.length ? ` (${cap.observacionesIlustracion.length})` : ""}</Btn>
+                {/* Cuando TODA la cápsula (todas sus referencias rumbo a
+                    envío) ya está "preparada_para_enviar", este botón
+                    reemplaza a "Observaciones" — deja de tener sentido pedir
+                    observaciones de ilustración a esta altura, y es el
+                    momento de registrar el envío agrupado de una vez. En
+                    cualquier otro momento, "Observaciones" se muestra normal. */}
+                {capsulaListaParaEnviar(cap) ? (
+                  <button onClick={() => enviarCapsulaCompleta(cap)} style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: T.jade, color: T.white, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+                    📦 Registrar Envío de Cápsula
+                  </button>
+                ) : (
+                  <Btn small variant="ghost" onClick={() => setObsCapsula(cap)}>💬 Observaciones{cap.observacionesIlustracion?.length ? ` (${cap.observacionesIlustracion.length})` : ""}</Btn>
+                )}
                 {!aprobada && canAdminIlustracion && (
                   <>
                     <Btn small variant="success" onClick={() => onSetIlustracion(cap.id, "aprobado", null)}>✓ Aprobar Ilustración</Btn>
@@ -4758,6 +4826,25 @@ function AppInner() {
         // y de ahí en adelante el listener SOLO lee, nunca vuelve a escribir.
         let dbConfig = await fsGet("config");
         if (!dbConfig.length) { await fsSave("config", "main", INIT_CONFIG); }
+        else {
+          // Migración una sola vez: a los "config" ya guardados antes de que
+          // existiera la etapa "Por Enviar" les falta ese ítem en `stages`
+          // (INIT_CONFIG solo siembra un config nuevo — nunca actualiza uno
+          // que ya existe). Si falta, se inserta justo después de
+          // "confeccion" y se guarda con merge (fsSave), sin tocar el resto
+          // del documento (roles, clientes, etc.).
+          const existente = dbConfig.find((c) => c.id === "main") || dbConfig[0];
+          const stagesActuales = existente?.stages || [];
+          if (existente && !stagesActuales.some((s) => s.id === "por_enviar")) {
+            const idxConfeccion = stagesActuales.findIndex((s) => s.id === "confeccion");
+            const nuevaEtapa = { id: "por_enviar", label: "Por Enviar", short: "P.ENV", days: 2 };
+            const stagesConNuevaEtapa =
+              idxConfeccion >= 0
+                ? [...stagesActuales.slice(0, idxConfeccion + 1), nuevaEtapa, ...stagesActuales.slice(idxConfeccion + 1)]
+                : [...stagesActuales, nuevaEtapa];
+            await fsSave("config", "main", { stages: stagesConNuevaEtapa });
+          }
+        }
         const unsubConfig = onSnapshot(collection(db, "config"), (snap) => {
           if (!snap.docs.length) { setConfig(INIT_CONFIG); return; }
           const mainDoc = snap.docs.find((d) => d.id === "main") || snap.docs[0];
