@@ -4300,12 +4300,22 @@ function InformeVigentesBusintView() {
   const [error, setError] = useState("");
   const [resultado, setResultado] = useState(null);
   const [expandidos, setExpandidos] = useState(new Set());
+  const [pedidosDetalle, setPedidosDetalle] = useState(new Set());
 
   function toggleExpand(cliente) {
     setExpandidos((s) => {
       const next = new Set(s);
       if (next.has(cliente)) next.delete(cliente);
       else next.add(cliente);
+      return next;
+    });
+  }
+
+  function toggleDetalle(numero) {
+    setPedidosDetalle((s) => {
+      const next = new Set(s);
+      if (next.has(numero)) next.delete(numero);
+      else next.add(numero);
       return next;
     });
   }
@@ -4418,9 +4428,9 @@ function InformeVigentesBusintView() {
                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                           <thead>
                             <tr style={{ background: T.canvas }}>
-                              {["N° Pedido", "Fecha Pedido", "Fecha Despacho", "Referencias", "Unidades", "Corte"].map((h) => (
+                              {["", "N° Pedido", "Fecha Pedido", "Fecha Despacho", "Referencias", "Unidades", "Corte"].map((h, hi) => (
                                 <th
-                                  key={h}
+                                  key={h + hi}
                                   style={{
                                     padding: "8px 10px",
                                     textAlign: h === "Unidades" ? "right" : "left",
@@ -4428,6 +4438,7 @@ function InformeVigentesBusintView() {
                                     fontSize: 10,
                                     color: T.slate,
                                     textTransform: "uppercase",
+                                    width: hi === 0 ? 24 : undefined,
                                   }}
                                 >
                                   {h}
@@ -4436,48 +4447,101 @@ function InformeVigentesBusintView() {
                             </tr>
                           </thead>
                           <tbody>
-                            {g.pedidos.map((p) => (
-                              <tr
-                                key={p.numero}
-                                style={{
-                                  borderBottom: `1px solid ${T.border}`,
-                                  background: p.vencido ? T.coralBg : "transparent",
-                                }}
-                              >
-                                <td style={{ padding: "8px 10px", fontWeight: 800, color: T.denim }}>#{p.numero}</td>
-                                <td style={{ padding: "8px 10px", color: T.ink }}>{p.fechaPedido || "—"}</td>
-                                <td style={{ padding: "8px 10px", color: p.vencido ? T.coral : T.ink, fontWeight: p.vencido ? 800 : 400 }}>
-                                  {p.fechaDespacho || "—"}
-                                  {p.vencido && (
-                                    <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, color: T.coral }}>🚨 VENCIDO</span>
+                            {g.pedidos.map((p) => {
+                              const detalleAbierto = pedidosDetalle.has(p.numero);
+                              return (
+                                <React.Fragment key={p.numero}>
+                                  <tr
+                                    onClick={() => toggleDetalle(p.numero)}
+                                    style={{
+                                      borderBottom: detalleAbierto ? "none" : `1px solid ${T.border}`,
+                                      background: p.vencido ? T.coralBg : "transparent",
+                                      cursor: "pointer",
+                                    }}
+                                  >
+                                    <td style={{ padding: "8px 4px", textAlign: "center", color: T.slate }}>
+                                      <span style={{ display: "inline-block", transform: detalleAbierto ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>›</span>
+                                    </td>
+                                    <td style={{ padding: "8px 10px", fontWeight: 800, color: T.denim }}>#{p.numero}</td>
+                                    <td style={{ padding: "8px 10px", color: T.ink }}>{p.fechaPedido || "—"}</td>
+                                    <td style={{ padding: "8px 10px", color: p.vencido ? T.coral : T.ink, fontWeight: p.vencido ? 800 : 400 }}>
+                                      {p.fechaDespacho || "—"}
+                                      {p.vencido && (
+                                        <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, color: T.coral }}>🚨 VENCIDO</span>
+                                      )}
+                                    </td>
+                                    <td style={{ padding: "8px 10px", color: T.slate }}>
+                                      {p.referencias.map((r) => r.ref).filter(Boolean).join(", ") || "—"}
+                                    </td>
+                                    <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, color: T.ink }}>{fmtNum(p.totalUnidades)}</td>
+                                    <td style={{ padding: "8px 10px", color: T.slate, minWidth: 120 }}>
+                                      {p.pctCortado === null ? (
+                                        <span style={{ fontSize: 11, fontStyle: "italic" }}>sin dato</span>
+                                      ) : (
+                                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                          <div style={{ flex: 1, height: 6, background: T.border, borderRadius: 4, overflow: "hidden" }}>
+                                            <div
+                                              style={{
+                                                width: `${Math.min(100, p.pctCortado)}%`,
+                                                height: "100%",
+                                                background: p.pctCortado >= 100 ? T.jade : p.pctCortado > 0 ? T.amber : T.coral,
+                                              }}
+                                            />
+                                          </div>
+                                          <span style={{ fontSize: 11, fontWeight: 700, color: T.ink, minWidth: 32, textAlign: "right" }}>
+                                            {p.pctCortado}%
+                                          </span>
+                                        </div>
+                                      )}
+                                    </td>
+                                  </tr>
+                                  {detalleAbierto && (
+                                    <tr style={{ borderBottom: `1px solid ${T.border}` }}>
+                                      <td colSpan={7} style={{ padding: "0 10px 12px 34px", background: T.canvas }}>
+                                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                                          <thead>
+                                            <tr>
+                                              {["Referencia", "Talla", "Cantidad"].map((h) => (
+                                                <th
+                                                  key={h}
+                                                  style={{
+                                                    padding: "6px 8px",
+                                                    textAlign: h === "Cantidad" ? "right" : "left",
+                                                    fontWeight: 700,
+                                                    fontSize: 9,
+                                                    color: T.slate,
+                                                    textTransform: "uppercase",
+                                                    borderBottom: `1px solid ${T.border}`,
+                                                  }}
+                                                >
+                                                  {h}
+                                                </th>
+                                              ))}
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {p.referencias.flatMap((r) =>
+                                              Object.entries(r.tallas || {})
+                                                .filter(([, cant]) => cant > 0)
+                                                .map(([talla, cant]) => (
+                                                  <tr key={`${r.id}__${talla}`}>
+                                                    <td style={{ padding: "5px 8px", color: T.ink }}>
+                                                      {r.ref}
+                                                      {r.descripcion ? ` · ${r.descripcion}` : ""}
+                                                    </td>
+                                                    <td style={{ padding: "5px 8px", color: T.slate }}>{talla}</td>
+                                                    <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 700, color: T.ink }}>{fmtNum(cant)}</td>
+                                                  </tr>
+                                                ))
+                                            )}
+                                          </tbody>
+                                        </table>
+                                      </td>
+                                    </tr>
                                   )}
-                                </td>
-                                <td style={{ padding: "8px 10px", color: T.slate }}>
-                                  {p.referencias.map((r) => r.ref).filter(Boolean).join(", ") || "—"}
-                                </td>
-                                <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, color: T.ink }}>{fmtNum(p.totalUnidades)}</td>
-                                <td style={{ padding: "8px 10px", color: T.slate, minWidth: 120 }}>
-                                  {p.pctCortado === null ? (
-                                    <span style={{ fontSize: 11, fontStyle: "italic" }}>sin dato</span>
-                                  ) : (
-                                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                      <div style={{ flex: 1, height: 6, background: T.border, borderRadius: 4, overflow: "hidden" }}>
-                                        <div
-                                          style={{
-                                            width: `${Math.min(100, p.pctCortado)}%`,
-                                            height: "100%",
-                                            background: p.pctCortado >= 100 ? T.jade : p.pctCortado > 0 ? T.amber : T.coral,
-                                          }}
-                                        />
-                                      </div>
-                                      <span style={{ fontSize: 11, fontWeight: 700, color: T.ink, minWidth: 32, textAlign: "right" }}>
-                                        {p.pctCortado}%
-                                      </span>
-                                    </div>
-                                  )}
-                                </td>
-                              </tr>
-                            ))}
+                                </React.Fragment>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
