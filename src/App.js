@@ -516,6 +516,11 @@ const INIT_CONFIG = {
   siluetas: ["Slimfit","Regularfit","Silueta Amplia","Oversize","Super Oversize","Estándar"],
   rangos: ["Normal (S,M,L,XL)","Doble Talla (S/M - M/L)","Talla U","Plus","Plus (1XL-2XL-3XL)"],
   disenadores: [],
+  // Puestos del área de Diseño usados en el módulo de KPIs (ver KPIsView) —
+  // cada persona del roster de KPIs tiene uno de estos puestos, y cada KPI
+  // del catálogo se asigna a UN solo puesto (para evitar que dos personas se
+  // midan con el mismo indicador sin darse cuenta).
+  puestosDiseno: ["Diseñador de Modas", "Auxiliar de Colecciones", "Líder de Colecciones", "Auxiliar de Ilustración", "Patronista"],
   talleresMuestra: [],
   prioridadesMuestra: ["Media", "Urgente", "Súper urgente", "Espera", "Modificación"],
   roles: [
@@ -613,7 +618,7 @@ function nowISO() { return new Date().toISOString(); }
 // Corte, sin Prototipos ni Cápsulas).
 // Claves granulares de sección dentro de Diseño (Corte y Contabilidad siempre
 // se gestionan como llaves independientes, nunca implícitas en "diseno").
-const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial", "cronograma_muestras", "bitacora"];
+const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial", "cronograma_muestras", "bitacora", "kpis"];
 function moduloVisible(roleData, mod, isAdmin) {
   if (isAdmin) return true;
   if (!roleData) return false;
@@ -2060,7 +2065,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
         <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
-            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar la cápsula <strong>"{confirmDel.name}"</strong> y sus {confirmDel.referencias?.length || 0} referencia{confirmDel.referencias?.length !== 1 ? "s" : ""}? Esta acción no se puede deshacer.</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar la cápsula <strong>"{confirmDel.name}"</strong>, sus {confirmDel.referencias?.length || 0} referencia{confirmDel.referencias?.length !== 1 ? "s" : ""} y los envíos de Bitácora registrados para esta cápsula? Esta acción no se puede deshacer.</div>
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
               <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
               <Btn variant="danger" onClick={() => { onDeleteCapsula(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
@@ -2668,6 +2673,295 @@ function BitacoraEnviosView({ envios, onUpdateEnvio }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+// Alta/edición de una persona del roster de KPIs (nombre + puesto). El
+// puesto sale de config.puestosDiseno (editable en Administrador General →
+// Puestos), no está fijo en el código.
+function PersonaKpiModal({ persona, puestos, onSave, onClose }) {
+  const [nombre, setNombre] = useState(persona?.nombre || "");
+  const [puesto, setPuesto] = useState(persona?.puesto || "");
+  function save() {
+    if (!nombre.trim() || !puesto) return;
+    onSave({ nombre: nombre.trim(), puesto });
+  }
+  return (
+    <Modal title={persona ? "Editar Persona" : "Nueva Persona"} onClose={onClose} width={420}>
+      <Field label="Nombre"><FInput value={nombre} onChange={setNombre} placeholder="Ej: María García" /></Field>
+      <Field label="Puesto"><FSel value={puesto} onChange={setPuesto} options={puestos} /></Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={save} disabled={!nombre.trim() || !puesto}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+// Alta/edición de un KPI del catálogo. Cada KPI pertenece a UN puesto — si al
+// guardar el nombre ya existe en OTRO puesto, se avisa (no se bloquea, por si
+// de verdad quieres repetirlo, pero queda claro que hay solapamiento).
+function KpiCatalogoModal({ kpi, puestos, catalogo, onSave, onClose }) {
+  const [nombre, setNombre] = useState(kpi?.nombre || "");
+  const [descripcion, setDescripcion] = useState(kpi?.descripcion || "");
+  const [puesto, setPuesto] = useState(kpi?.puesto || "");
+  const [unidad, setUnidad] = useState(kpi?.unidad || "");
+  const [meta, setMeta] = useState(kpi?.meta != null ? String(kpi.meta) : "");
+  const nombreKey = nombre.trim().toLowerCase();
+  const puestosConMismoNombre = [
+    ...new Set(
+      catalogo
+        .filter((k) => k.id !== kpi?.id && (k.nombre || "").trim().toLowerCase() === nombreKey && nombreKey)
+        .map((k) => k.puesto)
+    ),
+  ];
+  function save() {
+    if (!nombre.trim() || !puesto) return;
+    onSave({ nombre: nombre.trim(), descripcion: descripcion.trim(), puesto, unidad: unidad.trim(), meta: meta === "" ? null : Number(meta) });
+  }
+  return (
+    <Modal title={kpi ? "Editar KPI" : "Nuevo KPI"} onClose={onClose} width={460}>
+      <Field label="Nombre del KPI"><FInput value={nombre} onChange={setNombre} placeholder="Ej: Referencias completadas por mes" /></Field>
+      {puestosConMismoNombre.length > 0 && (
+        <div style={{ padding: "10px 14px", background: T.amberBg, borderRadius: 8, marginBottom: 14, fontSize: 12, color: T.amber, fontWeight: 600 }}>
+          ⚠ Este KPI ya existe en: {puestosConMismoNombre.join(", ")}. Puede que se esté midiendo lo mismo en dos puestos.
+        </div>
+      )}
+      <Field label="Puesto"><FSel value={puesto} onChange={setPuesto} options={puestos} /></Field>
+      <Field label="Descripción (opcional)"><FInput value={descripcion} onChange={setDescripcion} placeholder="Ej: Cuenta las referencias que llegaron a Aprobado" /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Unidad"><FInput value={unidad} onChange={setUnidad} placeholder="Ej: referencias, días, %" /></Field>
+        <Field label="Meta (opcional)"><FInput type="number" value={meta} onChange={setMeta} placeholder="Ej: 10" /></Field>
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={save} disabled={!nombre.trim() || !puesto}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+// --- Módulo KPIs ---
+// Tres pestañas: Registro (matriz mensual persona × KPI, agrupada por
+// puesto — sirve de comparativo directo entre personas del mismo puesto),
+// Catálogo (qué KPIs tiene cada puesto) y Personas (el roster). Solo
+// Administrador crea/edita/borra catálogo y personas; el registro de valores
+// mensuales lo puede hacer cualquiera con acceso al módulo.
+function KPIsView({ personas, catalogo, registros, puestos, isAdmin, onAddPersona, onUpdatePersona, onDeletePersona, onAddKpi, onUpdateKpi, onDeleteKpi, onGuardarRegistro }) {
+  const [tab, setTab] = useState("registro");
+  const [periodo, setPeriodo] = useState(() => today().slice(0, 7));
+  const [editPersona, setEditPersona] = useState(null);
+  const [showNuevaPersona, setShowNuevaPersona] = useState(false);
+  const [confirmDelPersona, setConfirmDelPersona] = useState(null);
+  const [editKpi, setEditKpi] = useState(null);
+  const [showNuevoKpi, setShowNuevoKpi] = useState(false);
+  const [confirmDelKpi, setConfirmDelKpi] = useState(null);
+  const [valoresLocales, setValoresLocales] = useState({});
+
+  function valorDe(personaId, kpiId) {
+    const local = valoresLocales[`${personaId}__${kpiId}__${periodo}`];
+    if (local !== undefined) return local;
+    const r = registros.find((r) => r.personaId === personaId && r.kpiId === kpiId && r.periodo === periodo);
+    return r?.valor != null ? String(r.valor) : "";
+  }
+  function setValorLocal(personaId, kpiId, val) {
+    setValoresLocales((v) => ({ ...v, [`${personaId}__${kpiId}__${periodo}`]: val }));
+  }
+  function guardarCelda(personaId, kpiId) {
+    const val = valorDe(personaId, kpiId);
+    if (val === "") return;
+    onGuardarRegistro({ personaId, kpiId, periodo, valor: Number(val) });
+  }
+
+  // Puestos que efectivamente tienen personas Y kpis (para no mostrar
+  // bloques vacíos en el registro).
+  const puestosConDatos = puestos.filter((p) => personas.some((per) => per.puesto === p) && catalogo.some((k) => k.puesto === p));
+
+  const kpisPorNombre = {};
+  catalogo.forEach((k) => {
+    const key = (k.nombre || "").trim().toLowerCase();
+    if (!key) return;
+    kpisPorNombre[key] = kpisPorNombre[key] || new Set();
+    kpisPorNombre[key].add(k.puesto);
+  });
+  const nombresConSolapamiento = new Set(Object.entries(kpisPorNombre).filter(([, s]) => s.size > 1).map(([k]) => k));
+
+  return (
+    <div>
+      {showNuevaPersona && <PersonaKpiModal puestos={puestos} onSave={(p) => { onAddPersona(p); setShowNuevaPersona(false); }} onClose={() => setShowNuevaPersona(false)} />}
+      {editPersona && <PersonaKpiModal persona={editPersona} puestos={puestos} onSave={(p) => { onUpdatePersona(editPersona.id, p); setEditPersona(null); }} onClose={() => setEditPersona(null)} />}
+      {showNuevoKpi && <KpiCatalogoModal puestos={puestos} catalogo={catalogo} onSave={(k) => { onAddKpi(k); setShowNuevoKpi(false); }} onClose={() => setShowNuevoKpi(false)} />}
+      {editKpi && <KpiCatalogoModal kpi={editKpi} puestos={puestos} catalogo={catalogo} onSave={(k) => { onUpdateKpi(editKpi.id, k); setEditKpi(null); }} onClose={() => setEditKpi(null)} />}
+      {confirmDelPersona && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar a <strong>"{confirmDelPersona.nombre}"</strong> del roster de KPIs, junto con sus registros mensuales? Esta acción no se puede deshacer.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmDelPersona(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={() => { onDeletePersona(confirmDelPersona.id); setConfirmDelPersona(null); }}>Sí, eliminar</Btn>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmDelKpi && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar el KPI <strong>"{confirmDelKpi.nombre}"</strong> del catálogo, junto con los registros mensuales que ya tenga? Esta acción no se puede deshacer.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmDelKpi(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={() => { onDeleteKpi(confirmDelKpi.id); setConfirmDelKpi(null); }}>Sí, eliminar</Btn>
+            </div>
+          </div>
+        </div>
+      )}
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>KPIs</h2>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Catálogo por puesto y seguimiento mensual — pensado para ver de un vistazo si hay solapamiento entre personas.</p>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 20 }}>
+        {[["registro", "📈 Registro Mensual"], ["catalogo", "📋 Catálogo de KPIs"], ["personas", "👤 Personas"]].map(([v, label]) => (
+          <button key={v} onClick={() => setTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${tab === v ? T.ink : T.border}`, background: tab === v ? T.ink : T.white, color: tab === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
+        ))}
+      </div>
+
+      {tab === "registro" && (
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
+            <label style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Periodo</label>
+            <input type="month" value={periodo} onChange={(e) => setPeriodo(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, fontFamily: "inherit" }} />
+          </div>
+          {!puestosConDatos.length ? (
+            <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
+              Todavía no hay puestos con personas Y KPIs asignados. Ve a las pestañas "Catálogo de KPIs" y "Personas" para configurarlos.
+            </div>
+          ) : (
+            puestosConDatos.map((puesto) => {
+              const personasDelPuesto = personas.filter((p) => p.puesto === puesto);
+              const kpisDelPuesto = catalogo.filter((k) => k.puesto === puesto);
+              return (
+                <div key={puesto} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 20, overflow: "hidden" }}>
+                  <div style={{ padding: "14px 18px", background: T.canvas, borderBottom: `1px solid ${T.border}`, fontWeight: 800, fontSize: 14, color: T.ink }}>{puesto}</div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ background: T.canvas }}>
+                          <th style={{ padding: "8px 12px", textAlign: "left", fontWeight: 700, fontSize: 10, color: T.slate, textTransform: "uppercase" }}>Persona</th>
+                          {kpisDelPuesto.map((k) => (
+                            <th key={k.id} style={{ padding: "8px 12px", textAlign: "center", fontWeight: 700, fontSize: 10, color: T.slate, textTransform: "uppercase" }}>
+                              {k.nombre}{k.unidad ? ` (${k.unidad})` : ""}{k.meta != null ? <div style={{ fontWeight: 400, fontSize: 9, color: T.slate }}>meta: {k.meta}</div> : null}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {personasDelPuesto.map((persona) => (
+                          <tr key={persona.id} style={{ borderBottom: `1px solid ${T.border}` }}>
+                            <td style={{ padding: "8px 12px", fontWeight: 700, color: T.ink }}>{persona.nombre}</td>
+                            {kpisDelPuesto.map((k) => {
+                              const val = valorDe(persona.id, k.id);
+                              const bajoMeta = k.meta != null && val !== "" && Number(val) < k.meta;
+                              return (
+                                <td key={k.id} style={{ padding: "6px 10px", textAlign: "center" }}>
+                                  <input
+                                    type="number"
+                                    value={val}
+                                    onChange={(e) => setValorLocal(persona.id, k.id, e.target.value)}
+                                    onBlur={() => guardarCelda(persona.id, k.id)}
+                                    style={{ width: 80, padding: "6px 8px", border: `1.5px solid ${bajoMeta ? T.amber : T.border}`, borderRadius: 6, fontSize: 13, textAlign: "center", color: T.ink, background: bajoMeta ? T.amberBg : T.white, fontFamily: "inherit" }}
+                                  />
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {tab === "catalogo" && (
+        <div>
+          {isAdmin && (
+            <div style={{ marginBottom: 20 }}>
+              <Btn onClick={() => setShowNuevoKpi(true)}>+ Nuevo KPI</Btn>
+            </div>
+          )}
+          {!puestos.length ? (
+            <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>No hay puestos configurados. Agrégalos en Administrador General → Puestos (KPI).</div>
+          ) : (
+            puestos.map((puesto) => {
+              const kpisDelPuesto = catalogo.filter((k) => k.puesto === puesto);
+              return (
+                <div key={puesto} style={{ marginBottom: 24 }}>
+                  <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, marginBottom: 10 }}>{puesto} <span style={{ fontWeight: 400, color: T.slate, fontSize: 12 }}>({kpisDelPuesto.length} KPI{kpisDelPuesto.length !== 1 ? "s" : ""})</span></div>
+                  {!kpisDelPuesto.length ? (
+                    <div style={{ padding: "12px 16px", background: T.canvas, borderRadius: 10, color: T.slate, fontSize: 13 }}>Sin KPIs asignados todavía.</div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {kpisDelPuesto.map((k) => {
+                        const repetido = nombresConSolapamiento.has((k.nombre || "").trim().toLowerCase());
+                        return (
+                          <div key={k.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: T.white, border: `1px solid ${repetido ? T.amber : T.border}`, borderRadius: 10 }}>
+                            <div>
+                              <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>
+                                {k.nombre}
+                                {repetido && <span title="Este mismo nombre de KPI aparece en más de un puesto" style={{ marginLeft: 8, fontSize: 11, fontWeight: 700, color: T.amber }}>⚠ Solapado</span>}
+                              </div>
+                              {k.descripcion && <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{k.descripcion}</div>}
+                              <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{k.unidad ? `Unidad: ${k.unidad}` : ""}{k.meta != null ? ` · Meta: ${k.meta}` : ""}</div>
+                            </div>
+                            {isAdmin && (
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <Btn small variant="ghost" onClick={() => setEditKpi(k)}>✏ Editar</Btn>
+                                <Btn small variant="danger" onClick={() => setConfirmDelKpi(k)}>🗑</Btn>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {tab === "personas" && (
+        <div>
+          {isAdmin && (
+            <div style={{ marginBottom: 20 }}>
+              <Btn onClick={() => setShowNuevaPersona(true)}>+ Nueva Persona</Btn>
+            </div>
+          )}
+          {!personas.length ? (
+            <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Todavía no hay personas en el roster.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {personas.map((p) => (
+                <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 10 }}>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{p.nombre}</div>
+                    <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{p.puesto}</div>
+                  </div>
+                  {isAdmin && (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <Btn small variant="ghost" onClick={() => setEditPersona(p)}>✏ Editar</Btn>
+                      <Btn small variant="danger" onClick={() => setConfirmDelPersona(p)}>🗑</Btn>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -3664,10 +3958,11 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     ["historial", "🕘 Historial"],
     ["cronograma_muestras", "🧵 Cronograma de Muestras"],
     ["bitacora", "📜 Bitácora de Envíos"],
+    ["kpis", "🎯 KPIs"],
     ["stats", "📊 Estadísticas"],
   ];
   const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"]];
-  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["disenadores", "🎨 Diseñadores"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
+  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["disenadores", "🎨 Diseñadores"], ["puestos", "🧑‍🎨 Puestos (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
   function ListEditor({ listKey, title }) {
     return (
       <div>
@@ -3740,6 +4035,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
         {tab === "siluetas" && <ListEditor listKey="siluetas" title="Siluetas" />}
         {tab === "rangos" && <ListEditor listKey="rangos" title="Rangos" />}
         {tab === "disenadores" && <ListEditor listKey="disenadores" title="Diseñadores" />}
+        {tab === "puestos" && <ListEditor listKey="puestosDiseno" title="Puestos (KPI)" />}
         {tab === "talleres" && <ListEditor listKey="talleresMuestra" title="Talleres de Muestra" />}
         {tab === "prioridades" && <ListEditor listKey="prioridadesMuestra" title="Prioridades de Muestra" />}
         {tab === "roles" && (
@@ -4837,6 +5133,13 @@ function AppInner() {
   const [pedidos, setPedidos] = useState([]);
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
   const [bitacoraEnvios, setBitacoraEnvios] = useState([]);
+  // --- Módulo KPIs (por rol/puesto de Diseño) ---
+  // kpiPersonas: roster de personas con su puesto. kpiCatalogo: catálogo de
+  // KPIs, cada uno asignado a UN puesto. kpiRegistros: valores mensuales
+  // digitados a mano por persona/KPI/periodo (ver KPIsView).
+  const [kpiPersonas, setKpiPersonas] = useState([]);
+  const [kpiCatalogo, setKpiCatalogo] = useState([]);
+  const [kpiRegistros, setKpiRegistros] = useState([]);
   const [view, setView] = useState("dashboard");
   const [selProtoId, setSelProtoId] = useState(null);
   const [selCapId, setSelCapId] = useState(null);
@@ -4948,6 +5251,12 @@ function AppInner() {
         unsubs.push(unsubPedidoConfig);
         const unsubBitacora = onSnapshot(collection(db, "bitacora_envios"), (snap) => { setBitacoraEnvios(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubs.push(unsubBitacora);
+        const unsubKpiPersonas = onSnapshot(collection(db, "kpi_personas"), (snap) => { setKpiPersonas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubs.push(unsubKpiPersonas);
+        const unsubKpiCatalogo = onSnapshot(collection(db, "kpi_catalogo"), (snap) => { setKpiCatalogo(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubs.push(unsubKpiCatalogo);
+        const unsubKpiRegistros = onSnapshot(collection(db, "kpi_registros"), (snap) => { setKpiRegistros(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubs.push(unsubKpiRegistros);
         setAppState("login");
       } catch (e) { console.error("Firebase error:", e); setAppState("login"); }
     }
@@ -5066,6 +5375,71 @@ function AppInner() {
       else await updateRef(it.capsulaId, it.id, patchData);
     }
     notify({ id: uid(), icon: "📦", title: "Envío registrado en Bitácora", msg: `${items.length} referencia${items.length !== 1 ? "s" : ""} — ${envio.coleccion || envio.cliente}` });
+  }
+  // --- Módulo KPIs (por rol/puesto de Diseño) ---
+  // Roster de personas: { id, nombre, puesto }. Solo Administrador
+  // agrega/edita/borra personas y KPIs del catálogo (ver KPIsView) — así el
+  // roster y el catálogo quedan controlados centralmente.
+  async function addKpiPersona(p) {
+    const withId = { ...p, id: uid() };
+    setKpiPersonas((ps) => [...ps, withId]);
+    await fsSave("kpi_personas", withId.id, withId);
+  }
+  async function updateKpiPersona(id, patch) {
+    const updated = kpiPersonas.map((p) => (p.id === id ? { ...p, ...patch } : p));
+    setKpiPersonas(updated);
+    await fsSave("kpi_personas", id, updated.find((p) => p.id === id));
+  }
+  async function deleteKpiPersona(id) {
+    setKpiPersonas((ps) => ps.filter((p) => p.id !== id));
+    await fsDelete("kpi_personas", id);
+    // Se borran también los registros mensuales de esa persona — si no,
+    // quedaban números huérfanos de alguien que ya no está en el roster.
+    const registrosDeEsaPersona = kpiRegistros.filter((r) => r.personaId === id);
+    if (registrosDeEsaPersona.length) {
+      setKpiRegistros((rs) => rs.filter((r) => r.personaId !== id));
+      await Promise.all(registrosDeEsaPersona.map((r) => fsDelete("kpi_registros", r.id)));
+    }
+  }
+  // Catálogo: { id, nombre, descripcion, puesto, unidad, meta }. Cada KPI
+  // pertenece a UN solo puesto (se agrupan por puesto en KPIsView, para que
+  // sea fácil ver de un vistazo si dos puestos terminan midiendo lo mismo).
+  async function addKpiCatalogo(k) {
+    const withId = { ...k, id: uid() };
+    setKpiCatalogo((ks) => [...ks, withId]);
+    await fsSave("kpi_catalogo", withId.id, withId);
+  }
+  async function updateKpiCatalogo(id, patch) {
+    const updated = kpiCatalogo.map((k) => (k.id === id ? { ...k, ...patch } : k));
+    setKpiCatalogo(updated);
+    await fsSave("kpi_catalogo", id, updated.find((k) => k.id === id));
+  }
+  async function deleteKpiCatalogo(id) {
+    setKpiCatalogo((ks) => ks.filter((k) => k.id !== id));
+    await fsDelete("kpi_catalogo", id);
+    const registrosDeEseKpi = kpiRegistros.filter((r) => r.kpiId === id);
+    if (registrosDeEseKpi.length) {
+      setKpiRegistros((rs) => rs.filter((r) => r.kpiId !== id));
+      await Promise.all(registrosDeEseKpi.map((r) => fsDelete("kpi_registros", r.id)));
+    }
+  }
+  // Registros: { id, personaId, kpiId, periodo: "AAAA-MM", valor, nota,
+  // registradoPor, fecha }. Un registro por (persona, KPI, periodo) — guardar
+  // uno existente lo actualiza en vez de duplicarlo (upsert por esa llave).
+  async function guardarKpiRegistro({ personaId, kpiId, periodo, valor, nota }) {
+    const existente = kpiRegistros.find((r) => r.personaId === personaId && r.kpiId === kpiId && r.periodo === periodo);
+    const item = {
+      id: existente?.id || uid(),
+      personaId,
+      kpiId,
+      periodo,
+      valor,
+      nota: nota || "",
+      registradoPor: currentUser?.name || "",
+      fecha: nowISO(),
+    };
+    setKpiRegistros((rs) => (existente ? rs.map((r) => (r.id === item.id ? item : r)) : [...rs, item]));
+    await fsSave("kpi_registros", item.id, item);
   }
   // --- Cronograma de Muestras ---
   async function addCronogramaMuestra(entry) {
@@ -5186,7 +5560,19 @@ function AppInner() {
     notify({ id: uid(), icon: "⬆", title: "Promovido", msg: `${ref.name} añadida.` });
   }
   async function deleteProto(id) { setProtos((ps) => ps.filter((p) => p.id !== id)); await fsDelete("prototipos", id); }
-  async function deleteCapsula(id) { setCapsulas((cs) => cs.filter((c) => c.id !== id)); await fsDelete("capsulas", id); }
+  // Borrar cápsula es una acción solo de Administrador (ver botón "🗑 Borrar"
+  // en CapsulasView, gateado por isAdmin). Al borrarla, también se borran los
+  // envíos de Bitácora que tengan referencias de ESA cápsula — si no,
+  // quedaban registros huérfanos apuntando a una cápsula que ya no existe.
+  async function deleteCapsula(id) {
+    setCapsulas((cs) => cs.filter((c) => c.id !== id));
+    await fsDelete("capsulas", id);
+    const enviosDeEstaCapsula = bitacoraEnvios.filter((e) => (e.items || []).some((it) => it.capsulaId === id));
+    if (enviosDeEstaCapsula.length) {
+      setBitacoraEnvios((es) => es.filter((e) => !enviosDeEstaCapsula.some((x) => x.id === e.id)));
+      await Promise.all(enviosDeEstaCapsula.map((e) => fsDelete("bitacora_envios", e.id)));
+    }
+  }
   async function updateProtoName(id, patch) { await updateProto(id, patch); }
   async function updateCapsulaName(id, patch) { const updated = capsulas.map((c) => (c.id !== id ? c : { ...c, ...patch })); setCapsulas(updated); const cap = updated.find((c) => c.id === id); await fsSave("capsulas", id, cap); }
   async function addPedido(p) {
@@ -5242,6 +5628,7 @@ function AppInner() {
   const canAccessHistorial = moduloVisible(userRoleData, "historial", currentUser?.isAdmin);
   const canAccessCronograma = moduloVisible(userRoleData, "cronograma_muestras", currentUser?.isAdmin);
   const canAccessBitacora = moduloVisible(userRoleData, "bitacora", currentUser?.isAdmin);
+  const canAccessKpis = moduloVisible(userRoleData, "kpis", currentUser?.isAdmin);
   const canAccessCorte = moduloVisible(userRoleData, "corte", currentUser?.isAdmin);
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
   const canAccessPlaneacion = moduloVisible(userRoleData, "planeacion", currentUser?.isAdmin);
@@ -5249,7 +5636,7 @@ function AppInner() {
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
   const canAccessAdminDiseno = moduloVisible(userRoleData, "admin_diseno", currentUser?.isAdmin);
-  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessHistorial || canAccessCronograma || canAccessBitacora || canAccessCorte || canAccessAdminDiseno || !!currentUser?.isAdmin;
+  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessHistorial || canAccessCronograma || canAccessBitacora || canAccessKpis || canAccessCorte || canAccessAdminDiseno || !!currentUser?.isAdmin;
   const [moduloActivo, setModuloActivo] = useState("diseno");
   const AREAS = [
     ...(canAccessDiseno
@@ -5263,6 +5650,7 @@ function AppInner() {
             ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
             ...(canAccessHistorial ? [{ id: "historial", icon: "🕘", label: "Historial" }] : []),
             ...(canAccessBitacora ? [{ id: "bitacora", icon: "📜", label: "Bitácora de Envíos" }] : []),
+            ...(canAccessKpis ? [{ id: "kpis", icon: "🎯", label: "KPIs" }] : []),
             ...(canAccessCronograma ? [{ id: "cronograma_muestras", icon: "🧵", label: "Cronograma de Muestras" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
             ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
@@ -5405,6 +5793,7 @@ function AppInner() {
                     else if (canAccessStats) setView("stats");
                     else if (canAccessHistorial) setView("historial");
                     else if (canAccessBitacora) setView("bitacora");
+                    else if (canAccessKpis) setView("kpis");
                     else if (canAccessCronograma) setView("cronograma_muestras");
                     else if (canAccessCorte) setModuloActivo("corte");
                   }
@@ -5439,6 +5828,22 @@ function AppInner() {
             )}
             {view === "bitacora" && (
               <BitacoraEnviosView envios={bitacoraEnvios} onUpdateEnvio={updateBitacoraEnvio} />
+            )}
+            {view === "kpis" && (
+              <KPIsView
+                personas={kpiPersonas}
+                catalogo={kpiCatalogo}
+                registros={kpiRegistros}
+                puestos={config.puestosDiseno || []}
+                isAdmin={currentUser?.isAdmin}
+                onAddPersona={addKpiPersona}
+                onUpdatePersona={updateKpiPersona}
+                onDeletePersona={deleteKpiPersona}
+                onAddKpi={addKpiCatalogo}
+                onUpdateKpi={updateKpiCatalogo}
+                onDeleteKpi={deleteKpiCatalogo}
+                onGuardarRegistro={guardarKpiRegistro}
+              />
             )}
             {view === "proto-detail" && selProto && (
               <DetailView item={selProto} kind="proto" role={role} perms={perms} capsulas={capsulas}
