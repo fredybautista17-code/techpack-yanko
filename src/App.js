@@ -4898,6 +4898,22 @@ function InformeVigentesBusintView() {
     });
   }
 
+  // Suma las cantidades de todas las variantes de color/pinta de una misma
+  // referencia+talla en una sola fila — el detalle solo necesita mostrar
+  // cuánto hay por referencia y talla, no el desglose por color.
+  function detallePorTalla(referencias) {
+    const porClave = new Map();
+    referencias.forEach((r) => {
+      Object.entries(r.tallas || {}).forEach(([talla, cant]) => {
+        if (!(cant > 0)) return;
+        const clave = `${r.ref}__${talla}`;
+        if (!porClave.has(clave)) porClave.set(clave, { ref: r.ref, talla, cant: 0 });
+        porClave.get(clave).cant += cant;
+      });
+    });
+    return [...porClave.values()];
+  }
+
   async function consultar() {
     setError("");
     setCargando(true);
@@ -5098,20 +5114,13 @@ function InformeVigentesBusintView() {
                                             </tr>
                                           </thead>
                                           <tbody>
-                                            {p.referencias.flatMap((r) =>
-                                              Object.entries(r.tallas || {})
-                                                .filter(([, cant]) => cant > 0)
-                                                .map(([talla, cant]) => (
-                                                  <tr key={`${r.id}__${talla}`}>
-                                                    <td style={{ padding: "5px 8px", color: T.ink }}>
-                                                      {r.ref}
-                                                      {r.descripcion ? ` · ${r.descripcion}` : ""}
-                                                    </td>
-                                                    <td style={{ padding: "5px 8px", color: T.slate }}>{talla}</td>
-                                                    <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 700, color: T.ink }}>{fmtNum(cant)}</td>
-                                                  </tr>
-                                                ))
-                                            )}
+                                            {detallePorTalla(p.referencias).map((item) => (
+                                              <tr key={`${item.ref}__${item.talla}`}>
+                                                <td style={{ padding: "5px 8px", color: T.ink }}>{item.ref}</td>
+                                                <td style={{ padding: "5px 8px", color: T.slate }}>{item.talla}</td>
+                                                <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 700, color: T.ink }}>{fmtNum(item.cant)}</td>
+                                              </tr>
+                                            ))}
                                           </tbody>
                                         </table>
                                       </td>
