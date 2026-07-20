@@ -516,11 +516,12 @@ const INIT_CONFIG = {
   siluetas: ["Slimfit","Regularfit","Silueta Amplia","Oversize","Super Oversize","Estándar"],
   rangos: ["Normal (S,M,L,XL)","Doble Talla (S/M - M/L)","Talla U","Plus","Plus (1XL-2XL-3XL)"],
   disenadores: [],
-  // Puestos del área de Diseño usados en el módulo de KPIs (ver KPIsView) —
-  // cada persona del roster de KPIs tiene uno de estos puestos, y cada KPI
-  // del catálogo se asigna a UN solo puesto (para evitar que dos personas se
-  // midan con el mismo indicador sin darse cuenta).
-  puestosDiseno: ["Diseñador de Modas", "Auxiliar de Colecciones", "Líder de Colecciones", "Auxiliar de Ilustración", "Patronista"],
+  // Áreas de la compañía usadas en el módulo de KPIs (ver KPIsView), que
+  // cubre TODA la empresa, no solo Diseño. Cada Puesto (colección
+  // `kpi_puestos`) pertenece a UNA de estas áreas; cada persona y cada KPI
+  // del catálogo heredan el área de su puesto — así se puede filtrar y
+  // comparar por área o por puesto, y detectar KPIs solapados entre puestos.
+  kpiAreas: ["Diseño", "Corte", "Ventas", "Contabilidad", "Planeación"],
   talleresMuestra: [],
   prioridadesMuestra: ["Media", "Urgente", "Súper urgente", "Espera", "Modificación"],
   roles: [
@@ -618,7 +619,7 @@ function nowISO() { return new Date().toISOString(); }
 // Corte, sin Prototipos ni Cápsulas).
 // Claves granulares de sección dentro de Diseño (Corte y Contabilidad siempre
 // se gestionan como llaves independientes, nunca implícitas en "diseno").
-const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial", "cronograma_muestras", "bitacora", "kpis"];
+const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial", "cronograma_muestras", "bitacora"];
 function moduloVisible(roleData, mod, isAdmin) {
   if (isAdmin) return true;
   if (!roleData) return false;
@@ -2676,23 +2677,77 @@ function BitacoraEnviosView({ envios, onUpdateEnvio }) {
     </div>
   );
 }
-// Alta/edición de una persona del roster de KPIs (nombre + puesto). El
-// puesto sale de config.puestosDiseno (editable en Administrador General →
-// Puestos), no está fijo en el código.
+// Alta/edición de un Puesto de trabajo: nombre + área (de config.kpiAreas) +
+// funciones asignadas (responsabilidades esperadas, texto libre). Es la base
+// de todo el módulo — Personas y KPIs del catálogo se cuelgan de un puesto.
+function PuestoKpiModal({ puesto, areas, onSave, onClose }) {
+  const [nombre, setNombre] = useState(puesto?.nombre || "");
+  const [area, setArea] = useState(puesto?.area || "");
+  const [funciones, setFunciones] = useState(puesto?.funciones || "");
+  function save() {
+    if (!nombre.trim() || !area) return;
+    onSave({ nombre: nombre.trim(), area, funciones: funciones.trim() });
+  }
+  return (
+    <Modal title={puesto ? "Editar Puesto" : "Nuevo Puesto"} onClose={onClose} width={480}>
+      <Field label="Nombre del puesto"><FInput value={nombre} onChange={setNombre} placeholder="Ej: Patronista" /></Field>
+      <Field label="Área">
+        {areas.length ? (
+          <FSel value={area} onChange={setArea} options={areas} />
+        ) : (
+          <div style={{ padding: "10px 14px", background: T.amberBg, borderRadius: 8, fontSize: 12, color: T.amber, fontWeight: 600 }}>No hay áreas configuradas — agrégalas en Administrador General → Áreas (KPI).</div>
+        )}
+      </Field>
+      <Field label="Funciones asignadas (responsabilidades esperadas)">
+        <textarea
+          value={funciones}
+          onChange={(e) => setFunciones(e.target.value)}
+          rows={4}
+          placeholder="Ej: Elaborar moldes base, ajustar patrones según muestra física, entregar a Corte dentro del plazo..."
+          style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical" }}
+        />
+      </Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={save} disabled={!nombre.trim() || !area}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+// Selector de puesto agrupado por área — usado tanto en PersonaKpiModal como
+// en KpiCatalogoModal, para no repetir el mismo <select> con <optgroup> dos
+// veces.
+function SelectorPuesto({ value, onChange, puestos }) {
+  const porArea = {};
+  puestos.forEach((p) => { (porArea[p.area] = porArea[p.area] || []).push(p); });
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
+      <option value="">— Seleccionar —</option>
+      {Object.entries(porArea).map(([area, ps]) => (
+        <optgroup key={area} label={area}>
+          {ps.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+        </optgroup>
+      ))}
+    </select>
+  );
+}
 function PersonaKpiModal({ persona, puestos, onSave, onClose }) {
   const [nombre, setNombre] = useState(persona?.nombre || "");
-  const [puesto, setPuesto] = useState(persona?.puesto || "");
+  const [puestoId, setPuestoId] = useState(persona?.puestoId || "");
   function save() {
-    if (!nombre.trim() || !puesto) return;
-    onSave({ nombre: nombre.trim(), puesto });
+    if (!nombre.trim() || !puestoId) return;
+    onSave({ nombre: nombre.trim(), puestoId });
   }
   return (
     <Modal title={persona ? "Editar Persona" : "Nueva Persona"} onClose={onClose} width={420}>
       <Field label="Nombre"><FInput value={nombre} onChange={setNombre} placeholder="Ej: María García" /></Field>
-      <Field label="Puesto"><FSel value={puesto} onChange={setPuesto} options={puestos} /></Field>
+      <Field label="Puesto"><SelectorPuesto value={puestoId} onChange={setPuestoId} puestos={puestos} /></Field>
+      {!puestos.length && (
+        <div style={{ padding: "10px 14px", background: T.amberBg, borderRadius: 8, marginTop: 8, fontSize: 12, color: T.amber, fontWeight: 600 }}>Todavía no hay puestos creados — ve a la pestaña "Puestos" primero.</div>
+      )}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn onClick={save} disabled={!nombre.trim() || !puesto}>Guardar</Btn>
+        <Btn onClick={save} disabled={!nombre.trim() || !puestoId}>Guardar</Btn>
       </div>
     </Modal>
   );
@@ -2703,20 +2758,20 @@ function PersonaKpiModal({ persona, puestos, onSave, onClose }) {
 function KpiCatalogoModal({ kpi, puestos, catalogo, onSave, onClose }) {
   const [nombre, setNombre] = useState(kpi?.nombre || "");
   const [descripcion, setDescripcion] = useState(kpi?.descripcion || "");
-  const [puesto, setPuesto] = useState(kpi?.puesto || "");
+  const [puestoId, setPuestoId] = useState(kpi?.puestoId || "");
   const [unidad, setUnidad] = useState(kpi?.unidad || "");
   const [meta, setMeta] = useState(kpi?.meta != null ? String(kpi.meta) : "");
   const nombreKey = nombre.trim().toLowerCase();
   const puestosConMismoNombre = [
     ...new Set(
       catalogo
-        .filter((k) => k.id !== kpi?.id && (k.nombre || "").trim().toLowerCase() === nombreKey && nombreKey)
-        .map((k) => k.puesto)
+        .filter((k) => k.id !== kpi?.id && k.puestoId !== puestoId && nombreKey && (k.nombre || "").trim().toLowerCase() === nombreKey)
+        .map((k) => puestos.find((p) => p.id === k.puestoId)?.nombre || "(puesto eliminado)")
     ),
   ];
   function save() {
-    if (!nombre.trim() || !puesto) return;
-    onSave({ nombre: nombre.trim(), descripcion: descripcion.trim(), puesto, unidad: unidad.trim(), meta: meta === "" ? null : Number(meta) });
+    if (!nombre.trim() || !puestoId) return;
+    onSave({ nombre: nombre.trim(), descripcion: descripcion.trim(), puestoId, unidad: unidad.trim(), meta: meta === "" ? null : Number(meta) });
   }
   return (
     <Modal title={kpi ? "Editar KPI" : "Nuevo KPI"} onClose={onClose} width={460}>
@@ -2726,7 +2781,10 @@ function KpiCatalogoModal({ kpi, puestos, catalogo, onSave, onClose }) {
           ⚠ Este KPI ya existe en: {puestosConMismoNombre.join(", ")}. Puede que se esté midiendo lo mismo en dos puestos.
         </div>
       )}
-      <Field label="Puesto"><FSel value={puesto} onChange={setPuesto} options={puestos} /></Field>
+      <Field label="Puesto"><SelectorPuesto value={puestoId} onChange={setPuestoId} puestos={puestos} /></Field>
+      {!puestos.length && (
+        <div style={{ padding: "10px 14px", background: T.amberBg, borderRadius: 8, marginBottom: 14, fontSize: 12, color: T.amber, fontWeight: 600 }}>Todavía no hay puestos creados — ve a la pestaña "Puestos" primero.</div>
+      )}
       <Field label="Descripción (opcional)"><FInput value={descripcion} onChange={setDescripcion} placeholder="Ej: Cuenta las referencias que llegaron a Aprobado" /></Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Unidad"><FInput value={unidad} onChange={setUnidad} placeholder="Ej: referencias, días, %" /></Field>
@@ -2734,19 +2792,23 @@ function KpiCatalogoModal({ kpi, puestos, catalogo, onSave, onClose }) {
       </div>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn onClick={save} disabled={!nombre.trim() || !puesto}>Guardar</Btn>
+        <Btn onClick={save} disabled={!nombre.trim() || !puestoId}>Guardar</Btn>
       </div>
     </Modal>
   );
 }
-// --- Módulo KPIs ---
-// Tres pestañas: Registro (matriz mensual persona × KPI, agrupada por
-// puesto — sirve de comparativo directo entre personas del mismo puesto),
-// Catálogo (qué KPIs tiene cada puesto) y Personas (el roster). Solo
-// Administrador crea/edita/borra catálogo y personas; el registro de valores
+// --- Módulo KPIs (toda la compañía) ---
+// Cuatro pestañas: Registro (matriz mensual persona × KPI, agrupada por
+// puesto — comparativo directo entre personas del mismo puesto), Catálogo
+// (qué KPIs tiene cada puesto, con aviso si un KPI se repite en otro
+// puesto), Personas (el roster) y Puestos (el catálogo de puestos con su
+// área y funciones asignadas — la base de todo lo demás). Un selector de
+// Área arriba filtra las cuatro pestañas a la vez. Solo Administrador
+// crea/edita/borra puestos, catálogo y personas; el registro de valores
 // mensuales lo puede hacer cualquiera con acceso al módulo.
-function KPIsView({ personas, catalogo, registros, puestos, isAdmin, onAddPersona, onUpdatePersona, onDeletePersona, onAddKpi, onUpdateKpi, onDeleteKpi, onGuardarRegistro }) {
+function KPIsView({ areas, puestos, personas, catalogo, registros, isAdmin, onAddPuesto, onUpdatePuesto, onDeletePuesto, onAddPersona, onUpdatePersona, onDeletePersona, onAddKpi, onUpdateKpi, onDeleteKpi, onGuardarRegistro }) {
   const [tab, setTab] = useState("registro");
+  const [areaFiltro, setAreaFiltro] = useState("todas");
   const [periodo, setPeriodo] = useState(() => today().slice(0, 7));
   const [editPersona, setEditPersona] = useState(null);
   const [showNuevaPersona, setShowNuevaPersona] = useState(false);
@@ -2754,7 +2816,16 @@ function KPIsView({ personas, catalogo, registros, puestos, isAdmin, onAddPerson
   const [editKpi, setEditKpi] = useState(null);
   const [showNuevoKpi, setShowNuevoKpi] = useState(false);
   const [confirmDelKpi, setConfirmDelKpi] = useState(null);
+  const [editPuesto, setEditPuesto] = useState(null);
+  const [showNuevoPuesto, setShowNuevoPuesto] = useState(false);
+  const [confirmDelPuesto, setConfirmDelPuesto] = useState(null);
   const [valoresLocales, setValoresLocales] = useState({});
+
+  function puestoDe(id) { return puestos.find((p) => p.id === id); }
+  const puestosFiltrados = areaFiltro === "todas" ? puestos : puestos.filter((p) => p.area === areaFiltro);
+  const puestosFiltradosIds = new Set(puestosFiltrados.map((p) => p.id));
+  const personasFiltradas = personas.filter((p) => puestosFiltradosIds.has(p.puestoId));
+  const catalogoFiltrado = catalogo.filter((k) => puestosFiltradosIds.has(k.puestoId));
 
   function valorDe(personaId, kpiId) {
     const local = valoresLocales[`${personaId}__${kpiId}__${periodo}`];
@@ -2771,25 +2842,42 @@ function KPIsView({ personas, catalogo, registros, puestos, isAdmin, onAddPerson
     onGuardarRegistro({ personaId, kpiId, periodo, valor: Number(val) });
   }
 
-  // Puestos que efectivamente tienen personas Y kpis (para no mostrar
-  // bloques vacíos en el registro).
-  const puestosConDatos = puestos.filter((p) => personas.some((per) => per.puesto === p) && catalogo.some((k) => k.puesto === p));
+  // Puestos (dentro del filtro de área) que efectivamente tienen personas Y
+  // kpis, para no mostrar bloques vacíos en el registro.
+  const puestosConDatos = puestosFiltrados.filter((p) => personas.some((per) => per.puestoId === p.id) && catalogo.some((k) => k.puestoId === p.id));
 
+  // Detección de nombres de KPI repetidos entre puestos DISTINTOS (posible
+  // solapamiento) — se calcula sobre TODO el catálogo, sin importar el
+  // filtro de área, porque el solapamiento puede darse entre dos áreas.
   const kpisPorNombre = {};
   catalogo.forEach((k) => {
     const key = (k.nombre || "").trim().toLowerCase();
     if (!key) return;
     kpisPorNombre[key] = kpisPorNombre[key] || new Set();
-    kpisPorNombre[key].add(k.puesto);
+    kpisPorNombre[key].add(k.puestoId);
   });
   const nombresConSolapamiento = new Set(Object.entries(kpisPorNombre).filter(([, s]) => s.size > 1).map(([k]) => k));
 
   return (
     <div>
+      {showNuevoPuesto && <PuestoKpiModal areas={areas} onSave={(p) => { onAddPuesto(p); setShowNuevoPuesto(false); }} onClose={() => setShowNuevoPuesto(false)} />}
+      {editPuesto && <PuestoKpiModal puesto={editPuesto} areas={areas} onSave={(p) => { onUpdatePuesto(editPuesto.id, p); setEditPuesto(null); }} onClose={() => setEditPuesto(null)} />}
       {showNuevaPersona && <PersonaKpiModal puestos={puestos} onSave={(p) => { onAddPersona(p); setShowNuevaPersona(false); }} onClose={() => setShowNuevaPersona(false)} />}
       {editPersona && <PersonaKpiModal persona={editPersona} puestos={puestos} onSave={(p) => { onUpdatePersona(editPersona.id, p); setEditPersona(null); }} onClose={() => setEditPersona(null)} />}
       {showNuevoKpi && <KpiCatalogoModal puestos={puestos} catalogo={catalogo} onSave={(k) => { onAddKpi(k); setShowNuevoKpi(false); }} onClose={() => setShowNuevoKpi(false)} />}
       {editKpi && <KpiCatalogoModal kpi={editKpi} puestos={puestos} catalogo={catalogo} onSave={(k) => { onUpdateKpi(editKpi.id, k); setEditKpi(null); }} onClose={() => setEditKpi(null)} />}
+      {confirmDelPuesto && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar el puesto <strong>"{confirmDelPuesto.nombre}"</strong>? Las personas y KPIs que ya lo tengan asignado NO se borran, pero quedarán sin puesto válido hasta que los reasignes.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmDelPuesto(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={() => { onDeletePuesto(confirmDelPuesto.id); setConfirmDelPuesto(null); }}>Sí, eliminar</Btn>
+            </div>
+          </div>
+        </div>
+      )}
       {confirmDelPersona && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
@@ -2816,12 +2904,21 @@ function KPIsView({ personas, catalogo, registros, puestos, isAdmin, onAddPerson
       )}
       <div style={{ marginBottom: 20 }}>
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>KPIs</h2>
-        <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Catálogo por puesto y seguimiento mensual — pensado para ver de un vistazo si hay solapamiento entre personas.</p>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Indicadores por área y persona en toda la compañía — funciones asignadas, catálogo de KPIs y seguimiento mensual, pensado para ver de un vistazo si hay solapamiento entre puestos.</p>
       </div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 20 }}>
-        {[["registro", "📈 Registro Mensual"], ["catalogo", "📋 Catálogo de KPIs"], ["personas", "👤 Personas"]].map(([v, label]) => (
-          <button key={v} onClick={() => setTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${tab === v ? T.ink : T.border}`, background: tab === v ? T.ink : T.white, color: tab === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
-        ))}
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 20, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["registro", "📈 Registro Mensual"], ["catalogo", "📋 Catálogo de KPIs"], ["personas", "👤 Personas"], ["puestos", "🧑‍💼 Puestos"]].map(([v, label]) => (
+            <button key={v} onClick={() => setTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${tab === v ? T.ink : T.border}`, background: tab === v ? T.ink : T.white, color: tab === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+          <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Área</label>
+          <select value={areaFiltro} onChange={(e) => setAreaFiltro(e.target.value)} style={{ padding: "7px 12px", border: `1.5px solid ${areaFiltro !== "todas" ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: areaFiltro !== "todas" ? T.denim : T.ink, background: areaFiltro !== "todas" ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer" }}>
+            <option value="todas">Todas</option>
+            {areas.map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </div>
       </div>
 
       {tab === "registro" && (
@@ -2832,15 +2929,20 @@ function KPIsView({ personas, catalogo, registros, puestos, isAdmin, onAddPerson
           </div>
           {!puestosConDatos.length ? (
             <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
-              Todavía no hay puestos con personas Y KPIs asignados. Ve a las pestañas "Catálogo de KPIs" y "Personas" para configurarlos.
+              Todavía no hay puestos (en esta área) con personas Y KPIs asignados. Ve a las pestañas "Puestos", "Catálogo de KPIs" y "Personas" para configurarlos.
             </div>
           ) : (
             puestosConDatos.map((puesto) => {
-              const personasDelPuesto = personas.filter((p) => p.puesto === puesto);
-              const kpisDelPuesto = catalogo.filter((k) => k.puesto === puesto);
+              const personasDelPuesto = personas.filter((p) => p.puestoId === puesto.id);
+              const kpisDelPuesto = catalogo.filter((k) => k.puestoId === puesto.id);
               return (
-                <div key={puesto} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 20, overflow: "hidden" }}>
-                  <div style={{ padding: "14px 18px", background: T.canvas, borderBottom: `1px solid ${T.border}`, fontWeight: 800, fontSize: 14, color: T.ink }}>{puesto}</div>
+                <div key={puesto.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 20, overflow: "hidden" }}>
+                  <div style={{ padding: "14px 18px", background: T.canvas, borderBottom: `1px solid ${T.border}` }}>
+                    <div style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>
+                      {puesto.nombre} <span style={{ fontWeight: 600, fontSize: 11, color: T.denim, padding: "2px 8px", background: T.denimBg, borderRadius: 20, marginLeft: 6 }}>{puesto.area}</span>
+                    </div>
+                    {puesto.funciones && <div style={{ fontSize: 12, color: T.slate, marginTop: 4 }}>{puesto.funciones}</div>}
+                  </div>
                   <div style={{ overflowX: "auto" }}>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                       <thead>
@@ -2888,21 +2990,24 @@ function KPIsView({ personas, catalogo, registros, puestos, isAdmin, onAddPerson
         <div>
           {isAdmin && (
             <div style={{ marginBottom: 20 }}>
-              <Btn onClick={() => setShowNuevoKpi(true)}>+ Nuevo KPI</Btn>
+              <Btn onClick={() => setShowNuevoKpi(true)} disabled={!puestos.length}>+ Nuevo KPI</Btn>
             </div>
           )}
-          {!puestos.length ? (
-            <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>No hay puestos configurados. Agrégalos en Administrador General → Puestos (KPI).</div>
+          {!puestosFiltrados.length ? (
+            <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>No hay puestos configurados en esta área todavía. Agrégalos en la pestaña "Puestos".</div>
           ) : (
-            puestos.map((puesto) => {
-              const kpisDelPuesto = catalogo.filter((k) => k.puesto === puesto);
+            puestosFiltrados.map((puesto) => {
+              const kpisDelPuesto = catalogo.filter((k) => k.puestoId === puesto.id);
               return (
-                <div key={puesto} style={{ marginBottom: 24 }}>
-                  <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, marginBottom: 10 }}>{puesto} <span style={{ fontWeight: 400, color: T.slate, fontSize: 12 }}>({kpisDelPuesto.length} KPI{kpisDelPuesto.length !== 1 ? "s" : ""})</span></div>
+                <div key={puesto.id} style={{ marginBottom: 24 }}>
+                  <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, marginBottom: 2 }}>
+                    {puesto.nombre} <span style={{ fontWeight: 600, fontSize: 11, color: T.denim, padding: "2px 8px", background: T.denimBg, borderRadius: 20, marginLeft: 4 }}>{puesto.area}</span> <span style={{ fontWeight: 400, color: T.slate, fontSize: 12 }}>({kpisDelPuesto.length} KPI{kpisDelPuesto.length !== 1 ? "s" : ""})</span>
+                  </div>
+                  {puesto.funciones && <div style={{ fontSize: 12, color: T.slate, marginBottom: 10 }}>{puesto.funciones}</div>}
                   {!kpisDelPuesto.length ? (
-                    <div style={{ padding: "12px 16px", background: T.canvas, borderRadius: 10, color: T.slate, fontSize: 13 }}>Sin KPIs asignados todavía.</div>
+                    <div style={{ padding: "12px 16px", background: T.canvas, borderRadius: 10, color: T.slate, fontSize: 13, marginTop: 8 }}>Sin KPIs asignados todavía.</div>
                   ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
                       {kpisDelPuesto.map((k) => {
                         const repetido = nombresConSolapamiento.has((k.nombre || "").trim().toLowerCase());
                         return (
@@ -2937,23 +3042,61 @@ function KPIsView({ personas, catalogo, registros, puestos, isAdmin, onAddPerson
         <div>
           {isAdmin && (
             <div style={{ marginBottom: 20 }}>
-              <Btn onClick={() => setShowNuevaPersona(true)}>+ Nueva Persona</Btn>
+              <Btn onClick={() => setShowNuevaPersona(true)} disabled={!puestos.length}>+ Nueva Persona</Btn>
             </div>
           )}
-          {!personas.length ? (
-            <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Todavía no hay personas en el roster.</div>
+          {!personasFiltradas.length ? (
+            <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Todavía no hay personas en el roster{areaFiltro !== "todas" ? " para esta área" : ""}.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {personas.map((p) => (
-                <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 10 }}>
+              {personasFiltradas.map((p) => {
+                const su = puestoDe(p.puestoId);
+                return (
+                  <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{p.nombre}</div>
+                      <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{su ? `${su.nombre} · ${su.area}` : "(puesto eliminado)"}</div>
+                    </div>
+                    {isAdmin && (
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <Btn small variant="ghost" onClick={() => setEditPersona(p)}>✏ Editar</Btn>
+                        <Btn small variant="danger" onClick={() => setConfirmDelPersona(p)}>🗑</Btn>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === "puestos" && (
+        <div>
+          {isAdmin && (
+            <div style={{ marginBottom: 20 }}>
+              <Btn onClick={() => setShowNuevoPuesto(true)} disabled={!areas.length}>+ Nuevo Puesto</Btn>
+              {!areas.length && <span style={{ marginLeft: 10, fontSize: 12, color: T.amber, fontWeight: 600 }}>Agrega primero áreas en Administrador General → Áreas (KPI).</span>}
+            </div>
+          )}
+          {!puestosFiltrados.length ? (
+            <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Todavía no hay puestos{areaFiltro !== "todas" ? " en esta área" : ""}.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {puestosFiltrados.map((p) => (
+                <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "14px 16px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 10 }}>
                   <div>
-                    <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{p.nombre}</div>
-                    <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{p.puesto}</div>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{p.nombre} <span style={{ fontWeight: 600, fontSize: 11, color: T.denim, padding: "2px 8px", background: T.denimBg, borderRadius: 20, marginLeft: 4 }}>{p.area}</span></div>
+                    {p.funciones ? (
+                      <div style={{ fontSize: 12, color: T.slate, marginTop: 6, maxWidth: 560 }}>{p.funciones}</div>
+                    ) : (
+                      <div style={{ fontSize: 12, color: T.slate, marginTop: 6, fontStyle: "italic" }}>Sin funciones asignadas descritas todavía.</div>
+                    )}
                   </div>
                   {isAdmin && (
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <Btn small variant="ghost" onClick={() => setEditPersona(p)}>✏ Editar</Btn>
-                      <Btn small variant="danger" onClick={() => setConfirmDelPersona(p)}>🗑</Btn>
+                    <div style={{ display: "flex", gap: 6, flexShrink: 0, marginLeft: 12 }}>
+                      <Btn small variant="ghost" onClick={() => setEditPuesto(p)}>✏ Editar</Btn>
+                      <Btn small variant="danger" onClick={() => setConfirmDelPuesto(p)}>🗑</Btn>
                     </div>
                   )}
                 </div>
@@ -3176,7 +3319,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     </div>
   );
 }
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessDiseno, onGoArea, protos, capsulas, pedidos }) {
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessDiseno, canAccessKpis, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
@@ -3201,6 +3344,11 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
       id: "planeacion_area", icon: "📋", label: "Planeación", desc: "Informes de producción de planta a partir de Hoja1", color: T.violet, bg: T.violetBg,
       stats: [],
       permiso: canAccessPlaneacion,
+    },
+    {
+      id: "kpis_area", icon: "🎯", label: "KPIs", desc: "Indicadores por área y persona en toda la compañía — Diseño, Corte, Ventas, Contabilidad, Planeación...", color: T.coral, bg: T.coralBg,
+      stats: [],
+      permiso: canAccessKpis,
     },
   ].filter((a) => a.permiso);
   return (
@@ -3958,11 +4106,13 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     ["historial", "🕘 Historial"],
     ["cronograma_muestras", "🧵 Cronograma de Muestras"],
     ["bitacora", "📜 Bitácora de Envíos"],
-    ["kpis", "🎯 KPIs"],
     ["stats", "📊 Estadísticas"],
   ];
-  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"]];
-  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["disenadores", "🎨 Diseñadores"], ["puestos", "🧑‍🎨 Puestos (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
+  // KPIs ahora es un módulo de compañía completo (no solo Diseño — cubre
+  // Corte, Ventas, Contabilidad, Planeación, etc.), por eso su permiso vive
+  // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
+  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["kpis", "🎯 KPIs"]];
+  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
   function ListEditor({ listKey, title }) {
     return (
       <div>
@@ -4035,7 +4185,14 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
         {tab === "siluetas" && <ListEditor listKey="siluetas" title="Siluetas" />}
         {tab === "rangos" && <ListEditor listKey="rangos" title="Rangos" />}
         {tab === "disenadores" && <ListEditor listKey="disenadores" title="Diseñadores" />}
-        {tab === "puestos" && <ListEditor listKey="puestosDiseno" title="Puestos (KPI)" />}
+        {tab === "kpi_areas" && (
+          <div>
+            <ListEditor listKey="kpiAreas" title="Áreas (KPI)" />
+            <div style={{ marginTop: 16, padding: "10px 14px", background: T.denimBg, borderRadius: 8, fontSize: 13, color: T.denim, fontWeight: 600 }}>
+              Los puestos dentro de cada área (con sus funciones asignadas) se gestionan directamente en el módulo KPIs, pestaña "Puestos" — no aquí.
+            </div>
+          </div>
+        )}
         {tab === "talleres" && <ListEditor listKey="talleresMuestra" title="Talleres de Muestra" />}
         {tab === "prioridades" && <ListEditor listKey="prioridadesMuestra" title="Prioridades de Muestra" />}
         {tab === "roles" && (
@@ -5133,10 +5290,13 @@ function AppInner() {
   const [pedidos, setPedidos] = useState([]);
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
   const [bitacoraEnvios, setBitacoraEnvios] = useState([]);
-  // --- Módulo KPIs (por rol/puesto de Diseño) ---
-  // kpiPersonas: roster de personas con su puesto. kpiCatalogo: catálogo de
-  // KPIs, cada uno asignado a UN puesto. kpiRegistros: valores mensuales
-  // digitados a mano por persona/KPI/periodo (ver KPIsView).
+  // --- Módulo KPIs (toda la compañía, no solo Diseño) ---
+  // kpiPuestos: puestos de trabajo, cada uno con su área y sus funciones
+  // asignadas (responsabilidades esperadas). kpiPersonas: roster de personas,
+  // cada una ligada a un puesto por `puestoId`. kpiCatalogo: catálogo de
+  // KPIs, cada uno ligado a un puesto por `puestoId`. kpiRegistros: valores
+  // mensuales digitados a mano por persona/KPI/periodo (ver KPIsView).
+  const [kpiPuestos, setKpiPuestos] = useState([]);
   const [kpiPersonas, setKpiPersonas] = useState([]);
   const [kpiCatalogo, setKpiCatalogo] = useState([]);
   const [kpiRegistros, setKpiRegistros] = useState([]);
@@ -5251,6 +5411,8 @@ function AppInner() {
         unsubs.push(unsubPedidoConfig);
         const unsubBitacora = onSnapshot(collection(db, "bitacora_envios"), (snap) => { setBitacoraEnvios(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubs.push(unsubBitacora);
+        const unsubKpiPuestos = onSnapshot(collection(db, "kpi_puestos"), (snap) => { setKpiPuestos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubs.push(unsubKpiPuestos);
         const unsubKpiPersonas = onSnapshot(collection(db, "kpi_personas"), (snap) => { setKpiPersonas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubs.push(unsubKpiPersonas);
         const unsubKpiCatalogo = onSnapshot(collection(db, "kpi_catalogo"), (snap) => { setKpiCatalogo(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
@@ -5376,8 +5538,29 @@ function AppInner() {
     }
     notify({ id: uid(), icon: "📦", title: "Envío registrado en Bitácora", msg: `${items.length} referencia${items.length !== 1 ? "s" : ""} — ${envio.coleccion || envio.cliente}` });
   }
-  // --- Módulo KPIs (por rol/puesto de Diseño) ---
-  // Roster de personas: { id, nombre, puesto }. Solo Administrador
+  // --- Módulo KPIs (toda la compañía) ---
+  // Puestos: { id, area, nombre, funciones }. `area` viene de
+  // config.kpiAreas (lista controlada, editable en Administrador General).
+  // `funciones` es texto libre con las responsabilidades esperadas de ese
+  // puesto — se muestra junto a sus KPIs para poder comparar "lo que debía
+  // hacer" contra lo que realmente se registra. No se borran en cascada las
+  // personas/KPIs que referencian un puesto borrado (quedan con un puestoId
+  // huérfano, KPIsView los filtra al no encontrar el puesto).
+  async function addKpiPuesto(p) {
+    const withId = { ...p, id: uid() };
+    setKpiPuestos((ps) => [...ps, withId]);
+    await fsSave("kpi_puestos", withId.id, withId);
+  }
+  async function updateKpiPuesto(id, patch) {
+    const updated = kpiPuestos.map((p) => (p.id === id ? { ...p, ...patch } : p));
+    setKpiPuestos(updated);
+    await fsSave("kpi_puestos", id, updated.find((p) => p.id === id));
+  }
+  async function deleteKpiPuesto(id) {
+    setKpiPuestos((ps) => ps.filter((p) => p.id !== id));
+    await fsDelete("kpi_puestos", id);
+  }
+  // Roster de personas: { id, nombre, puestoId }. Solo Administrador
   // agrega/edita/borra personas y KPIs del catálogo (ver KPIsView) — así el
   // roster y el catálogo quedan controlados centralmente.
   async function addKpiPersona(p) {
@@ -5401,7 +5584,7 @@ function AppInner() {
       await Promise.all(registrosDeEsaPersona.map((r) => fsDelete("kpi_registros", r.id)));
     }
   }
-  // Catálogo: { id, nombre, descripcion, puesto, unidad, meta }. Cada KPI
+  // Catálogo: { id, nombre, descripcion, puestoId, unidad, meta }. Cada KPI
   // pertenece a UN solo puesto (se agrupan por puesto en KPIsView, para que
   // sea fácil ver de un vistazo si dos puestos terminan midiendo lo mismo).
   async function addKpiCatalogo(k) {
@@ -5636,7 +5819,10 @@ function AppInner() {
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
   const canAccessAdminDiseno = moduloVisible(userRoleData, "admin_diseno", currentUser?.isAdmin);
-  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessHistorial || canAccessCronograma || canAccessBitacora || canAccessKpis || canAccessCorte || canAccessAdminDiseno || !!currentUser?.isAdmin;
+  // KPIs ya NO cuenta para canAccessDiseno — es su propia área de nivel
+  // superior en el menú (ver AREAS abajo), porque cubre toda la compañía
+  // (Corte, Ventas, Contabilidad, Planeación...), no solo Diseño.
+  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessHistorial || canAccessCronograma || canAccessBitacora || canAccessCorte || canAccessAdminDiseno || !!currentUser?.isAdmin;
   const [moduloActivo, setModuloActivo] = useState("diseno");
   const AREAS = [
     ...(canAccessDiseno
@@ -5650,7 +5836,6 @@ function AppInner() {
             ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
             ...(canAccessHistorial ? [{ id: "historial", icon: "🕘", label: "Historial" }] : []),
             ...(canAccessBitacora ? [{ id: "bitacora", icon: "📜", label: "Bitácora de Envíos" }] : []),
-            ...(canAccessKpis ? [{ id: "kpis", icon: "🎯", label: "KPIs" }] : []),
             ...(canAccessCronograma ? [{ id: "cronograma_muestras", icon: "🧵", label: "Cronograma de Muestras" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
             ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
@@ -5665,6 +5850,15 @@ function AppInner() {
       : []),
     ...(canAccessPlaneacion
       ? [{ id: "planeacion_area", icon: "📋", label: "Planeación", items: [{ id: "planeacion_area", icon: "📋", label: "Módulo Planeación" }] }]
+      : []),
+    // KPIs es su propia área de nivel superior (cubre toda la compañía).
+    // A diferencia de Contabilidad/Planeación, no es un módulo externo aparte
+    // (moduloActivo) — se renderiza dentro del layout normal usando el mismo
+    // mecanismo de "view" que Prototipos/Cápsulas/Bitácora, por eso el id del
+    // ítem interno es simplemente "kpis" (sin necesitar un caso especial en
+    // isViewActive/navClick).
+    ...(canAccessKpis
+      ? [{ id: "kpis_area", icon: "🎯", label: "KPIs", items: [{ id: "kpis", icon: "🎯", label: "Módulo KPIs" }] }]
       : []),
   ];
   const [areaAbierta, setAreaAbierta] = useState("diseno");
@@ -5777,10 +5971,11 @@ function AppInner() {
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
             {view === "dashboard" && (
-              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessDiseno={canAccessDiseno}
+              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessDiseno={canAccessDiseno} canAccessKpis={canAccessKpis}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
                   else if (id === "planeacion_area") { setModuloActivo("planeacion"); }
+                  else if (id === "kpis_area") { setAreaAbierta("kpis_area"); setView("kpis"); }
                   else if (id === "diseno") {
                     setAreaAbierta("diseno");
                     // Entra a la primera sección de Diseño realmente habilitada
@@ -5793,7 +5988,6 @@ function AppInner() {
                     else if (canAccessStats) setView("stats");
                     else if (canAccessHistorial) setView("historial");
                     else if (canAccessBitacora) setView("bitacora");
-                    else if (canAccessKpis) setView("kpis");
                     else if (canAccessCronograma) setView("cronograma_muestras");
                     else if (canAccessCorte) setModuloActivo("corte");
                   }
@@ -5831,11 +6025,15 @@ function AppInner() {
             )}
             {view === "kpis" && (
               <KPIsView
+                areas={config.kpiAreas || []}
+                puestos={kpiPuestos}
                 personas={kpiPersonas}
                 catalogo={kpiCatalogo}
                 registros={kpiRegistros}
-                puestos={config.puestosDiseno || []}
                 isAdmin={currentUser?.isAdmin}
+                onAddPuesto={addKpiPuesto}
+                onUpdatePuesto={updateKpiPuesto}
+                onDeletePuesto={deleteKpiPuesto}
                 onAddPersona={addKpiPersona}
                 onUpdatePersona={updateKpiPersona}
                 onDeletePersona={deleteKpiPersona}
