@@ -3985,6 +3985,176 @@ function UsersTab({ users, onUpdateUsers, config }) {
     </div>
   );
 }
+// Quita tildes, pasa a mayúsculas, quita puntos/comas y normaliza espacios —
+// para poder comparar "Kamila Group S.A.S." contra "KAMILA GROUP SAS" y
+// reconocerlos como el mismo nombre.
+function normalizarNombreCliente(s) {
+  return (s || "")
+    .toString()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toUpperCase()
+    .replace(/[.,]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Compara un nombre de Busint contra la lista de clientes ya guardados en
+// Administración: "exacto" si coincide igual (normalizado) — no hace falta
+// revisarlo; "parecido" si uno contiene al otro (posible duplicado por
+// nombre escrito distinto) — se le pregunta al usuario; "nuevo" si no se
+// parece a nada — se agrega directo.
+function buscarPosibleDuplicado(nombreBusint, clientesExistentes) {
+  const norm = normalizarNombreCliente(nombreBusint);
+  for (const c of clientesExistentes) {
+    if (normalizarNombreCliente(c.nombre) === norm) return { tipo: "exacto", cliente: c };
+  }
+  for (const c of clientesExistentes) {
+    const normC = normalizarNombreCliente(c.nombre);
+    if (normC.length >= 4 && norm.length >= 4 && (normC.includes(norm) || norm.includes(normC))) {
+      return { tipo: "parecido", cliente: c };
+    }
+  }
+  return { tipo: "nuevo", cliente: null };
+}
+
+// Trae en vivo el maestro de clientes de Busint (getClientesBusint) y deja
+// que el usuario decida, uno por uno, qué hacer con cada nombre parecido a
+// uno que ya existe — nada se guarda hasta que el usuario confirme.
+function ImportarClientesBusintModal({ clientesExistentes, onImportar, onClose }) {
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
+  const [filas, setFilas] = useState([]);
+
+  useEffect(() => {
+    let cancelado = false;
+    (async () => {
+      setCargando(true);
+      setError("");
+      try {
+        const llamar = httpsCallable(functionsClient, "getClientesBusint");
+        const resp = await llamar({});
+        if (cancelado) return;
+        const procesadas = (resp.data?.clientes || [])
+          .map((c) => {
+            const match = buscarPosibleDuplicado(c.nombre, clientesExistentes);
+            return { ...c, match, accion: match.tipo === "nuevo" ? "agregar" : "omitir" };
+          })
+          .filter((f) => f.match.tipo !== "exacto");
+        setFilas(procesadas);
+      } catch (err) {
+        if (!cancelado) {
+          setError(
+            err?.message ||
+              "No se pudo consultar el maestro de clientes de Busint. Verifica que la función getClientesBusint esté desplegada."
+          );
+        }
+      }
+      if (!cancelado) setCargando(false);
+    })();
+    return () => {
+      cancelado = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function setAccion(idx, accion) {
+    setFilas((fs) => fs.map((f, i) => (i === idx ? { ...f, accion } : f)));
+  }
+
+  function guardar() {
+    const nuevos = [];
+    const reemplazos = new Map();
+    filas.forEach((f) => {
+      if (f.accion === "agregar") {
+        nuevos.push({ id: uid(), nombre: f.nombre, contacto: f.contacto, email: f.email, telefono: f.telefono });
+      } else if (f.accion === "reemplazar" && f.match.cliente) {
+        reemplazos.set(f.match.cliente.id, {
+          nombre: f.nombre,
+          contacto: f.match.cliente.contacto || f.contacto,
+          email: f.match.cliente.email || f.email,
+          telefono: f.match.cliente.telefono || f.telefono,
+        });
+      }
+    });
+    onImportar({ nuevos, reemplazos });
+    onClose();
+  }
+
+  const totalAccion = filas.filter((f) => f.accion === "agregar" || f.accion === "reemplazar").length;
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ background: T.white, borderRadius: 14, padding: 28, maxWidth: 720, width: "100%", maxHeight: "85vh", overflow: "auto", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <div style={{ fontWeight: 800, fontSize: 16, color: T.ink }}>Importar Clientes desde Busint</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 20, color: T.slate, cursor: "pointer" }}>✕</button>
+        </div>
+        <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>
+          Se consulta el maestro de clientes en vivo. Revisa cada uno — nada se agrega ni se cambia hasta que confirmes.
+        </div>
+        {cargando && <div style={{ textAlign: "center", padding: 40, color: T.slate }}>Consultando Busint…</div>}
+        {error && (
+          <div style={{ padding: "12px 16px", background: T.coralBg, borderRadius: 10, color: T.coral, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
+            {error}
+          </div>
+        )}
+        {!cargando && !error && (
+          <>
+            {!filas.length ? (
+              <div style={{ textAlign: "center", padding: 32, color: T.slate }}>
+                No hay clientes nuevos ni parecidos — tu lista ya coincide con el maestro de Busint.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
+                {filas.map((f, i) => (
+                  <div
+                    key={f.nombre + i}
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 10,
+                      border: `1px solid ${f.match.tipo === "parecido" ? T.amber : T.border}`,
+                      background: f.match.tipo === "parecido" ? T.amberBg : T.canvas,
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>
+                      {f.nombre}
+                      {!f.activo && <span style={{ marginLeft: 8, fontSize: 10, color: T.slate, fontWeight: 400, fontStyle: "italic" }}>(inactivo en Busint)</span>}
+                    </div>
+                    {f.match.tipo === "parecido" && (
+                      <div style={{ fontSize: 11, color: T.amber, fontWeight: 600, marginTop: 2 }}>
+                        ⚠ Se parece a "{f.match.cliente.nombre}" — ¿es el mismo cliente?
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 14, marginTop: 8, fontSize: 12, flexWrap: "wrap" }}>
+                      {f.match.tipo === "parecido" ? (
+                        ["omitir", "reemplazar", "agregar"].map((op) => (
+                          <label key={op} style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", color: T.ink }}>
+                            <input type="radio" name={`accion-${i}`} checked={f.accion === op} onChange={() => setAccion(i, op)} />
+                            {op === "omitir" ? "Omitir" : op === "reemplazar" ? `Reemplazar nombre de "${f.match.cliente.nombre}"` : "Son distintos, agregar como nuevo"}
+                          </label>
+                        ))
+                      ) : (
+                        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", color: T.ink, fontWeight: 600 }}>
+                          <input type="checkbox" checked={f.accion === "agregar"} onChange={(e) => setAccion(i, e.target.checked ? "agregar" : "omitir")} />
+                          Agregar como cliente nuevo
+                        </label>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+              <Btn onClick={guardar} disabled={!totalAccion}>Guardar{totalAccion > 0 ? ` (${totalAccion})` : ""}</Btn>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 function ClientesTab({ config, onUpdateConfig }) {
   const [showForm, setShowForm] = useState(false);
   const [editIdx, setEditIdx] = useState(null);
@@ -3999,12 +4169,27 @@ function ClientesTab({ config, onUpdateConfig }) {
     setShowForm(false);
   }
   function del(i) { onUpdateConfig({ clientes: clientes.filter((_, idx) => idx !== i) }); }
+  const [showImportar, setShowImportar] = useState(false);
+  function aplicarImportacion({ nuevos, reemplazos }) {
+    const actualizados = clientes.map((c) => (reemplazos.has(c.id) ? { ...c, ...reemplazos.get(c.id) } : c));
+    onUpdateConfig({ clientes: [...actualizados, ...nuevos] });
+  }
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div><div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>Clientes</div><div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{clientes.length} cliente{clientes.length !== 1 ? "s" : ""}</div></div>
-        <Btn onClick={openNew}>+ Nuevo Cliente</Btn>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn variant="secondary" onClick={() => setShowImportar(true)}>⬇ Importar de Busint</Btn>
+          <Btn onClick={openNew}>+ Nuevo Cliente</Btn>
+        </div>
       </div>
+      {showImportar && (
+        <ImportarClientesBusintModal
+          clientesExistentes={clientes}
+          onImportar={aplicarImportacion}
+          onClose={() => setShowImportar(false)}
+        />
+      )}
       {showForm && (
         <div style={{ background: T.canvas, borderRadius: 12, padding: 20, border: `1.5px solid ${T.denim}`, marginBottom: 20 }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 16 }}>{editIdx !== null ? "Editar Cliente" : "Nuevo Cliente"}</div>
