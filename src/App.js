@@ -559,7 +559,7 @@ const STATUS = {
 // vuelva del taller, y "enviado" se pone solo cuando el prototipo/referencia
 // pasa a status "enviado" (ver syncCronogramaEnviado).
 const ESTADO_MUESTRA = {
-  pendiente: { label: "Sin asignar", color: T.amber, bg: T.amberBg },
+  pendiente: { label: "Asignado", color: T.amber, bg: T.amberBg },
   aprobado: { label: "Aprobado", color: T.jade, bg: T.jadeBg },
   modificar: { label: "Modificar", color: T.coral, bg: T.coralBg },
   enviado: { label: "Enviado", color: "#0369A1", bg: "#EFF6FF" },
