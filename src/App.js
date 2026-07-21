@@ -5314,8 +5314,13 @@ function InformeVigentesBusintView({ isAdmin }) {
         </div>
       )}
       <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>
-        Consulta la API de Busint en vivo (no la base de datos local) y muestra los pedidos que aún no están 100% cortados (según lo registrado en el módulo Corte). Los que ya vencieron su fecha de despacho sin terminar de cortar aparecen primero, marcados como <strong style={{ color: T.coral }}>vencidos</strong>.
+        Consulta la API de Busint en vivo (no la base de datos local) y muestra los pedidos que todavía no se han facturado ni despachado (factura normal, traslado externo o en consignación). Para los que faltan, cruza con la carga más reciente de Planeación para mostrar en qué etapa van, o si aún no tienen lote ("sin cortar"). Los que ya vencieron su fecha de despacho sin facturar aparecen primero, marcados como <strong style={{ color: T.coral }}>vencidos</strong>.
       </div>
+      {resultado?.avisoFacturacion && (
+        <div style={{ padding: "12px 16px", background: T.amberBg, borderRadius: 10, border: `1px solid ${T.amber}44`, color: T.amber, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
+          ⚠ {resultado.avisoFacturacion}
+        </div>
+      )}
       {error && (
         <div style={{ padding: "12px 16px", background: T.coralBg, borderRadius: 10, border: `1px solid ${T.coral}44`, color: T.coral, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
           {error}
@@ -5379,7 +5384,7 @@ function InformeVigentesBusintView({ isAdmin }) {
                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                           <thead>
                             <tr style={{ background: T.canvas }}>
-                              {(isAdmin ? ["", "N° Pedido", "Fecha Pedido", "Fecha Despacho", "Referencias", "Unidades", "Corte", ""] : ["", "N° Pedido", "Fecha Pedido", "Fecha Despacho", "Referencias", "Unidades", "Corte"]).map((h, hi) => (
+                              {(isAdmin ? ["", "N° Pedido", "Fecha Pedido", "Fecha Despacho", "Referencias", "Unidades", "Estado", ""] : ["", "N° Pedido", "Fecha Pedido", "Fecha Despacho", "Referencias", "Unidades", "Estado"]).map((h, hi) => (
                                 <th
                                   key={h + hi}
                                   style={{
@@ -5425,24 +5430,15 @@ function InformeVigentesBusintView({ isAdmin }) {
                                       {p.referencias.map((r) => r.ref).filter(Boolean).join(", ") || "—"}
                                     </td>
                                     <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, color: T.ink }}>{fmtNum(p.totalUnidades)}</td>
-                                    <td style={{ padding: "8px 10px", color: T.slate, minWidth: 120 }}>
-                                      {p.pctCortado === null ? (
-                                        <span style={{ fontSize: 11, fontStyle: "italic" }}>sin dato</span>
+                                    <td style={{ padding: "8px 10px", color: T.slate, minWidth: 140 }}>
+                                      {p.tieneLote ? (
+                                        <span style={{ padding: "3px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: T.amberBg, color: T.amber, whiteSpace: "nowrap" }}>
+                                          {p.etapas.join(", ")}
+                                        </span>
                                       ) : (
-                                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                          <div style={{ flex: 1, height: 6, background: T.border, borderRadius: 4, overflow: "hidden" }}>
-                                            <div
-                                              style={{
-                                                width: `${Math.min(100, p.pctCortado)}%`,
-                                                height: "100%",
-                                                background: p.pctCortado >= 100 ? T.jade : p.pctCortado > 0 ? T.amber : T.coral,
-                                              }}
-                                            />
-                                          </div>
-                                          <span style={{ fontSize: 11, fontWeight: 700, color: T.ink, minWidth: 32, textAlign: "right" }}>
-                                            {p.pctCortado}%
-                                          </span>
-                                        </div>
+                                        <span style={{ padding: "3px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: T.coralBg, color: T.coral, whiteSpace: "nowrap" }}>
+                                          🔴 Sin cortar
+                                        </span>
                                       )}
                                     </td>
                                     {isAdmin && (
