@@ -5440,6 +5440,11 @@ function InformeVigentesBusintView({ isAdmin }) {
                                           🔴 Sin cortar
                                         </span>
                                       )}
+                                      {p.pctFacturado > 0 && (
+                                        <div style={{ fontSize: 10, color: T.slate, marginTop: 3 }}>
+                                          {p.pctFacturado}% facturado
+                                        </div>
+                                      )}
                                     </td>
                                     {isAdmin && (
                                       <td style={{ padding: "8px 10px", textAlign: "center" }}>
