@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import ModuloCorte from "./modulo-corte";
 import ModuloContabilidad from "./modulo-contabilidad";
 import ModuloPlaneacion from "./modulo-planeacion";
+import ModuloPlanta from "./modulo-planta";
 import { initializeApp } from "firebase/app";
 import {
   getFirestore,
@@ -3319,7 +3320,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     </div>
   );
 }
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessDiseno, canAccessKpis, onGoArea, protos, capsulas, pedidos }) {
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessDiseno, canAccessKpis, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
@@ -3344,6 +3345,11 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
       id: "planeacion_area", icon: "📋", label: "Planeación", desc: "Informes de producción de planta a partir de Hoja1", color: T.violet, bg: T.violetBg,
       stats: [],
       permiso: canAccessPlaneacion,
+    },
+    {
+      id: "planta_area", icon: "🏭", label: "Planta", desc: "Programación diaria y cumplimiento de Planta Industrias Yanko", color: T.amber, bg: T.amberBg,
+      stats: [],
+      permiso: canAccessPlanta,
     },
     {
       id: "kpis_area", icon: "🎯", label: "KPIs", desc: "Indicadores por área y persona en toda la compañía — Diseño, Corte, Ventas, Contabilidad, Planeación...", color: T.coral, bg: T.coralBg,
@@ -4305,7 +4311,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // KPIs ahora es un módulo de compañía completo (no solo Diseño — cubre
   // Corte, Ventas, Contabilidad, Planeación, etc.), por eso su permiso vive
   // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
-  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["kpis", "🎯 KPIs"]];
+  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["kpis", "🎯 KPIs"]];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
   function ListEditor({ listKey, title }) {
     return (
@@ -6130,6 +6136,7 @@ function AppInner() {
   const canAccessCorte = moduloVisible(userRoleData, "corte", currentUser?.isAdmin);
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
   const canAccessPlaneacion = moduloVisible(userRoleData, "planeacion", currentUser?.isAdmin);
+  const canAccessPlanta = moduloVisible(userRoleData, "planta", currentUser?.isAdmin);
   // "admin_diseno" es un permiso aparte del admin general: da entrada al panel
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
@@ -6166,6 +6173,9 @@ function AppInner() {
     ...(canAccessPlaneacion
       ? [{ id: "planeacion_area", icon: "📋", label: "Planeación", items: [{ id: "planeacion_area", icon: "📋", label: "Módulo Planeación" }] }]
       : []),
+    ...(canAccessPlanta
+      ? [{ id: "planta_area", icon: "🏭", label: "Planta", items: [{ id: "planta_area", icon: "🏭", label: "Módulo Planta" }] }]
+      : []),
     // KPIs es su propia área de nivel superior (cubre toda la compañía).
     // A diferencia de Contabilidad/Planeación, no es un módulo externo aparte
     // (moduloActivo) — se renderiza dentro del layout normal usando el mismo
@@ -6186,12 +6196,14 @@ function AppInner() {
     if (itemId === "__corte__") return moduloActivo === "corte";
     if (itemId === "contabilidad_area") return moduloActivo === "contabilidad";
     if (itemId === "planeacion_area") return moduloActivo === "planeacion";
+    if (itemId === "planta_area") return moduloActivo === "planta";
     return view === itemId;
   }
   function navClick(itemId) {
     if (itemId === "__corte__") { setModuloActivo("corte"); return; }
     if (itemId === "contabilidad_area") { setModuloActivo("contabilidad"); return; }
     if (itemId === "planeacion_area") { setModuloActivo("planeacion"); return; }
+    if (itemId === "planta_area") { setModuloActivo("planta"); return; }
     setView(itemId);
   }
   // "Planeador puro": solo tiene Corte y NINGUNA otra sección de Diseño (ni
@@ -6215,6 +6227,9 @@ function AppInner() {
   }
   if (moduloActivo === "planeacion") {
     return <ModuloPlaneacion currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); }} />;
+  }
+  if (moduloActivo === "planta") {
+    return <ModuloPlanta currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); }} />;
   }
   return (
     <div style={{ minHeight: "100vh", background: T.canvas, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,sans-serif" }}>
@@ -6286,10 +6301,11 @@ function AppInner() {
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
             {view === "dashboard" && (
-              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessDiseno={canAccessDiseno} canAccessKpis={canAccessKpis}
+              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessDiseno={canAccessDiseno} canAccessKpis={canAccessKpis}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
                   else if (id === "planeacion_area") { setModuloActivo("planeacion"); }
+                  else if (id === "planta_area") { setModuloActivo("planta"); }
                   else if (id === "kpis_area") { setAreaAbierta("kpis_area"); setView("kpis"); }
                   else if (id === "diseno") {
                     setAreaAbierta("diseno");
