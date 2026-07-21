@@ -25,7 +25,6 @@ async function fsSave(col, id, data) {
 async function fsDelete(col, id) {
   await deleteDoc(doc(db, col, id));
 }
-// ─── TOKENS ──────────────────────────────────────────────────────────────────
 const C = {
   ink: "#1A1A2E",
   slate: "#5A5A7A",
@@ -77,7 +76,6 @@ function mesLabel(m, a) {
     year: "numeric",
   });
 }
-// ─── UI ATOMS ─────────────────────────────────────────────────────────────────
 function Btn({ children, onClick, variant = "primary", small, disabled }) {
   const S = {
     primary: { background: C.ink, color: C.white, border: "none" },
@@ -296,7 +294,6 @@ function KPI({ icon, label, value, color, bg, sub }) {
     </div>
   );
 }
-// ─── CATEGORÍAS POR DEFECTO ───────────────────────────────────────────────────
 const CATS_INGRESO = [
   "Anticipo Nómina",
   "Anticipo Insumos",
@@ -315,7 +312,7 @@ const CATS_EGRESO = [
   "Otros egresos",
 ];
 // ─── NUEVO MOVIMIENTO MODAL ───────────────────────────────────────────────────
-function NuevoMovimientoModal({ tipo, onSave, onClose, clientesDiseno, rubros }) {
+function NuevoMovimientoModal({ tipo, onSave, onClose, clientesDiseno, rubros, calendarioCxp }) {
   const [form, setForm] = useState({
     fecha: today(),
     categoria: "",
@@ -324,8 +321,6 @@ function NuevoMovimientoModal({ tipo, onSave, onClose, clientesDiseno, rubros })
     referencia: "",
     proveedor: "",
   });
-  // Distribución del ingreso entre rubros (opcional). Lo que no se reparta
-  // queda como "disponible" — caja libre, no comprometida a ningún gasto.
   const [distribucion, setDistribucion] = useState([]);
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const cats = tipo === "ingreso" ? CATS_INGRESO : CATS_EGRESO;
@@ -333,6 +328,20 @@ function NuevoMovimientoModal({ tipo, onSave, onClose, clientesDiseno, rubros })
   const valorNum = parseFloat(form.valor) || 0;
   const distribuido = distribucion.reduce((s, d) => s + (parseFloat(d.monto) || 0), 0);
   const disponible = valorNum - distribuido;
+  const mesForm = form.fecha ? form.fecha.slice(0, 7) : "";
+  // Cuentas por pagar (manuales o de corte TNS) que el usuario programó pagar
+  // en "Cuentas por Pagar → Programar pago" para este mismo mes — se ofrecen
+  // aquí como Rubro adicional para poder asignarles directamente el abono.
+  const rubrosCxp = (calendarioCxp || [])
+    .filter((c) => c.mes === mesForm)
+    .reduce((acc, c) => {
+      const concepto = `🧾 ${c.proveedor} (Cuenta por Pagar)`;
+      if (!acc.some((r) => r.concepto === concepto)) {
+        acc.push({ codConcep: `CXP__${c.proveedor}`, concepto });
+      }
+      return acc;
+    }, []);
+  const rubrosDisponibles = [...(rubros || []), ...rubrosCxp];
   function agregarFilaDistribucion() {
     setDistribucion((d) => [...d, { codConcep: "", concepto: "", monto: "" }]);
   }
@@ -475,7 +484,7 @@ function NuevoMovimientoModal({ tipo, onSave, onClose, clientesDiseno, rubros })
                   <select
                     value={row.codConcep}
                     onChange={(e) => {
-                      const r = (rubros || []).find((x) => x.codConcep === e.target.value);
+                      const r = rubrosDisponibles.find((x) => x.codConcep === e.target.value);
                       actualizarFilaDistribucion(i, { codConcep: e.target.value, concepto: r?.concepto || "" });
                     }}
                     style={{
@@ -491,7 +500,7 @@ function NuevoMovimientoModal({ tipo, onSave, onClose, clientesDiseno, rubros })
                     }}
                   >
                     <option value="">— Rubro —</option>
-                    {(rubros || []).map((r) => (
+                    {rubrosDisponibles.map((r) => (
                       <option key={r.codConcep} value={r.codConcep}>
                         {r.concepto}
                       </option>
@@ -572,14 +581,23 @@ function NuevoMovimientoModal({ tipo, onSave, onClose, clientesDiseno, rubros })
   );
 }
 // ─── ASIGNAR POR RUBRO (POST-INGRESO) ─────────────────────────────────────────
-// Permite, desde la tabla de Flujo de Caja, ir repartiendo un abono ya
-// registrado entre los rubros donde efectivamente se gastó — sin tener que
-// hacerlo todo en el momento de crear el ingreso. Cada línea lleva su propia
-// fecha, siempre dentro del mes en que quedó registrado el abono.
-function AsignarRubroModal({ movimiento, rubros, onUpdate, onClose }) {
+function AsignarRubroModal({ movimiento, rubros, calendarioCxp, onUpdate, onClose }) {
   const mes = movimiento.fecha?.slice(0, 7) || today().slice(0, 7);
   const minFecha = `${mes}-01`;
   const maxFecha = `${mes}-${String(ultimoDiaMes(mes)).padStart(2, "0")}`;
+  // Cuentas por pagar programadas para pagarse este mismo mes (ver
+  // "Cuentas por Pagar → Programar pago") — se ofrecen como Rubro adicional
+  // para poder asignarles directamente parte de este abono.
+  const rubrosCxp = (calendarioCxp || [])
+    .filter((c) => c.mes === mes)
+    .reduce((acc, c) => {
+      const concepto = `🧾 ${c.proveedor} (Cuenta por Pagar)`;
+      if (!acc.some((r) => r.concepto === concepto)) {
+        acc.push({ codConcep: `CXP__${c.proveedor}`, concepto });
+      }
+      return acc;
+    }, []);
+  const rubrosDisponibles = [...(rubros || []), ...rubrosCxp];
   const [lineas, setLineas] = useState(
     (movimiento.distribucion || []).map((d) => ({
       codConcep: d.codConcep,
@@ -664,7 +682,7 @@ function AsignarRubroModal({ movimiento, rubros, onUpdate, onClose }) {
               <select
                 value={l.codConcep}
                 onChange={(e) => {
-                  const r = (rubros || []).find((x) => x.codConcep === e.target.value);
+                  const r = rubrosDisponibles.find((x) => x.codConcep === e.target.value);
                   actualizarLinea(i, { codConcep: e.target.value, concepto: r?.concepto || "" });
                 }}
                 style={{
@@ -680,7 +698,7 @@ function AsignarRubroModal({ movimiento, rubros, onUpdate, onClose }) {
                 }}
               >
                 <option value="">— Rubro —</option>
-                {(rubros || []).map((r) => (
+                {rubrosDisponibles.map((r) => (
                   <option key={r.codConcep} value={r.codConcep}>
                     {r.concepto}
                   </option>
@@ -786,10 +804,6 @@ function AsignarRubroModal({ movimiento, rubros, onUpdate, onClose }) {
   );
 }
 // ─── IMPORTAR EGRESOS DESDE EXCEL ─────────────────────────────────────────────
-// Lee la primera hoja de un archivo .xlsx/.xls y detecta columnas por nombre
-// de encabezado (Fecha, Categoría, Descripción, Valor, Proveedor, Referencia),
-// sin importar mayúsculas/tildes ni el orden en que vengan. Filas sin valor,
-// categoría ni descripción se descartan por vacías.
 function normalizarEncabezado(k) {
   return String(k)
     .toLowerCase()
@@ -1026,11 +1040,6 @@ function ImportarExcelModal({ onSave, onClose }) {
   );
 }
 // ─── IMPORTAR COMPRAS BUSINT (COMPARATIVO POR CONCEPTO) ───────────────────────
-// A diferencia de los egresos manuales, un export de Busint trae MUCHAS filas
-// (una por factura) repitiendo el mismo concepto varias veces dentro del mismo
-// mes. Aquí se agrupan y se suman por Código de Concepto + Mes usando la
-// columna Vbruto (valor bruto, antes de IVA/retenciones), que es la que pidió
-// el usuario para el comparativo — no "Total".
 function fmtMesLargo(mes) {
   if (!mes) return "";
   return new Date(mes + "-02").toLocaleDateString("es-CO", { month: "long", year: "numeric" });
@@ -1281,13 +1290,6 @@ function ImportarBusintModal({ comprasExistentes, onConfirm, onClose }) {
   );
 }
 // ─── CUENTAS POR PAGAR (IMPORT TNS + MANUAL + CALENDARIO DE PAGO) ─────────────
-// El reporte "Resumen de Cuentas por Pagar por Edades" de TNS agrupa por
-// proveedor en franjas de antigüedad (Por vencer, 0-30, 31-60, 61-90, 91+),
-// no trae facturas individuales con vencimiento. Se lee posicionalmente:
-// nombre en la primera celda de cada fila, seguido de los valores numéricos
-// de cada franja + el total — así evitamos depender de la alineación exacta
-// de columnas del encabezado (que viene desalineada por celdas combinadas
-// distintas entre encabezado y filas de datos en el export real de TNS).
 async function parseCuentasPorPagar(file) {
   const XLSX = await import("xlsx");
   const buffer = await file.arrayBuffer();
@@ -1590,8 +1592,6 @@ function AgregarProveedorCXPModal({ onSave, onClose }) {
     </Modal>
   );
 }
-// El calendario reparte una deuda en montos por mes, hasta 24 meses adelante,
-// para poder negociar con el proveedor un plan de pago concreto.
 function ProgramarPagoModal({ proveedor, totalAdeudado, entradasExistentes, disponiblePorMes = {}, onGuardar, onClose }) {
   const meses = proximosMeses(24);
   const [montos, setMontos] = useState(() => {
@@ -1685,7 +1685,7 @@ function ProgramarPagoModal({ proveedor, totalAdeudado, entradasExistentes, disp
   );
 }
 // ─── FLUJO DE CAJA VIEW ───────────────────────────────────────────────────────
-function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, clientesDiseno, rubros, onUpdateDistribucion }) {
+function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, clientesDiseno, rubros, calendarioCxp, onUpdateDistribucion }) {
   const [showModal, setShowModal] = useState(null); // "ingreso" | "egreso" | "importar"
   const [fechaABorrar, setFechaABorrar] = useState("");
   const [asignandoId, setAsignandoId] = useState(null);
@@ -1705,7 +1705,6 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
     .filter((m) => m.tipo === "egreso")
     .reduce((s, m) => s + m.valor, 0);
   const saldo = totalIngresos - totalEgresos;
-  // Generar últimos 12 meses para selector
   const meses = [];
   const d = new Date();
   for (let i = 0; i < 12; i++) {
@@ -1723,6 +1722,7 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
           onClose={() => setShowModal(null)}
           clientesDiseno={clientesDiseno}
           rubros={rubros}
+          calendarioCxp={calendarioCxp}
         />
       )}
       {showModal === "importar" && (
@@ -1739,6 +1739,7 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
             <AsignarRubroModal
               movimiento={m}
               rubros={rubros}
+              calendarioCxp={calendarioCxp}
               onUpdate={(id, distribucion) => onUpdateDistribucion && onUpdateDistribucion(id, distribucion)}
               onClose={() => setAsignandoId(null)}
             />
@@ -1800,7 +1801,6 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
           </Btn>
         </div>
       </div>
-      {/* KPIs */}
       <div
         style={{
           display: "grid",
@@ -1832,7 +1832,6 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
           sub={saldo >= 0 ? "✓ Positivo" : "⚠ Negativo"}
         />
       </div>
-      {/* Barra visual ingresos vs egresos */}
       {(totalIngresos > 0 || totalEgresos > 0) && (
         <div
           style={{
@@ -1883,7 +1882,6 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
           </div>
         </div>
       )}
-      {/* Filtro categoría */}
       <div
         style={{
           display: "flex",
@@ -1963,7 +1961,6 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
           </>
         )}
       </div>
-      {/* Tabla movimientos */}
       {!movFiltrados.length ? (
         <div
           style={{
@@ -2173,7 +2170,7 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
 // ─── COMPARATIVO POR CONCEPTO (MES A MES) ─────────────────────────────────────
 function ComparativoConceptosView({ compras, onImportar, onDeleteMes, onUpdateCompra, isAdmin }) {
   const [showImport, setShowImport] = useState(false);
-  const [cuadrando, setCuadrando] = useState(null); // { codConcep, concepto, mes } — celda que se está cuadrando
+  const [cuadrando, setCuadrando] = useState(null);
   const meses = [...new Set(compras.map((c) => c.mes))].sort();
   const filasMap = {};
   compras.forEach((c) => {
@@ -2191,7 +2188,6 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, onUpdateCo
   });
   const mesMayor = meses.reduce((max, m) => (max === null || totalesPorMes[m] > totalesPorMes[max] ? m : max), null);
   const granTotal = Object.values(totalesPorMes).reduce((s, v) => s + v, 0);
-  // Tendencia: compara el último mes cargado contra el penúltimo, por rubro.
   const [ultimoMes, penultimoMes] = [...meses].reverse();
   filas.forEach((f) => {
     const actual = ultimoMes ? f.porMes[ultimoMes] || 0 : 0;
@@ -2202,7 +2198,6 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, onUpdateCo
   const conTendencia = penultimoMes ? filas.filter((f) => (f.porMes[ultimoMes] || 0) > 0 || (f.porMes[penultimoMes] || 0) > 0) : [];
   const subieron = [...conTendencia].filter((f) => f.cambio > 0).sort((a, b) => b.cambio - a.cambio).slice(0, 5);
   const bajaron = [...conTendencia].filter((f) => f.cambio < 0).sort((a, b) => a.cambio - b.cambio).slice(0, 5);
-  // Celdas (mes + concepto) que ya tienen IVA/Retención cuadrados manualmente.
   const cuadradasSet = new Set(
     compras.filter((c) => c.iva !== undefined || c.retencion !== undefined).map((c) => `${c.mes}__${c.codConcep}__${c.concepto}`)
   );
@@ -2474,10 +2469,6 @@ function ComparativoConceptosView({ compras, onImportar, onDeleteMes, onUpdateCo
   );
 }
 // ─── CUADRE MANUAL DE IVA / RETENCIÓN (por celda mes + concepto) ─────────────
-// El usuario escribe IVA y Retención a mano (no se calculan con %); el Valor
-// Neto a Pagar = Vbruto (Busint) + IVA - Retención. Si la celda agrupa más de
-// un registro (p. ej. se importó el mismo mes dos veces sin reemplazar), se
-// edita cada registro por separado y también se muestra el total combinado.
 function CuadrarPagoModal({ concepto, codConcep, mes, registros, onUpdateCompra, onClose }) {
   const [valores, setValores] = useState(() => {
     const init = {};
@@ -2583,21 +2574,11 @@ function CuadrarPagoModal({ concepto, codConcep, mes, registros, onUpdateCompra,
   );
 }
 // ─── PROYECCIÓN DE FLUJO DE CAJA (PRESUPUESTO POR MES) ────────────────────────
-// El "promedio" de cada rubro se calcula en vivo a partir de los meses ya
-// cargados en el Comparativo (contabilidad_compras). Un presupuesto guardado
-// NO se recalcula solo al importar más meses — hay que pulsar "Recalcular"
-// a propósito (p. ej. después de cuadrar IVA/Retención de una compra), para
-// no cambiar cifras ya usadas sin que el usuario lo pida explícitamente.
 function sumarMes(mes, n = 1) {
   const [y, m] = mes.split("-").map(Number);
   const d = new Date(y, m - 1 + n, 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
-// Promedio de gasto por rubro (codConcep+concepto), sobre todos los meses
-// cargados en el Comparativo. Si una compra ya tiene IVA/Retención cuadrados
-// manualmente, se usa su Valor Neto (Vbruto + IVA - Retención); si no, se usa
-// el Vbruto de Busint tal cual. Se usa tanto al crear una Proyección nueva
-// como al Recalcular una ya existente (botón "🔄 Recalcular" en la tarjeta).
 function calcularBaseItemsPromedio(compras) {
   const mesesCompras = [...new Set(compras.map((c) => c.mes))].sort();
   const map = {};
@@ -2770,9 +2751,6 @@ function ProyeccionForm({ compras, presupuestoExistente, onGuardar, onClose }) {
 function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onGuardar, onFinalizar, onDeletePresupuesto, onRecalcular, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [editando, setEditando] = useState(null);
-  // Cada mes arranca colapsado (como una fila de lista) — se despliega solo
-  // al hacer clic, para no tener que desplazarse por todos los meses
-  // acumulados con su detalle completo abierto de una vez.
   const [expandidos, setExpandidos] = useState(new Set());
   function toggleExpand(id) {
     setExpandidos((s) => {
@@ -2826,9 +2804,6 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
         </div>
       ) : (
         <>
-          {/* Selector de mes: todos los meses quedan a la vista como chips —
-              al hacer clic en uno, la página se desplaza directo a esa
-              tarjeta, sin tener que bajar buscando entre todas. */}
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
             {lista.map((p) => (
               <button
@@ -2861,8 +2836,6 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
             const terminado = p.estado === "terminado";
             const pagosCxpMes = (calendarioCxp || []).filter((c) => c.mes === p.mes);
             const totalPagosCxp = pagosCxpMes.reduce((s, c) => s + c.monto, 0);
-            // Avance por rubro: cuánto de cada rubro presupuestado ya fue cubierto
-            // por distribuciones de ingresos de clientes registradas ese mes.
             const itemsConAvance = terminado
               ? (p.items || [])
                   .filter((i) => i.incluido)
@@ -2871,11 +2844,6 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
                       const enEsteRubro = (m.distribucion || []).filter((d) => d.codConcep === i.codConcep);
                       return s + enEsteRubro.reduce((s2, d) => s2 + (parseFloat(d.monto) || 0), 0);
                     }, 0);
-                    // Si ya se cuadró el IVA/Retención de la compra real de ESTE
-                    // mes (en Comparativo por Concepto), el avance se compara
-                    // contra ese Valor Neto real en vez del promedio proyectado
-                    // — así no se ve "pagado de más" solo porque el proyectado
-                    // no incluía IVA.
                     const registroReal = compras.find(
                       (c) => c.mes === p.mes && c.codConcep === i.codConcep && c.concepto === i.concepto
                     );
@@ -3048,10 +3016,6 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
   );
 }
 // ─── PRESUPUESTO POR CLIENTE ───────────────────────────────────────────────────
-// A diferencia del presupuesto por rubro (Proyección, calculado del histórico
-// de compras), este lo define el usuario a mano: cuánto espera que cada
-// cliente le abone ese mes, según los pedidos que tenga con él. Compara contra
-// lo efectivamente abonado para saber quién va cumpliendo.
 function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDiseno, onGuardar, onDelete, isAdmin }) {
   const [mes, setMes] = useState(() => today().slice(0, 7));
   const [showAdd, setShowAdd] = useState(false);
@@ -3059,9 +3023,6 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
   const [categoriaNueva, setCategoriaNueva] = useState("");
   const [montoNuevo, setMontoNuevo] = useState("");
   const presupuestosMes = presupuestosCliente.filter((p) => p.mes === mes);
-  // Un mismo cliente puede tener varias líneas de presupuesto el mismo mes,
-  // una por categoría (Anticipo Nómina, Insumos, Tela, Maquinaria) — así se
-  // sabe cuánto se espera de cada cliente Y de cada categoría por separado.
   const pairExiste = (cliente, categoria) =>
     presupuestosMes.some((p) => p.cliente === cliente && p.categoria === categoria);
   function abonadoDe(cliente, categoria) {
@@ -3091,9 +3052,6 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
     setMontoNuevo("");
     setShowAdd(false);
   }
-  // Tela no cuenta para el presupuesto final: hoy se puede llevar abono de
-  // Nómina, Insumos, Tela y Maquinaria, pero solo las primeras tres (menos
-  // Tela) sirven para el total que se compara contra lo abonado.
   const CATEGORIA_NO_CUENTA = "Anticipo Tela";
   const totalPresupuestado = presupuestosMes
     .filter((p) => p.categoria !== CATEGORIA_NO_CUENTA)
@@ -3101,8 +3059,6 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
   const totalAbonado = presupuestosMes
     .filter((p) => p.categoria !== CATEGORIA_NO_CUENTA)
     .reduce((s, p) => s + abonadoDe(p.cliente, p.categoria), 0);
-  // Resumen agregado por categoría: cuánto se presupuestó vs. cuánto entró
-  // realmente ese mes en cada categoría, sumando todos los clientes.
   const resumenCategorias = CATS_INGRESO.map((cat) => {
     const presupuestado = presupuestosMes.filter((p) => p.categoria === cat).reduce((s, p) => s + p.monto, 0);
     const abonado = movimientos
@@ -3110,9 +3066,6 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
       .reduce((s, m) => s + m.valor, 0);
     return { categoria: cat, presupuestado, abonado };
   }).filter((r) => r.presupuestado > 0 || r.abonado > 0);
-  // Agrupación por cliente: cada cliente muestra las 4 ramificaciones
-  // (Nómina, Tela, Insumos, Maquinaria) por las que se puede llevar abono,
-  // aunque no todas tengan presupuesto asignado todavía.
   const clientesConPresupuesto = Array.from(new Set(presupuestosMes.map((p) => p.cliente))).sort((a, b) =>
     a.localeCompare(b)
   );
@@ -3357,13 +3310,6 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
   );
 }
 // ─── CUENTAS POR PAGAR VIEW ─────────────────────────────────────────────────────
-// Proyecta cómo baja el saldo total de la deuda mes a mes, a partir de lo que
-// ya se dejó programado en el calendario de pago por proveedor. Es una lectura
-// hacia adelante (no depende del histórico de cortes) — si un mes no tiene
-// nada programado, el saldo simplemente no baja ese mes.
-// Gráfica de línea/área SVG (sin librerías externas) para mostrar la
-// evolución proyectada del saldo mes a mes de forma más visual que una
-// lista de barras de progreso.
 function EvolucionSaldoChart({ filas, totalAdeudado }) {
   const W = 900, H = 300, padL = 90, padR = 24, padT = 20, padB = 40;
   const chartW = W - padL - padR, chartH = H - padT - padB;
@@ -3480,9 +3426,6 @@ function EstadisticaCxpView({ totalAdeudado, calendario }) {
     </div>
   );
 }
-// Gráfica SVG (sin librerías externas) del saldo neto acumulado proyectado:
-// a diferencia de EvolucionSaldoChart (que solo baja hacia 0), esta puede
-// mostrar valores negativos (déficit) con una línea base en cero.
 function SaldoNetoChart({ filas }) {
   const W = 900, H = 300, padL = 90, padR = 24, padT = 20, padB = 40;
   const chartW = W - padL - padR, chartH = H - padT - padB;
@@ -3555,13 +3498,6 @@ function SaldoNetoChart({ filas }) {
     </svg>
   );
 }
-// ─── PROGRAMACIÓN DE PAGOS ──────────────────────────────────────────────────
-// Cruza, mes a mes, lo que se espera que entre de clientes (Presupuesto
-// Clientes) contra lo que ya está comprometido salir: el presupuesto por
-// rubro de Proyección más los pagos a proveedores programados en Cuentas por
-// Pagar. El saldo neto de cada mes se arrastra (acumulado) para detectar con
-// anticipación en qué mes la caja quedaría en déficit si no se ajusta el
-// calendario de pagos.
 function ProgramacionPagosView({ presupuestosCliente, presupuestos, calendarioCxp }) {
   const meses = proximosMeses(24);
   let acumulado = 0;
@@ -3662,10 +3598,6 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   const total31a60 = filas.reduce((s, f) => s + f.dias31a60, 0);
   const total61a90 = filas.reduce((s, f) => s + f.dias61a90, 0);
   const total91 = filas.reduce((s, f) => s + f.dias91mas, 0);
-  // Monto correspondiente a lo que esté elegido en "Ordenar por" — así al
-  // seleccionar una franja de vencimiento (30/60/90/91+) se ve de una vez
-  // cuánto suma esa franja entre todos los proveedores, sin tener que ir a
-  // buscarlo en la tabla.
   const ORDEN_INFO = {
     total: { label: "Total adeudado", monto: totalAdeudado, color: C.violet },
     "0-30": { label: "0-30 días", monto: total0a30, color: C.amber },
@@ -3677,10 +3609,6 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   function calendarioDe(nombre) {
     return calendario.filter((c) => c.proveedor === nombre);
   }
-  // Cruce mes a mes (Ingresos esperados de clientes − Egresos comprometidos
-  // de Proyección − Pagos a proveedores ya programados) usado como referencia
-  // dentro de "Programar pago", para que al asignar un monto a un proveedor
-  // se vea si ese mes realmente tiene holgura proyectada.
   const mesesProgramacion = proximosMeses(24);
   const disponiblePorMes = {};
   let acumuladoProgramacion = 0;
@@ -4096,17 +4024,12 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
         setPresupuestos(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
       }
     );
-    // Presupuesto por cliente: definido a mano por el usuario, mes a mes,
-    // según los pedidos que tenga con cada cliente.
     const unsubPresupuestosCliente = onSnapshot(
       collection(db, "contabilidad_presupuestos_cliente"),
       (snap) => {
         setPresupuestosCliente(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
       }
     );
-    // Cuentas por pagar: cada import de TNS se guarda como un "corte" nuevo
-    // (histórico, nunca se sobreescribe), más una lista de proveedores
-    // agregados a mano, más el calendario de pago programado por proveedor.
     const unsubCortesCxp = onSnapshot(
       collection(db, "contabilidad_cxp_cortes"),
       (snap) => {
@@ -4125,9 +4048,6 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
         setCalendarioCxp(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
       }
     );
-    // Clientes: se leen en vivo del mismo documento de configuración que usa
-    // Diseño (Admin → Clientes). Solo lectura desde Contabilidad — agregar o
-    // borrar clientes se sigue haciendo únicamente desde Diseño.
     const unsubClientes = onSnapshot(doc(db, "config", "main"), (snap) => {
       setClientesDiseno(snap.exists() ? snap.data()?.clientes || [] : []);
     });
@@ -4150,16 +4070,11 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     setMovimientos((ms) => ms.filter((m) => m.id !== id));
     await fsDelete("contabilidad_movimientos", id);
   }
-  // Limpieza rápida para cuando se importó por el botón equivocado (ej. un
-  // export de Busint importado como egresos genéricos): borra de un golpe
-  // todos los movimientos que quedaron con una fecha específica.
   async function deleteMovimientosDeFecha(fecha) {
     const aBorrar = movimientos.filter((m) => m.fecha === fecha).map((m) => m.id);
     setMovimientos((ms) => ms.filter((m) => m.fecha !== fecha));
     await Promise.all(aBorrar.map((id) => fsDelete("contabilidad_movimientos", id)));
   }
-  // Actualiza solo la distribución por rubro de un ingreso ya registrado —
-  // usado por "Asignar por rubro" en la tabla de Flujo de Caja.
   async function updateDistribucion(id, distribucion) {
     setMovimientos((ms) => ms.map((m) => (m.id === id ? { ...m, distribucion } : m)));
     await fsSave("contabilidad_movimientos", id, { distribucion });
@@ -4177,15 +4092,10 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     setCompras((cs) => cs.filter((c) => c.id !== id));
     await fsDelete("contabilidad_compras", id);
   }
-  // Cuadre manual de IVA/Retención sobre un registro ya importado de Busint
-  // (Comparativo por Concepto). El usuario escribe los valores a mano; el
-  // Valor Neto a Pagar se calcula como Vbruto + IVA - Retención.
   async function updateCompra(id, patch) {
     setCompras((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch } : c)));
     await fsSave("contabilidad_compras", id, patch);
   }
-  // Antes de agregar los grupos nuevos, borra los meses que el usuario marcó
-  // para reemplazar (evita duplicar totales si se reimporta el mismo mes).
   async function onImportarCompras(nuevos, reemplazarMap) {
     const mesesAReemplazar = Object.keys(reemplazarMap).filter((m) => reemplazarMap[m]);
     for (const mes of mesesAReemplazar) {
@@ -4204,11 +4114,6 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     setPresupuestos((ps) => ps.map((x) => (x.id === id ? actualizado : x)));
     await fsSave("contabilidad_presupuestos", id, actualizado);
   }
-  // Recalcula los valores de un presupuesto ya guardado (borrador o terminado)
-  // usando el promedio Neto actual de cada rubro (Vbruto + IVA - Retención de
-  // las compras ya cuadradas). Se dispara solo cuando el usuario pulsa
-  // "Recalcular" — nunca automáticamente — y conserva qué rubros estaban
-  // incluidos y el % de ajuste que ya tenía guardado ese presupuesto.
   async function recalcularPresupuesto(id) {
     const p = presupuestos.find((x) => x.id === id);
     if (!p) return;
@@ -4244,9 +4149,6 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     setCortesCxp((cs) => cs.filter((c) => c.id !== id));
     await fsDelete("contabilidad_cxp_cortes", id);
   }
-  // Borra un solo proveedor dentro de un corte ya importado (a diferencia de
-  // deleteCorteCxp, que borra el corte completo). Reescribe el corte sin ese
-  // proveedor y lo guarda de nuevo en Firestore.
   async function eliminarProveedorDeCorte(corteId, nombreProveedor) {
     const corte = cortesCxp.find((c) => c.id === corteId);
     if (!corte) return;
@@ -4262,9 +4164,6 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     setManualCxp((ms) => ms.filter((m) => m.id !== id));
     await fsDelete("contabilidad_cxp_manual", id);
   }
-  // Reemplaza el calendario completo de un proveedor: borra las entradas
-  // anteriores y guarda las nuevas, para que "Programar pago" siempre refleje
-  // exactamente lo que se dejó en el formulario.
   async function guardarCalendarioProveedor(proveedor, entradas) {
     const existentes = calendarioCxp.filter((c) => c.proveedor === proveedor);
     const nuevos = entradas.map((e) => ({
@@ -4278,8 +4177,6 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     await Promise.all(existentes.map((e) => fsDelete("contabilidad_cxp_calendario", e.id)));
     await Promise.all(nuevos.map((n) => fsSave("contabilidad_cxp_calendario", n.id, n)));
   }
-  // Lista única de rubros históricos (código + nombre), para el selector de
-  // distribución de ingresos y para calcular el avance por rubro en Proyección.
   const rubros = (() => {
     const map = {};
     compras.forEach((c) => {
@@ -4325,7 +4222,6 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
       }}
     >
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
-      {/* Sidebar */}
       <div
         style={{
           width: 220,
@@ -4481,7 +4377,6 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
           )}
         </nav>
       </div>
-      {/* Main */}
       <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
         <div style={{ maxWidth: 1100, margin: "0 auto" }}>
           {subView === "home" && (
@@ -4496,6 +4391,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               isAdmin={isAdmin}
               clientesDiseno={clientesDiseno}
               rubros={rubros}
+              calendarioCxp={calendarioCxp}
               onUpdateDistribucion={updateDistribucion}
             />
           )}
@@ -4559,3 +4455,4 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     </div>
   );
 }
+
