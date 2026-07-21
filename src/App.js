@@ -3864,10 +3864,20 @@ function EditNombreModal({ item, tipo, config, onSave, onClose }) {
   const [nombre, setNombre] = useState(item?.name || "");
   const [season, setSeason] = useState(item?.season || "");
   const [assignedTo, setAssignedTo] = useState(item?.assignedTo || "");
-  function save() { if (!nombre.trim()) return; onSave({ name: nombre.trim(), ...(tipo === "capsula" ? { season: season.trim(), assignedTo } : {}) }); onClose(); }
+  const [cliente, setCliente] = useState(item?.cliente || "");
+  function save() {
+    if (!nombre.trim()) return;
+    onSave({ name: nombre.trim(), ...(tipo === "capsula" ? { season: season.trim(), assignedTo, cliente } : {}) });
+    onClose();
+  }
   return (
     <Modal title={`Editar ${tipo === "capsula" ? "Cápsula" : "Prototipo"}`} onClose={onClose} width={420}>
       <Field label="Nombre"><input value={nombre} onChange={(e) => setNombre(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} /></Field>
+      {tipo === "capsula" && (
+        <Field label="Cliente">
+          <FSel value={cliente} onChange={setCliente} options={(config?.clientes || []).map((c) => c.nombre)} />
+        </Field>
+      )}
       {tipo === "capsula" && <Field label="Temporada / Código"><input value={season} onChange={(e) => setSeason(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} /></Field>}
       {tipo === "capsula" && <Field label="Responsable"><FSel value={assignedTo} onChange={setAssignedTo} options={config?.disenadores || []} /></Field>}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
@@ -4887,22 +4897,52 @@ function EditPedidoModal({ pedido, onSave, onClose }) {
   );
 }
 
-function ClientesPedidosView({ clientes: clientesProp, pedidos }) {
+function ClientesPedidosView({ clientes: clientesProp, pedidos, protos, capsulas }) {
   const [buscar, setBuscar] = useState("");
+  // Por defecto solo se muestran los clientes que todavía tienen algo sin
+  // resolver — un prototipo suelto o una referencia dentro de una cápsula
+  // que no haya llegado a un estado final (Aprobado/Declinado). El toggle
+  // "Mostrar todos" deja ver el maestro completo cuando haga falta.
+  const [soloPendientes, setSoloPendientes] = useState(true);
   const clientes = clientesProp || [];
-  const filtrados = buscar ? clientes.filter((c) => c.nombre?.toLowerCase().includes(buscar.toLowerCase()) || c.empresa?.toLowerCase().includes(buscar.toLowerCase()) || c.contacto?.toLowerCase().includes(buscar.toLowerCase())) : clientes;
   function pedidosDelCliente(nombre) { return pedidos.filter((p) => p.cliente === nombre); }
+  // Cliente "efectivo" de una referencia dentro de una cápsula: el de la
+  // cápsula manda, y si no tiene se usa el de la referencia (mismo criterio
+  // que capCliente/refCliente en CapsulasView).
+  function tienePendiente(nombre) {
+    const protoPendiente = (protos || []).some((p) => p.cliente === nombre && !["aprobado", "declinado"].includes(p.status));
+    if (protoPendiente) return true;
+    return (capsulas || []).some((cap) =>
+      (cap.referencias || []).some((r) => {
+        const clienteRef = cap.cliente || r.cliente || r.colores?.[0];
+        return clienteRef === nombre && !["aprobado", "declinado"].includes(r.status);
+      })
+    );
+  }
+  const buscados = buscar ? clientes.filter((c) => c.nombre?.toLowerCase().includes(buscar.toLowerCase()) || c.empresa?.toLowerCase().includes(buscar.toLowerCase()) || c.contacto?.toLowerCase().includes(buscar.toLowerCase())) : clientes;
+  const filtrados = soloPendientes ? buscados.filter((c) => tienePendiente(c.nombre)) : buscados;
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Clientes</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>{clientes.length} cliente{clientes.length !== 1 ? "s" : ""} registrado{clientes.length !== 1 ? "s" : ""}</p></div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
+        <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Clientes</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>{filtrados.length} de {clientes.length} cliente{clientes.length !== 1 ? "s" : ""}</p></div>
         <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar cliente..." style={{ padding: "9px 14px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, width: 220, outline: "none", fontFamily: "inherit" }} />
       </div>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: T.slate, fontWeight: 600, marginBottom: 20, cursor: "pointer" }}>
+        <input type="checkbox" checked={soloPendientes} onChange={(e) => setSoloPendientes(e.target.checked)} />
+        Mostrar solo clientes con algo pendiente (protos o referencias sin Aprobar/Declinar)
+      </label>
       {!clientes.length && (
         <div style={{ textAlign: "center", padding: 48, color: T.slate }}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>🏢</div>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 8 }}>Sin clientes registrados</div>
           <div style={{ fontSize: 13 }}>Ve a <strong>Administrador General → Clientes</strong> en el menú para agregar clientes.</div>
+        </div>
+      )}
+      {!!clientes.length && !filtrados.length && (
+        <div style={{ textAlign: "center", padding: 48, color: T.slate }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 8 }}>Ningún cliente tiene algo pendiente ahora mismo</div>
+          <div style={{ fontSize: 13 }}>Desmarca "Mostrar solo clientes con algo pendiente" para ver el listado completo.</div>
         </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 14 }}>
@@ -6351,7 +6391,7 @@ function AppInner() {
             )}
             {view === "pedido-detail" && selPedido && <PedidoDetailView pedido={selPedido} onBack={() => setView("pedidos")} onUpdatePedido={updatePedido} />}
             {view === "pedidos_admin" && currentUser?.isAdmin && <AdminPedidosView pedidoConfig={pedidoConfig} onSave={savePedidoConfig} config={config} onSaveConfig={saveConfig} />}
-            {view === "pedidos_clientes" && <ClientesPedidosView clientes={config.clientes} pedidos={pedidos} />}
+            {view === "pedidos_clientes" && <ClientesPedidosView clientes={config.clientes} pedidos={pedidos} protos={protos} capsulas={capsulas} />}
             {view === "stats" && <EstadisticasView protos={protos} capsulas={capsulas} stages={config.stages} config={config} />}
             {view === "historial" && (
               <HistorialDisenoView historial={historial} protos={protos} capsulas={capsulas} pedidos={pedidos} role={role} perms={perms} stages={config.stages}
