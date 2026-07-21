@@ -4055,7 +4055,6 @@ function ImportarClientesBusintModal({ clientesExistentes, onImportar, onClose }
     return () => {
       cancelado = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function setAccion(idx, accion) {
@@ -5052,7 +5051,7 @@ function AdminPedidosView({ pedidoConfig, onSave, config, onSaveConfig }) {
 // `getPedidosVigentesBusint` esté desplegada y los secrets BUSINT_TOKEN /
 // BUSINT_BASE_URL ya configurados (los mismos que usa la sincronización
 // automática cada 6 horas) — ver README_BUSINT_SYNC.md.
-function InformeVigentesBusintView() {
+function InformeVigentesBusintView({ isAdmin }) {
   const [fechaInicio, setFechaInicio] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
@@ -5064,6 +5063,30 @@ function InformeVigentesBusintView() {
   const [resultado, setResultado] = useState(null);
   const [expandidos, setExpandidos] = useState(new Set());
   const [pedidosDetalle, setPedidosDetalle] = useState(new Set());
+  // Pedidos que Busint está generando mal (p. ej. por algo interno de
+  // facturación aún sin identificar) y que el administrador decidió ocultar
+  // DEL APLICATIVO mientras se resuelve con Busint — no se toca nada en
+  // Busint, solo se guarda el número en esta colección y tanto el backend
+  // (getPedidosVigentesBusint) como esta pantalla lo filtran.
+  const [ocultos, setOcultos] = useState([]);
+  const [confirmOcultar, setConfirmOcultar] = useState(null);
+  const [showOcultosPanel, setShowOcultosPanel] = useState(false);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "pedidos_ocultos_busint"), (snap) => {
+      setOcultos(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, []);
+  const ocultosSet = new Set(ocultos.map((o) => o.numero));
+
+  async function ocultarPedido(numero) {
+    await fsSave("pedidos_ocultos_busint", numero, { numero, ocultadoEn: today() });
+    setConfirmOcultar(null);
+  }
+  async function restaurarPedido(numero) {
+    await fsDelete("pedidos_ocultos_busint", numero);
+  }
 
   function toggleExpand(cliente) {
     setExpandidos((s) => {
@@ -5119,6 +5142,20 @@ function InformeVigentesBusintView() {
 
   return (
     <div>
+      {confirmOcultar && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 420, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.ink, marginBottom: 12 }}>⚠ Ocultar pedido #{confirmOcultar}</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>
+              Esto solo lo quita de este aplicativo — <strong>no borra ni modifica nada en Busint</strong>. Úsalo mientras se resuelve con Busint por qué se está creando este pedido. Lo puedes restaurar en cualquier momento desde "👁 Ocultos" arriba.
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmOcultar(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={() => ocultarPedido(confirmOcultar)}>Sí, ocultar</Btn>
+            </div>
+          </div>
+        </div>
+      )}
       <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 10, flexWrap: "wrap" }}>
         <div>
           <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>
@@ -5145,7 +5182,32 @@ function InformeVigentesBusintView() {
         <Btn onClick={consultar} disabled={cargando}>
           {cargando ? "Consultando…" : "📡 Consultar Busint"}
         </Btn>
+        {isAdmin && ocultos.length > 0 && (
+          <Btn variant="secondary" onClick={() => setShowOcultosPanel((v) => !v)}>
+            👁 Ocultos ({ocultos.length})
+          </Btn>
+        )}
       </div>
+      {showOcultosPanel && (
+        <div style={{ background: T.canvas, borderRadius: 12, border: `1px solid ${T.border}`, padding: 16, marginBottom: 16 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: T.ink, marginBottom: 10 }}>Pedidos ocultos en este aplicativo</div>
+          {!ocultos.length ? (
+            <div style={{ fontSize: 13, color: T.slate }}>No hay pedidos ocultos.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {ocultos.map((o) => (
+                <div key={o.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: T.white, borderRadius: 8, border: `1px solid ${T.border}` }}>
+                  <div style={{ fontSize: 13, color: T.ink }}>
+                    <strong>#{o.numero}</strong>
+                    <span style={{ color: T.slate, fontSize: 11, marginLeft: 8 }}>ocultado {o.ocultadoEn || ""}</span>
+                  </div>
+                  <Btn small variant="ghost" onClick={() => restaurarPedido(o.numero)}>↺ Restaurar</Btn>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>
         Consulta la API de Busint en vivo (no la base de datos local) y muestra los pedidos que aún no están 100% cortados (según lo registrado en el módulo Corte). Los que ya vencieron su fecha de despacho sin terminar de cortar aparecen primero, marcados como <strong style={{ color: T.coral }}>vencidos</strong>.
       </div>
@@ -5158,17 +5220,21 @@ function InformeVigentesBusintView() {
         <>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 20 }}>
             <div style={{ background: T.denimBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.denim}22` }}>
-              <div style={{ fontSize: 22, fontWeight: 900, color: T.denim }}>{resultado.totalPedidos}</div>
+              <div style={{ fontSize: 22, fontWeight: 900, color: T.denim }}>
+                {resultado.porCliente.reduce((s, g) => s + g.pedidos.filter((p) => !ocultosSet.has(p.numero)).length, 0)}
+              </div>
               <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>Pedidos vigentes</div>
             </div>
             <div style={{ background: T.coralBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.coral}22` }}>
               <div style={{ fontSize: 22, fontWeight: 900, color: T.coral }}>
-                {resultado.porCliente.reduce((s, g) => s + g.pedidos.filter((p) => p.vencido).length, 0)}
+                {resultado.porCliente.reduce((s, g) => s + g.pedidos.filter((p) => p.vencido && !ocultosSet.has(p.numero)).length, 0)}
               </div>
               <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>Vencidos sin cortar</div>
             </div>
             <div style={{ background: T.violetBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.violet}22` }}>
-              <div style={{ fontSize: 22, fontWeight: 900, color: T.violet }}>{resultado.totalClientes}</div>
+              <div style={{ fontSize: 22, fontWeight: 900, color: T.violet }}>
+                {resultado.porCliente.filter((g) => g.pedidos.some((p) => !ocultosSet.has(p.numero))).length}
+              </div>
               <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>Clientes</div>
             </div>
             <div style={{ background: T.jadeBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.jade}22` }}>
@@ -5186,6 +5252,7 @@ function InformeVigentesBusintView() {
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               {resultado.porCliente.map((g) => {
                 const expandido = expandidos.has(g.cliente);
+                const pedidosVisibles = g.pedidos.filter((p) => !ocultosSet.has(p.numero));
                 return (
                   <div key={g.cliente} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, overflow: "hidden" }}>
                     <div
@@ -5195,7 +5262,7 @@ function InformeVigentesBusintView() {
                       <div>
                         <div style={{ fontWeight: 800, fontSize: 15, color: T.ink }}>{g.cliente}</div>
                         <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>
-                          {g.totalPedidos} pedido{g.totalPedidos !== 1 ? "s" : ""} · {fmtNum(g.totalUnidades)} unidades
+                          {pedidosVisibles.length} pedido{pedidosVisibles.length !== 1 ? "s" : ""} · {fmtNum(pedidosVisibles.reduce((s, p) => s + p.totalUnidades, 0))} unidades
                         </div>
                       </div>
                       <span style={{ fontSize: 18, color: T.slate, transform: expandido ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>
@@ -5207,7 +5274,7 @@ function InformeVigentesBusintView() {
                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                           <thead>
                             <tr style={{ background: T.canvas }}>
-                              {["", "N° Pedido", "Fecha Pedido", "Fecha Despacho", "Referencias", "Unidades", "Corte"].map((h, hi) => (
+                              {(isAdmin ? ["", "N° Pedido", "Fecha Pedido", "Fecha Despacho", "Referencias", "Unidades", "Corte", ""] : ["", "N° Pedido", "Fecha Pedido", "Fecha Despacho", "Referencias", "Unidades", "Corte"]).map((h, hi) => (
                                 <th
                                   key={h + hi}
                                   style={{
@@ -5226,7 +5293,7 @@ function InformeVigentesBusintView() {
                             </tr>
                           </thead>
                           <tbody>
-                            {g.pedidos.map((p) => {
+                            {pedidosVisibles.map((p) => {
                               const detalleAbierto = pedidosDetalle.has(p.numero);
                               return (
                                 <React.Fragment key={p.numero}>
@@ -5273,10 +5340,24 @@ function InformeVigentesBusintView() {
                                         </div>
                                       )}
                                     </td>
+                                    {isAdmin && (
+                                      <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setConfirmOcultar(p.numero);
+                                          }}
+                                          title="Ocultar este pedido del aplicativo (no afecta Busint)"
+                                          style={{ padding: "5px 10px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 6, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+                                        >
+                                          🗑 Ocultar
+                                        </button>
+                                      </td>
+                                    )}
                                   </tr>
                                   {detalleAbierto && (
                                     <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                                      <td colSpan={7} style={{ padding: "0 10px 12px 34px", background: T.canvas }}>
+                                      <td colSpan={isAdmin ? 8 : 7} style={{ padding: "0 10px 12px 34px", background: T.canvas }}>
                                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                                           <thead>
                                             <tr>
@@ -5393,7 +5474,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           <button key={v} onClick={() => setFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filtro === v ? T.ink : T.border}`, background: filtro === v ? T.ink : T.white, color: filtro === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
-      {filtro === "vigentes_busint" && <InformeVigentesBusintView />}
+      {filtro === "vigentes_busint" && <InformeVigentesBusintView isAdmin={isAdmin} />}
       {filtro === "activos" && lista.length > 0 && (
         <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, overflow: "hidden", marginBottom: 16 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
