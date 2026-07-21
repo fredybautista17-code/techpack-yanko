@@ -2678,19 +2678,58 @@ function BitacoraEnviosView({ envios, onUpdateEnvio }) {
     </div>
   );
 }
+// Funciones asignadas de un puesto: antes era un solo texto libre, ahora es
+// una lista numerada (un renglón por función). `funcionesArray` normaliza
+// cualquiera de las dos formas — soporta puestos viejos que todavía tengan
+// `funciones` guardado como string plano — para que tanto el modal de
+// edición como las vistas de solo lectura trabajen siempre con un array.
+function funcionesArray(funciones) {
+  if (Array.isArray(funciones)) return funciones.filter((f) => f && f.trim());
+  if (typeof funciones === "string" && funciones.trim()) return [funciones.trim()];
+  return [];
+}
+// Lista numerada de solo lectura (Puestos, Registro Mensual, Catálogo de
+// KPIs) — no se repite el numerado a mano en cada vista.
+function FuncionesPreview({ funciones, style }) {
+  const lista = funcionesArray(funciones);
+  if (!lista.length) return null;
+  return (
+    <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: T.slate, ...style }}>
+      {lista.map((f, i) => (
+        <li key={i} style={{ marginBottom: 2 }}>{f}</li>
+      ))}
+    </ol>
+  );
+}
 // Alta/edición de un Puesto de trabajo: nombre + área (de config.kpiAreas) +
-// funciones asignadas (responsabilidades esperadas, texto libre). Es la base
-// de todo el módulo — Personas y KPIs del catálogo se cuelgan de un puesto.
+// funciones asignadas (responsabilidades esperadas), ahora como lista
+// numerada — cada función es su propio renglón, se agrega/quita con
+// botones y el consecutivo (1, 2, 3...) se pone solo según el orden de la
+// lista. Es la base de todo el módulo — Personas y KPIs del catálogo se
+// cuelgan de un puesto.
 function PuestoKpiModal({ puesto, areas, onSave, onClose }) {
   const [nombre, setNombre] = useState(puesto?.nombre || "");
   const [area, setArea] = useState(puesto?.area || "");
-  const [funciones, setFunciones] = useState(puesto?.funciones || "");
+  const [funciones, setFunciones] = useState(() => {
+    const arr = funcionesArray(puesto?.funciones);
+    return arr.length ? arr : [""];
+  });
+  function actualizarFuncion(i, val) {
+    setFunciones((fs) => fs.map((f, idx) => (idx === i ? val : f)));
+  }
+  function agregarFuncion() {
+    setFunciones((fs) => [...fs, ""]);
+  }
+  function quitarFuncion(i) {
+    setFunciones((fs) => (fs.length === 1 ? fs : fs.filter((_, idx) => idx !== i)));
+  }
   function save() {
     if (!nombre.trim() || !area) return;
-    onSave({ nombre: nombre.trim(), area, funciones: funciones.trim() });
+    const limpio = funciones.map((f) => f.trim()).filter(Boolean);
+    onSave({ nombre: nombre.trim(), area, funciones: limpio });
   }
   return (
-    <Modal title={puesto ? "Editar Puesto" : "Nuevo Puesto"} onClose={onClose} width={480}>
+    <Modal title={puesto ? "Editar Puesto" : "Nuevo Puesto"} onClose={onClose} width={520}>
       <Field label="Nombre del puesto"><FInput value={nombre} onChange={setNombre} placeholder="Ej: Patronista" /></Field>
       <Field label="Área">
         {areas.length ? (
@@ -2700,13 +2739,33 @@ function PuestoKpiModal({ puesto, areas, onSave, onClose }) {
         )}
       </Field>
       <Field label="Funciones asignadas (responsabilidades esperadas)">
-        <textarea
-          value={funciones}
-          onChange={(e) => setFunciones(e.target.value)}
-          rows={4}
-          placeholder="Ej: Elaborar moldes base, ajustar patrones según muestra física, entregar a Corte dentro del plazo..."
-          style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical" }}
-        />
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 8 }}>
+          {funciones.map((f, i) => (
+            <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ width: 20, flexShrink: 0, textAlign: "right", fontSize: 12, fontWeight: 700, color: T.slate }}>{i + 1}.</span>
+              <input
+                value={f}
+                onChange={(e) => actualizarFuncion(i, e.target.value)}
+                placeholder="Ej: Elaborar moldes base según ficha técnica"
+                style={{ flex: 1, padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}
+              />
+              <button
+                onClick={() => quitarFuncion(i)}
+                disabled={funciones.length === 1}
+                title="Quitar función"
+                style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "6px 9px", color: T.coral, fontWeight: 700, cursor: funciones.length === 1 ? "not-allowed" : "pointer", opacity: funciones.length === 1 ? 0.5 : 1, flexShrink: 0 }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+        <button
+          onClick={agregarFuncion}
+          style={{ background: "none", border: `1px solid ${T.denim}`, borderRadius: 6, padding: "5px 12px", color: T.denim, fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+        >
+          + Agregar función
+        </button>
       </Field>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
@@ -2942,7 +3001,7 @@ function KPIsView({ areas, puestos, personas, catalogo, registros, isAdmin, onAd
                     <div style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>
                       {puesto.nombre} <span style={{ fontWeight: 600, fontSize: 11, color: T.denim, padding: "2px 8px", background: T.denimBg, borderRadius: 20, marginLeft: 6 }}>{puesto.area}</span>
                     </div>
-                    {puesto.funciones && <div style={{ fontSize: 12, color: T.slate, marginTop: 4 }}>{puesto.funciones}</div>}
+                    <FuncionesPreview funciones={puesto.funciones} style={{ marginTop: 4 }} />
                   </div>
                   <div style={{ overflowX: "auto" }}>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -3004,7 +3063,7 @@ function KPIsView({ areas, puestos, personas, catalogo, registros, isAdmin, onAd
                   <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, marginBottom: 2 }}>
                     {puesto.nombre} <span style={{ fontWeight: 600, fontSize: 11, color: T.denim, padding: "2px 8px", background: T.denimBg, borderRadius: 20, marginLeft: 4 }}>{puesto.area}</span> <span style={{ fontWeight: 400, color: T.slate, fontSize: 12 }}>({kpisDelPuesto.length} KPI{kpisDelPuesto.length !== 1 ? "s" : ""})</span>
                   </div>
-                  {puesto.funciones && <div style={{ fontSize: 12, color: T.slate, marginBottom: 10 }}>{puesto.funciones}</div>}
+                  <FuncionesPreview funciones={puesto.funciones} style={{ marginBottom: 10 }} />
                   {!kpisDelPuesto.length ? (
                     <div style={{ padding: "12px 16px", background: T.canvas, borderRadius: 10, color: T.slate, fontSize: 13, marginTop: 8 }}>Sin KPIs asignados todavía.</div>
                   ) : (
@@ -3088,8 +3147,8 @@ function KPIsView({ areas, puestos, personas, catalogo, registros, isAdmin, onAd
                 <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "14px 16px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 10 }}>
                   <div>
                     <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{p.nombre} <span style={{ fontWeight: 600, fontSize: 11, color: T.denim, padding: "2px 8px", background: T.denimBg, borderRadius: 20, marginLeft: 4 }}>{p.area}</span></div>
-                    {p.funciones ? (
-                      <div style={{ fontSize: 12, color: T.slate, marginTop: 6, maxWidth: 560 }}>{p.funciones}</div>
+                    {funcionesArray(p.funciones).length ? (
+                      <FuncionesPreview funciones={p.funciones} style={{ marginTop: 6, maxWidth: 560 }} />
                     ) : (
                       <div style={{ fontSize: 12, color: T.slate, marginTop: 6, fontStyle: "italic" }}>Sin funciones asignadas descritas todavía.</div>
                     )}
