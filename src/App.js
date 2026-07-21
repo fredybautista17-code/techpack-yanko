@@ -1876,12 +1876,11 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
     if (!c) return;
     conteoPorCliente[c] = (conteoPorCliente[c] || 0) + 1;
   });
-  // El desplegable incluye TODOS los clientes registrados en el maestro de
-  // Clientes (Administrador General), no solo los que ya tienen un
-  // prototipo — así un cliente recién creado no falta en la lista, y se
-  // suman también nombres sueltos que ya existan en los datos aunque no
-  // estén en el maestro (compatibilidad con datos viejos).
-  const clientesDisponibles = [...new Set([...(config?.clientes || []).map((c) => c.nombre), ...Object.keys(conteoPorCliente)])].sort((a, b) => a.localeCompare(b));
+  // Solo se listan los clientes que tienen al menos un prototipo activo
+  // ahora mismo (conteoPorCliente > 0) — antes se mostraba TODO el maestro
+  // de Clientes de Administrador General, aunque el cliente no tuviera nada
+  // pendiente, lo que hacía el desplegable innecesariamente largo.
+  const clientesDisponibles = Object.keys(conteoPorCliente).sort((a, b) => a.localeCompare(b));
   // "Todos" oculta Aprobados/Promovidos/Declinados para no saturar el tablero
   // (un prototipo promovido sigue con status "aprobado", así que basta con
   // excluir aprobado/declinado). Siguen disponibles en sus propias pestañas.
@@ -2035,10 +2034,11 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
     if (!c) return;
     conteoPorCliente[c] = (conteoPorCliente[c] || 0) + 1;
   });
-  // El desplegable incluye TODOS los clientes registrados en el maestro de
-  // Clientes (Administrador General), no solo los que ya tienen una cápsula
-  // — así un cliente/cápsula recién creada no falta en la lista.
-  const clientesDisponibles = [...new Set([...(config?.clientes || []).map((c) => c.nombre), ...Object.keys(conteoPorCliente)])].sort((a, b) => a.localeCompare(b));
+  // Solo se listan los clientes que tienen al menos una cápsula activa
+  // ahora mismo (conteoPorCliente > 0) — antes se mostraba TODO el maestro
+  // de Clientes de Administrador General, aunque el cliente no tuviera nada
+  // pendiente, lo que hacía el desplegable innecesariamente largo.
+  const clientesDisponibles = Object.keys(conteoPorCliente).sort((a, b) => a.localeCompare(b));
   // "Todos" oculta referencias Aprobadas/Declinadas (y cápsulas que solo
   // tengan referencias en esos estados) para no saturar el tablero. Siguen
   // disponibles en las pestañas "Aprobadas"/"Declinadas". El filtro de
