@@ -5752,14 +5752,19 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   const lista = filtro === "activos" ? activos : historico;
   const hoy = new Date();
   // Consulta Busint en vivo (mismo endpoint de órdenes de pedido que ya usa
-  // el Informe de Vigentes) para el rango que cubre la fecha de pedido más
-  // antigua entre los activos, hasta hoy — así no se pierde ningún pedido
-  // activo por quedar fuera del rango consultado. Cualquier activo cuyo
-  // número ya NO aparezca en la respuesta se marca "cancelado_busint".
+  // el Informe de Vigentes) para un rango fijo amplio (3 años atrás hasta
+  // hoy) — así no se pierde ningún pedido activo por quedar fuera del rango
+  // consultado. Cualquier activo cuyo número ya NO aparezca en la respuesta
+  // se marca "cancelado_busint".
   async function revisarContraBusint() {
-    const conFecha = activos.filter((p) => p.fechaPedido);
-    if (!conFecha.length) { setResultRevision({ error: "No hay pedidos activos con fecha de pedido para revisar." }); return; }
-    const fechaInicio = conFecha.reduce((min, p) => (p.fechaPedido < min ? p.fechaPedido : min), conFecha[0].fechaPedido);
+    if (!activos.length) { setResultRevision({ error: "No hay pedidos activos para revisar." }); return; }
+    // OJO: NO se calcula fechaInicio a partir de las fechas guardadas en los
+    // pedidos — algunas (sobre todo las que vienen del Excel manual de
+    // Corte) no siempre quedan en formato AAAA-MM-DD, así que compararlas
+    // como texto podía dar un rango incorrecto (o directamente ninguno). Se
+    // usa mejor un rango fijo bien amplio, que cubre cualquier pedido activo
+    // real sin depender de qué tan bien formateada esté su fecha guardada.
+    const fechaInicio = (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 3); return d.toISOString().slice(0, 10); })();
     const fechaFin = today();
     setRevisando(true);
     setResultRevision(null);
