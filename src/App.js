@@ -5741,10 +5741,42 @@ function InformeVigentesBusintView({ isAdmin }) {
 function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, pedidoConfig, onSavePedidoConfig, isAdmin }) {
   const [filtro, setFiltro] = useState("activos");
   const [editPedido, setEditPedido] = useState(null);
+  const [revisando, setRevisando] = useState(false);
+  const [resultRevision, setResultRevision] = useState(null);
   const activos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado");
-  const historico = pedidos.filter((p) => p.estado === "cumplido");
+  // "cancelado_busint" es un estado propio, distinto de "cumplido": lo pone
+  // automáticamente "Revisar contra Busint" cuando un pedido que estaba
+  // activo ya no aparece en Busint (se canceló o se cerró allá) — no
+  // significa que se terminó de cortar, por eso se distingue en pantalla.
+  const historico = pedidos.filter((p) => p.estado === "cumplido" || p.estado === "cancelado_busint");
   const lista = filtro === "activos" ? activos : historico;
   const hoy = new Date();
+  // Consulta Busint en vivo (mismo endpoint de órdenes de pedido que ya usa
+  // el Informe de Vigentes) para el rango que cubre la fecha de pedido más
+  // antigua entre los activos, hasta hoy — así no se pierde ningún pedido
+  // activo por quedar fuera del rango consultado. Cualquier activo cuyo
+  // número ya NO aparezca en la respuesta se marca "cancelado_busint".
+  async function revisarContraBusint() {
+    const conFecha = activos.filter((p) => p.fechaPedido);
+    if (!conFecha.length) { setResultRevision({ error: "No hay pedidos activos con fecha de pedido para revisar." }); return; }
+    const fechaInicio = conFecha.reduce((min, p) => (p.fechaPedido < min ? p.fechaPedido : min), conFecha[0].fechaPedido);
+    const fechaFin = today();
+    setRevisando(true);
+    setResultRevision(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getPedidosExistentesBusint");
+      const resp = await llamar({ fechaInicio, fechaFin });
+      const existentesSet = new Set((resp.data.numeros || []).map((n) => String(n).trim()));
+      const desaparecidos = activos.filter((p) => p.numero && !existentesSet.has(String(p.numero).trim()));
+      for (const p of desaparecidos) {
+        await onUpdatePedido({ ...p, estado: "cancelado_busint", fechaCumplido: today() });
+      }
+      setResultRevision({ revisados: activos.length, marcados: desaparecidos.length });
+    } catch (err) {
+      setResultRevision({ error: err?.message || "No se pudo consultar Busint. Intenta de nuevo en unos minutos." });
+    }
+    setRevisando(false);
+  }
   const vencidos = activos.filter((p) => p.fechaDespacho && new Date(p.fechaDespacho) < hoy);
   const proximos = activos.filter((p) => { if (!p.fechaDespacho) return false; const d = Math.ceil((new Date(p.fechaDespacho) - hoy) / 86400000); return d >= 0 && d <= 7; });
   const vigentes = activos.filter((p) => { if (!p.fechaDespacho) return true; return Math.ceil((new Date(p.fechaDespacho) - hoy) / 86400000) > 7; });
@@ -5754,8 +5786,22 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
       {editPedido && <EditPedidoModal pedido={editPedido} onSave={(p) => { onUpdatePedido(p); setEditPedido(null); }} onClose={() => setEditPedido(null)} />}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Pedidos</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Seguimiento y control de pedidos Busint</p></div>
-        <Btn onClick={onNewPedido}>+ Cargar Pedido</Btn>
+        <div style={{ display: "flex", gap: 8 }}>
+          {isAdmin && (
+            <Btn variant="secondary" onClick={revisarContraBusint} disabled={revisando}>
+              {revisando ? "Revisando..." : "🔄 Revisar contra Busint"}
+            </Btn>
+          )}
+          <Btn onClick={onNewPedido}>+ Cargar Pedido</Btn>
+        </div>
       </div>
+      {resultRevision && (
+        <div style={{ padding: "10px 16px", background: resultRevision.error ? T.coralBg : T.jadeBg, borderRadius: 10, border: `1px solid ${resultRevision.error ? T.coral : T.jade}44`, color: resultRevision.error ? T.coral : T.jade, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
+          {resultRevision.error
+            ? `⚠ ${resultRevision.error}`
+            : `✓ Se revisaron ${resultRevision.revisados} pedidos activos contra Busint — ${resultRevision.marcados} ya no existían allá y se marcaron como cancelados.`}
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 20 }}>
         {[
           { label: "Total Activos", value: activos.length, icon: "📦", color: T.denim, bg: T.denimBg },
@@ -5857,15 +5903,19 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           {lista.sort((a, b) => (b.fechaCumplido || "").localeCompare(a.fechaCumplido || "")).map((p) => {
             const totalP = p.referencias.reduce((s, r) => s + r.total, 0);
             const totalC = (p.cortesRealizados || []).reduce((s, c) => s + (c.totalUnidades || 0), 0);
+            const esCancelado = p.estado === "cancelado_busint";
             return (
               <div key={p.id} onClick={() => onSelectPedido(p.id)} style={{ display: "flex", alignItems: "center", gap: 16, padding: "14px 18px", background: T.white, borderRadius: 12, border: `1px solid ${T.border}`, cursor: "pointer" }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = T.canvas)}
                 onMouseLeave={(e) => (e.currentTarget.style.background = T.white)}
               >
-                <div style={{ width: 40, height: 40, borderRadius: "50%", background: T.jadeBg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>✅</div>
+                <div style={{ width: 40, height: 40, borderRadius: "50%", background: esCancelado ? T.coralBg : T.jadeBg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>{esCancelado ? "🚫" : "✅"}</div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 800, color: T.ink }}>Pedido #{p.numero} — {p.cliente}</div>
-                  <div style={{ fontSize: 12, color: T.slate }}>Cumplido: {p.fechaCumplido || "—"} · {fmtNum(totalP)} uds pedidas · {fmtNum(totalC)} cortadas</div>
+                  <div style={{ fontWeight: 800, color: T.ink, display: "flex", alignItems: "center", gap: 8 }}>
+                    Pedido #{p.numero} — {p.cliente}
+                    {esCancelado && <span style={{ fontSize: 10, fontWeight: 800, color: T.coral, background: T.coralBg, padding: "1px 8px", borderRadius: 10 }}>Cancelado en Busint</span>}
+                  </div>
+                  <div style={{ fontSize: 12, color: T.slate }}>{esCancelado ? "Ya no existe en Busint desde" : "Cumplido"}: {p.fechaCumplido || "—"} · {fmtNum(totalP)} uds pedidas · {fmtNum(totalC)} cortadas</div>
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <button onClick={(e) => { e.stopPropagation(); onUpdatePedido({ ...p, estado: "activo", fechaCumplido: null }); }} style={{ background: T.amberBg, border: `1px solid ${T.amber}44`, borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, color: T.amber, cursor: "pointer" }}>↩ Reactivar</button>
