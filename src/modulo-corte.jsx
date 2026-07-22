@@ -10,6 +10,7 @@ import {
   writeBatch,
   onSnapshot,
 } from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
 
 // ─── FIREBASE ────────────────────────────────────────────────────────────────
 const firebaseConfig = {
@@ -22,6 +23,12 @@ const firebaseConfig = {
 };
 const fbApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
+// Cliente de Cloud Functions — usado por "Revisar contra Busint" (llama
+// getPedidosExistentesBusint, la misma función que ya usa el Informe de
+// Pedidos Vigentes en el módulo de Diseño) para saber qué pedidos activos ya
+// no existen en Busint y marcarlos automáticamente en vez de dejarlos
+// pegados como activos para siempre.
+const functionsClient = getFunctions(fbApp);
 
 async function fsGet(col) {
   const snap = await getDocs(collection(db, col));
@@ -2446,8 +2453,40 @@ function EstadisticasTela({ pedidos }) {
 }
 
 // ─── DASHBOARD CORTE ──────────────────────────────────────────────────────────
-function DashboardCorte({ pedidos, onSelectPedido, nominaConfig }) {
+function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido, isAdmin }) {
   const activos = pedidos.filter((p) => p.estado === "activo");
+  const [revisando, setRevisando] = useState(false);
+  const [resultRevision, setResultRevision] = useState(null);
+  // Igual que "Revisar contra Busint" en Pedidos (módulo Diseño): consulta
+  // Busint en vivo (misma Cloud Function getPedidosExistentesBusint) para el
+  // rango que cubre la fecha de pedido más antigua entre los activos, hasta
+  // hoy. Cualquier pedido activo cuyo número ya no aparezca en Busint se
+  // marca "cancelado_busint" — así no se queda pegado como activo para
+  // siempre solo porque nadie revisó a mano.
+  async function revisarContraBusint() {
+    const conFecha = activos.filter((p) => p.fechaPedido);
+    if (!conFecha.length) {
+      setResultRevision({ error: "No hay pedidos activos con fecha de pedido para revisar." });
+      return;
+    }
+    const fechaInicio = conFecha.reduce((min, p) => (p.fechaPedido < min ? p.fechaPedido : min), conFecha[0].fechaPedido);
+    const fechaFin = today();
+    setRevisando(true);
+    setResultRevision(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getPedidosExistentesBusint");
+      const resp = await llamar({ fechaInicio, fechaFin });
+      const existentesSet = new Set((resp.data.numeros || []).map((n) => String(n).trim()));
+      const desaparecidos = activos.filter((p) => p.numero && !existentesSet.has(String(p.numero).trim()));
+      for (const p of desaparecidos) {
+        await onUpdatePedido({ ...p, estado: "cancelado_busint", fechaCumplido: today() });
+      }
+      setResultRevision({ revisados: activos.length, marcados: desaparecidos.length });
+    } catch (err) {
+      setResultRevision({ error: err?.message || "No se pudo consultar Busint. Intenta de nuevo en unos minutos." });
+    }
+    setRevisando(false);
+  }
   const mes = new Date().getMonth() + 1;
   const anio = new Date().getFullYear();
   const nominaMensual = (nominaConfig?.trabajadores || []).reduce(
@@ -2486,20 +2525,56 @@ function DashboardCorte({ pedidos, onSelectPedido, nominaConfig }) {
 
   return (
     <div>
-      <h2
+      <div
         style={{
-          margin: "0 0 6px",
-          fontSize: 20,
-          fontWeight: 800,
-          color: C.ink,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          marginBottom: 20,
+          flexWrap: "wrap",
+          gap: 12,
         }}
       >
-        Dashboard Corte
-      </h2>
-      <p style={{ margin: "0 0 20px", fontSize: 13, color: C.slate }}>
-        {activos.length} pedido{activos.length !== 1 ? "s" : ""} activo
-        {activos.length !== 1 ? "s" : ""}
-      </p>
+        <div>
+          <h2
+            style={{
+              margin: "0 0 6px",
+              fontSize: 20,
+              fontWeight: 800,
+              color: C.ink,
+            }}
+          >
+            Dashboard Corte
+          </h2>
+          <p style={{ margin: 0, fontSize: 13, color: C.slate }}>
+            {activos.length} pedido{activos.length !== 1 ? "s" : ""} activo
+            {activos.length !== 1 ? "s" : ""}
+          </p>
+        </div>
+        {isAdmin && onUpdatePedido && (
+          <Btn variant="secondary" onClick={revisarContraBusint} disabled={revisando}>
+            {revisando ? "Revisando..." : "🔄 Revisar contra Busint"}
+          </Btn>
+        )}
+      </div>
+      {resultRevision && (
+        <div
+          style={{
+            padding: "10px 16px",
+            background: resultRevision.error ? C.redBg : C.greenBg,
+            borderRadius: 10,
+            border: `1px solid ${resultRevision.error ? C.red : C.green}44`,
+            color: resultRevision.error ? C.red : C.green,
+            fontWeight: 600,
+            fontSize: 13,
+            marginBottom: 20,
+          }}
+        >
+          {resultRevision.error
+            ? `⚠ ${resultRevision.error}`
+            : `✓ Se revisaron ${resultRevision.revisados} pedidos activos contra Busint — ${resultRevision.marcados} ya no existían allá y se marcaron como cancelados.`}
+        </div>
+      )}
 
       {/* KPI Mensual */}
       <div
@@ -2685,7 +2760,11 @@ function DashboardCorte({ pedidos, onSelectPedido, nominaConfig }) {
 
 // ─── HISTÓRICO ────────────────────────────────────────────────────────────────
 function Historico({ pedidos, onSelectPedido }) {
-  const cumplidos = pedidos.filter((p) => p.estado === "cumplido");
+  // "cancelado_busint" es un estado propio, distinto de "cumplido": lo pone
+  // "Revisar contra Busint" en el Dashboard cuando un pedido activo ya no
+  // aparece en Busint (se canceló o se cerró allá) — no significa que se
+  // terminó de cortar, por eso se distingue con su propio ícono/etiqueta.
+  const cumplidos = pedidos.filter((p) => p.estado === "cumplido" || p.estado === "cancelado_busint");
   const [filtro, setFiltro] = useState("");
 
   const filtrados = filtro
@@ -2751,6 +2830,7 @@ function Historico({ pedidos, onSelectPedido }) {
                 (s, c) => s + (c.ingresoCorte || 0),
                 0
               );
+              const esCancelado = p.estado === "cancelado_busint";
               return (
                 <div
                   key={p.id}
@@ -2777,7 +2857,7 @@ function Historico({ pedidos, onSelectPedido }) {
                       width: 40,
                       height: 40,
                       borderRadius: "50%",
-                      background: C.greenBg,
+                      background: esCancelado ? C.redBg : C.greenBg,
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
@@ -2785,14 +2865,19 @@ function Historico({ pedidos, onSelectPedido }) {
                       flexShrink: 0,
                     }}
                   >
-                    ✅
+                    {esCancelado ? "🚫" : "✅"}
                   </div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 800, color: C.ink }}>
+                    <div style={{ fontWeight: 800, color: C.ink, display: "flex", alignItems: "center", gap: 8 }}>
                       Pedido #{p.numero} — {p.cliente}
+                      {esCancelado && (
+                        <span style={{ fontSize: 10, fontWeight: 800, color: C.red, background: C.redBg, padding: "1px 8px", borderRadius: 10 }}>
+                          Cancelado en Busint
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize: 12, color: C.slate }}>
-                      Cumplido: {p.fechaCumplido || "—"} · {fmtNum(totalC)} uds
+                      {esCancelado ? "Ya no existe en Busint desde" : "Cumplido"}: {p.fechaCumplido || "—"} · {fmtNum(totalC)} uds
                       cortadas
                     </div>
                   </div>
@@ -3094,6 +3179,8 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
                 setView("detalle");
               }}
               nominaConfig={corteConfig.nomina}
+              onUpdatePedido={savePedido}
+              isAdmin={currentUser?.isAdmin}
             />
           )}
           {view === "detalle" && selPedido && (
