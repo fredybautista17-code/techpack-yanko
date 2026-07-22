@@ -5378,6 +5378,142 @@ function AdminPedidosView({ pedidoConfig, onSave, config, onSaveConfig }) {
 // `getPedidosVigentesBusint` esté desplegada y los secrets BUSINT_TOKEN /
 // BUSINT_BASE_URL ya configurados (los mismos que usa la sincronización
 // automática cada 6 horas) — ver README_BUSINT_SYNC.md.
+// Herramienta de diagnóstico: consulta la API de Busint (órdenes de pedido)
+// SIN ningún filtro ni cruce del aplicativo — solo trae exactamente las
+// filas que Busint devuelve para un número de pedido puntual, en el rango
+// de fechas indicado. Sirve para confirmar, de forma cruda, si un pedido
+// (p. ej. el #1445) realmente sigue existiendo en Busint o no.
+function DiagnosticoPedidoBusintView() {
+  const [numeroPedido, setNumeroPedido] = useState("");
+  const [fechaInicio, setFechaInicio] = useState(() => {
+    const d = new Date();
+    d.setFullYear(d.getFullYear() - 3);
+    return d.toISOString().slice(0, 10);
+  });
+  const [fechaFin, setFechaFin] = useState(today());
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState("");
+  const [resultado, setResultado] = useState(null);
+
+  async function consultar() {
+    const numero = numeroPedido.trim();
+    if (!numero) { setError("Escribe un número de pedido."); return; }
+    setError("");
+    setCargando(true);
+    setResultado(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getOrdenBusintPorNumero");
+      const resp = await llamar({ fechaInicio, fechaFin, numeroPedido: numero });
+      setResultado(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+    }
+    setCargando(false);
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>
+        Consulta la API de Busint (órdenes de pedido) en vivo y muestra <strong>exactamente</strong> lo que Busint devuelve para un número de pedido, sin ningún filtro ni cruce del aplicativo — ni facturación, ni Planeación, ni estado local. Útil para confirmar si un pedido puntual sigue existiendo allá o no.
+      </div>
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <div>
+          <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+            N° Pedido
+          </label>
+          <input
+            type="text"
+            value={numeroPedido}
+            onChange={(e) => setNumeroPedido(e.target.value)}
+            placeholder="ej. 1445"
+            style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, fontFamily: "inherit", width: 140 }}
+          />
+        </div>
+        <div>
+          <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+            Fecha Inicio
+          </label>
+          <input
+            type="date"
+            value={fechaInicio}
+            onChange={(e) => setFechaInicio(e.target.value)}
+            style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, fontFamily: "inherit" }}
+          />
+        </div>
+        <div>
+          <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+            Fecha Fin
+          </label>
+          <input
+            type="date"
+            value={fechaFin}
+            onChange={(e) => setFechaFin(e.target.value)}
+            style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, fontFamily: "inherit" }}
+          />
+        </div>
+        <Btn onClick={consultar} disabled={cargando}>
+          {cargando ? "Consultando…" : "🔍 Consultar Busint"}
+        </Btn>
+      </div>
+      {error && (
+        <div style={{ padding: "12px 16px", background: T.coralBg, borderRadius: 10, border: `1px solid ${T.coral}44`, color: T.coral, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
+          {error}
+        </div>
+      )}
+      {resultado && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 20 }}>
+            <div style={{ background: resultado.filasCoincidentes.length ? T.jadeBg : T.coralBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${(resultado.filasCoincidentes.length ? T.jade : T.coral)}22` }}>
+              <div style={{ fontSize: 22, fontWeight: 900, color: resultado.filasCoincidentes.length ? T.jade : T.coral }}>
+                {resultado.filasCoincidentes.length}
+              </div>
+              <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>
+                Filas encontradas para #{resultado.numeroPedido}
+              </div>
+            </div>
+            <div style={{ background: T.denimBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.denim}22` }}>
+              <div style={{ fontSize: 22, fontWeight: 900, color: T.denim }}>{resultado.totalFilasEnRango}</div>
+              <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>Total filas en el rango (todos los pedidos)</div>
+            </div>
+            <div style={{ background: T.violetBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.violet}22` }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: T.violet }}>
+                {resultado.fechaInicio} → {resultado.fechaFin}
+              </div>
+              <div style={{ fontSize: 11, color: T.slate, fontWeight: 600, marginTop: 4 }}>Rango consultado</div>
+            </div>
+          </div>
+          {!resultado.filasCoincidentes.length ? (
+            <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14, background: T.canvas, borderRadius: 12, border: `1px solid ${T.border}` }}>
+              Busint no devolvió ninguna fila con número de pedido <strong>#{resultado.numeroPedido}</strong> en este rango de fechas — es decir, ese pedido no existe (o ya no existe) en la respuesta de la API de órdenes de pedido.
+            </div>
+          ) : (
+            <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, overflow: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: T.ink }}>
+                    {Object.keys(resultado.filasCoincidentes[0]).map((h) => (
+                      <th key={h} style={{ padding: "8px 12px", color: T.seam, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {resultado.filasCoincidentes.map((fila, i) => (
+                    <tr key={i} style={{ borderTop: `1px solid ${T.border}` }}>
+                      {Object.keys(resultado.filasCoincidentes[0]).map((h) => (
+                        <td key={h} style={{ padding: "8px 12px", color: T.ink, whiteSpace: "nowrap" }}>{String(fila[h] ?? "")}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function InformeVigentesBusintView({ isAdmin }) {
   const [fechaInicio, setFechaInicio] = useState(() => {
     const d = new Date();
@@ -5738,17 +5874,65 @@ function InformeVigentesBusintView({ isAdmin }) {
   );
 }
 
+// Parsea el reporte "Ventas Perdidas" que exportan los asesores de Busint
+// desde su módulo de Ventas (una fila por referencia/talla/color, con
+// columnas "Num Ped", "Cumplido" (S/N), "Cant Pedida", "Cant Facturada",
+// "Cant Ventas Perdidas", entre otras). Se confirmó con datos reales que
+// "Cumplido" es el MISMO valor en todas las filas de un mismo pedido, así
+// que basta con tomarlo de cualquiera de sus filas — es la señal propia de
+// Busint de que el pedido ya está cerrado, ya sea porque se facturó
+// completo o porque se dio de baja como venta perdida (el pedido #1445 es
+// justo este segundo caso: 1 unidad pedida, 0 facturada, -1 en "Cant Ventas
+// Perdidas", y aun así Cumplido="S"). Ningún endpoint de la API genérica de
+// Busint (revisados los 12 documentados) trae estos dos campos, por eso
+// este reporte se sube a mano en vez de consultarse en vivo.
+async function parseVentasPerdidasBusint(file) {
+  const XLSX = await import("xlsx");
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+  const porPedido = new Map();
+  rows.forEach((r) => {
+    const numero = String(r["Num Ped"] ?? "").trim();
+    if (!numero) return;
+    if (!porPedido.has(numero)) {
+      porPedido.set(numero, {
+        numero,
+        cliente: String(r["Razon Social"] || r["Nombre Comercial"] || "").trim(),
+        cumplido: String(r["Cumplido"] ?? "").trim().toUpperCase() === "S",
+        totalPedida: 0,
+        totalFacturada: 0,
+        totalVentasPerdidas: 0,
+      });
+    }
+    const acc = porPedido.get(numero);
+    acc.totalPedida += Number(r["Cant Pedida"]) || 0;
+    acc.totalFacturada += Number(r["Cant Facturada"]) || 0;
+    acc.totalVentasPerdidas += Math.abs(Number(r["Cant Ventas Perdidas"]) || 0);
+  });
+  return [...porPedido.values()];
+}
+
 function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, pedidoConfig, onSavePedidoConfig, isAdmin }) {
   const [filtro, setFiltro] = useState("activos");
   const [editPedido, setEditPedido] = useState(null);
   const [revisando, setRevisando] = useState(false);
   const [resultRevision, setResultRevision] = useState(null);
+  const [subiendoVP, setSubiendoVP] = useState(false);
+  const [resultVP, setResultVP] = useState(null);
+  const vpInputRef = useRef(null);
   const activos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado");
   // "cancelado_busint" es un estado propio, distinto de "cumplido": lo pone
   // automáticamente "Revisar contra Busint" cuando un pedido que estaba
   // activo ya no aparece en Busint (se canceló o se cerró allá) — no
   // significa que se terminó de cortar, por eso se distingue en pantalla.
-  const historico = pedidos.filter((p) => p.estado === "cumplido" || p.estado === "cancelado_busint");
+  // "venta_perdida_busint" es otro estado propio, distinto de ambos: lo pone
+  // automáticamente la subida del reporte "Ventas Perdidas" cuando Busint
+  // marca Cumplido="S" en ese pedido PERO con unidades dadas de baja como
+  // venta perdida — el pedido sigue apareciendo en las órdenes de Busint (a
+  // diferencia de cancelado_busint), pero ya está cerrado allá.
+  const historico = pedidos.filter((p) => p.estado === "cumplido" || p.estado === "cancelado_busint" || p.estado === "venta_perdida_busint");
   const lista = filtro === "activos" ? activos : historico;
   const hoy = new Date();
   // Consulta Busint en vivo (mismo endpoint de órdenes de pedido que ya usa
@@ -5782,6 +5966,38 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
     }
     setRevisando(false);
   }
+  // Sube el reporte "Ventas Perdidas" (exportado a mano desde Busint) y
+  // cruza cada pedido activo local contra él por número de pedido. Si Busint
+  // lo marca "Cumplido" ahí, se cierra automáticamente en el aplicativo: si
+  // tuvo unidades en "Cant Ventas Perdidas" queda como "venta_perdida_busint"
+  // (se distingue en pantalla), si no, como "cumplido" normal.
+  async function subirVentasPerdidas(file) {
+    if (!file) return;
+    setSubiendoVP(true);
+    setResultVP(null);
+    try {
+      const filas = await parseVentasPerdidasBusint(file);
+      const porNumero = new Map(filas.map((f) => [f.numero, f]));
+      let cerradosCumplido = 0;
+      let cerradosVentaPerdida = 0;
+      for (const p of activos) {
+        if (!p.numero) continue;
+        const info = porNumero.get(String(p.numero).trim());
+        if (!info || !info.cumplido) continue;
+        if (info.totalVentasPerdidas > 0) {
+          await onUpdatePedido({ ...p, estado: "venta_perdida_busint", fechaCumplido: today(), ventasPerdidasUds: info.totalVentasPerdidas });
+          cerradosVentaPerdida++;
+        } else {
+          await onUpdatePedido({ ...p, estado: "cumplido", fechaCumplido: today() });
+          cerradosCumplido++;
+        }
+      }
+      setResultVP({ revisados: activos.length, enReporte: filas.length, cerradosCumplido, cerradosVentaPerdida });
+    } catch (err) {
+      setResultVP({ error: err?.message || "No se pudo leer el archivo. Verifica que sea el reporte de Ventas Perdidas de Busint (.xlsx)." });
+    }
+    setSubiendoVP(false);
+  }
   const vencidos = activos.filter((p) => p.fechaDespacho && new Date(p.fechaDespacho) < hoy);
   const proximos = activos.filter((p) => { if (!p.fechaDespacho) return false; const d = Math.ceil((new Date(p.fechaDespacho) - hoy) / 86400000); return d >= 0 && d <= 7; });
   const vigentes = activos.filter((p) => { if (!p.fechaDespacho) return true; return Math.ceil((new Date(p.fechaDespacho) - hoy) / 86400000) > 7; });
@@ -5797,6 +6013,20 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
               {revisando ? "Revisando..." : "🔄 Revisar contra Busint"}
             </Btn>
           )}
+          {isAdmin && (
+            <>
+              <input
+                type="file"
+                ref={vpInputRef}
+                accept=".xlsx,.xls,.csv"
+                style={{ display: "none" }}
+                onChange={(e) => { const f = e.target.files?.[0]; subirVentasPerdidas(f); e.target.value = ""; }}
+              />
+              <Btn variant="secondary" onClick={() => vpInputRef.current?.click()} disabled={subiendoVP}>
+                {subiendoVP ? "Procesando..." : "📤 Cargar Ventas Perdidas"}
+              </Btn>
+            </>
+          )}
           <Btn onClick={onNewPedido}>+ Cargar Pedido</Btn>
         </div>
       </div>
@@ -5805,6 +6035,13 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           {resultRevision.error
             ? `⚠ ${resultRevision.error}`
             : `✓ Se revisaron ${resultRevision.revisados} pedidos activos contra Busint — ${resultRevision.marcados} ya no existían allá y se marcaron como cancelados.`}
+        </div>
+      )}
+      {resultVP && (
+        <div style={{ padding: "10px 16px", background: resultVP.error ? T.coralBg : T.jadeBg, borderRadius: 10, border: `1px solid ${resultVP.error ? T.coral : T.jade}44`, color: resultVP.error ? T.coral : T.jade, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
+          {resultVP.error
+            ? `⚠ ${resultVP.error}`
+            : `✓ Reporte con ${resultVP.enReporte} pedidos — de ${resultVP.revisados} activos locales, ${resultVP.cerradosCumplido + resultVP.cerradosVentaPerdida} ya estaban cerrados en Busint (${resultVP.cerradosCumplido} cumplidos, ${resultVP.cerradosVentaPerdida} por venta perdida).`}
         </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 20 }}>
@@ -5849,11 +6086,12 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
         </div>
       )}
       <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
-        {[["activos", `Activos (${activos.length})`], ["historico", `Histórico (${historico.length})`], ["vigentes_busint", "📡 Vigentes por Cliente (Busint)"]].map(([v, label]) => (
+        {[["activos", `Activos (${activos.length})`], ["historico", `Histórico (${historico.length})`], ["vigentes_busint", "📡 Vigentes por Cliente (Busint)"], ["diagnostico_busint", "🔍 Diagnóstico Pedido"]].map(([v, label]) => (
           <button key={v} onClick={() => setFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filtro === v ? T.ink : T.border}`, background: filtro === v ? T.ink : T.white, color: filtro === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
       {filtro === "vigentes_busint" && <InformeVigentesBusintView isAdmin={isAdmin} />}
+      {filtro === "diagnostico_busint" && <DiagnosticoPedidoBusintView />}
       {filtro === "activos" && lista.length > 0 && (
         <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, overflow: "hidden", marginBottom: 16 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -5909,18 +6147,23 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
             const totalP = p.referencias.reduce((s, r) => s + r.total, 0);
             const totalC = (p.cortesRealizados || []).reduce((s, c) => s + (c.totalUnidades || 0), 0);
             const esCancelado = p.estado === "cancelado_busint";
+            const esVentaPerdida = p.estado === "venta_perdida_busint";
             return (
               <div key={p.id} onClick={() => onSelectPedido(p.id)} style={{ display: "flex", alignItems: "center", gap: 16, padding: "14px 18px", background: T.white, borderRadius: 12, border: `1px solid ${T.border}`, cursor: "pointer" }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = T.canvas)}
                 onMouseLeave={(e) => (e.currentTarget.style.background = T.white)}
               >
-                <div style={{ width: 40, height: 40, borderRadius: "50%", background: esCancelado ? T.coralBg : T.jadeBg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>{esCancelado ? "🚫" : "✅"}</div>
+                <div style={{ width: 40, height: 40, borderRadius: "50%", background: esCancelado ? T.coralBg : esVentaPerdida ? T.amberBg : T.jadeBg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>{esCancelado ? "🚫" : esVentaPerdida ? "💸" : "✅"}</div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 800, color: T.ink, display: "flex", alignItems: "center", gap: 8 }}>
                     Pedido #{p.numero} — {p.cliente}
                     {esCancelado && <span style={{ fontSize: 10, fontWeight: 800, color: T.coral, background: T.coralBg, padding: "1px 8px", borderRadius: 10 }}>Cancelado en Busint</span>}
+                    {esVentaPerdida && <span style={{ fontSize: 10, fontWeight: 800, color: T.amber, background: T.amberBg, padding: "1px 8px", borderRadius: 10 }}>Venta Perdida (Busint)</span>}
                   </div>
-                  <div style={{ fontSize: 12, color: T.slate }}>{esCancelado ? "Ya no existe en Busint desde" : "Cumplido"}: {p.fechaCumplido || "—"} · {fmtNum(totalP)} uds pedidas · {fmtNum(totalC)} cortadas</div>
+                  <div style={{ fontSize: 12, color: T.slate }}>
+                    {esCancelado ? "Ya no existe en Busint desde" : esVentaPerdida ? "Cerrado por Busint desde" : "Cumplido"}: {p.fechaCumplido || "—"} · {fmtNum(totalP)} uds pedidas · {fmtNum(totalC)} cortadas
+                    {esVentaPerdida && p.ventasPerdidasUds ? ` · ${fmtNum(p.ventasPerdidasUds)} uds dadas de baja` : ""}
+                  </div>
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <button onClick={(e) => { e.stopPropagation(); onUpdatePedido({ ...p, estado: "activo", fechaCumplido: null }); }} style={{ background: T.amberBg, border: `1px solid ${T.amber}44`, borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, color: T.amber, cursor: "pointer" }}>↩ Reactivar</button>
