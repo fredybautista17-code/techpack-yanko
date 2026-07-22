@@ -2458,18 +2458,23 @@ function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido,
   const [revisando, setRevisando] = useState(false);
   const [resultRevision, setResultRevision] = useState(null);
   // Igual que "Revisar contra Busint" en Pedidos (módulo Diseño): consulta
-  // Busint en vivo (misma Cloud Function getPedidosExistentesBusint) para el
-  // rango que cubre la fecha de pedido más antigua entre los activos, hasta
-  // hoy. Cualquier pedido activo cuyo número ya no aparezca en Busint se
-  // marca "cancelado_busint" — así no se queda pegado como activo para
-  // siempre solo porque nadie revisó a mano.
+  // Busint en vivo (misma Cloud Function getPedidosExistentesBusint) para un
+  // rango fijo amplio (3 años atrás hasta hoy). Cualquier pedido activo cuyo
+  // número ya no aparezca en Busint se marca "cancelado_busint" — así no se
+  // queda pegado como activo para siempre solo porque nadie revisó a mano.
   async function revisarContraBusint() {
-    const conFecha = activos.filter((p) => p.fechaPedido);
-    if (!conFecha.length) {
-      setResultRevision({ error: "No hay pedidos activos con fecha de pedido para revisar." });
+    if (!activos.length) {
+      setResultRevision({ error: "No hay pedidos activos para revisar." });
       return;
     }
-    const fechaInicio = conFecha.reduce((min, p) => (p.fechaPedido < min ? p.fechaPedido : min), conFecha[0].fechaPedido);
+    // OJO: NO se calcula fechaInicio a partir de las fechas guardadas en los
+    // pedidos — las que vienen del Excel manual de Corte no siempre quedan
+    // en formato AAAA-MM-DD (ver parseBusintFile/fmtFecha), así que
+    // compararlas como texto podía dar un rango incorrecto o directamente
+    // ninguno. Se usa mejor un rango fijo bien amplio, que cubre cualquier
+    // pedido activo real sin depender de qué tan bien formateada esté su
+    // fecha guardada.
+    const fechaInicio = (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 3); return d.toISOString().slice(0, 10); })();
     const fechaFin = today();
     setRevisando(true);
     setResultRevision(null);
@@ -3214,3 +3219,4 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
     </div>
   );
 }
+
