@@ -2597,16 +2597,92 @@ async function exportBitacoraEnvioToExcel(envio) {
   const nombreArchivo = `Envio_${(envio.coleccion || envio.cliente || "bitacora").replace(/[^a-zA-Z0-9]+/g, "_")}_${envio.fechaEnviado || today()}.xlsx`;
   XLSX.writeFile(wb, nombreArchivo);
 }
-function BitacoraEnviosView({ envios, onUpdateEnvio }) {
-  const [expandido, setExpandido] = useState(null);
-  const [busqueda, setBusqueda] = useState("");
-  const q = busqueda.trim().toLowerCase();
-  const filtrados = [...envios]
-    .filter((e) => !q || (e.coleccion || "").toLowerCase().includes(q) || (e.cliente || "").toLowerCase().includes(q) || (e.numPedido || "").toLowerCase?.().includes(q))
-    .sort((a, b) => (b.fechaEnviado || "").localeCompare(a.fechaEnviado || "") || (b.createdAt || "").localeCompare(a.createdAt || ""));
+// Envuelve las dos bitácoras (Envíos / Aprobados sin Pedido) en pestañas
+// dentro de un solo ítem de menú "Bitácoras" — antes eran dos entradas
+// sueltas, ahora comparten pantalla como ya hace Historial con sus propias
+// pestañas internas.
+function BitacorasView(props) {
+  const [tab, setTab] = useState("envios");
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 20 }}>
+        {[["envios", "📦 Bitácora de Envíos"], ["sin_pedido", "🚫 Bitácora de Aprobados sin Pedido"]].map(([v, label]) => (
+          <button key={v} onClick={() => setTab(v)} style={{ padding: "8px 16px", borderRadius: 8, border: `1.5px solid ${tab === v ? T.ink : T.border}`, background: tab === v ? T.ink : T.white, color: tab === v ? T.white : T.ink, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{label}</button>
+        ))}
+      </div>
+      {tab === "envios" ? <BitacoraEnviosView {...props} /> : <BitacoraAprobadosSinPedidoView {...props} />}
+    </div>
+  );
+}
+function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial, onGoHistorial }) {
+  const [subTab, setSubTab] = useState("pendientes");
+  const [kindFiltro, setKindFiltro] = useState("todos");
+  const [busqueda, setBusqueda] = useState("");
+  const [mesFiltro, setMesFiltro] = useState("");
+  const [expandido, setExpandido] = useState(null);
+  const hoy = new Date();
+  const hoyIso = hoy.toISOString().slice(0, 10);
+  function diasDesde(fechaISO) {
+    if (!fechaISO) return null;
+    const d = new Date(fechaISO);
+    if (isNaN(d.getTime())) return null;
+    return Math.floor((hoy - d) / 86400000);
+  }
+  // Busca el prototipo/referencia VIVO detrás de cada ítem del envío (por
+  // itemId/capsulaId) para saber su estado ACTUAL — el "estado" guardado en
+  // el envío es solo la foto del momento en que se mandó, no se actualiza.
+  function liveItemFor(it) {
+    if (it.kind === "proto") return protos.find((p) => p.id === it.itemId);
+    const cap = capsulas.find((c) => c.id === it.capsulaId);
+    return cap?.referencias.find((r) => r.id === it.itemId);
+  }
+  function itemResuelto(it) {
+    const live = liveItemFor(it);
+    return !!live && ["aprobado", "declinado"].includes(live.status);
+  }
+  // Cada envío se enriquece con: cuántas de sus referencias siguen sin
+  // resolver, hace cuántos días se envió (solo relevante si sigue habiendo
+  // pendientes), y si es de prototipos o de cápsula (según sus items — un
+  // envío siempre sale homogéneo, se arma desde Prototipos o desde Cápsulas,
+  // nunca mezclado).
+  const enriquecidos = envios.map((envio) => {
+    const pendientes = envio.items.filter((it) => !itemResuelto(it));
+    const dias = pendientes.length ? diasDesde(envio.fechaEnviado) : null;
+    const kind = envio.items[0]?.kind === "proto" ? "proto" : "ref";
+    return { ...envio, _pendientes: pendientes.length, _dias: dias, _kind: kind };
+  });
+  const q = busqueda.trim().toLowerCase();
+  const mesDe = (e) => (e.fechaEnviado || "").slice(0, 7);
+  const base = enriquecidos.filter(
+    (e) =>
+      (!q || (e.coleccion || "").toLowerCase().includes(q) || (e.cliente || "").toLowerCase().includes(q) || (e.numPedido || "").toLowerCase?.().includes(q)) &&
+      (!mesFiltro || mesDe(e) === mesFiltro)
+  );
+  const porTab = subTab === "pendientes" ? base.filter((e) => e._pendientes > 0) : base;
+  const countProto = porTab.filter((e) => e._kind === "proto").length;
+  const countCapsula = porTab.filter((e) => e._kind === "ref").length;
+  const filtrados = porTab
+    .filter((e) => kindFiltro === "todos" || e._kind === kindFiltro)
+    .sort((a, b) =>
+      subTab === "pendientes"
+        ? (b._dias ?? 0) - (a._dias ?? 0)
+        : (b.fechaEnviado || "").localeCompare(a.fechaEnviado || "") || (b.createdAt || "").localeCompare(a.createdAt || "")
+    );
+  const mesActual = hoyIso.slice(0, 7);
+  const declinadasEsteMes = (historial || []).filter((h) => h.resultado === "declinado" && h.mes === mesActual).length;
+  const mesesDisponibles = [...new Set(envios.map((e) => mesDe(e)).filter(Boolean))].sort((a, b) => b.localeCompare(a));
+  function labelMes(m) { return new Date(m + "-02").toLocaleDateString("es-CO", { month: "long", year: "numeric" }); }
+  return (
+    <div>
+      {declinadasEsteMes > 0 && onGoHistorial && (
+        <div
+          onClick={onGoHistorial}
+          style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 16px", background: T.coralBg, borderRadius: 10, border: `1px solid ${T.coral}44`, marginBottom: 16, fontSize: 13, fontWeight: 700, color: T.coral }}
+        >
+          ❌ {declinadasEsteMes} declinada{declinadasEsteMes !== 1 ? "s" : ""} este mes · Ver en Historial →
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Bitácora de Envíos</h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Historial de colecciones/lotes enviados al cliente</p>
@@ -2618,9 +2694,31 @@ function BitacoraEnviosView({ envios, onUpdateEnvio }) {
           style={{ padding: "9px 14px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, minWidth: 260, outline: "none", fontFamily: "inherit" }}
         />
       </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+        {[["pendientes", "⏳ Pendientes"], ["todos", "Todos"]].map(([v, label]) => (
+          <button key={v} onClick={() => setSubTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${subTab === v ? T.denim : T.border}`, background: subTab === v ? T.denimBg : T.white, color: subTab === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[["todos", `Todos (${porTab.length})`], ["proto", `Prototipos (${countProto})`], ["ref", `Cápsulas (${countCapsula})`]].map(([v, label]) => (
+            <button key={v} onClick={() => setKindFiltro(v)} style={{ padding: "5px 12px", borderRadius: 6, border: `1.5px solid ${kindFiltro === v ? T.ink : T.border}`, background: kindFiltro === v ? T.ink : T.white, color: kindFiltro === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
+          ))}
+        </div>
+        {mesesDisponibles.length > 0 && (
+          <select value={mesFiltro} onChange={(e) => setMesFiltro(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", textTransform: "capitalize" }}>
+            <option value="">Todos los meses</option>
+            {mesesDisponibles.map((m) => <option key={m} value={m}>{labelMes(m)}</option>)}
+          </select>
+        )}
+      </div>
       {!filtrados.length && (
         <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
-          {envios.length ? "Ningún envío coincide con la búsqueda." : "Todavía no hay envíos registrados. Se crean desde Prototipos/Cápsulas, pestaña \"Enviar al Cliente\", seleccionando referencias y usando \"Crear Envío\"."}
+          {!envios.length
+            ? "Todavía no hay envíos registrados. Se crean desde Prototipos/Cápsulas, pestaña \"Enviar al Cliente\", seleccionando referencias y usando \"Crear Envío\"."
+            : subTab === "pendientes"
+            ? "No hay envíos con referencias pendientes de aprobación. 🎉"
+            : "Ningún envío coincide con la búsqueda."}
         </div>
       )}
       {filtrados.map((envio) => {
@@ -2635,11 +2733,23 @@ function BitacoraEnviosView({ envios, onUpdateEnvio }) {
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: 20 }}>{abierto ? "📂" : "📁"}</span>
                 <div>
-                  <div style={{ fontWeight: 800, fontSize: 15, color: T.ink }}>{envio.coleccion || "(Sin nombre de colección)"}</div>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: T.ink, display: "flex", alignItems: "center", gap: 8 }}>
+                    {envio.coleccion || "(Sin nombre de colección)"}
+                    <span style={{ fontSize: 10, fontWeight: 700, color: envio._kind === "proto" ? T.violet : T.denim, background: envio._kind === "proto" ? T.violetBg : T.denimBg, padding: "1px 8px", borderRadius: 10 }}>
+                      {envio._kind === "proto" ? "Prototipo" : "Cápsula"}
+                    </span>
+                  </div>
                   <div style={{ fontSize: 12, color: T.slate }}>{envio.cliente || "Sin cliente"} · {envio.items.length} ref · {fmtNum(totalUnidades)} unid. · Enviado {envio.fechaEnviado}{envio.numPedido ? ` · Pedido ${envio.numPedido}` : ""}</div>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                {envio._pendientes > 0 ? (
+                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: envio._dias >= 15 ? T.coralBg : T.amberBg, color: envio._dias >= 15 ? T.coral : T.amber }}>
+                    ⏳ {envio._pendientes} sin resolver · {envio._dias}d esperando
+                  </span>
+                ) : (
+                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✓ Todo resuelto</span>
+                )}
                 <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: envio.fechaRecibidoCliente ? T.jadeBg : T.amberBg, color: envio.fechaRecibidoCliente ? T.jade : T.amber }}>
                   {envio.fechaRecibidoCliente ? `✓ Recibido ${envio.fechaRecibidoCliente}` : "⏳ Sin confirmar recibido"}
                 </span>
@@ -2671,32 +2781,35 @@ function BitacoraEnviosView({ envios, onUpdateEnvio }) {
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                     <thead>
                       <tr style={{ background: T.ink }}>
-                        {["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Obs. Cliente"].map((h) => (
+                        {["Foto", "Ref", "Nombre", "Estado Actual", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Obs. Cliente"].map((h) => (
                           <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {envio.items.map((it, i) => (
-                        <tr key={it.itemId} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
-                          <td style={{ padding: "6px 10px" }}>{it.foto ? <img src={it.foto} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
-                          <td style={{ padding: "6px 10px", fontWeight: 700 }}>{it.referencia}</td>
-                          <td style={{ padding: "6px 10px" }}>{it.nombre}</td>
-                          <td style={{ padding: "6px 10px" }}>{it.estado}</td>
-                          <td style={{ padding: "6px 10px" }}>{it.consumo || "—"}</td>
-                          <td style={{ padding: "6px 10px" }}>{it.tipo || "—"}</td>
-                          <td style={{ padding: "6px 10px" }}>{it.categoria || "—"}</td>
-                          <td style={{ padding: "6px 10px" }}>{it.silueta || "—"}</td>
-                          <td style={{ padding: "6px 10px" }}>{it.rango || "—"}</td>
-                          <td style={{ padding: "6px 10px" }}>{it.tela || "—"}</td>
-                          <td style={{ padding: "6px 10px" }}>{it.colombiaCurva || "—"}</td>
-                          <td style={{ padding: "6px 10px" }}>{it.colombiaCantidad || "—"}</td>
-                          <td style={{ padding: "6px 10px" }}>{it.venezuelaCurva || "—"}</td>
-                          <td style={{ padding: "6px 10px" }}>{it.venezuelaCantidad || "—"}</td>
-                          <td style={{ padding: "6px 10px" }}>{it.precio || "—"}</td>
-                          <td style={{ padding: "6px 10px" }}>{it.observacionesCliente || "—"}</td>
-                        </tr>
-                      ))}
+                      {envio.items.map((it, i) => {
+                        const live = liveItemFor(it);
+                        return (
+                          <tr key={it.itemId} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
+                            <td style={{ padding: "6px 10px" }}>{it.foto ? <img src={it.foto} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
+                            <td style={{ padding: "6px 10px", fontWeight: 700 }}>{it.referencia}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.nombre}</td>
+                            <td style={{ padding: "6px 10px" }}>{live ? <Badge status={live.status} /> : <span style={{ color: T.slate, fontStyle: "italic" }}>—</span>}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.consumo || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.tipo || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.categoria || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.silueta || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.rango || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.tela || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.colombiaCurva || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.colombiaCantidad || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.venezuelaCurva || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.venezuelaCantidad || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.precio || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.observacionesCliente || "—"}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -2705,6 +2818,85 @@ function BitacoraEnviosView({ envios, onUpdateEnvio }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+// Bitácora de Aprobados sin Pedido: cápsulas cuyas referencias YA llegaron a
+// "Aprobado" pero cuyo código nunca apareció en ningún Pedido cargado — la
+// misma señal que ya usa Historial con el badge "🚫 Sin pedido", pero acá
+// presentada con el mismo formato de tabla (foto/ref/nombre/categoría/...)
+// que usa la Bitácora de Envíos, agrupada por cápsula.
+function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef }) {
+  const [busqueda, setBusqueda] = useState("");
+  function usedInPedido(refCode) {
+    if (!refCode) return false;
+    const target = String(refCode).trim().toLowerCase();
+    return (pedidos || []).some((p) => (p.referencias || []).some((r) => String(r.ref || "").trim().toLowerCase() === target));
+  }
+  const q = busqueda.trim().toLowerCase();
+  const capsulasConSinPedido = (capsulas || [])
+    .map((cap) => ({
+      cap,
+      refs: (cap.referencias || []).filter((r) => r.status === "aprobado" && !usedInPedido(r.reference)),
+    }))
+    .filter(({ cap, refs }) => refs.length > 0 && (!q || (cap.name || "").toLowerCase().includes(q) || (cap.cliente || "").toLowerCase().includes(q)))
+    .sort((a, b) => (a.cap.name || "").localeCompare(b.cap.name || ""));
+  const totalRefs = capsulasConSinPedido.reduce((s, c) => s + c.refs.length, 0);
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Bitácora de Aprobados sin Pedido</h2>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Cápsulas con referencias aprobadas que nunca se usaron en un pedido — {totalRefs} referencia{totalRefs !== 1 ? "s" : ""}</p>
+        </div>
+        <input
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="Buscar por cápsula o cliente..."
+          style={{ padding: "9px 14px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, minWidth: 260, outline: "none", fontFamily: "inherit" }}
+        />
+      </div>
+      {!capsulasConSinPedido.length && (
+        <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
+          No hay referencias aprobadas sin usar en pedido. 🎉
+        </div>
+      )}
+      {capsulasConSinPedido.map(({ cap, refs }) => (
+        <div key={cap.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
+          <div style={{ padding: "16px 20px", background: T.canvas }}>
+            <div style={{ fontWeight: 800, fontSize: 15, color: T.ink }}>🗂 {cap.name || "Cápsula"}</div>
+            <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{cap.cliente || "Sin cliente"}{cap.season ? ` · ${cap.season}` : ""} · {refs.length} referencia{refs.length !== 1 ? "s" : ""} sin pedido</div>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: T.ink }}>
+                  {["Foto", "Ref", "Nombre", "Categoría", "Silueta", "Rango", "Tela"].map((h) => (
+                    <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {refs.map((r, i) => (
+                  <tr
+                    key={r.id}
+                    onClick={() => onSelectRef && onSelectRef(cap.id, r.id)}
+                    style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}`, cursor: onSelectRef ? "pointer" : "default" }}
+                  >
+                    <td style={{ padding: "6px 10px" }}>{r.image ? <img src={r.image} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
+                    <td style={{ padding: "6px 10px", fontWeight: 700 }}>{r.reference || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{r.name || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{r.categoria || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{r.silueta || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{r.rango || r.tallas?.[0] || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{r.tipoTela || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -3198,11 +3390,11 @@ function KPIsView({ areas, puestos, personas, catalogo, registros, isAdmin, onAd
     </div>
   );
 }
-function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms, stages, isAdmin, onBackfill, onSelectProto, onSelectRef, onPromote }) {
+function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms, stages, isAdmin, onBackfill, onSelectProto, onSelectRef, onPromote, initialResultado, initialTipoFiltro }) {
   const [modo, setModo] = useState("todos");
   const [clienteSel, setClienteSel] = useState("");
-  const [resultado, setResultado] = useState("todos");
-  const [tipoFiltro, setTipoFiltro] = useState("todos");
+  const [resultado, setResultado] = useState(initialResultado || "todos");
+  const [tipoFiltro, setTipoFiltro] = useState(initialTipoFiltro || "todos");
   const [mesFiltro, setMesFiltro] = useState("");
   const [soloSinPedido, setSoloSinPedido] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
@@ -4394,7 +4586,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     ["corte", "✂ Corte"],
     ["historial", "🕘 Historial"],
     ["cronograma_muestras", "🧵 Cronograma de Muestras"],
-    ["bitacora", "📜 Bitácora de Envíos"],
+    ["bitacora", "📜 Bitácoras"],
     ["stats", "📊 Estadísticas"],
   ];
   // KPIs ahora es un módulo de compañía completo (no solo Diseño — cubre
@@ -5701,6 +5893,10 @@ function AppInner() {
   const [pedidos, setPedidos] = useState([]);
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
   const [bitacoraEnvios, setBitacoraEnvios] = useState([]);
+  // Al entrar a Historial desde el enlace "❌ N declinadas" de Bitácora, se
+  // usa esto para que abra ya filtrado en Declinados (HistorialDisenoView lo
+  // lee una sola vez, al montar, vía initialResultado/initialTipoFiltro).
+  const [historialFiltroInicial, setHistorialFiltroInicial] = useState(null);
   // --- Módulo KPIs (toda la compañía, no solo Diseño) ---
   // kpiPuestos: puestos de trabajo, cada uno con su área y sus funciones
   // asignadas (responsabilidades esperadas). kpiPersonas: roster de personas,
@@ -6247,7 +6443,7 @@ function AppInner() {
             ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
             ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
             ...(canAccessHistorial ? [{ id: "historial", icon: "🕘", label: "Historial" }] : []),
-            ...(canAccessBitacora ? [{ id: "bitacora", icon: "📜", label: "Bitácora de Envíos" }] : []),
+            ...(canAccessBitacora ? [{ id: "bitacora", icon: "📜", label: "Bitácoras" }] : []),
             ...(canAccessCronograma ? [{ id: "cronograma_muestras", icon: "🧵", label: "Cronograma de Muestras" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
             ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
@@ -6442,7 +6638,16 @@ function AppInner() {
               />
             )}
             {view === "bitacora" && (
-              <BitacoraEnviosView envios={bitacoraEnvios} onUpdateEnvio={updateBitacoraEnvio} />
+              <BitacorasView
+                envios={bitacoraEnvios}
+                onUpdateEnvio={updateBitacoraEnvio}
+                protos={protos}
+                capsulas={capsulas}
+                pedidos={pedidos}
+                historial={historial}
+                onGoHistorial={() => { setHistorialFiltroInicial({ resultado: "declinado", tipo: "todos" }); setView("historial"); }}
+                onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
+              />
             )}
             {view === "kpis" && (
               <KPIsView
@@ -6505,6 +6710,8 @@ function AppInner() {
                 onSelectProto={(id) => { setSelProtoId(id); setView("proto-detail"); }}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
                 onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
+                initialResultado={historialFiltroInicial?.resultado}
+                initialTipoFiltro={historialFiltroInicial?.tipo}
               />
             )}
             {view === "cronograma_muestras" && (
