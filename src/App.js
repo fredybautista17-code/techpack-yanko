@@ -554,12 +554,18 @@ const STATUS = {
 };
 // --- Cronograma de Muestras ---
 // Estado propio de cada envío a taller de muestra (independiente del status
-// del prototipo/referencia en Diseño): arranca "pendiente" (sin resultado
-// todavía), el usuario lo pasa a "aprobado" o "modificar" según lo que
-// vuelva del taller, y "enviado" se pone solo cuando el prototipo/referencia
-// pasa a status "enviado" (ver syncCronogramaEnviado).
+// del prototipo/referencia en Diseño). Elegir un taller en el formulario no
+// significa que el taller ya la vaya a hacer — muchas veces el taller tiene
+// cola de muestras y todavía no la ha tomado. Por eso el flujo tiene 5
+// pasos: arranca "pendiente" ("Sin asignar" — ya se eligió taller, pero el
+// taller aún no confirmó que la va a hacer), pasa a "asignado" ("Asignado" —
+// el taller ya la tomó) cuando alguien lo marca a mano, luego a "aprobado" o
+// "modificar" según lo que vuelva del taller, y "enviado" se pone solo
+// cuando el prototipo/referencia pasa a status "enviado" en Diseño (ver
+// syncCronogramaEnviado) — no se elige a mano.
 const ESTADO_MUESTRA = {
-  pendiente: { label: "Asignado", color: T.amber, bg: T.amberBg },
+  pendiente: { label: "Sin asignar", color: T.slate, bg: "#EDEDF2" },
+  asignado: { label: "Asignado", color: T.amber, bg: T.amberBg },
   aprobado: { label: "Aprobado", color: T.jade, bg: T.jadeBg },
   modificar: { label: "Modificar", color: T.coral, bg: T.coralBg },
   enviado: { label: "Enviado", color: "#0369A1", bg: "#EFF6FF" },
@@ -2331,6 +2337,18 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
   const visibles = cronogramaMuestras.filter((c) => (tab === "activas" ? c.estado !== "aprobado" : c.estado === "aprobado"));
   function itemsForDay(ds) { return visibles.filter((c) => c.fechaEntrega === ds).sort((a, b) => (a.prioridad || "").localeCompare(b.prioridad || "")); }
   const sinFecha = visibles.filter((c) => !c.fechaEntrega);
+  // Cuántas muestras tiene cada taller en este momento (ni aprobadas ni ya
+  // enviadas al cliente) — para ver de un vistazo qué taller está saturado
+  // antes de mandarle una muestra nueva.
+  const cargaPorTaller = (() => {
+    const activos = cronogramaMuestras.filter((c) => c.estado !== "aprobado" && c.estado !== "enviado");
+    const mapa = new Map();
+    activos.forEach((c) => {
+      const t = c.taller || "(Sin taller)";
+      mapa.set(t, (mapa.get(t) || 0) + 1);
+    });
+    return [...mapa.entries()].sort((a, b) => b[1] - a[1]);
+  })();
   function renderCard(c) {
     const est = ESTADO_MUESTRA[c.estado] || ESTADO_MUESTRA.pendiente;
     const colorPrioridad = PRIORIDAD_MUESTRA_COLOR[c.prioridad] || T.border;
@@ -2388,6 +2406,18 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
         </div>
         <Btn onClick={() => setShowNuevo(true)}>🧵 + Agregar al Cronograma</Btn>
       </div>
+      {cargaPorTaller.length > 0 && (
+        <div style={{ marginBottom: 16, padding: "12px 16px", background: T.white, borderRadius: 12, border: `1px solid ${T.border}` }}>
+          <div style={{ fontWeight: 800, fontSize: 12, color: T.slate, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>🏭 Muestras en Planta (activas por taller)</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {cargaPorTaller.map(([taller, n]) => (
+              <span key={taller} style={{ padding: "5px 12px", borderRadius: 20, fontSize: 12, fontWeight: 700, background: n >= 5 ? T.coralBg : T.amberBg, color: n >= 5 ? T.coral : T.amber }}>
+                {taller} · {n}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
         <div style={{ display: "flex", gap: 6 }}>
           {[["activas", "Activas"], ["aprobadas", "✓ Aprobadas (Historial)"]].map(([v, label]) => (
