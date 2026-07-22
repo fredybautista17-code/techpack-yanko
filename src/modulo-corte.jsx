@@ -10,7 +10,6 @@ import {
   writeBatch,
   onSnapshot,
 } from "firebase/firestore";
-import { getFunctions, httpsCallable } from "firebase/functions";
 
 // ─── FIREBASE ────────────────────────────────────────────────────────────────
 const firebaseConfig = {
@@ -23,12 +22,6 @@ const firebaseConfig = {
 };
 const fbApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
-// Cliente de Cloud Functions — usado por "Revisar contra Busint" (llama
-// getPedidosExistentesBusint, la misma función que ya usa el Informe de
-// Pedidos Vigentes en el módulo de Diseño) para saber qué pedidos activos ya
-// no existen en Busint y marcarlos automáticamente en vez de dejarlos
-// pegados como activos para siempre.
-const functionsClient = getFunctions(fbApp);
 
 async function fsGet(col) {
   const snap = await getDocs(collection(db, col));
@@ -100,147 +93,6 @@ const TALLAS_BUSINT = [
   "18 4XL",
   "20",
 ];
-
-// ─── PARSE EXCEL BUSINT (XLSX o CSV) ─────────────────────────────────────────
-async function parseBusintFile(file) {
-  const XLSX = await import("xlsx");
-  const buffer = await file.arrayBuffer();
-  const wb = XLSX.read(buffer, { type: "array" });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, {
-    header: 1,
-    defval: "",
-    raw: true,
-  });
-
-  // ── Columnas fijas del reporte Busint ──────────────────────────────────────
-  const COL = {
-    numPedido: 2, // C — o buscar en primeras filas
-    cliente: 5, // F
-    fechaPed: 8, // I (30-jun-26)
-    fechaDes: 8, // I misma celda o J
-    ciudad: 10, // K
-    vendedor: 11, // L
-    ref: 12, // M
-    descripcion: 13, // N
-    tallas: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23], // O-X
-  };
-
-  const TALLA_LABELS = [
-    "U-2/4-2 PLUS",
-    "4 XS",
-    "6-6/8 S-S/M",
-    "8 M-M/L",
-    "10-10/12 L-L/XL",
-    "12 XL-1XL",
-    "14-14/16 2XL",
-    "16 3XL",
-    "18 4XL",
-    "20",
-  ];
-
-  function cellStr(row, idx) {
-    return String(row[idx] || "").trim();
-  }
-  function cellNum(row, idx) {
-    return Math.round(Number(row[idx]) || 0);
-  }
-  function fmtFecha(val) {
-    if (!val) return "";
-    // Si es número de serie de Excel (fecha)
-    if (typeof val === "number") {
-      const d = new Date(Math.round((val - 25569) * 86400 * 1000));
-      return d.toISOString().slice(0, 10);
-    }
-    const s = String(val).trim();
-    const m = s.match(
-      /(\d{4}[-\/]\d{2}[-\/]\d{2})|(\d{2}[-\/]\d{2}[-\/]\d{4})/
-    );
-    return m ? m[0] : s;
-  }
-
-  const pedido = {
-    id: uid(),
-    numero: "",
-    cliente: "",
-    fechaPedido: "",
-    fechaDespacho: "",
-    vendedor: "",
-    ciudad: "",
-    observacion: "",
-    referencias: [],
-    estado: "activo",
-    cortesRealizados: [],
-    creadoEn: today(),
-  };
-
-  let headerFound = false;
-
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    if (!row || !row.length) continue;
-
-    // Leer encabezado del pedido (primeras filas con datos en columnas clave)
-    if (!headerFound) {
-      const numPed = cellStr(row, COL.numPedido);
-      const cliente = cellStr(row, COL.cliente);
-      if (numPed && String(numPed).match(/^\d{3,6}$/)) {
-        if (!pedido.numero) pedido.numero = numPed;
-        if (!pedido.cliente && cliente) pedido.cliente = cliente;
-        if (!pedido.fechaPedido)
-          pedido.fechaPedido = fmtFecha(row[COL.fechaPed]);
-        if (!pedido.fechaDespacho)
-          pedido.fechaDespacho = fmtFecha(row[COL.fechaDes]);
-        if (!pedido.ciudad) pedido.ciudad = cellStr(row, COL.ciudad);
-        if (!pedido.vendedor) pedido.vendedor = cellStr(row, COL.vendedor);
-      }
-      // También buscar en filas de cabecera aunque no tenga número de pedido
-      if (
-        !pedido.cliente &&
-        cliente &&
-        cliente.length > 3 &&
-        !cliente.match(/YANKO|INDUSTRIAS|Nit/i)
-      )
-        pedido.cliente = cliente;
-    }
-
-    // Detectar filas de referencias — tienen valor en col M (ref) y números en tallas
-    const refVal = cellStr(row, COL.ref);
-    const descVal = cellStr(row, COL.descripcion);
-    const totalTallas = COL.tallas.reduce((s, idx) => s + cellNum(row, idx), 0);
-
-    if (refVal && totalTallas > 0 && !refVal.match(/^(Ref|TOTAL|Suma)/i)) {
-      const ref = {
-        id: uid(),
-        ref: refVal,
-        descripcion: descVal,
-        tallas: {},
-        total: 0,
-        precioCortePrenda: 0,
-      };
-      COL.tallas.forEach((colIdx, ti) => {
-        const val = cellNum(row, colIdx);
-        ref.tallas[TALLA_LABELS[ti]] = val;
-        ref.total += val;
-      });
-      pedido.referencias.push(ref);
-    }
-  }
-
-  // Si no encontró número de pedido, buscar en cualquier celda de las primeras filas
-  if (!pedido.numero) {
-    for (let i = 0; i < Math.min(15, rows.length); i++) {
-      const line = (rows[i] || []).map((c) => String(c || "")).join(" ");
-      const m = line.match(/\b(\d{3,6})\b/);
-      if (m) {
-        pedido.numero = m[1];
-        break;
-      }
-    }
-  }
-
-  return pedido;
-}
 
 // ─── SEMÁFORO FECHA ───────────────────────────────────────────────────────────
 function semaforo(fechaDespacho) {
@@ -455,441 +307,6 @@ function KPICard({ icon, label, value, sub, color, bg }) {
         </div>
       )}
     </div>
-  );
-}
-
-// ─── SUBIR PEDIDO MODAL ───────────────────────────────────────────────────────
-function SubirPedidoModal({ onSave, onClose }) {
-  const [paso, setPaso] = useState(1);
-  const [pedido, setPedido] = useState(null);
-  const [error, setError] = useState("");
-  const fileRef = useRef();
-
-  async function handleFile(e) {
-    const f = e.target.files[0];
-    if (!f) return;
-    try {
-      const parsed = await parseBusintFile(f);
-      if (!parsed.numero && !parsed.referencias.length) {
-        setError(
-          "No se pudo leer el archivo. Verifica que sea el reporte de Busint."
-        );
-        return;
-      }
-      setPedido(parsed);
-      setPaso(2);
-    } catch (err) {
-      setError("Error al leer el archivo: " + err.message);
-    }
-  }
-
-  function handleManual() {
-    setPedido({
-      id: uid(),
-      numero: "",
-      ordenCompra: "",
-      clienteTipo: "A",
-      cliente: "",
-      fechaPedido: today(),
-      fechaDespacho: "",
-      codVen: "",
-      vendedor: "",
-      ciudad: "CÚCUTA",
-      observacion: "",
-      referencias: [],
-      estado: "activo",
-      cortesRealizados: [],
-      creadoEn: today(),
-    });
-    setPaso(2);
-  }
-
-  function addRef() {
-    setPedido((p) => ({
-      ...p,
-      referencias: [
-        ...p.referencias,
-        {
-          id: uid(),
-          ref: "",
-          descripcion: "",
-          precioCortePrenda: 0,
-          tallas: Object.fromEntries(TALLAS_BUSINT.map((t) => [t, 0])),
-          total: 0,
-        },
-      ],
-    }));
-  }
-
-  function updateRef(idx, field, val) {
-    setPedido((p) => {
-      const refs = [...p.referencias];
-      refs[idx] = { ...refs[idx], [field]: val };
-      if (field.startsWith("talla_")) {
-        const t = field.replace("talla_", "");
-        refs[idx].tallas = { ...refs[idx].tallas, [t]: parseInt(val) || 0 };
-        refs[idx].total = Object.values(refs[idx].tallas).reduce(
-          (a, b) => a + b,
-          0
-        );
-      }
-      return { ...p, referencias: refs };
-    });
-  }
-
-  function save() {
-    if (!pedido.cliente || !pedido.referencias.length) {
-      setError("Completa el cliente y al menos una referencia.");
-      return;
-    }
-    onSave(pedido);
-    onClose();
-  }
-
-  return (
-    <Modal title="Cargar Pedido Busint" onClose={onClose} width={720}>
-      {paso === 1 && (
-        <div>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 16,
-              marginBottom: 20,
-            }}
-          >
-            <div
-              onClick={() => fileRef.current.click()}
-              style={{
-                border: `2px dashed ${C.blue}`,
-                borderRadius: 12,
-                padding: 32,
-                textAlign: "center",
-                cursor: "pointer",
-                background: C.blueBg,
-              }}
-            >
-              <div style={{ fontSize: 32, marginBottom: 8 }}>📂</div>
-              <div style={{ fontWeight: 700, color: C.blue }}>
-                Subir Excel de Busint
-              </div>
-              <div style={{ fontSize: 12, color: C.slate, marginTop: 4 }}>
-                Acepta .xlsx, .xls o .csv
-              </div>
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".xlsx,.xls,.csv"
-                style={{ display: "none" }}
-                onChange={handleFile}
-              />
-            </div>
-            <div
-              onClick={handleManual}
-              style={{
-                border: `2px dashed ${C.border}`,
-                borderRadius: 12,
-                padding: 32,
-                textAlign: "center",
-                cursor: "pointer",
-                background: C.canvas,
-              }}
-            >
-              <div style={{ fontSize: 32, marginBottom: 8 }}>✏️</div>
-              <div style={{ fontWeight: 700, color: C.ink }}>
-                Ingresar manualmente
-              </div>
-              <div style={{ fontSize: 12, color: C.slate, marginTop: 4 }}>
-                Digitar los datos del pedido
-              </div>
-            </div>
-          </div>
-          {error && (
-            <div
-              style={{
-                padding: "10px 14px",
-                background: C.redBg,
-                borderRadius: 8,
-                color: C.red,
-                fontSize: 13,
-                fontWeight: 600,
-              }}
-            >
-              ⚠ {error}
-            </div>
-          )}
-        </div>
-      )}
-      {paso === 2 && pedido && (
-        <div>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 12,
-              marginBottom: 16,
-            }}
-          >
-            <Field label="Pedido N°">
-              <FInput
-                value={pedido.numero}
-                onChange={(v) => setPedido((p) => ({ ...p, numero: v }))}
-                placeholder="Ej: 1103"
-              />
-            </Field>
-            <Field label="Cliente">
-              <FInput
-                value={pedido.cliente}
-                onChange={(v) => setPedido((p) => ({ ...p, cliente: v }))}
-                placeholder="Nombre del cliente"
-              />
-            </Field>
-            <Field label="Fecha Pedido">
-              <FInput
-                type="date"
-                value={pedido.fechaPedido}
-                onChange={(v) => setPedido((p) => ({ ...p, fechaPedido: v }))}
-              />
-            </Field>
-            <Field label="Fecha Despacho">
-              <FInput
-                type="date"
-                value={pedido.fechaDespacho}
-                onChange={(v) => setPedido((p) => ({ ...p, fechaDespacho: v }))}
-              />
-            </Field>
-            <Field label="Vendedor">
-              <FInput
-                value={pedido.vendedor}
-                onChange={(v) => setPedido((p) => ({ ...p, vendedor: v }))}
-                placeholder="Vendedor"
-              />
-            </Field>
-            <Field label="Ciudad">
-              <FInput
-                value={pedido.ciudad}
-                onChange={(v) => setPedido((p) => ({ ...p, ciudad: v }))}
-                placeholder="Ciudad"
-              />
-            </Field>
-          </div>
-          <Field label="Observación">
-            <FInput
-              value={pedido.observacion}
-              onChange={(v) => setPedido((p) => ({ ...p, observacion: v }))}
-              placeholder="Observación del pedido"
-            />
-          </Field>
-
-          <div
-            style={{
-              fontWeight: 700,
-              fontSize: 14,
-              color: C.ink,
-              margin: "16px 0 10px",
-            }}
-          >
-            Referencias ({pedido.referencias.length})
-            <button
-              onClick={addRef}
-              style={{
-                marginLeft: 12,
-                padding: "4px 10px",
-                background: C.blueBg,
-                border: `1px solid ${C.blue}`,
-                borderRadius: 6,
-                color: C.blue,
-                fontWeight: 700,
-                fontSize: 12,
-                cursor: "pointer",
-              }}
-            >
-              + Agregar
-            </button>
-          </div>
-
-          <div style={{ maxHeight: 300, overflowY: "auto" }}>
-            {pedido.referencias.map((ref, idx) => (
-              <div
-                key={ref.id}
-                style={{
-                  background: C.canvas,
-                  borderRadius: 10,
-                  padding: 14,
-                  marginBottom: 10,
-                  border: `1px solid ${C.border}`,
-                }}
-              >
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 2fr 1fr",
-                    gap: 8,
-                    marginBottom: 10,
-                  }}
-                >
-                  <Field label="Ref">
-                    <FInput
-                      value={ref.ref}
-                      onChange={(v) => updateRef(idx, "ref", v)}
-                      placeholder="C-103"
-                    />
-                  </Field>
-                  <Field label="Descripción">
-                    <FInput
-                      value={ref.descripcion}
-                      onChange={(v) => updateRef(idx, "descripcion", v)}
-                      placeholder="PANTALONETA"
-                    />
-                  </Field>
-                  <Field label="Precio Corte/Prenda $">
-                    <FInput
-                      type="number"
-                      value={ref.precioCortePrenda}
-                      onChange={(v) =>
-                        updateRef(idx, "precioCortePrenda", parseFloat(v) || 0)
-                      }
-                      placeholder="800"
-                    />
-                  </Field>
-                </div>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(5,1fr)",
-                    gap: 6,
-                  }}
-                >
-                  {TALLAS_BUSINT.slice(0, 5).map((t) => (
-                    <div key={t}>
-                      <div
-                        style={{
-                          fontSize: 9,
-                          color: C.slate,
-                          fontWeight: 700,
-                          marginBottom: 3,
-                        }}
-                      >
-                        {t}
-                      </div>
-                      <input
-                        type="number"
-                        value={ref.tallas[t] || 0}
-                        onChange={(e) =>
-                          updateRef(idx, `talla_${t}`, e.target.value)
-                        }
-                        style={{
-                          width: "100%",
-                          padding: "5px",
-                          border: `1px solid ${C.border}`,
-                          borderRadius: 6,
-                          fontSize: 12,
-                          textAlign: "center",
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(5,1fr)",
-                    gap: 6,
-                    marginTop: 6,
-                  }}
-                >
-                  {TALLAS_BUSINT.slice(5).map((t) => (
-                    <div key={t}>
-                      <div
-                        style={{
-                          fontSize: 9,
-                          color: C.slate,
-                          fontWeight: 700,
-                          marginBottom: 3,
-                        }}
-                      >
-                        {t}
-                      </div>
-                      <input
-                        type="number"
-                        value={ref.tallas[t] || 0}
-                        onChange={(e) =>
-                          updateRef(idx, `talla_${t}`, e.target.value)
-                        }
-                        style={{
-                          width: "100%",
-                          padding: "5px",
-                          border: `1px solid ${C.border}`,
-                          borderRadius: 6,
-                          fontSize: 12,
-                          textAlign: "center",
-                        }}
-                      />
-                    </div>
-                  ))}
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "flex-end",
-                      paddingBottom: 2,
-                    }}
-                  >
-                    <div style={{ textAlign: "center", width: "100%" }}>
-                      <div
-                        style={{
-                          fontSize: 9,
-                          color: C.slate,
-                          fontWeight: 700,
-                          marginBottom: 3,
-                        }}
-                      >
-                        TOTAL
-                      </div>
-                      <div
-                        style={{ fontWeight: 900, fontSize: 16, color: C.blue }}
-                      >
-                        {ref.total}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {error && (
-            <div
-              style={{
-                padding: "10px 14px",
-                background: C.redBg,
-                borderRadius: 8,
-                color: C.red,
-                fontSize: 13,
-                fontWeight: 600,
-                marginTop: 12,
-              }}
-            >
-              ⚠ {error}
-            </div>
-          )}
-          <div
-            style={{
-              display: "flex",
-              gap: 10,
-              justifyContent: "space-between",
-              marginTop: 16,
-            }}
-          >
-            <Btn variant="secondary" onClick={() => setPaso(1)}>
-              ← Atrás
-            </Btn>
-            <Btn variant="success" onClick={save}>
-              ✓ Guardar Pedido
-            </Btn>
-          </div>
-        </div>
-      )}
-    </Modal>
   );
 }
 
@@ -1346,7 +763,11 @@ function DetallePedido({
       (s, c) => s + (c.totalUnidades || 0),
       0
     );
-    if (totalC >= totalPedido) updated.estado = "cumplido";
+    // Al llegar al 100% se marca "terminado" (corte completo), NO "cerrado"
+    // — "cerrado" queda reservado para cuando Busint confirma el cierre real
+    // del pedido (vía "🧊 Congelar como base de Corte" en Vigentes por
+    // Cliente, o a mano desde el detalle en Pedidos).
+    if (totalC >= totalPedido && updated.estado === "activo") updated.estado = "terminado";
     onSave(updated);
   }
 
@@ -1413,19 +834,27 @@ function DetallePedido({
         >
           📅 {pedido.fechaDespacho} · {sem.label}
         </div>
-        {pedido.estado !== "cumplido" && (
+        {pedido.estado === "terminado" && (
+          <span style={{ padding: "6px 14px", background: C.greenBg, color: C.green, borderRadius: 20, fontWeight: 800, fontSize: 13 }}>
+            🏁 TERMINADO
+          </span>
+        )}
+        {pedido.estado !== "cerrado" && (
           <Btn variant="cyan" onClick={() => setShowCorte(true)}>
             ✂ Programar Corte
           </Btn>
         )}
-        {pedido.estado !== "cumplido" && pct === 100 && (
+        {pedido.estado === "activo" && (
           <Btn
             variant="success"
-            onClick={() =>
-              onSave({ ...pedido, estado: "cumplido", fechaCumplido: today() })
-            }
+            onClick={() => onSave({ ...pedido, estado: "terminado" })}
           >
-            ✓ Marcar Cumplido
+            🏁 Marcar Terminado
+          </Btn>
+        )}
+        {pedido.estado === "terminado" && (
+          <Btn variant="secondary" small onClick={() => onSave({ ...pedido, estado: "activo" })}>
+            ↩ Deshacer Terminado
           </Btn>
         )}
       </div>
@@ -2454,44 +1883,12 @@ function EstadisticasTela({ pedidos }) {
 
 // ─── DASHBOARD CORTE ──────────────────────────────────────────────────────────
 function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido, isAdmin }) {
+  // Los pedidos ya no se cargan ni se revisan aquí — vienen listos de
+  // "pedidos_activos", alimentada por el botón "🧊 Congelar como base de
+  // Corte" en Vigentes por Cliente (módulo Diseño → Pedidos). Ese mismo
+  // flujo ya cruza contra Busint en vivo y contra el reporte de Ventas
+  // Perdidas, así que aquí no hace falta repetirlo.
   const activos = pedidos.filter((p) => p.estado === "activo");
-  const [revisando, setRevisando] = useState(false);
-  const [resultRevision, setResultRevision] = useState(null);
-  // Igual que "Revisar contra Busint" en Pedidos (módulo Diseño): consulta
-  // Busint en vivo (misma Cloud Function getPedidosExistentesBusint) para un
-  // rango fijo amplio (3 años atrás hasta hoy). Cualquier pedido activo cuyo
-  // número ya no aparezca en Busint se marca "cancelado_busint" — así no se
-  // queda pegado como activo para siempre solo porque nadie revisó a mano.
-  async function revisarContraBusint() {
-    if (!activos.length) {
-      setResultRevision({ error: "No hay pedidos activos para revisar." });
-      return;
-    }
-    // OJO: NO se calcula fechaInicio a partir de las fechas guardadas en los
-    // pedidos — las que vienen del Excel manual de Corte no siempre quedan
-    // en formato AAAA-MM-DD (ver parseBusintFile/fmtFecha), así que
-    // compararlas como texto podía dar un rango incorrecto o directamente
-    // ninguno. Se usa mejor un rango fijo bien amplio, que cubre cualquier
-    // pedido activo real sin depender de qué tan bien formateada esté su
-    // fecha guardada.
-    const fechaInicio = (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 3); return d.toISOString().slice(0, 10); })();
-    const fechaFin = today();
-    setRevisando(true);
-    setResultRevision(null);
-    try {
-      const llamar = httpsCallable(functionsClient, "getPedidosExistentesBusint");
-      const resp = await llamar({ fechaInicio, fechaFin });
-      const existentesSet = new Set((resp.data.numeros || []).map((n) => String(n).trim()));
-      const desaparecidos = activos.filter((p) => p.numero && !existentesSet.has(String(p.numero).trim()));
-      for (const p of desaparecidos) {
-        await onUpdatePedido({ ...p, estado: "cancelado_busint", fechaCumplido: today() });
-      }
-      setResultRevision({ revisados: activos.length, marcados: desaparecidos.length });
-    } catch (err) {
-      setResultRevision({ error: err?.message || "No se pudo consultar Busint. Intenta de nuevo en unos minutos." });
-    }
-    setRevisando(false);
-  }
   const mes = new Date().getMonth() + 1;
   const anio = new Date().getFullYear();
   const nominaMensual = (nominaConfig?.trabajadores || []).reduce(
@@ -2556,30 +1953,7 @@ function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido,
             {activos.length !== 1 ? "s" : ""}
           </p>
         </div>
-        {isAdmin && onUpdatePedido && (
-          <Btn variant="secondary" onClick={revisarContraBusint} disabled={revisando}>
-            {revisando ? "Revisando..." : "🔄 Revisar contra Busint"}
-          </Btn>
-        )}
       </div>
-      {resultRevision && (
-        <div
-          style={{
-            padding: "10px 16px",
-            background: resultRevision.error ? C.redBg : C.greenBg,
-            borderRadius: 10,
-            border: `1px solid ${resultRevision.error ? C.red : C.green}44`,
-            color: resultRevision.error ? C.red : C.green,
-            fontWeight: 600,
-            fontSize: 13,
-            marginBottom: 20,
-          }}
-        >
-          {resultRevision.error
-            ? `⚠ ${resultRevision.error}`
-            : `✓ Se revisaron ${resultRevision.revisados} pedidos activos contra Busint — ${resultRevision.marcados} ya no existían allá y se marcaron como cancelados.`}
-        </div>
-      )}
 
       {/* KPI Mensual */}
       <div
@@ -2764,12 +2138,27 @@ function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido,
 }
 
 // ─── HISTÓRICO ────────────────────────────────────────────────────────────────
+// Ícono/color/etiqueta según motivoCierre (mismo criterio que motivoCierreInfo
+// en App.js) — un único estado de cierre ("cerrado"), con el motivo aparte.
+function motivoCierreInfo(motivo) {
+  switch (motivo) {
+    case "venta_perdida":
+      return { icon: "💸", color: C.amber, bg: C.amberBg, label: "Venta Perdida (Busint)", desc: "Cerrado por Busint desde" };
+    case "facturado":
+      return { icon: "✅", color: C.green, bg: C.greenBg, label: "Facturado (Busint)", desc: "Cerrado por Busint desde" };
+    case "ya_no_vigente":
+      return { icon: "🚫", color: C.red, bg: C.redBg, label: "Ya no vigente en Busint", desc: "Dejó de aparecer en Busint desde" };
+    default:
+      return { icon: "✅", color: C.green, bg: C.greenBg, label: "Cumplido", desc: "Cumplido" };
+  }
+}
+
 function Historico({ pedidos, onSelectPedido }) {
-  // "cancelado_busint" es un estado propio, distinto de "cumplido": lo pone
-  // "Revisar contra Busint" en el Dashboard cuando un pedido activo ya no
-  // aparece en Busint (se canceló o se cerró allá) — no significa que se
-  // terminó de cortar, por eso se distingue con su propio ícono/etiqueta.
-  const cumplidos = pedidos.filter((p) => p.estado === "cumplido" || p.estado === "cancelado_busint");
+  // Un único estado de cierre ("cerrado"), con el motivo en motivoCierre —
+  // lo pone "🧊 Congelar como base de Corte" (Vigentes por Cliente, módulo
+  // Diseño → Pedidos) cuando un pedido activo deja de aparecer vigente en
+  // Busint, o a mano desde el detalle del pedido en Pedidos.
+  const cumplidos = pedidos.filter((p) => p.estado === "cerrado");
   const [filtro, setFiltro] = useState("");
 
   const filtrados = filtro
@@ -2835,7 +2224,7 @@ function Historico({ pedidos, onSelectPedido }) {
                 (s, c) => s + (c.ingresoCorte || 0),
                 0
               );
-              const esCancelado = p.estado === "cancelado_busint";
+              const mi = motivoCierreInfo(p.motivoCierre);
               return (
                 <div
                   key={p.id}
@@ -2862,7 +2251,7 @@ function Historico({ pedidos, onSelectPedido }) {
                       width: 40,
                       height: 40,
                       borderRadius: "50%",
-                      background: esCancelado ? C.redBg : C.greenBg,
+                      background: mi.bg,
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
@@ -2870,20 +2259,19 @@ function Historico({ pedidos, onSelectPedido }) {
                       flexShrink: 0,
                     }}
                   >
-                    {esCancelado ? "🚫" : "✅"}
+                    {mi.icon}
                   </div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 800, color: C.ink, display: "flex", alignItems: "center", gap: 8 }}>
                       Pedido #{p.numero} — {p.cliente}
-                      {esCancelado && (
-                        <span style={{ fontSize: 10, fontWeight: 800, color: C.red, background: C.redBg, padding: "1px 8px", borderRadius: 10 }}>
-                          Cancelado en Busint
-                        </span>
-                      )}
+                      <span style={{ fontSize: 10, fontWeight: 800, color: mi.color, background: mi.bg, padding: "1px 8px", borderRadius: 10 }}>
+                        {mi.label}
+                      </span>
                     </div>
                     <div style={{ fontSize: 12, color: C.slate }}>
-                      {esCancelado ? "Ya no existe en Busint desde" : "Cumplido"}: {p.fechaCumplido || "—"} · {fmtNum(totalC)} uds
+                      {mi.desc}: {p.fechaCumplido || "—"} · {fmtNum(totalC)} uds
                       cortadas
+                      {p.motivoCierre === "venta_perdida" && p.ventasPerdidasUds ? ` · ${fmtNum(p.ventasPerdidasUds)} uds dadas de baja` : ""}
                     </div>
                   </div>
                   <div style={{ textAlign: "right" }}>
@@ -2910,7 +2298,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
   const [view, setView] = useState("dashboard");
   const [pedidos, setPedidos] = useState([]);
   const [selPedidoId, setSelPedidoId] = useState(null);
-  const [showSubir, setShowSubir] = useState(false);
   const [corteConfig, setCorteConfig] = useState({
     plantas: [
       { id: "p1", nombre: "Planta Industrias Yanko" },
@@ -2926,7 +2313,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
     async function init() {
       try {
         const unsubPedidos = onSnapshot(
-          collection(db, "corte_pedidos"),
+          collection(db, "pedidos_activos"),
           (snap) => {
             setPedidos(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
           }
@@ -2951,7 +2338,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
         ? ps.map((p) => (p.id === pedido.id ? pedido : p))
         : [...ps, pedido]
     );
-    await fsSave("corte_pedidos", pedido.id, pedido);
+    await fsSave("pedidos_activos", pedido.id, pedido);
   }
 
   async function saveConfig(cfg) {
@@ -2997,13 +2384,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
       }}
     >
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
-
-      {showSubir && (
-        <SubirPedidoModal
-          onSave={savePedido}
-          onClose={() => setShowSubir(false)}
-        />
-      )}
 
       {/* Sidebar */}
       <div
@@ -3152,25 +2532,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
             </button>
           )}
         </nav>
-        {view === "dashboard" && (
-          <button
-            onClick={() => setShowSubir(true)}
-            style={{
-              width: "100%",
-              padding: "10px",
-              background: C.cyan,
-              border: "none",
-              borderRadius: 10,
-              color: C.white,
-              fontWeight: 800,
-              fontSize: 13,
-              cursor: "pointer",
-              marginTop: 12,
-            }}
-          >
-            + Cargar Pedido
-          </button>
-        )}
       </div>
 
       {/* Main */}
