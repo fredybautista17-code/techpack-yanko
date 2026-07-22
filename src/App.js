@@ -3605,7 +3605,7 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
-  const pedidosVencidos = pedidos.filter((p) => p.fechaDespacho && new Date(p.fechaDespacho) < hoy && p.estado !== "cumplido").length;
+  const pedidosVencidos = pedidos.filter((p) => p.fechaDespacho && new Date(p.fechaDespacho) < hoy && p.estado !== "cerrado").length;
   const AREAS_CARDS = [
     {
       id: "diseno", icon: "🎨", label: "Diseño", desc: "Prototipos, Cápsulas, Pedidos, Corte y seguimiento de producción", color: T.denim, bg: T.denimBg,
@@ -5007,7 +5007,12 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido }) {
     return exc;
   }
   function toggleEtapa(stage) { onUpdatePedido({ ...pedido, seguimiento: { ...pedido.seguimiento, [stage]: !pedido.seguimiento?.[stage] } }); }
-  function marcarCumplido() { onUpdatePedido({ ...pedido, estado: "cumplido", fechaCumplido: today() }); onBack(); }
+  // "cerrado" es el único estado de cierre desde el rediseño (antes había
+  // "cumplido"/"cancelado_busint"/"venta_perdida_busint" por separado). Se
+  // guarda el motivo en motivoCierre — "manual" cuando se marca aquí a
+  // mano; "facturado"/"venta_perdida"/"ya_no_vigente" cuando lo cierra solo
+  // el botón "Congelar como base de Corte" en Vigentes por Cliente.
+  function marcarCumplido() { onUpdatePedido({ ...pedido, estado: "cerrado", motivoCierre: "manual", fechaCumplido: today() }); onBack(); }
   function marcarTerminado() { onUpdatePedido({ ...pedido, estado: "terminado" }); }
   function deshacerTerminado() { onUpdatePedido({ ...pedido, estado: "activo" }); }
   return (
@@ -5037,8 +5042,8 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido }) {
         <Btn variant="ghost" small onClick={() => setShowEdit(true)}>✏ Editar</Btn>
         {pedido.estado === "activo" && <Btn variant="amber" onClick={marcarTerminado}>🏁 Marcar Terminado</Btn>}
         {pedido.estado === "terminado" && <Btn variant="secondary" small onClick={deshacerTerminado}>↩ Deshacer Terminado</Btn>}
-        {pedido.estado === "cumplido" && <Btn variant="secondary" small onClick={() => onUpdatePedido({ ...pedido, estado: "activo", fechaCumplido: null })}>↩ Reactivar</Btn>}
-        {pedido.estado !== "cumplido" && <Btn variant="success" onClick={() => setShowConfirmCumplido(true)}>✓ Cumplido</Btn>}
+        {pedido.estado === "cerrado" && <Btn variant="secondary" small onClick={() => onUpdatePedido({ ...pedido, estado: "activo", motivoCierre: null, fechaCumplido: null })}>↩ Reactivar</Btn>}
+        {pedido.estado !== "cerrado" && <Btn variant="success" onClick={() => setShowConfirmCumplido(true)}>✓ Cumplido</Btn>}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 20 }}>
         {[
@@ -5236,8 +5241,8 @@ function ClientesPedidosView({ clientes: clientesProp, pedidos, protos, capsulas
         {filtrados.map((c, i) => {
           const peds = pedidosDelCliente(c.nombre);
           const activos = peds.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
-          const historico = peds.filter((p) => p.estado === "cumplido").length;
-          const totalPrendas = peds.filter((p) => p.estado !== "cumplido").reduce((s, p) => s + p.referencias.reduce((a, r) => a + r.total, 0), 0);
+          const historico = peds.filter((p) => p.estado === "cerrado").length;
+          const totalPrendas = peds.filter((p) => p.estado !== "cerrado").reduce((s, p) => s + p.referencias.reduce((a, r) => a + r.total, 0), 0);
           return (
             <div key={c.id || i} style={{ background: T.white, borderRadius: 12, padding: 20, border: `1px solid ${T.border}` }}
               onMouseEnter={(e) => (e.currentTarget.style.boxShadow = "0 4px 20px rgba(26,26,46,0.09)")}
@@ -5514,7 +5519,7 @@ function DiagnosticoPedidoBusintView() {
   );
 }
 
-function InformeVigentesBusintView({ isAdmin }) {
+function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
   const [fechaInicio, setFechaInicio] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
@@ -5534,6 +5539,16 @@ function InformeVigentesBusintView({ isAdmin }) {
   const [ocultos, setOcultos] = useState([]);
   const [confirmOcultar, setConfirmOcultar] = useState(null);
   const [showOcultosPanel, setShowOcultosPanel] = useState(false);
+  // Última carga del reporte "Ventas Perdidas" (subido a mano — ningún
+  // endpoint de la API genérica de Busint trae Cumplido/Ventas Perdidas). Se
+  // guarda un doc nuevo por cada subida en "ventas_perdidas_cargas" y aquí
+  // se toma siempre el más reciente por creadoTs, igual que Planeación con
+  // sus cargas.
+  const [ventasPerdidasCargas, setVentasPerdidasCargas] = useState([]);
+  const [subiendoVP, setSubiendoVP] = useState(false);
+  const [congelando, setCongelando] = useState(false);
+  const [resultCongelar, setResultCongelar] = useState(null);
+  const vpInputRef = useRef(null);
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "pedidos_ocultos_busint"), (snap) => {
@@ -5542,6 +5557,99 @@ function InformeVigentesBusintView({ isAdmin }) {
     return () => unsub();
   }, []);
   const ocultosSet = new Set(ocultos.map((o) => o.numero));
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "ventas_perdidas_cargas"), (snap) => {
+      setVentasPerdidasCargas(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, []);
+  const ultimaCargaVP = ventasPerdidasCargas.reduce((max, c) => (!max || (c.creadoTs || 0) > (max.creadoTs || 0) ? c : max), null);
+  const vpMap = new Map((ultimaCargaVP?.filas || []).map((f) => [String(f.numero).trim(), f]));
+  // Un pedido cuenta como visible en pantalla solo si no está oculto a mano
+  // Y Busint no lo marca ya "Cumplido" en el reporte de Ventas Perdidas
+  // (aunque la API de órdenes lo siga devolviendo).
+  function esVisible(p) {
+    return !ocultosSet.has(p.numero) && !vpMap.get(String(p.numero).trim())?.cumplido;
+  }
+  async function subirVentasPerdidas(file) {
+    if (!file) return;
+    setSubiendoVP(true);
+    try {
+      const filas = await parseVentasPerdidasBusint(file);
+      await fsSave("ventas_perdidas_cargas", uid(), { creadoEn: today(), creadoTs: Date.now(), filas });
+    } catch (err) {
+      setError(err?.message || "No se pudo leer el archivo. Verifica que sea el reporte de Ventas Perdidas de Busint (.xlsx).");
+    }
+    setSubiendoVP(false);
+  }
+  // "Congelar" toma la lista vigente que se ve en pantalla (ya filtrada por
+  // ocultos + Ventas Perdidas) y la escribe en pedidos_activos — la única
+  // colección que leen tanto Pedidos como Corte desde ahora. Los pedidos que
+  // ya existían conservan cortesRealizados/seguimiento/precio de corte
+  // (fusión, no reemplazo); los que estaban activos y ya no aparecen en esta
+  // consulta se cierran solos con un motivo.
+  async function congelarBaseDeCorte() {
+    if (!resultado) return;
+    setCongelando(true);
+    setResultCongelar(null);
+    try {
+      const vigentesFiltrados = [];
+      resultado.porCliente.forEach((g) => {
+        g.pedidos.forEach((p) => {
+          if (!esVisible(p)) return;
+          vigentesFiltrados.push({ ...p, cliente: g.cliente });
+        });
+      });
+      const numerosNuevos = new Set(vigentesFiltrados.map((p) => String(p.numero).trim()));
+      const existentesPorNumero = new Map((pedidosActivos || []).map((p) => [String(p.numero || "").trim(), p]));
+      let nuevos = 0, actualizados = 0, cerrados = 0;
+      for (const p of vigentesFiltrados) {
+        const numero = String(p.numero).trim();
+        const existente = existentesPorNumero.get(numero);
+        const precioPorRef = new Map((existente?.referencias || []).map((r) => [r.ref, r.precioCortePrenda || 0]));
+        const referencias = (p.referencias || []).map((r) => ({
+          id: r.id || uid(),
+          ref: r.ref,
+          descripcion: r.descripcion,
+          tallas: { ...r.tallas },
+          total: r.total,
+          precioCortePrenda: precioPorRef.get(r.ref) || 0,
+        }));
+        const doc = {
+          id: numero,
+          numero,
+          cliente: p.cliente,
+          fechaPedido: p.fechaPedido,
+          fechaDespacho: p.fechaDespacho,
+          referencias,
+          cortesRealizados: existente?.cortesRealizados || [],
+          seguimiento: existente?.seguimiento || {},
+          estado: existente?.estado === "terminado" ? "terminado" : "activo",
+          motivoCierre: null,
+          fechaCumplido: null,
+          origen: "busint_vigentes",
+          congeladoEn: today(),
+          creadoEn: existente?.creadoEn || today(),
+        };
+        await fsSave("pedidos_activos", numero, doc);
+        if (existente) actualizados++; else nuevos++;
+      }
+      for (const existente of pedidosActivos || []) {
+        if (existente.estado === "cerrado") continue;
+        const numero = String(existente.numero || "").trim();
+        if (!numero || numerosNuevos.has(numero)) continue;
+        const vp = vpMap.get(numero);
+        const motivoCierre = vp?.cumplido ? (vp.totalVentasPerdidas > 0 ? "venta_perdida" : "facturado") : "ya_no_vigente";
+        await fsSave("pedidos_activos", existente.id, { ...existente, estado: "cerrado", motivoCierre, fechaCumplido: today() });
+        cerrados++;
+      }
+      setResultCongelar({ total: vigentesFiltrados.length, nuevos, actualizados, cerrados });
+    } catch (err) {
+      setResultCongelar({ error: err?.message || "No se pudo congelar la lista." });
+    }
+    setCongelando(false);
+  }
 
   async function ocultarPedido(numero) {
     await fsSave("pedidos_ocultos_busint", numero, { numero, ocultadoEn: today() });
@@ -5650,7 +5758,38 @@ function InformeVigentesBusintView({ isAdmin }) {
             👁 Ocultos ({ocultos.length})
           </Btn>
         )}
+        {isAdmin && (
+          <>
+            <input
+              type="file"
+              ref={vpInputRef}
+              accept=".xlsx,.xls,.csv"
+              style={{ display: "none" }}
+              onChange={(e) => { const f = e.target.files?.[0]; subirVentasPerdidas(f); e.target.value = ""; }}
+            />
+            <Btn variant="secondary" onClick={() => vpInputRef.current?.click()} disabled={subiendoVP}>
+              {subiendoVP ? "Procesando..." : "📤 Actualizar Ventas Perdidas"}
+            </Btn>
+          </>
+        )}
+        {isAdmin && resultado && (
+          <Btn onClick={congelarBaseDeCorte} disabled={congelando}>
+            {congelando ? "Congelando..." : "🧊 Congelar como base de Corte"}
+          </Btn>
+        )}
       </div>
+      {ultimaCargaVP && (
+        <div style={{ fontSize: 11, color: T.slate, marginBottom: 10 }}>
+          Último reporte de Ventas Perdidas subido: {ultimaCargaVP.creadoEn} — se usa automáticamente para ocultar de esta lista los pedidos que Busint ya marca "Cumplido" ahí.
+        </div>
+      )}
+      {resultCongelar && (
+        <div style={{ padding: "10px 16px", background: resultCongelar.error ? T.coralBg : T.jadeBg, borderRadius: 10, border: `1px solid ${resultCongelar.error ? T.coral : T.jade}44`, color: resultCongelar.error ? T.coral : T.jade, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
+          {resultCongelar.error
+            ? `⚠ ${resultCongelar.error}`
+            : `✓ Congelado: ${resultCongelar.total} pedidos vigentes (${resultCongelar.nuevos} nuevos, ${resultCongelar.actualizados} actualizados) — ${resultCongelar.cerrados} pedido${resultCongelar.cerrados === 1 ? "" : "s"} que ya no está${resultCongelar.cerrados === 1 ? "" : "n"} vigente${resultCongelar.cerrados === 1 ? "" : "s"} se cerró${resultCongelar.cerrados === 1 ? "" : "n"} automáticamente. Ya puedes verlos/cortarlos en Pedidos y en Corte.`}
+        </div>
+      )}
       {showOcultosPanel && (
         <div style={{ background: T.canvas, borderRadius: 12, border: `1px solid ${T.border}`, padding: 16, marginBottom: 16 }}>
           <div style={{ fontWeight: 700, fontSize: 13, color: T.ink, marginBottom: 10 }}>Pedidos ocultos en este aplicativo</div>
@@ -5689,19 +5828,19 @@ function InformeVigentesBusintView({ isAdmin }) {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 20 }}>
             <div style={{ background: T.denimBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.denim}22` }}>
               <div style={{ fontSize: 22, fontWeight: 900, color: T.denim }}>
-                {resultado.porCliente.reduce((s, g) => s + g.pedidos.filter((p) => !ocultosSet.has(p.numero)).length, 0)}
+                {resultado.porCliente.reduce((s, g) => s + g.pedidos.filter(esVisible).length, 0)}
               </div>
               <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>Pedidos vigentes</div>
             </div>
             <div style={{ background: T.coralBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.coral}22` }}>
               <div style={{ fontSize: 22, fontWeight: 900, color: T.coral }}>
-                {resultado.porCliente.reduce((s, g) => s + g.pedidos.filter((p) => p.vencido && !ocultosSet.has(p.numero)).length, 0)}
+                {resultado.porCliente.reduce((s, g) => s + g.pedidos.filter((p) => p.vencido && esVisible(p)).length, 0)}
               </div>
               <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>Vencidos sin cortar</div>
             </div>
             <div style={{ background: T.violetBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.violet}22` }}>
               <div style={{ fontSize: 22, fontWeight: 900, color: T.violet }}>
-                {resultado.porCliente.filter((g) => g.pedidos.some((p) => !ocultosSet.has(p.numero))).length}
+                {resultado.porCliente.filter((g) => g.pedidos.some(esVisible)).length}
               </div>
               <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>Clientes</div>
             </div>
@@ -5720,7 +5859,7 @@ function InformeVigentesBusintView({ isAdmin }) {
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               {resultado.porCliente.map((g) => {
                 const expandido = expandidos.has(g.cliente);
-                const pedidosVisibles = g.pedidos.filter((p) => !ocultosSet.has(p.numero));
+                const pedidosVisibles = g.pedidos.filter(esVisible);
                 return (
                   <div key={g.cliente} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, overflow: "hidden" }}>
                     <div
@@ -5914,90 +6053,37 @@ async function parseVentasPerdidasBusint(file) {
   return [...porPedido.values()];
 }
 
+// Devuelve ícono/color/etiqueta para mostrar por qué se cerró un pedido en
+// pedidos_activos (campo motivoCierre). "manual" es cuando alguien le da clic
+// a "✓ Cumplido" en el detalle del pedido; los otros tres los pone solo el
+// botón "Congelar como base de Corte" en Vigentes por Cliente, comparando
+// contra la consulta en vivo de Busint (y, si está subido, el reporte de
+// Ventas Perdidas).
+function motivoCierreInfo(motivo) {
+  switch (motivo) {
+    case "venta_perdida":
+      return { icon: "💸", color: T.amber, bg: T.amberBg, label: "Venta Perdida (Busint)", desc: "Cerrado por Busint desde" };
+    case "facturado":
+      return { icon: "✅", color: T.jade, bg: T.jadeBg, label: "Facturado (Busint)", desc: "Cerrado por Busint desde" };
+    case "ya_no_vigente":
+      return { icon: "🚫", color: T.coral, bg: T.coralBg, label: "Ya no vigente en Busint", desc: "Dejó de aparecer en Busint desde" };
+    default:
+      return { icon: "✅", color: T.jade, bg: T.jadeBg, label: "Cumplido", desc: "Cumplido" };
+  }
+}
+
 function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, pedidoConfig, onSavePedidoConfig, isAdmin }) {
   const [filtro, setFiltro] = useState("activos");
   const [editPedido, setEditPedido] = useState(null);
-  const [revisando, setRevisando] = useState(false);
-  const [resultRevision, setResultRevision] = useState(null);
-  const [subiendoVP, setSubiendoVP] = useState(false);
-  const [resultVP, setResultVP] = useState(null);
-  const vpInputRef = useRef(null);
   const activos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado");
-  // "cancelado_busint" es un estado propio, distinto de "cumplido": lo pone
-  // automáticamente "Revisar contra Busint" cuando un pedido que estaba
-  // activo ya no aparece en Busint (se canceló o se cerró allá) — no
-  // significa que se terminó de cortar, por eso se distingue en pantalla.
-  // "venta_perdida_busint" es otro estado propio, distinto de ambos: lo pone
-  // automáticamente la subida del reporte "Ventas Perdidas" cuando Busint
-  // marca Cumplido="S" en ese pedido PERO con unidades dadas de baja como
-  // venta perdida — el pedido sigue apareciendo en las órdenes de Busint (a
-  // diferencia de cancelado_busint), pero ya está cerrado allá.
-  const historico = pedidos.filter((p) => p.estado === "cumplido" || p.estado === "cancelado_busint" || p.estado === "venta_perdida_busint");
+  // Un único estado de cierre ("cerrado"), con el motivo en motivoCierre — ya
+  // no hay "cumplido"/"cancelado_busint"/"venta_perdida_busint" por separado.
+  // Se cierra automáticamente desde "🧊 Congelar como base de Corte" (pestaña
+  // Vigentes por Cliente) cuando un pedido activo deja de aparecer en la
+  // consulta en vivo de Busint, o a mano desde el detalle del pedido.
+  const historico = pedidos.filter((p) => p.estado === "cerrado");
   const lista = filtro === "activos" ? activos : historico;
   const hoy = new Date();
-  // Consulta Busint en vivo (mismo endpoint de órdenes de pedido que ya usa
-  // el Informe de Vigentes) para un rango fijo amplio (3 años atrás hasta
-  // hoy) — así no se pierde ningún pedido activo por quedar fuera del rango
-  // consultado. Cualquier activo cuyo número ya NO aparezca en la respuesta
-  // se marca "cancelado_busint".
-  async function revisarContraBusint() {
-    if (!activos.length) { setResultRevision({ error: "No hay pedidos activos para revisar." }); return; }
-    // OJO: NO se calcula fechaInicio a partir de las fechas guardadas en los
-    // pedidos — algunas (sobre todo las que vienen del Excel manual de
-    // Corte) no siempre quedan en formato AAAA-MM-DD, así que compararlas
-    // como texto podía dar un rango incorrecto (o directamente ninguno). Se
-    // usa mejor un rango fijo bien amplio, que cubre cualquier pedido activo
-    // real sin depender de qué tan bien formateada esté su fecha guardada.
-    const fechaInicio = (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 3); return d.toISOString().slice(0, 10); })();
-    const fechaFin = today();
-    setRevisando(true);
-    setResultRevision(null);
-    try {
-      const llamar = httpsCallable(functionsClient, "getPedidosExistentesBusint");
-      const resp = await llamar({ fechaInicio, fechaFin });
-      const existentesSet = new Set((resp.data.numeros || []).map((n) => String(n).trim()));
-      const desaparecidos = activos.filter((p) => p.numero && !existentesSet.has(String(p.numero).trim()));
-      for (const p of desaparecidos) {
-        await onUpdatePedido({ ...p, estado: "cancelado_busint", fechaCumplido: today() });
-      }
-      setResultRevision({ revisados: activos.length, marcados: desaparecidos.length });
-    } catch (err) {
-      setResultRevision({ error: err?.message || "No se pudo consultar Busint. Intenta de nuevo en unos minutos." });
-    }
-    setRevisando(false);
-  }
-  // Sube el reporte "Ventas Perdidas" (exportado a mano desde Busint) y
-  // cruza cada pedido activo local contra él por número de pedido. Si Busint
-  // lo marca "Cumplido" ahí, se cierra automáticamente en el aplicativo: si
-  // tuvo unidades en "Cant Ventas Perdidas" queda como "venta_perdida_busint"
-  // (se distingue en pantalla), si no, como "cumplido" normal.
-  async function subirVentasPerdidas(file) {
-    if (!file) return;
-    setSubiendoVP(true);
-    setResultVP(null);
-    try {
-      const filas = await parseVentasPerdidasBusint(file);
-      const porNumero = new Map(filas.map((f) => [f.numero, f]));
-      let cerradosCumplido = 0;
-      let cerradosVentaPerdida = 0;
-      for (const p of activos) {
-        if (!p.numero) continue;
-        const info = porNumero.get(String(p.numero).trim());
-        if (!info || !info.cumplido) continue;
-        if (info.totalVentasPerdidas > 0) {
-          await onUpdatePedido({ ...p, estado: "venta_perdida_busint", fechaCumplido: today(), ventasPerdidasUds: info.totalVentasPerdidas });
-          cerradosVentaPerdida++;
-        } else {
-          await onUpdatePedido({ ...p, estado: "cumplido", fechaCumplido: today() });
-          cerradosCumplido++;
-        }
-      }
-      setResultVP({ revisados: activos.length, enReporte: filas.length, cerradosCumplido, cerradosVentaPerdida });
-    } catch (err) {
-      setResultVP({ error: err?.message || "No se pudo leer el archivo. Verifica que sea el reporte de Ventas Perdidas de Busint (.xlsx)." });
-    }
-    setSubiendoVP(false);
-  }
   const vencidos = activos.filter((p) => p.fechaDespacho && new Date(p.fechaDespacho) < hoy);
   const proximos = activos.filter((p) => { if (!p.fechaDespacho) return false; const d = Math.ceil((new Date(p.fechaDespacho) - hoy) / 86400000); return d >= 0 && d <= 7; });
   const vigentes = activos.filter((p) => { if (!p.fechaDespacho) return true; return Math.ceil((new Date(p.fechaDespacho) - hoy) / 86400000) > 7; });
@@ -6006,44 +6092,11 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
     <div>
       {editPedido && <EditPedidoModal pedido={editPedido} onSave={(p) => { onUpdatePedido(p); setEditPedido(null); }} onClose={() => setEditPedido(null)} />}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Pedidos</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Seguimiento y control de pedidos Busint</p></div>
+        <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Pedidos</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Base de pedidos vigentes — se actualiza desde "📡 Vigentes por Cliente (Busint)"</p></div>
         <div style={{ display: "flex", gap: 8 }}>
-          {isAdmin && (
-            <Btn variant="secondary" onClick={revisarContraBusint} disabled={revisando}>
-              {revisando ? "Revisando..." : "🔄 Revisar contra Busint"}
-            </Btn>
-          )}
-          {isAdmin && (
-            <>
-              <input
-                type="file"
-                ref={vpInputRef}
-                accept=".xlsx,.xls,.csv"
-                style={{ display: "none" }}
-                onChange={(e) => { const f = e.target.files?.[0]; subirVentasPerdidas(f); e.target.value = ""; }}
-              />
-              <Btn variant="secondary" onClick={() => vpInputRef.current?.click()} disabled={subiendoVP}>
-                {subiendoVP ? "Procesando..." : "📤 Cargar Ventas Perdidas"}
-              </Btn>
-            </>
-          )}
-          <Btn onClick={onNewPedido}>+ Cargar Pedido</Btn>
+          <Btn variant="secondary" onClick={onNewPedido}>+ Pedido manual</Btn>
         </div>
       </div>
-      {resultRevision && (
-        <div style={{ padding: "10px 16px", background: resultRevision.error ? T.coralBg : T.jadeBg, borderRadius: 10, border: `1px solid ${resultRevision.error ? T.coral : T.jade}44`, color: resultRevision.error ? T.coral : T.jade, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
-          {resultRevision.error
-            ? `⚠ ${resultRevision.error}`
-            : `✓ Se revisaron ${resultRevision.revisados} pedidos activos contra Busint — ${resultRevision.marcados} ya no existían allá y se marcaron como cancelados.`}
-        </div>
-      )}
-      {resultVP && (
-        <div style={{ padding: "10px 16px", background: resultVP.error ? T.coralBg : T.jadeBg, borderRadius: 10, border: `1px solid ${resultVP.error ? T.coral : T.jade}44`, color: resultVP.error ? T.coral : T.jade, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
-          {resultVP.error
-            ? `⚠ ${resultVP.error}`
-            : `✓ Reporte con ${resultVP.enReporte} pedidos — de ${resultVP.revisados} activos locales, ${resultVP.cerradosCumplido + resultVP.cerradosVentaPerdida} ya estaban cerrados en Busint (${resultVP.cerradosCumplido} cumplidos, ${resultVP.cerradosVentaPerdida} por venta perdida).`}
-        </div>
-      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 20 }}>
         {[
           { label: "Total Activos", value: activos.length, icon: "📦", color: T.denim, bg: T.denimBg },
@@ -6090,7 +6143,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           <button key={v} onClick={() => setFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filtro === v ? T.ink : T.border}`, background: filtro === v ? T.ink : T.white, color: filtro === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
-      {filtro === "vigentes_busint" && <InformeVigentesBusintView isAdmin={isAdmin} />}
+      {filtro === "vigentes_busint" && <InformeVigentesBusintView isAdmin={isAdmin} pedidosActivos={pedidos} />}
       {filtro === "diagnostico_busint" && <DiagnosticoPedidoBusintView />}
       {filtro === "activos" && lista.length > 0 && (
         <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, overflow: "hidden", marginBottom: 16 }}>
@@ -6146,27 +6199,25 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           {lista.sort((a, b) => (b.fechaCumplido || "").localeCompare(a.fechaCumplido || "")).map((p) => {
             const totalP = p.referencias.reduce((s, r) => s + r.total, 0);
             const totalC = (p.cortesRealizados || []).reduce((s, c) => s + (c.totalUnidades || 0), 0);
-            const esCancelado = p.estado === "cancelado_busint";
-            const esVentaPerdida = p.estado === "venta_perdida_busint";
+            const mi = motivoCierreInfo(p.motivoCierre);
             return (
               <div key={p.id} onClick={() => onSelectPedido(p.id)} style={{ display: "flex", alignItems: "center", gap: 16, padding: "14px 18px", background: T.white, borderRadius: 12, border: `1px solid ${T.border}`, cursor: "pointer" }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = T.canvas)}
                 onMouseLeave={(e) => (e.currentTarget.style.background = T.white)}
               >
-                <div style={{ width: 40, height: 40, borderRadius: "50%", background: esCancelado ? T.coralBg : esVentaPerdida ? T.amberBg : T.jadeBg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>{esCancelado ? "🚫" : esVentaPerdida ? "💸" : "✅"}</div>
+                <div style={{ width: 40, height: 40, borderRadius: "50%", background: mi.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>{mi.icon}</div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 800, color: T.ink, display: "flex", alignItems: "center", gap: 8 }}>
                     Pedido #{p.numero} — {p.cliente}
-                    {esCancelado && <span style={{ fontSize: 10, fontWeight: 800, color: T.coral, background: T.coralBg, padding: "1px 8px", borderRadius: 10 }}>Cancelado en Busint</span>}
-                    {esVentaPerdida && <span style={{ fontSize: 10, fontWeight: 800, color: T.amber, background: T.amberBg, padding: "1px 8px", borderRadius: 10 }}>Venta Perdida (Busint)</span>}
+                    <span style={{ fontSize: 10, fontWeight: 800, color: mi.color, background: mi.bg, padding: "1px 8px", borderRadius: 10 }}>{mi.label}</span>
                   </div>
                   <div style={{ fontSize: 12, color: T.slate }}>
-                    {esCancelado ? "Ya no existe en Busint desde" : esVentaPerdida ? "Cerrado por Busint desde" : "Cumplido"}: {p.fechaCumplido || "—"} · {fmtNum(totalP)} uds pedidas · {fmtNum(totalC)} cortadas
-                    {esVentaPerdida && p.ventasPerdidasUds ? ` · ${fmtNum(p.ventasPerdidasUds)} uds dadas de baja` : ""}
+                    {mi.desc}: {p.fechaCumplido || "—"} · {fmtNum(totalP)} uds pedidas · {fmtNum(totalC)} cortadas
+                    {p.motivoCierre === "venta_perdida" && p.ventasPerdidasUds ? ` · ${fmtNum(p.ventasPerdidasUds)} uds dadas de baja` : ""}
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={(e) => { e.stopPropagation(); onUpdatePedido({ ...p, estado: "activo", fechaCumplido: null }); }} style={{ background: T.amberBg, border: `1px solid ${T.amber}44`, borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, color: T.amber, cursor: "pointer" }}>↩ Reactivar</button>
+                  <button onClick={(e) => { e.stopPropagation(); onUpdatePedido({ ...p, estado: "activo", motivoCierre: null, fechaCumplido: null }); }} style={{ background: T.amberBg, border: `1px solid ${T.amber}44`, borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, color: T.amber, cursor: "pointer" }}>↩ Reactivar</button>
                   <button onClick={(e) => { e.stopPropagation(); setEditPedido(p); }} style={{ background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 6, padding: "4px 8px", fontSize: 11, fontWeight: 700, color: T.slate, cursor: "pointer" }}>✏</button>
                 </div>
               </div>
@@ -6297,7 +6348,12 @@ function AppInner() {
         unsubs.push(unsubHistorial);
         const unsubCronogramaMuestras = onSnapshot(collection(db, "cronograma_muestras"), (snap) => { setCronogramaMuestras(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubs.push(unsubCronogramaMuestras);
-        const unsubPedidos = onSnapshot(collection(db, "pedidos"), (snap) => { setPedidos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        // "pedidos_activos" reemplaza a la vieja colección "pedidos" (y a
+        // "corte_pedidos" del módulo Corte, que nunca se llegó a usar): es la
+        // única fuente de verdad ahora, alimentada por "🧊 Congelar como base
+        // de Corte" en Vigentes por Cliente — tanto Pedidos como Corte leen
+        // de aquí.
+        const unsubPedidos = onSnapshot(collection(db, "pedidos_activos"), (snap) => { setPedidos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubs.push(unsubPedidos);
         // Mismo motivo que "config": pedidoConfig (clientes/vendedores de
         // Pedidos) se sincroniza en vivo en vez de leerse una sola vez con
@@ -6666,7 +6722,7 @@ function AppInner() {
   async function addPedido(p) {
     const updated = [...pedidos, p];
     setPedidos(updated);
-    await fsSave("pedidos", p.id, p);
+    await fsSave("pedidos_activos", p.id, p);
     // Los clientes de Pedidos usan la misma lista que Administrador General →
     // Clientes (config.clientes) — un cliente nuevo cargado desde un pedido
     // se registra ahí, no en una lista aparte (pedidoConfig ya no guarda
@@ -6683,7 +6739,7 @@ function AppInner() {
   async function updatePedido(updatedPedido) {
     const updated = pedidos.map((p) => (p.id === updatedPedido.id ? updatedPedido : p));
     setPedidos(updated);
-    await fsSave("pedidos", updatedPedido.id, updatedPedido);
+    await fsSave("pedidos_activos", updatedPedido.id, updatedPedido);
   }
   const selProto = protos.find((p) => p.id === selProtoId);
   const selCap = capsulas.find((c) => c.id === selCapId);
