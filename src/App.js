@@ -5430,6 +5430,10 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
   }, []);
   const ultimaCargaVP = ventasPerdidasCargas.reduce((max, c) => (!max || (c.creadoTs || 0) > (max.creadoTs || 0) ? c : max), null);
   const vpMap = new Map((ultimaCargaVP?.filas || []).map((f) => [String(f.numero).trim(), f]));
+  // Por pedido+referencia — permite calcular cuánto de cada referencia ya
+  // quedó resuelto en Busint (facturado + traslados + venta perdida) sin
+  // depender de que Corte haya registrado el corte a mano en el aplicativo.
+  const vpRefMap = new Map((ultimaCargaVP?.filasPorRef || []).map((f) => [`${f.numero}__${f.ref}`, f]));
   // Un pedido cuenta como visible en pantalla solo si no está oculto a mano
   // Y Busint no lo marca ya "Cumplido" en el reporte de Ventas Perdidas
   // (aunque la API de órdenes lo siga devolviendo).
@@ -5440,8 +5444,8 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
     if (!file) return;
     setSubiendoVP(true);
     try {
-      const filas = await parseVentasPerdidasBusint(file);
-      await fsSave("ventas_perdidas_cargas", uid(), { creadoEn: today(), creadoTs: Date.now(), filas });
+      const { porPedido, porReferencia } = await parseVentasPerdidasBusint(file);
+      await fsSave("ventas_perdidas_cargas", uid(), { creadoEn: today(), creadoTs: Date.now(), filas: porPedido, filasPorRef: porReferencia });
     } catch (err) {
       setError(err?.message || "No se pudo leer el archivo. Verifica que sea el reporte de Ventas Perdidas de Busint (.xlsx).");
     }
@@ -5547,11 +5551,19 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
 
   // Arma la tabla horizontal de detalle de un pedido: una fila por
   // referencia (sumando variantes de color/pinta), con una columna por cada
-  // talla que aparezca en ese pedido, más Total/Cortado/Pendiente. El
-  // cruce con lo cortado se hace por código de referencia (r.ref) — no por
-  // id, porque el id de cada referencia se regenera en cada consulta a
-  // Busint y nunca coincidiría con el refId guardado en cortesRealizados.
-  function detalleHorizontal(p, pedidoActivo) {
+  // talla que aparezca en ese pedido, más Total/Cortado/Pendiente.
+  //
+  // "Cortado" ya NO depende solo de que Corte haya registrado el corte a
+  // mano en el aplicativo (esa disciplina no se estaba dando de forma
+  // confiable). Cuando el reporte de Ventas Perdidas trae esa referencia
+  // para ese pedido, se prefiere ESA fuente: se considera "resuelto" todo lo
+  // que Busint ya facturó, trasladó (externo o consignación) o dio de baja
+  // como venta perdida — lo que no está cubierto ahí es lo que de verdad
+  // falta por cortar, según pidió el usuario. Si el pedido/referencia no
+  // aparece en el reporte de Ventas Perdidas (p. ej. porque nunca se ha
+  // subido, o es un pedido nuevo que aún no tiene movimientos), se cae de
+  // vuelta a lo que Corte sí haya registrado en pedidos_activos.
+  function detalleHorizontal(p, pedidoActivo, vpRefMap) {
     const porRef = new Map();
     p.referencias.forEach((r) => {
       if (!porRef.has(r.ref)) porRef.set(r.ref, { ref: r.ref, descripcion: r.descripcion, tallas: {}, total: 0 });
@@ -5562,11 +5574,11 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
         acc.total += cant;
       });
     });
-    const cortadoPorRef = new Map();
+    const cortadoPorRefApp = new Map();
     (pedidoActivo?.cortesRealizados || []).forEach((c) => {
       (c.refs || []).forEach((cr) => {
         const suma = Object.values(cr.tallas || {}).reduce((a, b) => a + (b || 0), 0);
-        cortadoPorRef.set(cr.ref, (cortadoPorRef.get(cr.ref) || 0) + suma);
+        cortadoPorRefApp.set(cr.ref, (cortadoPorRefApp.get(cr.ref) || 0) + suma);
       });
     });
     const tallasDistintas = [];
@@ -5574,8 +5586,16 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
       Object.keys(r.tallas).forEach((t) => { if (!tallasDistintas.includes(t)) tallasDistintas.push(t); });
     });
     const filas = [...porRef.values()].map((r) => {
-      const cortado = cortadoPorRef.get(r.ref) || 0;
-      return { ...r, cortado, pendiente: Math.max(0, r.total - cortado) };
+      const vp = vpRefMap?.get(`${p.numero}__${r.ref}`);
+      let cortado, fuente;
+      if (vp) {
+        cortado = (vp.totalFacturada || 0) + (vp.totalTrasExt || 0) + (vp.totalTrasCon || 0) + Math.abs(vp.totalVentasPerdidas || 0);
+        fuente = "busint";
+      } else {
+        cortado = cortadoPorRefApp.get(r.ref) || 0;
+        fuente = "app";
+      }
+      return { ...r, cortado, pendiente: Math.max(0, r.total - cortado), fuente };
     });
     return { tallasDistintas, filas };
   }
@@ -5847,15 +5867,14 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
                                   </tr>
                                   {detalleAbierto && (() => {
                                     const pedidoActivo = pedidosActivosPorNumero.get(String(p.numero).trim());
-                                    const { tallasDistintas, filas } = detalleHorizontal(p, pedidoActivo);
+                                    const { tallasDistintas, filas } = detalleHorizontal(p, pedidoActivo, vpRefMap);
+                                    const algunaFuenteApp = filas.some((r) => r.fuente === "app");
                                     return (
                                     <tr style={{ borderBottom: `1px solid ${T.border}` }}>
                                       <td colSpan={isAdmin ? 8 : 7} style={{ padding: "0 10px 12px 34px", background: T.canvas }}>
-                                        {!pedidoActivo && (
-                                          <div style={{ fontSize: 10, color: T.slate, margin: "6px 0" }}>
-                                            Este pedido aún no se ha congelado como base de Corte — "Cortado"/"Pendiente" muestran 0/Total hasta que se use "🧊 Congelar como base de Corte".
-                                          </div>
-                                        )}
+                                        <div style={{ fontSize: 10, color: T.slate, margin: "6px 0" }}>
+                                          "Cortado"/"Pendiente" se calculan primero con el reporte de Ventas Perdidas (facturado + traslados + venta perdida por referencia){algunaFuenteApp ? "; las referencias marcadas (app) no aparecen ahí y usan en su lugar lo registrado en Corte" : ""}.
+                                        </div>
                                         <div style={{ overflowX: "auto" }}>
                                           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                                             <thead>
@@ -5888,7 +5907,10 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
                                                     <td key={t} style={{ padding: "5px 8px", textAlign: "right", color: r.tallas[t] ? T.ink : T.border }}>{r.tallas[t] || "—"}</td>
                                                   ))}
                                                   <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 800, color: T.denim }}>{fmtNum(r.total)}</td>
-                                                  <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 700, color: T.jade }}>{fmtNum(r.cortado)}</td>
+                                                  <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 700, color: T.jade }}>
+                                                    {fmtNum(r.cortado)}
+                                                    {r.fuente === "app" && <span style={{ color: T.slate, fontWeight: 600, marginLeft: 4 }}>(app)</span>}
+                                                  </td>
                                                   <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 700, color: r.pendiente > 0 ? T.coral : T.jade }}>{fmtNum(r.pendiente)}</td>
                                                 </tr>
                                               ))}
@@ -5919,16 +5941,26 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
 
 // Parsea el reporte "Ventas Perdidas" que exportan los asesores de Busint
 // desde su módulo de Ventas (una fila por referencia/talla/color, con
-// columnas "Num Ped", "Cumplido" (S/N), "Cant Pedida", "Cant Facturada",
-// "Cant Ventas Perdidas", entre otras). Se confirmó con datos reales que
-// "Cumplido" es el MISMO valor en todas las filas de un mismo pedido, así
-// que basta con tomarlo de cualquiera de sus filas — es la señal propia de
-// Busint de que el pedido ya está cerrado, ya sea porque se facturó
-// completo o porque se dio de baja como venta perdida (el pedido #1445 es
-// justo este segundo caso: 1 unidad pedida, 0 facturada, -1 en "Cant Ventas
-// Perdidas", y aun así Cumplido="S"). Ningún endpoint de la API genérica de
-// Busint (revisados los 12 documentados) trae estos dos campos, por eso
-// este reporte se sube a mano en vez de consultarse en vivo.
+// columnas "Num Ped", "Referencia", "Cumplido" (S/N), "Cant Pedida", "Cant
+// Facturada", "Cant TrasExt", "Cant TrasCon", "Cant Ventas Perdidas", entre
+// otras). Se confirmó con datos reales que "Cumplido" es el MISMO valor en
+// todas las filas de un mismo pedido, así que basta con tomarlo de
+// cualquiera de sus filas — es la señal propia de Busint de que el pedido
+// ya está cerrado, ya sea porque se facturó completo o porque se dio de
+// baja como venta perdida (el pedido #1445 es justo este segundo caso: 1
+// unidad pedida, 0 facturada, -1 en "Cant Ventas Perdidas", y aun así
+// Cumplido="S"). Ningún endpoint de la API genérica de Busint (revisados
+// los 12 documentados) trae estos campos, por eso este reporte se sube a
+// mano en vez de consultarse en vivo.
+//
+// Además del agregado por pedido (para el chequeo de "Cumplido"), esta
+// función agrega TAMBIÉN por pedido+referencia — es lo que permite mostrar
+// en Vigentes por Cliente cuánto de cada referencia ya se facturó, se
+// trasladó o se dio de baja como venta perdida, y por lo tanto cuánto
+// realmente falta por cortar SIN depender de que Corte haya registrado el
+// corte a mano en el aplicativo (esa disciplina manual es justo lo que no
+// se estaba dando, según explicó el usuario con el pedido de las
+// referencias C-5031/C-5046).
 async function parseVentasPerdidasBusint(file) {
   const XLSX = await import("xlsx");
   const buffer = await file.arrayBuffer();
@@ -5936,6 +5968,7 @@ async function parseVentasPerdidasBusint(file) {
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
   const porPedido = new Map();
+  const porReferencia = new Map();
   rows.forEach((r) => {
     const numero = String(r["Num Ped"] ?? "").trim();
     if (!numero) return;
@@ -5953,8 +5986,29 @@ async function parseVentasPerdidasBusint(file) {
     acc.totalPedida += Number(r["Cant Pedida"]) || 0;
     acc.totalFacturada += Number(r["Cant Facturada"]) || 0;
     acc.totalVentasPerdidas += Math.abs(Number(r["Cant Ventas Perdidas"]) || 0);
+
+    const ref = String(r["Referencia"] ?? "").trim();
+    if (!ref) return;
+    const claveRef = `${numero}__${ref}`;
+    if (!porReferencia.has(claveRef)) {
+      porReferencia.set(claveRef, {
+        numero,
+        ref,
+        totalPedida: 0,
+        totalFacturada: 0,
+        totalTrasExt: 0,
+        totalTrasCon: 0,
+        totalVentasPerdidas: 0,
+      });
+    }
+    const accRef = porReferencia.get(claveRef);
+    accRef.totalPedida += Number(r["Cant Pedida"]) || 0;
+    accRef.totalFacturada += Number(r["Cant Facturada"]) || 0;
+    accRef.totalTrasExt += Number(r["Cant TrasExt"]) || 0;
+    accRef.totalTrasCon += Number(r["Cant TrasCon"]) || 0;
+    accRef.totalVentasPerdidas += Math.abs(Number(r["Cant Ventas Perdidas"]) || 0);
   });
-  return [...porPedido.values()];
+  return { porPedido: [...porPedido.values()], porReferencia: [...porReferencia.values()] };
 }
 
 // Devuelve ícono/color/etiqueta para mostrar por qué se cerró un pedido en
