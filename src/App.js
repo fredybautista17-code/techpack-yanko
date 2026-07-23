@@ -5775,36 +5775,68 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
                 }
               });
             });
+            encontrados.sort((a, b) => String(b.cargaFecha || "").localeCompare(String(a.cargaFecha || "")));
+            const maxPorLote = new Map();
+            encontrados.forEach((l) => {
+              const key = String(l.numLote ?? "");
+              const cc = Number(l.cantCortada) || 0;
+              if (!maxPorLote.has(key) || cc > maxPorLote.get(key).cantCortada) {
+                maxPorLote.set(key, { numLote: l.numLote, referencia: l.referencia, cantCortada: cc });
+              }
+            });
             return (
               <div style={{ marginTop: 8, fontSize: 11 }}>
                 <div style={{ color: T.slate, marginBottom: 4 }}>
                   {encontrados.length === 0
                     ? `No se encontró ningún lote con numPedido === "${objetivo}" (comparando como texto) en ninguna de las ${planeacionCargas.length} cargas.`
-                    : `${encontrados.length} lote(s) encontrados:`}
+                    : `${encontrados.length} fila(s) encontradas (ordenadas de carga más reciente a más vieja). Resumen — máximo cantCortada visto por lote (esto es lo que usa el cruce):`}
                 </div>
-                {encontrados.length > 0 && (
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                {maxPorLote.size > 0 && (
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10, marginBottom: 10 }}>
                     <thead>
                       <tr style={{ color: T.slate, textAlign: "left" }}>
                         <th style={{ padding: 4 }}>numLote</th>
-                        <th style={{ padding: 4 }}>numPedido (raw)</th>
-                        <th style={{ padding: 4 }}>referencia (raw)</th>
-                        <th style={{ padding: 4 }}>cantCortada</th>
-                        <th style={{ padding: 4 }}>carga</th>
+                        <th style={{ padding: 4 }}>referencia</th>
+                        <th style={{ padding: 4 }}>MAX cantCortada</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {encontrados.map((l, i) => (
-                        <tr key={i} style={{ borderTop: `1px solid ${T.border}` }}>
+                      {[...maxPorLote.values()].map((l, i) => (
+                        <tr key={i} style={{ borderTop: `1px solid ${T.border}`, fontWeight: 700 }}>
                           <td style={{ padding: 4 }}>{JSON.stringify(l.numLote)}</td>
-                          <td style={{ padding: 4 }}>{JSON.stringify(l.numPedido)}</td>
                           <td style={{ padding: 4 }}>{JSON.stringify(l.referencia)}</td>
-                          <td style={{ padding: 4 }}>{JSON.stringify(l.cantCortada)}</td>
-                          <td style={{ padding: 4 }}>{l.cargaFecha}</td>
+                          <td style={{ padding: 4, color: l.cantCortada > 0 ? T.jade : T.coral }}>{l.cantCortada}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                )}
+                {encontrados.length > 0 && (
+                  <>
+                    <div style={{ color: T.slate, marginBottom: 4 }}>Detalle crudo por carga (más reciente primero):</div>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                      <thead>
+                        <tr style={{ color: T.slate, textAlign: "left" }}>
+                          <th style={{ padding: 4 }}>numLote</th>
+                          <th style={{ padding: 4 }}>numPedido (raw)</th>
+                          <th style={{ padding: 4 }}>referencia (raw)</th>
+                          <th style={{ padding: 4 }}>cantCortada</th>
+                          <th style={{ padding: 4 }}>carga</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {encontrados.map((l, i) => (
+                          <tr key={i} style={{ borderTop: `1px solid ${T.border}` }}>
+                            <td style={{ padding: 4 }}>{JSON.stringify(l.numLote)}</td>
+                            <td style={{ padding: 4 }}>{JSON.stringify(l.numPedido)}</td>
+                            <td style={{ padding: 4 }}>{JSON.stringify(l.referencia)}</td>
+                            <td style={{ padding: 4 }}>{JSON.stringify(l.cantCortada)}</td>
+                            <td style={{ padding: 4 }}>{l.cargaFecha}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
                 )}
               </div>
             );
