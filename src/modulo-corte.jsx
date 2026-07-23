@@ -426,7 +426,7 @@ async function parseNomina(file) {
   return filas;
 }
 
-function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, onSave, onClose }) {
+function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, lotesExistentes, onGuardarLote, preseleccion, onSave, onClose }) {
   const mes = new Date().getMonth() + 1;
   const anio = new Date().getFullYear();
   const [form, setForm] = useState({
@@ -444,12 +444,18 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, onSave, 
     // cortar todas las capas del trazo (no incluye empaque ni entrega).
     horaInicio: "",
     horaFin: "",
+    // Número de lote del corte — obligatorio y nunca se puede repetir (ver
+    // validación en save()). Se genera un lote por cada corte registrado.
+    lote: "",
   });
   // El precio por prenda se toma primero del archivo de precios de corte
   // (Admin Corte → Precios Corte, la fuente "oficial" por referencia); si esa
   // referencia no aparece ahí, se cae al precio que ya tuviera guardado el
   // pedido (precioCortePrenda, capturado a mano en cortes anteriores); si
   // tampoco hay eso, queda en 0 y se puede escribir a mano como antes.
+  // Si venimos de un ítem ya programado (preseleccion), se precargan las
+  // cantidades por talla de esa referencia — quedan editables por si algo
+  // cambió al momento de cortar (ej. no alcanzó la tela).
   const [cantidades, setCantidades] = useState(() => {
     const c = {};
     pedido.referencias.forEach((r) => {
@@ -459,9 +465,16 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, onSave, 
       TALLAS_BUSINT.forEach((t) => {
         c[r.id].tallas[t] = 0;
       });
+      if (preseleccion && preseleccion.ref === r.ref) {
+        Object.entries(preseleccion.tallas || {}).forEach(([t, cant]) => {
+          if (t in c[r.id].tallas) c[r.id].tallas[t] = cant;
+        });
+      }
     });
     return c;
   });
+  const loteTrim = form.lote.trim();
+  const loteRepetido = loteTrim && lotesExistentes?.has(loteTrim.toUpperCase());
 
   function pendiente(ref) {
     const yaCortado = (pedido.cortesRealizados || [])
@@ -511,8 +524,9 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, onSave, 
     return trazo * capas;
   }
 
-  function save() {
+  async function save() {
     if (!form.planta || !form.cortador || !form.fecha) return;
+    if (!loteTrim || loteRepetido) return;
     const refs = pedido.referencias
       .map((r) => ({
         refId: r.id,
@@ -541,11 +555,23 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, onSave, 
       horaInicio: form.horaInicio,
       horaFin: form.horaFin,
       minutos: minutosTotales(),
+      lote: loteTrim,
       refs,
       ingresoCorte: ingresoTotal(),
       totalUnidades: totalCortando(),
       creadoEn: new Date().toISOString(),
     };
+    // Cada corte registrado genera su propio lote — registro simple con lo
+    // que se cortó, para poder controlar que el número nunca se repita.
+    await onGuardarLote?.({
+      numero: loteTrim,
+      pedidoId: pedido.id,
+      numeroPedido: pedido.numero,
+      cliente: pedido.cliente,
+      cantidad: totalCortando(),
+      fecha: form.fecha,
+      creadoEn: new Date().toISOString(),
+    });
     onSave(corte);
     onClose();
   }
@@ -684,6 +710,23 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, onSave, 
             {minutosTotales() > 0 ? `${minutosTotales()} min` : "—"}
           </div>
         </Field>
+      </div>
+
+      {/* Número de lote — obligatorio, nunca se puede repetir. Cada corte
+          registrado genera su propio lote (registro simple de control). */}
+      <div style={{ marginBottom: 16 }}>
+        <Field label="Número de Lote (obligatorio, único)">
+          <FInput
+            value={form.lote}
+            onChange={(v) => setForm((f) => ({ ...f, lote: v }))}
+            placeholder="Ej: L-0234"
+          />
+        </Field>
+        {loteRepetido && (
+          <div style={{ marginTop: 6, fontSize: 12, color: C.red, fontWeight: 700 }}>
+            ⚠ Ese número de lote ya existe — usa uno diferente.
+          </div>
+        )}
       </div>
 
       {minutosTotales() > 0 && metrosTotales() > 0 && (
@@ -892,7 +935,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, onSave, 
         <Btn
           variant="success"
           onClick={save}
-          disabled={totalCortando() === 0 || !form.planta || !form.cortador}
+          disabled={totalCortando() === 0 || !form.planta || !form.cortador || !loteTrim || loteRepetido}
         >
           ✓ Registrar Corte
         </Btn>
@@ -908,10 +951,20 @@ function DetallePedido({
   cortadores,
   nominaConfig,
   preciosMap,
+  lotesExistentes,
+  onGuardarLote,
+  preseleccion,
+  onConsumirPreseleccion,
   onBack,
   onSave,
 }) {
   const [showCorte, setShowCorte] = useState(false);
+  // Si venimos del botón "✂ Cortar" de un ítem ya programado, abrir el
+  // formulario de Programar Corte directo, ya con esa referencia/tallas
+  // cargadas (ProgramarCorteModal las toma de `preseleccion`).
+  useEffect(() => {
+    if (preseleccion) setShowCorte(true);
+  }, [preseleccion]);
   const mes = new Date().getMonth() + 1;
   const anio = new Date().getFullYear();
   const dh = diasHabiles(mes, anio);
@@ -972,8 +1025,14 @@ function DetallePedido({
           plantas={plantas}
           cortadores={cortadores}
           preciosMap={preciosMap}
+          lotesExistentes={lotesExistentes}
+          onGuardarLote={onGuardarLote}
+          preseleccion={preseleccion}
           onSave={registrarCorte}
-          onClose={() => setShowCorte(false)}
+          onClose={() => {
+            setShowCorte(false);
+            if (preseleccion) onConsumirPreseleccion?.();
+          }}
         />
       )}
       <div
@@ -2611,12 +2670,16 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onSelectPedido }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onCortarProgramado }) {
   const [fechaSel, setFechaSel] = useState(today());
-  const [seleccion, setSeleccion] = useState(new Set());
+  // Selección por talla: Map key `${pedidoId}__${ref}__${talla}` -> { ...contexto, cantidad }
+  // (cantidad es editable, por si no alcanza la tela para toda la talla).
+  const [seleccion, setSeleccion] = useState(new Map());
   const [clientesAbiertos, setClientesAbiertos] = useState(new Set());
   const [subTab, setSubTab] = useState("programar");
   const [vista, setVista] = useState("dia");
+  const [editandoCumplidoId, setEditandoCumplidoId] = useState(null);
+  const [edicionCumplido, setEdicionCumplido] = useState({ cantidad: 0, fecha: "" });
 
   const activos = pedidos.filter((p) => p.estado === "activo");
   const pendientesProg = programacion.filter((pr) => pr.estado !== "cumplido");
@@ -2652,11 +2715,31 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     (s, pedidosMap) => s + [...pedidosMap.values()].reduce((s2, { filas }) => s2 + filas.length, 0),
     0
   );
+  // Todas las combinaciones posibles ref+talla de un cliente, con su
+  // cantidad ordenada como valor por defecto (editable al seleccionar) — se
+  // usa tanto para pintar la tabla como para "seleccionar toda la ref/todo
+  // el cliente".
   function itemsDelCliente(cliente) {
     const pedidosMap = porCliente.get(cliente);
     const items = [];
     pedidosMap.forEach(({ pedido, filas }) => {
-      filas.forEach((r) => items.push({ key: `${pedido.id}__${r.ref}`, pedidoId: pedido.id, numero: pedido.numero, cliente, ref: r.ref, descripcion: r.descripcion, pendiente: r.pendiente }));
+      filas.forEach((r) => {
+        Object.entries(r.tallas || {}).forEach(([t, cant]) => {
+          if (cant > 0) {
+            items.push({
+              key: `${pedido.id}__${r.ref}__${t}`,
+              pedidoId: pedido.id,
+              numero: pedido.numero,
+              cliente,
+              ref: r.ref,
+              descripcion: r.descripcion,
+              talla: t,
+              cantidad: cant,
+              pendienteRef: r.pendiente,
+            });
+          }
+        });
+      });
     });
     return items;
   }
@@ -2669,39 +2752,73 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
       return next;
     });
   }
-  function toggleItem(key) {
+  // Marca/desmarca una talla puntual de una referencia (item ya trae la
+  // cantidad por defecto = lo que se ordenó de esa talla).
+  function toggleItem(item) {
     setSeleccion((s) => {
-      const next = new Set(s);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+      const next = new Map(s);
+      if (next.has(item.key)) next.delete(item.key);
+      else next.set(item.key, item);
+      return next;
+    });
+  }
+  function setCantidadItem(key, cantidad) {
+    setSeleccion((s) => {
+      const next = new Map(s);
+      const it = next.get(key);
+      if (it) next.set(key, { ...it, cantidad: Math.max(0, cantidad) });
+      return next;
+    });
+  }
+  // Selecciona/deselecciona TODAS las tallas de una referencia puntual a la
+  // vez (para cuando no hace falta elegir talla por talla).
+  function toggleTodaLaRef(items) {
+    setSeleccion((s) => {
+      const next = new Map(s);
+      const todasMarcadas = items.every((it) => next.has(it.key));
+      items.forEach((it) => (todasMarcadas ? next.delete(it.key) : next.set(it.key, it)));
       return next;
     });
   }
   function toggleTodosCliente(cliente) {
     const items = itemsDelCliente(cliente);
-    setSeleccion((s) => {
-      const next = new Set(s);
-      const todasMarcadas = items.every((it) => next.has(it.key));
-      items.forEach((it) => (todasMarcadas ? next.delete(it.key) : next.add(it.key)));
-      return next;
-    });
+    toggleTodaLaRef(items);
   }
 
-  // Valor estimado (unidades pendientes × precio de corte por referencia) de
-  // lo que se tiene seleccionado en este momento — para comparar contra el
-  // costo diario del centro de costo antes de confirmar.
-  const todosLosItems = [];
-  porCliente.forEach((pedidosMap, cliente) => todosLosItems.push(...itemsDelCliente(cliente)));
-  const ingresoSeleccion = todosLosItems
-    .filter((it) => seleccion.has(it.key))
-    .reduce((s, it) => s + it.pendiente * precioRef(it.ref), 0);
+  // Valor estimado (cantidad seleccionada × precio de corte por referencia)
+  // de lo que se tiene seleccionado en este momento — para comparar contra
+  // el costo diario del centro de costo antes de confirmar.
+  const ingresoSeleccion = [...seleccion.values()].reduce((s, it) => s + it.cantidad * precioRef(it.ref), 0);
 
+  // Agrupa la selección (que está a nivel talla) de vuelta a nivel
+  // referencia — un solo ítem de Programación por pedido+ref, con el
+  // desglose de tallas/cantidades elegidas (puede ser menos que el
+  // pendiente total si no alcanza la tela para todo).
   function confirmarProgramacion() {
-    const items = [];
-    porCliente.forEach((pedidosMap, cliente) => items.push(...itemsDelCliente(cliente).filter((it) => seleccion.has(it.key))));
+    const grupos = new Map();
+    seleccion.forEach((it) => {
+      if (it.cantidad <= 0) return;
+      const gkey = `${it.pedidoId}__${it.ref}`;
+      if (!grupos.has(gkey)) {
+        grupos.set(gkey, {
+          pedidoId: it.pedidoId,
+          numero: it.numero,
+          cliente: it.cliente,
+          ref: it.ref,
+          descripcion: it.descripcion,
+          pendiente: it.pendienteRef,
+          tallas: {},
+          cantidadProgramada: 0,
+        });
+      }
+      const g = grupos.get(gkey);
+      g.tallas[it.talla] = (g.tallas[it.talla] || 0) + it.cantidad;
+      g.cantidadProgramada += it.cantidad;
+    });
+    const items = [...grupos.values()];
     if (!items.length) return;
     onProgramar(items, fechaSel);
-    setSeleccion(new Set());
+    setSeleccion(new Map());
   }
 
   const hoy = today();
@@ -2803,7 +2920,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                           {seleccionadosCliente} seleccionada{seleccionadosCliente === 1 ? "" : "s"}
                         </span>
                       )}
-                      <span style={{ fontSize: 11, color: C.slate }}>{items.length} ref{items.length === 1 ? "" : "s"}</span>
+                      <span style={{ fontSize: 11, color: C.slate }}>{items.length} talla{items.length === 1 ? "" : "s"}</span>
                       <button
                         onClick={(e) => { e.stopPropagation(); toggleTodosCliente(cliente); }}
                         style={{ fontSize: 11, fontWeight: 700, color: C.blue, background: "transparent", border: `1px solid ${C.blue}`, borderRadius: 6, padding: "3px 8px", cursor: "pointer" }}
@@ -2840,17 +2957,79 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                   </thead>
                                   <tbody>
                                     {filas.map((r) => {
-                                      const key = `${p.id}__${r.ref}`;
+                                      // Ítems seleccionables de esta referencia (una talla = un ítem),
+                                      // se usan tanto para el checkbox "toda la ref" como para pintar
+                                      // cada celda de talla.
+                                      const itemsRef = tallasDistintas
+                                        .filter((t) => r.tallas[t] > 0)
+                                        .map((t) => ({
+                                          key: `${p.id}__${r.ref}__${t}`,
+                                          pedidoId: p.id,
+                                          numero: p.numero,
+                                          cliente,
+                                          ref: r.ref,
+                                          descripcion: r.descripcion,
+                                          talla: t,
+                                          cantidad: r.tallas[t],
+                                          pendienteRef: r.pendiente,
+                                        }));
+                                      const todaLaRefSel = itemsRef.length > 0 && itemsRef.every((it) => seleccion.has(it.key));
                                       return (
-                                        <tr key={key} style={{ background: seleccion.has(key) ? C.blueBg : "transparent", cursor: "pointer" }} onClick={() => toggleItem(key)}>
+                                        <tr key={`${p.id}__${r.ref}`} style={{ borderTop: `1px solid ${C.border}` }}>
                                           <td style={{ padding: "5px 8px" }}>
-                                            <input type="checkbox" checked={seleccion.has(key)} onChange={() => toggleItem(key)} onClick={(e) => e.stopPropagation()} style={{ width: 15, height: 15 }} />
+                                            <input
+                                              type="checkbox"
+                                              checked={todaLaRefSel}
+                                              onChange={() => toggleTodaLaRef(itemsRef)}
+                                              title="Seleccionar toda la referencia"
+                                              style={{ width: 15, height: 15 }}
+                                            />
                                           </td>
                                           <td style={{ padding: "5px 8px", fontWeight: 700, color: C.ink }}>{r.ref}</td>
                                           <td style={{ padding: "5px 8px", color: C.slate }}>{r.descripcion}</td>
-                                          {tallasDistintas.map((t) => (
-                                            <td key={t} style={{ padding: "5px 8px", textAlign: "right", color: r.tallas[t] ? C.ink : C.border }}>{r.tallas[t] || "—"}</td>
-                                          ))}
+                                          {tallasDistintas.map((t) => {
+                                            const cant = r.tallas[t] || 0;
+                                            if (cant <= 0) {
+                                              return (
+                                                <td key={t} style={{ padding: "4px 6px", textAlign: "center", color: C.border }}>
+                                                  —
+                                                </td>
+                                              );
+                                            }
+                                            const key = `${p.id}__${r.ref}__${t}`;
+                                            const sel = seleccion.get(key);
+                                            return (
+                                              <td
+                                                key={t}
+                                                onClick={() => {
+                                                  if (!sel) toggleItem({ key, pedidoId: p.id, numero: p.numero, cliente, ref: r.ref, descripcion: r.descripcion, talla: t, cantidad: cant, pendienteRef: r.pendiente });
+                                                }}
+                                                style={{ padding: "4px 6px", textAlign: "center", cursor: sel ? "default" : "pointer", background: sel ? C.blueBg : "transparent" }}
+                                              >
+                                                {sel ? (
+                                                  <div style={{ display: "flex", alignItems: "center", gap: 3, justifyContent: "center" }}>
+                                                    <input
+                                                      type="number"
+                                                      min={0}
+                                                      value={sel.cantidad}
+                                                      onClick={(e) => e.stopPropagation()}
+                                                      onChange={(e) => setCantidadItem(key, parseInt(e.target.value) || 0)}
+                                                      style={{ width: 42, padding: "2px 3px", border: `1px solid ${C.blue}`, borderRadius: 4, fontSize: 11, textAlign: "center" }}
+                                                    />
+                                                    <span
+                                                      onClick={(e) => { e.stopPropagation(); toggleItem(sel); }}
+                                                      title="Quitar"
+                                                      style={{ cursor: "pointer", color: C.blue, fontWeight: 800, fontSize: 11 }}
+                                                    >
+                                                      ✕
+                                                    </span>
+                                                  </div>
+                                                ) : (
+                                                  <span style={{ color: C.ink }}>{cant}</span>
+                                                )}
+                                              </td>
+                                            );
+                                          })}
                                           <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 800, color: C.amber }}>{fmtNum(r.pendiente)}</td>
                                         </tr>
                                       );
@@ -2885,11 +3064,11 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             >
               <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
                 <span style={{ color: C.white, fontWeight: 700, fontSize: 13 }}>
-                  {seleccion.size} referencia{seleccion.size === 1 ? "" : "s"} seleccionada{seleccion.size === 1 ? "" : "s"}
+                  {seleccion.size} talla{seleccion.size === 1 ? "" : "s"} seleccionada{seleccion.size === 1 ? "" : "s"}
                 </span>
                 <span style={{ color: C.seam, fontSize: 12 }}>para el {fmtFechaISO(fechaSel)}</span>
                 <div style={{ marginLeft: "auto", display: "flex", gap: 10 }}>
-                  <button onClick={() => setSeleccion(new Set())} style={{ background: "transparent", border: `1px solid rgba(255,255,255,0.3)`, color: C.white, borderRadius: 8, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                  <button onClick={() => setSeleccion(new Map())} style={{ background: "transparent", border: `1px solid rgba(255,255,255,0.3)`, color: C.white, borderRadius: 8, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
                     Limpiar
                   </button>
                   <Btn variant="success" onClick={confirmarProgramacion}>📅 Programar corte</Btn>
@@ -2952,15 +3131,28 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                   </tr>
                 </thead>
                 <tbody>
-                  {pendientesConEstado.map((p) => (
-                    <tr key={p.id} style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer" }} onClick={() => onSelectPedido(p.pedidoId)}>
-                      <td style={{ padding: "10px", fontWeight: 700, color: C.ink }}>{p.cliente} · #{p.numero}</td>
+                  {pendientesConEstado.map((p) => {
+                    const cant = p.cantidadProgramada ?? p.cantidadPendiente;
+                    return (
+                    <tr key={p.id} style={{ borderBottom: `1px solid ${C.border}` }}>
+                      <td style={{ padding: "10px", fontWeight: 700, color: C.ink, cursor: "pointer" }} onClick={() => onSelectPedido(p.pedidoId)}>{p.cliente} · #{p.numero}</td>
                       <td style={{ padding: "10px" }}>
                         <span style={{ fontWeight: 700 }}>{p.ref}</span>
                         {p.descripcion && <span style={{ color: C.slate, marginLeft: 6, fontSize: 12 }}>{p.descripcion}</span>}
                       </td>
-                      <td style={{ padding: "10px", textAlign: "right", color: C.amber, fontWeight: 700 }}>{fmtNum(p.cantidadPendiente)}</td>
-                      <td style={{ padding: "10px" }} onClick={(e) => e.stopPropagation()}>
+                      <td style={{ padding: "10px", textAlign: "right" }}>
+                        <input
+                          type="number"
+                          min={0}
+                          value={cant}
+                          onChange={(e) => onEditarCantidad(p.id, parseInt(e.target.value) || 0)}
+                          style={{ width: 70, padding: "5px 6px", border: `1.5px solid ${C.border}`, borderRadius: 6, fontSize: 12, textAlign: "right", fontWeight: 700, color: C.amber }}
+                        />
+                        {p.cantidadPendiente > cant && (
+                          <div style={{ fontSize: 10, color: C.slate, marginTop: 2 }}>de {fmtNum(p.cantidadPendiente)} pend.</div>
+                        )}
+                      </td>
+                      <td style={{ padding: "10px" }}>
                         <input
                           type="date"
                           value={p.fechaProgramada}
@@ -2971,9 +3163,16 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                       <td style={{ padding: "10px", textAlign: "right", color: p.vencido ? C.red : C.ink, fontWeight: p.vencido ? 800 : 500 }}>
                         {p.vencido ? `Vencido ${Math.abs(p.dias)}d` : `${p.dias}d`}
                       </td>
-                      <td style={{ padding: "10px", textAlign: "right" }}>
+                      <td style={{ padding: "10px", textAlign: "right", whiteSpace: "nowrap" }}>
                         <button
-                          onClick={(e) => { e.stopPropagation(); onCancelar(p.id); }}
+                          onClick={() => onCortarProgramado(p)}
+                          title="Ir a cortar"
+                          style={{ background: C.cyanBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.cyan, fontWeight: 700, fontSize: 11, cursor: "pointer", marginRight: 6 }}
+                        >
+                          ✂ Cortar
+                        </button>
+                        <button
+                          onClick={() => onCancelar(p.id)}
                           title="Cancelar programación"
                           style={{ background: C.redBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.red, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
                         >
@@ -2981,7 +3180,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                         </button>
                       </td>
                     </tr>
-                  ))}
+                  );})}
                 </tbody>
               </table>
             )
@@ -3007,18 +3206,25 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                           {vencidosSemana > 0 && <span style={{ color: C.red, fontWeight: 700 }}> · {vencidosSemana} vencida{vencidosSemana === 1 ? "" : "s"}</span>}
                         </div>
                       </div>
-                      {items.map((p, i) => (
+                      {items.map((p, i) => {
+                        const cant = p.cantidadProgramada ?? p.cantidadPendiente;
+                        return (
                         <div
                           key={p.id}
-                          onClick={() => onSelectPedido(p.pedidoId)}
-                          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", borderTop: i > 0 ? `1px solid ${C.border}` : "none", cursor: "pointer" }}
+                          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", borderTop: i > 0 ? `1px solid ${C.border}` : "none" }}
                         >
-                          <div>
+                          <div style={{ cursor: "pointer" }} onClick={() => onSelectPedido(p.pedidoId)}>
                             <span style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{p.cliente} · #{p.numero}</span>
                             <span style={{ color: C.slate, marginLeft: 8, fontSize: 12 }}>{p.ref}</span>
                           </div>
-                          <div style={{ display: "flex", gap: 14, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
-                            <span style={{ fontSize: 12, color: C.amber, fontWeight: 700 }}>{fmtNum(p.cantidadPendiente)}</span>
+                          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                            <input
+                              type="number"
+                              min={0}
+                              value={cant}
+                              onChange={(e) => onEditarCantidad(p.id, parseInt(e.target.value) || 0)}
+                              style={{ width: 60, padding: "4px 6px", border: `1.5px solid ${C.border}`, borderRadius: 6, fontSize: 11, textAlign: "right", fontWeight: 700, color: C.amber }}
+                            />
                             <input
                               type="date"
                               value={p.fechaProgramada}
@@ -3028,9 +3234,23 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                             <span style={{ fontSize: 12, fontWeight: 800, color: p.vencido ? C.red : C.ink }}>
                               {p.vencido ? `Vencido ${Math.abs(p.dias)}d` : `${p.dias}d`}
                             </span>
+                            <button
+                              onClick={() => onCortarProgramado(p)}
+                              title="Ir a cortar"
+                              style={{ background: C.cyanBg, border: "none", borderRadius: 6, padding: "4px 7px", color: C.cyan, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+                            >
+                              ✂
+                            </button>
+                            <button
+                              onClick={() => onCancelar(p.id)}
+                              title="Cancelar programación"
+                              style={{ background: C.redBg, border: "none", borderRadius: 6, padding: "4px 7px", color: C.red, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+                            >
+                              ✕
+                            </button>
                           </div>
                         </div>
-                      ))}
+                      );})}
                     </div>
                   );
                 })}
@@ -3049,22 +3269,91 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
               <tr style={{ borderBottom: `2px solid ${C.border}` }}>
                 <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Cliente / Pedido</th>
                 <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Referencia</th>
+                <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Cantidad</th>
                 <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Fecha programada</th>
                 <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Se cortó el</th>
                 <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Resultado</th>
+                <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}></th>
               </tr>
             </thead>
             <tbody>
               {cumplidosProg.map((p) => {
                 const tarde = p.fechaCumplioISO && p.fechaProgramada && p.fechaCumplioISO > p.fechaProgramada;
+                const cant = p.cantidadProgramada ?? p.cantidadPendiente;
+                const editando = editandoCumplidoId === p.id;
                 return (
-                  <tr key={p.id} style={{ borderBottom: `1px solid ${C.border}` }}>
+                  <tr key={p.id} style={{ borderBottom: `1px solid ${C.border}`, background: editando ? C.blueBg : "transparent" }}>
                     <td style={{ padding: "10px", fontWeight: 700, color: C.ink }}>{p.cliente} · #{p.numero}</td>
                     <td style={{ padding: "10px" }}>{p.ref}</td>
+                    <td style={{ padding: "10px", textAlign: "right" }}>
+                      {editando ? (
+                        <input
+                          type="number"
+                          min={0}
+                          value={edicionCumplido.cantidad}
+                          onChange={(e) => setEdicionCumplido((s) => ({ ...s, cantidad: parseInt(e.target.value) || 0 }))}
+                          style={{ width: 70, padding: "4px 6px", border: `1.5px solid ${C.blue}`, borderRadius: 6, fontSize: 12, textAlign: "right" }}
+                        />
+                      ) : (
+                        fmtNum(cant)
+                      )}
+                    </td>
                     <td style={{ padding: "10px" }}>{fmtFechaISO(p.fechaProgramada)}</td>
-                    <td style={{ padding: "10px" }}>{fmtFechaISO(p.fechaCumplioISO)}</td>
+                    <td style={{ padding: "10px" }}>
+                      {editando ? (
+                        <input
+                          type="date"
+                          value={edicionCumplido.fecha}
+                          onChange={(e) => setEdicionCumplido((s) => ({ ...s, fecha: e.target.value }))}
+                          style={{ padding: "4px 6px", border: `1.5px solid ${C.blue}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}
+                        />
+                      ) : (
+                        fmtFechaISO(p.fechaCumplioISO)
+                      )}
+                    </td>
                     <td style={{ padding: "10px", textAlign: "right", fontWeight: 800, color: tarde ? C.red : C.green }}>
                       {tarde ? "Tarde" : "A tiempo"}
+                    </td>
+                    <td style={{ padding: "10px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      {editando ? (
+                        <>
+                          <button
+                            onClick={() => {
+                              onEditarCumplido(p.id, { cantidadProgramada: edicionCumplido.cantidad, fechaCumplioISO: edicionCumplido.fecha });
+                              setEditandoCumplidoId(null);
+                            }}
+                            style={{ background: C.greenBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.green, fontWeight: 700, fontSize: 11, cursor: "pointer", marginRight: 6 }}
+                          >
+                            Guardar
+                          </button>
+                          <button
+                            onClick={() => setEditandoCumplidoId(null)}
+                            style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 8px", color: C.slate, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+                          >
+                            Cancelar
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => {
+                              setEditandoCumplidoId(p.id);
+                              setEdicionCumplido({ cantidad: cant, fecha: p.fechaCumplioISO || today() });
+                            }}
+                            title="Editar"
+                            style={{ background: C.blueBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.blue, fontWeight: 700, fontSize: 11, cursor: "pointer", marginRight: 6 }}
+                          >
+                            ✎
+                          </button>
+                          <button
+                            onClick={() => onEliminarCumplido(p.id)}
+                            title="Eliminar"
+                            style={{ background: C.redBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.red, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+                          >
+                            🗑
+                          </button>
+                        </>
+                      )}
                     </td>
                   </tr>
                 );
@@ -3505,6 +3794,15 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
   // Programación de Corte: fecha comprometida por pedido, con cumplimiento
   // automático (ver useEffect más abajo).
   const [programacionCorte, setProgramacionCorte] = useState([]);
+  // Lotes de corte (uno por cada corte registrado desde ProgramarCorteModal)
+  // — se usa para validar que el número de lote nunca se repita y para tener
+  // un registro simple (cantidad, fecha, referencia, pedido) de cada corte
+  // terminado.
+  const [lotesCorte, setLotesCorte] = useState([]);
+  // Ítem de Programación desde el que se está yendo a cortar (botón "✂
+  // Cortar" en Programados Pendientes) — se usa para abrir Programar Corte
+  // ya con la referencia/tallas/cantidades de esa programación cargadas.
+  const [preseleccionCorte, setPreseleccionCorte] = useState(null);
 
   useEffect(() => {
     const unsubs = [];
@@ -3533,6 +3831,10 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
           setProgramacionCorte(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
         });
         unsubs.push(unsubProgramacion);
+        const unsubLotes = onSnapshot(collection(db, "corte_lotes"), (snap) => {
+          setLotesCorte(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        });
+        unsubs.push(unsubLotes);
         const cfgDocs = await fsGet("corte_config");
         if (cfgDocs.length)
           setCorteConfig((prev) => ({ ...prev, ...cfgDocs[0] }));
@@ -3585,6 +3887,11 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
   );
   const preciosMap = new Map((ultimaCargaPrecios?.precios || []).map((p) => [String(p.ref).trim(), p.precio]));
 
+  // Números de lote ya usados (el id del doc en corte_lotes ES el número de
+  // lote) — se usa para no dejar repetir un número de lote al registrar un
+  // corte.
+  const lotesExistentes = new Set(lotesCorte.map((l) => String(l.id).trim().toUpperCase()));
+
   // Une los nombres de "Cortadores" (lista histórica) con los de "Nómina"
   // (lo que se sube por archivo o se agrega a mano), sin duplicados, para
   // que el desplegable de "Cortador" en Programar Corte siempre incluya a
@@ -3608,8 +3915,9 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
 
   // Programa en lote una o varias referencias puntuales (no el pedido
   // completo) para el mismo día — items viene de ProgramacionCorteView, ya
-  // trae pedidoId/numero/cliente/ref/descripcion/pendiente por cada casilla
-  // marcada.
+  // agrupado por pedido+referencia con el desglose de tallas/cantidades que
+  // se seleccionaron (puede ser menos que el pendiente total, por ejemplo si
+  // no alcanza la tela para todas las tallas).
   async function programarCorte(items, fecha) {
     for (const it of items) {
       const nuevo = {
@@ -3620,6 +3928,8 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
         ref: it.ref,
         descripcion: it.descripcion || "",
         cantidadPendiente: it.pendiente || 0,
+        cantidadProgramada: it.cantidadProgramada || 0,
+        tallas: it.tallas || {},
         fechaProgramada: fecha,
         creadoEn: new Date().toISOString(),
         estado: "pendiente",
@@ -3635,6 +3945,23 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
   // por si hay un cambio de plan — no hace falta cancelar y volver a marcar.
   async function editarFechaProgramacion(id, fecha) {
     await fsSave("corte_programacion", id, { fechaProgramada: fecha });
+  }
+  // Editar la cantidad programada de un ítem ya creado — por ejemplo si
+  // después de programarlo resulta que no alcanza la tela para todo.
+  async function editarCantidadProgramacion(id, cantidad) {
+    await fsSave("corte_programacion", id, { cantidadProgramada: cantidad });
+  }
+  // Editar un registro ya cumplido (cantidad y/o fecha) — para corregir un
+  // error de digitación sin tener que borrar y volver a crear todo.
+  async function editarCumplidoProgramacion(id, cambios) {
+    await fsSave("corte_programacion", id, cambios);
+  }
+  // Guarda el registro simple del lote generado al terminar un corte — el id
+  // del doc ES el número de lote, así que si ya existe, sobreescribiría el
+  // mismo registro (por eso ProgramarCorteModal valida unicidad antes contra
+  // lotesExistentes, no se debe llamar esta función con un número repetido).
+  async function guardarLoteCorte(lote) {
+    await fsSave("corte_lotes", lote.numero, lote);
   }
   // Revisión automática de cumplimiento: cada vez que cambian los pedidos o
   // las fuentes que definen "pendiente" (Ventas Perdidas, Planeación), se
@@ -3876,9 +4203,14 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
               cortadores={cortadoresUnificados}
               nominaConfig={corteConfig.nomina}
               preciosMap={preciosMap}
+              lotesExistentes={lotesExistentes}
+              onGuardarLote={guardarLoteCorte}
+              preseleccion={preseleccionCorte && preseleccionCorte.pedidoId === selPedido.id ? preseleccionCorte : null}
+              onConsumirPreseleccion={() => setPreseleccionCorte(null)}
               onBack={() => {
                 setView("dashboard");
                 setSelPedidoId(null);
+                setPreseleccionCorte(null);
               }}
               onSave={savePedido}
             />
@@ -3915,8 +4247,16 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
               onProgramar={programarCorte}
               onCancelar={cancelarProgramacionCorte}
               onEditarFecha={editarFechaProgramacion}
+              onEditarCantidad={editarCantidadProgramacion}
+              onEditarCumplido={editarCumplidoProgramacion}
+              onEliminarCumplido={cancelarProgramacionCorte}
               onSelectPedido={(id) => {
                 setSelPedidoId(id);
+                setView("detalle");
+              }}
+              onCortarProgramado={(prog) => {
+                setPreseleccionCorte(prog);
+                setSelPedidoId(prog.pedidoId);
                 setView("detalle");
               }}
             />
