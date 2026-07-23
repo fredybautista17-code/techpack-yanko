@@ -311,7 +311,96 @@ function KPICard({ icon, label, value, sub, color, bg }) {
 }
 
 // ─── PROGRAMAR CORTE MODAL ────────────────────────────────────────────────────
-function ProgramarCorteModal({ pedido, plantas, cortadores, onSave, onClose }) {
+// ─── ARCHIVOS: PRECIOS DE CORTE Y NÓMINA (Centro de Costo) ────────────────────
+// Precios de corte por referencia — archivo maestro tipo "gerencia-coleccion"
+// del ERP. Se usa la columna "MdeO Corte" (mano de obra de corte, SÍ varía
+// por referencia) — no "Proc Corte", que en la práctica viene casi siempre
+// vacía o en 0. Si el archivo trae varias hojas (como el de Centro de Costo,
+// que también trae "bodega consecutivos" y "nomina"), se busca la que tenga
+// columnas "Ref" y "MdeO Corte".
+async function parsePreciosCorte(file) {
+  const XLSX = await import("xlsx");
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: "array" });
+  let hoja = null;
+  for (const name of wb.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: "" });
+    if (rows.length && "Ref" in rows[0] && "MdeO Corte" in rows[0]) {
+      hoja = rows;
+      break;
+    }
+  }
+  if (!hoja) {
+    throw new Error('No se encontró una hoja con columnas "Ref" y "MdeO Corte" en este archivo.');
+  }
+  const porRef = new Map();
+  hoja.forEach((r) => {
+    const ref = String(r["Ref"] ?? "").trim();
+    if (!ref) return;
+    porRef.set(ref, Number(r["MdeO Corte"]) || 0);
+  });
+  return [...porRef.entries()].map(([ref, precio]) => ({ ref, precio }));
+}
+
+// Nómina — archivo tipo la hoja "nomina" del Centro de Costo. La fila real de
+// encabezados no está en la primera fila (hay título y filas en blanco
+// antes), así que se busca la fila que tenga "CEDULA" y "NOMBRE" para ubicar
+// las columnas por nombre, no por posición fija. El costo por trabajador se
+// toma como Total Devengado + prestaciones sociales (Cesantías + Intereses +
+// Prima + Vacaciones) — el costo real para la empresa antes de descuentos de
+// ley. Si el periodo cubre menos de ~25 días (típico de una quincena), se
+// escala a un valor mensual (× 30/días) para que sea comparable con el campo
+// "Sueldo integral $" que ya se usaba en Admin Corte.
+async function parseNomina(file) {
+  const XLSX = await import("xlsx");
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: "array" });
+  let filas = null;
+  for (const name of wb.SheetNames) {
+    const raw = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: "" });
+    const headerIdx = raw.findIndex(
+      (row) =>
+        Array.isArray(row) &&
+        row.some((c) => String(c).toUpperCase().includes("CEDULA")) &&
+        row.some((c) => String(c).toUpperCase().includes("NOMBRE"))
+    );
+    if (headerIdx < 0) continue;
+    const headers = raw[headerIdx].map((h) => String(h || "").trim().toUpperCase());
+    const idx = (match) => headers.findIndex((h) => h.includes(match));
+    const iNombre = idx("NOMBRE");
+    const iDevengado = idx("TOTAL DEVENGADO");
+    const iDias = idx("DIAS");
+    const iCesantias = idx("CESANTIAS");
+    const iIntereses = idx("INTERESES");
+    const iPrima = idx("PRIMA");
+    const iVacaciones = idx("VACACIONES");
+    filas = [];
+    for (let r = headerIdx + 1; r < raw.length; r++) {
+      const row = raw[r];
+      if (!row || !row.length) continue;
+      const nombre = String(row[iNombre] ?? "").trim();
+      if (!nombre || nombre.toUpperCase() === "TOTAL") continue;
+      const devengado = Number(row[iDevengado]) || 0;
+      if (!devengado) continue;
+      const prestaciones =
+        (Number(row[iCesantias]) || 0) +
+        (Number(row[iIntereses]) || 0) +
+        (Number(row[iPrima]) || 0) +
+        (Number(row[iVacaciones]) || 0);
+      const dias = Number(row[iDias]) || 0;
+      const factor = dias > 0 && dias < 25 ? 30 / dias : 1;
+      const sueldo = Math.round((devengado + prestaciones) * factor);
+      filas.push({ nombre, sueldo, devengado, prestaciones, dias });
+    }
+    break;
+  }
+  if (!filas) {
+    throw new Error('No se encontró una hoja de nómina con columnas "CEDULA" y "NOMBRE" en este archivo.');
+  }
+  return filas;
+}
+
+function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, onSave, onClose }) {
   const mes = new Date().getMonth() + 1;
   const anio = new Date().getFullYear();
   const [form, setForm] = useState({
@@ -330,10 +419,17 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, onSave, onClose }) {
     horaInicio: "",
     horaFin: "",
   });
+  // El precio por prenda se toma primero del archivo de precios de corte
+  // (Admin Corte → Precios Corte, la fuente "oficial" por referencia); si esa
+  // referencia no aparece ahí, se cae al precio que ya tuviera guardado el
+  // pedido (precioCortePrenda, capturado a mano en cortes anteriores); si
+  // tampoco hay eso, queda en 0 y se puede escribir a mano como antes.
   const [cantidades, setCantidades] = useState(() => {
     const c = {};
     pedido.referencias.forEach((r) => {
-      c[r.id] = { precio: r.precioCortePrenda || 0, tallas: {} };
+      const precioArchivo = preciosMap?.get(String(r.ref).trim());
+      const precio = precioArchivo ?? r.precioCortePrenda ?? 0;
+      c[r.id] = { precio, tallas: {} };
       TALLAS_BUSINT.forEach((t) => {
         c[r.id].tallas[t] = 0;
       });
@@ -631,7 +727,11 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, onSave, onClose }) {
                     </span>
                   </div>
                   <div style={{ fontSize: 12 }}>
-                    <span style={{ color: C.slate }}>Precio/prenda: </span>
+                    <span style={{ color: C.slate }}>
+                      Precio/prenda{preciosMap?.has(String(ref.ref).trim()) && (
+                        <span style={{ color: C.violet, fontWeight: 700 }}> (archivo)</span>
+                      )}:{" "}
+                    </span>
                     <input
                       type="number"
                       value={cantidades[ref.id]?.precio || 0}
@@ -781,6 +881,7 @@ function DetallePedido({
   plantas,
   cortadores,
   nominaConfig,
+  preciosMap,
   onBack,
   onSave,
 }) {
@@ -844,6 +945,7 @@ function DetallePedido({
           pedido={pedido}
           plantas={plantas}
           cortadores={cortadores}
+          preciosMap={preciosMap}
           onSave={registrarCorte}
           onClose={() => setShowCorte(false)}
         />
@@ -1351,6 +1453,12 @@ function AdminCorte({ config, onSave }) {
     nombre: "",
     sueldo: "",
   });
+  const [subiendoNomina, setSubiendoNomina] = useState(false);
+  const [resultNomina, setResultNomina] = useState(null);
+  const [subiendoPrecios, setSubiendoPrecios] = useState(false);
+  const [resultPrecios, setResultPrecios] = useState(null);
+  const nominaInputRef = useRef(null);
+  const preciosInputRef = useRef(null);
 
   const plantas = config.plantas || [];
   const cortadores = config.cortadores || [];
@@ -1416,10 +1524,62 @@ function AdminCorte({ config, onSave }) {
     });
   }
 
+  // Importar nómina desde Excel: actualiza el sueldo de quien ya esté
+  // registrado (comparando por nombre, sin importar mayúsculas/tildes de
+  // más o menos espacios) y AGREGA como nuevo a quien no exista todavía. NO
+  // borra a nadie — así se puede seguir ajustando a mano por horas extra, o
+  // agregar un trabajador adicional que no venga en el archivo.
+  async function importarNomina(file) {
+    if (!file) return;
+    setSubiendoNomina(true);
+    setResultNomina(null);
+    try {
+      const filas = await parseNomina(file);
+      const norm = (s) => String(s || "").trim().toUpperCase();
+      const actuales = [...trabajadores];
+      let actualizados = 0;
+      let nuevos = 0;
+      filas.forEach((f) => {
+        const idx = actuales.findIndex((t) => norm(t.nombre) === norm(f.nombre));
+        if (idx >= 0) {
+          actuales[idx] = { ...actuales[idx], sueldo: f.sueldo };
+          actualizados++;
+        } else {
+          actuales.push({ id: uid(), nombre: f.nombre, sueldo: f.sueldo });
+          nuevos++;
+        }
+      });
+      onSave({ ...config, nomina: { ...config.nomina, trabajadores: actuales } });
+      setResultNomina({ total: filas.length, actualizados, nuevos });
+    } catch (err) {
+      setResultNomina({ error: err?.message || "No se pudo leer el archivo de nómina." });
+    }
+    setSubiendoNomina(false);
+  }
+
+  async function subirPrecios(file) {
+    if (!file) return;
+    setSubiendoPrecios(true);
+    setResultPrecios(null);
+    try {
+      const precios = await parsePreciosCorte(file);
+      await fsSave("precios_corte_cargas", uid(), {
+        creadoEn: today(),
+        creadoTs: Date.now(),
+        precios,
+      });
+      setResultPrecios({ total: precios.length });
+    } catch (err) {
+      setResultPrecios({ error: err?.message || "No se pudo leer el archivo de precios." });
+    }
+    setSubiendoPrecios(false);
+  }
+
   const tabs = [
     ["plantas", "🏭 Plantas"],
     ["cortadores", "✂ Cortadores"],
     ["nomina", "💰 Nómina"],
+    ["precios", "💲 Precios Corte"],
   ];
 
   return (
@@ -1591,6 +1751,50 @@ function AdminCorte({ config, onSave }) {
 
       {tab === "nomina" && (
         <div>
+          <div
+            style={{
+              border: `1px dashed ${C.border}`,
+              borderRadius: 10,
+              padding: 14,
+              marginBottom: 20,
+              background: C.canvas,
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 4 }}>
+              📤 Importar nómina desde Excel
+            </div>
+            <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>
+              Actualiza el sueldo de quien ya esté en la lista y agrega como nuevo a quien no exista — no borra a nadie. Después puedes seguir ajustando a mano (horas extra, trabajador adicional).
+            </div>
+            <input
+              type="file"
+              ref={nominaInputRef}
+              accept=".xlsx,.xls,.csv"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                importarNomina(f);
+                e.target.value = "";
+              }}
+            />
+            <Btn variant="secondary" small onClick={() => nominaInputRef.current?.click()} disabled={subiendoNomina}>
+              {subiendoNomina ? "Leyendo..." : "📤 Subir archivo de nómina"}
+            </Btn>
+            {resultNomina && (
+              <div
+                style={{
+                  marginTop: 10,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: resultNomina.error ? C.red : C.green,
+                }}
+              >
+                {resultNomina.error
+                  ? `⚠ ${resultNomina.error}`
+                  : `✓ ${resultNomina.total} trabajador(es) leídos — ${resultNomina.actualizados} actualizado(s), ${resultNomina.nuevos} nuevo(s).`}
+              </div>
+            )}
+          </div>
           <div
             style={{
               display: "grid",
@@ -1775,6 +1979,43 @@ function AdminCorte({ config, onSave }) {
                   {fmtCOP(nominaTotal / dh)}
                 </div>
               </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === "precios" && (
+        <div>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 620 }}>
+            Sube el archivo maestro de precios (el que trae la columna "Ref" y "MdeO Corte" por referencia). Al programar un corte, el precio por prenda se llena solo con lo que traiga aquí — si una referencia no aparece, se puede seguir escribiendo a mano como antes.
+          </div>
+          <input
+            type="file"
+            ref={preciosInputRef}
+            accept=".xlsx,.xls,.csv"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              subirPrecios(f);
+              e.target.value = "";
+            }}
+          />
+          <Btn onClick={() => preciosInputRef.current?.click()} disabled={subiendoPrecios}>
+            {subiendoPrecios ? "Leyendo..." : "📤 Subir archivo de precios de corte"}
+          </Btn>
+          {resultPrecios && (
+            <div
+              style={{
+                marginTop: 14,
+                padding: "10px 16px",
+                borderRadius: 10,
+                fontSize: 13,
+                fontWeight: 700,
+                background: resultPrecios.error ? C.redBg : C.greenBg,
+                color: resultPrecios.error ? C.red : C.green,
+              }}
+            >
+              {resultPrecios.error ? `⚠ ${resultPrecios.error}` : `✓ ${resultPrecios.total} referencias cargadas.`}
             </div>
           )}
         </div>
@@ -2335,6 +2576,129 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
   );
 }
 
+// ─── CENTRO DE COSTO (por cortador) ────────────────────────────────────────────
+// Primer centro de costo del aplicativo: por cada persona que aparece
+// cortando este mes (campo "cortador" en los registros de Programar Corte),
+// se compara cuánto "generó" en corte (unidades × precio/prenda de cada
+// referencia que cortó) contra cuánto le cuesta a la empresa según la
+// nómina cargada en Admin Corte. Los trabajadores de nómina que no
+// cortaron nada este mes también aparecen, en 0, para que sea visible si
+// alguien no está siendo aprovechado en corte; los nombres que cortaron
+// pero no están en la nómina quedan marcados para revisar el dato (puede
+// ser un nombre escrito distinto, o un trabajador que falta agregar).
+function CentroCosto({ pedidos, trabajadores }) {
+  const mes = new Date().getMonth() + 1;
+  const anio = new Date().getFullYear();
+  const mesStr = `${anio}-${String(mes).padStart(2, "0")}`;
+  const norm = (s) => String(s || "").trim().toUpperCase();
+
+  const cortesMes = pedidos
+    .flatMap((p) => p.cortesRealizados || [])
+    .filter((c) => c.fecha?.slice(0, 7) === mesStr);
+
+  const porCortador = new Map();
+  cortesMes.forEach((c) => {
+    const nombre = (c.cortador || "").trim() || "(Sin cortador asignado)";
+    const key = norm(nombre);
+    if (!porCortador.has(key)) porCortador.set(key, { nombre, unidades: 0, ingreso: 0 });
+    const acc = porCortador.get(key);
+    acc.unidades += c.totalUnidades || 0;
+    acc.ingreso += c.ingresoCorte || 0;
+  });
+
+  const filas = [];
+  const usados = new Set();
+  (trabajadores || []).forEach((t) => {
+    const key = norm(t.nombre);
+    const datos = porCortador.get(key);
+    filas.push({
+      nombre: t.nombre,
+      unidades: datos?.unidades || 0,
+      ingreso: datos?.ingreso || 0,
+      costo: t.sueldo || 0,
+      enNomina: true,
+    });
+    usados.add(key);
+  });
+  porCortador.forEach((datos, key) => {
+    if (usados.has(key)) return;
+    filas.push({ nombre: datos.nombre, unidades: datos.unidades, ingreso: datos.ingreso, costo: 0, enNomina: false });
+  });
+  filas.sort((a, b) => b.ingreso - a.ingreso);
+
+  const totalUnidades = filas.reduce((s, f) => s + f.unidades, 0);
+  const totalIngreso = filas.reduce((s, f) => s + f.ingreso, 0);
+  const totalCosto = filas.reduce((s, f) => s + f.costo, 0);
+  const rentabilidad = totalIngreso - totalCosto;
+
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
+        💰 Centro de Costo — Corte
+      </h2>
+      <p style={{ margin: "0 0 20px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
+        Mes actual. "Ingreso" = unidades cortadas × precio/prenda de cada corte registrado (viene del archivo de Precios Corte cuando esa referencia está ahí, o de lo escrito a mano). "Costo" = sueldo integral cargado en Admin Corte → Nómina.
+      </p>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 24 }}>
+        <KPICard icon="✂" label="Unidades Mes" value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
+        <KPICard icon="💵" label="Ingreso Corte Mes" value={fmtCOP(totalIngreso)} color={C.green} bg={C.greenBg} />
+        <KPICard icon="💸" label="Costo Nómina Mes" value={fmtCOP(totalCosto)} color={C.amber} bg={C.amberBg} />
+        <KPICard
+          icon={rentabilidad >= 0 ? "📈" : "📉"}
+          label="Rentabilidad Mes"
+          value={fmtCOP(rentabilidad)}
+          color={rentabilidad >= 0 ? C.green : C.red}
+          bg={rentabilidad >= 0 ? C.greenBg : C.redBg}
+          sub={rentabilidad >= 0 ? "✓ Rentable" : "⚠ Pérdida"}
+        />
+      </div>
+      {!filas.length ? (
+        <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
+          Sin trabajadores en nómina ni cortes registrados este mes.
+        </div>
+      ) : (
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ borderBottom: `2px solid ${C.border}` }}>
+              <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Cortador</th>
+              <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Unidades</th>
+              <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Ingreso Corte</th>
+              <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Costo Nómina</th>
+              <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Rentabilidad</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filas.map((f, i) => {
+              const rent = f.ingreso - f.costo;
+              return (
+                <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
+                  <td style={{ padding: "10px", fontWeight: 700, color: C.ink }}>
+                    {f.nombre}
+                    {!f.enNomina && (
+                      <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.red, background: C.redBg, padding: "2px 6px", borderRadius: 10 }}>
+                        no está en nómina
+                      </span>
+                    )}
+                    {f.enNomina && f.unidades === 0 && (
+                      <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.slate, background: C.canvas, padding: "2px 6px", borderRadius: 10 }}>
+                        sin cortes este mes
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ padding: "10px", textAlign: "right" }}>{fmtNum(f.unidades)}</td>
+                  <td style={{ padding: "10px", textAlign: "right", color: C.green, fontWeight: 700 }}>{fmtCOP(f.ingreso)}</td>
+                  <td style={{ padding: "10px", textAlign: "right", color: C.amber, fontWeight: 700 }}>{fmtCOP(f.costo)}</td>
+                  <td style={{ padding: "10px", textAlign: "right", color: rent >= 0 ? C.green : C.red, fontWeight: 800 }}>{fmtCOP(rent)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 // ─── HISTÓRICO ────────────────────────────────────────────────────────────────
 // Ícono/color/etiqueta según motivoCierre (mismo criterio que motivoCierreInfo
 // en App.js) — un único estado de cierre ("cerrado"), con el motivo aparte.
@@ -2513,6 +2877,9 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
   // (Planeación) que en InformeVigentesBusintView de App.js.
   const [ventasPerdidasCargas, setVentasPerdidasCargas] = useState([]);
   const [planeacionCargas, setPlaneacionCargas] = useState([]);
+  // Precios de corte por referencia (Centro de Costo → Admin Corte → Precios
+  // Corte). Se usa la carga más reciente, igual que Ventas Perdidas.
+  const [preciosCorteCargas, setPreciosCorteCargas] = useState([]);
 
   useEffect(() => {
     const unsubs = [];
@@ -2533,6 +2900,10 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
           setPlaneacionCargas(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
         });
         unsubs.push(unsubPlan);
+        const unsubPrecios = onSnapshot(collection(db, "precios_corte_cargas"), (snap) => {
+          setPreciosCorteCargas(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        });
+        unsubs.push(unsubPrecios);
         const cfgDocs = await fsGet("corte_config");
         if (cfgDocs.length)
           setCorteConfig((prev) => ({ ...prev, ...cfgDocs[0] }));
@@ -2579,6 +2950,24 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
     });
   }
 
+  const ultimaCargaPrecios = preciosCorteCargas.reduce(
+    (max, c) => (!max || (c.creadoTs || 0) > (max.creadoTs || 0) ? c : max),
+    null
+  );
+  const preciosMap = new Map((ultimaCargaPrecios?.precios || []).map((p) => [String(p.ref).trim(), p.precio]));
+
+  // Une los nombres de "Cortadores" (lista histórica) con los de "Nómina"
+  // (lo que se sube por archivo o se agrega a mano), sin duplicados, para
+  // que el desplegable de "Cortador" en Programar Corte siempre incluya a
+  // quien esté en la nómina — así el Centro de Costo puede emparejar por
+  // nombre sin depender de que alguien haya recordado agregarlo dos veces.
+  const cortadoresUnificados = (() => {
+    const nombres = new Map();
+    (corteConfig.cortadores || []).forEach((c) => nombres.set(c.nombre.trim().toUpperCase(), c.nombre));
+    (corteConfig.nomina?.trabajadores || []).forEach((t) => nombres.set(t.nombre.trim().toUpperCase(), t.nombre));
+    return [...nombres.values()].sort().map((nombre) => ({ id: nombre, nombre }));
+  })();
+
   async function savePedido(pedido) {
     setPedidos((ps) =>
       ps.some((p) => p.id === pedido.id)
@@ -2601,6 +2990,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
     { id: "cola", icon: "📋", label: "Cola Sugerida" },
     { id: "historico", icon: "📁", label: "Histórico" },
     { id: "estadisticas", icon: "📊", label: "Telas" },
+    { id: "costo", icon: "💰", label: "Centro de Costo" },
     ...(isAdmin ? [{ id: "admin", icon: "⚙", label: "Admin Corte" }] : []),
   ];
 
@@ -2801,8 +3191,9 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
             <DetallePedido
               pedido={selPedido}
               plantas={corteConfig.plantas || []}
-              cortadores={corteConfig.cortadores || []}
+              cortadores={cortadoresUnificados}
               nominaConfig={corteConfig.nomina}
+              preciosMap={preciosMap}
               onBack={() => {
                 setView("dashboard");
                 setSelPedidoId(null);
@@ -2831,6 +3222,9 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
             />
           )}
           {view === "estadisticas" && <EstadisticasTela pedidos={pedidos} />}
+          {view === "costo" && (
+            <CentroCosto pedidos={pedidos} trabajadores={corteConfig.nomina?.trabajadores || []} />
+          )}
           {view === "admin" && isAdmin && (
             <AdminCorte config={corteConfig} onSave={saveConfig} />
           )}
