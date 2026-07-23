@@ -5456,15 +5456,24 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
   const ultimaCargaPlaneacion = [...planeacionCargas].sort((a, b) =>
     String(b.creadoEn || b.fecha || "").localeCompare(String(a.creadoEn || a.fecha || ""))
   )[0] || null;
-  // "Cant Cortada" por pedido+referencia, revisando TODAS las cargas de
+  // Unidades ya cortadas por pedido+referencia, revisando TODAS las cargas de
   // Planeación guardadas (no solo la última). Cada carga es una foto del
   // reporte de producción del día en que se subió — un lote que ya se
   // terminó y se facturó puede dejar de aparecer en las cargas más nuevas,
   // así que quedarse solo con la última carga pierde el registro de que ese
   // lote SÍ se cortó. Para evitarlo: primero se agrupa por número de lote
   // (un mismo lote puede aparecer en varias cargas a medida que avanza) y se
-  // toma el mayor "Cant Cortada" visto para ese lote en cualquier carga;
-  // luego se suma por pedido+referencia entre los distintos lotes.
+  // toma el mayor valor visto para ese lote en cualquier carga; luego se
+  // suma por pedido+referencia entre los distintos lotes.
+  //
+  // El campo "Cant Cortada" del archivo llega en 0 en las cargas reales (no
+  // lo está poblando el reporte que se sube a diario) — confirmado con el
+  // usuario. Lo que SÍ trae el dato confiable es el inventario por etapa
+  // (Corte, BMP, Planta, BPT, Semiterminado): si un lote tiene unidades en
+  // cualquiera de esas etapas, es porque YA se cortó (no se puede estar en
+  // planta de confección sin haber pasado por corte primero). Por eso el
+  // "cortado" de cada lote es el máximo entre Cant Cortada y la suma de esas
+  // columnas de inventario en proceso.
   const lotesCortadoMap = new Map();
   {
     const porNumLote = new Map();
@@ -5474,16 +5483,22 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
         const ref = String(l.referencia ?? "").trim();
         if (!numPedido || !ref) return;
         const numLote = String(l.numLote ?? "").trim() || `${numPedido}__${ref}__sinlote`;
-        const cantCortada = Number(l.cantCortada) || 0;
+        const enProceso =
+          (Number(l.invCorte) || 0) +
+          (Number(l.invBMP) || 0) +
+          (Number(l.invPlanta) || 0) +
+          (Number(l.invBPT) || 0) +
+          (Number(l.invSemiterminado) || 0);
+        const cantidad = Math.max(Number(l.cantCortada) || 0, enProceso);
         const actual = porNumLote.get(numLote);
-        if (!actual || cantCortada > actual.cantCortada) {
-          porNumLote.set(numLote, { numPedido, ref, cantCortada });
+        if (!actual || cantidad > actual.cantidad) {
+          porNumLote.set(numLote, { numPedido, ref, cantidad });
         }
       });
     });
-    porNumLote.forEach(({ numPedido, ref, cantCortada }) => {
+    porNumLote.forEach(({ numPedido, ref, cantidad }) => {
       const clave = `${numPedido}__${ref}`;
-      lotesCortadoMap.set(clave, (lotesCortadoMap.get(clave) || 0) + cantCortada);
+      lotesCortadoMap.set(clave, (lotesCortadoMap.get(clave) || 0) + cantidad);
     });
   }
   // Un pedido cuenta como visible en pantalla solo si no está oculto a mano
@@ -5776,12 +5791,21 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
               });
             });
             encontrados.sort((a, b) => String(b.cargaFecha || "").localeCompare(String(a.cargaFecha || "")));
+            const conEnProceso = encontrados.map((l) => ({
+              ...l,
+              enProceso:
+                (Number(l.invCorte) || 0) +
+                (Number(l.invBMP) || 0) +
+                (Number(l.invPlanta) || 0) +
+                (Number(l.invBPT) || 0) +
+                (Number(l.invSemiterminado) || 0),
+            }));
             const maxPorLote = new Map();
-            encontrados.forEach((l) => {
+            conEnProceso.forEach((l) => {
               const key = String(l.numLote ?? "");
-              const cc = Number(l.cantCortada) || 0;
-              if (!maxPorLote.has(key) || cc > maxPorLote.get(key).cantCortada) {
-                maxPorLote.set(key, { numLote: l.numLote, referencia: l.referencia, cantCortada: cc });
+              const cantidad = Math.max(Number(l.cantCortada) || 0, l.enProceso);
+              if (!maxPorLote.has(key) || cantidad > maxPorLote.get(key).cantidad) {
+                maxPorLote.set(key, { numLote: l.numLote, referencia: l.referencia, cantidad });
               }
             });
             return (
@@ -5789,7 +5813,7 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
                 <div style={{ color: T.slate, marginBottom: 4 }}>
                   {encontrados.length === 0
                     ? `No se encontró ningún lote con numPedido === "${objetivo}" (comparando como texto) en ninguna de las ${planeacionCargas.length} cargas.`
-                    : `${encontrados.length} fila(s) encontradas (ordenadas de carga más reciente a más vieja). Resumen — máximo cantCortada visto por lote (esto es lo que usa el cruce):`}
+                    : `${encontrados.length} fila(s) encontradas (ordenadas de carga más reciente a más vieja). Resumen — máximo cortado visto por lote, tomando max(cantCortada, inventario en proceso) — esto es lo que usa el cruce:`}
                 </div>
                 {maxPorLote.size > 0 && (
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10, marginBottom: 10 }}>
@@ -5797,7 +5821,7 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
                       <tr style={{ color: T.slate, textAlign: "left" }}>
                         <th style={{ padding: 4 }}>numLote</th>
                         <th style={{ padding: 4 }}>referencia</th>
-                        <th style={{ padding: 4 }}>MAX cantCortada</th>
+                        <th style={{ padding: 4 }}>MAX cortado</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -5805,7 +5829,7 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
                         <tr key={i} style={{ borderTop: `1px solid ${T.border}`, fontWeight: 700 }}>
                           <td style={{ padding: 4 }}>{JSON.stringify(l.numLote)}</td>
                           <td style={{ padding: 4 }}>{JSON.stringify(l.referencia)}</td>
-                          <td style={{ padding: 4, color: l.cantCortada > 0 ? T.jade : T.coral }}>{l.cantCortada}</td>
+                          <td style={{ padding: 4, color: l.cantidad > 0 ? T.jade : T.coral }}>{l.cantidad}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -5818,19 +5842,19 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
                       <thead>
                         <tr style={{ color: T.slate, textAlign: "left" }}>
                           <th style={{ padding: 4 }}>numLote</th>
-                          <th style={{ padding: 4 }}>numPedido (raw)</th>
-                          <th style={{ padding: 4 }}>referencia (raw)</th>
+                          <th style={{ padding: 4 }}>referencia</th>
                           <th style={{ padding: 4 }}>cantCortada</th>
+                          <th style={{ padding: 4 }}>en proceso (Inv*)</th>
                           <th style={{ padding: 4 }}>carga</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {encontrados.map((l, i) => (
+                        {conEnProceso.map((l, i) => (
                           <tr key={i} style={{ borderTop: `1px solid ${T.border}` }}>
                             <td style={{ padding: 4 }}>{JSON.stringify(l.numLote)}</td>
-                            <td style={{ padding: 4 }}>{JSON.stringify(l.numPedido)}</td>
                             <td style={{ padding: 4 }}>{JSON.stringify(l.referencia)}</td>
                             <td style={{ padding: 4 }}>{JSON.stringify(l.cantCortada)}</td>
+                            <td style={{ padding: 4 }}>{l.enProceso}</td>
                             <td style={{ padding: 4 }}>{l.cargaFecha}</td>
                           </tr>
                         ))}
