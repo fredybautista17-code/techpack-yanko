@@ -5383,142 +5383,6 @@ function AdminPedidosView({ pedidoConfig, onSave, config, onSaveConfig }) {
 // `getPedidosVigentesBusint` esté desplegada y los secrets BUSINT_TOKEN /
 // BUSINT_BASE_URL ya configurados (los mismos que usa la sincronización
 // automática cada 6 horas) — ver README_BUSINT_SYNC.md.
-// Herramienta de diagnóstico: consulta la API de Busint (órdenes de pedido)
-// SIN ningún filtro ni cruce del aplicativo — solo trae exactamente las
-// filas que Busint devuelve para un número de pedido puntual, en el rango
-// de fechas indicado. Sirve para confirmar, de forma cruda, si un pedido
-// (p. ej. el #1445) realmente sigue existiendo en Busint o no.
-function DiagnosticoPedidoBusintView() {
-  const [numeroPedido, setNumeroPedido] = useState("");
-  const [fechaInicio, setFechaInicio] = useState(() => {
-    const d = new Date();
-    d.setFullYear(d.getFullYear() - 3);
-    return d.toISOString().slice(0, 10);
-  });
-  const [fechaFin, setFechaFin] = useState(today());
-  const [cargando, setCargando] = useState(false);
-  const [error, setError] = useState("");
-  const [resultado, setResultado] = useState(null);
-
-  async function consultar() {
-    const numero = numeroPedido.trim();
-    if (!numero) { setError("Escribe un número de pedido."); return; }
-    setError("");
-    setCargando(true);
-    setResultado(null);
-    try {
-      const llamar = httpsCallable(functionsClient, "getOrdenBusintPorNumero");
-      const resp = await llamar({ fechaInicio, fechaFin, numeroPedido: numero });
-      setResultado(resp.data);
-    } catch (err) {
-      setError(err?.message || "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
-    }
-    setCargando(false);
-  }
-
-  return (
-    <div>
-      <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>
-        Consulta la API de Busint (órdenes de pedido) en vivo y muestra <strong>exactamente</strong> lo que Busint devuelve para un número de pedido, sin ningún filtro ni cruce del aplicativo — ni facturación, ni Planeación, ni estado local. Útil para confirmar si un pedido puntual sigue existiendo allá o no.
-      </div>
-      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
-        <div>
-          <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-            N° Pedido
-          </label>
-          <input
-            type="text"
-            value={numeroPedido}
-            onChange={(e) => setNumeroPedido(e.target.value)}
-            placeholder="ej. 1445"
-            style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, fontFamily: "inherit", width: 140 }}
-          />
-        </div>
-        <div>
-          <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-            Fecha Inicio
-          </label>
-          <input
-            type="date"
-            value={fechaInicio}
-            onChange={(e) => setFechaInicio(e.target.value)}
-            style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, fontFamily: "inherit" }}
-          />
-        </div>
-        <div>
-          <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-            Fecha Fin
-          </label>
-          <input
-            type="date"
-            value={fechaFin}
-            onChange={(e) => setFechaFin(e.target.value)}
-            style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, fontFamily: "inherit" }}
-          />
-        </div>
-        <Btn onClick={consultar} disabled={cargando}>
-          {cargando ? "Consultando…" : "🔍 Consultar Busint"}
-        </Btn>
-      </div>
-      {error && (
-        <div style={{ padding: "12px 16px", background: T.coralBg, borderRadius: 10, border: `1px solid ${T.coral}44`, color: T.coral, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
-          {error}
-        </div>
-      )}
-      {resultado && (
-        <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 20 }}>
-            <div style={{ background: resultado.filasCoincidentes.length ? T.jadeBg : T.coralBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${(resultado.filasCoincidentes.length ? T.jade : T.coral)}22` }}>
-              <div style={{ fontSize: 22, fontWeight: 900, color: resultado.filasCoincidentes.length ? T.jade : T.coral }}>
-                {resultado.filasCoincidentes.length}
-              </div>
-              <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>
-                Filas encontradas para #{resultado.numeroPedido}
-              </div>
-            </div>
-            <div style={{ background: T.denimBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.denim}22` }}>
-              <div style={{ fontSize: 22, fontWeight: 900, color: T.denim }}>{resultado.totalFilasEnRango}</div>
-              <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>Total filas en el rango (todos los pedidos)</div>
-            </div>
-            <div style={{ background: T.violetBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.violet}22` }}>
-              <div style={{ fontSize: 13, fontWeight: 800, color: T.violet }}>
-                {resultado.fechaInicio} → {resultado.fechaFin}
-              </div>
-              <div style={{ fontSize: 11, color: T.slate, fontWeight: 600, marginTop: 4 }}>Rango consultado</div>
-            </div>
-          </div>
-          {!resultado.filasCoincidentes.length ? (
-            <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14, background: T.canvas, borderRadius: 12, border: `1px solid ${T.border}` }}>
-              Busint no devolvió ninguna fila con número de pedido <strong>#{resultado.numeroPedido}</strong> en este rango de fechas — es decir, ese pedido no existe (o ya no existe) en la respuesta de la API de órdenes de pedido.
-            </div>
-          ) : (
-            <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, overflow: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                <thead>
-                  <tr style={{ background: T.ink }}>
-                    {Object.keys(resultado.filasCoincidentes[0]).map((h) => (
-                      <th key={h} style={{ padding: "8px 12px", color: T.seam, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {resultado.filasCoincidentes.map((fila, i) => (
-                    <tr key={i} style={{ borderTop: `1px solid ${T.border}` }}>
-                      {Object.keys(resultado.filasCoincidentes[0]).map((h) => (
-                        <td key={h} style={{ padding: "8px 12px", color: T.ink, whiteSpace: "nowrap" }}>{String(fila[h] ?? "")}</td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
 function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
   const [fechaInicio, setFechaInicio] = useState(() => {
     const d = new Date();
@@ -5677,20 +5541,43 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
     });
   }
 
-  // Suma las cantidades de todas las variantes de color/pinta de una misma
-  // referencia+talla en una sola fila — el detalle solo necesita mostrar
-  // cuánto hay por referencia y talla, no el desglose por color.
-  function detallePorTalla(referencias) {
-    const porClave = new Map();
-    referencias.forEach((r) => {
+  // Mapa numero → doc de pedidos_activos, para cruzar cada pedido vigente
+  // con lo que ya se cortó (si es que ya se congeló al menos una vez).
+  const pedidosActivosPorNumero = new Map((pedidosActivos || []).map((pa) => [String(pa.numero || "").trim(), pa]));
+
+  // Arma la tabla horizontal de detalle de un pedido: una fila por
+  // referencia (sumando variantes de color/pinta), con una columna por cada
+  // talla que aparezca en ese pedido, más Total/Cortado/Pendiente. El
+  // cruce con lo cortado se hace por código de referencia (r.ref) — no por
+  // id, porque el id de cada referencia se regenera en cada consulta a
+  // Busint y nunca coincidiría con el refId guardado en cortesRealizados.
+  function detalleHorizontal(p, pedidoActivo) {
+    const porRef = new Map();
+    p.referencias.forEach((r) => {
+      if (!porRef.has(r.ref)) porRef.set(r.ref, { ref: r.ref, descripcion: r.descripcion, tallas: {}, total: 0 });
+      const acc = porRef.get(r.ref);
       Object.entries(r.tallas || {}).forEach(([talla, cant]) => {
         if (!(cant > 0)) return;
-        const clave = `${r.ref}__${talla}`;
-        if (!porClave.has(clave)) porClave.set(clave, { ref: r.ref, talla, cant: 0 });
-        porClave.get(clave).cant += cant;
+        acc.tallas[talla] = (acc.tallas[talla] || 0) + cant;
+        acc.total += cant;
       });
     });
-    return [...porClave.values()];
+    const cortadoPorRef = new Map();
+    (pedidoActivo?.cortesRealizados || []).forEach((c) => {
+      (c.refs || []).forEach((cr) => {
+        const suma = Object.values(cr.tallas || {}).reduce((a, b) => a + (b || 0), 0);
+        cortadoPorRef.set(cr.ref, (cortadoPorRef.get(cr.ref) || 0) + suma);
+      });
+    });
+    const tallasDistintas = [];
+    porRef.forEach((r) => {
+      Object.keys(r.tallas).forEach((t) => { if (!tallasDistintas.includes(t)) tallasDistintas.push(t); });
+    });
+    const filas = [...porRef.values()].map((r) => {
+      const cortado = cortadoPorRef.get(r.ref) || 0;
+      return { ...r, cortado, pendiente: Math.max(0, r.total - cortado) };
+    });
+    return { tallasDistintas, filas };
   }
 
   async function consultar() {
@@ -5958,43 +5845,60 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
                                       </td>
                                     )}
                                   </tr>
-                                  {detalleAbierto && (
+                                  {detalleAbierto && (() => {
+                                    const pedidoActivo = pedidosActivosPorNumero.get(String(p.numero).trim());
+                                    const { tallasDistintas, filas } = detalleHorizontal(p, pedidoActivo);
+                                    return (
                                     <tr style={{ borderBottom: `1px solid ${T.border}` }}>
                                       <td colSpan={isAdmin ? 8 : 7} style={{ padding: "0 10px 12px 34px", background: T.canvas }}>
-                                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-                                          <thead>
-                                            <tr>
-                                              {["Referencia", "Talla", "Cantidad"].map((h) => (
-                                                <th
-                                                  key={h}
-                                                  style={{
-                                                    padding: "6px 8px",
-                                                    textAlign: h === "Cantidad" ? "right" : "left",
-                                                    fontWeight: 700,
-                                                    fontSize: 9,
-                                                    color: T.slate,
-                                                    textTransform: "uppercase",
-                                                    borderBottom: `1px solid ${T.border}`,
-                                                  }}
-                                                >
-                                                  {h}
-                                                </th>
-                                              ))}
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            {detallePorTalla(p.referencias).map((item) => (
-                                              <tr key={`${item.ref}__${item.talla}`}>
-                                                <td style={{ padding: "5px 8px", color: T.ink }}>{item.ref}</td>
-                                                <td style={{ padding: "5px 8px", color: T.slate }}>{item.talla}</td>
-                                                <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 700, color: T.ink }}>{fmtNum(item.cant)}</td>
+                                        {!pedidoActivo && (
+                                          <div style={{ fontSize: 10, color: T.slate, margin: "6px 0" }}>
+                                            Este pedido aún no se ha congelado como base de Corte — "Cortado"/"Pendiente" muestran 0/Total hasta que se use "🧊 Congelar como base de Corte".
+                                          </div>
+                                        )}
+                                        <div style={{ overflowX: "auto" }}>
+                                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                                            <thead>
+                                              <tr>
+                                                {["Referencia", "Descripción", ...tallasDistintas, "Total", "Cortado", "Pendiente"].map((h) => (
+                                                  <th
+                                                    key={h}
+                                                    style={{
+                                                      padding: "6px 8px",
+                                                      textAlign: h === "Referencia" || h === "Descripción" ? "left" : "right",
+                                                      fontWeight: 700,
+                                                      fontSize: 9,
+                                                      color: T.slate,
+                                                      textTransform: "uppercase",
+                                                      borderBottom: `1px solid ${T.border}`,
+                                                      whiteSpace: "nowrap",
+                                                    }}
+                                                  >
+                                                    {h}
+                                                  </th>
+                                                ))}
                                               </tr>
-                                            ))}
-                                          </tbody>
-                                        </table>
+                                            </thead>
+                                            <tbody>
+                                              {filas.map((r) => (
+                                                <tr key={r.ref}>
+                                                  <td style={{ padding: "5px 8px", color: T.ink, fontWeight: 700 }}>{r.ref}</td>
+                                                  <td style={{ padding: "5px 8px", color: T.slate }}>{r.descripcion}</td>
+                                                  {tallasDistintas.map((t) => (
+                                                    <td key={t} style={{ padding: "5px 8px", textAlign: "right", color: r.tallas[t] ? T.ink : T.border }}>{r.tallas[t] || "—"}</td>
+                                                  ))}
+                                                  <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 800, color: T.denim }}>{fmtNum(r.total)}</td>
+                                                  <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 700, color: T.jade }}>{fmtNum(r.cortado)}</td>
+                                                  <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 700, color: r.pendiente > 0 ? T.coral : T.jade }}>{fmtNum(r.pendiente)}</td>
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        </div>
                                       </td>
                                     </tr>
-                                  )}
+                                    );
+                                  })()}
                                 </React.Fragment>
                               );
                             })}
@@ -6139,12 +6043,11 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
         </div>
       )}
       <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
-        {[["activos", `Activos (${activos.length})`], ["historico", `Histórico (${historico.length})`], ["vigentes_busint", "📡 Vigentes por Cliente (Busint)"], ["diagnostico_busint", "🔍 Diagnóstico Pedido"]].map(([v, label]) => (
+        {[["activos", `Activos (${activos.length})`], ["historico", `Histórico (${historico.length})`], ["vigentes_busint", "📡 Vigentes por Cliente (Busint)"]].map(([v, label]) => (
           <button key={v} onClick={() => setFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filtro === v ? T.ink : T.border}`, background: filtro === v ? T.ink : T.white, color: filtro === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
       {filtro === "vigentes_busint" && <InformeVigentesBusintView isAdmin={isAdmin} pedidosActivos={pedidos} />}
-      {filtro === "diagnostico_busint" && <DiagnosticoPedidoBusintView />}
       {filtro === "activos" && lista.length > 0 && (
         <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, overflow: "hidden", marginBottom: 16 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
