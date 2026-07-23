@@ -465,7 +465,10 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, lotesExi
       TALLAS_BUSINT.forEach((t) => {
         c[r.id].tallas[t] = 0;
       });
-      if (preseleccion && preseleccion.ref === r.ref) {
+      // Match por refId (identifica el color/pinta exacto) — con respaldo
+      // por `ref` solo si la programación es de antes de guardar refId.
+      const coincideRef = preseleccion && (preseleccion.refId ? preseleccion.refId === r.id : preseleccion.ref === r.ref);
+      if (coincideRef) {
         Object.entries(preseleccion.tallas || {}).forEach(([t, cant]) => {
           if (t in c[r.id].tallas) c[r.id].tallas[t] = cant;
         });
@@ -2547,11 +2550,19 @@ function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido,
 //   3) Corte (registrado a mano aquí mismo en el aplicativo) — respaldo si
 //      las dos anteriores no traen esa referencia para ese pedido.
 function calcularCortadoPendiente(pedido, vpRefMap, lotesCortadoMap) {
+  // OJO: Busint entrega una "referencia" por cada combinación ref+pinta+color
+  // — varias filas de pedido.referencias pueden compartir el mismo código
+  // `ref` (solo cambian de color/pinta, ver descripcion). Lo único que
+  // identifica una referencia de forma única es su `id`. Por eso el cortado
+  // propio de la app (cortesRealizados) se cruza por refId, NO por ref —
+  // si se cruzara por ref, cortar un color contaría como si se hubiera
+  // cortado también en los demás colores que comparten ese mismo código.
   const cortadoPorRefApp = new Map();
   (pedido.cortesRealizados || []).forEach((c) => {
     (c.refs || []).forEach((cr) => {
       const suma = Object.values(cr.tallas || {}).reduce((a, b) => a + (b || 0), 0);
-      cortadoPorRefApp.set(cr.ref, (cortadoPorRefApp.get(cr.ref) || 0) + suma);
+      const clave = cr.refId || cr.ref;
+      cortadoPorRefApp.set(clave, (cortadoPorRefApp.get(clave) || 0) + suma);
     });
   });
   let totalPedido = 0;
@@ -2559,19 +2570,22 @@ function calcularCortadoPendiente(pedido, vpRefMap, lotesCortadoMap) {
   const porRef = (pedido.referencias || []).map((r) => {
     const total = r.total || 0;
     totalPedido += total;
+    // Ventas Perdidas y Planeación (Busint) solo dan el total por código de
+    // referencia, sin desglose de color — es una limitación de esas fuentes
+    // externas, no de la app; se deja tal cual (por ref, no por refId).
     const clave = `${pedido.numero}__${r.ref}`;
     const vp = vpRefMap?.get(clave);
     const cortadoVP = vp
       ? (vp.totalFacturada || 0) + (vp.totalTrasExt || 0) + (vp.totalTrasCon || 0) + Math.abs(vp.totalVentasPerdidas || 0)
       : null;
     const cortadoPlanta = lotesCortadoMap?.has(clave) ? lotesCortadoMap.get(clave) : null;
-    const cortadoApp = cortadoPorRefApp.get(r.ref) || 0;
+    const cortadoApp = cortadoPorRefApp.get(r.id) || 0;
     const candidatos = [cortadoApp];
     if (cortadoVP !== null) candidatos.push(cortadoVP);
     if (cortadoPlanta !== null) candidatos.push(cortadoPlanta);
     const cortado = Math.max(...candidatos);
     totalCortado += cortado;
-    return { ref: r.ref, descripcion: r.descripcion, tallas: r.tallas || {}, total, cortado, pendiente: Math.max(0, total - cortado) };
+    return { refId: r.id, ref: r.ref, descripcion: r.descripcion, tallas: r.tallas || {}, total, cortado, pendiente: Math.max(0, total - cortado) };
   });
   return { totalPedido, totalCortado, totalPendiente: Math.max(0, totalPedido - totalCortado), porRef };
 }
@@ -2686,7 +2700,10 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   const cumplidosProg = [...programacion.filter((pr) => pr.estado === "cumplido")].sort(
     (a, b) => (b.fechaCumplioISO || "").localeCompare(a.fechaCumplioISO || "")
   );
-  const yaProgramados = new Set(pendientesProg.map((pr) => `${pr.pedidoId}__${pr.ref}`));
+  // Se identifica por refId (id único de la referencia, no el código `ref`
+  // que puede repetirse entre colores) — con fallback a `ref` solo para
+  // registros viejos que se hayan creado antes de guardar refId.
+  const yaProgramados = new Set(pendientesProg.map((pr) => `${pr.pedidoId}__${pr.refId || pr.ref}`));
 
   // Costo diario del centro de costo: nómina total entre los días laborales
   // del mes (20, fijo — así trabaja la empresa). Se usa para saber si lo que
@@ -2704,7 +2721,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   const porCliente = new Map(); // cliente -> Map(pedidoId -> { pedido, filas })
   activos.forEach((p) => {
     const { porRef } = calcularCortadoPendiente(p, vpRefMap, lotesCortadoMap);
-    const filas = porRef.filter((r) => r.pendiente > 0 && !yaProgramados.has(`${p.id}__${r.ref}`));
+    const filas = porRef.filter((r) => r.pendiente > 0 && !yaProgramados.has(`${p.id}__${r.refId}`));
     if (!filas.length) return;
     const clienteKey = p.cliente || "Sin cliente";
     if (!porCliente.has(clienteKey)) porCliente.set(clienteKey, new Map());
@@ -2727,11 +2744,15 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
         Object.entries(r.tallas || {}).forEach(([t, cant]) => {
           if (cant > 0) {
             items.push({
-              key: `${pedido.id}__${r.ref}__${t}`,
+              // La key usa refId (único por color/pinta) — NO el código
+              // `ref`, que puede repetirse entre varios colores del mismo
+              // pedido y haría que seleccionar uno marcara los demás.
+              key: `${pedido.id}__${r.refId}__${t}`,
               pedidoId: pedido.id,
               numero: pedido.numero,
               cliente,
               ref: r.ref,
+              refId: r.refId,
               descripcion: r.descripcion,
               talla: t,
               cantidad: cant,
@@ -2798,13 +2819,16 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     const grupos = new Map();
     seleccion.forEach((it) => {
       if (it.cantidad <= 0) return;
-      const gkey = `${it.pedidoId}__${it.ref}`;
+      // Agrupar por refId (no por ref) — así dos colores con el mismo
+      // código de referencia quedan como programaciones separadas.
+      const gkey = `${it.pedidoId}__${it.refId}`;
       if (!grupos.has(gkey)) {
         grupos.set(gkey, {
           pedidoId: it.pedidoId,
           numero: it.numero,
           cliente: it.cliente,
           ref: it.ref,
+          refId: it.refId,
           descripcion: it.descripcion,
           pendiente: it.pendienteRef,
           tallas: {},
@@ -2963,11 +2987,14 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                       const itemsRef = tallasDistintas
                                         .filter((t) => r.tallas[t] > 0)
                                         .map((t) => ({
-                                          key: `${p.id}__${r.ref}__${t}`,
+                                          // key por refId — el código `ref` puede repetirse entre
+                                          // colores del mismo pedido (ver calcularCortadoPendiente).
+                                          key: `${p.id}__${r.refId}__${t}`,
                                           pedidoId: p.id,
                                           numero: p.numero,
                                           cliente,
                                           ref: r.ref,
+                                          refId: r.refId,
                                           descripcion: r.descripcion,
                                           talla: t,
                                           cantidad: r.tallas[t],
@@ -2975,7 +3002,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                         }));
                                       const todaLaRefSel = itemsRef.length > 0 && itemsRef.every((it) => seleccion.has(it.key));
                                       return (
-                                        <tr key={`${p.id}__${r.ref}`} style={{ borderTop: `1px solid ${C.border}` }}>
+                                        <tr key={r.refId} style={{ borderTop: `1px solid ${C.border}` }}>
                                           <td style={{ padding: "5px 8px" }}>
                                             <input
                                               type="checkbox"
@@ -2996,13 +3023,13 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                                 </td>
                                               );
                                             }
-                                            const key = `${p.id}__${r.ref}__${t}`;
+                                            const key = `${p.id}__${r.refId}__${t}`;
                                             const sel = seleccion.get(key);
                                             return (
                                               <td
                                                 key={t}
                                                 onClick={() => {
-                                                  if (!sel) toggleItem({ key, pedidoId: p.id, numero: p.numero, cliente, ref: r.ref, descripcion: r.descripcion, talla: t, cantidad: cant, pendienteRef: r.pendiente });
+                                                  if (!sel) toggleItem({ key, pedidoId: p.id, numero: p.numero, cliente, ref: r.ref, refId: r.refId, descripcion: r.descripcion, talla: t, cantidad: cant, pendienteRef: r.pendiente });
                                                 }}
                                                 style={{ padding: "4px 6px", textAlign: "center", cursor: sel ? "default" : "pointer", background: sel ? C.blueBg : "transparent" }}
                                               >
@@ -3134,13 +3161,18 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                   {pendientesConEstado.map((p) => {
                     const cant = p.cantidadProgramada ?? p.cantidadPendiente;
                     return (
-                    <tr key={p.id} style={{ borderBottom: `1px solid ${C.border}` }}>
-                      <td style={{ padding: "10px", fontWeight: 700, color: C.ink, cursor: "pointer" }} onClick={() => onSelectPedido(p.pedidoId)}>{p.cliente} · #{p.numero}</td>
+                    <tr
+                      key={p.id}
+                      onClick={() => onCortarProgramado(p)}
+                      title="Ir a cortar con estos datos"
+                      style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer" }}
+                    >
+                      <td style={{ padding: "10px", fontWeight: 700, color: C.ink }}>{p.cliente} · #{p.numero}</td>
                       <td style={{ padding: "10px" }}>
                         <span style={{ fontWeight: 700 }}>{p.ref}</span>
                         {p.descripcion && <span style={{ color: C.slate, marginLeft: 6, fontSize: 12 }}>{p.descripcion}</span>}
                       </td>
-                      <td style={{ padding: "10px", textAlign: "right" }}>
+                      <td style={{ padding: "10px", textAlign: "right" }} onClick={(e) => e.stopPropagation()}>
                         <input
                           type="number"
                           min={0}
@@ -3152,7 +3184,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                           <div style={{ fontSize: 10, color: C.slate, marginTop: 2 }}>de {fmtNum(p.cantidadPendiente)} pend.</div>
                         )}
                       </td>
-                      <td style={{ padding: "10px" }}>
+                      <td style={{ padding: "10px" }} onClick={(e) => e.stopPropagation()}>
                         <input
                           type="date"
                           value={p.fechaProgramada}
@@ -3163,14 +3195,8 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                       <td style={{ padding: "10px", textAlign: "right", color: p.vencido ? C.red : C.ink, fontWeight: p.vencido ? 800 : 500 }}>
                         {p.vencido ? `Vencido ${Math.abs(p.dias)}d` : `${p.dias}d`}
                       </td>
-                      <td style={{ padding: "10px", textAlign: "right", whiteSpace: "nowrap" }}>
-                        <button
-                          onClick={() => onCortarProgramado(p)}
-                          title="Ir a cortar"
-                          style={{ background: C.cyanBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.cyan, fontWeight: 700, fontSize: 11, cursor: "pointer", marginRight: 6 }}
-                        >
-                          ✂ Cortar
-                        </button>
+                      <td style={{ padding: "10px", textAlign: "right", whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
+                        <span style={{ fontSize: 11, color: C.cyan, fontWeight: 700, marginRight: 10 }}>✂ Click para cortar</span>
                         <button
                           onClick={() => onCancelar(p.id)}
                           title="Cancelar programación"
@@ -3211,13 +3237,15 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                         return (
                         <div
                           key={p.id}
-                          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", borderTop: i > 0 ? `1px solid ${C.border}` : "none" }}
+                          onClick={() => onCortarProgramado(p)}
+                          title="Ir a cortar con estos datos"
+                          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", borderTop: i > 0 ? `1px solid ${C.border}` : "none", cursor: "pointer" }}
                         >
-                          <div style={{ cursor: "pointer" }} onClick={() => onSelectPedido(p.pedidoId)}>
+                          <div>
                             <span style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{p.cliente} · #{p.numero}</span>
                             <span style={{ color: C.slate, marginLeft: 8, fontSize: 12 }}>{p.ref}</span>
                           </div>
-                          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                          <div style={{ display: "flex", gap: 10, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
                             <input
                               type="number"
                               min={0}
@@ -3234,13 +3262,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                             <span style={{ fontSize: 12, fontWeight: 800, color: p.vencido ? C.red : C.ink }}>
                               {p.vencido ? `Vencido ${Math.abs(p.dias)}d` : `${p.dias}d`}
                             </span>
-                            <button
-                              onClick={() => onCortarProgramado(p)}
-                              title="Ir a cortar"
-                              style={{ background: C.cyanBg, border: "none", borderRadius: 6, padding: "4px 7px", color: C.cyan, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
-                            >
-                              ✂
-                            </button>
                             <button
                               onClick={() => onCancelar(p.id)}
                               title="Cancelar programación"
@@ -3926,6 +3947,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
         numero: it.numero,
         cliente: it.cliente,
         ref: it.ref,
+        refId: it.refId || "",
         descripcion: it.descripcion || "",
         cantidadPendiente: it.pendiente || 0,
         cantidadProgramada: it.cantidadProgramada || 0,
@@ -3975,10 +3997,15 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
       const pedido = pedidos.find((p) => p.id === pr.pedidoId);
       if (!pedido) return;
       const { porRef } = calcularCortadoPendiente(pedido, vpRefMap, lotesCortadoMap);
-      const refInfo = porRef.find((r) => r.ref === pr.ref);
+      // Se busca por refId (identifica el color/pinta exacto) — con
+      // respaldo por `ref` solo para programaciones viejas creadas antes de
+      // guardar refId, que podrían no tenerlo.
+      const refInfo = pr.refId ? porRef.find((r) => r.refId === pr.refId) : porRef.find((r) => r.ref === pr.ref);
       const pendienteActual = refInfo ? refInfo.pendiente : 0;
       if (pendienteActual === 0) {
-        const cortesConRef = (pedido.cortesRealizados || []).filter((c) => (c.refs || []).some((cr) => cr.ref === pr.ref));
+        const cortesConRef = (pedido.cortesRealizados || []).filter((c) =>
+          (c.refs || []).some((cr) => (pr.refId ? cr.refId === pr.refId : cr.ref === pr.ref))
+        );
         const ultimoCorte = [...cortesConRef].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))[0];
         await fsSave("corte_programacion", pr.id, { ...pr, estado: "cumplido", fechaCumplioISO: ultimoCorte?.fecha || today() });
       }
