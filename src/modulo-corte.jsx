@@ -2137,6 +2137,131 @@ function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido,
   );
 }
 
+// ─── COLA SUGERIDA DE CORTE ─────────────────────────────────────────────────
+// Cuánto falta por cortar de cada referencia de un pedido, cruzando las
+// mismas tres fuentes que usa el informe de Vigentes en Diseño → Pedidos
+// (se toma la que reporte más unidades, para no subestimar):
+//   1) Planeación (inventario en proceso por lote: Corte+BMP+Planta+BPT+
+//      Semiterminado, o Cant Cortada si esa sí trae dato) — confirma corte
+//      físico real aunque Busint no lo haya facturado todavía.
+//   2) Ventas Perdidas (Busint) — facturado + traslados + venta perdida.
+//   3) Corte (registrado a mano aquí mismo en el aplicativo) — respaldo si
+//      las dos anteriores no traen esa referencia para ese pedido.
+function calcularCortadoPendiente(pedido, vpRefMap, lotesCortadoMap) {
+  const cortadoPorRefApp = new Map();
+  (pedido.cortesRealizados || []).forEach((c) => {
+    (c.refs || []).forEach((cr) => {
+      const suma = Object.values(cr.tallas || {}).reduce((a, b) => a + (b || 0), 0);
+      cortadoPorRefApp.set(cr.ref, (cortadoPorRefApp.get(cr.ref) || 0) + suma);
+    });
+  });
+  let totalPedido = 0;
+  let totalCortado = 0;
+  const porRef = (pedido.referencias || []).map((r) => {
+    const total = r.total || 0;
+    totalPedido += total;
+    const clave = `${pedido.numero}__${r.ref}`;
+    const vp = vpRefMap?.get(clave);
+    const cortadoVP = vp
+      ? (vp.totalFacturada || 0) + (vp.totalTrasExt || 0) + (vp.totalTrasCon || 0) + Math.abs(vp.totalVentasPerdidas || 0)
+      : null;
+    const cortadoPlanta = lotesCortadoMap?.has(clave) ? lotesCortadoMap.get(clave) : null;
+    const cortadoApp = cortadoPorRefApp.get(r.ref) || 0;
+    const candidatos = [cortadoApp];
+    if (cortadoVP !== null) candidatos.push(cortadoVP);
+    if (cortadoPlanta !== null) candidatos.push(cortadoPlanta);
+    const cortado = Math.max(...candidatos);
+    totalCortado += cortado;
+    return { ref: r.ref, descripcion: r.descripcion, total, cortado, pendiente: Math.max(0, total - cortado) };
+  });
+  return { totalPedido, totalCortado, totalPendiente: Math.max(0, totalPedido - totalCortado), porRef };
+}
+
+// Lista de pedidos activos con algo pendiente por cortar, ordenada por
+// fecha de despacho: vencidos primero (los más vencidos arriba), luego los
+// próximos a vencer, y al final los que no tienen fecha. Así el analista no
+// tiene que adivinar por dónde empezar — la cola ya viene en orden de
+// urgencia. Se recalcula sola cada vez que se vuelve a Congelar en Vigentes,
+// o cuando se sube un nuevo reporte de Ventas Perdidas o Planeación.
+function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
+  const activos = pedidos.filter((p) => p.estado === "activo");
+  const conPendiente = activos
+    .map((p) => ({ pedido: p, ...calcularCortadoPendiente(p, vpRefMap, lotesCortadoMap) }))
+    .filter((x) => x.totalPendiente > 0);
+  conPendiente.sort((a, b) => {
+    const fa = a.pedido.fechaDespacho || "9999-12-31";
+    const fb = b.pedido.fechaDespacho || "9999-12-31";
+    return fa.localeCompare(fb);
+  });
+
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
+        📋 Cola sugerida de corte
+      </h2>
+      <p style={{ margin: "0 0 20px", fontSize: 13, color: C.slate, maxWidth: 640 }}>
+        Ordenada por fecha de despacho — los vencidos y los más próximos a vencer aparecen primero. El pendiente de cada referencia se calcula cruzando Planeación, Ventas Perdidas y lo registrado aquí en Corte.
+      </p>
+      {!conPendiente.length ? (
+        <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
+          No hay pendientes por cortar en este momento. 🎉
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {conPendiente.map(({ pedido: p, totalPedido, totalPendiente, porRef }, i) => {
+            const sem = semaforo(p.fechaDespacho);
+            const pendientesRef = porRef.filter((r) => r.pendiente > 0).sort((a, b) => b.pendiente - a.pendiente);
+            return (
+              <div
+                key={p.id}
+                onClick={() => onSelectPedido(p.id)}
+                style={{
+                  background: C.white,
+                  borderRadius: 12,
+                  padding: 16,
+                  cursor: "pointer",
+                  border: `1px solid ${C.border}`,
+                  transition: "box-shadow 0.15s",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.boxShadow = "0 4px 20px rgba(26,26,46,0.09)")}
+                onMouseLeave={(e) => (e.currentTarget.style.boxShadow = "none")}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: C.slate, fontWeight: 700, textTransform: "uppercase" }}>
+                      #{i + 1} · Pedido {p.numero}
+                    </div>
+                    <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginTop: 2 }}>{p.cliente}</div>
+                  </div>
+                  <div style={{ padding: "4px 10px", background: sem.bg, color: sem.color, borderRadius: 20, fontSize: 11, fontWeight: 800, whiteSpace: "nowrap" }}>
+                    📅 {sem.label}
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, color: C.slate, margin: "8px 0" }}>
+                  Despacho: {p.fechaDespacho || "—"} · <strong style={{ color: C.amber }}>{fmtNum(totalPendiente)}</strong> de {fmtNum(totalPedido)} prendas pendientes
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {pendientesRef.slice(0, 8).map((r) => (
+                    <span
+                      key={r.ref}
+                      style={{ fontSize: 11, padding: "3px 8px", background: C.canvas, borderRadius: 20, color: C.ink, fontWeight: 700 }}
+                    >
+                      {r.ref} <span style={{ color: C.amber }}>{fmtNum(r.pendiente)}</span>
+                    </span>
+                  ))}
+                  {pendientesRef.length > 8 && (
+                    <span style={{ fontSize: 11, color: C.slate, alignSelf: "center" }}>+{pendientesRef.length - 8} más</span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── HISTÓRICO ────────────────────────────────────────────────────────────────
 // Ícono/color/etiqueta según motivoCierre (mismo criterio que motivoCierreInfo
 // en App.js) — un único estado de cierre ("cerrado"), con el motivo aparte.
@@ -2307,6 +2432,14 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
     nomina: { trabajadores: [] },
   });
   const [loading, setLoading] = useState(true);
+  // Ventas Perdidas (Busint) y Planeación (lotes/inventario en proceso) — se
+  // leen aquí también, aparte de en Diseño → Pedidos, para que la Cola
+  // Sugerida calcule el pendiente real por referencia sin depender de que el
+  // usuario tenga esa otra pantalla abierta. Mismo criterio de "última
+  // carga" (Ventas Perdidas) y "todas las cargas, máximo por lote"
+  // (Planeación) que en InformeVigentesBusintView de App.js.
+  const [ventasPerdidasCargas, setVentasPerdidasCargas] = useState([]);
+  const [planeacionCargas, setPlaneacionCargas] = useState([]);
 
   useEffect(() => {
     const unsubs = [];
@@ -2319,6 +2452,14 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
           }
         );
         unsubs.push(unsubPedidos);
+        const unsubVP = onSnapshot(collection(db, "ventas_perdidas_cargas"), (snap) => {
+          setVentasPerdidasCargas(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        });
+        unsubs.push(unsubVP);
+        const unsubPlan = onSnapshot(collection(db, "planeacion_cargas"), (snap) => {
+          setPlaneacionCargas(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        });
+        unsubs.push(unsubPlan);
         const cfgDocs = await fsGet("corte_config");
         if (cfgDocs.length)
           setCorteConfig((prev) => ({ ...prev, ...cfgDocs[0] }));
@@ -2331,6 +2472,39 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
     init();
     return () => unsubs.forEach((fn) => fn());
   }, []);
+
+  const ultimaCargaVP = ventasPerdidasCargas.reduce(
+    (max, c) => (!max || (c.creadoTs || 0) > (max.creadoTs || 0) ? c : max),
+    null
+  );
+  const vpRefMap = new Map((ultimaCargaVP?.filasPorRef || []).map((f) => [`${f.numero}__${f.ref}`, f]));
+  const lotesCortadoMap = new Map();
+  {
+    const porNumLote = new Map();
+    planeacionCargas.forEach((carga) => {
+      (carga.lotes || []).forEach((l) => {
+        const numPedido = String(l.numPedido ?? "").trim();
+        const ref = String(l.referencia ?? "").trim();
+        if (!numPedido || !ref) return;
+        const numLote = String(l.numLote ?? "").trim() || `${numPedido}__${ref}__sinlote`;
+        const enProceso =
+          (Number(l.invCorte) || 0) +
+          (Number(l.invBMP) || 0) +
+          (Number(l.invPlanta) || 0) +
+          (Number(l.invBPT) || 0) +
+          (Number(l.invSemiterminado) || 0);
+        const cantidad = Math.max(Number(l.cantCortada) || 0, enProceso);
+        const actual = porNumLote.get(numLote);
+        if (!actual || cantidad > actual.cantidad) {
+          porNumLote.set(numLote, { numPedido, ref, cantidad });
+        }
+      });
+    });
+    porNumLote.forEach(({ numPedido, ref, cantidad }) => {
+      const clave = `${numPedido}__${ref}`;
+      lotesCortadoMap.set(clave, (lotesCortadoMap.get(clave) || 0) + cantidad);
+    });
+  }
 
   async function savePedido(pedido) {
     setPedidos((ps) =>
@@ -2351,6 +2525,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
 
   const NAV = [
     { id: "dashboard", icon: "◉", label: "Dashboard" },
+    { id: "cola", icon: "📋", label: "Cola Sugerida" },
     { id: "historico", icon: "📁", label: "Histórico" },
     { id: "estadisticas", icon: "📊", label: "Telas" },
     ...(isAdmin ? [{ id: "admin", icon: "⚙", label: "Admin Corte" }] : []),
@@ -2560,6 +2735,17 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
                 setSelPedidoId(null);
               }}
               onSave={savePedido}
+            />
+          )}
+          {view === "cola" && (
+            <ColaSugerida
+              pedidos={pedidos}
+              vpRefMap={vpRefMap}
+              lotesCortadoMap={lotesCortadoMap}
+              onSelectPedido={(id) => {
+                setSelPedidoId(id);
+                setView("detalle");
+              }}
             />
           )}
           {view === "historico" && (
