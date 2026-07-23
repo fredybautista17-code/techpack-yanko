@@ -100,6 +100,12 @@ function diasHabiles(mes, anio) {
   return count;
 }
 
+// Días laborales al mes usados para estimar el costo DIARIO del centro de
+// costo (nómina / DIAS_LABORALES_MES) — el usuario indicó que trabaja 20 días
+// al mes, así que se usa ese número fijo en vez del calendario de días
+// hábiles (que da un número distinto, ~21-23).
+const DIAS_LABORALES_MES = 20;
+
 // ─── TALLAS BUSINT ────────────────────────────────────────────────────────────
 const TALLAS_BUSINT = [
   "U-2/4-2 PLUS",
@@ -2506,7 +2512,7 @@ function calcularCortadoPendiente(pedido, vpRefMap, lotesCortadoMap) {
     if (cortadoPlanta !== null) candidatos.push(cortadoPlanta);
     const cortado = Math.max(...candidatos);
     totalCortado += cortado;
-    return { ref: r.ref, descripcion: r.descripcion, total, cortado, pendiente: Math.max(0, total - cortado) };
+    return { ref: r.ref, descripcion: r.descripcion, tallas: r.tallas || {}, total, cortado, pendiente: Math.max(0, total - cortado) };
   });
   return { totalPedido, totalCortado, totalPendiente: Math.max(0, totalPedido - totalCortado), porRef };
 }
@@ -2605,7 +2611,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, programacion, onProgramar, onCancelar, onEditarFecha, onSelectPedido }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onSelectPedido }) {
   const [fechaSel, setFechaSel] = useState(today());
   const [seleccion, setSeleccion] = useState(new Set());
   const [clientesAbiertos, setClientesAbiertos] = useState(new Set());
@@ -2619,31 +2625,41 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, programacio
   );
   const yaProgramados = new Set(pendientesProg.map((pr) => `${pr.pedidoId}__${pr.ref}`));
 
-  // Disponible para programar, agrupado por cliente — se excluye lo que ya
-  // tenga una programación activa (para reprogramar hay que cancelar antes).
-  const porCliente = new Map();
+  // Costo diario del centro de costo: nómina total entre los días laborales
+  // del mes (20, fijo — así trabaja la empresa). Se usa para saber si lo que
+  // se va programando/programado en un día alcanza a cubrirlo.
+  const nominaTotal = (trabajadores || []).reduce((s, t) => s + (t.sueldo || 0), 0);
+  const costoDia = nominaTotal / DIAS_LABORALES_MES;
+  function precioRef(ref) {
+    return preciosMap?.get(String(ref).trim()) || 0;
+  }
+
+  // Disponible para programar, agrupado por cliente → pedido, con el
+  // desglose horizontal por talla (igual formato que el informe de Vigentes
+  // en Diseño → Pedidos) — se excluye lo que ya tenga una programación
+  // activa (para reprogramar hay que cancelar antes).
+  const porCliente = new Map(); // cliente -> Map(pedidoId -> { pedido, filas })
   activos.forEach((p) => {
     const { porRef } = calcularCortadoPendiente(p, vpRefMap, lotesCortadoMap);
-    porRef.forEach((r) => {
-      if (r.pendiente <= 0) return;
-      const key = `${p.id}__${r.ref}`;
-      if (yaProgramados.has(key)) return;
-      const clienteKey = p.cliente || "Sin cliente";
-      if (!porCliente.has(clienteKey)) porCliente.set(clienteKey, []);
-      porCliente.get(clienteKey).push({
-        key,
-        pedidoId: p.id,
-        numero: p.numero,
-        cliente: clienteKey,
-        fechaDespacho: p.fechaDespacho,
-        ref: r.ref,
-        descripcion: r.descripcion,
-        pendiente: r.pendiente,
-      });
-    });
+    const filas = porRef.filter((r) => r.pendiente > 0 && !yaProgramados.has(`${p.id}__${r.ref}`));
+    if (!filas.length) return;
+    const clienteKey = p.cliente || "Sin cliente";
+    if (!porCliente.has(clienteKey)) porCliente.set(clienteKey, new Map());
+    porCliente.get(clienteKey).set(p.id, { pedido: p, filas });
   });
   const clientesOrdenados = [...porCliente.keys()].sort();
-  const totalDisponibles = [...porCliente.values()].reduce((s, arr) => s + arr.length, 0);
+  const totalDisponibles = [...porCliente.values()].reduce(
+    (s, pedidosMap) => s + [...pedidosMap.values()].reduce((s2, { filas }) => s2 + filas.length, 0),
+    0
+  );
+  function itemsDelCliente(cliente) {
+    const pedidosMap = porCliente.get(cliente);
+    const items = [];
+    pedidosMap.forEach(({ pedido, filas }) => {
+      filas.forEach((r) => items.push({ key: `${pedido.id}__${r.ref}`, pedidoId: pedido.id, numero: pedido.numero, cliente, ref: r.ref, descripcion: r.descripcion, pendiente: r.pendiente }));
+    });
+    return items;
+  }
 
   function toggleCliente(cliente) {
     setClientesAbiertos((s) => {
@@ -2661,7 +2677,8 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, programacio
       return next;
     });
   }
-  function toggleTodosCliente(cliente, items) {
+  function toggleTodosCliente(cliente) {
+    const items = itemsDelCliente(cliente);
     setSeleccion((s) => {
       const next = new Set(s);
       const todasMarcadas = items.every((it) => next.has(it.key));
@@ -2670,9 +2687,18 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, programacio
     });
   }
 
+  // Valor estimado (unidades pendientes × precio de corte por referencia) de
+  // lo que se tiene seleccionado en este momento — para comparar contra el
+  // costo diario del centro de costo antes de confirmar.
+  const todosLosItems = [];
+  porCliente.forEach((pedidosMap, cliente) => todosLosItems.push(...itemsDelCliente(cliente)));
+  const ingresoSeleccion = todosLosItems
+    .filter((it) => seleccion.has(it.key))
+    .reduce((s, it) => s + it.pendiente * precioRef(it.ref), 0);
+
   function confirmarProgramacion() {
     const items = [];
-    porCliente.forEach((arr) => arr.forEach((it) => { if (seleccion.has(it.key)) items.push(it); }));
+    porCliente.forEach((pedidosMap, cliente) => items.push(...itemsDelCliente(cliente).filter((it) => seleccion.has(it.key))));
     if (!items.length) return;
     onProgramar(items, fechaSel);
     setSeleccion(new Set());
@@ -2760,7 +2786,8 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, programacio
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 90 }}>
               {clientesOrdenados.map((cliente) => {
-                const items = porCliente.get(cliente);
+                const pedidosMap = porCliente.get(cliente);
+                const items = itemsDelCliente(cliente);
                 const abierto = clientesAbiertos.has(cliente);
                 const seleccionadosCliente = items.filter((it) => seleccion.has(it.key)).length;
                 return (
@@ -2778,29 +2805,62 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, programacio
                       )}
                       <span style={{ fontSize: 11, color: C.slate }}>{items.length} ref{items.length === 1 ? "" : "s"}</span>
                       <button
-                        onClick={(e) => { e.stopPropagation(); toggleTodosCliente(cliente, items); }}
+                        onClick={(e) => { e.stopPropagation(); toggleTodosCliente(cliente); }}
                         style={{ fontSize: 11, fontWeight: 700, color: C.blue, background: "transparent", border: `1px solid ${C.blue}`, borderRadius: 6, padding: "3px 8px", cursor: "pointer" }}
                       >
                         {items.every((it) => seleccion.has(it.key)) ? "Ninguna" : "Todas"}
                       </button>
                     </div>
                     {abierto && (
-                      <div>
-                        {items.map((it, i) => (
-                          <label
-                            key={it.key}
-                            style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderTop: `1px solid ${C.border}`, cursor: "pointer", background: seleccion.has(it.key) ? C.blueBg : "transparent" }}
-                          >
-                            <input type="checkbox" checked={seleccion.has(it.key)} onChange={() => toggleItem(it.key)} style={{ width: 16, height: 16 }} />
-                            <div style={{ flex: 1 }}>
-                              <span style={{ fontWeight: 700, color: C.ink }}>{it.ref}</span>
-                              <span style={{ color: C.slate, marginLeft: 8, fontSize: 12 }}>{it.descripcion}</span>
+                      <div style={{ padding: "10px 16px 16px" }}>
+                        {[...pedidosMap.values()].map(({ pedido: p, filas }) => {
+                          const tallasDistintas = [];
+                          filas.forEach((r) => {
+                            Object.entries(r.tallas || {}).forEach(([t, cant]) => {
+                              if (cant > 0 && !tallasDistintas.includes(t)) tallasDistintas.push(t);
+                            });
+                          });
+                          return (
+                            <div key={p.id} style={{ marginTop: 12 }}>
+                              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, marginBottom: 6 }}>
+                                Pedido {p.numero} · Despacho {p.fechaDespacho || "—"}
+                              </div>
+                              <div style={{ overflowX: "auto" }}>
+                                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                                  <thead>
+                                    <tr>
+                                      <th style={{ padding: "5px 8px" }}></th>
+                                      <th style={{ padding: "5px 8px", textAlign: "left", fontSize: 9, color: C.slate, textTransform: "uppercase" }}>Ref</th>
+                                      <th style={{ padding: "5px 8px", textAlign: "left", fontSize: 9, color: C.slate, textTransform: "uppercase" }}>Descripción</th>
+                                      {tallasDistintas.map((t) => (
+                                        <th key={t} style={{ padding: "5px 8px", textAlign: "right", fontSize: 9, color: C.slate, textTransform: "uppercase", whiteSpace: "nowrap" }}>{t}</th>
+                                      ))}
+                                      <th style={{ padding: "5px 8px", textAlign: "right", fontSize: 9, color: C.slate, textTransform: "uppercase" }}>Pendiente</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {filas.map((r) => {
+                                      const key = `${p.id}__${r.ref}`;
+                                      return (
+                                        <tr key={key} style={{ background: seleccion.has(key) ? C.blueBg : "transparent", cursor: "pointer" }} onClick={() => toggleItem(key)}>
+                                          <td style={{ padding: "5px 8px" }}>
+                                            <input type="checkbox" checked={seleccion.has(key)} onChange={() => toggleItem(key)} onClick={(e) => e.stopPropagation()} style={{ width: 15, height: 15 }} />
+                                          </td>
+                                          <td style={{ padding: "5px 8px", fontWeight: 700, color: C.ink }}>{r.ref}</td>
+                                          <td style={{ padding: "5px 8px", color: C.slate }}>{r.descripcion}</td>
+                                          {tallasDistintas.map((t) => (
+                                            <td key={t} style={{ padding: "5px 8px", textAlign: "right", color: r.tallas[t] ? C.ink : C.border }}>{r.tallas[t] || "—"}</td>
+                                          ))}
+                                          <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 800, color: C.amber }}>{fmtNum(r.pendiente)}</td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
                             </div>
-                            <span style={{ fontSize: 11, color: C.slate }}>Pedido {it.numero}</span>
-                            <span style={{ fontSize: 11, color: C.slate }}>Despacho {it.fechaDespacho || "—"}</span>
-                            <span style={{ fontWeight: 800, color: C.amber, fontSize: 13, minWidth: 60, textAlign: "right" }}>{fmtNum(it.pendiente)}</span>
-                          </label>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -2815,23 +2875,44 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, programacio
                 position: "sticky",
                 bottom: 16,
                 display: "flex",
-                alignItems: "center",
-                gap: 14,
+                flexDirection: "column",
+                gap: 8,
                 padding: "14px 20px",
                 background: C.ink,
                 borderRadius: 14,
                 boxShadow: "0 8px 30px rgba(0,0,0,0.25)",
               }}
             >
-              <span style={{ color: C.white, fontWeight: 700, fontSize: 13 }}>
-                {seleccion.size} referencia{seleccion.size === 1 ? "" : "s"} seleccionada{seleccion.size === 1 ? "" : "s"}
-              </span>
-              <span style={{ color: C.seam, fontSize: 12 }}>para el {fmtFechaISO(fechaSel)}</span>
-              <div style={{ marginLeft: "auto", display: "flex", gap: 10 }}>
-                <button onClick={() => setSeleccion(new Set())} style={{ background: "transparent", border: `1px solid rgba(255,255,255,0.3)`, color: C.white, borderRadius: 8, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-                  Limpiar
-                </button>
-                <Btn variant="success" onClick={confirmarProgramacion}>📅 Programar corte</Btn>
+              <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                <span style={{ color: C.white, fontWeight: 700, fontSize: 13 }}>
+                  {seleccion.size} referencia{seleccion.size === 1 ? "" : "s"} seleccionada{seleccion.size === 1 ? "" : "s"}
+                </span>
+                <span style={{ color: C.seam, fontSize: 12 }}>para el {fmtFechaISO(fechaSel)}</span>
+                <div style={{ marginLeft: "auto", display: "flex", gap: 10 }}>
+                  <button onClick={() => setSeleccion(new Set())} style={{ background: "transparent", border: `1px solid rgba(255,255,255,0.3)`, color: C.white, borderRadius: 8, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                    Limpiar
+                  </button>
+                  <Btn variant="success" onClick={confirmarProgramacion}>📅 Programar corte</Btn>
+                </div>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontSize: 12,
+                  color: ingresoSeleccion >= costoDia ? C.green : C.amber,
+                  borderTop: "1px solid rgba(255,255,255,0.15)",
+                  paddingTop: 8,
+                }}
+              >
+                <span style={{ fontWeight: 800 }}>{ingresoSeleccion >= costoDia ? "✓" : "⚠"}</span>
+                <span>
+                  Ingreso estimado de lo seleccionado: <b>{fmtCOP(ingresoSeleccion)}</b> · Costo diario centro de costo (nómina ÷ {DIAS_LABORALES_MES} días): <b>{fmtCOP(costoDia)}</b>
+                </span>
+                <span style={{ marginLeft: "auto", fontWeight: 800 }}>
+                  {ingresoSeleccion >= costoDia ? "Cubre el día" : `Falta ${fmtCOP(costoDia - ingresoSeleccion)}`}
+                </span>
               </div>
             </div>
           )}
@@ -3828,6 +3909,8 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
               pedidos={pedidos}
               vpRefMap={vpRefMap}
               lotesCortadoMap={lotesCortadoMap}
+              preciosMap={preciosMap}
+              trabajadores={corteConfig.nomina?.trabajadores || []}
               programacion={programacionCorte}
               onProgramar={programarCorte}
               onCancelar={cancelarProgramacionCorte}
