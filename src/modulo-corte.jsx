@@ -3412,7 +3412,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
         await fsSave("corte_programacion", pr.id, { ...pr, estado: "cumplido", fechaCumplioISO: ultimoCorte?.fecha || today() });
       }
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pedidos, programacionCorte, ventasPerdidasCargas, planeacionCargas]);
 
   async function saveConfig(cfg) {
