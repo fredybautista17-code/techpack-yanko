@@ -5419,6 +5419,11 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
   const [congelando, setCongelando] = useState(false);
   const [resultCongelar, setResultCongelar] = useState(null);
   const vpInputRef = useRef(null);
+  // Panel temporal de depuración (solo admin) para ver, crudo, qué quedó
+  // guardado en planeacion_cargas para un pedido puntual — usado para
+  // encontrar por qué "Cant Cortada" no está cruzando para ciertas
+  // referencias. Se puede quitar una vez resuelto.
+  const [debugPedido, setDebugPedido] = useState("");
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "pedidos_ocultos_busint"), (snap) => {
@@ -5746,6 +5751,64 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
       {ultimaCargaPlaneacion && (
         <div style={{ fontSize: 11, color: T.slate, marginBottom: 10 }}>
           Planeación: {planeacionCargas.length} carga{planeacionCargas.length === 1 ? "" : "s"} disponible{planeacionCargas.length === 1 ? "" : "s"} para "Cortado" (la más reciente es del {ultimaCargaPlaneacion.creadoEn || ultimaCargaPlaneacion.fecha}) — se revisan todas para no perder lotes que ya salieron del reporte más nuevo.
+        </div>
+      )}
+      {isAdmin && (
+        <div style={{ border: `1px dashed ${T.border}`, borderRadius: 10, padding: 10, marginBottom: 16, background: T.canvas }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 6 }}>
+            🔍 Depurar Planeación (temporal) — escribe un número de pedido para ver crudo qué hay guardado en las {planeacionCargas.length} cargas
+          </div>
+          <input
+            value={debugPedido}
+            onChange={(e) => setDebugPedido(e.target.value)}
+            placeholder="Ej: 1149"
+            style={{ padding: "6px 10px", borderRadius: 8, border: `1px solid ${T.border}`, fontSize: 12, width: 160 }}
+          />
+          {debugPedido.trim() && (() => {
+            const objetivo = debugPedido.trim();
+            const encontrados = [];
+            planeacionCargas.forEach((carga, ci) => {
+              (carga.lotes || []).forEach((l) => {
+                const numPedidoStr = String(l.numPedido ?? "").trim();
+                if (numPedidoStr === objetivo) {
+                  encontrados.push({ ...l, cargaFecha: carga.creadoEn || carga.fecha, cargaIdx: ci });
+                }
+              });
+            });
+            return (
+              <div style={{ marginTop: 8, fontSize: 11 }}>
+                <div style={{ color: T.slate, marginBottom: 4 }}>
+                  {encontrados.length === 0
+                    ? `No se encontró ningún lote con numPedido === "${objetivo}" (comparando como texto) en ninguna de las ${planeacionCargas.length} cargas.`
+                    : `${encontrados.length} lote(s) encontrados:`}
+                </div>
+                {encontrados.length > 0 && (
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                    <thead>
+                      <tr style={{ color: T.slate, textAlign: "left" }}>
+                        <th style={{ padding: 4 }}>numLote</th>
+                        <th style={{ padding: 4 }}>numPedido (raw)</th>
+                        <th style={{ padding: 4 }}>referencia (raw)</th>
+                        <th style={{ padding: 4 }}>cantCortada</th>
+                        <th style={{ padding: 4 }}>carga</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {encontrados.map((l, i) => (
+                        <tr key={i} style={{ borderTop: `1px solid ${T.border}` }}>
+                          <td style={{ padding: 4 }}>{JSON.stringify(l.numLote)}</td>
+                          <td style={{ padding: 4 }}>{JSON.stringify(l.numPedido)}</td>
+                          <td style={{ padding: 4 }}>{JSON.stringify(l.referencia)}</td>
+                          <td style={{ padding: 4 }}>{JSON.stringify(l.cantCortada)}</td>
+                          <td style={{ padding: 4 }}>{l.cargaFecha}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
       {resultCongelar && (
