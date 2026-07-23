@@ -318,9 +318,15 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, onSave, onClose }) {
     fecha: today(),
     planta: "",
     cortador: "",
+    // Etapa 1 — Tendido: qué tela se tiende, qué tan largo es el trazo (una
+    // sola capa) y cuántas capas se apilan. Los metros totales de tela
+    // consumida se calculan solos (largoTrazo × capas) en vez de escribirse
+    // a mano, para que la estadística por tipo de tela sea consistente.
     tipoTela: "",
-    metrosTendido: "",
+    largoTrazo: "",
     capas: "",
+    // Etapa 2 — Corte: desde que el cortador empieza hasta que termina de
+    // cortar todas las capas del trazo (no incluye empaque ni entrega).
     horaInicio: "",
     horaFin: "",
   });
@@ -373,6 +379,16 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, onSave, onClose }) {
     return h2 * 60 + m2 - (h1 * 60 + m1);
   }
 
+  // Metros totales de tela = largo del trazo (una sola capa) × número de
+  // capas apiladas. Ya no se escribe a mano — se calcula solo para que el
+  // dato sea consistente entre cortes y sirva para las estadísticas por
+  // tipo de tela.
+  function metrosTotales() {
+    const trazo = parseFloat(form.largoTrazo) || 0;
+    const capas = parseInt(form.capas) || 0;
+    return trazo * capas;
+  }
+
   function save() {
     if (!form.planta || !form.cortador || !form.fecha) return;
     const refs = pedido.referencias
@@ -397,8 +413,9 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, onSave, onClose }) {
       planta: form.planta,
       cortador: form.cortador,
       tipoTela: form.tipoTela,
-      metrosTendido: parseFloat(form.metrosTendido) || 0,
+      largoTrazo: parseFloat(form.largoTrazo) || 0,
       capas: parseInt(form.capas) || 0,
+      metrosTendido: metrosTotales(),
       horaInicio: form.horaInicio,
       horaFin: form.horaFin,
       minutos: minutosTotales(),
@@ -450,10 +467,15 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, onSave, onClose }) {
           />
         </Field>
       </div>
+      {/* Etapa 1 — Tendido: tela, largo del trazo (una capa) y número de
+          capas. Los metros totales de tela consumida se calculan solos. */}
+      <div style={{ fontSize: 11, fontWeight: 800, color: C.violet, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+        Etapa 1 · Tendido
+      </div>
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr",
+          gridTemplateColumns: "1.3fr 1fr 1fr 1fr",
           gap: 12,
           marginBottom: 16,
         }}
@@ -465,12 +487,12 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, onSave, onClose }) {
             placeholder="Ej: Diamante"
           />
         </Field>
-        <Field label="Metros Tendido">
+        <Field label="Largo del Trazo (1 capa, m)">
           <FInput
             type="number"
-            value={form.metrosTendido}
-            onChange={(v) => setForm((f) => ({ ...f, metrosTendido: v }))}
-            placeholder="45"
+            value={form.largoTrazo}
+            onChange={(v) => setForm((f) => ({ ...f, largoTrazo: v }))}
+            placeholder="4.5"
           />
         </Field>
         <Field label="Capas">
@@ -478,9 +500,39 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, onSave, onClose }) {
             type="number"
             value={form.capas}
             onChange={(v) => setForm((f) => ({ ...f, capas: v }))}
-            placeholder="8"
+            placeholder="40"
           />
         </Field>
+        <Field label="Metros Totales">
+          <div
+            style={{
+              padding: "9px 12px",
+              borderRadius: 8,
+              border: `1.5px solid ${C.border}`,
+              background: C.canvas,
+              fontWeight: 800,
+              color: metrosTotales() > 0 ? C.violet : C.slate,
+              fontSize: 13,
+            }}
+          >
+            {metrosTotales() > 0 ? `${metrosTotales().toLocaleString("es-CO")} m` : "—"}
+          </div>
+        </Field>
+      </div>
+
+      {/* Etapa 2 — Corte: desde que empieza hasta que termina de cortar
+          todas las capas del trazo. */}
+      <div style={{ fontSize: 11, fontWeight: 800, color: C.blue, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+        Etapa 2 · Corte
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr 1fr",
+          gap: 12,
+          marginBottom: 16,
+        }}
+      >
         <Field label="Hora Inicio">
           <FInput
             type="time"
@@ -488,16 +540,31 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, onSave, onClose }) {
             onChange={(v) => setForm((f) => ({ ...f, horaInicio: v }))}
           />
         </Field>
-        <Field label="Hora Fin">
+        <Field label="Hora Fin (termina de cortar)">
           <FInput
             type="time"
             value={form.horaFin}
             onChange={(v) => setForm((f) => ({ ...f, horaFin: v }))}
           />
         </Field>
+        <Field label="Duración">
+          <div
+            style={{
+              padding: "9px 12px",
+              borderRadius: 8,
+              border: `1.5px solid ${C.border}`,
+              background: C.canvas,
+              fontWeight: 800,
+              color: minutosTotales() > 0 ? C.blue : C.slate,
+              fontSize: 13,
+            }}
+          >
+            {minutosTotales() > 0 ? `${minutosTotales()} min` : "—"}
+          </div>
+        </Field>
       </div>
 
-      {minutosTotales() > 0 && form.metrosTendido > 0 && (
+      {minutosTotales() > 0 && metrosTotales() > 0 && (
         <div
           style={{
             padding: "10px 16px",
@@ -509,9 +576,8 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, onSave, onClose }) {
             fontWeight: 700,
           }}
         >
-          ⏱ {minutosTotales()} min ·{" "}
-          {(minutosTotales() / parseFloat(form.metrosTendido || 1)).toFixed(1)}{" "}
-          min/metro
+          ⏱ {minutosTotales()} min de corte · {(minutosTotales() / metrosTotales()).toFixed(1)} min/metro
+          {parseInt(form.capas) > 0 && ` · ${(minutosTotales() / parseInt(form.capas)).toFixed(1)} min/capa`}
         </div>
       )}
 
@@ -1157,13 +1223,20 @@ function DetallePedido({
                     gap: 16,
                     fontSize: 11,
                     color: C.slate,
+                    flexWrap: "wrap",
                   }}
                 >
                   <span>🧵 {corte.tipoTela}</span>
-                  {corte.metrosTendido > 0 && (
-                    <span>📏 {corte.metrosTendido}m</span>
+                  {corte.largoTrazo > 0 && corte.capas > 0 ? (
+                    <span>
+                      📐 {corte.largoTrazo}m × {corte.capas} capas = {corte.metrosTendido}m
+                    </span>
+                  ) : (
+                    <>
+                      {corte.metrosTendido > 0 && <span>📏 {corte.metrosTendido}m</span>}
+                      {corte.capas > 0 && <span>📚 {corte.capas} capas</span>}
+                    </>
                   )}
-                  {corte.capas > 0 && <span>📚 {corte.capas} capas</span>}
                   {corte.minutos > 0 && (
                     <span>
                       ⏱ {corte.minutos} min{" "}
