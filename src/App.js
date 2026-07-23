@@ -5409,6 +5409,12 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
   // se toma siempre el más reciente por creadoTs, igual que Planeación con
   // sus cargas.
   const [ventasPerdidasCargas, setVentasPerdidasCargas] = useState([]);
+  // Cargas de lotes del módulo Planeación ("planeacion_cargas" — la misma
+  // colección que llena Planta al subir su archivo de producción). Cada lote
+  // trae "Cant Cortada" por pedido+referencia — es la única fuente que
+  // confirma con certeza que algo YA se cortó, sin importar si Busint todavía
+  // no lo factura ni lo traslada (p. ej. sigue en planta de confección).
+  const [planeacionCargas, setPlaneacionCargas] = useState([]);
   const [subiendoVP, setSubiendoVP] = useState(false);
   const [congelando, setCongelando] = useState(false);
   const [resultCongelar, setResultCongelar] = useState(null);
@@ -5428,12 +5434,34 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
     });
     return () => unsub();
   }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_cargas"), (snap) => {
+      setPlaneacionCargas(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, []);
   const ultimaCargaVP = ventasPerdidasCargas.reduce((max, c) => (!max || (c.creadoTs || 0) > (max.creadoTs || 0) ? c : max), null);
   const vpMap = new Map((ultimaCargaVP?.filas || []).map((f) => [String(f.numero).trim(), f]));
   // Por pedido+referencia — permite calcular cuánto de cada referencia ya
   // quedó resuelto en Busint (facturado + traslados + venta perdida) sin
   // depender de que Corte haya registrado el corte a mano en el aplicativo.
   const vpRefMap = new Map((ultimaCargaVP?.filasPorRef || []).map((f) => [`${f.numero}__${f.ref}`, f]));
+  // Carga más reciente de Planeación, mismo criterio de "más reciente" que usa
+  // el backend (getPedidosVigentesBusint) para lotesPorPedido: creadoEn/fecha
+  // en orden descendente por texto ISO.
+  const ultimaCargaPlaneacion = [...planeacionCargas].sort((a, b) =>
+    String(b.creadoEn || b.fecha || "").localeCompare(String(a.creadoEn || a.fecha || ""))
+  )[0] || null;
+  // Suma de "Cant Cortada" por pedido+referencia, across todos los lotes de la
+  // carga vigente — un mismo pedido+referencia puede tener varios lotes.
+  const lotesCortadoMap = new Map();
+  (ultimaCargaPlaneacion?.lotes || []).forEach((l) => {
+    const numPedido = String(l.numPedido ?? "").trim();
+    const ref = String(l.referencia ?? "").trim();
+    if (!numPedido || !ref) return;
+    const clave = `${numPedido}__${ref}`;
+    lotesCortadoMap.set(clave, (lotesCortadoMap.get(clave) || 0) + (Number(l.cantCortada) || 0));
+  });
   // Un pedido cuenta como visible en pantalla solo si no está oculto a mano
   // Y Busint no lo marca ya "Cumplido" en el reporte de Ventas Perdidas
   // (aunque la API de órdenes lo siga devolviendo).
@@ -5555,15 +5583,19 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
   //
   // "Cortado" ya NO depende solo de que Corte haya registrado el corte a
   // mano en el aplicativo (esa disciplina no se estaba dando de forma
-  // confiable). Cuando el reporte de Ventas Perdidas trae esa referencia
-  // para ese pedido, se prefiere ESA fuente: se considera "resuelto" todo lo
-  // que Busint ya facturó, trasladó (externo o consignación) o dio de baja
-  // como venta perdida — lo que no está cubierto ahí es lo que de verdad
-  // falta por cortar, según pidió el usuario. Si el pedido/referencia no
-  // aparece en el reporte de Ventas Perdidas (p. ej. porque nunca se ha
-  // subido, o es un pedido nuevo que aún no tiene movimientos), se cae de
-  // vuelta a lo que Corte sí haya registrado en pedidos_activos.
-  function detalleHorizontal(p, pedidoActivo, vpRefMap) {
+  // confiable). Se cruzan hasta tres fuentes y se toma la que reporte MÁS
+  // unidades cortadas para esa referencia (nunca se subestima si una fuente
+  // no tiene el dato):
+  //   1) Planeación (Cant Cortada por lote, archivo de Planta) — confirma
+  //      corte físico real aunque Busint todavía no factura ni traslada esa
+  //      referencia (p. ej. sigue en planta de confección, bodega de materia
+  //      prima o inventario de corte). Es la fuente más confiable cuando
+  //      existe, porque no depende de que Busint ya haya resuelto la venta.
+  //   2) Ventas Perdidas (Busint) — lo que Busint ya facturó, trasladó
+  //      (externo o consignación) o dio de baja como venta perdida.
+  //   3) Corte (registrado a mano en el aplicativo) — último respaldo si
+  //      ninguna de las dos anteriores trae esa referencia para ese pedido.
+  function detalleHorizontal(p, pedidoActivo, vpRefMap, lotesCortadoMap) {
     const porRef = new Map();
     p.referencias.forEach((r) => {
       if (!porRef.has(r.ref)) porRef.set(r.ref, { ref: r.ref, descripcion: r.descripcion, tallas: {}, total: 0 });
@@ -5586,15 +5618,17 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
       Object.keys(r.tallas).forEach((t) => { if (!tallasDistintas.includes(t)) tallasDistintas.push(t); });
     });
     const filas = [...porRef.values()].map((r) => {
-      const vp = vpRefMap?.get(`${p.numero}__${r.ref}`);
-      let cortado, fuente;
-      if (vp) {
-        cortado = (vp.totalFacturada || 0) + (vp.totalTrasExt || 0) + (vp.totalTrasCon || 0) + Math.abs(vp.totalVentasPerdidas || 0);
-        fuente = "busint";
-      } else {
-        cortado = cortadoPorRefApp.get(r.ref) || 0;
-        fuente = "app";
-      }
+      const clave = `${p.numero}__${r.ref}`;
+      const vp = vpRefMap?.get(clave);
+      const cortadoVP = vp ? (vp.totalFacturada || 0) + (vp.totalTrasExt || 0) + (vp.totalTrasCon || 0) + Math.abs(vp.totalVentasPerdidas || 0) : null;
+      const cortadoPlanta = lotesCortadoMap?.has(clave) ? lotesCortadoMap.get(clave) : null;
+      const cortadoApp = cortadoPorRefApp.get(r.ref) || 0;
+      const candidatos = [{ valor: cortadoApp, fuente: "app" }];
+      if (cortadoVP !== null) candidatos.push({ valor: cortadoVP, fuente: "busint" });
+      if (cortadoPlanta !== null) candidatos.push({ valor: cortadoPlanta, fuente: "planta" });
+      const mejor = candidatos.reduce((max, c) => (c.valor > max.valor ? c : max), candidatos[0]);
+      const cortado = mejor.valor;
+      const fuente = mejor.fuente;
       return { ...r, cortado, pendiente: Math.max(0, r.total - cortado), fuente };
     });
     return { tallasDistintas, filas };
@@ -5686,8 +5720,13 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
         )}
       </div>
       {ultimaCargaVP && (
-        <div style={{ fontSize: 11, color: T.slate, marginBottom: 10 }}>
+        <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>
           Último reporte de Ventas Perdidas subido: {ultimaCargaVP.creadoEn} — se usa automáticamente para ocultar de esta lista los pedidos que Busint ya marca "Cumplido" ahí.
+        </div>
+      )}
+      {ultimaCargaPlaneacion && (
+        <div style={{ fontSize: 11, color: T.slate, marginBottom: 10 }}>
+          Última carga de Planeación usada para "Cortado": {ultimaCargaPlaneacion.creadoEn || ultimaCargaPlaneacion.fecha} — es la misma carga que sube el módulo Planta.
         </div>
       )}
       {resultCongelar && (
@@ -5867,13 +5906,16 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
                                   </tr>
                                   {detalleAbierto && (() => {
                                     const pedidoActivo = pedidosActivosPorNumero.get(String(p.numero).trim());
-                                    const { tallasDistintas, filas } = detalleHorizontal(p, pedidoActivo, vpRefMap);
+                                    const { tallasDistintas, filas } = detalleHorizontal(p, pedidoActivo, vpRefMap, lotesCortadoMap);
+                                    const algunaFuentePlanta = filas.some((r) => r.fuente === "planta");
                                     const algunaFuenteApp = filas.some((r) => r.fuente === "app");
                                     return (
                                     <tr style={{ borderBottom: `1px solid ${T.border}` }}>
                                       <td colSpan={isAdmin ? 8 : 7} style={{ padding: "0 10px 12px 34px", background: T.canvas }}>
                                         <div style={{ fontSize: 10, color: T.slate, margin: "6px 0" }}>
-                                          "Cortado"/"Pendiente" se calculan primero con el reporte de Ventas Perdidas (facturado + traslados + venta perdida por referencia){algunaFuenteApp ? "; las referencias marcadas (app) no aparecen ahí y usan en su lugar lo registrado en Corte" : ""}.
+                                          "Cortado"/"Pendiente" se calculan tomando el máximo entre lo que confirma Planeación (Cant Cortada por lote, incluye lo que ya se cortó aunque siga en planta o bodega sin facturar), lo que confirma el reporte de Ventas Perdidas (facturado + traslados + venta perdida) y lo registrado a mano en Corte
+                                          {algunaFuentePlanta ? "; las referencias marcadas (planta) toman el dato de Planeación" : ""}
+                                          {algunaFuenteApp ? "; las referencias marcadas (app) no aparecen en Planeación ni en Ventas Perdidas y usan lo registrado en Corte" : ""}.
                                         </div>
                                         <div style={{ overflowX: "auto" }}>
                                           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
@@ -5909,6 +5951,7 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
                                                   <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 800, color: T.denim }}>{fmtNum(r.total)}</td>
                                                   <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 700, color: T.jade }}>
                                                     {fmtNum(r.cortado)}
+                                                    {r.fuente === "planta" && <span style={{ color: T.slate, fontWeight: 600, marginLeft: 4 }}>(planta)</span>}
                                                     {r.fuente === "app" && <span style={{ color: T.slate, fontWeight: 600, marginLeft: 4 }}>(app)</span>}
                                                   </td>
                                                   <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 700, color: r.pendiente > 0 ? T.coral : T.jade }}>{fmtNum(r.pendiente)}</td>
