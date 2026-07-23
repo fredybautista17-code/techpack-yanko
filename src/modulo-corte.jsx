@@ -63,6 +63,26 @@ function uid() {
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
+function fmtFechaISO(iso) {
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+}
+// Lunes de la semana ISO a la que pertenece una fecha (YYYY-MM-DD) — para
+// agrupar la Programación de Corte por semana.
+function lunesDeSemanaISO(fechaISO) {
+  const [y, m, d] = fechaISO.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  const dow = dt.getDay() === 0 ? 7 : dt.getDay();
+  dt.setDate(dt.getDate() - (dow - 1));
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+}
+function sumarDiasISO(fechaISO, dias) {
+  const [y, m, d] = fechaISO.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + dias);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+}
 function fmtNum(n) {
   return Number(n || 0).toLocaleString("es-CO");
 }
@@ -2576,6 +2596,261 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
   );
 }
 
+// ─── PROGRAMACIÓN DE CORTE (día y semana) ──────────────────────────────────────
+// Mismo patrón que "Programación Diaria" de Planta: se le asigna una fecha
+// comprometida a cada pedido pendiente por cortar (desde la Cola Sugerida) y
+// el cumplimiento se revisa solo — cuando el pendiente de ese pedido llega a
+// 0 (cruzando Planeación + Ventas Perdidas + Corte, igual que en todo el
+// resto del módulo), queda marcado como cumplido con la fecha en que
+// realmente se terminó de cortar, comparada contra la fecha comprometida.
+function ProgramarFechaCorteModal({ pedido, onConfirm, onClose }) {
+  const [fecha, setFecha] = useState(today());
+  return (
+    <Modal title={`Programar corte — Pedido ${pedido.numero}`} onClose={onClose} width={420}>
+      <div style={{ padding: "10px 14px", background: C.blueBg, borderRadius: 8, marginBottom: 16, fontSize: 12, color: C.blue }}>
+        <div style={{ fontWeight: 700 }}>{pedido.cliente}</div>
+        <div>Despacho: {pedido.fechaDespacho || "—"}</div>
+      </div>
+      <Field label="Fecha comprometida de corte">
+        <FInput type="date" value={fecha} onChange={setFecha} />
+      </Field>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={() => { onConfirm(pedido, fecha); onClose(); }} disabled={!fecha}>📅 Programar</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, programacion, onProgramar, onCancelar, onSelectPedido }) {
+  const [programando, setProgramando] = useState(null);
+  const [subTab, setSubTab] = useState("pendientes");
+  const [vista, setVista] = useState("dia"); // "dia" | "semana"
+
+  const activos = pedidos.filter((p) => p.estado === "activo");
+  const conPendiente = activos
+    .map((p) => ({ pedido: p, ...calcularCortadoPendiente(p, vpRefMap, lotesCortadoMap) }))
+    .filter((x) => x.totalPendiente > 0);
+
+  const pendientesProg = programacion.filter((pr) => pr.estado !== "cumplido");
+  const cumplidosProg = [...programacion.filter((pr) => pr.estado === "cumplido")].sort(
+    (a, b) => (b.fechaCumplioISO || "").localeCompare(a.fechaCumplioISO || "")
+  );
+  const idsProgramados = new Set(pendientesProg.map((pr) => pr.pedidoId));
+  const sinProgramar = conPendiente.filter((x) => !idsProgramados.has(x.pedido.id));
+
+  const hoy = today();
+  const pendientesConEstado = pendientesProg
+    .map((pr) => {
+      const dias = Math.round((new Date(pr.fechaProgramada) - new Date(hoy)) / 86400000);
+      return { ...pr, dias, vencido: dias < 0 };
+    })
+    .sort((a, b) => a.fechaProgramada.localeCompare(b.fechaProgramada));
+  const vencidosCount = pendientesConEstado.filter((p) => p.vencido).length;
+
+  const porSemana = new Map();
+  pendientesConEstado.forEach((p) => {
+    const lunes = lunesDeSemanaISO(p.fechaProgramada);
+    if (!porSemana.has(lunes)) porSemana.set(lunes, []);
+    porSemana.get(lunes).push(p);
+  });
+  const semanasOrdenadas = [...porSemana.keys()].sort();
+
+  return (
+    <div>
+      {programando && (
+        <ProgramarFechaCorteModal pedido={programando} onConfirm={onProgramar} onClose={() => setProgramando(null)} />
+      )}
+      <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
+        📅 Programación de Corte
+      </h2>
+      <p style={{ margin: "0 0 20px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
+        Asigna una fecha comprometida a cada pedido pendiente. El cumplimiento se revisa solo cuando el pendiente de ese pedido llega a 0.
+      </p>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 24 }}>
+        <KPICard icon="📋" label="Sin programar" value={fmtNum(sinProgramar.length)} color={C.violet} bg={C.violetBg} />
+        <KPICard icon="📅" label="Programados pendientes" value={fmtNum(pendientesProg.length)} color={C.blue} bg={C.blueBg} />
+        <KPICard icon="⚠" label="Vencidos" value={fmtNum(vencidosCount)} color={C.red} bg={C.redBg} />
+        <KPICard icon="✓" label="Cumplidos (histórico)" value={fmtNum(cumplidosProg.length)} color={C.green} bg={C.greenBg} />
+      </div>
+
+      {sinProgramar.length > 0 && (
+        <div style={{ marginBottom: 28 }}>
+          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>PENDIENTES SIN PROGRAMAR</div>
+          <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+            {sinProgramar.map(({ pedido: p, totalPendiente }, i) => {
+              const sem = semaforo(p.fechaDespacho);
+              return (
+                <div
+                  key={p.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "12px 16px",
+                    borderTop: i > 0 ? `1px solid ${C.border}` : "none",
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>Pedido {p.numero} · {p.cliente}</div>
+                    <div style={{ fontSize: 11, color: C.slate }}>{fmtNum(totalPendiente)} prendas pendientes</div>
+                  </div>
+                  <div style={{ padding: "4px 10px", background: sem.bg, color: sem.color, borderRadius: 20, fontSize: 11, fontWeight: 800, whiteSpace: "nowrap" }}>
+                    📅 {sem.label}
+                  </div>
+                  <Btn small onClick={() => setProgramando(p)}>📅 Programar</Btn>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <div
+          onClick={() => setSubTab("pendientes")}
+          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: subTab === "pendientes" ? C.ink : C.white, color: subTab === "pendientes" ? C.seam : C.ink, border: `1px solid ${subTab === "pendientes" ? C.ink : C.border}` }}
+        >
+          PROGRAMADOS PENDIENTES
+        </div>
+        <div
+          onClick={() => setSubTab("cumplidos")}
+          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: subTab === "cumplidos" ? C.ink : C.white, color: subTab === "cumplidos" ? C.seam : C.ink, border: `1px solid ${subTab === "cumplidos" ? C.ink : C.border}` }}
+        >
+          HISTORIAL DE CUMPLIDOS
+        </div>
+        {subTab === "pendientes" && (
+          <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+            <button
+              onClick={() => setVista("dia")}
+              style={{ padding: "9px 14px", borderRadius: 10, fontWeight: 700, fontSize: 12, background: vista === "dia" ? C.blueBg : C.white, color: vista === "dia" ? C.blue : C.slate, border: `1px solid ${vista === "dia" ? C.blue : C.border}`, cursor: "pointer" }}
+            >
+              Por día
+            </button>
+            <button
+              onClick={() => setVista("semana")}
+              style={{ padding: "9px 14px", borderRadius: 10, fontWeight: 700, fontSize: 12, background: vista === "semana" ? C.blueBg : C.white, color: vista === "semana" ? C.blue : C.slate, border: `1px solid ${vista === "semana" ? C.blue : C.border}`, cursor: "pointer" }}
+            >
+              Por semana
+            </button>
+          </div>
+        )}
+      </div>
+
+      {subTab === "pendientes" && vista === "dia" && (
+        !pendientesConEstado.length ? (
+          <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>No hay pedidos programados pendientes.</div>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ borderBottom: `2px solid ${C.border}` }}>
+                <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Pedido</th>
+                <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Fecha comprometida</th>
+                <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Días</th>
+                <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {pendientesConEstado.map((p) => (
+                <tr key={p.id} style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer" }} onClick={() => onSelectPedido(p.pedidoId)}>
+                  <td style={{ padding: "10px", fontWeight: 700, color: C.ink }}>Pedido {p.numero} · {p.cliente}</td>
+                  <td style={{ padding: "10px" }}>{fmtFechaISO(p.fechaProgramada)}</td>
+                  <td style={{ padding: "10px", textAlign: "right", color: p.vencido ? C.red : C.ink, fontWeight: p.vencido ? 800 : 500 }}>
+                    {p.vencido ? `Vencido ${Math.abs(p.dias)}d` : `${p.dias}d`}
+                  </td>
+                  <td style={{ padding: "10px", textAlign: "right" }}>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onCancelar(p.id); }}
+                      title="Cancelar programación"
+                      style={{ background: C.redBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.red, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+                    >
+                      ✕
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )
+      )}
+
+      {subTab === "pendientes" && vista === "semana" && (
+        !semanasOrdenadas.length ? (
+          <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>No hay pedidos programados pendientes.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {semanasOrdenadas.map((lunes) => {
+              const items = porSemana.get(lunes);
+              const domingo = sumarDiasISO(lunes, 6);
+              const vencidosSemana = items.filter((p) => p.vencido).length;
+              return (
+                <div key={lunes} style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+                  <div style={{ padding: "10px 16px", background: C.canvas, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>
+                      Semana del {fmtFechaISO(lunes)} al {fmtFechaISO(domingo)}
+                    </div>
+                    <div style={{ fontSize: 11, color: C.slate }}>
+                      {items.length} pedido{items.length === 1 ? "" : "s"}
+                      {vencidosSemana > 0 && <span style={{ color: C.red, fontWeight: 700 }}> · {vencidosSemana} vencido{vencidosSemana === 1 ? "" : "s"}</span>}
+                    </div>
+                  </div>
+                  {items.map((p, i) => (
+                    <div
+                      key={p.id}
+                      onClick={() => onSelectPedido(p.pedidoId)}
+                      style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", borderTop: i > 0 ? `1px solid ${C.border}` : "none", cursor: "pointer" }}
+                    >
+                      <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>Pedido {p.numero} · {p.cliente}</div>
+                      <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+                        <span style={{ fontSize: 12, color: C.slate }}>{fmtFechaISO(p.fechaProgramada)}</span>
+                        <span style={{ fontSize: 12, fontWeight: 800, color: p.vencido ? C.red : C.ink }}>
+                          {p.vencido ? `Vencido ${Math.abs(p.dias)}d` : `${p.dias}d`}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        )
+      )}
+
+      {subTab === "cumplidos" && (
+        !cumplidosProg.length ? (
+          <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>Todavía no hay pedidos cumplidos.</div>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ borderBottom: `2px solid ${C.border}` }}>
+                <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Pedido</th>
+                <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Fecha comprometida</th>
+                <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Se cortó el</th>
+                <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Resultado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cumplidosProg.map((p) => {
+                const tarde = p.fechaCumplioISO && p.fechaProgramada && p.fechaCumplioISO > p.fechaProgramada;
+                return (
+                  <tr key={p.id} style={{ borderBottom: `1px solid ${C.border}` }}>
+                    <td style={{ padding: "10px", fontWeight: 700, color: C.ink }}>Pedido {p.numero} · {p.cliente}</td>
+                    <td style={{ padding: "10px" }}>{fmtFechaISO(p.fechaProgramada)}</td>
+                    <td style={{ padding: "10px" }}>{fmtFechaISO(p.fechaCumplioISO)}</td>
+                    <td style={{ padding: "10px", textAlign: "right", fontWeight: 800, color: tarde ? C.red : C.green }}>
+                      {tarde ? "Tarde" : "A tiempo"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )
+      )}
+    </div>
+  );
+}
+
 // ─── CENTRO DE COSTO (por cortador) ────────────────────────────────────────────
 // Primer centro de costo del aplicativo: por cada persona que aparece
 // cortando este mes (campo "cortador" en los registros de Programar Corte),
@@ -2586,18 +2861,45 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // alguien no está siendo aprovechado en corte; los nombres que cortaron
 // pero no están en la nómina quedan marcados para revisar el dato (puede
 // ser un nombre escrito distinto, o un trabajador que falta agregar).
+// Centro de Costo con tres periodos — Día, Mes, Año. El "ingreso" siempre se
+// suma directo de los cortes registrados en ese rango de fechas (dato real,
+// exacto para cualquier periodo). El "costo de nómina" es distinto: solo se
+// guarda el sueldo ACTUAL de cada trabajador (no un histórico mes a mes), así
+// que para Día y Año se estima a partir de ese sueldo actual — se avisa en
+// pantalla que esa parte es una aproximación, no un dato histórico real.
 function CentroCosto({ pedidos, trabajadores }) {
-  const mes = new Date().getMonth() + 1;
-  const anio = new Date().getFullYear();
-  const mesStr = `${anio}-${String(mes).padStart(2, "0")}`;
+  const hoy = today();
+  const [periodo, setPeriodo] = useState("mes"); // "dia" | "mes" | "anio"
+  const [fechaDia, setFechaDia] = useState(hoy);
+  const [mesSel, setMesSel] = useState(new Date().getMonth() + 1);
+  const [anioSel, setAnioSel] = useState(new Date().getFullYear());
   const norm = (s) => String(s || "").trim().toUpperCase();
 
-  const cortesMes = pedidos
+  function enPeriodo(fechaISO) {
+    if (!fechaISO) return false;
+    if (periodo === "dia") return fechaISO === fechaDia;
+    if (periodo === "mes") return fechaISO.slice(0, 7) === `${anioSel}-${String(mesSel).padStart(2, "0")}`;
+    if (periodo === "anio") return fechaISO.slice(0, 4) === String(anioSel);
+    return false;
+  }
+
+  // Costo de nómina para el periodo elegido, a partir del sueldo mensual
+  // actual de cada trabajador (no hay histórico de nómina por mes guardado).
+  function costoPeriodo(sueldoMensual) {
+    if (periodo === "dia") {
+      const [y, m] = fechaDia.split("-").map(Number);
+      return sueldoMensual / diasHabiles(m, y);
+    }
+    if (periodo === "anio") return sueldoMensual * 12;
+    return sueldoMensual;
+  }
+
+  const cortesPeriodo = pedidos
     .flatMap((p) => p.cortesRealizados || [])
-    .filter((c) => c.fecha?.slice(0, 7) === mesStr);
+    .filter((c) => enPeriodo(c.fecha));
 
   const porCortador = new Map();
-  cortesMes.forEach((c) => {
+  cortesPeriodo.forEach((c) => {
     const nombre = (c.cortador || "").trim() || "(Sin cortador asignado)";
     const key = norm(nombre);
     if (!porCortador.has(key)) porCortador.set(key, { nombre, unidades: 0, ingreso: 0 });
@@ -2615,7 +2917,7 @@ function CentroCosto({ pedidos, trabajadores }) {
       nombre: t.nombre,
       unidades: datos?.unidades || 0,
       ingreso: datos?.ingreso || 0,
-      costo: t.sueldo || 0,
+      costo: costoPeriodo(t.sueldo || 0),
       enNomina: true,
     });
     usados.add(key);
@@ -2630,31 +2932,125 @@ function CentroCosto({ pedidos, trabajadores }) {
   const totalIngreso = filas.reduce((s, f) => s + f.ingreso, 0);
   const totalCosto = filas.reduce((s, f) => s + f.costo, 0);
   const rentabilidad = totalIngreso - totalCosto;
+  const pctCobertura = totalCosto > 0 ? (totalIngreso / totalCosto) * 100 : 0;
+  const estado = totalCosto === 0 ? null : totalIngreso >= totalCosto ? "ok" : "bad";
+
+  const etiquetaPeriodo =
+    periodo === "dia"
+      ? fmtFechaISO(fechaDia)
+      : periodo === "mes"
+      ? `${["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"][mesSel - 1]} ${anioSel}`
+      : String(anioSel);
+
+  const btnPeriodo = (id, label) => (
+    <button
+      onClick={() => setPeriodo(id)}
+      style={{
+        padding: "8px 16px",
+        borderRadius: 8,
+        border: `1px solid ${periodo === id ? C.ink : C.border}`,
+        background: periodo === id ? C.ink : C.white,
+        color: periodo === id ? C.seam : C.slate,
+        fontWeight: 800,
+        fontSize: 12,
+        cursor: "pointer",
+      }}
+    >
+      {label}
+    </button>
+  );
 
   return (
     <div>
       <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
         💰 Centro de Costo — Corte
       </h2>
-      <p style={{ margin: "0 0 20px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
-        Mes actual. "Ingreso" = unidades cortadas × precio/prenda de cada corte registrado (viene del archivo de Precios Corte cuando esa referencia está ahí, o de lo escrito a mano). "Costo" = sueldo integral cargado en Admin Corte → Nómina.
+      <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 680 }}>
+        "Ingreso" = unidades cortadas × precio/prenda de cada corte registrado en el periodo (dato real). "Costo" = sueldo integral de nómina
+        {periodo !== "mes" && (
+          <strong>
+            {" "}
+            — {periodo === "dia" ? "estimado dividiendo el sueldo mensual actual entre los días hábiles del mes" : "estimado multiplicando el sueldo mensual actual × 12"}, porque solo se guarda la nómina vigente, no un histórico mes a mes
+          </strong>
+        )}
+        .
       </p>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 24 }}>
-        <KPICard icon="✂" label="Unidades Mes" value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
-        <KPICard icon="💵" label="Ingreso Corte Mes" value={fmtCOP(totalIngreso)} color={C.green} bg={C.greenBg} />
-        <KPICard icon="💸" label="Costo Nómina Mes" value={fmtCOP(totalCosto)} color={C.amber} bg={C.amberBg} />
+      <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginBottom: 20, flexWrap: "wrap" }}>
+        {btnPeriodo("dia", "📆 Día")}
+        {btnPeriodo("mes", "🗓 Mes")}
+        {btnPeriodo("anio", "📅 Año")}
+        {periodo === "dia" && (
+          <input
+            type="date"
+            value={fechaDia}
+            onChange={(e) => setFechaDia(e.target.value)}
+            style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }}
+          />
+        )}
+        {periodo === "mes" && (
+          <>
+            <select
+              value={mesSel}
+              onChange={(e) => setMesSel(Number(e.target.value))}
+              style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }}
+            >
+              {["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"].map((m, i) => (
+                <option key={i} value={i + 1}>{m}</option>
+              ))}
+            </select>
+            <input
+              type="number"
+              value={anioSel}
+              onChange={(e) => setAnioSel(Number(e.target.value) || anioSel)}
+              style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, width: 90, fontFamily: "inherit" }}
+            />
+          </>
+        )}
+        {periodo === "anio" && (
+          <input
+            type="number"
+            value={anioSel}
+            onChange={(e) => setAnioSel(Number(e.target.value) || anioSel)}
+            style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, width: 90, fontFamily: "inherit" }}
+          />
+        )}
+        <span style={{ fontSize: 12, color: C.slate, marginLeft: 4 }}>Mostrando: <strong style={{ color: C.ink }}>{etiquetaPeriodo}</strong></span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 20 }}>
+        <KPICard icon="✂" label={`Unidades ${periodo === "dia" ? "Día" : periodo === "anio" ? "Año" : "Mes"}`} value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
+        <KPICard icon="💵" label="Ingreso Corte" value={fmtCOP(totalIngreso)} color={C.green} bg={C.greenBg} />
+        <KPICard icon="💸" label="Costo Nómina" value={fmtCOP(totalCosto)} color={C.amber} bg={C.amberBg} />
         <KPICard
           icon={rentabilidad >= 0 ? "📈" : "📉"}
-          label="Rentabilidad Mes"
+          label="Rentabilidad"
           value={fmtCOP(rentabilidad)}
           color={rentabilidad >= 0 ? C.green : C.red}
           bg={rentabilidad >= 0 ? C.greenBg : C.redBg}
           sub={rentabilidad >= 0 ? "✓ Rentable" : "⚠ Pérdida"}
         />
       </div>
+      {estado && (
+        <div
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "8px 18px",
+            borderRadius: 30,
+            fontWeight: 800,
+            fontSize: 13,
+            marginBottom: 24,
+            background: estado === "ok" ? C.greenBg : C.redBg,
+            color: estado === "ok" ? C.green : C.red,
+          }}
+        >
+          <span style={{ width: 12, height: 12, borderRadius: "50%", background: estado === "ok" ? C.green : C.red, display: "inline-block" }} />
+          {estado === "ok" ? "El corte cubre la nómina" : "El corte NO cubre la nómina"} · {pctCobertura.toFixed(1)}% de cobertura
+        </div>
+      )}
       {!filas.length ? (
         <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
-          Sin trabajadores en nómina ni cortes registrados este mes.
+          Sin trabajadores en nómina ni cortes registrados en este periodo.
         </div>
       ) : (
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -2681,7 +3077,7 @@ function CentroCosto({ pedidos, trabajadores }) {
                     )}
                     {f.enNomina && f.unidades === 0 && (
                       <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.slate, background: C.canvas, padding: "2px 6px", borderRadius: 10 }}>
-                        sin cortes este mes
+                        sin cortes en el periodo
                       </span>
                     )}
                   </td>
@@ -2880,6 +3276,9 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
   // Precios de corte por referencia (Centro de Costo → Admin Corte → Precios
   // Corte). Se usa la carga más reciente, igual que Ventas Perdidas.
   const [preciosCorteCargas, setPreciosCorteCargas] = useState([]);
+  // Programación de Corte: fecha comprometida por pedido, con cumplimiento
+  // automático (ver useEffect más abajo).
+  const [programacionCorte, setProgramacionCorte] = useState([]);
 
   useEffect(() => {
     const unsubs = [];
@@ -2904,6 +3303,10 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
           setPreciosCorteCargas(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
         });
         unsubs.push(unsubPrecios);
+        const unsubProgramacion = onSnapshot(collection(db, "corte_programacion"), (snap) => {
+          setProgramacionCorte(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        });
+        unsubs.push(unsubProgramacion);
         const cfgDocs = await fsGet("corte_config");
         if (cfgDocs.length)
           setCorteConfig((prev) => ({ ...prev, ...cfgDocs[0] }));
@@ -2977,6 +3380,41 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
     await fsSave("pedidos_activos", pedido.id, pedido);
   }
 
+  async function programarCorte(pedido, fecha) {
+    const nuevo = {
+      id: uid(),
+      pedidoId: pedido.id,
+      numero: pedido.numero,
+      cliente: pedido.cliente,
+      fechaProgramada: fecha,
+      creadoEn: new Date().toISOString(),
+      estado: "pendiente",
+      fechaCumplioISO: null,
+    };
+    await fsSave("corte_programacion", nuevo.id, nuevo);
+  }
+  async function cancelarProgramacionCorte(id) {
+    await fsDelete("corte_programacion", id);
+  }
+  // Revisión automática de cumplimiento: cada vez que cambian los pedidos o
+  // las fuentes que definen "pendiente" (Ventas Perdidas, Planeación), se
+  // recalcula el pendiente de cada pedido programado — si ya llegó a 0, se
+  // marca cumplido con la fecha del corte más reciente registrado.
+  useEffect(() => {
+    const pendientesActivas = programacionCorte.filter((pr) => pr.estado !== "cumplido");
+    if (!pendientesActivas.length) return;
+    pendientesActivas.forEach(async (pr) => {
+      const pedido = pedidos.find((p) => p.id === pr.pedidoId);
+      if (!pedido) return;
+      const { totalPendiente } = calcularCortadoPendiente(pedido, vpRefMap, lotesCortadoMap);
+      if (totalPendiente === 0) {
+        const ultimoCorte = [...(pedido.cortesRealizados || [])].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))[0];
+        await fsSave("corte_programacion", pr.id, { ...pr, estado: "cumplido", fechaCumplioISO: ultimoCorte?.fecha || today() });
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pedidos, programacionCorte, ventasPerdidasCargas, planeacionCargas]);
+
   async function saveConfig(cfg) {
     setCorteConfig(cfg);
     await fsSave("corte_config", "main", cfg);
@@ -2990,6 +3428,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
     { id: "cola", icon: "📋", label: "Cola Sugerida" },
     { id: "historico", icon: "📁", label: "Histórico" },
     { id: "estadisticas", icon: "📊", label: "Telas" },
+    { id: "programacion", icon: "📅", label: "Programación" },
     { id: "costo", icon: "💰", label: "Centro de Costo" },
     ...(isAdmin ? [{ id: "admin", icon: "⚙", label: "Admin Corte" }] : []),
   ];
@@ -3222,6 +3661,20 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
             />
           )}
           {view === "estadisticas" && <EstadisticasTela pedidos={pedidos} />}
+          {view === "programacion" && (
+            <ProgramacionCorteView
+              pedidos={pedidos}
+              vpRefMap={vpRefMap}
+              lotesCortadoMap={lotesCortadoMap}
+              programacion={programacionCorte}
+              onProgramar={programarCorte}
+              onCancelar={cancelarProgramacionCorte}
+              onSelectPedido={(id) => {
+                setSelPedidoId(id);
+                setView("detalle");
+              }}
+            />
+          )}
           {view === "costo" && (
             <CentroCosto pedidos={pedidos} trabajadores={corteConfig.nomina?.trabajadores || []} />
           )}
