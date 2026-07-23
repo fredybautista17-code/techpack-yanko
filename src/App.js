@@ -5446,22 +5446,41 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
   // quedó resuelto en Busint (facturado + traslados + venta perdida) sin
   // depender de que Corte haya registrado el corte a mano en el aplicativo.
   const vpRefMap = new Map((ultimaCargaVP?.filasPorRef || []).map((f) => [`${f.numero}__${f.ref}`, f]));
-  // Carga más reciente de Planeación, mismo criterio de "más reciente" que usa
-  // el backend (getPedidosVigentesBusint) para lotesPorPedido: creadoEn/fecha
-  // en orden descendente por texto ISO.
+  // Carga más reciente de Planeación (solo para mostrar la fecha en pantalla
+  // — el cálculo de abajo NO se limita a esta, ver nota siguiente).
   const ultimaCargaPlaneacion = [...planeacionCargas].sort((a, b) =>
     String(b.creadoEn || b.fecha || "").localeCompare(String(a.creadoEn || a.fecha || ""))
   )[0] || null;
-  // Suma de "Cant Cortada" por pedido+referencia, across todos los lotes de la
-  // carga vigente — un mismo pedido+referencia puede tener varios lotes.
+  // "Cant Cortada" por pedido+referencia, revisando TODAS las cargas de
+  // Planeación guardadas (no solo la última). Cada carga es una foto del
+  // reporte de producción del día en que se subió — un lote que ya se
+  // terminó y se facturó puede dejar de aparecer en las cargas más nuevas,
+  // así que quedarse solo con la última carga pierde el registro de que ese
+  // lote SÍ se cortó. Para evitarlo: primero se agrupa por número de lote
+  // (un mismo lote puede aparecer en varias cargas a medida que avanza) y se
+  // toma el mayor "Cant Cortada" visto para ese lote en cualquier carga;
+  // luego se suma por pedido+referencia entre los distintos lotes.
   const lotesCortadoMap = new Map();
-  (ultimaCargaPlaneacion?.lotes || []).forEach((l) => {
-    const numPedido = String(l.numPedido ?? "").trim();
-    const ref = String(l.referencia ?? "").trim();
-    if (!numPedido || !ref) return;
-    const clave = `${numPedido}__${ref}`;
-    lotesCortadoMap.set(clave, (lotesCortadoMap.get(clave) || 0) + (Number(l.cantCortada) || 0));
-  });
+  {
+    const porNumLote = new Map();
+    planeacionCargas.forEach((carga) => {
+      (carga.lotes || []).forEach((l) => {
+        const numPedido = String(l.numPedido ?? "").trim();
+        const ref = String(l.referencia ?? "").trim();
+        if (!numPedido || !ref) return;
+        const numLote = String(l.numLote ?? "").trim() || `${numPedido}__${ref}__sinlote`;
+        const cantCortada = Number(l.cantCortada) || 0;
+        const actual = porNumLote.get(numLote);
+        if (!actual || cantCortada > actual.cantCortada) {
+          porNumLote.set(numLote, { numPedido, ref, cantCortada });
+        }
+      });
+    });
+    porNumLote.forEach(({ numPedido, ref, cantCortada }) => {
+      const clave = `${numPedido}__${ref}`;
+      lotesCortadoMap.set(clave, (lotesCortadoMap.get(clave) || 0) + cantCortada);
+    });
+  }
   // Un pedido cuenta como visible en pantalla solo si no está oculto a mano
   // Y Busint no lo marca ya "Cumplido" en el reporte de Ventas Perdidas
   // (aunque la API de órdenes lo siga devolviendo).
@@ -5726,7 +5745,7 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
       )}
       {ultimaCargaPlaneacion && (
         <div style={{ fontSize: 11, color: T.slate, marginBottom: 10 }}>
-          Última carga de Planeación usada para "Cortado": {ultimaCargaPlaneacion.creadoEn || ultimaCargaPlaneacion.fecha} — es la misma carga que sube el módulo Planta.
+          Planeación: {planeacionCargas.length} carga{planeacionCargas.length === 1 ? "" : "s"} disponible{planeacionCargas.length === 1 ? "" : "s"} para "Cortado" (la más reciente es del {ultimaCargaPlaneacion.creadoEn || ultimaCargaPlaneacion.fecha}) — se revisan todas para no perder lotes que ya salieron del reporte más nuevo.
         </div>
       )}
       {resultCongelar && (
