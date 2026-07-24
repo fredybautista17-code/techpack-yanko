@@ -70,6 +70,12 @@ function fmtCOP(n) {
 function fmtNum(n) {
   return Number(n || 0).toLocaleString("es-CO");
 }
+// Normaliza nombres de proveedor para cruzar abonos (contabilidad_cxp_abonos)
+// contra Cuentas por Pagar / Pagos programados, aunque el nombre se haya
+// escrito con espacios extra o mayúsculas/minúsculas distintas en cada lado.
+function normNombre(s) {
+  return String(s || "").trim().toUpperCase();
+}
 function fmtFechaCorta(iso) {
   if (!iso) return "—";
   const [y, m, d] = iso.split("-");
@@ -3197,9 +3203,10 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, abo
                       // rubro" más abajo que sí lo necesita).
                       const abonadoPorProveedor = new Map();
                       abonosMes.forEach((a) => {
-                        abonadoPorProveedor.set(a.proveedor, (abonadoPorProveedor.get(a.proveedor) || 0) + (a.monto || 0));
+                        const key = normNombre(a.proveedor);
+                        abonadoPorProveedor.set(key, (abonadoPorProveedor.get(key) || 0) + (a.monto || 0));
                       });
-                      const totalAbonadoCxp = pagosCxpMes.reduce((s, c) => s + Math.min(abonadoPorProveedor.get(c.proveedor) || 0, c.monto), 0);
+                      const totalAbonadoCxp = pagosCxpMes.reduce((s, c) => s + Math.min(abonadoPorProveedor.get(normNombre(c.proveedor)) || 0, c.monto), 0);
                       const pctCxp = totalPagosCxp > 0 ? Math.min((totalAbonadoCxp / totalPagosCxp) * 100, 999) : 0;
                       return (
                         <div style={{ marginTop: 0, marginBottom: terminado ? 14 : 0, padding: "10px 14px", background: C.amberBg, borderRadius: 10 }}>
@@ -3212,7 +3219,7 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, abo
                           </div>
                           <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 180, overflowY: "auto", paddingRight: 4 }}>
                             {pagosCxpMes.map((c) => {
-                              const abonadoProv = Math.min(abonadoPorProveedor.get(c.proveedor) || 0, c.monto);
+                              const abonadoProv = Math.min(abonadoPorProveedor.get(normNombre(c.proveedor)) || 0, c.monto);
                               const cubierto = abonadoProv >= c.monto && c.monto > 0;
                               return (
                                 <div key={c.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.slate }}>
@@ -3878,10 +3885,12 @@ function CuentasPorPagarView({ cortes, manuales, calendario, abonos, rubros, pre
     nombre: { label: "Total adeudado", monto: totalAdeudado, color: C.violet },
   };
   function calendarioDe(nombre) {
-    return calendario.filter((c) => c.proveedor === nombre);
+    const key = normNombre(nombre);
+    return calendario.filter((c) => normNombre(c.proveedor) === key);
   }
   function abonosDe(nombre) {
-    return (abonos || []).filter((a) => a.proveedor === nombre);
+    const key = normNombre(nombre);
+    return (abonos || []).filter((a) => normNombre(a.proveedor) === key);
   }
   const mesesProgramacion = proximosMeses(24);
   const disponiblePorMes = {};
