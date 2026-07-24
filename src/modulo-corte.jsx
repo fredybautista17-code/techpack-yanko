@@ -83,6 +83,28 @@ function sumarDiasISO(fechaISO, dias) {
   dt.setDate(dt.getDate() + dias);
   return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
 }
+function sumarMesesISO(fechaISO, meses) {
+  const [y, m] = fechaISO.split("-").map(Number);
+  const dt = new Date(y, m - 1 + meses, 1);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-01`;
+}
+// Lunes con el que arranca la cuadrícula de calendario que cubre el mes de
+// una fecha (puede caer en el mes anterior) — así el mes se pinta completo
+// en filas de semana de lunes a domingo.
+function primerLunesDeCuadriculaMes(fechaISO) {
+  const [y, m] = fechaISO.split("-").map(Number);
+  return lunesDeSemanaISO(`${y}-${String(m).padStart(2, "0")}-01`);
+}
+function ultimoDiaMesISO(fechaISO) {
+  const [y, m] = fechaISO.split("-").map(Number);
+  const d = new Date(y, m, 0);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+const MESES_ES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+function mesAnioLabel(fechaISO) {
+  const [y, m] = fechaISO.split("-").map(Number);
+  return `${MESES_ES[m - 1]} ${y}`;
+}
 function fmtNum(n) {
   return Number(n || 0).toLocaleString("es-CO");
 }
@@ -3311,9 +3333,18 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // Selección por talla: Map key `${pedidoId}__${ref}__${talla}` -> { ...contexto, cantidad }
   // (cantidad es editable, por si no alcanza la tela para toda la talla).
   const [seleccion, setSeleccion] = useState(new Map());
-  const [clientesAbiertos, setClientesAbiertos] = useState(new Set());
+  // Selección Cliente → Pedido en la pestaña Programar: primero se elige el
+  // cliente en un desplegable, luego se hace click sobre el pedido para ver
+  // sus referencias y elegir qué tallas programar.
+  const [clienteSel, setClienteSel] = useState("");
+  const [pedidoSel, setPedidoSel] = useState("");
   const [subTab, setSubTab] = useState("programar");
-  const [vista, setVista] = useState("dia");
+  // Vista de calendario de "Programados Pendientes" — semana o mes completo.
+  const [vista, setVista] = useState("semana");
+  // Fecha ancla del calendario (qué semana/mes se está mostrando) — no tiene
+  // que ver con `fechaSel`, que es el día al que se está programando algo
+  // nuevo en la pestaña Programar.
+  const [calFecha, setCalFecha] = useState(today());
   const [editandoCumplidoId, setEditandoCumplidoId] = useState(null);
   const [edicionCumplido, setEdicionCumplido] = useState({ cantidad: 0, fecha: "" });
   // Ítem de "Programados Pendientes" sobre el que se está haciendo la
@@ -3400,14 +3431,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     return items;
   }
 
-  function toggleCliente(cliente) {
-    setClientesAbiertos((s) => {
-      const next = new Set(s);
-      if (next.has(cliente)) next.delete(cliente);
-      else next.add(cliente);
-      return next;
-    });
-  }
   // Marca/desmarca una talla puntual de una referencia (item ya trae la
   // cantidad por defecto = lo que se ordenó de esa talla).
   function toggleItem(item) {
@@ -3488,6 +3511,48 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     })
     .sort((a, b) => a.fechaProgramada.localeCompare(b.fechaProgramada));
   const vencidosCount = pendientesConEstado.filter((p) => p.vencido).length;
+  const vencidosProg = pendientesConEstado.filter((p) => p.vencido);
+
+  // Pendientes agrupados por fecha programada — la base del calendario.
+  const porDiaPendientes = new Map();
+  pendientesConEstado.forEach((p) => {
+    if (!porDiaPendientes.has(p.fechaProgramada)) porDiaPendientes.set(p.fechaProgramada, []);
+    porDiaPendientes.get(p.fechaProgramada).push(p);
+  });
+  // Datos de un día del calendario: qué hay programado, cuánto ingreso
+  // estimado suma y si eso alcanza a cubrir el costo diario del centro de
+  // costo (el mismo indicador ✓/⚠ que ya se usaba al seleccionar, ahora
+  // visible por día directo en el calendario).
+  function datosDelDia(fechaISO) {
+    const items = porDiaPendientes.get(fechaISO) || [];
+    const ingreso = items.reduce((s, it) => s + (it.cantidadProgramada ?? it.cantidadPendiente ?? 0) * precioRef(it.ref), 0);
+    return { items, ingreso, cubre: items.length > 0 && ingreso >= costoDia };
+  }
+
+  // Cuadrícula del calendario: una semana (7 días desde el lunes de
+  // `calFecha`) o el mes completo de `calFecha` en filas de semana.
+  const semanaBase = lunesDeSemanaISO(calFecha);
+  const diasSemanaCal = Array.from({ length: 7 }, (_, i) => sumarDiasISO(semanaBase, i));
+  const mesBaseCal = primerLunesDeCuadriculaMes(calFecha);
+  const ultimoDiaMesCal = ultimoDiaMesISO(calFecha);
+  const semanasMesCal = [];
+  {
+    let cursor = mesBaseCal;
+    while (cursor <= ultimoDiaMesCal) {
+      semanasMesCal.push(Array.from({ length: 7 }, (_, i) => sumarDiasISO(cursor, i)));
+      cursor = sumarDiasISO(cursor, 7);
+    }
+  }
+
+  // "Programado Mes" — dashboard rápido de cuánto lleva programado el mes
+  // que se está mirando en el calendario (pendiente + ya cumplido, ambos
+  // cuentan como "programado" ese día) y cuánto hay programado hoy mismo.
+  const mesCalISO = calFecha.slice(0, 7);
+  const programacionMes = programacion.filter((p) => (p.fechaProgramada || "").slice(0, 7) === mesCalISO);
+  const unidadesMes = programacionMes.reduce((s, p) => s + (p.cantidadProgramada ?? p.cantidadPendiente ?? 0), 0);
+  const ingresoMes = programacionMes.reduce((s, p) => s + (p.cantidadProgramada ?? p.cantidadPendiente ?? 0) * precioRef(p.ref), 0);
+  const itemsHoyHoy = porDiaPendientes.get(hoy) || [];
+  const unidadesHoy = itemsHoyHoy.reduce((s, p) => s + (p.cantidadProgramada ?? p.cantidadPendiente ?? 0), 0);
 
   const porSemana = new Map();
   pendientesConEstado.forEach((p) => {
@@ -3537,11 +3602,12 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
         >
           HISTORIAL DE CUMPLIDOS
         </div>
-        {vencidosCount > 0 && (
-          <span style={{ marginLeft: "auto", alignSelf: "center", padding: "5px 12px", background: C.redBg, color: C.red, borderRadius: 20, fontWeight: 800, fontSize: 12 }}>
-            ⚠ {vencidosCount} vencido{vencidosCount === 1 ? "" : "s"}
-          </span>
-        )}
+        <div
+          onClick={() => setSubTab("vencidos")}
+          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: subTab === "vencidos" ? C.red : C.white, color: subTab === "vencidos" ? C.white : C.red, border: `1px solid ${subTab === "vencidos" ? C.red : C.redBg}` }}
+        >
+          ⚠ CORTES VENCIDOS {vencidosCount > 0 && `(${vencidosCount})`}
+        </div>
       </div>
 
       {subTab === "programar" && (
@@ -3567,161 +3633,222 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             DISPONIBLE PARA PROGRAMAR ({totalDisponibles})
           </div>
 
-          {!clientesOrdenados.length ? (
-            <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
-              No hay referencias pendientes sin programar en este momento.
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 90 }}>
-              {clientesOrdenados.map((cliente) => {
-                const pedidosMap = porCliente.get(cliente);
-                const items = itemsDelCliente(cliente);
-                const abierto = clientesAbiertos.has(cliente);
-                const seleccionadosCliente = items.filter((it) => seleccion.has(it.key)).length;
-                return (
-                  <div key={cliente} style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
-                    <div
-                      onClick={() => toggleCliente(cliente)}
-                      style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", background: C.canvas, cursor: "pointer" }}
-                    >
-                      <span style={{ fontSize: 11, color: C.slate }}>{abierto ? "▾" : "▸"}</span>
-                      <span style={{ fontWeight: 800, fontSize: 13, color: C.ink, flex: 1 }}>{cliente}</span>
-                      {seleccionadosCliente > 0 && (
-                        <span style={{ fontSize: 11, fontWeight: 800, color: C.blue, background: C.blueBg, padding: "2px 8px", borderRadius: 12 }}>
-                          {seleccionadosCliente} seleccionada{seleccionadosCliente === 1 ? "" : "s"}
-                        </span>
-                      )}
-                      <span style={{ fontSize: 11, color: C.slate }}>{items.length} talla{items.length === 1 ? "" : "s"}</span>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); toggleTodosCliente(cliente); }}
-                        style={{ fontSize: 11, fontWeight: 700, color: C.blue, background: "transparent", border: `1px solid ${C.blue}`, borderRadius: 6, padding: "3px 8px", cursor: "pointer" }}
-                      >
-                        {items.every((it) => seleccion.has(it.key)) ? "Ninguna" : "Todas"}
-                      </button>
-                    </div>
-                    {abierto && (
-                      <div style={{ padding: "10px 16px 16px" }}>
-                        {[...pedidosMap.values()].map(({ pedido: p, filas }) => {
-                          const tallasSinOrden = [];
-                          filas.forEach((r) => {
-                            Object.entries(r.tallas || {}).forEach(([t, cant]) => {
-                              if (cant > 0 && !tallasSinOrden.includes(t)) tallasSinOrden.push(t);
-                            });
-                          });
-                          const tallasDistintas = ordenarTallas(tallasSinOrden);
-                          return (
-                            <div key={p.id} style={{ marginTop: 12 }}>
-                              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, marginBottom: 6 }}>
-                                Pedido {p.numero} · Despacho {p.fechaDespacho || "—"}
-                              </div>
-                              <div style={{ overflowX: "auto" }}>
-                                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-                                  <thead>
-                                    <tr>
-                                      <th style={{ padding: "5px 8px" }}></th>
-                                      <th style={{ padding: "5px 8px", textAlign: "left", fontSize: 9, color: C.slate, textTransform: "uppercase" }}>Ref</th>
-                                      <th style={{ padding: "5px 8px", textAlign: "left", fontSize: 9, color: C.slate, textTransform: "uppercase" }}>Descripción</th>
-                                      {tallasDistintas.map((t) => (
-                                        <th key={t} style={{ padding: "5px 8px", textAlign: "right", fontSize: 9, color: C.slate, textTransform: "uppercase", whiteSpace: "nowrap" }}>{t}</th>
-                                      ))}
-                                      <th style={{ padding: "5px 8px", textAlign: "right", fontSize: 9, color: C.slate, textTransform: "uppercase" }}>Pendiente</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {filas.map((r) => {
-                                      // Ítems seleccionables de esta referencia (una talla = un ítem),
-                                      // se usan tanto para el checkbox "toda la ref" como para pintar
-                                      // cada celda de talla.
-                                      const itemsRef = tallasDistintas
-                                        .filter((t) => r.tallas[t] > 0)
-                                        .map((t) => ({
-                                          // key por refId — el código `ref` puede repetirse entre
-                                          // colores del mismo pedido (ver calcularCortadoPendiente).
-                                          key: `${p.id}__${r.refId}__${t}`,
-                                          pedidoId: p.id,
-                                          numero: p.numero,
-                                          cliente,
-                                          ref: r.ref,
-                                          refId: r.refId,
-                                          descripcion: r.descripcion,
-                                          talla: t,
-                                          cantidad: r.tallas[t],
-                                          pendienteRef: r.pendiente,
-                                        }));
-                                      const todaLaRefSel = itemsRef.length > 0 && itemsRef.every((it) => seleccion.has(it.key));
-                                      return (
-                                        <tr key={r.refId} style={{ borderTop: `1px solid ${C.border}` }}>
-                                          <td style={{ padding: "5px 8px" }}>
-                                            <input
-                                              type="checkbox"
-                                              checked={todaLaRefSel}
-                                              onChange={() => toggleTodaLaRef(itemsRef)}
-                                              title="Seleccionar toda la referencia"
-                                              style={{ width: 15, height: 15 }}
-                                            />
-                                          </td>
-                                          <td style={{ padding: "5px 8px", fontWeight: 700, color: C.ink }}>{r.ref}</td>
-                                          <td style={{ padding: "5px 8px", color: C.slate }}>{r.descripcion}</td>
-                                          {tallasDistintas.map((t) => {
-                                            const cant = r.tallas[t] || 0;
-                                            if (cant <= 0) {
-                                              return (
-                                                <td key={t} style={{ padding: "4px 6px", textAlign: "center", color: C.border }}>
-                                                  —
-                                                </td>
-                                              );
-                                            }
-                                            const key = `${p.id}__${r.refId}__${t}`;
-                                            const sel = seleccion.get(key);
-                                            return (
-                                              <td
-                                                key={t}
-                                                onClick={() => {
-                                                  if (!sel) toggleItem({ key, pedidoId: p.id, numero: p.numero, cliente, ref: r.ref, refId: r.refId, descripcion: r.descripcion, talla: t, cantidad: cant, pendienteRef: r.pendiente });
-                                                }}
-                                                style={{ padding: "4px 6px", textAlign: "center", cursor: sel ? "default" : "pointer", background: sel ? C.blueBg : "transparent" }}
-                                              >
-                                                {sel ? (
-                                                  <div style={{ display: "flex", alignItems: "center", gap: 3, justifyContent: "center" }}>
-                                                    <input
-                                                      type="number"
-                                                      min={0}
-                                                      value={sel.cantidad}
-                                                      onClick={(e) => e.stopPropagation()}
-                                                      onChange={(e) => setCantidadItem(key, parseInt(e.target.value) || 0)}
-                                                      style={{ width: 42, padding: "2px 3px", border: `1px solid ${C.blue}`, borderRadius: 4, fontSize: 11, textAlign: "center" }}
-                                                    />
-                                                    <span
-                                                      onClick={(e) => { e.stopPropagation(); toggleItem(sel); }}
-                                                      title="Quitar"
-                                                      style={{ cursor: "pointer", color: C.blue, fontWeight: 800, fontSize: 11 }}
-                                                    >
-                                                      ✕
-                                                    </span>
-                                                  </div>
-                                                ) : (
-                                                  <span style={{ color: C.ink }}>{cant}</span>
-                                                )}
-                                              </td>
-                                            );
-                                          })}
-                                          <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 800, color: C.amber }}>{fmtNum(r.pendiente)}</td>
-                                        </tr>
-                                      );
-                                    })}
-                                  </tbody>
-                                </table>
-                              </div>
+          <div style={{ display: "flex", gap: 16, marginBottom: 90 }}>
+            <div style={{ width: 260, flexShrink: 0 }}>
+              <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>
+                Cliente
+              </label>
+              <select
+                value={clienteSel}
+                onChange={(e) => {
+                  setClienteSel(e.target.value);
+                  setPedidoSel("");
+                }}
+                style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", marginBottom: 14 }}
+              >
+                <option value="">— Elegir cliente —</option>
+                {clientesOrdenados.map((cliente) => {
+                  const items = itemsDelCliente(cliente);
+                  return (
+                    <option key={cliente} value={cliente}>
+                      {cliente} ({items.length})
+                    </option>
+                  );
+                })}
+              </select>
+
+              {clienteSel &&
+                (() => {
+                  const pedidosMap = porCliente.get(clienteSel);
+                  if (!pedidosMap) return null;
+                  return (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {[...pedidosMap.values()].map(({ pedido: p, filas }) => {
+                        const itemsPedido = filas.flatMap((r) =>
+                          Object.entries(r.tallas || {})
+                            .filter(([, c]) => c > 0)
+                            .map(([t]) => `${p.id}__${r.refId}__${t}`)
+                        );
+                        const seleccionadosPedido = itemsPedido.filter((k) => seleccion.has(k)).length;
+                        const activo = pedidoSel === p.id;
+                        return (
+                          <div
+                            key={p.id}
+                            onClick={() => setPedidoSel(p.id)}
+                            style={{
+                              cursor: "pointer",
+                              padding: "10px 12px",
+                              borderRadius: 8,
+                              border: `1.5px solid ${activo ? C.blue : C.border}`,
+                              background: activo ? C.blueBg : C.white,
+                            }}
+                          >
+                            <div style={{ fontWeight: 800, fontSize: 12, color: C.ink }}>Pedido #{p.numero}</div>
+                            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+                              Despacho {p.fechaDespacho || "—"} · {filas.length} ref.
+                              {seleccionadosPedido > 0 && <span style={{ color: C.blue, fontWeight: 700 }}> · {seleccionadosPedido} sel.</span>}
                             </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
             </div>
-          )}
+
+            <div style={{ flex: 1, minWidth: 0 }}>
+              {!clienteSel ? (
+                <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
+                  {clientesOrdenados.length ? "Elige un cliente para ver sus pedidos." : "No hay referencias pendientes sin programar en este momento."}
+                </div>
+              ) : !pedidoSel || !porCliente.get(clienteSel)?.has(pedidoSel) ? (
+                <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
+                  Elige un pedido de {clienteSel} para ver sus referencias.
+                </div>
+              ) : (
+                (() => {
+                  const { pedido: p, filas } = porCliente.get(clienteSel).get(pedidoSel);
+                  const items = itemsDelCliente(clienteSel).filter((it) => it.pedidoId === p.id);
+                  const seleccionadosPedido = items.filter((it) => seleccion.has(it.key)).length;
+                  const tallasSinOrden = [];
+                  filas.forEach((r) => {
+                    Object.entries(r.tallas || {}).forEach(([t, cant]) => {
+                      if (cant > 0 && !tallasSinOrden.includes(t)) tallasSinOrden.push(t);
+                    });
+                  });
+                  const tallasDistintas = ordenarTallas(tallasSinOrden);
+                  return (
+                    <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: 16 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                        <span style={{ fontWeight: 800, fontSize: 14, color: C.ink, flex: 1 }}>
+                          {clienteSel} · Pedido #{p.numero}
+                        </span>
+                        {seleccionadosPedido > 0 && (
+                          <span style={{ fontSize: 11, fontWeight: 800, color: C.blue, background: C.blueBg, padding: "2px 8px", borderRadius: 12 }}>
+                            {seleccionadosPedido} seleccionada{seleccionadosPedido === 1 ? "" : "s"}
+                          </span>
+                        )}
+                        <button
+                          onClick={() => toggleTodaLaRef(items)}
+                          style={{ fontSize: 11, fontWeight: 700, color: C.blue, background: "transparent", border: `1px solid ${C.blue}`, borderRadius: 6, padding: "3px 8px", cursor: "pointer" }}
+                        >
+                          {items.length > 0 && items.every((it) => seleccion.has(it.key)) ? "Ninguna" : "Todas"}
+                        </button>
+                      </div>
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                          <thead>
+                            <tr>
+                              <th style={{ padding: "5px 8px" }}></th>
+                              <th style={{ padding: "5px 8px", textAlign: "left", fontSize: 9, color: C.slate, textTransform: "uppercase" }}>Ref</th>
+                              <th style={{ padding: "5px 8px", textAlign: "left", fontSize: 9, color: C.slate, textTransform: "uppercase" }}>Descripción</th>
+                              {tallasDistintas.map((t) => (
+                                <th key={t} style={{ padding: "5px 8px", textAlign: "right", fontSize: 9, color: C.slate, textTransform: "uppercase", whiteSpace: "nowrap" }}>{t}</th>
+                              ))}
+                              <th style={{ padding: "5px 8px", textAlign: "right", fontSize: 9, color: C.slate, textTransform: "uppercase" }}>Pendiente</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {filas.map((r) => {
+                              const itemsRef = tallasDistintas
+                                .filter((t) => r.tallas[t] > 0)
+                                .map((t) => ({
+                                  key: `${p.id}__${r.refId}__${t}`,
+                                  pedidoId: p.id,
+                                  numero: p.numero,
+                                  cliente: clienteSel,
+                                  ref: r.ref,
+                                  refId: r.refId,
+                                  descripcion: r.descripcion,
+                                  talla: t,
+                                  cantidad: r.tallas[t],
+                                  pendienteRef: r.pendiente,
+                                }));
+                              const todaLaRefSel = itemsRef.length > 0 && itemsRef.every((it) => seleccion.has(it.key));
+                              return (
+                                <tr key={r.refId} style={{ borderTop: `1px solid ${C.border}` }}>
+                                  <td style={{ padding: "5px 8px" }}>
+                                    <input
+                                      type="checkbox"
+                                      checked={todaLaRefSel}
+                                      onChange={() => toggleTodaLaRef(itemsRef)}
+                                      title="Seleccionar toda la referencia"
+                                      style={{ width: 15, height: 15 }}
+                                    />
+                                  </td>
+                                  <td style={{ padding: "5px 8px", fontWeight: 700, color: C.ink }}>{r.ref}</td>
+                                  <td style={{ padding: "5px 8px", color: C.slate }}>{r.descripcion}</td>
+                                  {tallasDistintas.map((t) => {
+                                    const cant = r.tallas[t] || 0;
+                                    if (cant <= 0) {
+                                      return (
+                                        <td key={t} style={{ padding: "4px 6px", textAlign: "center", color: C.border }}>
+                                          —
+                                        </td>
+                                      );
+                                    }
+                                    const key = `${p.id}__${r.refId}__${t}`;
+                                    const sel = seleccion.get(key);
+                                    return (
+                                      <td
+                                        key={t}
+                                        onClick={() => {
+                                          if (!sel)
+                                            toggleItem({
+                                              key,
+                                              pedidoId: p.id,
+                                              numero: p.numero,
+                                              cliente: clienteSel,
+                                              ref: r.ref,
+                                              refId: r.refId,
+                                              descripcion: r.descripcion,
+                                              talla: t,
+                                              cantidad: cant,
+                                              pendienteRef: r.pendiente,
+                                            });
+                                        }}
+                                        style={{ padding: "4px 6px", textAlign: "center", cursor: sel ? "default" : "pointer", background: sel ? C.blueBg : "transparent" }}
+                                      >
+                                        {sel ? (
+                                          <div style={{ display: "flex", alignItems: "center", gap: 3, justifyContent: "center" }}>
+                                            <input
+                                              type="number"
+                                              min={0}
+                                              value={sel.cantidad}
+                                              onClick={(e) => e.stopPropagation()}
+                                              onChange={(e) => setCantidadItem(key, parseInt(e.target.value) || 0)}
+                                              style={{ width: 42, padding: "2px 3px", border: `1px solid ${C.blue}`, borderRadius: 4, fontSize: 11, textAlign: "center" }}
+                                            />
+                                            <span
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                toggleItem(sel);
+                                              }}
+                                              title="Quitar"
+                                              style={{ cursor: "pointer", color: C.blue, fontWeight: 800, fontSize: 11 }}
+                                            >
+                                              ✕
+                                            </span>
+                                          </div>
+                                        ) : (
+                                          <span style={{ color: C.ink }}>{cant}</span>
+                                        )}
+                                      </td>
+                                    );
+                                  })}
+                                  <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 800, color: C.amber }}>{fmtNum(r.pendiente)}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })()
+              )}
+            </div>
+          </div>
 
           {seleccion.size > 0 && (
             <div
@@ -3775,174 +3902,130 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
 
       {subTab === "pendientes" && (
         <div>
-          <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-            <button
-              onClick={() => setVista("dia")}
-              style={{ padding: "9px 14px", borderRadius: 10, fontWeight: 700, fontSize: 12, background: vista === "dia" ? C.blueBg : C.white, color: vista === "dia" ? C.blue : C.slate, border: `1px solid ${vista === "dia" ? C.blue : C.border}`, cursor: "pointer" }}
-            >
-              Por día
-            </button>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 20 }}>
+            <KPICard icon="📊" label={`Programado ${mesAnioLabel(calFecha)}`} value={fmtNum(unidadesMes)} sub={fmtCOP(ingresoMes)} color={C.violet} bg={C.violetBg} />
+            <KPICard icon="📆" label="Programado Hoy" value={fmtNum(unidadesHoy)} color={C.blue} bg={C.blueBg} />
+            <KPICard icon={vencidosCount > 0 ? "⚠" : "✓"} label="Cortes Vencidos" value={String(vencidosCount)} color={vencidosCount > 0 ? C.red : C.green} bg={vencidosCount > 0 ? C.redBg : C.greenBg} />
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
             <button
               onClick={() => setVista("semana")}
               style={{ padding: "9px 14px", borderRadius: 10, fontWeight: 700, fontSize: 12, background: vista === "semana" ? C.blueBg : C.white, color: vista === "semana" ? C.blue : C.slate, border: `1px solid ${vista === "semana" ? C.blue : C.border}`, cursor: "pointer" }}
             >
-              Por semana
+              Semana
             </button>
+            <button
+              onClick={() => setVista("mes")}
+              style={{ padding: "9px 14px", borderRadius: 10, fontWeight: 700, fontSize: 12, background: vista === "mes" ? C.blueBg : C.white, color: vista === "mes" ? C.blue : C.slate, border: `1px solid ${vista === "mes" ? C.blue : C.border}`, cursor: "pointer" }}
+            >
+              Mes
+            </button>
+            <div style={{ marginLeft: 16, display: "flex", alignItems: "center", gap: 8 }}>
+              <button
+                onClick={() => setCalFecha(vista === "mes" ? sumarMesesISO(calFecha, -1) : sumarDiasISO(calFecha, -7))}
+                style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 12px", fontWeight: 800, fontSize: 13, cursor: "pointer", color: C.ink }}
+              >
+                ‹
+              </button>
+              <span style={{ fontWeight: 800, fontSize: 13, color: C.ink, minWidth: 190, textAlign: "center" }}>
+                {vista === "mes" ? mesAnioLabel(calFecha) : `Semana del ${fmtFechaISO(semanaBase)} al ${fmtFechaISO(sumarDiasISO(semanaBase, 6))}`}
+              </span>
+              <button
+                onClick={() => setCalFecha(vista === "mes" ? sumarMesesISO(calFecha, 1) : sumarDiasISO(calFecha, 7))}
+                style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: "7px 12px", fontWeight: 800, fontSize: 13, cursor: "pointer", color: C.ink }}
+              >
+                ›
+              </button>
+              <button
+                onClick={() => setCalFecha(today())}
+                style={{ background: "transparent", border: `1px solid ${C.blue}`, color: C.blue, borderRadius: 8, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+              >
+                Hoy
+              </button>
+            </div>
           </div>
 
-          {vista === "dia" && (
-            !pendientesConEstado.length ? (
-              <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>No hay referencias programadas pendientes.</div>
-            ) : (
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                <thead>
-                  <tr style={{ borderBottom: `2px solid ${C.border}` }}>
-                    <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Cliente / Pedido</th>
-                    <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Referencia</th>
-                    <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Cantidad</th>
-                    <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Fecha programada</th>
-                    <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Días</th>
-                    <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pendientesConEstado.map((p) => {
-                    const cant = p.cantidadProgramada ?? p.cantidadPendiente;
-                    return (
-                    <tr
-                      key={p.id}
-                      onClick={() => handleRowClick(p)}
-                      title={p.etapa === "programacion_hecha" ? "Ir a Entrada de Corte" : "Ir a Programación Hecha"}
-                      style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer" }}
-                    >
-                      <td style={{ padding: "10px", fontWeight: 700, color: C.ink }}>{p.cliente} · #{p.numero}</td>
-                      <td style={{ padding: "10px" }}>
-                        <span style={{ fontWeight: 700 }}>{p.ref}</span>
-                        {p.descripcion && <span style={{ color: C.slate, marginLeft: 6, fontSize: 12 }}>{p.descripcion}</span>}
-                        {p.etapa === "programacion_hecha" ? (
-                          <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 800, color: C.cyan, background: C.blueBg, padding: "2px 6px", borderRadius: 10 }}>
-                            ✓ {p.planta}{p.meson ? ` · ${p.meson}` : ""}
-                          </span>
-                        ) : (
-                          <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 800, color: C.violet }}>
-                            ○ Sin Programación Hecha
-                          </span>
-                        )}
-                      </td>
-                      <td style={{ padding: "10px", textAlign: "right" }} onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="number"
-                          min={0}
-                          value={cant}
-                          onChange={(e) => onEditarCantidad(p.id, parseInt(e.target.value) || 0)}
-                          style={{ width: 70, padding: "5px 6px", border: `1.5px solid ${C.border}`, borderRadius: 6, fontSize: 12, textAlign: "right", fontWeight: 700, color: C.amber }}
-                        />
-                        {p.cantidadPendiente > cant && (
-                          <div style={{ fontSize: 10, color: C.slate, marginTop: 2 }}>de {fmtNum(p.cantidadPendiente)} pend.</div>
-                        )}
-                      </td>
-                      <td style={{ padding: "10px" }} onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="date"
-                          value={p.fechaProgramada}
-                          onChange={(e) => onEditarFecha(p.id, e.target.value)}
-                          style={{ padding: "5px 8px", border: `1.5px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}
-                        />
-                      </td>
-                      <td style={{ padding: "10px", textAlign: "right", color: p.vencido ? C.red : C.ink, fontWeight: p.vencido ? 800 : 500 }}>
-                        {p.vencido ? `Vencido ${Math.abs(p.dias)}d` : `${p.dias}d`}
-                      </td>
-                      <td style={{ padding: "10px", textAlign: "right", whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
-                        <span style={{ fontSize: 11, color: p.etapa === "programacion_hecha" ? C.cyan : C.violet, fontWeight: 700, marginRight: 10 }}>
-                          {p.etapa === "programacion_hecha" ? "✂ Click para Entrada de Corte" : "📋 Click para Programación Hecha"}
-                        </span>
-                        <button
-                          onClick={() => onCancelar(p.id)}
-                          title="Cancelar programación"
-                          style={{ background: C.redBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.red, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
-                        >
-                          ✕
-                        </button>
-                      </td>
-                    </tr>
-                  );})}
-                </tbody>
-              </table>
-            )
+          {!pendientesConEstado.length && (
+            <div style={{ padding: "10px 14px", background: C.canvas, borderRadius: 8, marginBottom: 14, fontSize: 12, color: C.slate }}>
+              No hay referencias programadas pendientes todavía — el calendario está vacío.
+            </div>
           )}
 
-          {vista === "semana" && (
-            !semanasOrdenadas.length ? (
-              <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>No hay referencias programadas pendientes.</div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                {semanasOrdenadas.map((lunes) => {
-                  const items = porSemana.get(lunes);
-                  const domingo = sumarDiasISO(lunes, 6);
-                  const vencidosSemana = items.filter((p) => p.vencido).length;
-                  return (
-                    <div key={lunes} style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
-                      <div style={{ padding: "10px 16px", background: C.canvas, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>
-                          Semana del {fmtFechaISO(lunes)} al {fmtFechaISO(domingo)}
-                        </div>
-                        <div style={{ fontSize: 11, color: C.slate }}>
-                          {items.length} referencia{items.length === 1 ? "" : "s"}
-                          {vencidosSemana > 0 && <span style={{ color: C.red, fontWeight: 700 }}> · {vencidosSemana} vencida{vencidosSemana === 1 ? "" : "s"}</span>}
-                        </div>
-                      </div>
-                      {items.map((p, i) => {
-                        const cant = p.cantidadProgramada ?? p.cantidadPendiente;
-                        return (
-                        <div
-                          key={p.id}
-                          onClick={() => handleRowClick(p)}
-                          title={p.etapa === "programacion_hecha" ? "Ir a Entrada de Corte" : "Ir a Programación Hecha"}
-                          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", borderTop: i > 0 ? `1px solid ${C.border}` : "none", cursor: "pointer" }}
-                        >
-                          <div>
-                            <span style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{p.cliente} · #{p.numero}</span>
-                            <span style={{ color: C.slate, marginLeft: 8, fontSize: 12 }}>{p.ref}</span>
-                            {p.etapa === "programacion_hecha" && (
-                              <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 800, color: C.cyan }}>✓ Prog. Hecha</span>
-                            )}
-                          </div>
-                          <div style={{ display: "flex", gap: 10, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
-                            <input
-                              type="number"
-                              min={0}
-                              value={cant}
-                              onChange={(e) => onEditarCantidad(p.id, parseInt(e.target.value) || 0)}
-                              style={{ width: 60, padding: "4px 6px", border: `1.5px solid ${C.border}`, borderRadius: 6, fontSize: 11, textAlign: "right", fontWeight: 700, color: C.amber }}
-                            />
-                            <input
-                              type="date"
-                              value={p.fechaProgramada}
-                              onChange={(e) => onEditarFecha(p.id, e.target.value)}
-                              style={{ padding: "4px 6px", border: `1.5px solid ${C.border}`, borderRadius: 6, fontSize: 11, fontFamily: "inherit" }}
-                            />
-                            <span style={{ fontSize: 12, fontWeight: 800, color: p.vencido ? C.red : C.ink }}>
-                              {p.vencido ? `Vencido ${Math.abs(p.dias)}d` : `${p.dias}d`}
-                            </span>
-                            <button
-                              onClick={() => onCancelar(p.id)}
-                              title="Cancelar programación"
-                              style={{ background: C.redBg, border: "none", borderRadius: 6, padding: "4px 7px", color: C.red, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        </div>
-                      );})}
-                    </div>
-                  );
-                })}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 6, marginBottom: 6 }}>
+            {["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"].map((d) => (
+              <div key={d} style={{ fontSize: 10, fontWeight: 800, color: C.slate, textTransform: "uppercase", textAlign: "center" }}>
+                {d}
               </div>
-            )
-          )}
+            ))}
+          </div>
+
+          {(vista === "mes" ? semanasMesCal : [diasSemanaCal]).map((semana, wi) => (
+            <div key={wi} style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 6, marginBottom: 6 }}>
+              {semana.map((date) => {
+                const datos = datosDelDia(date);
+                const enMes = date.slice(0, 7) === calFecha.slice(0, 7);
+                const esHoy = date === hoy;
+                const maxItems = vista === "mes" ? 3 : 8;
+                return (
+                  <div
+                    key={date}
+                    style={{
+                      minHeight: vista === "mes" ? 90 : 170,
+                      border: `1.5px solid ${esHoy ? C.blue : C.border}`,
+                      borderRadius: 8,
+                      padding: 6,
+                      background: enMes ? C.white : C.canvas,
+                      opacity: enMes ? 1 : 0.55,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 4,
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: 11, fontWeight: 800, color: esHoy ? C.blue : C.ink }}>{Number(date.slice(8, 10))}</span>
+                      {datos.items.length > 0 && (
+                        <span
+                          title={datos.cubre ? "Cubre el costo diario del centro de costo" : "No cubre el costo diario del centro de costo"}
+                          style={{ fontSize: 11 }}
+                        >
+                          {datos.cubre ? "✓" : "⚠"}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2, overflow: "hidden" }}>
+                      {datos.items.slice(0, maxItems).map((it) => (
+                        <div
+                          key={it.id}
+                          onClick={() => handleRowClick(it)}
+                          title={`${it.cliente} · #${it.numero} · ${it.ref} — ${it.etapa === "programacion_hecha" ? "Ir a Entrada de Corte" : "Ir a Programación Hecha"}`}
+                          style={{
+                            fontSize: 10,
+                            padding: "2px 4px",
+                            borderRadius: 4,
+                            cursor: "pointer",
+                            background: it.vencido ? C.redBg : it.etapa === "programacion_hecha" ? C.blueBg : C.violetBg,
+                            color: it.vencido ? C.red : it.etapa === "programacion_hecha" ? C.cyan : C.violet,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            fontWeight: 700,
+                          }}
+                        >
+                          {it.ref} · {fmtNum(it.cantidadProgramada ?? it.cantidadPendiente)}
+                        </div>
+                      ))}
+                      {datos.items.length > maxItems && (
+                        <div style={{ fontSize: 9, color: C.slate }}>+{datos.items.length - maxItems} más</div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
         </div>
       )}
-
       {subTab === "cumplidos" && (
         !cumplidosProg.length ? (
           <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>Todavía no hay referencias cumplidas.</div>
@@ -4041,6 +4124,67 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                           🔒
                         </span>
                       )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )
+      )}
+
+      {subTab === "vencidos" && (
+        !vencidosProg.length ? (
+          <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
+            No hay cortes vencidos — todo lo programado está al día. 🎉
+          </div>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ borderBottom: `2px solid ${C.border}` }}>
+                <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Cliente / Pedido</th>
+                <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Referencia</th>
+                <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Cantidad</th>
+                <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Fecha programada</th>
+                <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Días vencido</th>
+                <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {vencidosProg.map((p) => {
+                const cant = p.cantidadProgramada ?? p.cantidadPendiente;
+                return (
+                  <tr
+                    key={p.id}
+                    onClick={() => handleRowClick(p)}
+                    title={p.etapa === "programacion_hecha" ? "Ir a Entrada de Corte" : "Ir a Programación Hecha"}
+                    style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: C.redBg }}
+                  >
+                    <td style={{ padding: "10px", fontWeight: 700, color: C.ink }}>{p.cliente} · #{p.numero}</td>
+                    <td style={{ padding: "10px" }}>
+                      <span style={{ fontWeight: 700 }}>{p.ref}</span>
+                      {p.descripcion && <span style={{ color: C.slate, marginLeft: 6, fontSize: 12 }}>{p.descripcion}</span>}
+                      {p.etapa === "programacion_hecha" && (
+                        <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 800, color: C.cyan, background: C.blueBg, padding: "2px 6px", borderRadius: 10 }}>
+                          ✓ {p.planta}
+                          {p.meson ? ` · ${p.meson}` : ""}
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ padding: "10px", textAlign: "right", fontWeight: 700, color: C.amber }}>{fmtNum(cant)}</td>
+                    <td style={{ padding: "10px" }}>{fmtFechaISO(p.fechaProgramada)}</td>
+                    <td style={{ padding: "10px", textAlign: "right", fontWeight: 800, color: C.red }}>{Math.abs(p.dias)}d</td>
+                    <td style={{ padding: "10px", textAlign: "right", whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
+                      <span style={{ fontSize: 11, color: p.etapa === "programacion_hecha" ? C.cyan : C.violet, fontWeight: 700, marginRight: 10 }}>
+                        {p.etapa === "programacion_hecha" ? "✂ Click para Entrada de Corte" : "📋 Click para Programación Hecha"}
+                      </span>
+                      <button
+                        onClick={() => onCancelar(p.id)}
+                        title="Cancelar programación"
+                        style={{ background: C.white, border: `1px solid ${C.red}`, borderRadius: 6, padding: "4px 8px", color: C.red, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+                      >
+                        ✕
+                      </button>
                     </td>
                   </tr>
                 );
