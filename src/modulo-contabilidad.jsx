@@ -70,6 +70,12 @@ function fmtCOP(n) {
 function fmtNum(n) {
   return Number(n || 0).toLocaleString("es-CO");
 }
+function fmtFechaCorta(iso) {
+  if (!iso) return "—";
+  const [y, m, d] = iso.split("-");
+  if (!y || !m || !d) return iso;
+  return `${d}/${m}/${y.slice(2)}`;
+}
 function mesLabel(m, a) {
   return new Date(a, m - 1, 1).toLocaleDateString("es-CO", {
     month: "long",
@@ -1520,19 +1526,25 @@ function ImportarCXPModal({ onConfirm, onClose }) {
     </Modal>
   );
 }
-function AgregarProveedorCXPModal({ onSave, onClose }) {
+function AgregarProveedorCXPModal({ rubros, onSave, onClose }) {
   const [nombre, setNombre] = useState("");
+  const [rubroKey, setRubroKey] = useState("");
   const [porVencer, setPorVencer] = useState("");
   const [dias0a30, setDias0a30] = useState("");
   const [dias31a60, setDias31a60] = useState("");
   const [dias61a90, setDias61a90] = useState("");
   const [dias91mas, setDias91mas] = useState("");
   const total = [porVencer, dias0a30, dias31a60, dias61a90, dias91mas].reduce((s, v) => s + (parseFloat(v) || 0), 0);
+  const rubroOptions = (rubros || []).map((r) => ({ value: `${r.codConcep}__${r.concepto}`, label: `${r.concepto} (${r.codConcep})` }));
   function guardar() {
     if (!nombre || total <= 0) return;
+    const rubroSel = (rubros || []).find((r) => `${r.codConcep}__${r.concepto}` === rubroKey) || null;
     onSave({
       id: uid(),
       nombre,
+      // Rubro al que pertenece este proveedor — se usa para cruzar los
+      // abonos que se le hagan con el "Avance por rubro" del presupuesto.
+      rubro: rubroSel ? { codConcep: rubroSel.codConcep, concepto: rubroSel.concepto } : null,
       porVencer: parseFloat(porVencer) || 0,
       dias0a30: parseFloat(dias0a30) || 0,
       dias31a60: parseFloat(dias31a60) || 0,
@@ -1547,6 +1559,9 @@ function AgregarProveedorCXPModal({ onSave, onClose }) {
     <Modal title="Agregar proveedor manualmente" onClose={onClose} width={480}>
       <Field label="Proveedor">
         <FInput value={nombre} onChange={setNombre} placeholder="Nombre del proveedor" />
+      </Field>
+      <Field label="Rubro (para que los abonos cuenten en Avance por rubro)">
+        <FSel value={rubroKey} onChange={setRubroKey} options={rubroOptions} />
       </Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Por vencer">
@@ -1587,6 +1602,68 @@ function AgregarProveedorCXPModal({ onSave, onClose }) {
         </Btn>
         <Btn variant="danger" onClick={guardar} disabled={!nombre || total <= 0}>
           Guardar
+        </Btn>
+      </div>
+    </Modal>
+  );
+}
+// Registra un abono (pago real ya ejecutado, con fecha) contra una Cuenta
+// por Pagar — reduce su saldo pendiente y, si tiene rubro asignado, cuenta
+// hacia el "Avance por rubro" del mes en que se pagó.
+function AbonarCXPModal({ proveedor, origen, cxpId, rubroSugerido, rubros, saldoPendiente, onGuardar, onClose }) {
+  const rubroKeyInicial = rubroSugerido ? `${rubroSugerido.codConcep}__${rubroSugerido.concepto}` : "";
+  const [rubroKey, setRubroKey] = useState(rubroKeyInicial);
+  const [monto, setMonto] = useState("");
+  const [fecha, setFecha] = useState(today());
+  const rubroOptions = (rubros || []).map((r) => ({ value: `${r.codConcep}__${r.concepto}`, label: `${r.concepto} (${r.codConcep})` }));
+  const montoNum = parseFloat(monto) || 0;
+  function guardar() {
+    if (montoNum <= 0 || !fecha) return;
+    const rubroSel = (rubros || []).find((r) => `${r.codConcep}__${r.concepto}` === rubroKey) || null;
+    onGuardar({
+      id: uid(),
+      proveedor,
+      origen,
+      cxpId: cxpId || null,
+      codConcep: rubroSel?.codConcep || null,
+      concepto: rubroSel?.concepto || null,
+      monto: montoNum,
+      fecha,
+      mes: fecha.slice(0, 7),
+      creadoEn: new Date().toISOString(),
+    });
+    onClose();
+  }
+  return (
+    <Modal title={`Abonar a ${proveedor}`} onClose={onClose} width={440}>
+      {saldoPendiente !== undefined && (
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", background: C.canvas, borderRadius: 8, fontSize: 13, fontWeight: 700, color: C.ink, marginBottom: 14 }}>
+          <span>Saldo pendiente actual</span>
+          <span>{fmtCOP(saldoPendiente)}</span>
+        </div>
+      )}
+      {!rubroSugerido && (
+        <div style={{ fontSize: 11, color: C.slate, marginBottom: 8 }}>
+          Este proveedor no tiene rubro asignado — puedes elegir uno solo para este abono, o dejarlo sin rubro (no contará en "Avance por rubro").
+        </div>
+      )}
+      <Field label="Rubro">
+        <FSel value={rubroKey} onChange={setRubroKey} options={rubroOptions} />
+      </Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Monto abonado">
+          <FInput type="number" value={monto} onChange={setMonto} placeholder="0" />
+        </Field>
+        <Field label="Fecha del pago">
+          <FInput type="date" value={fecha} onChange={setFecha} />
+        </Field>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>
+          Cancelar
+        </Btn>
+        <Btn variant="danger" onClick={guardar} disabled={montoNum <= 0 || !fecha}>
+          Guardar abono
         </Btn>
       </div>
     </Modal>
@@ -2748,10 +2825,134 @@ function ProyeccionForm({ compras, presupuestoExistente, onGuardar, onClose }) {
     </Modal>
   );
 }
-function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onGuardar, onFinalizar, onDeletePresupuesto, onRecalcular, isAdmin }) {
+// Una fila de "Avance por rubro" — al pasar el mouse muestra un desglose de
+// los abonos concretos (proveedor, fecha, monto) que suman el "cubierto" de
+// esa barra, para no tener que adivinar de dónde sale el número.
+function RubroAvanceRow({ item: i }) {
+  const [hover, setHover] = useState(false);
+  const tieneAbonos = (i.abonosDelRubro || []).length > 0;
+  return (
+    <div
+      style={{ position: "relative" }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.slate, marginBottom: 3, cursor: tieneAbonos ? "help" : "default" }}>
+        <span>
+          {i.concepto} <span style={{ color: C.slate, fontWeight: 400 }}>({i.codConcep})</span>
+          {i.cuadrado && (
+            <span title="Objetivo ajustado con IVA/Retención cuadrados" style={{ marginLeft: 6, fontSize: 10, color: C.green, fontWeight: 700 }}>
+              ● Neto cuadrado
+            </span>
+          )}
+        </span>
+        <span style={{ fontWeight: 700, color: i.pct >= 100 ? C.green : C.ink }}>
+          {fmtCOP(i.cubierto)} / {fmtCOP(i.objetivo)} · {Math.round(i.pct)}%
+        </span>
+      </div>
+      <div style={{ height: 7, borderRadius: 4, background: C.canvas, overflow: "hidden" }}>
+        <div
+          style={{
+            height: "100%",
+            width: `${Math.min(i.pct, 100)}%`,
+            background: i.pct >= 100 ? C.green : C.violet,
+            borderRadius: 4,
+          }}
+        />
+      </div>
+      {hover && tieneAbonos && (
+        <div
+          style={{
+            position: "absolute",
+            zIndex: 60,
+            top: "100%",
+            left: 0,
+            marginTop: 4,
+            background: C.ink,
+            color: C.white,
+            borderRadius: 8,
+            padding: "8px 10px",
+            fontSize: 11,
+            minWidth: 240,
+            maxWidth: 320,
+            boxShadow: "0 10px 30px rgba(0,0,0,0.3)",
+          }}
+        >
+          <div style={{ fontWeight: 800, marginBottom: 5, color: C.seam }}>Abonos a este rubro</div>
+          {[...i.abonosDelRubro]
+            .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
+            .map((a) => (
+              <div key={a.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "2px 0" }}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {fmtFechaCorta(a.fecha)} · {a.proveedor}
+                </span>
+                <span style={{ fontWeight: 700, flexShrink: 0 }}>{fmtCOP(a.monto)}</span>
+              </div>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Lista de todos los abonos de un mes, agrupados por rubro y ordenados por
+// fecha — el botón "📊 Estadística de Pagos" de cada tarjeta de presupuesto
+// abre esto.
+function EstadisticaPagosModal({ mes, abonosCxp, onClose }) {
+  const abonosMes = (abonosCxp || []).filter((a) => a.mes === mes || (a.fecha || "").slice(0, 7) === mes);
+  const totalMes = abonosMes.reduce((s, a) => s + (a.monto || 0), 0);
+  const porRubro = new Map();
+  abonosMes.forEach((a) => {
+    const key = a.codConcep ? `${a.codConcep}__${a.concepto}` : "__sin_rubro";
+    if (!porRubro.has(key)) {
+      porRubro.set(key, { codConcep: a.codConcep, concepto: a.concepto || "Sin rubro asignado", abonos: [] });
+    }
+    porRubro.get(key).abonos.push(a);
+  });
+  const grupos = [...porRubro.values()]
+    .map((g) => ({ ...g, total: g.abonos.reduce((s, a) => s + (a.monto || 0), 0), abonos: [...g.abonos].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")) }))
+    .sort((a, b) => b.total - a.total);
+  return (
+    <Modal title={`Estadística de Pagos — ${fmtMesLargo(mes)}`} onClose={onClose} width={620}>
+      <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", background: C.violetBg, borderRadius: 10, marginBottom: 16, fontWeight: 800 }}>
+        <span style={{ color: C.violet }}>Total abonado en el mes</span>
+        <span style={{ color: C.violet }}>{fmtCOP(totalMes)}</span>
+      </div>
+      {!grupos.length ? (
+        <div style={{ textAlign: "center", padding: 32, color: C.slate, fontSize: 13 }}>
+          Todavía no hay abonos registrados para este mes.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16, maxHeight: "60vh", overflowY: "auto" }}>
+          {grupos.map((g) => (
+            <div key={g.codConcep || "sin_rubro"}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 800, color: C.ink, marginBottom: 6 }}>
+                <span>
+                  {g.concepto} {g.codConcep && <span style={{ color: C.slate, fontWeight: 400 }}>({g.codConcep})</span>}
+                </span>
+                <span>{fmtCOP(g.total)}</span>
+              </div>
+              <div style={{ background: C.canvas, borderRadius: 8, overflow: "hidden" }}>
+                {g.abonos.map((a) => (
+                  <div key={a.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 12px", fontSize: 12, color: C.slate, borderTop: `1px solid ${C.border}` }}>
+                    <span>{fmtFechaCorta(a.fecha)} · {a.proveedor}</span>
+                    <span style={{ fontWeight: 700, color: C.ink }}>{fmtCOP(a.monto)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, abonosCxp, onGuardar, onFinalizar, onDeletePresupuesto, onRecalcular, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [editando, setEditando] = useState(null);
   const [expandidos, setExpandidos] = useState(new Set());
+  const [estadisticaMes, setEstadisticaMes] = useState(null);
   function toggleExpand(id) {
     setExpandidos((s) => {
       const next = new Set(s);
@@ -2772,6 +2973,13 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
             setShowForm(false);
             setEditando(null);
           }}
+        />
+      )}
+      {estadisticaMes && (
+        <EstadisticaPagosModal
+          mes={estadisticaMes}
+          abonosCxp={abonosCxp}
+          onClose={() => setEstadisticaMes(null)}
         />
       )}
       <div
@@ -2836,14 +3044,18 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
             const terminado = p.estado === "terminado";
             const pagosCxpMes = (calendarioCxp || []).filter((c) => c.mes === p.mes);
             const totalPagosCxp = pagosCxpMes.reduce((s, c) => s + c.monto, 0);
+            // Abonos reales (pagos ya ejecutados a Cuentas por Pagar) de este
+            // mes — "Avance por rubro" mide cuánto de lo presupuestado por
+            // rubro ya se pagó de verdad, NO cuánto ingreso de clientes se
+            // distribuyó (eso quedó como "Ingresos reales" arriba, que es
+            // otra cosa).
+            const abonosMes = (abonosCxp || []).filter((a) => a.mes === p.mes || (a.fecha || "").slice(0, 7) === p.mes);
             const itemsConAvance = terminado
               ? (p.items || [])
                   .filter((i) => i.incluido)
                   .map((i) => {
-                    const cubierto = ingresosMes.reduce((s, m) => {
-                      const enEsteRubro = (m.distribucion || []).filter((d) => d.codConcep === i.codConcep);
-                      return s + enEsteRubro.reduce((s2, d) => s2 + (parseFloat(d.monto) || 0), 0);
-                    }, 0);
+                    const abonosDelRubro = abonosMes.filter((a) => a.codConcep === i.codConcep);
+                    const cubierto = abonosDelRubro.reduce((s, a) => s + (parseFloat(a.monto) || 0), 0);
                     const registroReal = compras.find(
                       (c) => c.mes === p.mes && c.codConcep === i.codConcep && c.concepto === i.concepto
                     );
@@ -2852,7 +3064,7 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
                       ? registroReal.valor + (registroReal.iva || 0) - (registroReal.retencion || 0)
                       : i.valorFinal;
                     const pct = objetivo > 0 ? Math.min((cubierto / objetivo) * 100, 999) : 0;
-                    return { ...i, cubierto, objetivo, cuadrado, pct };
+                    return { ...i, cubierto, objetivo, cuadrado, pct, abonosDelRubro };
                   })
               : [];
             const disponibleSinAsignar = ingresosMes.reduce((s, m) => {
@@ -2919,6 +3131,9 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
                         <Btn small variant="danger" onClick={() => onDeletePresupuesto(p.id)}>
                           Eliminar
                         </Btn>
+                        <Btn small variant="secondary" onClick={() => setEstadisticaMes(p.mes)}>
+                          📊 Estadística de Pagos
+                        </Btn>
                       </div>
                     )}
                     {totalPagosCxp > 0 && (
@@ -2958,31 +3173,7 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
                         <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 8 }}>Avance por rubro</div>
                         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14, maxHeight: 260, overflowY: "auto", paddingRight: 4 }}>
                           {itemsConAvance.map((i) => (
-                            <div key={i.key || `${i.codConcep}__${i.concepto}`}>
-                              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.slate, marginBottom: 3 }}>
-                                <span>
-                                  {i.concepto} <span style={{ color: C.slate, fontWeight: 400 }}>({i.codConcep})</span>
-                                  {i.cuadrado && (
-                                    <span title="Objetivo ajustado con IVA/Retención cuadrados" style={{ marginLeft: 6, fontSize: 10, color: C.green, fontWeight: 700 }}>
-                                      ● Neto cuadrado
-                                    </span>
-                                  )}
-                                </span>
-                                <span style={{ fontWeight: 700, color: i.pct >= 100 ? C.green : C.ink }}>
-                                  {fmtCOP(i.cubierto)} / {fmtCOP(i.objetivo)} · {Math.round(i.pct)}%
-                                </span>
-                              </div>
-                              <div style={{ height: 7, borderRadius: 4, background: C.canvas, overflow: "hidden" }}>
-                                <div
-                                  style={{
-                                    height: "100%",
-                                    width: `${Math.min(i.pct, 100)}%`,
-                                    background: i.pct >= 100 ? C.green : C.violet,
-                                    borderRadius: 4,
-                                  }}
-                                />
-                              </div>
-                            </div>
+                            <RubroAvanceRow key={i.key || `${i.codConcep}__${i.concepto}`} item={i} />
                           ))}
                         </div>
                         <div
@@ -3570,10 +3761,11 @@ function ProgramacionPagosView({ presupuestosCliente, presupuestos, calendarioCx
     </div>
   );
 }
-function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente, presupuestos, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, isAdmin }) {
+function CuentasPorPagarView({ cortes, manuales, calendario, abonos, rubros, presupuestosCliente, presupuestos, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, onGuardarAbono, isAdmin }) {
   const [showImport, setShowImport] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const [programando, setProgramando] = useState(null);
+  const [abonando, setAbonando] = useState(null);
   const [orden, setOrden] = useState("total");
   const [corteSeleccionado, setCorteSeleccionado] = useState(null);
   const [vista, setVista] = useState("tabla");
@@ -3609,6 +3801,9 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   function calendarioDe(nombre) {
     return calendario.filter((c) => c.proveedor === nombre);
   }
+  function abonosDe(nombre) {
+    return (abonos || []).filter((a) => a.proveedor === nombre);
+  }
   const mesesProgramacion = proximosMeses(24);
   const disponiblePorMes = {};
   let acumuladoProgramacion = 0;
@@ -3623,7 +3818,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   return (
     <div>
       {showImport && <ImportarCXPModal onConfirm={onImportarCorte} onClose={() => setShowImport(false)} />}
-      {showManual && <AgregarProveedorCXPModal onSave={onAddManual} onClose={() => setShowManual(false)} />}
+      {showManual && <AgregarProveedorCXPModal rubros={rubros} onSave={onAddManual} onClose={() => setShowManual(false)} />}
       {programando &&
         (() => {
           const fila = filas.find((f) => f.nombre === programando);
@@ -3636,6 +3831,24 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
               disponiblePorMes={disponiblePorMes}
               onGuardar={onGuardarCalendario}
               onClose={() => setProgramando(null)}
+            />
+          );
+        })()}
+      {abonando &&
+        (() => {
+          const fila = filas.find((f) => f.nombre === abonando);
+          if (!fila) return null;
+          const abonadoYa = abonosDe(abonando).reduce((s, a) => s + (a.monto || 0), 0);
+          return (
+            <AbonarCXPModal
+              proveedor={abonando}
+              origen={fila.origen}
+              cxpId={fila.origen === "manual" ? fila.id : null}
+              rubroSugerido={fila.rubro || null}
+              rubros={rubros}
+              saldoPendiente={fila.total - abonadoYa}
+              onGuardar={onGuardarAbono}
+              onClose={() => setAbonando(null)}
             />
           );
         })()}
@@ -3745,7 +3958,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
                 <tr style={{ background: C.ink }}>
-                  {["Proveedor", "Por vencer", "0-30", "31-60", "61-90", "91+", "Total", "Programado", ""].map((h) => (
+                  {["Proveedor", "Por vencer", "0-30", "31-60", "61-90", "91+", "Total", "Abonado", "Saldo", "Programado", ""].map((h) => (
                     <th
                       key={h}
                       style={{
@@ -3765,6 +3978,8 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
               <tbody>
                 {filas.map((f, i) => {
                   const progTotal = calendarioDe(f.nombre).reduce((s, c) => s + c.monto, 0);
+                  const abonadoTotal = abonosDe(f.nombre).reduce((s, a) => s + (a.monto || 0), 0);
+                  const saldoPend = f.total - abonadoTotal;
                   return (
                     <tr
                       key={`${f.origen}-${f.id || i}`}
@@ -3775,6 +3990,9 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                     >
                       <td style={{ padding: "8px 12px", fontWeight: 600, color: C.ink }}>
                         {f.nombre} {f.origen === "manual" && <span style={{ fontSize: 10, color: C.slate, fontWeight: 400 }}>(manual)</span>}
+                        {f.rubro && (
+                          <div style={{ fontSize: 9, color: C.violet, fontWeight: 700 }}>{f.rubro.concepto}</div>
+                        )}
                       </td>
                       <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.porVencer)}</td>
                       <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.dias0a30)}</td>
@@ -3784,10 +4002,32 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                         {fmtCOP(f.dias91mas)}
                       </td>
                       <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800, color: C.ink }}>{fmtCOP(f.total)}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", color: abonadoTotal > 0 ? C.green : C.slate, fontWeight: abonadoTotal > 0 ? 700 : 400 }}>
+                        {abonadoTotal > 0 ? fmtCOP(abonadoTotal) : "—"}
+                      </td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700, color: saldoPend <= 0 ? C.green : C.ink }}>
+                        {fmtCOP(Math.max(0, saldoPend))}
+                      </td>
                       <td style={{ padding: "8px 12px", textAlign: "right", color: progTotal > 0 ? C.green : C.slate, fontWeight: progTotal > 0 ? 700 : 400 }}>
                         {progTotal > 0 ? fmtCOP(progTotal) : "—"}
                       </td>
                       <td style={{ padding: "8px 8px", textAlign: "center", whiteSpace: "nowrap" }}>
+                        <button
+                          onClick={() => setAbonando(f.nombre)}
+                          style={{
+                            background: C.greenBg,
+                            border: "none",
+                            borderRadius: 6,
+                            padding: "4px 8px",
+                            color: C.green,
+                            fontWeight: 700,
+                            fontSize: 10,
+                            cursor: "pointer",
+                            marginRight: 6,
+                          }}
+                        >
+                          💰 Abonar
+                        </button>
                         <button
                           onClick={() => setProgramando(f.nombre)}
                           style={{
@@ -4002,6 +4242,12 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
   const [cortesCxp, setCortesCxp] = useState([]);
   const [manualCxp, setManualCxp] = useState([]);
   const [calendarioCxp, setCalendarioCxp] = useState([]);
+  // Abonos (pagos reales ya ejecutados) contra una Cuenta por Pagar —
+  // distinto de "Programar pago" (contabilidad_cxp_calendario), que es solo
+  // un plan de cuánto se piensa pagar a futuro. Un abono sí reduce el saldo
+  // pendiente del proveedor y sí cuenta hacia el "Avance por rubro" del mes
+  // en que se pagó (por su campo `fecha`).
+  const [abonosCxp, setAbonosCxp] = useState([]);
   const [clientesDiseno, setClientesDiseno] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -4048,6 +4294,12 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
         setCalendarioCxp(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
       }
     );
+    const unsubAbonosCxp = onSnapshot(
+      collection(db, "contabilidad_cxp_abonos"),
+      (snap) => {
+        setAbonosCxp(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      }
+    );
     const unsubClientes = onSnapshot(doc(db, "config", "main"), (snap) => {
       setClientesDiseno(snap.exists() ? snap.data()?.clientes || [] : []);
     });
@@ -4059,6 +4311,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
       unsubCortesCxp();
       unsubManualCxp();
       unsubCalendarioCxp();
+      unsubAbonosCxp();
       unsubClientes();
     };
   }, []);
@@ -4176,6 +4429,14 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     setCalendarioCxp((cs) => [...cs.filter((c) => c.proveedor !== proveedor), ...nuevos]);
     await Promise.all(existentes.map((e) => fsDelete("contabilidad_cxp_calendario", e.id)));
     await Promise.all(nuevos.map((n) => fsSave("contabilidad_cxp_calendario", n.id, n)));
+  }
+  async function guardarAbonoCxp(abono) {
+    setAbonosCxp((as) => [...as, abono]);
+    await fsSave("contabilidad_cxp_abonos", abono.id, abono);
+  }
+  async function eliminarAbonoCxp(id) {
+    setAbonosCxp((as) => as.filter((a) => a.id !== id));
+    await fsDelete("contabilidad_cxp_abonos", id);
   }
   const rubros = (() => {
     const map = {};
@@ -4410,6 +4671,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               movimientos={movimientos}
               presupuestos={presupuestos}
               calendarioCxp={calendarioCxp}
+              abonosCxp={abonosCxp}
               onGuardar={guardarPresupuesto}
               onFinalizar={finalizarPresupuesto}
               onDeletePresupuesto={deletePresupuesto}
@@ -4432,6 +4694,8 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               cortes={cortesCxp}
               manuales={manualCxp}
               calendario={calendarioCxp}
+              abonos={abonosCxp}
+              rubros={rubros}
               presupuestosCliente={presupuestosCliente}
               presupuestos={presupuestos}
               onImportarCorte={addCorteCxp}
@@ -4440,6 +4704,8 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               onDeleteManual={deleteManualCxp}
               onDeleteProveedorCorte={eliminarProveedorDeCorte}
               onGuardarCalendario={guardarCalendarioProveedor}
+              onGuardarAbono={guardarAbonoCxp}
+              onEliminarAbono={eliminarAbonoCxp}
               isAdmin={isAdmin}
             />
           )}
