@@ -291,7 +291,60 @@ function FSel({ value, onChange, options }) {
     </select>
   );
 }
+// Cuadro de diálogo que se puede mover (arrastrando desde el encabezado) y
+// ampliar (arrastrando la esquina inferior derecha) — útil para formularios
+// largos como Programar Corte, donde a veces conviene verlo más grande o
+// correrlo a un lado para comparar con lo que hay detrás.
 function Modal({ title, onClose, children, width = 600 }) {
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const [size, setSize] = useState({ width, height: null });
+  const dragState = useRef(null);
+  const resizeState = useRef(null);
+
+  function onHeaderMouseDown(e) {
+    if (e.target.closest("button")) return;
+    dragState.current = { startX: e.clientX, startY: e.clientY, origX: pos.x, origY: pos.y };
+    function onMove(ev) {
+      if (!dragState.current) return;
+      const { startX, startY, origX, origY } = dragState.current;
+      setPos({ x: origX + (ev.clientX - startX), y: origY + (ev.clientY - startY) });
+    }
+    function onUp() {
+      dragState.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  function onResizeMouseDown(e) {
+    e.stopPropagation();
+    e.preventDefault();
+    const box = e.currentTarget.parentElement;
+    resizeState.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      origW: size.width,
+      origH: size.height || box.offsetHeight,
+    };
+    function onMove(ev) {
+      if (!resizeState.current) return;
+      const { startX, startY, origW, origH } = resizeState.current;
+      setSize({
+        width: Math.max(360, origW + (ev.clientX - startX)),
+        height: Math.max(240, origH + (ev.clientY - startY)),
+      });
+    }
+    function onUp() {
+      resizeState.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
   return (
     <div
       style={{
@@ -308,19 +361,23 @@ function Modal({ title, onClose, children, width = 600 }) {
     >
       <div
         style={{
+          position: "relative",
           background: C.white,
           borderRadius: 14,
-          width: "100%",
-          maxWidth: width,
+          width: size.width,
+          maxWidth: "95vw",
+          height: size.height || undefined,
           maxHeight: "90vh",
           overflow: "hidden",
           display: "flex",
           flexDirection: "column",
           boxShadow: "0 24px 80px rgba(26,26,46,0.18)",
+          transform: `translate(${pos.x}px, ${pos.y}px)`,
         }}
         onClick={(e) => e.stopPropagation()}
       >
         <div
+          onMouseDown={onHeaderMouseDown}
           style={{
             padding: "18px 24px",
             borderBottom: `1px solid ${C.border}`,
@@ -328,25 +385,66 @@ function Modal({ title, onClose, children, width = 600 }) {
             justifyContent: "space-between",
             alignItems: "center",
             flexShrink: 0,
+            cursor: "move",
+            userSelect: "none",
           }}
         >
           <span style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>
             {title}
           </span>
-          <button
-            onClick={onClose}
-            style={{
-              background: "none",
-              border: "none",
-              fontSize: 22,
-              cursor: "pointer",
-              color: C.slate,
-            }}
-          >
-            ×
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {(pos.x !== 0 || pos.y !== 0 || size.height !== null) && (
+              <button
+                onClick={() => {
+                  setPos({ x: 0, y: 0 });
+                  setSize({ width, height: null });
+                }}
+                title="Volver a tamaño y posición original"
+                style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 6, padding: "3px 8px", fontSize: 11, fontWeight: 700, color: C.slate, cursor: "pointer" }}
+              >
+                ⟲
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              style={{
+                background: "none",
+                border: "none",
+                fontSize: 22,
+                cursor: "pointer",
+                color: C.slate,
+              }}
+            >
+              ×
+            </button>
+          </div>
         </div>
-        <div style={{ padding: 24, overflowY: "auto" }}>{children}</div>
+        <div style={{ padding: 24, overflowY: "auto", flex: 1, minHeight: 0 }}>{children}</div>
+        <div
+          onMouseDown={onResizeMouseDown}
+          title="Arrastrar para ampliar"
+          style={{
+            position: "absolute",
+            right: 2,
+            bottom: 2,
+            width: 18,
+            height: 18,
+            cursor: "nwse-resize",
+            display: "flex",
+            alignItems: "flex-end",
+            justifyContent: "flex-end",
+            padding: 2,
+          }}
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <circle cx="8" cy="2" r="1" fill={C.border} />
+            <circle cx="8" cy="5" r="1" fill={C.border} />
+            <circle cx="8" cy="8" r="1" fill={C.border} />
+            <circle cx="5" cy="5" r="1" fill={C.border} />
+            <circle cx="5" cy="8" r="1" fill={C.border} />
+            <circle cx="2" cy="8" r="1" fill={C.border} />
+          </svg>
+        </div>
       </div>
     </div>
   );
