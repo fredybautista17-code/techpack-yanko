@@ -107,6 +107,14 @@ function diasHabiles(mes, anio) {
 const DIAS_LABORALES_MES = 20;
 
 // ─── TALLAS BUSINT ────────────────────────────────────────────────────────────
+// OJO: esta lista de 10 etiquetas es un catálogo viejo que ya NO coincide
+// con lo que realmente manda Busint (que llega como "S", "M", "L", "XL",
+// "2XL", tallas numéricas, etc. — la etiqueta que sea, tal cual la escribió
+// quien digitó el pedido). Por eso ya no se usa para armar las grillas de
+// tallas de un pedido — cada pantalla arma sus propias columnas a partir de
+// las tallas reales que trae cada referencia (ver ordenarTallas más abajo),
+// para no dejar cortadas ni vacías las tallas que no encajan en esta lista.
+// Se deja declarada por si algo más del archivo la sigue referenciando.
 const TALLAS_BUSINT = [
   "U-2/4-2 PLUS",
   "4 XS",
@@ -119,6 +127,50 @@ const TALLAS_BUSINT = [
   "18 4XL",
   "20",
 ];
+
+// Orden "natural" para columnas de talla armadas a partir de lo que trae
+// cada referencia (que puede variar de pedido a pedido) — primero las
+// etiquetas conocidas en su orden lógico, luego tallas numéricas de menor a
+// mayor, y cualquier otra etiqueta no reconocida al final en orden
+// alfabético. Así las columnas no salen en el orden aleatorio en que Busint
+// las va entregando.
+const ORDEN_TALLAS_CONOCIDAS = [
+  "U", "UNICA", "ÚNICA", "TU", "T/U",
+  "XXS", "2XS",
+  "XS",
+  "S",
+  "S/M",
+  "M",
+  "M/L",
+  "L",
+  "L/XL",
+  "XL",
+  "XL/2XL", "XL/XXL",
+  "2XL", "XXL",
+  "3XL", "XXXL",
+  "4XL", "XXXXL",
+  "5XL",
+  "6XL",
+];
+function ordenarTallas(tallas) {
+  return [...tallas].sort((a, b) => {
+    const A = String(a).trim().toUpperCase();
+    const B = String(b).trim().toUpperCase();
+    const iA = ORDEN_TALLAS_CONOCIDAS.indexOf(A);
+    const iB = ORDEN_TALLAS_CONOCIDAS.indexOf(B);
+    if (iA !== -1 && iB !== -1) return iA - iB;
+    if (iA !== -1) return -1;
+    if (iB !== -1) return 1;
+    const soloNumA = /^[\d.,/-]+$/.test(A.replace(/\s/g, ""));
+    const soloNumB = /^[\d.,/-]+$/.test(B.replace(/\s/g, ""));
+    const numA = parseFloat(A);
+    const numB = parseFloat(B);
+    if (soloNumA && soloNumB && !isNaN(numA) && !isNaN(numB)) return numA - numB;
+    if (soloNumA && !isNaN(numA)) return -1;
+    if (soloNumB && !isNaN(numB)) return 1;
+    return A.localeCompare(B, "es");
+  });
+}
 
 // ─── SEMÁFORO FECHA ───────────────────────────────────────────────────────────
 function semaforo(fechaDespacho) {
@@ -462,7 +514,11 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, lotesExi
       const precioArchivo = preciosMap?.get(String(r.ref).trim());
       const precio = precioArchivo ?? r.precioCortePrenda ?? 0;
       c[r.id] = { precio, tallas: {} };
-      TALLAS_BUSINT.forEach((t) => {
+      // Las tallas de cada referencia son las que realmente trae esa
+      // referencia (vienen de Busint tal cual, pueden variar de pedido a
+      // pedido) — ya NO se usa el catálogo fijo TALLAS_BUSINT, que no
+      // coincide con las etiquetas reales y dejaba la grilla vacía.
+      Object.keys(r.tallas || {}).forEach((t) => {
         c[r.id].tallas[t] = 0;
       });
       // Match por refId (identifica el color/pinta exacto) — con respaldo
@@ -470,7 +526,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, lotesExi
       const coincideRef = preseleccion && (preseleccion.refId ? preseleccion.refId === r.id : preseleccion.ref === r.ref);
       if (coincideRef) {
         Object.entries(preseleccion.tallas || {}).forEach(([t, cant]) => {
-          if (t in c[r.id].tallas) c[r.id].tallas[t] = cant;
+          c[r.id].tallas[t] = cant;
         });
       }
     });
@@ -484,13 +540,13 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, lotesExi
       .flatMap((c) => c.refs || [])
       .filter((cr) => cr.refId === ref.id)
       .reduce((acc, cr) => {
-        TALLAS_BUSINT.forEach((t) => {
+        Object.keys(cr.tallas || {}).forEach((t) => {
           acc[t] = (acc[t] || 0) + (cr.tallas[t] || 0);
         });
         return acc;
       }, {});
     const pend = {};
-    TALLAS_BUSINT.forEach((t) => {
+    Object.keys(ref.tallas || {}).forEach((t) => {
       pend[t] = (ref.tallas[t] || 0) - (yaCortado[t] || 0);
     });
     return pend;
@@ -835,7 +891,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, lotesExi
                   gap: 6,
                 }}
               >
-                {TALLAS_BUSINT.map((t) =>
+                {ordenarTallas(Object.keys(pend)).map((t) =>
                   pend[t] > 0 ? (
                     <div key={t}>
                       <div
@@ -986,18 +1042,26 @@ function DetallePedido({
     totalPedido > 0 ? Math.round((totalCortado / totalPedido) * 100) : 0;
   const sem = semaforo(pedido.fechaDespacho);
 
+  // Columnas de talla de la tabla de abajo — se arman con las tallas reales
+  // que traen las referencias de este pedido (no el catálogo fijo
+  // TALLAS_BUSINT, que no coincide con lo que manda Busint), ordenadas de
+  // forma lógica (ver ordenarTallas).
+  const tallasTabla = ordenarTallas([
+    ...new Set(pedido.referencias.flatMap((r) => Object.keys(r.tallas || {}))),
+  ]);
+
   function excedente(ref) {
     const cortado = (pedido.cortesRealizados || [])
       .flatMap((c) => c.refs || [])
       .filter((cr) => cr.refId === ref.id)
       .reduce((acc, cr) => {
-        TALLAS_BUSINT.forEach((t) => {
+        Object.keys(cr.tallas || {}).forEach((t) => {
           acc[t] = (acc[t] || 0) + (cr.tallas[t] || 0);
         });
         return acc;
       }, {});
     const exc = {};
-    TALLAS_BUSINT.forEach((t) => {
+    Object.keys(ref.tallas || {}).forEach((t) => {
       exc[t] = (ref.tallas[t] || 0) - (cortado[t] || 0);
     });
     return exc;
@@ -1220,7 +1284,7 @@ function DetallePedido({
                 >
                   Descripción
                 </th>
-                {TALLAS_BUSINT.map((t) => (
+                {tallasTabla.map((t) => (
                   <th
                     key={t}
                     style={{
@@ -1231,7 +1295,7 @@ function DetallePedido({
                       fontSize: 10,
                     }}
                   >
-                    {t.split(" ")[0]}
+                    {t}
                   </th>
                 ))}
                 <th
@@ -1294,7 +1358,7 @@ function DetallePedido({
                     <td style={{ padding: "8px 10px", color: C.slate }}>
                       {ref.descripcion}
                     </td>
-                    {TALLAS_BUSINT.map((t) => (
+                    {tallasTabla.map((t) => (
                       <td
                         key={t}
                         style={{
@@ -2955,12 +3019,13 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     {abierto && (
                       <div style={{ padding: "10px 16px 16px" }}>
                         {[...pedidosMap.values()].map(({ pedido: p, filas }) => {
-                          const tallasDistintas = [];
+                          const tallasSinOrden = [];
                           filas.forEach((r) => {
                             Object.entries(r.tallas || {}).forEach(([t, cant]) => {
-                              if (cant > 0 && !tallasDistintas.includes(t)) tallasDistintas.push(t);
+                              if (cant > 0 && !tallasSinOrden.includes(t)) tallasSinOrden.push(t);
                             });
                           });
+                          const tallasDistintas = ordenarTallas(tallasSinOrden);
                           return (
                             <div key={p.id} style={{ marginTop: 12 }}>
                               <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, marginBottom: 6 }}>
