@@ -1179,6 +1179,8 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
 // misma tela.
 function ProgramacionHechaModal({ item, plantas, cortadores, telas, estadisticasTela, metrosUsadosMeson, onSave, onClose }) {
   const [form, setForm] = useState({
+    fechaProgramada: item.fechaProgramada || today(),
+    cantidadProgramada: item.cantidadProgramada ?? item.cantidadPendiente ?? 0,
     planta: item.planta || "",
     meson: item.meson || "",
     cortador: item.cortador || "",
@@ -1207,7 +1209,7 @@ function ProgramacionHechaModal({ item, plantas, cortadores, telas, estadisticas
   // capacidad es largoTrazo solo, no largoTrazo × capas.
   const largoTrazoNum = parseFloat(form.largoTrazo) || 0;
   const capacidad = grupoSel ? grupoSel.metros : mesonSel ? mesonSel.metros : null;
-  const usados = mesonSel ? metrosUsadosMeson(item.fechaProgramada, form.planta, form.meson, mesonSel.grupoId, item.id) : 0;
+  const usados = mesonSel ? metrosUsadosMeson(form.fechaProgramada, form.planta, form.meson, mesonSel.grupoId, item.id) : 0;
   const disponible = capacidad !== null ? capacidad - usados : null;
   const excedeCapacidad = disponible !== null && largoTrazoNum > disponible;
 
@@ -1216,8 +1218,10 @@ function ProgramacionHechaModal({ item, plantas, cortadores, telas, estadisticas
   const telasDatalistId = `telas-prog-hecha-${item.id}`;
 
   function save() {
-    if (!form.planta || !form.meson || !form.cortador || excedeCapacidad) return;
+    if (!form.planta || !form.meson || !form.cortador || !form.fechaProgramada || excedeCapacidad) return;
     onSave(item.id, {
+      fechaProgramada: form.fechaProgramada,
+      cantidadProgramada: form.cantidadProgramada,
       planta: form.planta,
       meson: form.meson,
       mesonGrupo: mesonSel?.grupoId || "",
@@ -1235,8 +1239,24 @@ function ProgramacionHechaModal({ item, plantas, cortadores, telas, estadisticas
 
   return (
     <Modal title={`Programación Hecha — ${item.cliente} · #${item.numero} · ${item.ref}`} onClose={onClose} width={680}>
-      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
-        Fecha programada: <b>{fmtFechaISO(item.fechaProgramada)}</b> · Cantidad: <b>{fmtNum(item.cantidadProgramada ?? item.cantidadPendiente)}</b>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <Field label="Fecha Programada">
+          <FInput
+            type="date"
+            value={form.fechaProgramada}
+            onChange={(v) => setForm((f) => ({ ...f, fechaProgramada: v }))}
+          />
+        </Field>
+        <Field label="Cantidad Programada">
+          <FInput
+            type="number"
+            value={String(form.cantidadProgramada)}
+            onChange={(v) => setForm((f) => ({ ...f, cantidadProgramada: Math.max(0, parseInt(v) || 0) }))}
+          />
+          {item.cantidadPendiente > form.cantidadProgramada && (
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>de {fmtNum(item.cantidadPendiente)} pendientes originalmente</div>
+          )}
+        </Field>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
         <Field label="Planta">
@@ -1276,7 +1296,7 @@ function ProgramacionHechaModal({ item, plantas, cortadores, telas, estadisticas
         >
           {excedeCapacidad ? "⚠ " : "✓ "}
           {grupoSel ? `${grupoSel.nombre}: ` : `${mesonSel.nombre}: `}
-          {usados}m de trazo ya reservados de {capacidad}m {grupoSel ? "compartidos" : "de mesa"} el {fmtFechaISO(item.fechaProgramada)}
+          {usados}m de trazo ya reservados de {capacidad}m {grupoSel ? "compartidos" : "de mesa"} el {fmtFechaISO(form.fechaProgramada)}
           {excedeCapacidad && ` — este trazo de ${largoTrazoNum}m no cabe (quedan ${Math.max(0, disponible)}m disponibles). Puedes apilar las capas que quieras, lo que no cabe es el largo del trazo.`}
         </div>
       )}
@@ -1355,7 +1375,7 @@ function ProgramacionHechaModal({ item, plantas, cortadores, telas, estadisticas
         <Btn variant="secondary" onClick={onClose}>
           Cancelar
         </Btn>
-        <Btn variant="success" onClick={save} disabled={!form.planta || !form.meson || !form.cortador || excedeCapacidad}>
+        <Btn variant="success" onClick={save} disabled={!form.planta || !form.meson || !form.cortador || !form.fechaProgramada || excedeCapacidad}>
           ✓ Guardar Programación Hecha
         </Btn>
       </div>
@@ -2758,170 +2778,194 @@ function AdminCorte({ config, onSave }) {
 
 // ─── ESTADÍSTICAS TELA ────────────────────────────────────────────────────────
 function EstadisticasTela({ pedidos }) {
+  // Rango de largo de trazo — agrupa los cortes reales para poder comparar,
+  // dentro de una misma tela, si un trazo corto o largo rinde más. Los
+  // cortes de un mismo tipo de tela pueden variar mucho de largo de trazo
+  // (una capa de 3m no cunde igual que una de 12m), así que ver solo el
+  // promedio por tela se queda corto — esto es lo que pidió Yanko: saber
+  // qué combinación tela + largo de trazo es la más rendidora, tanto en
+  // velocidad de corte (min/metro) como en prendas cortadas por minuto.
+  function rangoTrazo(largo) {
+    if (!(largo > 0)) return "Sin dato";
+    if (largo <= 4) return "≤4m";
+    if (largo <= 8) return "4–8m";
+    if (largo <= 12) return "8–12m";
+    return ">12m";
+  }
+  const ORDEN_RANGOS = ["≤4m", "4–8m", "8–12m", ">12m", "Sin dato"];
+
   const allCortes = pedidos.flatMap((p) =>
-    (p.cortesRealizados || []).filter(
-      (c) => c.tipoTela && c.metrosTendido > 0 && c.minutos > 0
-    )
+    (p.cortesRealizados || []).filter((c) => c.tipoTela && c.metrosTendido > 0 && c.minutos > 0)
   );
+
   const byTela = {};
+  const combos = new Map(); // "tela||rango" -> acumulado, para el ranking
   allCortes.forEach((c) => {
-    if (!byTela[c.tipoTela])
-      byTela[c.tipoTela] = { cortes: 0, metros: 0, minutos: 0, capas: 0 };
-    byTela[c.tipoTela].cortes++;
-    byTela[c.tipoTela].metros += c.metrosTendido || 0;
-    byTela[c.tipoTela].minutos += c.minutos || 0;
-    byTela[c.tipoTela].capas += c.capas || 0;
+    if (!byTela[c.tipoTela]) byTela[c.tipoTela] = { cortes: 0, metros: 0, minutos: 0, capas: 0, unidades: 0, porRango: {} };
+    const t = byTela[c.tipoTela];
+    t.cortes++;
+    t.metros += c.metrosTendido || 0;
+    t.minutos += c.minutos || 0;
+    t.capas += c.capas || 0;
+    t.unidades += c.totalUnidades || 0;
+
+    const rango = rangoTrazo(c.largoTrazo);
+    if (!t.porRango[rango]) t.porRango[rango] = { cortes: 0, metros: 0, minutos: 0, unidades: 0 };
+    t.porRango[rango].cortes++;
+    t.porRango[rango].metros += c.metrosTendido || 0;
+    t.porRango[rango].minutos += c.minutos || 0;
+    t.porRango[rango].unidades += c.totalUnidades || 0;
+
+    const comboKey = `${c.tipoTela}||${rango}`;
+    if (!combos.has(comboKey)) combos.set(comboKey, { tela: c.tipoTela, rango, cortes: 0, metros: 0, minutos: 0, unidades: 0 });
+    const cb = combos.get(comboKey);
+    cb.cortes++;
+    cb.metros += c.metrosTendido || 0;
+    cb.minutos += c.minutos || 0;
+    cb.unidades += c.totalUnidades || 0;
   });
+
+  // Ranking de rendimiento: prendas cortadas por minuto (mientras más alto,
+  // más rendidor) — solo combos con al menos 2 cortes registrados, para que
+  // un solo dato suelto no distorsione el ranking.
+  const rankingCombos = [...combos.values()]
+    .filter((cb) => cb.cortes >= 2 && cb.minutos > 0)
+    .map((cb) => ({ ...cb, unidadesPorMin: cb.unidades / cb.minutos, minPorMetro: cb.metros > 0 ? cb.minutos / cb.metros : null }))
+    .sort((a, b) => b.unidadesPorMin - a.unidadesPorMin);
+  const masRendidores = rankingCombos.slice(0, 3);
+  const menosRendidores = [...rankingCombos].reverse().slice(0, 3);
 
   return (
     <div>
-      <h2
-        style={{
-          margin: "0 0 20px",
-          fontSize: 20,
-          fontWeight: 800,
-          color: C.ink,
-        }}
-      >
-        Estadísticas de Tela
+      <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
+        📊 Estadística de Tendido y Corte
       </h2>
+      <p style={{ margin: "0 0 20px", fontSize: 13, color: C.slate, maxWidth: 700 }}>
+        Con cada corte real registrado (Entrada de Corte) se va afinando esto solo. Compara tela + largo de trazo para saber qué combinación rinde más, tanto en velocidad de corte (min/metro) como en prendas cortadas por minuto.
+      </p>
+
       {!Object.keys(byTela).length ? (
         <div style={{ textAlign: "center", padding: 48, color: C.slate }}>
-          Sin datos de corte registrados aún. Los datos aparecerán cuando
-          registres cortes con tipo de tela, metros y tiempos.
+          Sin datos de corte registrados aún. Los datos aparecerán cuando registres cortes con tipo de tela, largo de trazo y tiempos.
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {Object.entries(byTela)
-            .sort((a, b) => b[1].metros - a[1].metros)
-            .map(([tela, data]) => {
-              const minPorMetro =
-                data.metros > 0 ? (data.minutos / data.metros).toFixed(1) : "—";
-              const capasPromedio =
-                data.cortes > 0 ? (data.capas / data.cortes).toFixed(0) : "—";
-              return (
-                <div
-                  key={tela}
-                  style={{
-                    background: C.white,
-                    borderRadius: 14,
-                    border: `1px solid ${C.border}`,
-                    padding: 20,
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      marginBottom: 14,
-                    }}
-                  >
-                    <div>
-                      <div
-                        style={{ fontWeight: 800, fontSize: 16, color: C.ink }}
-                      >
-                        🧵 {tela}
-                      </div>
-                      <div
-                        style={{ fontSize: 12, color: C.slate, marginTop: 2 }}
-                      >
-                        {data.cortes} corte{data.cortes !== 1 ? "s" : ""}{" "}
-                        registrado{data.cortes !== 1 ? "s" : ""}
-                      </div>
-                    </div>
-                    <div
-                      style={{
-                        padding: "8px 16px",
-                        background: C.violetBg,
-                        borderRadius: 20,
-                        color: C.violet,
-                        fontWeight: 900,
-                        fontSize: 18,
-                      }}
-                    >
-                      {minPorMetro} min/m
-                    </div>
-                  </div>
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "repeat(4,1fr)",
-                      gap: 10,
-                    }}
-                  >
-                    {[
-                      {
-                        label: "Total Metros",
-                        value: `${data.metros.toFixed(1)}m`,
-                        color: C.blue,
-                      },
-                      {
-                        label: "Total Minutos",
-                        value: `${data.minutos} min`,
-                        color: C.amber,
-                      },
-                      {
-                        label: "Capas Promedio",
-                        value: capasPromedio,
-                        color: C.cyan,
-                      },
-                      {
-                        label: "Min/Metro",
-                        value: `${minPorMetro} min`,
-                        color: C.violet,
-                      },
-                    ].map((k) => (
-                      <div
-                        key={k.label}
-                        style={{
-                          background: C.canvas,
-                          borderRadius: 8,
-                          padding: "10px 12px",
-                          textAlign: "center",
-                        }}
-                      >
-                        <div
-                          style={{
-                            fontSize: 10,
-                            color: C.slate,
-                            fontWeight: 700,
-                            textTransform: "uppercase",
-                          }}
-                        >
-                          {k.label}
-                        </div>
-                        <div
-                          style={{
-                            fontSize: 18,
-                            fontWeight: 900,
-                            color: k.color,
-                            marginTop: 4,
-                          }}
-                        >
-                          {k.value}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <div
-                    style={{
-                      marginTop: 12,
-                      padding: "8px 14px",
-                      background: C.amberBg,
-                      borderRadius: 8,
-                      fontSize: 12,
-                      color: C.amber,
-                      fontWeight: 600,
-                    }}
-                  >
-                    💡 Sugerencia: Para {tela}, programar 1 metro ={" "}
-                    {minPorMetro} minutos de corte
-                  </div>
+        <>
+          {rankingCombos.length > 0 && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
+              <div style={{ background: C.greenBg, borderRadius: 12, padding: 16, border: `1px solid ${C.green}33` }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: C.green, textTransform: "uppercase", marginBottom: 10 }}>
+                  🏆 Combos más rendidores (prendas/min)
                 </div>
-              );
-            })}
-        </div>
+                {masRendidores.map((cb) => (
+                  <div key={`${cb.tela}-${cb.rango}`} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: `1px solid ${C.green}22` }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>
+                      🧵 {cb.tela} · {cb.rango}
+                    </span>
+                    <span style={{ fontSize: 12, fontWeight: 900, color: C.green }}>{cb.unidadesPorMin.toFixed(2)} u/min</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ background: C.redBg, borderRadius: 12, padding: 16, border: `1px solid ${C.red}33` }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: C.red, textTransform: "uppercase", marginBottom: 10 }}>
+                  🐢 Combos menos rendidores (prendas/min)
+                </div>
+                {menosRendidores.map((cb) => (
+                  <div key={`${cb.tela}-${cb.rango}`} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: `1px solid ${C.red}22` }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>
+                      🧵 {cb.tela} · {cb.rango}
+                    </span>
+                    <span style={{ fontSize: 12, fontWeight: 900, color: C.red }}>{cb.unidadesPorMin.toFixed(2)} u/min</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {Object.entries(byTela)
+              .sort((a, b) => b[1].metros - a[1].metros)
+              .map(([tela, data]) => {
+                const minPorMetro = data.metros > 0 ? (data.minutos / data.metros).toFixed(1) : "—";
+                const capasPromedio = data.cortes > 0 ? (data.capas / data.cortes).toFixed(0) : "—";
+                const unidadesPorMin = data.minutos > 0 ? (data.unidades / data.minutos).toFixed(2) : "—";
+                const rangos = ORDEN_RANGOS.filter((r) => data.porRango[r]);
+                return (
+                  <div key={tela} style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                      <div>
+                        <div style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>🧵 {tela}</div>
+                        <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
+                          {data.cortes} corte{data.cortes !== 1 ? "s" : ""} registrado{data.cortes !== 1 ? "s" : ""}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <div style={{ padding: "8px 16px", background: C.violetBg, borderRadius: 20, color: C.violet, fontWeight: 900, fontSize: 18 }}>
+                          {minPorMetro} min/m
+                        </div>
+                        <div style={{ padding: "8px 16px", background: C.greenBg, borderRadius: 20, color: C.green, fontWeight: 900, fontSize: 18 }}>
+                          {unidadesPorMin} u/min
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 14 }}>
+                      {[
+                        { label: "Total Metros", value: `${data.metros.toFixed(1)}m`, color: C.blue },
+                        { label: "Total Minutos", value: `${data.minutos} min`, color: C.amber },
+                        { label: "Capas Promedio", value: capasPromedio, color: C.cyan },
+                        { label: "Unidades Cortadas", value: fmtNum(data.unidades), color: C.green },
+                      ].map((k) => (
+                        <div key={k.label} style={{ background: C.canvas, borderRadius: 8, padding: "10px 12px", textAlign: "center" }}>
+                          <div style={{ fontSize: 10, color: C.slate, fontWeight: 700, textTransform: "uppercase" }}>{k.label}</div>
+                          <div style={{ fontSize: 18, fontWeight: 900, color: k.color, marginTop: 4 }}>{k.value}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {rangos.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: 10, fontWeight: 800, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>
+                          Por largo de trazo — qué tan rendidor es cada largo con esta tela
+                        </div>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                          <thead>
+                            <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                              <th style={{ textAlign: "left", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Trazo</th>
+                              <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Cortes</th>
+                              <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Metros</th>
+                              <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Min/Metro</th>
+                              <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Unidades</th>
+                              <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Rendimiento</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rangos.map((r) => {
+                              const d = data.porRango[r];
+                              const mpm = d.metros > 0 ? (d.minutos / d.metros).toFixed(1) : "—";
+                              const upm = d.minutos > 0 ? (d.unidades / d.minutos).toFixed(2) : "—";
+                              return (
+                                <tr key={r} style={{ borderBottom: `1px solid ${C.border}` }}>
+                                  <td style={{ padding: "5px 8px", fontWeight: 700, color: C.ink }}>{r}</td>
+                                  <td style={{ padding: "5px 8px", textAlign: "right" }}>{d.cortes}</td>
+                                  <td style={{ padding: "5px 8px", textAlign: "right" }}>{d.metros.toFixed(1)}m</td>
+                                  <td style={{ padding: "5px 8px", textAlign: "right", color: C.violet, fontWeight: 700 }}>{mpm}</td>
+                                  <td style={{ padding: "5px 8px", textAlign: "right" }}>{fmtNum(d.unidades)}</td>
+                                  <td style={{ padding: "5px 8px", textAlign: "right", color: C.green, fontWeight: 700 }}>{upm} u/min</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    <div style={{ marginTop: 12, padding: "8px 14px", background: C.amberBg, borderRadius: 8, fontSize: 12, color: C.amber, fontWeight: 600 }}>
+                      💡 Sugerencia: para {tela}, programar 1 metro tendido = {minPorMetro} minutos de corte en promedio.
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+        </>
       )}
     </div>
   );
@@ -3995,24 +4039,39 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 2, overflow: "hidden" }}>
                       {datos.items.slice(0, maxItems).map((it) => (
-                        <div
-                          key={it.id}
-                          onClick={() => handleRowClick(it)}
-                          title={`${it.cliente} · #${it.numero} · ${it.ref} — ${it.etapa === "programacion_hecha" ? "Ir a Entrada de Corte" : "Ir a Programación Hecha"}`}
-                          style={{
-                            fontSize: 10,
-                            padding: "2px 4px",
-                            borderRadius: 4,
-                            cursor: "pointer",
-                            background: it.vencido ? C.redBg : it.etapa === "programacion_hecha" ? C.blueBg : C.violetBg,
-                            color: it.vencido ? C.red : it.etapa === "programacion_hecha" ? C.cyan : C.violet,
-                            whiteSpace: "nowrap",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            fontWeight: 700,
-                          }}
-                        >
-                          {it.ref} · {fmtNum(it.cantidadProgramada ?? it.cantidadPendiente)}
+                        <div key={it.id} style={{ display: "flex", alignItems: "stretch", gap: 2 }}>
+                          <div
+                            onClick={() => handleRowClick(it)}
+                            title={`${it.cliente} · #${it.numero} · ${it.ref} — ${it.etapa === "programacion_hecha" ? "Ir a Entrada de Corte" : "Ir a Programación Hecha"}`}
+                            style={{
+                              flex: 1,
+                              minWidth: 0,
+                              fontSize: 10,
+                              padding: "2px 4px",
+                              borderRadius: 4,
+                              cursor: "pointer",
+                              background: it.vencido ? C.redBg : it.etapa === "programacion_hecha" ? C.blueBg : C.violetBg,
+                              color: it.vencido ? C.red : it.etapa === "programacion_hecha" ? C.cyan : C.violet,
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              fontWeight: 700,
+                            }}
+                          >
+                            {it.ref} · {fmtNum(it.cantidadProgramada ?? it.cantidadPendiente)}
+                          </div>
+                          {isAdmin && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onCancelar(it.id);
+                              }}
+                              title="Cancelar programación (admin)"
+                              style={{ flexShrink: 0, background: C.redBg, border: "none", borderRadius: 4, padding: "0 4px", color: C.red, fontWeight: 800, fontSize: 10, cursor: "pointer" }}
+                            >
+                              ✕
+                            </button>
+                          )}
                         </div>
                       ))}
                       {datos.items.length > maxItems && (
@@ -4178,13 +4237,19 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                       <span style={{ fontSize: 11, color: p.etapa === "programacion_hecha" ? C.cyan : C.violet, fontWeight: 700, marginRight: 10 }}>
                         {p.etapa === "programacion_hecha" ? "✂ Click para Entrada de Corte" : "📋 Click para Programación Hecha"}
                       </span>
-                      <button
-                        onClick={() => onCancelar(p.id)}
-                        title="Cancelar programación"
-                        style={{ background: C.white, border: `1px solid ${C.red}`, borderRadius: 6, padding: "4px 8px", color: C.red, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
-                      >
-                        ✕
-                      </button>
+                      {isAdmin ? (
+                        <button
+                          onClick={() => onCancelar(p.id)}
+                          title="Cancelar programación (admin)"
+                          style={{ background: C.white, border: `1px solid ${C.red}`, borderRadius: 6, padding: "4px 8px", color: C.red, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+                        >
+                          ✕
+                        </button>
+                      ) : (
+                        <span title="Solo un administrador puede borrar una programación" style={{ fontSize: 11, color: C.slate }}>
+                          🔒
+                        </span>
+                      )}
                     </td>
                   </tr>
                 );
@@ -4899,7 +4964,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
     { id: "dashboard", icon: "◉", label: "Dashboard" },
     { id: "cola", icon: "📋", label: "Cola Sugerida" },
     { id: "historico", icon: "📁", label: "Histórico" },
-    { id: "estadisticas", icon: "📊", label: "Telas" },
+    { id: "estadisticas", icon: "📊", label: "Tendido y Corte" },
     { id: "programacion", icon: "📅", label: "Programación" },
     { id: "costo", icon: "💰", label: "Centro de Costo" },
     ...(isAdmin ? [{ id: "admin", icon: "⚙", label: "Admin Corte" }] : []),
