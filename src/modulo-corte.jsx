@@ -853,7 +853,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
             placeholder="40"
           />
         </Field>
-        <Field label="Metros Totales">
+        <Field label="Metros de Tela (trazo × capas)">
           <div
             style={{
               padding: "9px 12px",
@@ -1178,10 +1178,16 @@ function ProgramacionHechaModal({ item, plantas, cortadores, telas, estadisticas
     return trazo * capas;
   }
 
+  // La capacidad del mesón (10m, 14m compartidos entre Mesón 2+3...) es el
+  // LARGO de la mesa donde se tiende el trazo — no los metros totales de
+  // tela consumida. Un trazo de 8m cabe en una mesa de 10m sin importar si
+  // encima se apilan 40 capas o 200, así que lo que se compara contra la
+  // capacidad es largoTrazo solo, no largoTrazo × capas.
+  const largoTrazoNum = parseFloat(form.largoTrazo) || 0;
   const capacidad = grupoSel ? grupoSel.metros : mesonSel ? mesonSel.metros : null;
   const usados = mesonSel ? metrosUsadosMeson(item.fechaProgramada, form.planta, form.meson, mesonSel.grupoId, item.id) : 0;
   const disponible = capacidad !== null ? capacidad - usados : null;
-  const excedeCapacidad = disponible !== null && metrosTotales() > disponible;
+  const excedeCapacidad = disponible !== null && largoTrazoNum > disponible;
 
   const stats = estadisticasTela[form.tipoTela];
   const tiempoTeorico = stats?.minPorMetro && metrosTotales() > 0 ? Math.round(stats.minPorMetro * metrosTotales()) : null;
@@ -1248,8 +1254,8 @@ function ProgramacionHechaModal({ item, plantas, cortadores, telas, estadisticas
         >
           {excedeCapacidad ? "⚠ " : "✓ "}
           {grupoSel ? `${grupoSel.nombre}: ` : `${mesonSel.nombre}: `}
-          {usados}m ya reservados de {capacidad}m {grupoSel ? "compartidos" : ""} el {fmtFechaISO(item.fechaProgramada)}
-          {excedeCapacidad && ` — este trazo de ${metrosTotales()}m no cabe (quedan ${Math.max(0, disponible)}m disponibles).`}
+          {usados}m de trazo ya reservados de {capacidad}m {grupoSel ? "compartidos" : "de mesa"} el {fmtFechaISO(item.fechaProgramada)}
+          {excedeCapacidad && ` — este trazo de ${largoTrazoNum}m no cabe (quedan ${Math.max(0, disponible)}m disponibles). Puedes apilar las capas que quieras, lo que no cabe es el largo del trazo.`}
         </div>
       )}
 
@@ -1283,7 +1289,7 @@ function ProgramacionHechaModal({ item, plantas, cortadores, telas, estadisticas
             placeholder="40"
           />
         </Field>
-        <Field label="Metros Totales">
+        <Field label="Metros de Tela (trazo × capas)">
           <div
             style={{
               padding: "9px 12px",
@@ -2258,7 +2264,7 @@ function AdminCorte({ config, onSave }) {
               </div>
 
               <div style={{ fontSize: 10, fontWeight: 800, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>
-                Mesones (capacidad de tendido)
+                Mesones (largo máximo de trazo que cabe en la mesa — no metros de tela)
               </div>
               {mesones.map((m) => {
                 const grupo = grupos.find((g) => g.id === m.grupoId);
@@ -2266,7 +2272,7 @@ function AdminCorte({ config, onSave }) {
                   <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: C.white, borderRadius: 8, marginBottom: 4, border: `1px solid ${C.border}` }}>
                     <span style={{ flex: 1, fontSize: 12, fontWeight: 700, color: C.ink }}>{m.nombre}</span>
                     <span style={{ fontSize: 11, color: C.slate }}>
-                      {grupo ? `Comparte con "${grupo.nombre}" (máx ${grupo.metros}m entre todos)` : `${m.metros}m independiente`}
+                      {grupo ? `Comparte trazo con "${grupo.nombre}" (máx ${grupo.metros}m de trazo entre todos)` : `${m.metros}m de trazo (mesa independiente)`}
                     </span>
                     <button
                       onClick={() => delMeson(p.id, m.id)}
@@ -2288,7 +2294,7 @@ function AdminCorte({ config, onSave }) {
                   type="number"
                   value={mf.metros}
                   onChange={(e) => setMesonForms((s2) => ({ ...s2, [p.id]: { ...mf, metros: e.target.value } }))}
-                  placeholder="Metros"
+                  placeholder="Largo máx. trazo (m)"
                   style={{ padding: "6px 8px", border: `1.5px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}
                 />
                 <select
@@ -2305,12 +2311,12 @@ function AdminCorte({ config, onSave }) {
               </div>
 
               <div style={{ fontSize: 10, fontWeight: 800, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>
-                Grupos compartidos (ej: Mesón 2+3 de Yanko, máx 14m entre los dos)
+                Grupos compartidos (ej: Mesón 2+3 de Yanko, máx 14m de trazo entre los dos)
               </div>
               {grupos.map((g) => (
                 <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: C.white, borderRadius: 8, marginBottom: 4, border: `1px solid ${C.border}` }}>
                   <span style={{ flex: 1, fontSize: 12, fontWeight: 700, color: C.ink }}>{g.nombre}</span>
-                  <span style={{ fontSize: 11, color: C.slate }}>máx {g.metros}m entre todos los mesones del grupo</span>
+                  <span style={{ fontSize: 11, color: C.slate }}>máx {g.metros}m de trazo entre todos los mesones del grupo (sumando el largo de cada trazo tendido al mismo tiempo)</span>
                   <button
                     onClick={() => delGrupo(p.id, g.id)}
                     style={{ background: C.redBg, border: "none", borderRadius: 6, padding: "3px 8px", color: C.red, fontWeight: 700, fontSize: 10, cursor: "pointer" }}
@@ -2330,7 +2336,7 @@ function AdminCorte({ config, onSave }) {
                   type="number"
                   value={gf.metros}
                   onChange={(e) => setGrupoForms((s2) => ({ ...s2, [p.id]: { ...gf, metros: e.target.value } }))}
-                  placeholder="Metros máx"
+                  placeholder="Largo máx. trazo (m)"
                   style={{ padding: "6px 8px", border: `1.5px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}
                 />
                 <Btn small variant="secondary" onClick={() => addGrupo(p.id)}>+ Grupo</Btn>
@@ -4600,11 +4606,14 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
     return [...nombres.values()].sort().map((nombre) => ({ id: nombre, nombre }));
   })();
 
-  // Metros ya comprometidos en un mesón (o su grupo compartido) para una
-  // fecha+planta puntual — cuenta lo que ya está en "Programación Hecha" o
-  // ya se cortó (cumplido), sin contar el propio ítem que se está editando.
-  // Esto es lo que permite bloquear el Mesón 2+3 de Yanko cuando entre los
-  // dos ya suman 14 metros ese día.
+  // Largo de trazo ya comprometido en un mesón (o su grupo compartido) para
+  // una fecha+planta puntual. La capacidad de un mesón (10m, 14m...) es el
+  // LARGO de la mesa donde se tiende el trazo — NO los metros totales de
+  // tela consumida. Un trazo de 8m ocupa 8m de mesa sin importar si encima
+  // se apilan 40 capas o 200; lo que no cabe en la mesa es el trazo mismo,
+  // no la tela acumulada. Por eso acá se suma `largoTrazo`, no
+  // `metrosTendido` (que es largoTrazo × capas y sirve para otras cosas,
+  // como el tiempo teórico por tipo de tela).
   function metrosUsadosMeson(fecha, plantaNombre, mesonId, grupoId, excluirId) {
     let total = 0;
     programacionCorte.forEach((pr) => {
@@ -4613,7 +4622,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
       if (!(pr.etapa === "programacion_hecha" || pr.estado === "cumplido")) return;
       const mismoMeson = pr.meson === mesonId;
       const mismoGrupo = grupoId && pr.mesonGrupo === grupoId;
-      if (mismoMeson || mismoGrupo) total += pr.metrosTendido || 0;
+      if (mismoMeson || mismoGrupo) total += pr.largoTrazo || 0;
     });
     return total;
   }
