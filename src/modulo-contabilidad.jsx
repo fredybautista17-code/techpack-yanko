@@ -3188,22 +3188,49 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, abo
                         </Btn>
                       </div>
                     )}
-                    {totalPagosCxp > 0 && (
-                      <div style={{ marginTop: 0, marginBottom: terminado ? 14 : 0, padding: "10px 14px", background: C.amberBg, borderRadius: 10 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700, color: C.amber, marginBottom: 6 }}>
-                          <span>🧾 Pagos programados (Cuentas por Pagar)</span>
-                          <span>{fmtCOP(totalPagosCxp)}</span>
+                    {totalPagosCxp > 0 && (() => {
+                      // Cuánto de lo programado por proveedor ya se abonó
+                      // de verdad este mes — se cruza por nombre de
+                      // proveedor (los abonos de Cuentas por Pagar no
+                      // dependen de que el proveedor tenga rubro asignado
+                      // para mostrarse aquí, a diferencia de "Avance por
+                      // rubro" más abajo que sí lo necesita).
+                      const abonadoPorProveedor = new Map();
+                      abonosMes.forEach((a) => {
+                        abonadoPorProveedor.set(a.proveedor, (abonadoPorProveedor.get(a.proveedor) || 0) + (a.monto || 0));
+                      });
+                      const totalAbonadoCxp = pagosCxpMes.reduce((s, c) => s + Math.min(abonadoPorProveedor.get(c.proveedor) || 0, c.monto), 0);
+                      const pctCxp = totalPagosCxp > 0 ? Math.min((totalAbonadoCxp / totalPagosCxp) * 100, 999) : 0;
+                      return (
+                        <div style={{ marginTop: 0, marginBottom: terminado ? 14 : 0, padding: "10px 14px", background: C.amberBg, borderRadius: 10 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700, color: C.amber, marginBottom: 6 }}>
+                            <span>🧾 Pagos programados (Cuentas por Pagar)</span>
+                            <span>{fmtCOP(totalAbonadoCxp)} / {fmtCOP(totalPagosCxp)} · {Math.round(pctCxp)}%</span>
+                          </div>
+                          <div style={{ height: 6, borderRadius: 3, background: "rgba(255,255,255,0.6)", overflow: "hidden", marginBottom: 8 }}>
+                            <div style={{ height: "100%", width: `${Math.min(pctCxp, 100)}%`, background: pctCxp >= 100 ? C.green : C.amber, borderRadius: 3 }} />
+                          </div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 180, overflowY: "auto", paddingRight: 4 }}>
+                            {pagosCxpMes.map((c) => {
+                              const abonadoProv = Math.min(abonadoPorProveedor.get(c.proveedor) || 0, c.monto);
+                              const cubierto = abonadoProv >= c.monto && c.monto > 0;
+                              return (
+                                <div key={c.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.slate }}>
+                                  <span>
+                                    {cubierto && <span style={{ color: C.green, fontWeight: 700 }}>✓ </span>}
+                                    {c.proveedor}
+                                  </span>
+                                  <span>
+                                    {abonadoProv > 0 && <span style={{ color: cubierto ? C.green : C.ink, fontWeight: 700 }}>{fmtCOP(abonadoProv)} / </span>}
+                                    {fmtCOP(c.monto)}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 180, overflowY: "auto", paddingRight: 4 }}>
-                          {pagosCxpMes.map((c) => (
-                            <div key={c.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.slate }}>
-                              <span>{c.proveedor}</span>
-                              <span>{fmtCOP(c.monto)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                      );
+                    })()}
                     {terminado && (
                       <div>
                         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.slate, marginBottom: 6 }}>
