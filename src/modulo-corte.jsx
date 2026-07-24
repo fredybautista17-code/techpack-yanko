@@ -121,6 +121,19 @@ function diasHabiles(mes, anio) {
   }
   return count;
 }
+// Días laborales transcurridos desde el día 1 del mes hasta una fecha
+// puntual (inclusive) — para el "ritmo acumulado": comparar lo que ya se
+// cortó de verdad en lo que va del mes contra lo que se esperaría llevar
+// cortado a esa altura (costo diario × días laborales ya transcurridos).
+function diasLaboralesHastaFecha(fechaISO) {
+  const [y, m, d] = fechaISO.split("-").map(Number);
+  let count = 0;
+  for (let dia = 1; dia <= d; dia++) {
+    const dow = new Date(y, m - 1, dia).getDay();
+    if (dow !== 0 && dow !== 6) count++;
+  }
+  return count;
+}
 
 // Días laborales al mes usados para estimar el costo DIARIO del centro de
 // costo (nómina / DIAS_LABORALES_MES) — el usuario indicó que trabaja 20 días
@@ -3389,6 +3402,18 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // que ver con `fechaSel`, que es el día al que se está programando algo
   // nuevo en la pestaña Programar.
   const [calFecha, setCalFecha] = useState(today());
+  // Referencias (código de estilo) desplegadas en la tabla de selección de
+  // Programar — por defecto colapsadas, para que no se acumulen tantas
+  // filas de colores cuando una referencia trae varios colores/pintas.
+  const [refsAbiertas, setRefsAbiertas] = useState(new Set());
+  function toggleRefAbierta(refCode) {
+    setRefsAbiertas((s) => {
+      const next = new Set(s);
+      if (next.has(refCode)) next.delete(refCode);
+      else next.add(refCode);
+      return next;
+    });
+  }
   const [editandoCumplidoId, setEditandoCumplidoId] = useState(null);
   const [edicionCumplido, setEdicionCumplido] = useState({ cantidad: 0, fecha: "" });
   // Ítem de "Programados Pendientes" sobre el que se está haciendo la
@@ -3573,6 +3598,23 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     return { items, ingreso, cubre: items.length > 0 && ingreso >= costoDia };
   }
 
+  // Ritmo acumulado del mes: compara lo que YA se cortó de verdad (Entrada
+  // de Corte real, no lo simplemente programado) desde el día 1 del mes
+  // hasta una fecha puntual, contra lo que se esperaría llevar cortado a
+  // esa altura (costo diario × días laborales ya transcurridos ese mes).
+  // Solo tiene sentido para fechas que ya pasaron (o es hoy) — a futuro
+  // todavía no hay nada "ya cortado" que mostrar.
+  const todosCortesReales = pedidos.flatMap((p) => p.cortesRealizados || []);
+  function ritmoDelDia(fechaISO) {
+    const primerDiaMes = `${fechaISO.slice(0, 7)}-01`;
+    const presupuestoAcumulado = costoDia * diasLaboralesHastaFecha(fechaISO);
+    if (presupuestoAcumulado <= 0) return null;
+    const ingresoReal = todosCortesReales
+      .filter((c) => c.fecha >= primerDiaMes && c.fecha <= fechaISO)
+      .reduce((s, c) => s + (c.ingresoCorte || 0), 0);
+    return { ritmo: ingresoReal / presupuestoAcumulado, ingresoReal, presupuestoAcumulado };
+  }
+
   // Cuadrícula del calendario: una semana (7 días desde el lunes de
   // `calFecha`) o el mes completo de `calFecha` en filas de semana.
   const semanaBase = lunesDeSemanaISO(calFecha);
@@ -3693,9 +3735,14 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                 <option value="">— Elegir cliente —</option>
                 {clientesOrdenados.map((cliente) => {
                   const items = itemsDelCliente(cliente);
+                  // El número junto al cliente son unidades pendientes por
+                  // cortar (suma de cantidades por talla), no cantidad de
+                  // referencias ni de líneas — así se lee de una vez cuánto
+                  // volumen real tiene ese cliente por programar.
+                  const unidadesPendientes = items.reduce((s, it) => s + (it.cantidad || 0), 0);
                   return (
                     <option key={cliente} value={cliente}>
-                      {cliente} ({items.length})
+                      {cliente} ({fmtNum(unidadesPendientes)})
                     </option>
                   );
                 })}
@@ -3761,6 +3808,15 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     });
                   });
                   const tallasDistintas = ordenarTallas(tallasSinOrden);
+                  // Agrupa las filas (una por color/pinta) por código de
+                  // referencia — una referencia con varios colores traía
+                  // muchas filas seguidas y se volvía difícil de leer. Ahora
+                  // se ve colapsada por referencia y se despliega con click.
+                  const gruposPorRef = new Map();
+                  filas.forEach((r) => {
+                    if (!gruposPorRef.has(r.ref)) gruposPorRef.set(r.ref, []);
+                    gruposPorRef.get(r.ref).push(r);
+                  });
                   return (
                     <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: 16 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
@@ -3792,9 +3848,11 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                               <th style={{ padding: "5px 8px", textAlign: "right", fontSize: 9, color: C.slate, textTransform: "uppercase" }}>Pendiente</th>
                             </tr>
                           </thead>
-                          <tbody>
-                            {filas.map((r) => {
-                              const itemsRef = tallasDistintas
+                          {[...gruposPorRef.entries()].map(([refCode, colores]) => {
+                            const abierta = refsAbiertas.has(refCode);
+                            const totalPendienteGrupo = colores.reduce((s2, r) => s2 + r.pendiente, 0);
+                            const itemsGrupo = colores.flatMap((r) =>
+                              tallasDistintas
                                 .filter((t) => r.tallas[t] > 0)
                                 .map((t) => ({
                                   key: `${p.id}__${r.refId}__${t}`,
@@ -3807,84 +3865,129 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                   talla: t,
                                   cantidad: r.tallas[t],
                                   pendienteRef: r.pendiente,
-                                }));
-                              const todaLaRefSel = itemsRef.length > 0 && itemsRef.every((it) => seleccion.has(it.key));
-                              return (
-                                <tr key={r.refId} style={{ borderTop: `1px solid ${C.border}` }}>
-                                  <td style={{ padding: "5px 8px" }}>
+                                }))
+                            );
+                            const seleccionadosGrupo = itemsGrupo.filter((it) => seleccion.has(it.key)).length;
+                            return (
+                              <tbody key={refCode}>
+                                <tr
+                                  onClick={() => toggleRefAbierta(refCode)}
+                                  style={{ borderTop: `1px solid ${C.border}`, cursor: "pointer", background: C.canvas }}
+                                >
+                                  <td style={{ padding: "6px 8px" }} onClick={(e) => e.stopPropagation()}>
                                     <input
                                       type="checkbox"
-                                      checked={todaLaRefSel}
-                                      onChange={() => toggleTodaLaRef(itemsRef)}
-                                      title="Seleccionar toda la referencia"
+                                      checked={itemsGrupo.length > 0 && itemsGrupo.every((it) => seleccion.has(it.key))}
+                                      onChange={() => toggleTodaLaRef(itemsGrupo)}
+                                      title="Seleccionar toda la referencia (todos los colores)"
                                       style={{ width: 15, height: 15 }}
                                     />
                                   </td>
-                                  <td style={{ padding: "5px 8px", fontWeight: 700, color: C.ink }}>{r.ref}</td>
-                                  <td style={{ padding: "5px 8px", color: C.slate }}>{r.descripcion}</td>
-                                  {tallasDistintas.map((t) => {
-                                    const cant = r.tallas[t] || 0;
-                                    if (cant <= 0) {
-                                      return (
-                                        <td key={t} style={{ padding: "4px 6px", textAlign: "center", color: C.border }}>
-                                          —
-                                        </td>
-                                      );
-                                    }
-                                    const key = `${p.id}__${r.refId}__${t}`;
-                                    const sel = seleccion.get(key);
+                                  <td colSpan={2 + tallasDistintas.length} style={{ padding: "6px 8px", fontWeight: 800, color: C.ink }}>
+                                    <span style={{ marginRight: 6, color: C.slate, fontWeight: 900 }}>{abierta ? "▾" : "▸"}</span>
+                                    {refCode}
+                                    <span style={{ color: C.slate, fontWeight: 500, marginLeft: 8, fontSize: 10 }}>
+                                      {colores.length} color{colores.length === 1 ? "" : "es"}
+                                      {seleccionadosGrupo > 0 && <span style={{ color: C.blue, fontWeight: 700 }}> · {seleccionadosGrupo} sel.</span>}
+                                    </span>
+                                  </td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 800, color: C.amber }}>{fmtNum(totalPendienteGrupo)}</td>
+                                </tr>
+                                {abierta &&
+                                  colores.map((r) => {
+                                    const itemsRef = tallasDistintas
+                                      .filter((t) => r.tallas[t] > 0)
+                                      .map((t) => ({
+                                        key: `${p.id}__${r.refId}__${t}`,
+                                        pedidoId: p.id,
+                                        numero: p.numero,
+                                        cliente: clienteSel,
+                                        ref: r.ref,
+                                        refId: r.refId,
+                                        descripcion: r.descripcion,
+                                        talla: t,
+                                        cantidad: r.tallas[t],
+                                        pendienteRef: r.pendiente,
+                                      }));
+                                    const todaLaRefSel = itemsRef.length > 0 && itemsRef.every((it) => seleccion.has(it.key));
                                     return (
-                                      <td
-                                        key={t}
-                                        onClick={() => {
-                                          if (!sel)
-                                            toggleItem({
-                                              key,
-                                              pedidoId: p.id,
-                                              numero: p.numero,
-                                              cliente: clienteSel,
-                                              ref: r.ref,
-                                              refId: r.refId,
-                                              descripcion: r.descripcion,
-                                              talla: t,
-                                              cantidad: cant,
-                                              pendienteRef: r.pendiente,
-                                            });
-                                        }}
-                                        style={{ padding: "4px 6px", textAlign: "center", cursor: sel ? "default" : "pointer", background: sel ? C.blueBg : "transparent" }}
-                                      >
-                                        {sel ? (
-                                          <div style={{ display: "flex", alignItems: "center", gap: 3, justifyContent: "center" }}>
-                                            <input
-                                              type="number"
-                                              min={0}
-                                              value={sel.cantidad}
-                                              onClick={(e) => e.stopPropagation()}
-                                              onChange={(e) => setCantidadItem(key, parseInt(e.target.value) || 0)}
-                                              style={{ width: 42, padding: "2px 3px", border: `1px solid ${C.blue}`, borderRadius: 4, fontSize: 11, textAlign: "center" }}
-                                            />
-                                            <span
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                toggleItem(sel);
+                                      <tr key={r.refId} style={{ borderTop: `1px solid ${C.border}` }}>
+                                        <td style={{ padding: "5px 8px" }}>
+                                          <input
+                                            type="checkbox"
+                                            checked={todaLaRefSel}
+                                            onChange={() => toggleTodaLaRef(itemsRef)}
+                                            title="Seleccionar toda la referencia"
+                                            style={{ width: 15, height: 15 }}
+                                          />
+                                        </td>
+                                        <td style={{ padding: "5px 8px", fontWeight: 700, color: C.slate }}>↳ {r.ref}</td>
+                                        <td style={{ padding: "5px 8px", color: C.slate }}>{r.descripcion}</td>
+                                        {tallasDistintas.map((t) => {
+                                          const cant = r.tallas[t] || 0;
+                                          if (cant <= 0) {
+                                            return (
+                                              <td key={t} style={{ padding: "4px 6px", textAlign: "center", color: C.border }}>
+                                                —
+                                              </td>
+                                            );
+                                          }
+                                          const key = `${p.id}__${r.refId}__${t}`;
+                                          const sel = seleccion.get(key);
+                                          return (
+                                            <td
+                                              key={t}
+                                              onClick={() => {
+                                                if (!sel)
+                                                  toggleItem({
+                                                    key,
+                                                    pedidoId: p.id,
+                                                    numero: p.numero,
+                                                    cliente: clienteSel,
+                                                    ref: r.ref,
+                                                    refId: r.refId,
+                                                    descripcion: r.descripcion,
+                                                    talla: t,
+                                                    cantidad: cant,
+                                                    pendienteRef: r.pendiente,
+                                                  });
                                               }}
-                                              title="Quitar"
-                                              style={{ cursor: "pointer", color: C.blue, fontWeight: 800, fontSize: 11 }}
+                                              style={{ padding: "4px 6px", textAlign: "center", cursor: sel ? "default" : "pointer", background: sel ? C.blueBg : "transparent" }}
                                             >
-                                              ✕
-                                            </span>
-                                          </div>
-                                        ) : (
-                                          <span style={{ color: C.ink }}>{cant}</span>
-                                        )}
-                                      </td>
+                                              {sel ? (
+                                                <div style={{ display: "flex", alignItems: "center", gap: 3, justifyContent: "center" }}>
+                                                  <input
+                                                    type="number"
+                                                    min={0}
+                                                    value={sel.cantidad}
+                                                    onClick={(e) => e.stopPropagation()}
+                                                    onChange={(e) => setCantidadItem(key, parseInt(e.target.value) || 0)}
+                                                    style={{ width: 42, padding: "2px 3px", border: `1px solid ${C.blue}`, borderRadius: 4, fontSize: 11, textAlign: "center" }}
+                                                  />
+                                                  <span
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      toggleItem(sel);
+                                                    }}
+                                                    title="Quitar"
+                                                    style={{ cursor: "pointer", color: C.blue, fontWeight: 800, fontSize: 11 }}
+                                                  >
+                                                    ✕
+                                                  </span>
+                                                </div>
+                                              ) : (
+                                                <span style={{ color: C.ink }}>{cant}</span>
+                                              )}
+                                            </td>
+                                          );
+                                        })}
+                                        <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 800, color: C.amber }}>{fmtNum(r.pendiente)}</td>
+                                      </tr>
                                     );
                                   })}
-                                  <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 800, color: C.amber }}>{fmtNum(r.pendiente)}</td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
+                              </tbody>
+                            );
+                          })}
                         </table>
                       </div>
                     </div>
@@ -3946,10 +4049,25 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
 
       {subTab === "pendientes" && (
         <div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 20 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 20 }}>
             <KPICard icon="📊" label={`Programado ${mesAnioLabel(calFecha)}`} value={fmtNum(unidadesMes)} sub={fmtCOP(ingresoMes)} color={C.violet} bg={C.violetBg} />
             <KPICard icon="📆" label="Programado Hoy" value={fmtNum(unidadesHoy)} color={C.blue} bg={C.blueBg} />
             <KPICard icon={vencidosCount > 0 ? "⚠" : "✓"} label="Cortes Vencidos" value={String(vencidosCount)} color={vencidosCount > 0 ? C.red : C.green} bg={vencidosCount > 0 ? C.redBg : C.greenBg} />
+            {(() => {
+              const r = ritmoDelDia(hoy);
+              const pct = r ? Math.round(r.ritmo * 100) : null;
+              const ok = r && r.ritmo >= 1;
+              return (
+                <KPICard
+                  icon={pct === null ? "—" : ok ? "🚀" : "🐢"}
+                  label="Ritmo del Mes (real vs. presupuesto)"
+                  value={pct === null ? "—" : `${pct}%`}
+                  sub={r ? `${fmtCOP(r.ingresoReal)} de ${fmtCOP(r.presupuestoAcumulado)} esperado a hoy` : "Sin nómina cargada"}
+                  color={pct === null ? C.slate : ok ? C.green : C.red}
+                  bg={pct === null ? C.canvas : ok ? C.greenBg : C.redBg}
+                />
+              );
+            })()}
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
@@ -4011,6 +4129,9 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                 const enMes = date.slice(0, 7) === calFecha.slice(0, 7);
                 const esHoy = date === hoy;
                 const maxItems = vista === "mes" ? 3 : 8;
+                // Ritmo acumulado solo aplica a días que ya pasaron (o es
+                // hoy) — a futuro no hay nada "ya cortado" que comparar.
+                const ritmo = date <= hoy ? ritmoDelDia(date) : null;
                 return (
                   <div
                     key={date}
@@ -4037,6 +4158,14 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                         </span>
                       )}
                     </div>
+                    {ritmo && (
+                      <div
+                        title={`Ritmo acumulado del mes al ${fmtFechaISO(date)}: ya se cortó ${fmtCOP(ritmo.ingresoReal)} de ${fmtCOP(ritmo.presupuestoAcumulado)} que se esperaría llevar a esta altura del mes.`}
+                        style={{ fontSize: 9, fontWeight: 800, color: ritmo.ritmo >= 1 ? C.green : C.red }}
+                      >
+                        Mes: {Math.round(ritmo.ritmo * 100)}%
+                      </div>
+                    )}
                     <div style={{ display: "flex", flexDirection: "column", gap: 2, overflow: "hidden" }}>
                       {datos.items.slice(0, maxItems).map((it) => (
                         <div key={it.id} style={{ display: "flex", alignItems: "stretch", gap: 2 }}>
