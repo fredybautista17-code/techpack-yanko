@@ -2830,7 +2830,8 @@ function ProyeccionForm({ compras, presupuestoExistente, onGuardar, onClose }) {
 // esa barra, para no tener que adivinar de dónde sale el número.
 function RubroAvanceRow({ item: i }) {
   const [hover, setHover] = useState(false);
-  const tieneAbonos = (i.abonosDelRubro || []).length > 0;
+  const movs = i.movimientosDelRubro || [];
+  const tieneAbonos = movs.length > 0;
   return (
     <div
       style={{ position: "relative" }}
@@ -2878,17 +2879,23 @@ function RubroAvanceRow({ item: i }) {
             boxShadow: "0 10px 30px rgba(0,0,0,0.3)",
           }}
         >
-          <div style={{ fontWeight: 800, marginBottom: 5, color: C.seam }}>Abonos a este rubro</div>
-          {[...i.abonosDelRubro]
+          <div style={{ fontWeight: 800, marginBottom: 5, color: C.seam }}>Lo que cubre este rubro</div>
+          {[...movs]
             .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
-            .map((a) => (
-              <div key={a.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "2px 0" }}>
+            .map((m) => (
+              <div key={m.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "2px 0" }}>
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {fmtFechaCorta(a.fecha)} · {a.proveedor}
+                  <span style={{ color: m.tipo === "abono" ? C.green : C.blue, fontWeight: 700 }}>
+                    {m.tipo === "abono" ? "💰" : "↓"}
+                  </span>{" "}
+                  {fmtFechaCorta(m.fecha)} · {m.quien}
                 </span>
-                <span style={{ fontWeight: 700, flexShrink: 0 }}>{fmtCOP(a.monto)}</span>
+                <span style={{ fontWeight: 700, flexShrink: 0 }}>{fmtCOP(m.monto)}</span>
               </div>
             ))}
+          <div style={{ marginTop: 6, fontSize: 9, color: C.seam, opacity: 0.8 }}>
+            💰 = abono a proveedor · ↓ = ingreso de cliente distribuido
+          </div>
         </div>
       )}
     </div>
@@ -2898,29 +2905,47 @@ function RubroAvanceRow({ item: i }) {
 // Lista de todos los abonos de un mes, agrupados por rubro y ordenados por
 // fecha — el botón "📊 Estadística de Pagos" de cada tarjeta de presupuesto
 // abre esto.
-function EstadisticaPagosModal({ mes, abonosCxp, onClose }) {
+function EstadisticaPagosModal({ mes, movimientos, abonosCxp, onClose }) {
   const abonosMes = (abonosCxp || []).filter((a) => a.mes === mes || (a.fecha || "").slice(0, 7) === mes);
-  const totalMes = abonosMes.reduce((s, a) => s + (a.monto || 0), 0);
+  const ingresosMes = (movimientos || []).filter((m) => m.tipo === "ingreso" && m.fecha?.slice(0, 7) === mes);
+  // Se combinan las dos fuentes que alimentan "Avance por rubro": ingresos
+  // de clientes distribuidos a un rubro, y abonos reales pagados a
+  // proveedores de ese rubro.
+  const movs = [
+    ...ingresosMes.flatMap((m) =>
+      (m.distribucion || []).map((d, idx) => ({
+        id: `${m.id}__${idx}`,
+        tipo: "ingreso",
+        quien: m.cliente || m.descripcion || "Ingreso",
+        codConcep: d.codConcep,
+        concepto: d.concepto,
+        fecha: d.fecha || m.fecha,
+        monto: parseFloat(d.monto) || 0,
+      }))
+    ),
+    ...abonosMes.map((a) => ({ id: a.id, tipo: "abono", quien: a.proveedor, codConcep: a.codConcep, concepto: a.concepto, fecha: a.fecha, monto: a.monto || 0 })),
+  ];
+  const totalMes = movs.reduce((s, m) => s + m.monto, 0);
   const porRubro = new Map();
-  abonosMes.forEach((a) => {
-    const key = a.codConcep ? `${a.codConcep}__${a.concepto}` : "__sin_rubro";
+  movs.forEach((m) => {
+    const key = m.codConcep ? `${m.codConcep}__${m.concepto}` : "__sin_rubro";
     if (!porRubro.has(key)) {
-      porRubro.set(key, { codConcep: a.codConcep, concepto: a.concepto || "Sin rubro asignado", abonos: [] });
+      porRubro.set(key, { codConcep: m.codConcep, concepto: m.concepto || "Sin rubro asignado", movs: [] });
     }
-    porRubro.get(key).abonos.push(a);
+    porRubro.get(key).movs.push(m);
   });
   const grupos = [...porRubro.values()]
-    .map((g) => ({ ...g, total: g.abonos.reduce((s, a) => s + (a.monto || 0), 0), abonos: [...g.abonos].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")) }))
+    .map((g) => ({ ...g, total: g.movs.reduce((s, m) => s + m.monto, 0), movs: [...g.movs].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")) }))
     .sort((a, b) => b.total - a.total);
   return (
     <Modal title={`Estadística de Pagos — ${fmtMesLargo(mes)}`} onClose={onClose} width={620}>
       <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", background: C.violetBg, borderRadius: 10, marginBottom: 16, fontWeight: 800 }}>
-        <span style={{ color: C.violet }}>Total abonado en el mes</span>
+        <span style={{ color: C.violet }}>Total cubierto en el mes</span>
         <span style={{ color: C.violet }}>{fmtCOP(totalMes)}</span>
       </div>
       {!grupos.length ? (
         <div style={{ textAlign: "center", padding: 32, color: C.slate, fontSize: 13 }}>
-          Todavía no hay abonos registrados para este mes.
+          Todavía no hay ingresos distribuidos ni abonos registrados para este mes.
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 16, maxHeight: "60vh", overflowY: "auto" }}>
@@ -2933,15 +2958,19 @@ function EstadisticaPagosModal({ mes, abonosCxp, onClose }) {
                 <span>{fmtCOP(g.total)}</span>
               </div>
               <div style={{ background: C.canvas, borderRadius: 8, overflow: "hidden" }}>
-                {g.abonos.map((a) => (
-                  <div key={a.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 12px", fontSize: 12, color: C.slate, borderTop: `1px solid ${C.border}` }}>
-                    <span>{fmtFechaCorta(a.fecha)} · {a.proveedor}</span>
-                    <span style={{ fontWeight: 700, color: C.ink }}>{fmtCOP(a.monto)}</span>
+                {g.movs.map((m) => (
+                  <div key={m.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 12px", fontSize: 12, color: C.slate, borderTop: `1px solid ${C.border}` }}>
+                    <span>
+                      <span style={{ color: m.tipo === "abono" ? C.green : C.blue, fontWeight: 700 }}>{m.tipo === "abono" ? "💰" : "↓"}</span>{" "}
+                      {fmtFechaCorta(m.fecha)} · {m.quien}
+                    </span>
+                    <span style={{ fontWeight: 700, color: C.ink }}>{fmtCOP(m.monto)}</span>
                   </div>
                 ))}
               </div>
             </div>
           ))}
+          <div style={{ fontSize: 9, color: C.slate }}>💰 = abono a proveedor · ↓ = ingreso de cliente distribuido</div>
         </div>
       )}
     </Modal>
@@ -2978,6 +3007,7 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, abo
       {estadisticaMes && (
         <EstadisticaPagosModal
           mes={estadisticaMes}
+          movimientos={movimientos}
           abonosCxp={abonosCxp}
           onClose={() => setEstadisticaMes(null)}
         />
@@ -3054,8 +3084,30 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, abo
               ? (p.items || [])
                   .filter((i) => i.incluido)
                   .map((i) => {
-                    const abonosDelRubro = abonosMes.filter((a) => a.codConcep === i.codConcep);
-                    const cubierto = abonosDelRubro.reduce((s, a) => s + (parseFloat(a.monto) || 0), 0);
+                    // "Cubierto" suma DOS orígenes distintos de dinero que
+                    // va hacia este rubro: (1) ingresos de clientes que se
+                    // distribuyeron a este rubro (como se venía usando todo
+                    // este tiempo, vía "Nuevo Ingreso" → Distribución por
+                    // rubro / "Asignar rubro"), y (2) abonos reales pagados
+                    // a proveedores de este rubro (lo nuevo). No se
+                    // reemplaza uno por el otro para no perder de vista el
+                    // trabajo ya hecho distribuyendo ingresos.
+                    const distribucionesDelRubro = ingresosMes.flatMap((m) =>
+                      (m.distribucion || [])
+                        .filter((d) => d.codConcep === i.codConcep)
+                        .map((d, idx) => ({
+                          id: `${m.id}__${idx}`,
+                          tipo: "ingreso",
+                          quien: m.cliente || m.descripcion || "Ingreso",
+                          fecha: d.fecha || m.fecha,
+                          monto: parseFloat(d.monto) || 0,
+                        }))
+                    );
+                    const abonosDelRubro = abonosMes
+                      .filter((a) => a.codConcep === i.codConcep)
+                      .map((a) => ({ id: a.id, tipo: "abono", quien: a.proveedor, fecha: a.fecha, monto: parseFloat(a.monto) || 0 }));
+                    const movimientosDelRubro = [...distribucionesDelRubro, ...abonosDelRubro];
+                    const cubierto = movimientosDelRubro.reduce((s, x) => s + x.monto, 0);
                     const registroReal = compras.find(
                       (c) => c.mes === p.mes && c.codConcep === i.codConcep && c.concepto === i.concepto
                     );
@@ -3064,7 +3116,7 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, abo
                       ? registroReal.valor + (registroReal.iva || 0) - (registroReal.retencion || 0)
                       : i.valorFinal;
                     const pct = objetivo > 0 ? Math.min((cubierto / objetivo) * 100, 999) : 0;
-                    return { ...i, cubierto, objetivo, cuadrado, pct, abonosDelRubro };
+                    return { ...i, cubierto, objetivo, cuadrado, pct, movimientosDelRubro };
                   })
               : [];
             const disponibleSinAsignar = ingresosMes.reduce((s, m) => {
