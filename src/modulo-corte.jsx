@@ -244,13 +244,14 @@ function Field({ label, children }) {
     </div>
   );
 }
-function FInput({ value, onChange, placeholder, type = "text" }) {
+function FInput({ value, onChange, placeholder, type = "text", list }) {
   return (
     <input
       type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
+      list={list}
       style={{
         width: "100%",
         padding: "9px 12px",
@@ -576,28 +577,58 @@ async function parseNomina(file) {
   return filas;
 }
 
-function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, lotesExistentes, onGuardarLote, preseleccion, onSave, onClose }) {
+// Listado de tipo de tela — toma la primera columna con datos de la primera
+// hoja del archivo (sirve tanto si trae encabezado como "Tela"/"Tipo de
+// Tela" como si son solo nombres sin encabezado).
+async function parseTelas(file) {
+  const XLSX = await import("xlsx");
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: "array" });
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: "" });
+  const nombres = [];
+  const vistos = new Set();
+  rows.forEach((row) => {
+    const val = String((row && row[0]) ?? "").trim();
+    if (!val) return;
+    const up = val.toUpperCase();
+    if (up === "TELA" || up === "TIPO DE TELA" || up === "NOMBRE") return;
+    if (vistos.has(up)) return;
+    vistos.add(up);
+    nombres.push(val);
+  });
+  if (!nombres.length) throw new Error("No se encontraron nombres de tela en este archivo.");
+  return nombres;
+}
+
+function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, lotesExistentes, onGuardarLote, preseleccion, onSave, onClose }) {
   const mes = new Date().getMonth() + 1;
   const anio = new Date().getFullYear();
+  // Si el ítem viene de "Programación Hecha" (preseleccion trae planta,
+  // mesón, cortador, tela, trazo y capas ya definidos), se precargan acá —
+  // quedan editables por si algo cambió al momento real de cortar.
   const [form, setForm] = useState({
-    fecha: today(),
-    planta: "",
-    cortador: "",
+    fecha: preseleccion?.fechaProgramada || today(),
+    planta: preseleccion?.planta || "",
+    meson: preseleccion?.meson || "",
+    cortador: preseleccion?.cortador || "",
     // Etapa 1 — Tendido: qué tela se tiende, qué tan largo es el trazo (una
     // sola capa) y cuántas capas se apilan. Los metros totales de tela
     // consumida se calculan solos (largoTrazo × capas) en vez de escribirse
     // a mano, para que la estadística por tipo de tela sea consistente.
-    tipoTela: "",
-    largoTrazo: "",
-    capas: "",
+    tipoTela: preseleccion?.tipoTela || "",
+    largoTrazo: preseleccion?.largoTrazo ? String(preseleccion.largoTrazo) : "",
+    capas: preseleccion?.capas ? String(preseleccion.capas) : "",
     // Etapa 2 — Corte: desde que el cortador empieza hasta que termina de
     // cortar todas las capas del trazo (no incluye empaque ni entrega).
-    horaInicio: "",
-    horaFin: "",
+    horaInicio: preseleccion?.horaInicioEstimada || "",
+    horaFin: preseleccion?.horaFinEstimada || "",
     // Número de lote del corte — obligatorio y nunca se puede repetir (ver
     // validación en save()). Se genera un lote por cada corte registrado.
     lote: "",
   });
+  const plantaSel = plantas.find((pl) => pl.nombre === form.planta);
+  const mesonesDisponibles = plantaSel?.mesones || [];
+  const telasDatalistId = `telas-entrada-${pedido.id}`;
   // El precio por prenda se toma primero del archivo de precios de corte
   // (Admin Corte → Precios Corte, la fuente "oficial" por referencia); si esa
   // referencia no aparece ahí, se cae al precio que ya tuviera guardado el
@@ -704,6 +735,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, lotesExi
       id: uid(),
       fecha: form.fecha,
       planta: form.planta,
+      meson: form.meson,
       cortador: form.cortador,
       tipoTela: form.tipoTela,
       largoTrazo: parseFloat(form.largoTrazo) || 0,
@@ -735,14 +767,14 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, lotesExi
 
   return (
     <Modal
-      title={`Programar Corte — Pedido ${pedido.numero}`}
+      title={`Entrada de Corte — Pedido ${pedido.numero}`}
       onClose={onClose}
       width={760}
     >
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "1fr 1fr 1fr",
+          gridTemplateColumns: "1fr 1fr 1fr 1fr",
           gap: 12,
           marginBottom: 16,
         }}
@@ -757,8 +789,15 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, lotesExi
         <Field label="Planta">
           <FSel
             value={form.planta}
-            onChange={(v) => setForm((f) => ({ ...f, planta: v }))}
+            onChange={(v) => setForm((f) => ({ ...f, planta: v, meson: "" }))}
             options={plantas.map((p) => ({ id: p.nombre, nombre: p.nombre }))}
+          />
+        </Field>
+        <Field label="Mesón">
+          <FSel
+            value={form.meson}
+            onChange={(v) => setForm((f) => ({ ...f, meson: v }))}
+            options={mesonesDisponibles.map((m) => ({ id: m.id, nombre: m.nombre }))}
           />
         </Field>
         <Field label="Cortador">
@@ -790,7 +829,13 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, lotesExi
             value={form.tipoTela}
             onChange={(v) => setForm((f) => ({ ...f, tipoTela: v }))}
             placeholder="Ej: Diamante"
+            list={telasDatalistId}
           />
+          <datalist id={telasDatalistId}>
+            {(telas || []).map((t) => (
+              <option key={t} value={t} />
+            ))}
+          </datalist>
         </Field>
         <Field label="Largo del Trazo (1 capa, m)">
           <FInput
@@ -1094,7 +1139,196 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, preciosMap, lotesExi
           onClick={save}
           disabled={totalCortando() === 0 || !form.planta || !form.cortador || !loteTrim || loteRepetido}
         >
-          ✓ Registrar Corte
+          ✓ Entrada de Corte
+        </Btn>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── PROGRAMACIÓN HECHA MODAL ──────────────────────────────────────────────────
+// Segunda etapa del corte: ya se sabe qué referencia/talla/cantidad se va a
+// cortar (eso quedó en "En Programación"), acá se define CON QUÉ se va a
+// cortar — planta, mesón, cortador, tipo de tela, largo de trazo y capas —
+// sin todavía tocar unidades reales ni lote (eso es "Entrada de Corte",
+// cuando el corte ya pasó de verdad). Valida que el mesón elegido (o su
+// grupo compartido, ej. Mesón 2+3 de Yanko) tenga espacio ese día, y sugiere
+// un tiempo teórico a partir del promedio real de cortes anteriores con esa
+// misma tela.
+function ProgramacionHechaModal({ item, plantas, cortadores, telas, estadisticasTela, metrosUsadosMeson, onSave, onClose }) {
+  const [form, setForm] = useState({
+    planta: item.planta || "",
+    meson: item.meson || "",
+    cortador: item.cortador || "",
+    tipoTela: item.tipoTela || "",
+    largoTrazo: item.largoTrazo ? String(item.largoTrazo) : "",
+    capas: item.capas ? String(item.capas) : "",
+    horaInicioEstimada: item.horaInicioEstimada || "",
+    horaFinEstimada: item.horaFinEstimada || "",
+  });
+
+  const plantaSel = plantas.find((p) => p.nombre === form.planta);
+  const mesones = plantaSel?.mesones || [];
+  const mesonSel = mesones.find((m) => m.id === form.meson);
+  const grupoSel = mesonSel?.grupoId ? (plantaSel?.grupos || []).find((g) => g.id === mesonSel.grupoId) : null;
+
+  function metrosTotales() {
+    const trazo = parseFloat(form.largoTrazo) || 0;
+    const capas = parseInt(form.capas) || 0;
+    return trazo * capas;
+  }
+
+  const capacidad = grupoSel ? grupoSel.metros : mesonSel ? mesonSel.metros : null;
+  const usados = mesonSel ? metrosUsadosMeson(item.fechaProgramada, form.planta, form.meson, mesonSel.grupoId, item.id) : 0;
+  const disponible = capacidad !== null ? capacidad - usados : null;
+  const excedeCapacidad = disponible !== null && metrosTotales() > disponible;
+
+  const stats = estadisticasTela[form.tipoTela];
+  const tiempoTeorico = stats?.minPorMetro && metrosTotales() > 0 ? Math.round(stats.minPorMetro * metrosTotales()) : null;
+  const telasDatalistId = `telas-prog-hecha-${item.id}`;
+
+  function save() {
+    if (!form.planta || !form.meson || !form.cortador || excedeCapacidad) return;
+    onSave(item.id, {
+      planta: form.planta,
+      meson: form.meson,
+      mesonGrupo: mesonSel?.grupoId || "",
+      cortador: form.cortador,
+      tipoTela: form.tipoTela,
+      largoTrazo: parseFloat(form.largoTrazo) || 0,
+      capas: parseInt(form.capas) || 0,
+      metrosTendido: metrosTotales(),
+      horaInicioEstimada: form.horaInicioEstimada,
+      horaFinEstimada: form.horaFinEstimada,
+      tiempoTeoricoMin: tiempoTeorico,
+    });
+    onClose();
+  }
+
+  return (
+    <Modal title={`Programación Hecha — ${item.cliente} · #${item.numero} · ${item.ref}`} onClose={onClose} width={680}>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
+        Fecha programada: <b>{fmtFechaISO(item.fechaProgramada)}</b> · Cantidad: <b>{fmtNum(item.cantidadProgramada ?? item.cantidadPendiente)}</b>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <Field label="Planta">
+          <FSel
+            value={form.planta}
+            onChange={(v) => setForm((f) => ({ ...f, planta: v, meson: "" }))}
+            options={plantas.map((p) => ({ id: p.nombre, nombre: p.nombre }))}
+          />
+        </Field>
+        <Field label="Mesón">
+          <FSel
+            value={form.meson}
+            onChange={(v) => setForm((f) => ({ ...f, meson: v }))}
+            options={mesones.map((m) => ({ id: m.id, nombre: m.nombre }))}
+          />
+        </Field>
+        <Field label="Cortador">
+          <FSel
+            value={form.cortador}
+            onChange={(v) => setForm((f) => ({ ...f, cortador: v }))}
+            options={cortadores.map((c) => ({ id: c.nombre, nombre: c.nombre }))}
+          />
+        </Field>
+      </div>
+
+      {mesonSel && capacidad !== null && (
+        <div
+          style={{
+            padding: "10px 16px",
+            borderRadius: 8,
+            marginBottom: 16,
+            fontSize: 12,
+            fontWeight: 700,
+            background: excedeCapacidad ? C.redBg : C.greenBg,
+            color: excedeCapacidad ? C.red : C.green,
+          }}
+        >
+          {excedeCapacidad ? "⚠ " : "✓ "}
+          {grupoSel ? `${grupoSel.nombre}: ` : `${mesonSel.nombre}: `}
+          {usados}m ya reservados de {capacidad}m {grupoSel ? "compartidos" : ""} el {fmtFechaISO(item.fechaProgramada)}
+          {excedeCapacidad && ` — este trazo de ${metrosTotales()}m no cabe (quedan ${Math.max(0, disponible)}m disponibles).`}
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <Field label="Tipo de Tela">
+          <FInput
+            value={form.tipoTela}
+            onChange={(v) => setForm((f) => ({ ...f, tipoTela: v }))}
+            placeholder="Ej: Diamante"
+            list={telasDatalistId}
+          />
+          <datalist id={telasDatalistId}>
+            {(telas || []).map((t) => (
+              <option key={t} value={t} />
+            ))}
+          </datalist>
+        </Field>
+        <Field label="Largo del Trazo (1 capa, m)">
+          <FInput
+            type="number"
+            value={form.largoTrazo}
+            onChange={(v) => setForm((f) => ({ ...f, largoTrazo: v }))}
+            placeholder="4.5"
+          />
+        </Field>
+        <Field label="Capas">
+          <FInput
+            type="number"
+            value={form.capas}
+            onChange={(v) => setForm((f) => ({ ...f, capas: v }))}
+            placeholder="40"
+          />
+        </Field>
+        <Field label="Metros Totales">
+          <div
+            style={{
+              padding: "9px 12px",
+              borderRadius: 8,
+              border: `1.5px solid ${C.border}`,
+              background: C.canvas,
+              fontWeight: 800,
+              color: metrosTotales() > 0 ? C.violet : C.slate,
+              fontSize: 13,
+            }}
+          >
+            {metrosTotales() > 0 ? `${metrosTotales().toLocaleString("es-CO")} m` : "—"}
+          </div>
+        </Field>
+      </div>
+
+      {tiempoTeorico !== null && (
+        <div style={{ padding: "10px 16px", background: C.violetBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: C.violet, fontWeight: 700 }}>
+          ⏱ Tiempo teórico estimado: ~{tiempoTeorico} min (según {stats.cortes} corte{stats.cortes !== 1 ? "s" : ""} previo{stats.cortes !== 1 ? "s" : ""} de {form.tipoTela})
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <Field label="Hora Inicio Estimada (opcional)">
+          <FInput
+            type="time"
+            value={form.horaInicioEstimada}
+            onChange={(v) => setForm((f) => ({ ...f, horaInicioEstimada: v }))}
+          />
+        </Field>
+        <Field label="Hora Fin Estimada (opcional)">
+          <FInput
+            type="time"
+            value={form.horaFinEstimada}
+            onChange={(v) => setForm((f) => ({ ...f, horaFinEstimada: v }))}
+          />
+        </Field>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
+        <Btn variant="secondary" onClick={onClose}>
+          Cancelar
+        </Btn>
+        <Btn variant="success" onClick={save} disabled={!form.planta || !form.meson || !form.cortador || excedeCapacidad}>
+          ✓ Guardar Programación Hecha
         </Btn>
       </div>
     </Modal>
@@ -1106,6 +1340,7 @@ function DetallePedido({
   pedido,
   plantas,
   cortadores,
+  telas,
   nominaConfig,
   preciosMap,
   lotesExistentes,
@@ -1189,6 +1424,7 @@ function DetallePedido({
           pedido={pedido}
           plantas={plantas}
           cortadores={cortadores}
+          telas={telas}
           preciosMap={preciosMap}
           lotesExistentes={lotesExistentes}
           onGuardarLote={onGuardarLote}
@@ -1707,11 +1943,18 @@ function AdminCorte({ config, onSave }) {
   const [resultNomina, setResultNomina] = useState(null);
   const [subiendoPrecios, setSubiendoPrecios] = useState(false);
   const [resultPrecios, setResultPrecios] = useState(null);
+  const [mesonForms, setMesonForms] = useState({});
+  const [grupoForms, setGrupoForms] = useState({});
+  const [newTela, setNewTela] = useState("");
+  const [subiendoTelas, setSubiendoTelas] = useState(false);
+  const [resultTelas, setResultTelas] = useState(null);
   const nominaInputRef = useRef(null);
   const preciosInputRef = useRef(null);
+  const telasInputRef = useRef(null);
 
   const plantas = config.plantas || [];
   const cortadores = config.cortadores || [];
+  const telas = config.telas || [];
   const trabajadores = config.nomina?.trabajadores || [];
   const nominaTotal = trabajadores.reduce((s, t) => s + (t.sueldo || 0), 0);
   const mes = new Date().getMonth() + 1;
@@ -1728,6 +1971,87 @@ function AdminCorte({ config, onSave }) {
   }
   function delPlanta(id) {
     onSave({ ...config, plantas: plantas.filter((p) => p.id !== id) });
+  }
+  function addMeson(plantaId) {
+    const f = mesonForms[plantaId] || {};
+    if (!f.nombre?.trim()) return;
+    onSave({
+      ...config,
+      plantas: plantas.map((p) =>
+        p.id === plantaId
+          ? { ...p, mesones: [...(p.mesones || []), { id: uid(), nombre: f.nombre.trim(), metros: parseFloat(f.metros) || 0, grupoId: f.grupoId || "" }] }
+          : p
+      ),
+    });
+    setMesonForms((s2) => ({ ...s2, [plantaId]: { nombre: "", metros: "", grupoId: "" } }));
+  }
+  function delMeson(plantaId, mesonId) {
+    onSave({
+      ...config,
+      plantas: plantas.map((p) =>
+        p.id === plantaId ? { ...p, mesones: (p.mesones || []).filter((m) => m.id !== mesonId) } : p
+      ),
+    });
+  }
+  function addGrupo(plantaId) {
+    const f = grupoForms[plantaId] || {};
+    if (!f.nombre?.trim() || !f.metros) return;
+    onSave({
+      ...config,
+      plantas: plantas.map((p) =>
+        p.id === plantaId
+          ? { ...p, grupos: [...(p.grupos || []), { id: uid(), nombre: f.nombre.trim(), metros: parseFloat(f.metros) || 0 }] }
+          : p
+      ),
+    });
+    setGrupoForms((s2) => ({ ...s2, [plantaId]: { nombre: "", metros: "" } }));
+  }
+  function delGrupo(plantaId, grupoId) {
+    onSave({
+      ...config,
+      plantas: plantas.map((p) =>
+        p.id === plantaId
+          ? {
+              ...p,
+              grupos: (p.grupos || []).filter((g) => g.id !== grupoId),
+              mesones: (p.mesones || []).map((m) => (m.grupoId === grupoId ? { ...m, grupoId: "" } : m)),
+            }
+          : p
+      ),
+    });
+  }
+  function addTela() {
+    if (!newTela.trim()) return;
+    if (telas.some((t) => t.toUpperCase() === newTela.trim().toUpperCase())) {
+      setNewTela("");
+      return;
+    }
+    onSave({ ...config, telas: [...telas, newTela.trim()] });
+    setNewTela("");
+  }
+  function delTela(t) {
+    onSave({ ...config, telas: telas.filter((x) => x !== t) });
+  }
+  async function subirTelas(file) {
+    if (!file) return;
+    setSubiendoTelas(true);
+    setResultTelas(null);
+    try {
+      const nombres = await parseTelas(file);
+      const actuales = new Map(telas.map((t) => [t.toUpperCase(), t]));
+      let nuevos = 0;
+      nombres.forEach((n) => {
+        if (!actuales.has(n.toUpperCase())) {
+          actuales.set(n.toUpperCase(), n);
+          nuevos++;
+        }
+      });
+      onSave({ ...config, telas: [...actuales.values()] });
+      setResultTelas({ total: nombres.length, nuevos });
+    } catch (err) {
+      setResultTelas({ error: err?.message || "No se pudo leer el archivo de telas." });
+    }
+    setSubiendoTelas(false);
   }
   function addCortador() {
     if (!newCortador.trim()) return;
@@ -1830,6 +2154,7 @@ function AdminCorte({ config, onSave }) {
     ["cortadores", "✂ Cortadores"],
     ["nomina", "💰 Nómina"],
     ["precios", "💲 Precios Corte"],
+    ["telas", "🧵 Telas"],
   ];
 
   return (
@@ -1895,13 +2220,15 @@ function AdminCorte({ config, onSave }) {
             />
             <Btn onClick={addPlanta}>+ Agregar</Btn>
           </div>
-          {plantas.map((p) => (
+          {plantas.map((p) => {
+            const mf = mesonForms[p.id] || { nombre: "", metros: "", grupoId: "" };
+            const gf = grupoForms[p.id] || { nombre: "", metros: "" };
+            const mesones = p.mesones || [];
+            const grupos = p.grupos || [];
+            return (
             <div
               key={p.id}
               style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
                 padding: "12px 16px",
                 background: C.canvas,
                 borderRadius: 10,
@@ -1909,26 +2236,107 @@ function AdminCorte({ config, onSave }) {
                 border: `1px solid ${C.border}`,
               }}
             >
-              <span style={{ fontWeight: 700, color: C.ink }}>
-                🏭 {p.nombre}
-              </span>
-              <button
-                onClick={() => delPlanta(p.id)}
-                style={{
-                  background: C.redBg,
-                  border: "none",
-                  borderRadius: 6,
-                  padding: "4px 10px",
-                  color: C.red,
-                  fontWeight: 700,
-                  fontSize: 12,
-                  cursor: "pointer",
-                }}
-              >
-                Eliminar
-              </button>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <span style={{ fontWeight: 700, color: C.ink }}>
+                  🏭 {p.nombre}
+                </span>
+                <button
+                  onClick={() => delPlanta(p.id)}
+                  style={{
+                    background: C.redBg,
+                    border: "none",
+                    borderRadius: 6,
+                    padding: "4px 10px",
+                    color: C.red,
+                    fontWeight: 700,
+                    fontSize: 12,
+                    cursor: "pointer",
+                  }}
+                >
+                  Eliminar
+                </button>
+              </div>
+
+              <div style={{ fontSize: 10, fontWeight: 800, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>
+                Mesones (capacidad de tendido)
+              </div>
+              {mesones.map((m) => {
+                const grupo = grupos.find((g) => g.id === m.grupoId);
+                return (
+                  <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: C.white, borderRadius: 8, marginBottom: 4, border: `1px solid ${C.border}` }}>
+                    <span style={{ flex: 1, fontSize: 12, fontWeight: 700, color: C.ink }}>{m.nombre}</span>
+                    <span style={{ fontSize: 11, color: C.slate }}>
+                      {grupo ? `Comparte con "${grupo.nombre}" (máx ${grupo.metros}m entre todos)` : `${m.metros}m independiente`}
+                    </span>
+                    <button
+                      onClick={() => delMeson(p.id, m.id)}
+                      style={{ background: C.redBg, border: "none", borderRadius: 6, padding: "3px 8px", color: C.red, fontWeight: 700, fontSize: 10, cursor: "pointer" }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                );
+              })}
+              <div style={{ display: "grid", gridTemplateColumns: "1.5fr 0.8fr 1.2fr auto", gap: 6, marginTop: 6, marginBottom: 14 }}>
+                <input
+                  value={mf.nombre}
+                  onChange={(e) => setMesonForms((s2) => ({ ...s2, [p.id]: { ...mf, nombre: e.target.value } }))}
+                  placeholder="Nombre del mesón..."
+                  style={{ padding: "6px 8px", border: `1.5px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}
+                />
+                <input
+                  type="number"
+                  value={mf.metros}
+                  onChange={(e) => setMesonForms((s2) => ({ ...s2, [p.id]: { ...mf, metros: e.target.value } }))}
+                  placeholder="Metros"
+                  style={{ padding: "6px 8px", border: `1.5px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}
+                />
+                <select
+                  value={mf.grupoId}
+                  onChange={(e) => setMesonForms((s2) => ({ ...s2, [p.id]: { ...mf, grupoId: e.target.value } }))}
+                  style={{ padding: "6px 8px", border: `1.5px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}
+                >
+                  <option value="">Independiente (usa sus propios metros)</option>
+                  {grupos.map((g) => (
+                    <option key={g.id} value={g.id}>Comparte: {g.nombre}</option>
+                  ))}
+                </select>
+                <Btn small onClick={() => addMeson(p.id)}>+ Mesón</Btn>
+              </div>
+
+              <div style={{ fontSize: 10, fontWeight: 800, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>
+                Grupos compartidos (ej: Mesón 2+3 de Yanko, máx 14m entre los dos)
+              </div>
+              {grupos.map((g) => (
+                <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: C.white, borderRadius: 8, marginBottom: 4, border: `1px solid ${C.border}` }}>
+                  <span style={{ flex: 1, fontSize: 12, fontWeight: 700, color: C.ink }}>{g.nombre}</span>
+                  <span style={{ fontSize: 11, color: C.slate }}>máx {g.metros}m entre todos los mesones del grupo</span>
+                  <button
+                    onClick={() => delGrupo(p.id, g.id)}
+                    style={{ background: C.redBg, border: "none", borderRadius: 6, padding: "3px 8px", color: C.red, fontWeight: 700, fontSize: 10, cursor: "pointer" }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              <div style={{ display: "grid", gridTemplateColumns: "1.5fr 0.8fr auto", gap: 6, marginTop: 6 }}>
+                <input
+                  value={gf.nombre}
+                  onChange={(e) => setGrupoForms((s2) => ({ ...s2, [p.id]: { ...gf, nombre: e.target.value } }))}
+                  placeholder="Nombre del grupo (ej: Mesón 2+3)..."
+                  style={{ padding: "6px 8px", border: `1.5px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}
+                />
+                <input
+                  type="number"
+                  value={gf.metros}
+                  onChange={(e) => setGrupoForms((s2) => ({ ...s2, [p.id]: { ...gf, metros: e.target.value } }))}
+                  placeholder="Metros máx"
+                  style={{ padding: "6px 8px", border: `1.5px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}
+                />
+                <Btn small variant="secondary" onClick={() => addGrupo(p.id)}>+ Grupo</Btn>
+              </div>
             </div>
-          ))}
+          );})}
           {!plantas.length && (
             <div style={{ textAlign: "center", padding: 32, color: C.slate }}>
               Sin plantas registradas.
@@ -2268,6 +2676,52 @@ function AdminCorte({ config, onSave }) {
               {resultPrecios.error ? `⚠ ${resultPrecios.error}` : `✓ ${resultPrecios.total} referencias cargadas.`}
             </div>
           )}
+        </div>
+      )}
+
+      {tab === "telas" && (
+        <div>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 620 }}>
+            Lista de tipos de tela para elegir al hacer la Programación Hecha de un corte — así el nombre siempre queda escrito igual y las estadísticas por tipo de tela (tiempo teórico) salen bien. Puedes agregarlos a mano o subir un archivo con una lista.
+          </div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+            <input
+              value={newTela}
+              onChange={(e) => setNewTela(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addTela()}
+              placeholder="Ej: Diamante"
+              style={{ flex: 1, padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, outline: "none", fontFamily: "inherit" }}
+            />
+            <Btn onClick={addTela}>+ Agregar</Btn>
+          </div>
+          <input
+            type="file"
+            ref={telasInputRef}
+            accept=".xlsx,.xls,.csv"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              subirTelas(f);
+              e.target.value = "";
+            }}
+          />
+          <Btn variant="secondary" small onClick={() => telasInputRef.current?.click()} disabled={subiendoTelas}>
+            {subiendoTelas ? "Leyendo..." : "📤 Subir listado de telas"}
+          </Btn>
+          {resultTelas && (
+            <div style={{ marginTop: 10, fontSize: 12, fontWeight: 700, color: resultTelas.error ? C.red : C.green }}>
+              {resultTelas.error ? `⚠ ${resultTelas.error}` : `✓ ${resultTelas.total} leídas — ${resultTelas.nuevos} nueva(s).`}
+            </div>
+          )}
+          <div style={{ marginTop: 16, display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {telas.map((t) => (
+              <span key={t} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", background: C.violetBg, color: C.violet, borderRadius: 20, fontSize: 12, fontWeight: 700 }}>
+                🧵 {t}
+                <button onClick={() => delTela(t)} style={{ background: "none", border: "none", color: C.violet, cursor: "pointer", fontWeight: 800 }}>✕</button>
+              </span>
+            ))}
+            {!telas.length && <div style={{ color: C.slate, fontSize: 13 }}>Sin telas registradas.</div>}
+          </div>
         </div>
       )}
     </div>
@@ -2846,7 +3300,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onCortarProgramado }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onCortarProgramado, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, onGuardarProgramacionHecha, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Selección por talla: Map key `${pedidoId}__${ref}__${talla}` -> { ...contexto, cantidad }
   // (cantidad es editable, por si no alcanza la tela para toda la talla).
@@ -2856,6 +3310,19 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   const [vista, setVista] = useState("dia");
   const [editandoCumplidoId, setEditandoCumplidoId] = useState(null);
   const [edicionCumplido, setEdicionCumplido] = useState({ cantidad: 0, fecha: "" });
+  // Ítem de "Programados Pendientes" sobre el que se está haciendo la
+  // "Programación Hecha" (etapa 2: planta, mesón, cortador, tela...) — se
+  // maneja acá mismo porque solo esta vista necesita saber qué mesones y
+  // qué estadísticas de tela hay disponibles.
+  const [progHechaItem, setProgHechaItem] = useState(null);
+
+  // Click sobre una fila de "Programados Pendientes": si ya tiene
+  // Programación Hecha (planta/mesón/tela definidos), va directo a Entrada
+  // de Corte; si no, primero hay que hacer la Programación Hecha.
+  function handleRowClick(p) {
+    if (p.etapa === "programacion_hecha") onCortarProgramado(p);
+    else setProgHechaItem(p);
+  }
 
   const activos = pedidos.filter((p) => p.estado === "activo");
   const pendientesProg = programacion.filter((pr) => pr.estado !== "cumplido");
@@ -3026,6 +3493,18 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
 
   return (
     <div>
+      {progHechaItem && (
+        <ProgramacionHechaModal
+          item={progHechaItem}
+          plantas={plantasConfig || []}
+          cortadores={cortadoresConfig || []}
+          telas={telas || []}
+          estadisticasTela={estadisticasTela || {}}
+          metrosUsadosMeson={metrosUsadosMeson}
+          onSave={onGuardarProgramacionHecha}
+          onClose={() => setProgHechaItem(null)}
+        />
+      )}
       <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
         📅 Programación de Corte
       </h2>
@@ -3326,14 +3805,23 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     return (
                     <tr
                       key={p.id}
-                      onClick={() => onCortarProgramado(p)}
-                      title="Ir a cortar con estos datos"
+                      onClick={() => handleRowClick(p)}
+                      title={p.etapa === "programacion_hecha" ? "Ir a Entrada de Corte" : "Ir a Programación Hecha"}
                       style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer" }}
                     >
                       <td style={{ padding: "10px", fontWeight: 700, color: C.ink }}>{p.cliente} · #{p.numero}</td>
                       <td style={{ padding: "10px" }}>
                         <span style={{ fontWeight: 700 }}>{p.ref}</span>
                         {p.descripcion && <span style={{ color: C.slate, marginLeft: 6, fontSize: 12 }}>{p.descripcion}</span>}
+                        {p.etapa === "programacion_hecha" ? (
+                          <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 800, color: C.cyan, background: C.blueBg, padding: "2px 6px", borderRadius: 10 }}>
+                            ✓ {p.planta}{p.meson ? ` · ${p.meson}` : ""}
+                          </span>
+                        ) : (
+                          <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 800, color: C.violet }}>
+                            ○ Sin Programación Hecha
+                          </span>
+                        )}
                       </td>
                       <td style={{ padding: "10px", textAlign: "right" }} onClick={(e) => e.stopPropagation()}>
                         <input
@@ -3359,7 +3847,9 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                         {p.vencido ? `Vencido ${Math.abs(p.dias)}d` : `${p.dias}d`}
                       </td>
                       <td style={{ padding: "10px", textAlign: "right", whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
-                        <span style={{ fontSize: 11, color: C.cyan, fontWeight: 700, marginRight: 10 }}>✂ Click para cortar</span>
+                        <span style={{ fontSize: 11, color: p.etapa === "programacion_hecha" ? C.cyan : C.violet, fontWeight: 700, marginRight: 10 }}>
+                          {p.etapa === "programacion_hecha" ? "✂ Click para Entrada de Corte" : "📋 Click para Programación Hecha"}
+                        </span>
                         <button
                           onClick={() => onCancelar(p.id)}
                           title="Cancelar programación"
@@ -3400,13 +3890,16 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                         return (
                         <div
                           key={p.id}
-                          onClick={() => onCortarProgramado(p)}
-                          title="Ir a cortar con estos datos"
+                          onClick={() => handleRowClick(p)}
+                          title={p.etapa === "programacion_hecha" ? "Ir a Entrada de Corte" : "Ir a Programación Hecha"}
                           style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", borderTop: i > 0 ? `1px solid ${C.border}` : "none", cursor: "pointer" }}
                         >
                           <div>
                             <span style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{p.cliente} · #{p.numero}</span>
                             <span style={{ color: C.slate, marginLeft: 8, fontSize: 12 }}>{p.ref}</span>
+                            {p.etapa === "programacion_hecha" && (
+                              <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 800, color: C.cyan }}>✓ Prog. Hecha</span>
+                            )}
                           </div>
                           <div style={{ display: "flex", gap: 10, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
                             <input
@@ -3517,7 +4010,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                             Cancelar
                           </button>
                         </>
-                      ) : (
+                      ) : isAdmin ? (
                         <>
                           <button
                             onClick={() => {
@@ -3537,6 +4030,10 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                             🗑
                           </button>
                         </>
+                      ) : (
+                        <span title="Solo un administrador puede modificar un corte ya registrado" style={{ fontSize: 11, color: C.slate }}>
+                          🔒
+                        </span>
                       )}
                     </td>
                   </tr>
@@ -3957,11 +4454,26 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
   const [selPedidoId, setSelPedidoId] = useState(null);
   const [corteConfig, setCorteConfig] = useState({
     plantas: [
-      { id: "p1", nombre: "Planta Industrias Yanko" },
-      { id: "p2", nombre: "Planta Indutex" },
+      {
+        id: "p1",
+        nombre: "Planta Industrias Yanko",
+        mesones: [
+          { id: "m1", nombre: "Mesón 1", metros: 10, grupoId: "" },
+          { id: "m2", nombre: "Mesón 2", metros: 9, grupoId: "g1" },
+          { id: "m3", nombre: "Mesón 3", metros: 5, grupoId: "g1" },
+        ],
+        grupos: [{ id: "g1", nombre: "Mesa compartida (Mesón 2+3)", metros: 14 }],
+      },
+      {
+        id: "p2",
+        nombre: "Planta Indutex",
+        mesones: [{ id: "m1", nombre: "Mesón 1", metros: 10, grupoId: "" }],
+        grupos: [],
+      },
     ],
     cortadores: [],
     nomina: { trabajadores: [] },
+    telas: [],
   });
   const [loading, setLoading] = useState(true);
   // Ventas Perdidas (Busint) y Planeación (lotes/inventario en proceso) — se
@@ -4088,6 +4600,45 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
     return [...nombres.values()].sort().map((nombre) => ({ id: nombre, nombre }));
   })();
 
+  // Metros ya comprometidos en un mesón (o su grupo compartido) para una
+  // fecha+planta puntual — cuenta lo que ya está en "Programación Hecha" o
+  // ya se cortó (cumplido), sin contar el propio ítem que se está editando.
+  // Esto es lo que permite bloquear el Mesón 2+3 de Yanko cuando entre los
+  // dos ya suman 14 metros ese día.
+  function metrosUsadosMeson(fecha, plantaNombre, mesonId, grupoId, excluirId) {
+    let total = 0;
+    programacionCorte.forEach((pr) => {
+      if (pr.id === excluirId) return;
+      if (pr.fechaProgramada !== fecha || pr.planta !== plantaNombre) return;
+      if (!(pr.etapa === "programacion_hecha" || pr.estado === "cumplido")) return;
+      const mismoMeson = pr.meson === mesonId;
+      const mismoGrupo = grupoId && pr.mesonGrupo === grupoId;
+      if (mismoMeson || mismoGrupo) total += pr.metrosTendido || 0;
+    });
+    return total;
+  }
+
+  // Tiempo teórico por tipo de tela: promedio real (minutos ÷ metros
+  // tendidos) de todos los cortes ya registrados con ese tipo de tela — se
+  // va afinando solo a medida que se registran más cortes reales.
+  const estadisticasTela = (() => {
+    const byTela = {};
+    pedidos.forEach((p) =>
+      (p.cortesRealizados || []).forEach((c) => {
+        if (!c.tipoTela || !(c.metrosTendido > 0) || !(c.minutos > 0)) return;
+        if (!byTela[c.tipoTela]) byTela[c.tipoTela] = { minutos: 0, metros: 0, cortes: 0 };
+        byTela[c.tipoTela].minutos += c.minutos;
+        byTela[c.tipoTela].metros += c.metrosTendido;
+        byTela[c.tipoTela].cortes++;
+      })
+    );
+    const out = {};
+    Object.entries(byTela).forEach(([tela, d]) => {
+      out[tela] = { minPorMetro: d.metros > 0 ? d.minutos / d.metros : null, cortes: d.cortes };
+    });
+    return out;
+  })();
+
   async function savePedido(pedido) {
     setPedidos((ps) =>
       ps.some((p) => p.id === pedido.id)
@@ -4147,6 +4698,14 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
   // lotesExistentes, no se debe llamar esta función con un número repetido).
   async function guardarLoteCorte(lote) {
     await fsSave("corte_lotes", lote.numero, lote);
+  }
+  // Guarda los datos de "Programación Hecha" (planta, mesón, cortador, tela,
+  // trazo, capas...) sobre el ítem ya programado — todavía no es un corte
+  // real, solo dice que ya se sabe con qué se va a cortar y reserva espacio
+  // en el mesón. El corte real (unidades, lote) se registra después en
+  // "Entrada de Corte".
+  async function guardarProgramacionHecha(id, datos) {
+    await fsSave("corte_programacion", id, { ...datos, etapa: "programacion_hecha" });
   }
   // Revisión automática de cumplimiento: cada vez que cambian los pedidos o
   // las fuentes que definen "pendiente" (Ventas Perdidas, Planeación), se
@@ -4391,6 +4950,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
               pedido={selPedido}
               plantas={corteConfig.plantas || []}
               cortadores={cortadoresUnificados}
+              telas={corteConfig.telas || []}
               nominaConfig={corteConfig.nomina}
               preciosMap={preciosMap}
               lotesExistentes={lotesExistentes}
@@ -4449,6 +5009,13 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
                 setSelPedidoId(prog.pedidoId);
                 setView("detalle");
               }}
+              plantasConfig={corteConfig.plantas || []}
+              cortadoresConfig={cortadoresUnificados}
+              telas={corteConfig.telas || []}
+              estadisticasTela={estadisticasTela}
+              metrosUsadosMeson={metrosUsadosMeson}
+              onGuardarProgramacionHecha={guardarProgramacionHecha}
+              isAdmin={isAdmin}
             />
           )}
           {view === "costo" && (
