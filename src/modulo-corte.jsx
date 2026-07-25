@@ -1209,7 +1209,125 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
 // grupo compartido, ej. Mesón 2+3 de Yanko) tenga espacio ese día, y sugiere
 // un tiempo teórico a partir del promedio real de cortes anteriores con esa
 // misma tela.
-function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadisticasTela, metrosUsadosMeson, onSave, onClose }) {
+// Ventana visible del timeline de mesón: 6:00am a 8:00pm — cubre el horario
+// laboral típico. Los bloques que caen fuera de esta ventana se recortan.
+const MESON_TIMELINE_INICIO_MIN = 6 * 60;
+const MESON_TIMELINE_FIN_MIN = 20 * 60;
+const MESON_TIMELINE_SPAN_MIN = MESON_TIMELINE_FIN_MIN - MESON_TIMELINE_INICIO_MIN;
+
+function minDesdeHora(hhmm) {
+  if (!hhmm) return null;
+  const [h, m] = hhmm.split(":").map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  return h * 60 + m;
+}
+
+function bloqueTimelineStyle(inicioMin, finMin) {
+  const s = Math.max(MESON_TIMELINE_INICIO_MIN, inicioMin);
+  const e = Math.min(MESON_TIMELINE_FIN_MIN, finMin);
+  if (e <= s) return null;
+  const left = ((s - MESON_TIMELINE_INICIO_MIN) / MESON_TIMELINE_SPAN_MIN) * 100;
+  const width = ((e - s) / MESON_TIMELINE_SPAN_MIN) * 100;
+  return { left: `${left}%`, width: `${width}%` };
+}
+
+// "Foto" visual del mesón: nombre + capacidad, y debajo un timeline del día
+// (6am–8pm) con los horarios ya ocupados por otras referencias programadas
+// ahí ese día (según su Hora Inicio/Fin Estimada) en rojo, y el horario que
+// se está por guardar en violeta — para elegir a ojo un hueco libre.
+function MesonTimeline({ nombre, capacidad, compartido, ocupados, inicioActual, finActual }) {
+  const horasEtiqueta = [];
+  for (let m = MESON_TIMELINE_INICIO_MIN; m <= MESON_TIMELINE_FIN_MIN; m += 120) {
+    horasEtiqueta.push(m);
+  }
+  const inicioActualMin = minDesdeHora(inicioActual);
+  const finActualMin = minDesdeHora(finActual);
+  const actualStyle =
+    inicioActualMin !== null && finActualMin !== null && finActualMin > inicioActualMin
+      ? bloqueTimelineStyle(inicioActualMin, finActualMin)
+      : null;
+
+  return (
+    <div style={{ padding: "12px 16px", borderRadius: 8, border: `1.5px solid ${C.border}`, background: C.canvas, marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.ink }}>
+          🪧 {nombre}
+          {compartido ? " (compartido)" : ""}
+        </div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>Capacidad: {capacidad}m de trazo</div>
+      </div>
+      <div style={{ position: "relative", height: 34, borderRadius: 6, background: C.white, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+        {ocupados.map((it) => {
+          const iMin = minDesdeHora(it.horaInicioEstimada);
+          const fMin = minDesdeHora(it.horaFinEstimada);
+          if (iMin === null || fMin === null || fMin <= iMin) return null;
+          const st = bloqueTimelineStyle(iMin, fMin);
+          if (!st) return null;
+          return (
+            <div
+              key={it.id}
+              title={`${it.cliente} · #${it.numero} · ${it.ref} — ${it.horaInicioEstimada} a ${it.horaFinEstimada}`}
+              style={{
+                position: "absolute",
+                top: 0,
+                bottom: 0,
+                left: st.left,
+                width: st.width,
+                background: C.redBg,
+                borderRight: `1px solid ${C.white}`,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 9,
+                fontWeight: 800,
+                color: C.red,
+                overflow: "hidden",
+                whiteSpace: "nowrap",
+                padding: "0 2px",
+              }}
+            >
+              {it.ref}
+            </div>
+          );
+        })}
+        {actualStyle && (
+          <div
+            title={`Este corte: ${inicioActual} a ${finActual}`}
+            style={{
+              position: "absolute",
+              top: 0,
+              bottom: 0,
+              left: actualStyle.left,
+              width: actualStyle.width,
+              background: C.violet,
+              opacity: 0.85,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 9,
+              fontWeight: 800,
+              color: C.white,
+            }}
+          >
+            este
+          </div>
+        )}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+        {horasEtiqueta.map((m) => (
+          <span key={m} style={{ fontSize: 9, color: C.slate }}>
+            {String(Math.floor(m / 60)).padStart(2, "0")}:00
+          </span>
+        ))}
+      </div>
+      {ocupados.length === 0 && (
+        <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Ningún otro corte tiene horario estimado ahí ese día todavía.</div>
+      )}
+    </div>
+  );
+}
+
+function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onSave, onClose }) {
   const [form, setForm] = useState({
     fechaProgramada: grupo.fechaProgramada || today(),
     planta: grupo.planta || "",
@@ -1250,15 +1368,40 @@ function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadistica
 
   const stats = estadisticasTela[form.tipoTela];
   const tiempoTeorico = stats?.minPorMetro && metrosTotales() > 0 ? Math.round(stats.minPorMetro * metrosTotales()) : null;
+  // Tendido: no hay historial real todavía (nunca se ha cronometrado), así
+  // que se estima con una regla fija de 20 segundos por metro de trazo, por
+  // capa — igual que el corte, escala con los metros totales (trazo×capas).
+  const TENDIDO_SEG_POR_METRO = 20;
+  const tendidoEstimadoMin = metrosTotales() > 0 ? Math.round((TENDIDO_SEG_POR_METRO / 60) * metrosTotales()) : null;
+  const tiempoTotalEstimadoMin = tendidoEstimadoMin !== null ? tendidoEstimadoMin + (tiempoTeorico || 0) : null;
   const telasDatalistId = `telas-prog-hecha-${grupo.pedidoId}-${grupo.ref}`;
   const cantidadTotal = grupo.colores.reduce((s, c) => s + (c.cantidadProgramada ?? c.cantidadPendiente ?? 0), 0);
+  // Horas estimadas — ahora obligatorias para guardar, para poder dibujar el
+  // timeline del mesón con datos reales de todo lo programado.
+  const horasFaltantes = !form.horaInicioEstimada || !form.horaFinEstimada;
+  const horasInvalidas = !horasFaltantes && form.horaFinEstimada <= form.horaInicioEstimada;
+  // Qué más hay ya programado (con horario) en este mismo mesón ese día —
+  // para el timeline visual. Se excluyen los propios colores del grupo.
+  const ocupadosMeson = mesonSel
+    ? itemsUsadosMeson(form.fechaProgramada, form.planta, form.meson, mesonSel.grupoId, idsGrupo)
+    : [];
+
+  function autocompletarHoraFin() {
+    if (!form.horaInicioEstimada || !tiempoTotalEstimadoMin) return;
+    const [h, m] = form.horaInicioEstimada.split(":").map(Number);
+    let total = h * 60 + m + tiempoTotalEstimadoMin;
+    total = Math.min(total, 23 * 60 + 59);
+    const hh = String(Math.floor(total / 60)).padStart(2, "0");
+    const mm = String(total % 60).padStart(2, "0");
+    setForm((f) => ({ ...f, horaFinEstimada: `${hh}:${mm}` }));
+  }
 
   // Todos los colores de la referencia se tienden y cortan juntos, así que
   // comparten planta/mesón/cortador/tela/trazo/capas/horas — se guarda el
   // mismo `datosComunes` en cada uno de sus docs de corte_programacion, cada
   // uno conservando su propia cantidad (ya definida por color al programar).
   function save() {
-    if (!form.planta || !form.meson || !form.cortador || !form.fechaProgramada || excedeCapacidad) return;
+    if (!form.planta || !form.meson || !form.cortador || !form.fechaProgramada || excedeCapacidad || horasFaltantes || horasInvalidas) return;
     const datosComunes = {
       fechaProgramada: form.fechaProgramada,
       planta: form.planta,
@@ -1272,6 +1415,8 @@ function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadistica
       horaInicioEstimada: form.horaInicioEstimada,
       horaFinEstimada: form.horaFinEstimada,
       tiempoTeoricoMin: tiempoTeorico,
+      tendidoEstimadoMin: tendidoEstimadoMin,
+      tiempoTotalEstimadoMin: tiempoTotalEstimadoMin,
     };
     grupo.colores.forEach((c) => onSave(c.id, datosComunes));
     onClose();
@@ -1349,6 +1494,17 @@ function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadistica
         </div>
       )}
 
+      {mesonSel && capacidad !== null && (
+        <MesonTimeline
+          nombre={grupoMeson ? grupoMeson.nombre : mesonSel.nombre}
+          capacidad={capacidad}
+          compartido={!!grupoMeson}
+          ocupados={ocupadosMeson}
+          inicioActual={form.horaInicioEstimada}
+          finActual={form.horaFinEstimada}
+        />
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
         <Field label="Tipo de Tela">
           <FInput
@@ -1396,34 +1552,70 @@ function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadistica
         </Field>
       </div>
 
-      {tiempoTeorico !== null && (
+      {tiempoTotalEstimadoMin !== null && (
         <div style={{ padding: "10px 16px", background: C.violetBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: C.violet, fontWeight: 700 }}>
-          ⏱ Tiempo teórico estimado: ~{tiempoTeorico} min (según {stats.cortes} corte{stats.cortes !== 1 ? "s" : ""} previo{stats.cortes !== 1 ? "s" : ""} de {form.tipoTela})
+          ⏱ Tiempo estimado total: ~{tiempoTotalEstimadoMin} min — tendido ~{tendidoEstimadoMin} min
+          {tiempoTeorico !== null
+            ? ` + corte ~${tiempoTeorico} min (según ${stats.cortes} corte${stats.cortes !== 1 ? "s" : ""} previo${stats.cortes !== 1 ? "s" : ""} de ${form.tipoTela})`
+            : " + corte (todavía sin historial de corte para esta tela, el total solo cuenta el tendido)"}
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
-        <Field label="Hora Inicio Estimada (opcional)">
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 4 }}>
+        <Field label="Hora Inicio Estimada (obligatorio)">
           <FInput
             type="time"
             value={form.horaInicioEstimada}
             onChange={(v) => setForm((f) => ({ ...f, horaInicioEstimada: v }))}
           />
         </Field>
-        <Field label="Hora Fin Estimada (opcional)">
+        <Field label="Hora Fin Estimada (obligatorio)">
           <FInput
             type="time"
             value={form.horaFinEstimada}
             onChange={(v) => setForm((f) => ({ ...f, horaFinEstimada: v }))}
           />
+          {form.horaInicioEstimada && tiempoTotalEstimadoMin !== null && (
+            <button
+              type="button"
+              onClick={autocompletarHoraFin}
+              style={{
+                marginTop: 6,
+                fontSize: 11,
+                fontWeight: 700,
+                color: C.violet,
+                background: C.violetBg,
+                border: "none",
+                borderRadius: 6,
+                padding: "4px 8px",
+                cursor: "pointer",
+              }}
+            >
+              ⚡ Autocompletar con tiempo estimado (~{tiempoTotalEstimadoMin} min)
+            </button>
+          )}
         </Field>
       </div>
+      {horasInvalidas && (
+        <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginBottom: 12 }}>
+          ⚠ La Hora Fin debe ser posterior a la Hora Inicio.
+        </div>
+      )}
+      {horasFaltantes && (
+        <div style={{ fontSize: 11, color: C.slate, marginBottom: 12 }}>
+          Hora Inicio y Hora Fin son obligatorias para guardar — con eso se arma el timeline del mesón.
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
         <Btn variant="secondary" onClick={onClose}>
           Cancelar
         </Btn>
-        <Btn variant="success" onClick={save} disabled={!form.planta || !form.meson || !form.cortador || !form.fechaProgramada || excedeCapacidad}>
+        <Btn
+          variant="success"
+          onClick={save}
+          disabled={!form.planta || !form.meson || !form.cortador || !form.fechaProgramada || excedeCapacidad || horasFaltantes || horasInvalidas}
+        >
           ✓ Guardar Programación Hecha
         </Btn>
       </div>
@@ -3423,7 +3615,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onCortarProgramado, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, onGuardarProgramacionHecha, isAdmin }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onCortarProgramado, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Selección por talla: Map key `${pedidoId}__${ref}__${talla}` -> { ...contexto, cantidad }
   // (cantidad es editable, por si no alcanza la tela para toda la talla).
@@ -3728,6 +3920,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
           telas={telas || []}
           estadisticasTela={estadisticasTela || {}}
           metrosUsadosMeson={metrosUsadosMeson}
+          itemsUsadosMeson={itemsUsadosMeson}
           onSave={onGuardarProgramacionHecha}
           onClose={() => setProgHechaGrupo(null)}
         />
@@ -5054,6 +5247,36 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
     return total;
   }
 
+  // Igual que metrosUsadosMeson pero devuelve los ítems (no solo la suma) —
+  // se usa para dibujar el timeline visual del mesón: qué referencias ya
+  // tienen horario estimado ese día en ese mesón, y en qué franja.
+  function itemsUsadosMeson(fecha, plantaNombre, mesonId, grupoId, excluirIds) {
+    const excluir = excluirIds || [];
+    const vistos = new Set();
+    const items = [];
+    programacionCorte.forEach((pr) => {
+      if (excluir.includes(pr.id)) return;
+      if (pr.fechaProgramada !== fecha || pr.planta !== plantaNombre) return;
+      if (!(pr.etapa === "programacion_hecha" || pr.estado === "cumplido")) return;
+      const mismoMeson = pr.meson === mesonId;
+      const mismoGrupo = grupoId && pr.mesonGrupo === grupoId;
+      if (!(mismoMeson || mismoGrupo)) return;
+      const claveRef = `${pr.pedidoId}__${pr.ref}`;
+      if (vistos.has(claveRef)) return;
+      vistos.add(claveRef);
+      items.push({
+        id: claveRef,
+        ref: pr.ref,
+        cliente: pr.cliente,
+        numero: pr.numero,
+        horaInicioEstimada: pr.horaInicioEstimada || "",
+        horaFinEstimada: pr.horaFinEstimada || "",
+        largoTrazo: pr.largoTrazo || 0,
+      });
+    });
+    return items;
+  }
+
   // Tiempo teórico por tipo de tela: promedio real (minutos ÷ metros
   // tendidos) de todos los cortes ya registrados con ese tipo de tela — se
   // va afinando solo a medida que se registran más cortes reales.
@@ -5450,6 +5673,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
               telas={corteConfig.telas || []}
               estadisticasTela={estadisticasTela}
               metrosUsadosMeson={metrosUsadosMeson}
+              itemsUsadosMeson={itemsUsadosMeson}
               onGuardarProgramacionHecha={guardarProgramacionHecha}
               isAdmin={isAdmin}
             />
