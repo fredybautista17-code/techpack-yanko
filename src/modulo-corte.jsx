@@ -1474,7 +1474,10 @@ function DetallePedido({
     // — "cerrado" queda reservado para cuando Busint confirma el cierre real
     // del pedido (vía "🧊 Congelar como base de Corte" en Vigentes por
     // Cliente, o a mano desde el detalle en Pedidos).
-    if (totalC >= totalPedido && updated.estado === "activo") updated.estado = "terminado";
+    if (totalC >= totalPedido && updated.estado === "activo") {
+      updated.estado = "terminado";
+      updated.fechaCumplido = today();
+    }
     onSave(updated);
   }
 
@@ -1562,7 +1565,7 @@ function DetallePedido({
         {pedido.estado === "activo" && (
           <Btn
             variant="success"
-            onClick={() => onSave({ ...pedido, estado: "terminado" })}
+            onClick={() => onSave({ ...pedido, estado: "terminado", fechaCumplido: today() })}
           >
             🏁 Marcar Terminado
           </Btn>
@@ -4656,7 +4659,7 @@ function Historico({ pedidos, onSelectPedido }) {
   // lo pone "🧊 Congelar como base de Corte" (Vigentes por Cliente, módulo
   // Diseño → Pedidos) cuando un pedido activo deja de aparecer vigente en
   // Busint, o a mano desde el detalle del pedido en Pedidos.
-  const cumplidos = pedidos.filter((p) => p.estado === "cerrado");
+  const cumplidos = pedidos.filter((p) => p.estado === "cerrado" || p.estado === "terminado");
   const [filtro, setFiltro] = useState("");
 
   const filtrados = filtro
@@ -4722,7 +4725,14 @@ function Historico({ pedidos, onSelectPedido }) {
                 (s, c) => s + (c.ingresoCorte || 0),
                 0
               );
-              const mi = motivoCierreInfo(p.motivoCierre);
+              // Los pedidos "terminado" (corte dado por finalizado, a mano o al
+              // llegar al 100%) traen su propia etiqueta — son distintos de
+              // "cerrado" (cierre real confirmado por Busint), así que no
+              // usan motivoCierreInfo (esa es solo para cierres de Busint).
+              const mi =
+                p.estado === "terminado"
+                  ? { icon: "🏁", color: C.blue, bg: C.blueBg, label: "Terminado (corte)", desc: "Terminado" }
+                  : motivoCierreInfo(p.motivoCierre);
               return (
                 <div
                   key={p.id}
