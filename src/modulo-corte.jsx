@@ -641,22 +641,27 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
   // Si el ítem viene de "Programación Hecha" (preseleccion trae planta,
   // mesón, cortador, tela, trazo y capas ya definidos), se precargan acá —
   // quedan editables por si algo cambió al momento real de cortar.
+  // El grupo preseleccionado (desde el calendario o Vencidos) trae uno o
+  // varios colores de una misma referencia — todos comparten planta, mesón,
+  // tela, trazo, capas y horas (se definieron juntos en Programación Hecha),
+  // así que basta con leer esos datos comunes del primer color del grupo.
+  const preselColor0 = preseleccion?.colores?.[0] || preseleccion || null;
   const [form, setForm] = useState({
-    fecha: preseleccion?.fechaProgramada || today(),
-    planta: preseleccion?.planta || "",
-    meson: preseleccion?.meson || "",
-    cortador: preseleccion?.cortador || "",
+    fecha: preselColor0?.fechaProgramada || today(),
+    planta: preselColor0?.planta || "",
+    meson: preselColor0?.meson || "",
+    cortador: preselColor0?.cortador || "",
     // Etapa 1 — Tendido: qué tela se tiende, qué tan largo es el trazo (una
     // sola capa) y cuántas capas se apilan. Los metros totales de tela
     // consumida se calculan solos (largoTrazo × capas) en vez de escribirse
     // a mano, para que la estadística por tipo de tela sea consistente.
-    tipoTela: preseleccion?.tipoTela || "",
-    largoTrazo: preseleccion?.largoTrazo ? String(preseleccion.largoTrazo) : "",
-    capas: preseleccion?.capas ? String(preseleccion.capas) : "",
+    tipoTela: preselColor0?.tipoTela || "",
+    largoTrazo: preselColor0?.largoTrazo ? String(preselColor0.largoTrazo) : "",
+    capas: preselColor0?.capas ? String(preselColor0.capas) : "",
     // Etapa 2 — Corte: desde que el cortador empieza hasta que termina de
     // cortar todas las capas del trazo (no incluye empaque ni entrega).
-    horaInicio: preseleccion?.horaInicioEstimada || "",
-    horaFin: preseleccion?.horaFinEstimada || "",
+    horaInicio: preselColor0?.horaInicioEstimada || "",
+    horaFin: preselColor0?.horaFinEstimada || "",
     // Número de lote del corte — obligatorio y nunca se puede repetir (ver
     // validación en save()). Se genera un lote por cada corte registrado.
     lote: "",
@@ -686,10 +691,13 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
         c[r.id].tallas[t] = 0;
       });
       // Match por refId (identifica el color/pinta exacto) — con respaldo
-      // por `ref` solo si la programación es de antes de guardar refId.
-      const coincideRef = preseleccion && (preseleccion.refId ? preseleccion.refId === r.id : preseleccion.ref === r.ref);
-      if (coincideRef) {
-        Object.entries(preseleccion.tallas || {}).forEach(([t, cant]) => {
+      // por `ref` solo si la programación es de antes de guardar refId. El
+      // grupo preseleccionado puede traer varios colores de la misma
+      // referencia; se busca el que corresponda a esta talla-fila exacta.
+      const coloresPresel = preseleccion?.colores || (preseleccion ? [preseleccion] : []);
+      const colorPresel = coloresPresel.find((pc) => (pc.refId ? pc.refId === r.id : pc.ref === r.ref));
+      if (colorPresel) {
+        Object.entries(colorPresel.tallas || {}).forEach(([t, cant]) => {
           c[r.id].tallas[t] = cant;
         });
       }
@@ -698,6 +706,13 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
   });
   const loteTrim = form.lote.trim();
   const loteRepetido = loteTrim && lotesExistentes?.has(loteTrim.toUpperCase());
+
+  // Referencias (colores) que se programaron específicamente en el grupo
+  // preseleccionado — si existe, la tabla de "Unidades a cortar" se filtra
+  // para no mostrar el resto del pedido, solo lo que realmente se programó.
+  const refIdsPreseleccion = preseleccion?.colores
+    ? new Set(preseleccion.colores.map((c) => c.refId).filter(Boolean))
+    : null;
 
   function pendiente(ref) {
     const yaCortado = (pedido.cortesRealizados || [])
@@ -995,6 +1010,10 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       </div>
       <div style={{ maxHeight: 320, overflowY: "auto" }}>
         {pedido.referencias.map((ref) => {
+          // Si venimos de un grupo preseleccionado (calendario/Vencidos), acá
+          // se corta SOLO lo que se programó para esa referencia — no todo
+          // el pedido — mostrando nada más los colores incluidos en el grupo.
+          if (refIdsPreseleccion && !refIdsPreseleccion.has(ref.id)) return null;
           const pend = pendiente(ref);
           const totalPend = Object.values(pend).reduce((a, b) => a + b, 0);
           if (totalPend === 0) return null;
@@ -1190,24 +1209,23 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
 // grupo compartido, ej. Mesón 2+3 de Yanko) tenga espacio ese día, y sugiere
 // un tiempo teórico a partir del promedio real de cortes anteriores con esa
 // misma tela.
-function ProgramacionHechaModal({ item, plantas, cortadores, telas, estadisticasTela, metrosUsadosMeson, onSave, onClose }) {
+function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadisticasTela, metrosUsadosMeson, onSave, onClose }) {
   const [form, setForm] = useState({
-    fechaProgramada: item.fechaProgramada || today(),
-    cantidadProgramada: item.cantidadProgramada ?? item.cantidadPendiente ?? 0,
-    planta: item.planta || "",
-    meson: item.meson || "",
-    cortador: item.cortador || "",
-    tipoTela: item.tipoTela || "",
-    largoTrazo: item.largoTrazo ? String(item.largoTrazo) : "",
-    capas: item.capas ? String(item.capas) : "",
-    horaInicioEstimada: item.horaInicioEstimada || "",
-    horaFinEstimada: item.horaFinEstimada || "",
+    fechaProgramada: grupo.fechaProgramada || today(),
+    planta: grupo.planta || "",
+    meson: grupo.meson || "",
+    cortador: grupo.cortador || "",
+    tipoTela: grupo.tipoTela || "",
+    largoTrazo: grupo.largoTrazo ? String(grupo.largoTrazo) : "",
+    capas: grupo.capas ? String(grupo.capas) : "",
+    horaInicioEstimada: grupo.horaInicioEstimada || "",
+    horaFinEstimada: grupo.horaFinEstimada || "",
   });
 
   const plantaSel = plantas.find((p) => p.nombre === form.planta);
   const mesones = plantaSel?.mesones || [];
   const mesonSel = mesones.find((m) => m.id === form.meson);
-  const grupoSel = mesonSel?.grupoId ? (plantaSel?.grupos || []).find((g) => g.id === mesonSel.grupoId) : null;
+  const grupoMeson = mesonSel?.grupoId ? (plantaSel?.grupos || []).find((g) => g.id === mesonSel.grupoId) : null;
 
   function metrosTotales() {
     const trazo = parseFloat(form.largoTrazo) || 0;
@@ -1221,20 +1239,28 @@ function ProgramacionHechaModal({ item, plantas, cortadores, telas, estadisticas
   // encima se apilan 40 capas o 200, así que lo que se compara contra la
   // capacidad es largoTrazo solo, no largoTrazo × capas.
   const largoTrazoNum = parseFloat(form.largoTrazo) || 0;
-  const capacidad = grupoSel ? grupoSel.metros : mesonSel ? mesonSel.metros : null;
-  const usados = mesonSel ? metrosUsadosMeson(form.fechaProgramada, form.planta, form.meson, mesonSel.grupoId, item.id) : 0;
+  const capacidad = grupoMeson ? grupoMeson.metros : mesonSel ? mesonSel.metros : null;
+  // Todos los colores de esta referencia comparten un solo trazo físico, así
+  // que se excluyen TODOS sus docs (no solo uno) al calcular lo ya reservado
+  // en el mesón — si no, el propio trazo se restaría de la capacidad.
+  const idsGrupo = grupo.colores.map((c) => c.id);
+  const usados = mesonSel ? metrosUsadosMeson(form.fechaProgramada, form.planta, form.meson, mesonSel.grupoId, idsGrupo) : 0;
   const disponible = capacidad !== null ? capacidad - usados : null;
   const excedeCapacidad = disponible !== null && largoTrazoNum > disponible;
 
   const stats = estadisticasTela[form.tipoTela];
   const tiempoTeorico = stats?.minPorMetro && metrosTotales() > 0 ? Math.round(stats.minPorMetro * metrosTotales()) : null;
-  const telasDatalistId = `telas-prog-hecha-${item.id}`;
+  const telasDatalistId = `telas-prog-hecha-${grupo.pedidoId}-${grupo.ref}`;
+  const cantidadTotal = grupo.colores.reduce((s, c) => s + (c.cantidadProgramada ?? c.cantidadPendiente ?? 0), 0);
 
+  // Todos los colores de la referencia se tienden y cortan juntos, así que
+  // comparten planta/mesón/cortador/tela/trazo/capas/horas — se guarda el
+  // mismo `datosComunes` en cada uno de sus docs de corte_programacion, cada
+  // uno conservando su propia cantidad (ya definida por color al programar).
   function save() {
     if (!form.planta || !form.meson || !form.cortador || !form.fechaProgramada || excedeCapacidad) return;
-    onSave(item.id, {
+    const datosComunes = {
       fechaProgramada: form.fechaProgramada,
-      cantidadProgramada: form.cantidadProgramada,
       planta: form.planta,
       meson: form.meson,
       mesonGrupo: mesonSel?.grupoId || "",
@@ -1246,12 +1272,13 @@ function ProgramacionHechaModal({ item, plantas, cortadores, telas, estadisticas
       horaInicioEstimada: form.horaInicioEstimada,
       horaFinEstimada: form.horaFinEstimada,
       tiempoTeoricoMin: tiempoTeorico,
-    });
+    };
+    grupo.colores.forEach((c) => onSave(c.id, datosComunes));
     onClose();
   }
 
   return (
-    <Modal title={`Programación Hecha — ${item.cliente} · #${item.numero} · ${item.ref}`} onClose={onClose} width={680}>
+    <Modal title={`Programación Hecha — ${grupo.cliente} · #${grupo.numero} · ${grupo.ref}`} onClose={onClose} width={680}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
         <Field label="Fecha Programada">
           <FInput
@@ -1260,15 +1287,23 @@ function ProgramacionHechaModal({ item, plantas, cortadores, telas, estadisticas
             onChange={(v) => setForm((f) => ({ ...f, fechaProgramada: v }))}
           />
         </Field>
-        <Field label="Cantidad Programada">
-          <FInput
-            type="number"
-            value={String(form.cantidadProgramada)}
-            onChange={(v) => setForm((f) => ({ ...f, cantidadProgramada: Math.max(0, parseInt(v) || 0) }))}
-          />
-          {item.cantidadPendiente > form.cantidadProgramada && (
-            <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>de {fmtNum(item.cantidadPendiente)} pendientes originalmente</div>
-          )}
+        <Field label="Cantidad Programada (total)">
+          <div
+            style={{
+              padding: "9px 12px",
+              borderRadius: 8,
+              border: `1.5px solid ${C.border}`,
+              background: C.canvas,
+              fontWeight: 800,
+              color: C.ink,
+              fontSize: 13,
+            }}
+          >
+            {fmtNum(cantidadTotal)}
+          </div>
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>
+            {grupo.colores.length} color{grupo.colores.length !== 1 ? "es" : ""} — la cantidad por color se ajusta en Entrada de Corte
+          </div>
         </Field>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
@@ -1308,8 +1343,8 @@ function ProgramacionHechaModal({ item, plantas, cortadores, telas, estadisticas
           }}
         >
           {excedeCapacidad ? "⚠ " : "✓ "}
-          {grupoSel ? `${grupoSel.nombre}: ` : `${mesonSel.nombre}: `}
-          {usados}m de trazo ya reservados de {capacidad}m {grupoSel ? "compartidos" : "de mesa"} el {fmtFechaISO(form.fechaProgramada)}
+          {grupoMeson ? `${grupoMeson.nombre}: ` : `${mesonSel.nombre}: `}
+          {usados}m de trazo ya reservados de {capacidad}m {grupoMeson ? "compartidos" : "de mesa"} el {fmtFechaISO(form.fechaProgramada)}
           {excedeCapacidad && ` — este trazo de ${largoTrazoNum}m no cabe (quedan ${Math.max(0, disponible)}m disponibles). Puedes apilar las capas que quieras, lo que no cabe es el largo del trazo.`}
         </div>
       )}
@@ -3423,14 +3458,17 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // "Programación Hecha" (etapa 2: planta, mesón, cortador, tela...) — se
   // maneja acá mismo porque solo esta vista necesita saber qué mesones y
   // qué estadísticas de tela hay disponibles.
-  const [progHechaItem, setProgHechaItem] = useState(null);
+  const [progHechaGrupo, setProgHechaGrupo] = useState(null);
 
-  // Click sobre una fila de "Programados Pendientes": si ya tiene
-  // Programación Hecha (planta/mesón/tela definidos), va directo a Entrada
-  // de Corte; si no, primero hay que hacer la Programación Hecha.
-  function handleRowClick(p) {
-    if (p.etapa === "programacion_hecha") onCortarProgramado(p);
-    else setProgHechaItem(p);
+  // Click sobre un grupo (una referencia con todos sus colores) de
+  // "Programados Pendientes": si TODOS sus colores ya tienen Programación
+  // Hecha, va directo a Entrada de Corte con el grupo completo; si falta
+  // alguno, primero hay que completar la Programación Hecha para el grupo
+  // entero (planta/mesón/tela/trazo/capas se comparten entre colores).
+  function abrirFlujoCorte(grupo) {
+    const listo = grupo.colores.every((c) => c.etapa === "programacion_hecha");
+    if (listo) onCortarProgramado(grupo);
+    else setProgHechaGrupo(grupo);
   }
 
   const activos = pedidos.filter((p) => p.estado === "activo");
@@ -3598,7 +3636,36 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   function datosDelDia(fechaISO) {
     const items = porDiaPendientes.get(fechaISO) || [];
     const ingreso = items.reduce((s, it) => s + (it.cantidadProgramada ?? it.cantidadPendiente ?? 0) * precioRef(it.ref), 0);
-    return { items, ingreso, cubre: items.length > 0 && ingreso >= costoDia };
+    // Agrupa los ítems (uno por color) en un solo "grupo" por referencia —
+    // así el calendario muestra un chip por ref con la cantidad TOTAL
+    // sumada entre colores, en vez de un chip repetido por cada color.
+    const gruposMap = new Map();
+    items.forEach((it) => {
+      const gkey = `${it.pedidoId}__${it.ref}`;
+      if (!gruposMap.has(gkey)) {
+        gruposMap.set(gkey, {
+          key: gkey,
+          pedidoId: it.pedidoId,
+          numero: it.numero,
+          cliente: it.cliente,
+          ref: it.ref,
+          colores: [],
+          cantidadTotal: 0,
+          vencido: false,
+        });
+      }
+      const g = gruposMap.get(gkey);
+      g.colores.push(it);
+      g.cantidadTotal += it.cantidadProgramada ?? it.cantidadPendiente ?? 0;
+      if (it.vencido) g.vencido = true;
+    });
+    const grupos = [...gruposMap.values()].map((g) => ({
+      ...g,
+      etapa: g.colores.every((c) => c.etapa === "programacion_hecha") ? "programacion_hecha" : "en_programacion",
+      planta: g.colores[0]?.planta || "",
+      meson: g.colores[0]?.meson || "",
+    }));
+    return { items, ingreso, cubre: items.length > 0 && ingreso >= costoDia, grupos };
   }
 
   // Ritmo acumulado del mes: compara lo que YA se cortó de verdad (Entrada
@@ -3653,16 +3720,16 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
 
   return (
     <div>
-      {progHechaItem && (
+      {progHechaGrupo && (
         <ProgramacionHechaModal
-          item={progHechaItem}
+          grupo={progHechaGrupo}
           plantas={plantasConfig || []}
           cortadores={cortadoresConfig || []}
           telas={telas || []}
           estadisticasTela={estadisticasTela || {}}
           metrosUsadosMeson={metrosUsadosMeson}
           onSave={onGuardarProgramacionHecha}
-          onClose={() => setProgHechaItem(null)}
+          onClose={() => setProgHechaGrupo(null)}
         />
       )}
       <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
@@ -4170,11 +4237,11 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                       </div>
                     )}
                     <div style={{ display: "flex", flexDirection: "column", gap: 2, overflow: "hidden" }}>
-                      {datos.items.slice(0, maxItems).map((it) => (
-                        <div key={it.id} style={{ display: "flex", alignItems: "stretch", gap: 2 }}>
+                      {datos.grupos.slice(0, maxItems).map((g) => (
+                        <div key={g.key} style={{ display: "flex", alignItems: "stretch", gap: 2 }}>
                           <div
-                            onClick={() => handleRowClick(it)}
-                            title={`${it.cliente} · #${it.numero} · ${it.ref} — ${it.etapa === "programacion_hecha" ? "Ir a Entrada de Corte" : "Ir a Programación Hecha"}`}
+                            onClick={() => abrirFlujoCorte(g)}
+                            title={`${g.cliente} · #${g.numero} · ${g.ref} (${g.colores.length} color${g.colores.length !== 1 ? "es" : ""}) — ${g.etapa === "programacion_hecha" ? "Ir a Entrada de Corte" : "Ir a Programación Hecha"}`}
                             style={{
                               flex: 1,
                               minWidth: 0,
@@ -4182,21 +4249,21 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                               padding: "2px 4px",
                               borderRadius: 4,
                               cursor: "pointer",
-                              background: it.vencido ? C.redBg : it.etapa === "programacion_hecha" ? C.blueBg : C.violetBg,
-                              color: it.vencido ? C.red : it.etapa === "programacion_hecha" ? C.cyan : C.violet,
+                              background: g.vencido ? C.redBg : g.etapa === "programacion_hecha" ? C.blueBg : C.violetBg,
+                              color: g.vencido ? C.red : g.etapa === "programacion_hecha" ? C.cyan : C.violet,
                               whiteSpace: "nowrap",
                               overflow: "hidden",
                               textOverflow: "ellipsis",
                               fontWeight: 700,
                             }}
                           >
-                            {it.ref} · {fmtNum(it.cantidadProgramada ?? it.cantidadPendiente)}
+                            {g.ref} · {fmtNum(g.cantidadTotal)}
                           </div>
                           {isAdmin && (
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                onCancelar(it.id);
+                                g.colores.forEach((c) => onCancelar(c.id));
                               }}
                               title="Cancelar programación (admin)"
                               style={{ flexShrink: 0, background: C.redBg, border: "none", borderRadius: 4, padding: "0 4px", color: C.red, fontWeight: 800, fontSize: 10, cursor: "pointer" }}
@@ -4206,8 +4273,8 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                           )}
                         </div>
                       ))}
-                      {datos.items.length > maxItems && (
-                        <div style={{ fontSize: 9, color: C.slate }}>+{datos.items.length - maxItems} más</div>
+                      {datos.grupos.length > maxItems && (
+                        <div style={{ fontSize: 9, color: C.slate }}>+{datos.grupos.length - maxItems} más</div>
                       )}
                     </div>
                   </div>
@@ -4347,7 +4414,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                 return (
                   <tr
                     key={p.id}
-                    onClick={() => handleRowClick(p)}
+                    onClick={() => abrirFlujoCorte({ pedidoId: p.pedidoId, numero: p.numero, cliente: p.cliente, ref: p.ref, colores: [p] })}
                     title={p.etapa === "programacion_hecha" ? "Ir a Entrada de Corte" : "Ir a Programación Hecha"}
                     style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: C.redBg }}
                   >
@@ -4963,14 +5030,26 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
   // `metrosTendido` (que es largoTrazo × capas y sirve para otras cosas,
   // como el tiempo teórico por tipo de tela).
   function metrosUsadosMeson(fecha, plantaNombre, mesonId, grupoId, excluirId) {
+    // excluirId puede ser un solo id (compatibilidad) o un arreglo de ids —
+    // se usa un arreglo cuando se edita una referencia con varios colores
+    // (varios docs de corte_programacion comparten el mismo trazo físico).
+    const excluirIds = Array.isArray(excluirId) ? excluirId : excluirId ? [excluirId] : [];
+    // Varios colores de una misma referencia comparten UN solo trazo (se
+    // tienden juntos en la misma mesa) — si cada color se sumara aparte se
+    // contaría el mismo trazo varias veces. Se deduplica por pedido+ref.
+    const vistos = new Set();
     let total = 0;
     programacionCorte.forEach((pr) => {
-      if (pr.id === excluirId) return;
+      if (excluirIds.includes(pr.id)) return;
       if (pr.fechaProgramada !== fecha || pr.planta !== plantaNombre) return;
       if (!(pr.etapa === "programacion_hecha" || pr.estado === "cumplido")) return;
       const mismoMeson = pr.meson === mesonId;
       const mismoGrupo = grupoId && pr.mesonGrupo === grupoId;
-      if (mismoMeson || mismoGrupo) total += pr.largoTrazo || 0;
+      if (!(mismoMeson || mismoGrupo)) return;
+      const claveRef = `${pr.pedidoId}__${pr.ref}`;
+      if (vistos.has(claveRef)) return;
+      vistos.add(claveRef);
+      total += pr.largoTrazo || 0;
     });
     return total;
   }
