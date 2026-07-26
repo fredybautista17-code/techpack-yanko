@@ -41,10 +41,17 @@
  * 4. `getClientesBusint`: usado por Administrador General → Clientes →
  *    "Importar de Busint" — trae el maestro completo de clientes.
  *
- * 5. `migrarUsuariosAFirebaseAuth`: migración (Fase A) del login actual
+ * 5. `migrarUsuariosAFirebaseAuth`: migración (Fase A) del login antiguo
  *    (comparación de clave en texto plano contra la colección `users`) hacia
- *    Firebase Authentication real — ver comentario junto a esa función más
- *    abajo para el detalle completo.
+ *    Firebase Authentication real.
+ *
+ * 6. `adminCrearUsuario` / `adminCambiarClaveUsuario`: Fase B de esa misma
+ *    migración — ahora que el login real ya usa Firebase Auth, Admin →
+ *    Usuarios necesita crear cuentas reales al dar de alta un usuario nuevo,
+ *    y resetear la clave de OTRO usuario ya no lo puede hacer el navegador
+ *    directamente (solo el propio). Ambas verifican que quien llama esté
+ *    autenticado Y sea administrador antes de hacer nada — ver
+ *    `verificarLlamadorEsAdmin` más abajo.
  *
  * CREDENCIALES: el token y la URL base de Busint NUNCA se escriben en este
  * archivo (que queda en un repositorio público) — se leen como "secrets" de
@@ -242,19 +249,6 @@ exports.getPedidosVigentesBusint = onCall(
     const porPedido = agruparFilasBusintPorPedido(filas);
     const hoyISO = new Date().toISOString().slice(0, 10);
 
-    // a) Pedidos ya facturados/despachados: se consulta ApiGen_FacturadoBusint
-    // desde la misma fechaInicio elegida hasta HOY (no hasta fechaFin, porque
-    // un pedido dentro del rango puede facturarse después de fechaFin,
-    // incluso después de hoy si fechaFin quedó en el pasado). Busint factura
-    // por REFERENCIA, no por pedido completo — un pedido con 8 referencias
-    // puede tener solo 1 facturada y las otras 7 sin cortar todavía (visto en
-    // el reporte "Prioridades de Despacho" de Busint: pedido con 40% de sus
-    // unidades facturadas). Por eso NO basta con que el pedido "aparezca" en
-    // ApiGen_FacturadoBusint — hay que sumar las unidades facturadas
-    // (`cant`) de todas sus filas y compararlas contra el total pedido; solo
-    // se excluye del informe si ya está 100% facturado. Si esta consulta
-    // falla, no se cae el informe: se sigue igual sin excluir nada por
-    // facturación, y se avisa en la respuesta con `avisoFacturacion`.
     let facturadoPorPedido = new Map();
     let avisoFacturacion = null;
     try {
@@ -270,10 +264,6 @@ exports.getPedidosVigentesBusint = onCall(
       avisoFacturacion = "No se pudo consultar la facturación de Busint — este informe puede estar mostrando pedidos que ya se facturaron.";
     }
 
-    // b) Para los que no están facturados, se cruza con la carga más
-    // reciente de Planeación (misma colección `planeacion_cargas` que usa el
-    // módulo Planta) por número de pedido, para saber si ya tiene lote (y en
-    // qué etapa va) o si todavía no ha iniciado producción ("sin cortar").
     const cargasPlaneacionSnap = await db.collection("planeacion_cargas").get();
     const cargasPlaneacion = cargasPlaneacionSnap.docs.map((d) => d.data());
     cargasPlaneacion.sort((a, b) => String(b.creadoEn || b.fecha || "").localeCompare(String(a.creadoEn || a.fecha || "")));
@@ -286,17 +276,9 @@ exports.getPedidosVigentesBusint = onCall(
       lotesPorPedido.get(numPedido).push({ numLote: l.numLote, ubicacionActual: l.ubicacionActual || "En proceso" });
     });
 
-    // Pedidos que un administrador marcó como "ocultar" desde la pantalla del
-    // informe — normalmente porque Busint los está generando mal (p. ej. por
-    // algo interno de facturación aún sin identificar) y no son demanda real.
-    // Ocultar NO borra ni modifica nada en Busint, solo evita que este
-    // informe los muestre.
     const ocultosSnap = await db.collection("pedidos_ocultos_busint").get();
     const ocultosSet = new Set(ocultosSnap.docs.map((d) => String(d.data().numero || d.id).trim()));
 
-    // "Vigente" = todavía no está 100% facturado. Además se marca `vencido`
-    // cuando la fecha de despacho (programada por Busint) ya pasó, para
-    // diferenciarlo visualmente de los que van a tiempo.
     const porClienteMap = new Map();
     for (const [, pedido] of porPedido) {
       if (ocultosSet.has(pedido.numero)) continue;
@@ -331,8 +313,6 @@ exports.getPedidosVigentesBusint = onCall(
     }
 
     const porCliente = [...porClienteMap.values()].sort((a, b) => a.cliente.localeCompare(b.cliente));
-    // Los vencidos (fecha de despacho ya pasada, sin terminar de cortar)
-    // aparecen primero dentro de cada cliente — son los más urgentes.
     porCliente.forEach((g) =>
       g.pedidos.sort((a, b) => {
         if (a.vencido !== b.vencido) return a.vencido ? -1 : 1;
@@ -483,8 +463,6 @@ exports.getClientesBusint = onCall(
       }))
       .filter((c) => c.nombre);
 
-    // Ordenado alfabéticamente para que la revisión en pantalla sea
-    // predecible (Busint no garantiza ningún orden particular).
     clientes.sort((a, b) => a.nombre.localeCompare(b.nombre));
 
     return { generadoEn: new Date().toISOString(), total: clientes.length, clientes };
@@ -513,12 +491,6 @@ exports.getClientesBusint = onCall(
 //
 // Protegida con una clave secreta propia (no con sesión iniciada, porque en
 // este punto nadie puede iniciar sesión todavía con Firebase Auth).
-// Configúrala una sola vez desde la terminal:
-//
-//   firebase functions:secrets:set MIGRACION_CLAVE
-//
-// y guarda esa misma clave para escribirla en el botón temporal de
-// Administrador → Usuarios cuando la corras.
 const MIGRACION_CLAVE = defineSecret("MIGRACION_CLAVE");
 
 exports.migrarUsuariosAFirebaseAuth = onCall(
@@ -568,9 +540,6 @@ exports.migrarUsuariosAFirebaseAuth = onCall(
             displayName: data.name || username,
           });
         } catch (err) {
-          // Si ya existe (p. ej. se corrió parcialmente antes y falló al
-          // guardar el authUid en Firestore), se reutiliza la cuenta en vez
-          // de fallar.
           if (err.code === "auth/email-already-exists") {
             userRecord = await admin.auth().getUserByEmail(email);
           } else {
@@ -591,3 +560,99 @@ exports.migrarUsuariosAFirebaseAuth = onCall(
   }
 );
 
+// ─── FASE B: ADMINISTRACIÓN DE USUARIOS SOBRE FIREBASE AUTH REAL ──────────
+//
+// Ahora que el login real usa Firebase Authentication (ya no compara clave
+// en texto plano), dos acciones de Admin → Usuarios necesitan pasar por una
+// Cloud Function con permisos de administrador, porque el navegador de
+// quien administra NO tiene permiso para tocar la cuenta de Firebase Auth de
+// OTRA persona (solo la propia):
+//   - Crear un usuario nuevo: hay que crear su cuenta real de Firebase Auth
+//     además de su documento en Firestore, si no, no podría iniciar sesión.
+//   - Resetear la clave de otro usuario: cambiar la clave de una cuenta de
+//     Firebase Auth que no es la tuya requiere el SDK de administrador
+//     (`admin.auth().updateUser`), el cliente no puede hacerlo directo.
+// Ambas funciones exigen sesión iniciada (`request.auth`) Y que quien llama
+// tenga `isAdmin: true` en su propio documento de `users` — se verifica
+// buscando ese documento por `authUid == request.auth.uid`.
+async function verificarLlamadorEsAdmin(request) {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+  }
+  const snap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+  if (snap.empty || !snap.docs[0].data().isAdmin) {
+    throw new HttpsError("permission-denied", "Solo un administrador puede hacer esto.");
+  }
+  return snap.docs[0];
+}
+
+exports.adminCrearUsuario = onCall(
+  { timeoutSeconds: 60, memory: "256MiB" },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const { name, username, password, role, isAdmin } = request.data || {};
+    const nombreLimpio = String(name || "").trim();
+    const usernameNorm = String(username || "").trim().toLowerCase();
+    if (!nombreLimpio || !usernameNorm || !password) {
+      throw new HttpsError("invalid-argument", "Nombre, usuario y contraseña son obligatorios.");
+    }
+    if (String(password).length < 6) {
+      throw new HttpsError("invalid-argument", "La contraseña debe tener al menos 6 caracteres.");
+    }
+    const dupSnap = await db.collection("users").where("username", "==", usernameNorm).limit(1).get();
+    if (!dupSnap.empty) {
+      throw new HttpsError("already-exists", "Ese usuario ya existe.");
+    }
+    const email = `${usernameNorm}@techpack-yanko.local`;
+    let userRecord;
+    try {
+      userRecord = await admin.auth().createUser({ email, password: String(password), displayName: nombreLimpio });
+    } catch (err) {
+      if (err.code === "auth/email-already-exists") {
+        throw new HttpsError("already-exists", "Ya existe una cuenta de acceso con ese nombre de usuario.");
+      }
+      throw new HttpsError("internal", String(err.message || err));
+    }
+    const avatar = nombreLimpio.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+    const docRef = db.collection("users").doc();
+    await docRef.set({
+      id: docRef.id,
+      name: nombreLimpio,
+      username: usernameNorm,
+      role: role || "Equipo Interno",
+      isAdmin: !!isAdmin,
+      avatar,
+      authUid: userRecord.uid,
+    });
+    return { id: docRef.id };
+  }
+);
+
+exports.adminCambiarClaveUsuario = onCall(
+  { timeoutSeconds: 60, memory: "256MiB" },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const { userId, nuevaClave } = request.data || {};
+    if (!userId || !nuevaClave || String(nuevaClave).length < 6) {
+      throw new HttpsError("invalid-argument", "Selecciona un usuario y una contraseña de al menos 6 caracteres.");
+    }
+    const targetDoc = await db.collection("users").doc(userId).get();
+    if (!targetDoc.exists) {
+      throw new HttpsError("not-found", "Usuario no encontrado.");
+    }
+    const targetData = targetDoc.data();
+    let authUid = targetData.authUid;
+    if (!authUid) {
+      // Usuario nunca migrado a Firebase Auth (caso raro post Fase A) — se
+      // crea la cuenta ahora mismo en vez de fallar.
+      const usernameNorm = String(targetData.username || "").trim().toLowerCase();
+      const email = `${usernameNorm}@techpack-yanko.local`;
+      const userRecord = await admin.auth().createUser({ email, password: String(nuevaClave), displayName: targetData.name || usernameNorm });
+      authUid = userRecord.uid;
+      await targetDoc.ref.update({ authUid });
+    } else {
+      await admin.auth().updateUser(authUid, { password: String(nuevaClave) });
+    }
+    return { ok: true };
+  }
+);
