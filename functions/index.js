@@ -1,19 +1,50 @@
 /**
  * Integración con la API de Busint (Órdenes de Pedidos).
  *
- * Dos funciones distintas comparten las mismas credenciales y el mismo
- * endpoint de Busint:
- *
- * 1. `syncPedidosBusint` (programada, corre sola cada 6 horas): reemplaza el
- *    flujo manual de "descargar Excel de Busint → subirlo al aplicativo".
- *    Consulta los últimos 14 días y guarda en Firestore los pedidos que aún
- *    no existan.
- *
- * 2. `getPedidosVigentesBusint` (bajo demanda, "callable" desde la app): se
+ * 1. `getPedidosVigentesBusint` (bajo demanda, "callable" desde la app): se
  *    usa para el Informe de Pedidos Vigentes por Cliente — consulta Busint
  *    EN VIVO para el rango de fechas que el usuario escoja en pantalla (no
- *    depende de lo que ya esté guardado en Firestore) y devuelve solo los
- *    pedidos que todavía no tienen fecha de despacho, agrupados por cliente.
+ *    depende de lo que ya esté guardado en Firestore), agrupados por cliente
+ *    (Busint siempre trae una fechaDespacho poblada — es la fecha PROGRAMADA
+ *    de entrega, no una marca de "ya se entregó"). "Vigente" ya NO depende
+ *    del módulo Corte (esa colección, `corte_pedidos`, nunca se llegó a usar
+ *    en la práctica — nadie subió nada ahí, así que todo salía siempre como
+ *    pendiente). En vez de eso:
+ *      a) Se consulta también `ApiGen_FacturadoBusint` (mismo rango de
+ *         fechas, hasta hoy). Busint factura por REFERENCIA, no por pedido
+ *         completo, así que se suman las unidades facturadas (`cant`) de
+ *         todas las filas de cada pedido y se comparan contra el total
+ *         pedido — solo se excluye del informe si ya quedó 100% facturado
+ *         (factura normal, traslado externo, traslado en consignación,
+ *         etc., sin distinguir tipo). Un pedido con solo una referencia
+ *         facturada de varias sigue apareciendo como vigente.
+ *      b) Para los que no están facturados, se cruza contra la carga más
+ *         reciente de Planeación (`planeacion_cargas`, la misma que usa el
+ *         módulo Planta) por número de pedido: si ya tiene un lote ahí, se
+ *         muestra en qué etapa va (Corte, BMP, Planta, Semiterminado, BPT —
+ *         campo `ubicacionActual` del lote); si NO tiene ningún lote, se
+ *         marca "sin cortar" — es el caso más urgente, porque significa que
+ *         el pedido ni siquiera ha iniciado producción.
+ *    También marca `vencido` cuando la fechaDespacho ya pasó y el pedido
+ *    sigue sin facturar — esos aparecen primero, para priorizar atención. Si
+ *    la consulta a `ApiGen_FacturadoBusint` falla, no se cae el informe
+ *    completo: se muestra igual (sin excluir nada por facturación) y se
+ *    avisa con `avisoFacturacion` en la respuesta.
+ *
+ * 2. `getPedidosExistentesBusint`: usado por "Revisar contra Busint" (Pedidos
+ *    y módulo Corte) — devuelve la lista de números de pedido que Busint
+ *    todavía tiene hoy en un rango de fechas.
+ *
+ * 3. `getOrdenBusintPorNumero`: diagnóstico — trae las filas crudas que
+ *    Busint devuelve para un número de pedido puntual.
+ *
+ * 4. `getClientesBusint`: usado por Administrador General → Clientes →
+ *    "Importar de Busint" — trae el maestro completo de clientes.
+ *
+ * 5. `migrarUsuariosAFirebaseAuth`: migración (Fase A) del login actual
+ *    (comparación de clave en texto plano contra la colección `users`) hacia
+ *    Firebase Authentication real — ver comentario junto a esa función más
+ *    abajo para el detalle completo.
  *
  * CREDENCIALES: el token y la URL base de Busint NUNCA se escriben en este
  * archivo (que queda en un repositorio público) — se leen como "secrets" de
@@ -21,16 +52,29 @@
  *
  *   firebase functions:secrets:set BUSINT_TOKEN
  *   firebase functions:secrets:set BUSINT_BASE_URL
+ *   firebase functions:secrets:set BUSINT_PROXY_SECRET
+ *   firebase functions:secrets:set MIGRACION_CLAVE
  *
- * (BUSINT_BASE_URL es la URL base del instructivo, ej:
- *  http://tudominio:9095 — SIN "/" al final).
+ * IMPORTANTE — Busint Cloud exige conectarse por VPN (WireGuard) para poder
+ * usar la API; una Cloud Function no puede mantener una VPN abierta por sí
+ * sola. Por eso estas funciones NO le hablan directo a Busint: le hablan a
+ * una VM-puente (una máquina virtual siempre conectada a la VPN de Busint,
+ * que reenvía la petición) — ver vm-busint-relay-startup.sh. En este caso:
+ *   - BUSINT_BASE_URL = la dirección de esa VM-puente, ej: http://IP:8080
+ *     (SIN "/" al final)
+ *   - BUSINT_PROXY_SECRET = el mismo secreto configurado en la VM, para que
+ *     solo esta función pueda usar el puente (nadie más que sepa la IP).
  *
- * Ver README_BUSINT_SYNC.md para la guía completa de despliegue. Si ya
- * desplegaste `syncPedidosBusint` antes, estos secrets ya están configurados
- * y `getPedidosVigentesBusint` los reutiliza tal cual — no hace falta
- * volver a pegarlos en ningún lado.
+ * NOTA: este archivo tenía antes una función programada (`syncPedidosBusint`,
+ * corría sola cada 6 horas) que copiaba pedidos de Busint a la colección
+ * "pedidos". Se retiró — ese auto-sync generaba una base separada y
+ * desincronizada de la que realmente importa (la que corta el módulo Corte),
+ * y nunca reflejaba con certeza qué seguía vigente. El flujo actual es:
+ * getPedidosVigentesBusint (consulta en vivo, siempre fresca) + el botón
+ * "Congelar como base de Corte" en la pantalla de Vigentes, que escribe
+ * directo a la colección "pedidos_activos" — una sola fuente de verdad que
+ * tanto Pedidos como Corte leen.
  */
-const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
@@ -41,13 +85,7 @@ const db = admin.firestore();
 
 const BUSINT_TOKEN = defineSecret("BUSINT_TOKEN");
 const BUSINT_BASE_URL = defineSecret("BUSINT_BASE_URL");
-
-// Cuántos días hacia atrás se consultan en cada corrida programada. Generoso
-// a propósito: si la función falla una vez o Busint no responde, la
-// siguiente corrida igual alcanza a traer los pedidos que se quedaron
-// pendientes, porque el chequeo de duplicados por N° de Pedido evita que se
-// carguen dos veces.
-const DIAS_HACIA_ATRAS = 14;
+const BUSINT_PROXY_SECRET = defineSecret("BUSINT_PROXY_SECRET");
 
 function fmtFecha(d) {
   return d.toISOString().slice(0, 10);
@@ -60,14 +98,25 @@ function soloFecha(iso) {
   return String(iso).slice(0, 10);
 }
 
+// El endpoint real (confirmado contra el swagger.json de esta instancia de
+// Busint Cloud) es "ApiGen_OrdenesDePedidoBusint" (Pedido en singular) y
+// espera el cuerpo como multipart/form-data con los campos Token,
+// FechaInicio y FechaFin — NO como JSON con el token en un header, que era
+// el formato asumido originalmente (y que Busint respondía con 404).
 async function consultarOrdenesBusint(fechaInicio, fechaFin) {
   const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
   const token = BUSINT_TOKEN.value();
+  const proxySecret = BUSINT_PROXY_SECRET.value();
 
-  const resp = await fetch(`${baseUrl}/consultas/ApiGen_OrdenesDePedidosBusint`, {
+  const form = new FormData();
+  form.append("Token", token);
+  form.append("FechaInicio", fechaInicio);
+  form.append("FechaFin", fechaFin);
+
+  const resp = await fetch(`${baseUrl}/consultas/ApiGen_OrdenesDePedidoBusint`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", token },
-    body: JSON.stringify({ FechaInicio: fechaInicio, FechaFin: fechaFin }),
+    headers: { "X-Proxy-Secret": proxySecret },
+    body: form,
   });
 
   if (!resp.ok) {
@@ -126,130 +175,52 @@ function agruparFilasBusintPorPedido(filas) {
   return porPedido;
 }
 
-async function syncPedidosDesdeBusint() {
-  const hoy = new Date();
-  const inicio = new Date(hoy);
-  inicio.setDate(inicio.getDate() - DIAS_HACIA_ATRAS);
+// Consulta "ApiGen_FacturadoBusint" — trae, para un rango de fechas, TODO lo
+// que ya se facturó o se sacó de la fábrica: facturas normales, traslados
+// externos, traslados en consignación y sus devoluciones (así lo describe la
+// documentación de Busint). Se usa el mismo formato de solicitud confirmado
+// para "ApiGen_OrdenesDePedidoBusint" (form-data con Token/FechaInicio/
+// FechaFin, no JSON), porque es la misma familia de API — si Busint responde
+// distinto para este endpoint en particular, revisar los logs de
+// getPedidosVigentesBusint.
+async function consultarFacturadoBusint(fechaInicio, fechaFin) {
+  const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
+  const token = BUSINT_TOKEN.value();
+  const proxySecret = BUSINT_PROXY_SECRET.value();
 
-  const filas = await consultarOrdenesBusint(fmtFecha(inicio), fmtFecha(hoy));
-  if (!filas.length) {
-    logger.info("Sin filas nuevas de Busint en el rango consultado.");
-    return { pedidosCreados: 0, clientesCreados: 0 };
+  const form = new FormData();
+  form.append("Token", token);
+  form.append("FechaInicio", fechaInicio);
+  form.append("FechaFin", fechaFin);
+
+  const resp = await fetch(`${baseUrl}/consultas/ApiGen_FacturadoBusint`, {
+    method: "POST",
+    headers: { "X-Proxy-Secret": proxySecret },
+    body: form,
+  });
+
+  if (!resp.ok) {
+    const texto = await resp.text().catch(() => "");
+    logger.error("Busint respondió con error (ApiGen_FacturadoBusint)", { status: resp.status, texto });
+    throw new Error(`Busint respondió ${resp.status}`);
   }
 
-  const porPedido = agruparFilasBusintPorPedido(filas);
-
-  // Chequeo de duplicados: nunca se crea un pedido cuyo número ya existe en
-  // Firestore, sin importar en qué estado esté (igual que el chequeo del
-  // formulario manual "Cargar Pedido Busint" dentro del aplicativo).
-  const existentesSnap = await db.collection("pedidos").get();
-  const numerosExistentes = new Set(
-    existentesSnap.docs.map((d) => String(d.data().numero || "").trim().toLowerCase())
-  );
-
-  const configSnap = await db.collection("config").doc("main").get();
-  const clientesActuales = configSnap.exists ? configSnap.data().clientes || [] : [];
-  const nombresClientesExistentes = new Set(clientesActuales.map((c) => (c.nombre || "").toLowerCase()));
-  const clientesNuevos = [];
-
-  const PEDIDO_STAGES = [
-    "Hoja de Vida", "Verificación de Colorido", "Carta de Combinaciones, Textiles e Insumos",
-    "Verificación de Ilustración", "Muestra", "Revisión de Insumos", "Cotización", "Ficha Técnica",
-    "Pedido en Busint", "Explosión de Materiales", "Corte", "Control de Muestra de Corte",
-    "Bodega de Materia Prima", "Confección", "Inventario de Procesos", "Semiterminado", "Despacho",
-  ];
-
-  let batch = db.batch();
-  let opsEnBatch = 0;
-  let pedidosCreados = 0;
-
-  async function commitBatchSiHaceFalta() {
-    if (opsEnBatch >= 400) {
-      await batch.commit();
-      batch = db.batch();
-      opsEnBatch = 0;
-    }
-  }
-
-  for (const [numero, pedido] of porPedido) {
-    if (numerosExistentes.has(numero.toLowerCase())) continue;
-
-    const referencias = [...pedido.refsPorClave.values()];
-    if (!referencias.length) continue;
-
-    const seguimiento = {};
-    PEDIDO_STAGES.forEach((s) => { seguimiento[s] = false; });
-
-    const id = db.collection("pedidos").doc().id;
-    batch.set(db.collection("pedidos").doc(id), {
-      id,
-      numero: pedido.numero,
-      cliente: pedido.cliente,
-      fechaPedido: pedido.fechaPedido,
-      fechaDespacho: pedido.fechaDespacho,
-      vendedor: "",
-      ciudad: "",
-      referencias,
-      estado: "activo",
-      seguimiento,
-      cortesRealizados: [],
-      creadoEn: fmtFecha(hoy),
-      origenBusintAuto: true,
-    });
-    opsEnBatch++;
-    pedidosCreados++;
-    await commitBatchSiHaceFalta();
-
-    if (pedido.cliente && !nombresClientesExistentes.has(pedido.cliente.toLowerCase())) {
-      nombresClientesExistentes.add(pedido.cliente.toLowerCase());
-      clientesNuevos.push({ id: cryptoRandomId(), nombre: pedido.cliente, contacto: "", email: "", telefono: "" });
-    }
-  }
-
-  if (opsEnBatch > 0) await batch.commit();
-
-  // Escritura granular: solo se toca el campo "clientes" (con arrayUnion),
-  // nunca se reescribe el documento config/main completo — así esta
-  // sincronización nunca puede pisar roles/etapas/categorías ni ningún otro
-  // campo, sin importar qué tan vieja esté la copia leída arriba.
-  if (clientesNuevos.length) {
-    await db.collection("config").doc("main").update({
-      clientes: admin.firestore.FieldValue.arrayUnion(...clientesNuevos),
-    });
-  }
-
-  logger.info(`Sync Busint: ${pedidosCreados} pedido(s) nuevo(s), ${clientesNuevos.length} cliente(s) nuevo(s).`);
-  return { pedidosCreados, clientesCreados: clientesNuevos.length };
+  const filas = await resp.json();
+  return Array.isArray(filas) ? filas : [];
 }
 
 function cryptoRandomId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-// Corre sola cada 6 horas. Para cambiar la frecuencia, edita el string de
-// abajo (sintaxis tipo cron: https://firebase.google.com/docs/functions/schedule-functions)
-// y vuelve a desplegar con `firebase deploy --only functions`.
-exports.syncPedidosBusint = onSchedule(
-  {
-    schedule: "every 6 hours",
-    timeZone: "America/Bogota",
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
-    timeoutSeconds: 300,
-    memory: "256MiB",
-  },
-  async () => {
-    await syncPedidosDesdeBusint();
-  }
-);
-
 // Informe de Pedidos Vigentes por Cliente — consulta Busint EN VIVO (no lee
 // Firestore) para el rango { fechaInicio, fechaFin } que envía la pantalla,
-// y devuelve solo los pedidos que Busint todavía no marca con fecha de
-// despacho, agrupados por cliente. Se llama desde el navegador con
+// y devuelve solo los pedidos cuya fecha de despacho es hoy o está en el
+// futuro, agrupados por cliente. Se llama desde el navegador con
 // `httpsCallable(functions, "getPedidosVigentesBusint")({ fechaInicio, fechaFin })`.
 exports.getPedidosVigentesBusint = onCall(
   {
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_PROXY_SECRET],
     timeoutSeconds: 60,
     memory: "256MiB",
   },
@@ -269,14 +240,75 @@ exports.getPedidosVigentesBusint = onCall(
     }
 
     const porPedido = agruparFilasBusintPorPedido(filas);
+    const hoyISO = new Date().toISOString().slice(0, 10);
 
-    // "Vigente" = Busint todavía no le registra fecha de despacho, es decir,
-    // el pedido sigue pendiente de entrega.
+    // a) Pedidos ya facturados/despachados: se consulta ApiGen_FacturadoBusint
+    // desde la misma fechaInicio elegida hasta HOY (no hasta fechaFin, porque
+    // un pedido dentro del rango puede facturarse después de fechaFin,
+    // incluso después de hoy si fechaFin quedó en el pasado). Busint factura
+    // por REFERENCIA, no por pedido completo — un pedido con 8 referencias
+    // puede tener solo 1 facturada y las otras 7 sin cortar todavía (visto en
+    // el reporte "Prioridades de Despacho" de Busint: pedido con 40% de sus
+    // unidades facturadas). Por eso NO basta con que el pedido "aparezca" en
+    // ApiGen_FacturadoBusint — hay que sumar las unidades facturadas
+    // (`cant`) de todas sus filas y compararlas contra el total pedido; solo
+    // se excluye del informe si ya está 100% facturado. Si esta consulta
+    // falla, no se cae el informe: se sigue igual sin excluir nada por
+    // facturación, y se avisa en la respuesta con `avisoFacturacion`.
+    let facturadoPorPedido = new Map();
+    let avisoFacturacion = null;
+    try {
+      const filasFacturado = await consultarFacturadoBusint(fechaInicio, hoyISO);
+      filasFacturado.forEach((f) => {
+        const numero = String(f.numped ?? "").trim();
+        if (!numero) return;
+        const cant = Number(f.cant) || 0;
+        facturadoPorPedido.set(numero, (facturadoPorPedido.get(numero) || 0) + cant);
+      });
+    } catch (err) {
+      logger.error("Error consultando ApiGen_FacturadoBusint (getPedidosVigentesBusint)", { error: String(err) });
+      avisoFacturacion = "No se pudo consultar la facturación de Busint — este informe puede estar mostrando pedidos que ya se facturaron.";
+    }
+
+    // b) Para los que no están facturados, se cruza con la carga más
+    // reciente de Planeación (misma colección `planeacion_cargas` que usa el
+    // módulo Planta) por número de pedido, para saber si ya tiene lote (y en
+    // qué etapa va) o si todavía no ha iniciado producción ("sin cortar").
+    const cargasPlaneacionSnap = await db.collection("planeacion_cargas").get();
+    const cargasPlaneacion = cargasPlaneacionSnap.docs.map((d) => d.data());
+    cargasPlaneacion.sort((a, b) => String(b.creadoEn || b.fecha || "").localeCompare(String(a.creadoEn || a.fecha || "")));
+    const cargaPlaneacionActiva = cargasPlaneacion[0] || null;
+    const lotesPorPedido = new Map();
+    (cargaPlaneacionActiva?.lotes || []).forEach((l) => {
+      const numPedido = String(l.numPedido ?? "").trim();
+      if (!numPedido) return;
+      if (!lotesPorPedido.has(numPedido)) lotesPorPedido.set(numPedido, []);
+      lotesPorPedido.get(numPedido).push({ numLote: l.numLote, ubicacionActual: l.ubicacionActual || "En proceso" });
+    });
+
+    // Pedidos que un administrador marcó como "ocultar" desde la pantalla del
+    // informe — normalmente porque Busint los está generando mal (p. ej. por
+    // algo interno de facturación aún sin identificar) y no son demanda real.
+    // Ocultar NO borra ni modifica nada en Busint, solo evita que este
+    // informe los muestre.
+    const ocultosSnap = await db.collection("pedidos_ocultos_busint").get();
+    const ocultosSet = new Set(ocultosSnap.docs.map((d) => String(d.data().numero || d.id).trim()));
+
+    // "Vigente" = todavía no está 100% facturado. Además se marca `vencido`
+    // cuando la fecha de despacho (programada por Busint) ya pasó, para
+    // diferenciarlo visualmente de los que van a tiempo.
     const porClienteMap = new Map();
     for (const [, pedido] of porPedido) {
-      if (pedido.fechaDespacho) continue;
+      if (ocultosSet.has(pedido.numero)) continue;
       const referencias = [...pedido.refsPorClave.values()];
       const totalUnidades = referencias.reduce((s, r) => s + r.total, 0);
+      const totalFacturado = facturadoPorPedido.get(pedido.numero) || 0;
+      const completo = totalUnidades > 0 && totalFacturado >= totalUnidades;
+      if (completo) continue;
+      const lotesDelPedido = lotesPorPedido.get(pedido.numero) || [];
+      const tieneLote = lotesDelPedido.length > 0;
+      const etapas = tieneLote ? [...new Set(lotesDelPedido.map((l) => l.ubicacionActual))] : [];
+      const vencido = !!pedido.fechaDespacho && pedido.fechaDespacho < hoyISO;
       const clienteKey = pedido.cliente || "Sin cliente";
       if (!porClienteMap.has(clienteKey)) {
         porClienteMap.set(clienteKey, { cliente: clienteKey, pedidos: [], totalPedidos: 0, totalUnidades: 0 });
@@ -286,15 +318,27 @@ exports.getPedidosVigentesBusint = onCall(
         numero: pedido.numero,
         fechaPedido: pedido.fechaPedido,
         fechaDespacho: pedido.fechaDespacho,
+        vencido,
         referencias,
         totalUnidades,
+        totalFacturado,
+        pctFacturado: totalUnidades > 0 ? Math.round((totalFacturado / totalUnidades) * 100) : 0,
+        tieneLote,
+        etapas,
       });
       grupo.totalPedidos += 1;
       grupo.totalUnidades += totalUnidades;
     }
 
     const porCliente = [...porClienteMap.values()].sort((a, b) => a.cliente.localeCompare(b.cliente));
-    porCliente.forEach((g) => g.pedidos.sort((a, b) => (a.fechaPedido || "").localeCompare(b.fechaPedido || "")));
+    // Los vencidos (fecha de despacho ya pasada, sin terminar de cortar)
+    // aparecen primero dentro de cada cliente — son los más urgentes.
+    porCliente.forEach((g) =>
+      g.pedidos.sort((a, b) => {
+        if (a.vencido !== b.vencido) return a.vencido ? -1 : 1;
+        return (a.fechaDespacho || "").localeCompare(b.fechaDespacho || "");
+      })
+    );
 
     return {
       fechaInicio,
@@ -303,7 +347,147 @@ exports.getPedidosVigentesBusint = onCall(
       totalClientes: porCliente.length,
       totalPedidos: porCliente.reduce((s, g) => s + g.totalPedidos, 0),
       porCliente,
+      avisoFacturacion,
     };
+  }
+);
+
+// Callable usado por "Revisar contra Busint" tanto en Pedidos (pestaña
+// Activos) como en el módulo Corte: dado un rango de fechas, devuelve
+// simplemente la LISTA de números de pedido que Busint todavía tiene hoy en
+// ese rango (agrupando igual que consultarOrdenesBusint). Si un pedido que
+// el aplicativo tiene como "activo" ya NO aparece en esta lista, quiere
+// decir que en Busint se canceló, se cerró o se dio por cumplido — el
+// aplicativo lo usa para marcarlo automáticamente en vez de quedarse
+// pegado como activo para siempre.
+exports.getPedidosExistentesBusint = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_PROXY_SECRET],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const { fechaInicio, fechaFin } = request.data || {};
+    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    if (!fechaValida(fechaInicio) || !fechaValida(fechaFin)) {
+      throw new HttpsError("invalid-argument", "fechaInicio y fechaFin son obligatorias, en formato AAAA-MM-DD.");
+    }
+    let filas;
+    try {
+      filas = await consultarOrdenesBusint(fechaInicio, fechaFin);
+    } catch (err) {
+      logger.error("Error consultando Busint (getPedidosExistentesBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+    }
+    const porPedido = agruparFilasBusintPorPedido(filas);
+    return { fechaInicio, fechaFin, numeros: [...porPedido.keys()] };
+  }
+);
+
+// Diagnóstico: trae las filas CRUDAS (sin agrupar, sin filtrar campos) que
+// ApiGen_OrdenesDePedidoBusint devuelve para un número de pedido puntual, en
+// el rango de fechas dado. Se usa desde la pantalla de Pedidos para
+// responder la pregunta "¿este pedido todavía existe en Busint, y con qué
+// datos exactos?" sin adivinar — muestra tal cual lo que Busint responde.
+exports.getOrdenBusintPorNumero = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_PROXY_SECRET],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const { fechaInicio, fechaFin, numeroPedido } = request.data || {};
+    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    if (!fechaValida(fechaInicio) || !fechaValida(fechaFin)) {
+      throw new HttpsError("invalid-argument", "fechaInicio y fechaFin son obligatorias, en formato AAAA-MM-DD.");
+    }
+    const numeroBuscado = String(numeroPedido ?? "").trim();
+    if (!numeroBuscado) {
+      throw new HttpsError("invalid-argument", "numeroPedido es obligatorio.");
+    }
+    let filas;
+    try {
+      filas = await consultarOrdenesBusint(fechaInicio, fechaFin);
+    } catch (err) {
+      logger.error("Error consultando Busint (getOrdenBusintPorNumero)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+    }
+    const filasCoincidentes = filas.filter((f) => String(f.numPed ?? "").trim() === numeroBuscado);
+    return {
+      fechaInicio,
+      fechaFin,
+      numeroPedido: numeroBuscado,
+      totalFilasEnRango: filas.length,
+      filasCoincidentes,
+    };
+  }
+);
+
+// Consulta el maestro de clientes de Busint ("ApiGen_Clientes") — a
+// diferencia de las órdenes de pedido, este endpoint no recibe rango de
+// fechas: siempre trae el listado completo tal como está hoy en Busint.
+async function consultarClientesBusint() {
+  const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
+  const token = BUSINT_TOKEN.value();
+  const proxySecret = BUSINT_PROXY_SECRET.value();
+
+  const form = new FormData();
+  form.append("Token", token);
+
+  const resp = await fetch(`${baseUrl}/consultas/ApiGen_Clientes`, {
+    method: "POST",
+    headers: { "X-Proxy-Secret": proxySecret },
+    body: form,
+  });
+
+  if (!resp.ok) {
+    const texto = await resp.text().catch(() => "");
+    logger.error("Busint respondió con error (ApiGen_Clientes)", { status: resp.status, texto });
+    throw new Error(`Busint respondió ${resp.status}`);
+  }
+
+  const filas = await resp.json();
+  return Array.isArray(filas) ? filas : [];
+}
+
+// Callable usado por Administrador General → Clientes → "Importar de
+// Busint". Trae el maestro completo y lo reduce a los campos que el
+// aplicativo realmente guarda por cliente (nombre, contacto, email,
+// teléfono) — la decisión de qué hacer con cada uno (agregar, reemplazar
+// nombre existente, u omitir) la toma el usuario en pantalla, esta función
+// solo entrega los datos crudos de Busint.
+exports.getClientesBusint = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_PROXY_SECRET],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async () => {
+    let filas;
+    try {
+      filas = await consultarClientesBusint();
+    } catch (err) {
+      logger.error("Error consultando Busint (getClientesBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+    }
+
+    const clientes = filas
+      .map((f) => ({
+        nombre: (f.nombreORazonSocial || "").trim(),
+        nombreCorto: (f.nombreCorto || "").trim(),
+        contacto: (f.contacto || "").trim(),
+        email: (f.email || "").trim(),
+        telefono: (f.telefono || f.celular || "").trim(),
+        ciudad: (f.ciudad || "").trim(),
+        activo: f.clienteActivo !== false,
+      }))
+      .filter((c) => c.nombre);
+
+    // Ordenado alfabéticamente para que la revisión en pantalla sea
+    // predecible (Busint no garantiza ningún orden particular).
+    clientes.sort((a, b) => a.nombre.localeCompare(b.nombre));
+
+    return { generadoEn: new Date().toISOString(), total: clientes.length, clientes };
   }
 );
 
@@ -406,3 +590,4 @@ exports.migrarUsuariosAFirebaseAuth = onCall(
     return { migrados, yaExistian, errores };
   }
 );
+
