@@ -4174,7 +4174,7 @@ function EditNombreModal({ item, tipo, config, onSave, onClose }) {
     </Modal>
   );
 }
-function UsersTab({ users, onUpdateUsers, config }) {
+function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState(null);
   const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false });
@@ -4183,6 +4183,28 @@ function UsersTab({ users, onUpdateUsers, config }) {
   const [showPwd, setShowPwd] = useState(false);
   const [error, setError] = useState("");
   const roleOptions = config.roles.map((r) => r.name);
+  // --- Migración a Firebase Authentication (Fase A, temporal) ---
+  // Botón de un solo uso para crear, por detrás, una cuenta real de Firebase
+  // Auth para cada usuario que hoy solo existe como documento en Firestore
+  // (con clave en texto plano). No toca el login actual — es seguro de
+  // correr varias veces (los ya migrados se saltan). Se puede quitar este
+  // bloque una vez completada la migración de todo el equipo.
+  const [migrando, setMigrando] = useState(false);
+  const [resultadoMigracion, setResultadoMigracion] = useState(null);
+  async function migrarAuth() {
+    const clave = window.prompt("Clave de migración (la que configuraste con 'firebase functions:secrets:set MIGRACION_CLAVE'):");
+    if (!clave) return;
+    setMigrando(true);
+    setResultadoMigracion(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "migrarUsuariosAFirebaseAuth");
+      const resp = await llamar({ clave });
+      setResultadoMigracion(resp.data);
+    } catch (err) {
+      setResultadoMigracion({ error: err?.message || String(err) });
+    }
+    setMigrando(false);
+  }
   function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false }); setEditUser(null); setShowForm(true); setError(""); }
   function openEdit(u) { setForm({ name: u.name, username: u.username, password: u.password, role: u.role, isAdmin: u.isAdmin }); setEditUser(u); setShowForm(true); setError(""); }
   function saveUser() {
@@ -4209,8 +4231,48 @@ function UsersTab({ users, onUpdateUsers, config }) {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div><div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>Gestión de Usuarios</div><div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{users.length} usuario{users.length !== 1 ? "s" : ""}</div></div>
-        <Btn onClick={openNew}>+ Nuevo Usuario</Btn>
+        <div style={{ display: "flex", gap: 8 }}>
+          {isAdmin && (
+            <Btn variant="amber" onClick={migrarAuth} disabled={migrando}>
+              {migrando ? "Migrando..." : "🔐 Migrar a Firebase Auth"}
+            </Btn>
+          )}
+          <Btn onClick={openNew}>+ Nuevo Usuario</Btn>
+        </div>
       </div>
+      {resultadoMigracion && (
+        <div
+          style={{
+            padding: "12px 16px",
+            borderRadius: 10,
+            marginBottom: 20,
+            fontSize: 13,
+            fontWeight: 600,
+            background: resultadoMigracion.error ? T.coralBg : T.jadeBg,
+            color: resultadoMigracion.error ? T.coral : T.jade,
+            border: `1px solid ${resultadoMigracion.error ? T.coral : T.jade}44`,
+          }}
+        >
+          {resultadoMigracion.error ? (
+            `⚠ ${resultadoMigracion.error}`
+          ) : (
+            <div>
+              <div>
+                ✓ {resultadoMigracion.migrados.length} usuario{resultadoMigracion.migrados.length !== 1 ? "s" : ""} migrado{resultadoMigracion.migrados.length !== 1 ? "s" : ""}
+                {resultadoMigracion.migrados.length ? `: ${resultadoMigracion.migrados.join(", ")}` : ""}
+              </div>
+              {resultadoMigracion.yaExistian.length > 0 && (
+                <div style={{ marginTop: 4 }}>Ya estaban migrados: {resultadoMigracion.yaExistian.join(", ")}</div>
+              )}
+              {resultadoMigracion.errores.length > 0 && (
+                <div style={{ marginTop: 4, color: T.coral }}>
+                  ⚠ {resultadoMigracion.errores.length} con error: {resultadoMigracion.errores.map((e) => `${e.username || e.id} (${e.motivo})`).join(" · ")}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {showForm && (
         <div style={{ background: T.canvas, borderRadius: 12, padding: 20, border: `1.5px solid ${T.denim}`, marginBottom: 20 }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 16 }}>{editUser ? `Editar: ${editUser.name}` : "Nuevo Usuario"}</div>
@@ -4755,7 +4817,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
             </div>
           </div>
         )}
-        {tab === "usuarios" && <UsersTab users={users} onUpdateUsers={onUpdateUsers} config={config} />}
+        {tab === "usuarios" && <UsersTab users={users} onUpdateUsers={onUpdateUsers} config={config} isAdmin={isAdmin} />}
         {tab === "clientes" && <ClientesTab config={config} onUpdateConfig={onUpdateConfig} />}
         {tab === "contenido" && (
           <div>
