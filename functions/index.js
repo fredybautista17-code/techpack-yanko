@@ -306,3 +306,103 @@ exports.getPedidosVigentesBusint = onCall(
     };
   }
 );
+
+// ─── MIGRACIÓN A FIREBASE AUTHENTICATION (Fase A) ─────────────────────────
+//
+// Hoy el login del aplicativo compara la clave escrita a mano contra la
+// colección `users` de Firestore, que guarda las contraseñas en texto
+// plano y se lee completa ANTES de que la persona inicie sesión — por eso
+// las reglas de seguridad de Firestore no pueden exigir sesión iniciada sin
+// romper el login. Este es el primer paso para arreglarlo de raíz: crear,
+// por detrás y sin tocar el login actual, una cuenta REAL de Firebase
+// Authentication para cada usuario que ya existe.
+//
+// Firebase Auth pide un "correo" para el login por clave — como acá se
+// entra con nombre de usuario (no correo), se arma uno falso con el mismo
+// username: usuario@techpack-yanko.local. Nadie necesita memorizar nada
+// nuevo. La clave que ya tiene cada persona se reutiliza tal cual.
+//
+// Es segura de correr varias veces: si un usuario ya tiene el campo
+// `authUid` guardado (ya fue migrado), se salta. No borra ni modifica la
+// colección `users` existente — solo le agrega `authUid` a cada documento,
+// para poder ligarlo más adelante (Fase B) a la cuenta real.
+//
+// Protegida con una clave secreta propia (no con sesión iniciada, porque en
+// este punto nadie puede iniciar sesión todavía con Firebase Auth).
+// Configúrala una sola vez desde la terminal:
+//
+//   firebase functions:secrets:set MIGRACION_CLAVE
+//
+// y guarda esa misma clave para escribirla en el botón temporal de
+// Administrador → Usuarios cuando la corras.
+const MIGRACION_CLAVE = defineSecret("MIGRACION_CLAVE");
+
+exports.migrarUsuariosAFirebaseAuth = onCall(
+  {
+    secrets: [MIGRACION_CLAVE],
+    timeoutSeconds: 120,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const clave = request.data?.clave;
+    if (!clave || clave !== MIGRACION_CLAVE.value()) {
+      throw new HttpsError("permission-denied", "Clave de migración incorrecta.");
+    }
+
+    const usersSnap = await db.collection("users").get();
+    const migrados = [];
+    const yaExistian = [];
+    const errores = [];
+
+    for (const doc of usersSnap.docs) {
+      const data = doc.data();
+      if (data.authUid) {
+        yaExistian.push(data.username);
+        continue;
+      }
+      const username = String(data.username || "").trim().toLowerCase();
+      if (!username) {
+        errores.push({ id: doc.id, motivo: "Documento sin username." });
+        continue;
+      }
+      const email = `${username}@techpack-yanko.local`;
+      const password = data.password;
+      if (!password || String(password).length < 6) {
+        errores.push({
+          id: doc.id,
+          username,
+          motivo: "Clave ausente o muy corta (Firebase exige mínimo 6 caracteres) — cámbiala primero desde Admin → Usuarios y vuelve a correr la migración.",
+        });
+        continue;
+      }
+      try {
+        let userRecord;
+        try {
+          userRecord = await admin.auth().createUser({
+            email,
+            password: String(password),
+            displayName: data.name || username,
+          });
+        } catch (err) {
+          // Si ya existe (p. ej. se corrió parcialmente antes y falló al
+          // guardar el authUid en Firestore), se reutiliza la cuenta en vez
+          // de fallar.
+          if (err.code === "auth/email-already-exists") {
+            userRecord = await admin.auth().getUserByEmail(email);
+          } else {
+            throw err;
+          }
+        }
+        await doc.ref.update({ authUid: userRecord.uid });
+        migrados.push(username);
+      } catch (err) {
+        errores.push({ id: doc.id, username, motivo: String(err.message || err) });
+      }
+    }
+
+    logger.info(
+      `Migración a Firebase Auth: ${migrados.length} migrado(s), ${yaExistian.length} ya exist(ía/ían), ${errores.length} con error.`
+    );
+    return { migrados, yaExistian, errores };
+  }
+);
