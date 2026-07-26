@@ -1327,7 +1327,19 @@ function MesonTimeline({ nombre, capacidad, compartido, ocupados, inicioActual, 
   );
 }
 
-function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onSave, onClose }) {
+// Antes era un modal que se abría encima de "Programados Pendientes". Ahora
+// es el panel de la pestaña "Programación de Mesones": el cortador entra acá
+// (mirando hacia el futuro, cualquier día que tenga algo programado) a
+// ingresar los datos teóricos del corte (mesón, trazo, horario...), y un
+// analista con el permiso "aprobar_corte" revisa y aprueba antes de que
+// cuente como confirmado. `onClose` ahora es "volver a la lista" (deseleccionar),
+// no cerrar una ventana emergente.
+function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onSave, onClose, puedeAprobar, onAprobar, usuarioActual }) {
+  const aprobado = grupo.colores.every((c) => c.etapa === "programacion_hecha" && c.aprobado === true);
+  const pendienteAprobacion = grupo.colores.every((c) => c.etapa === "programacion_hecha") && !aprobado;
+  const aprobadoPorTxt = grupo.colores.find((c) => c.aprobadoPor)?.aprobadoPor;
+  const aprobadoFechaTxt = grupo.colores.find((c) => c.aprobadoFechaISO)?.aprobadoFechaISO;
+  const ingresadoPorTxt = grupo.colores.find((c) => c.ingresadoPor)?.ingresadoPor;
   const [form, setForm] = useState({
     fechaProgramada: grupo.fechaProgramada || today(),
     planta: grupo.planta || "",
@@ -1359,7 +1371,15 @@ function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadistica
   // encima se apilan 40 capas o 200, así que lo que se compara contra la
   // capacidad es largoTrazo solo, no largoTrazo × capas.
   const largoTrazoNum = parseFloat(form.largoTrazo) || 0;
-  const capacidad = grupoMeson ? grupoMeson.metros : mesonSel ? mesonSel.metros : null;
+  // Dentro de un grupo compartido, cada mesón conserva su propio tope
+  // individual (ej. Mesón 2 hasta 14m, Mesón 3 hasta 7m) ADEMÁS del total
+  // compartido entre los dos (ej. 14m) — un corte tiene que caber en las DOS
+  // cosas a la vez: no pasarse de su propio tope, y no pasarse de lo que
+  // quede libre del total compartido. "capacidad" (lo que se muestra en
+  // pantalla) es el tope propio del mesón elegido; "capacidadCompartida" es
+  // el total del grupo, solo aplica si está agrupado.
+  const capacidad = mesonSel ? mesonSel.metros : null;
+  const capacidadCompartida = grupoMeson ? grupoMeson.metros : null;
   // Todos los colores de esta referencia comparten un solo trazo físico, así
   // que se excluyen TODOS sus docs (no solo uno) al calcular lo ya reservado
   // en el mesón — si no, el propio trazo se restaría de la capacidad.
@@ -1369,12 +1389,6 @@ function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadistica
   // definen qué otros cortes de ese mesón "compiten" por el mismo espacio.
   const horasFaltantes = !form.horaInicioEstimada || !form.horaFinEstimada;
   const horasInvalidas = !horasFaltantes && form.horaFinEstimada <= form.horaInicioEstimada;
-  // Qué más hay ya programado (con horario) en este mismo mesón ese día —
-  // para el timeline visual y para calcular disponibilidad real. Se
-  // excluyen los propios colores del grupo.
-  const ocupadosMeson = mesonSel
-    ? itemsUsadosMeson(form.fechaProgramada, form.planta, form.meson, mesonSel.grupoId, idsGrupo)
-    : [];
   // Un mesón NO se ocupa el día entero por un solo trazo — se ocupa solo
   // durante la franja de horario en la que está tendido/en corte. Por eso la
   // disponibilidad real se compara contra los cortes cuyo horario SE CRUZA
@@ -1391,9 +1405,36 @@ function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadistica
     if (horasFaltantes) return true;
     return form.horaInicioEstimada < item.horaFinEstimada && item.horaInicioEstimada < form.horaFinEstimada;
   }
-  const ocupadosQueCruzan = ocupadosMeson.filter(seCruzaConHorario);
-  const usados = ocupadosQueCruzan.reduce((s, it) => s + (it.largoTrazo || 0), 0);
-  const disponible = capacidad !== null ? capacidad - usados : null;
+  // Calcula, para UN mesón puntual (agrupado o no), qué hay ocupado que se
+  // cruza con el horario actual y cuánto queda realmente disponible. Se usa
+  // tanto para el mesón elegido en el formulario como para cada fila del
+  // tablero de disponibilidad (ver tableroMesones más abajo) — así los dos
+  // usan exactamente la misma cuenta. Dentro de un grupo compartido (ej.
+  // Mesón 2 hasta 14m, Mesón 3 hasta 7m, 14m compartidos entre los dos), lo
+  // ocupado se suma de TODO el grupo (itemsUsadosMeson ya lo hace así), y lo
+  // disponible es el menor entre el tope propio del mesón y lo que quede
+  // libre del total compartido — un corte tiene que caber en las dos cosas
+  // a la vez.
+  function calcularDisponibilidad(mesonId, grupoIdMeson, capacidadIndividual, capacidadGrupo) {
+    const ocupados = itemsUsadosMeson(form.fechaProgramada, form.planta, mesonId, grupoIdMeson, idsGrupo);
+    const ocupadosQueCruzan = ocupados.filter(seCruzaConHorario);
+    const usadosAqui = ocupadosQueCruzan.reduce((s, it) => s + (it.largoTrazo || 0), 0);
+    const disponibleCompartido = capacidadGrupo !== null ? capacidadGrupo - usadosAqui : null;
+    const disponiblePropio = capacidadIndividual !== null ? capacidadIndividual - usadosAqui : null;
+    const disponibleFinal =
+      disponibleCompartido !== null && disponiblePropio !== null
+        ? Math.min(disponibleCompartido, disponiblePropio)
+        : disponibleCompartido !== null
+        ? disponibleCompartido
+        : disponiblePropio;
+    return { ocupados, usados: usadosAqui, disponible: disponibleFinal };
+  }
+  const calcMesonSel = mesonSel
+    ? calcularDisponibilidad(form.meson, mesonSel.grupoId, capacidad, capacidadCompartida)
+    : { ocupados: [], usados: 0, disponible: null };
+  const ocupadosMeson = calcMesonSel.ocupados;
+  const usados = calcMesonSel.usados;
+  const disponible = calcMesonSel.disponible;
   const excedeCapacidad = disponible !== null && largoTrazoNum > disponible;
 
   const stats = estadisticasTela[form.tipoTela];
@@ -1406,24 +1447,25 @@ function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadistica
   const tiempoTotalEstimadoMin = tendidoEstimadoMin !== null ? tendidoEstimadoMin + (tiempoTeorico || 0) : null;
   const telasDatalistId = `telas-prog-hecha-${grupo.pedidoId}-${grupo.ref}`;
   const cantidadTotal = grupo.colores.reduce((s, c) => s + (c.cantidadProgramada ?? c.cantidadPendiente ?? 0), 0);
-  // Tablero de disponibilidad: lista los mesones/grupos de esta planta (los
-  // que comparten capacidad, como "Mesón 2+3", se muestran una sola vez) con
-  // su ocupación real ese día, para decidir cuál usar sin tener que ir
-  // probando uno por uno.
-  const tableroMesones = [];
-  if (plantaSel) {
-    const vistosGrupo = new Set();
-    mesones.forEach((m) => {
-      if (m.grupoId) {
-        if (vistosGrupo.has(m.grupoId)) return;
-        vistosGrupo.add(m.grupoId);
-        const g = (plantaSel.grupos || []).find((gr) => gr.id === m.grupoId);
-        if (g) tableroMesones.push({ id: m.id, mesonId: m.id, grupoId: g.id, nombre: g.nombre, capacidad: g.metros, compartido: true });
-        return;
-      }
-      tableroMesones.push({ id: m.id, mesonId: m.id, grupoId: null, nombre: m.nombre, capacidad: m.metros, compartido: false });
-    });
-  }
+  // Tablero de disponibilidad: lista CADA mesón de esta planta por separado
+  // (incluso los que comparten grupo, como Mesón 2 y Mesón 3) porque cada
+  // uno conserva su propio tope individual además del total compartido — su
+  // disponibilidad real puede ser distinta aunque estén en el mismo grupo.
+  const tableroMesones = plantaSel
+    ? mesones.map((m) => {
+        const g = m.grupoId ? (plantaSel.grupos || []).find((gr) => gr.id === m.grupoId) : null;
+        return {
+          id: m.id,
+          mesonId: m.id,
+          grupoId: g?.id || null,
+          nombre: m.nombre,
+          nombreGrupo: g?.nombre || null,
+          capacidad: m.metros,
+          capacidadCompartida: g?.metros ?? null,
+          compartido: !!g,
+        };
+      })
+    : [];
 
   function autocompletarHoraFin() {
     if (!form.horaInicioEstimada || !tiempoTotalEstimadoMin) return;
@@ -1456,248 +1498,305 @@ function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadistica
       tiempoTeoricoMin: tiempoTeorico,
       tendidoEstimadoMin: tendidoEstimadoMin,
       tiempoTotalEstimadoMin: tiempoTotalEstimadoMin,
+      // Cada vez que se guarda (sea la primera vez o una edición posterior a
+      // una aprobación), queda "pendiente de aprobación" de nuevo — si los
+      // datos cambiaron, el analista tiene que revisarlos otra vez.
+      aprobado: false,
+      aprobadoPor: null,
+      aprobadoFechaISO: null,
+      ingresadoPor: usuarioActual || null,
+      ingresadoFechaISO: new Date().toISOString(),
     };
     grupo.colores.forEach((c) => onSave(c.id, datosComunes));
     onClose();
   }
 
   return (
-    <Modal title={`Programación Hecha — ${grupo.cliente} · #${grupo.numero} · ${grupo.ref}`} onClose={onClose} width={680}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
-        <Field label="Fecha Programada">
-          <FInput
-            type="date"
-            value={form.fechaProgramada}
-            onChange={(v) => setForm((f) => ({ ...f, fechaProgramada: v }))}
-          />
-        </Field>
-        <Field label="Cantidad Programada (total)">
-          <div
-            style={{
-              padding: "9px 12px",
-              borderRadius: 8,
-              border: `1.5px solid ${C.border}`,
-              background: C.canvas,
-              fontWeight: 800,
-              color: C.ink,
-              fontSize: 13,
-            }}
-          >
-            {fmtNum(cantidadTotal)}
+    <div style={{ border: `1.5px solid ${C.border}`, borderRadius: 14, background: C.white, padding: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, gap: 12 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 800, color: C.ink }}>
+            🔧 {grupo.cliente} · #{grupo.numero} · {grupo.ref}
           </div>
-          <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>
-            {grupo.colores.length} color{grupo.colores.length !== 1 ? "es" : ""} — la cantidad por color se ajusta en Entrada de Corte
+          <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
+            {grupo.colores.length} color{grupo.colores.length !== 1 ? "es" : ""} · Cantidad total {fmtNum(cantidadTotal)}
           </div>
-        </Field>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
-        <Field label="Planta">
-          <FSel
-            value={form.planta}
-            onChange={(v) => setForm((f) => ({ ...f, planta: v, meson: "" }))}
-            options={plantas.map((p) => ({ id: p.nombre, nombre: p.nombre }))}
-          />
-        </Field>
-        <Field label="Mesón">
-          <FSel
-            value={form.meson}
-            onChange={(v) => setForm((f) => ({ ...f, meson: v }))}
-            options={mesones.map((m) => ({ id: m.id, nombre: m.nombre }))}
-          />
-        </Field>
-        <Field label="Cortador">
-          <FSel
-            value={form.cortador}
-            onChange={(v) => setForm((f) => ({ ...f, cortador: v }))}
-            options={cortadores.map((c) => ({ id: c.nombre, nombre: c.nombre }))}
-          />
-        </Field>
+        </div>
+        <Btn variant="secondary" onClick={onClose}>
+          ‹ Volver a la lista
+        </Btn>
       </div>
 
-      {plantaSel && (
-        <div style={{ marginBottom: 16 }}>
-          <Btn variant="secondary" onClick={() => setShowTablero((v) => !v)}>
-            {showTablero ? "Ocultar disponibilidad de mesones" : "📋 Ver disponibilidad de todos los mesones"}
-          </Btn>
+      {aprobado && (
+        <div style={{ padding: "10px 14px", borderRadius: 8, marginBottom: 16, fontSize: 12, fontWeight: 700, background: C.greenBg, color: C.green }}>
+          ✓ Aprobado{aprobadoPorTxt ? ` por ${aprobadoPorTxt}` : ""}{aprobadoFechaTxt ? ` el ${fmtFechaISO(aprobadoFechaTxt.slice(0, 10))}` : ""}. Si cambias y guardas los datos, vuelve a quedar pendiente de aprobación.
+        </div>
+      )}
+      {pendienteAprobacion && (
+        <div style={{ padding: "10px 14px", borderRadius: 8, marginBottom: 16, fontSize: 12, fontWeight: 700, background: C.amberBg, color: C.amber, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span>
+            ⏳ Pendiente de aprobación{ingresadoPorTxt ? ` — ingresado por ${ingresadoPorTxt}` : ""}. Un analista con permiso de aprobar Corte debe revisarlo.
+          </span>
+          {puedeAprobar && (
+            <Btn variant="success" onClick={onAprobar}>
+              ✓ Aprobar programación
+            </Btn>
+          )}
         </div>
       )}
 
-      {showTablero && plantaSel && (
-        <div style={{ marginBottom: 16, padding: 12, borderRadius: 10, border: `1.5px solid ${C.denim}`, background: C.denimBg }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: C.denim, marginBottom: 10 }}>
-            Mesones de {plantaSel.nombre} el {fmtFechaISO(form.fechaProgramada)}
-            {!horasFaltantes && ` — franja resaltada en violeta: ${form.horaInicioEstimada} a ${form.horaFinEstimada}`}
-            {horasFaltantes && " — elige primero la hora de inicio/fin abajo para ver resaltada tu franja."}
-          </div>
-          {tableroMesones.map((fila) => (
-            <div key={fila.id}>
-              <MesonTimeline
-                nombre={fila.nombre}
-                capacidad={fila.capacidad}
-                compartido={fila.compartido}
-                ocupados={itemsUsadosMeson(form.fechaProgramada, form.planta, fila.mesonId, fila.grupoId, idsGrupo)}
-                inicioActual={form.horaInicioEstimada}
-                finActual={form.horaFinEstimada}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+        {/* ── Columna izquierda: datos teóricos del corte ── */}
+        <div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+            <Field label="Fecha Programada">
+              <FInput
+                type="date"
+                value={form.fechaProgramada}
+                onChange={(v) => setForm((f) => ({ ...f, fechaProgramada: v }))}
               />
-              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: -10, marginBottom: 10 }}>
-                <Btn
-                  variant={form.meson === fila.mesonId ? "success" : "secondary"}
-                  onClick={() => { setForm((f) => ({ ...f, meson: fila.mesonId })); setShowTablero(false); }}
-                >
-                  {form.meson === fila.mesonId ? "✓ Este mesón está seleccionado" : "Usar este mesón"}
-                </Btn>
+            </Field>
+            <Field label="Cantidad Programada (total)">
+              <div
+                style={{
+                  padding: "9px 12px",
+                  borderRadius: 8,
+                  border: `1.5px solid ${C.border}`,
+                  background: C.canvas,
+                  fontWeight: 800,
+                  color: C.ink,
+                  fontSize: 13,
+                }}
+              >
+                {fmtNum(cantidadTotal)}
               </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {mesonSel && capacidad !== null && (
-        <div
-          style={{
-            padding: "10px 16px",
-            borderRadius: 8,
-            marginBottom: 16,
-            fontSize: 12,
-            fontWeight: 700,
-            background: excedeCapacidad ? C.redBg : C.greenBg,
-            color: excedeCapacidad ? C.red : C.green,
-          }}
-        >
-          {excedeCapacidad ? "⚠ " : "✓ "}
-          {grupoMeson ? `${grupoMeson.nombre}: ` : `${mesonSel.nombre}: `}
-          {usados}m de trazo ya reservados de {capacidad}m {grupoMeson ? "compartidos" : "de mesa"} el {fmtFechaISO(form.fechaProgramada)}
-          {horasFaltantes && " (sin horario elegido todavía — se muestra el total del día como referencia)"}
-          {excedeCapacidad && ` — este trazo de ${largoTrazoNum}m no cabe en esa franja (quedan ${Math.max(0, disponible)}m disponibles). Puedes apilar las capas que quieras, lo que no cabe es el largo del trazo.`}
-        </div>
-      )}
-
-      {mesonSel && capacidad !== null && (
-        <MesonTimeline
-          nombre={grupoMeson ? grupoMeson.nombre : mesonSel.nombre}
-          capacidad={capacidad}
-          compartido={!!grupoMeson}
-          ocupados={ocupadosMeson}
-          inicioActual={form.horaInicioEstimada}
-          finActual={form.horaFinEstimada}
-        />
-      )}
-
-      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
-        <Field label="Tipo de Tela">
-          <FInput
-            value={form.tipoTela}
-            onChange={(v) => setForm((f) => ({ ...f, tipoTela: v }))}
-            placeholder="Ej: Diamante"
-            list={telasDatalistId}
-          />
-          <datalist id={telasDatalistId}>
-            {(telas || []).map((t) => (
-              <option key={t} value={t} />
-            ))}
-          </datalist>
-        </Field>
-        <Field label="Largo del Trazo (1 capa, m)">
-          <FInput
-            type="number"
-            value={form.largoTrazo}
-            onChange={(v) => setForm((f) => ({ ...f, largoTrazo: v }))}
-            placeholder="4.5"
-          />
-        </Field>
-        <Field label="Capas">
-          <FInput
-            type="number"
-            value={form.capas}
-            onChange={(v) => setForm((f) => ({ ...f, capas: v }))}
-            placeholder="40"
-          />
-        </Field>
-        <Field label="Metros de Tela (trazo × capas)">
-          <div
-            style={{
-              padding: "9px 12px",
-              borderRadius: 8,
-              border: `1.5px solid ${C.border}`,
-              background: C.canvas,
-              fontWeight: 800,
-              color: metrosTotales() > 0 ? C.violet : C.slate,
-              fontSize: 13,
-            }}
-          >
-            {metrosTotales() > 0 ? `${metrosTotales().toLocaleString("es-CO")} m` : "—"}
+            </Field>
           </div>
-        </Field>
-      </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+            <Field label="Planta">
+              <FSel
+                value={form.planta}
+                onChange={(v) => setForm((f) => ({ ...f, planta: v, meson: "" }))}
+                options={plantas.map((p) => ({ id: p.nombre, nombre: p.nombre }))}
+              />
+            </Field>
+            <Field label="Mesón">
+              <FSel
+                value={form.meson}
+                onChange={(v) => setForm((f) => ({ ...f, meson: v }))}
+                options={mesones.map((m) => ({ id: m.id, nombre: m.nombre }))}
+              />
+            </Field>
+            <Field label="Cortador">
+              <FSel
+                value={form.cortador}
+                onChange={(v) => setForm((f) => ({ ...f, cortador: v }))}
+                options={cortadores.map((c) => ({ id: c.nombre, nombre: c.nombre }))}
+              />
+            </Field>
+          </div>
 
-      {tiempoTotalEstimadoMin !== null && (
-        <div style={{ padding: "10px 16px", background: C.violetBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: C.violet, fontWeight: 700 }}>
-          ⏱ Tiempo estimado total: ~{tiempoTotalEstimadoMin} min — tendido ~{tendidoEstimadoMin} min
-          {tiempoTeorico !== null
-            ? ` + corte ~${tiempoTeorico} min (según ${stats.cortes} corte${stats.cortes !== 1 ? "s" : ""} previo${stats.cortes !== 1 ? "s" : ""} de ${form.tipoTela})`
-            : " + corte (todavía sin historial de corte para esta tela, el total solo cuenta el tendido)"}
+          <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+            <Field label="Tipo de Tela">
+              <FInput
+                value={form.tipoTela}
+                onChange={(v) => setForm((f) => ({ ...f, tipoTela: v }))}
+                placeholder="Ej: Diamante"
+                list={telasDatalistId}
+              />
+              <datalist id={telasDatalistId}>
+                {(telas || []).map((t) => (
+                  <option key={t} value={t} />
+                ))}
+              </datalist>
+            </Field>
+            <Field label="Largo del Trazo (1 capa, m)">
+              <FInput
+                type="number"
+                value={form.largoTrazo}
+                onChange={(v) => setForm((f) => ({ ...f, largoTrazo: v }))}
+                placeholder="4.5"
+              />
+            </Field>
+            <Field label="Capas">
+              <FInput
+                type="number"
+                value={form.capas}
+                onChange={(v) => setForm((f) => ({ ...f, capas: v }))}
+                placeholder="40"
+              />
+            </Field>
+            <Field label="Metros de Tela (trazo × capas)">
+              <div
+                style={{
+                  padding: "9px 12px",
+                  borderRadius: 8,
+                  border: `1.5px solid ${C.border}`,
+                  background: C.canvas,
+                  fontWeight: 800,
+                  color: metrosTotales() > 0 ? C.violet : C.slate,
+                  fontSize: 13,
+                }}
+              >
+                {metrosTotales() > 0 ? `${metrosTotales().toLocaleString("es-CO")} m` : "—"}
+              </div>
+            </Field>
+          </div>
+
+          {tiempoTotalEstimadoMin !== null && (
+            <div style={{ padding: "10px 16px", background: C.violetBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: C.violet, fontWeight: 700 }}>
+              ⏱ Tiempo estimado total: ~{tiempoTotalEstimadoMin} min — tendido ~{tendidoEstimadoMin} min
+              {tiempoTeorico !== null
+                ? ` + corte ~${tiempoTeorico} min (según ${stats.cortes} corte${stats.cortes !== 1 ? "s" : ""} previo${stats.cortes !== 1 ? "s" : ""} de ${form.tipoTela})`
+                : " + corte (todavía sin historial de corte para esta tela, el total solo cuenta el tendido)"}
+            </div>
+          )}
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 4 }}>
+            <Field label="Hora Inicio Estimada (obligatorio)">
+              <FInput
+                type="time"
+                value={form.horaInicioEstimada}
+                onChange={(v) => setForm((f) => ({ ...f, horaInicioEstimada: v }))}
+              />
+            </Field>
+            <Field label="Hora Fin Estimada (obligatorio)">
+              <FInput
+                type="time"
+                value={form.horaFinEstimada}
+                onChange={(v) => setForm((f) => ({ ...f, horaFinEstimada: v }))}
+              />
+              {form.horaInicioEstimada && tiempoTotalEstimadoMin !== null && (
+                <button
+                  type="button"
+                  onClick={autocompletarHoraFin}
+                  style={{
+                    marginTop: 6,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: C.violet,
+                    background: C.violetBg,
+                    border: "none",
+                    borderRadius: 6,
+                    padding: "4px 8px",
+                    cursor: "pointer",
+                  }}
+                >
+                  ⚡ Autocompletar con tiempo estimado (~{tiempoTotalEstimadoMin} min)
+                </button>
+              )}
+            </Field>
+          </div>
+          {horasInvalidas && (
+            <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginBottom: 12 }}>
+              ⚠ La Hora Fin debe ser posterior a la Hora Inicio.
+            </div>
+          )}
+          {horasFaltantes && (
+            <div style={{ fontSize: 11, color: C.slate, marginBottom: 12 }}>
+              Hora Inicio y Hora Fin son obligatorias para guardar — con eso se arma el timeline del mesón.
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
+            <Btn
+              variant="success"
+              onClick={save}
+              disabled={!form.planta || !form.meson || !form.cortador || !form.fechaProgramada || excedeCapacidad || horasFaltantes || horasInvalidas}
+            >
+              ✓ Guardar datos teóricos del corte
+            </Btn>
+          </div>
         </div>
-      )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 4 }}>
-        <Field label="Hora Inicio Estimada (obligatorio)">
-          <FInput
-            type="time"
-            value={form.horaInicioEstimada}
-            onChange={(v) => setForm((f) => ({ ...f, horaInicioEstimada: v }))}
-          />
-        </Field>
-        <Field label="Hora Fin Estimada (obligatorio)">
-          <FInput
-            type="time"
-            value={form.horaFinEstimada}
-            onChange={(v) => setForm((f) => ({ ...f, horaFinEstimada: v }))}
-          />
-          {form.horaInicioEstimada && tiempoTotalEstimadoMin !== null && (
-            <button
-              type="button"
-              onClick={autocompletarHoraFin}
+        {/* ── Columna derecha: el mesón dibujado con su disponibilidad ── */}
+        <div>
+          {plantaSel && (
+            <div style={{ marginBottom: 12 }}>
+              <Btn variant="secondary" onClick={() => setShowTablero((v) => !v)}>
+                {showTablero ? "Ver solo el mesón elegido" : "📋 Ver disponibilidad de todos los mesones"}
+              </Btn>
+            </div>
+          )}
+
+          {showTablero && plantaSel && (
+            <div style={{ marginBottom: 16, padding: 12, borderRadius: 10, border: `1.5px solid ${C.denim}`, background: C.denimBg }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.denim, marginBottom: 10 }}>
+                Mesones de {plantaSel.nombre} el {fmtFechaISO(form.fechaProgramada)}
+                {!horasFaltantes && ` — franja resaltada en violeta: ${form.horaInicioEstimada} a ${form.horaFinEstimada}`}
+                {horasFaltantes && " — elige primero la hora de inicio/fin para ver resaltada tu franja."}
+              </div>
+              {tableroMesones.map((fila) => {
+                const calc = calcularDisponibilidad(fila.mesonId, fila.grupoId, fila.capacidad, fila.capacidadCompartida);
+                const cabeAqui = largoTrazoNum > 0 && calc.disponible !== null && largoTrazoNum <= calc.disponible;
+                return (
+                  <div key={fila.id}>
+                    <MesonTimeline
+                      nombre={fila.compartido ? `${fila.nombre} (tope propio ${fila.capacidad}m, dentro de ${fila.nombreGrupo})` : fila.nombre}
+                      capacidad={fila.capacidad}
+                      compartido={fila.compartido}
+                      ocupados={calc.ocupados}
+                      inicioActual={form.horaInicioEstimada}
+                      finActual={form.horaFinEstimada}
+                    />
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: -10, marginBottom: 10 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: calc.disponible !== null && calc.disponible <= 0 ? C.red : C.green }}>
+                        {calc.disponible !== null ? `${Math.max(0, calc.disponible)}m disponibles ahí ahora` : ""}
+                        {largoTrazoNum > 0 && calc.disponible !== null && (cabeAqui ? " — tu trazo cabe" : " — tu trazo NO cabe aquí")}
+                      </div>
+                      <Btn
+                        variant={form.meson === fila.mesonId ? "success" : "secondary"}
+                        onClick={() => { setForm((f) => ({ ...f, meson: fila.mesonId })); setShowTablero(false); }}
+                      >
+                        {form.meson === fila.mesonId ? "✓ Elegido" : "Usar este mesón"}
+                      </Btn>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {mesonSel && capacidad !== null && (
+            <div
               style={{
-                marginTop: 6,
-                fontSize: 11,
+                padding: "10px 16px",
+                borderRadius: 8,
+                marginBottom: 16,
+                fontSize: 12,
                 fontWeight: 700,
-                color: C.violet,
-                background: C.violetBg,
-                border: "none",
-                borderRadius: 6,
-                padding: "4px 8px",
-                cursor: "pointer",
+                background: excedeCapacidad ? C.redBg : C.greenBg,
+                color: excedeCapacidad ? C.red : C.green,
               }}
             >
-              ⚡ Autocompletar con tiempo estimado (~{tiempoTotalEstimadoMin} min)
-            </button>
+              {excedeCapacidad ? "⚠ " : "✓ "}
+              {mesonSel.nombre}
+              {grupoMeson ? ` (tope propio ${capacidad}m, dentro de ${grupoMeson.nombre} de ${capacidadCompartida}m compartidos)` : ""}
+              : {usados}m de trazo ya reservados el {fmtFechaISO(form.fechaProgramada)} — quedan {Math.max(0, disponible ?? 0)}m disponibles ahí
+              {horasFaltantes && " (sin horario elegido todavía — se muestra el total del día como referencia)"}
+              {excedeCapacidad && ` — este trazo de ${largoTrazoNum}m no cabe en esa franja. Puedes apilar las capas que quieras, lo que no cabe es el largo del trazo.`}
+            </div>
           )}
-        </Field>
-      </div>
-      {horasInvalidas && (
-        <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginBottom: 12 }}>
-          ⚠ La Hora Fin debe ser posterior a la Hora Inicio.
-        </div>
-      )}
-      {horasFaltantes && (
-        <div style={{ fontSize: 11, color: C.slate, marginBottom: 12 }}>
-          Hora Inicio y Hora Fin son obligatorias para guardar — con eso se arma el timeline del mesón.
-        </div>
-      )}
 
-      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
-        <Btn variant="secondary" onClick={onClose}>
-          Cancelar
-        </Btn>
-        <Btn
-          variant="success"
-          onClick={save}
-          disabled={!form.planta || !form.meson || !form.cortador || !form.fechaProgramada || excedeCapacidad || horasFaltantes || horasInvalidas}
-        >
-          ✓ Guardar Programación Hecha
-        </Btn>
+          {mesonSel && capacidad !== null && (
+            <MesonTimeline
+              nombre={grupoMeson ? grupoMeson.nombre : mesonSel.nombre}
+              capacidad={capacidad}
+              compartido={!!grupoMeson}
+              ocupados={ocupadosMeson}
+              inicioActual={form.horaInicioEstimada}
+              finActual={form.horaFinEstimada}
+            />
+          )}
+
+          {!plantaSel && (
+            <div style={{ padding: 20, textAlign: "center", color: C.slate, fontSize: 12, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
+              Elige una planta a la izquierda para ver los mesones y su disponibilidad acá.
+            </div>
+          )}
+        </div>
       </div>
-    </Modal>
+    </div>
   );
 }
 
@@ -3693,7 +3792,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onCortarProgramado, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, isAdmin }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onCortarProgramado, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Selección por talla: Map key `${pedidoId}__${ref}__${talla}` -> { ...contexto, cantidad }
   // (cantidad es editable, por si no alcanza la tela para toda la talla).
@@ -3724,21 +3823,27 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   }
   const [editandoCumplidoId, setEditandoCumplidoId] = useState(null);
   const [edicionCumplido, setEdicionCumplido] = useState({ cantidad: 0, fecha: "" });
-  // Ítem de "Programados Pendientes" sobre el que se está haciendo la
-  // "Programación Hecha" (etapa 2: planta, mesón, cortador, tela...) — se
-  // maneja acá mismo porque solo esta vista necesita saber qué mesones y
-  // qué estadísticas de tela hay disponibles.
-  const [progHechaGrupo, setProgHechaGrupo] = useState(null);
+  // Fecha y grupo seleccionados en la pestaña "Programación de Mesones" —
+  // ahí es donde ahora se ingresan los datos teóricos del corte (antes se
+  // hacía en un modal encima de "Programados Pendientes").
+  const [mesonesFecha, setMesonesFecha] = useState(today());
+  const [mesonesGrupoKey, setMesonesGrupoKey] = useState(null);
 
   // Click sobre un grupo (una referencia con todos sus colores) de
-  // "Programados Pendientes": si TODOS sus colores ya tienen Programación
-  // Hecha, va directo a Entrada de Corte con el grupo completo; si falta
-  // alguno, primero hay que completar la Programación Hecha para el grupo
-  // entero (planta/mesón/tela/trazo/capas se comparten entre colores).
+  // "Programados Pendientes" o "Cortes Vencidos": si TODOS sus colores ya
+  // tienen Programación Hecha, va directo a Entrada de Corte con el grupo
+  // completo; si falta alguno, se manda a la pestaña "Programación de
+  // Mesones" (con la fecha y el grupo ya preseleccionados) para completar
+  // ahí los datos teóricos (planta/mesón/tela/trazo/capas, compartidos entre
+  // colores).
   function abrirFlujoCorte(grupo) {
     const listo = grupo.colores.every((c) => c.etapa === "programacion_hecha");
-    if (listo) onCortarProgramado(grupo);
-    else setProgHechaGrupo(grupo);
+    if (listo) { onCortarProgramado(grupo); return; }
+    const fecha = grupo.colores[0]?.fechaProgramada || grupo.fechaProgramada || today();
+    const key = grupo.key || `${grupo.pedidoId}__${grupo.ref}`;
+    setMesonesFecha(fecha);
+    setMesonesGrupoKey(key);
+    setSubTab("mesones");
   }
 
   const activos = pedidos.filter((p) => p.estado === "activo");
@@ -3988,21 +4093,14 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   });
   const semanasOrdenadas = [...porSemana.keys()].sort();
 
+  // Contador para la pestañita "Programación de Mesones": cuántos ítems
+  // pendientes (no cumplidos) todavía necesitan algo ahí — o falta ingresar
+  // sus datos teóricos, o ya se ingresaron pero falta que un analista los
+  // apruebe.
+  const mesonesPendientesCount = pendientesConEstado.filter((p) => !(p.etapa === "programacion_hecha" && p.aprobado === true)).length;
+
   return (
     <div>
-      {progHechaGrupo && (
-        <ProgramacionHechaModal
-          grupo={progHechaGrupo}
-          plantas={plantasConfig || []}
-          cortadores={cortadoresConfig || []}
-          telas={telas || []}
-          estadisticasTela={estadisticasTela || {}}
-          metrosUsadosMeson={metrosUsadosMeson}
-          itemsUsadosMeson={itemsUsadosMeson}
-          onSave={onGuardarProgramacionHecha}
-          onClose={() => setProgHechaGrupo(null)}
-        />
-      )}
       <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
         📅 Programación de Corte
       </h2>
@@ -4010,7 +4108,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
         Elige el día, marca las referencias que se van a cortar ese día y confirma. El cumplimiento se revisa solo cuando el pendiente de cada referencia llega a 0.
       </p>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
         <div
           onClick={() => setSubTab("programar")}
           style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: subTab === "programar" ? C.ink : C.white, color: subTab === "programar" ? C.seam : C.ink, border: `1px solid ${subTab === "programar" ? C.ink : C.border}` }}
@@ -4022,6 +4120,12 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
           style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: subTab === "pendientes" ? C.ink : C.white, color: subTab === "pendientes" ? C.seam : C.ink, border: `1px solid ${subTab === "pendientes" ? C.ink : C.border}` }}
         >
           PROGRAMADOS PENDIENTES {pendientesProg.length > 0 && `(${pendientesProg.length})`}
+        </div>
+        <div
+          onClick={() => setSubTab("mesones")}
+          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: subTab === "mesones" ? C.violet : C.white, color: subTab === "mesones" ? C.white : C.violet, border: `1px solid ${subTab === "mesones" ? C.violet : C.violetBg}` }}
+        >
+          🔧 PROGRAMACIÓN DE MESONES {mesonesPendientesCount > 0 && `(${mesonesPendientesCount})`}
         </div>
         <div
           onClick={() => setSubTab("cumplidos")}
@@ -4555,6 +4659,83 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
           ))}
         </div>
       )}
+      {subTab === "mesones" && (() => {
+        const datosMesones = datosDelDia(mesonesFecha);
+        const grupoSel = mesonesGrupoKey ? datosMesones.grupos.find((g) => g.key === mesonesGrupoKey) : null;
+        return (
+          <div>
+            <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
+              Elige un día para ver lo programado ahí (a futuro, para que el cortador vaya ingresando los datos teóricos con anticipación) y entra a cada referencia para poner mesón, trazo, capas y horario. Un analista revisa y aprueba antes de que quede confirmado.
+            </p>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+              <Field label="Día">
+                <FInput type="date" value={mesonesFecha} onChange={(v) => { setMesonesFecha(v); setMesonesGrupoKey(null); }} />
+              </Field>
+              <Btn variant="secondary" onClick={() => { setMesonesFecha(today()); setMesonesGrupoKey(null); }}>
+                Hoy
+              </Btn>
+            </div>
+
+            {!datosMesones.grupos.length && (
+              <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
+                No hay nada programado para el {fmtFechaISO(mesonesFecha)}.
+              </div>
+            )}
+
+            {!!datosMesones.grupos.length && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: grupoSel ? 24 : 0 }}>
+                {datosMesones.grupos.map((g) => {
+                  const aprobadoG = g.etapa === "programacion_hecha" && g.colores.every((c) => c.aprobado === true);
+                  const estadoLabel = g.etapa !== "programacion_hecha" ? "Falta ingresar" : aprobadoG ? "Aprobado" : "Pendiente de aprobación";
+                  const estadoColor = g.etapa !== "programacion_hecha" ? C.violet : aprobadoG ? C.green : C.amber;
+                  const estadoBg = g.etapa !== "programacion_hecha" ? C.violetBg : aprobadoG ? C.greenBg : C.amberBg;
+                  const seleccionado = g.key === mesonesGrupoKey;
+                  return (
+                    <div
+                      key={g.key}
+                      onClick={() => setMesonesGrupoKey(g.key)}
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+                        padding: "12px 16px", borderRadius: 10, cursor: "pointer",
+                        border: `1.5px solid ${seleccionado ? C.violet : C.border}`,
+                        background: seleccionado ? C.violetBg : C.white,
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{g.cliente} · #{g.numero} · {g.ref}</div>
+                        <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+                          {g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid.
+                          {g.etapa === "programacion_hecha" && ` · ${g.planta}${g.meson ? " · " + g.meson : ""}`}
+                        </div>
+                      </div>
+                      <span style={{ fontSize: 10, fontWeight: 800, color: estadoColor, background: estadoBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
+                        {estadoLabel}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {grupoSel && (
+              <ProgramacionMesonPanel
+                grupo={grupoSel}
+                plantas={plantasConfig || []}
+                cortadores={cortadoresConfig || []}
+                telas={telas || []}
+                estadisticasTela={estadisticasTela || {}}
+                metrosUsadosMeson={metrosUsadosMeson}
+                itemsUsadosMeson={itemsUsadosMeson}
+                onSave={onGuardarProgramacionHecha}
+                onClose={() => setMesonesGrupoKey(null)}
+                puedeAprobar={puedeAprobarCorte}
+                onAprobar={() => onAprobarProgramacionHecha(grupoSel.colores.map((c) => c.id), usuarioActual)}
+                usuarioActual={usuarioActual}
+              />
+            )}
+          </div>
+        );
+      })()}
       {subTab === "cumplidos" && (
         !cumplidosProg.length ? (
           <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>Todavía no hay referencias cumplidas.</div>
@@ -5140,7 +5321,7 @@ function Historico({ pedidos, onSelectPedido }) {
 }
 
 // ─── ROOT MÓDULO CORTE ────────────────────────────────────────────────────────
-export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
+export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeAprobarCorte }) {
   const [view, setView] = useState("dashboard");
   const [pedidos, setPedidos] = useState([]);
   const [selPedidoId, setSelPedidoId] = useState(null);
@@ -5443,6 +5624,14 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
   // "Entrada de Corte".
   async function guardarProgramacionHecha(id, datos) {
     await fsSave("corte_programacion", id, { ...datos, etapa: "programacion_hecha" });
+  }
+  // Aprobación del analista sobre la Programación de Mesones (etapa 2 ya
+  // ingresada por el cortador) — no toca ningún otro dato, solo marca
+  // aprobado + quién + cuándo. `ids` son los docs de TODOS los colores del
+  // grupo (comparten los mismos datos teóricos, así que se aprueban juntos).
+  async function aprobarProgramacionHecha(ids, aprobadoPor) {
+    const fecha = new Date().toISOString();
+    await Promise.all(ids.map((id) => fsSave("corte_programacion", id, { aprobado: true, aprobadoPor: aprobadoPor || null, aprobadoFechaISO: fecha })));
   }
   // Revisión automática de cumplimiento: cada vez que cambian los pedidos o
   // las fuentes que definen "pendiente" (Ventas Perdidas, Planeación), se
@@ -5753,6 +5942,9 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
               metrosUsadosMeson={metrosUsadosMeson}
               itemsUsadosMeson={itemsUsadosMeson}
               onGuardarProgramacionHecha={guardarProgramacionHecha}
+              onAprobarProgramacionHecha={aprobarProgramacionHecha}
+              puedeAprobarCorte={puedeAprobarCorte || isAdmin}
+              usuarioActual={currentUser?.name || currentUser?.username || ""}
               isAdmin={isAdmin}
             />
           )}
