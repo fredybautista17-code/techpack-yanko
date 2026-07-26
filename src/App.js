@@ -16,7 +16,7 @@ import {
   onSnapshot,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
-import { getAuth, signInWithEmailAndPassword, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -664,18 +664,20 @@ function LoadingScreen({ message }) {
     </div>
   );
 }
-function LoginScreen({ onLogin, users }) {
+function LoginScreen({ externalError }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPass, setShowPass] = useState(false);
-  // Login real con Firebase Authentication (Fase B de la migración de
+  // Login real con Firebase Authentication (Fase B/C de la migración de
   // seguridad — antes esto comparaba la clave en texto plano contra la
   // colección `users`). Como acá se entra con nombre de usuario y no correo,
   // se arma el mismo correo sintético que usó la migración de Fase A:
-  // usuario@techpack-yanko.local. Firebase valida la clave real — este
-  // archivo ya no la compara él mismo.
+  // usuario@techpack-yanko.local. Ya no hace falta leer la colección `users`
+  // aquí para nada — Firebase valida la clave real, y una vez la sesión
+  // queda activa, es AppInner (vía onAuthStateChanged) quien carga los datos
+  // y encuentra el perfil correspondiente.
   async function handleLogin() {
     if (!username || !password) { setError("Ingresa usuario y contraseña."); return; }
     setLoading(true);
@@ -683,20 +685,15 @@ function LoginScreen({ onLogin, users }) {
     const usernameNorm = username.toLowerCase().trim();
     const email = `${usernameNorm}@techpack-yanko.local`;
     try {
-      const cred = await signInWithEmailAndPassword(auth, email, password);
-      const perfil = users.find((u) => u.authUid === cred.user.uid || u.username === usernameNorm);
-      if (!perfil) {
-        setError("Tu cuenta no tiene un perfil asociado en el sistema. Contacta a un administrador.");
-        await signOut(auth);
-        setLoading(false);
-        return;
-      }
-      onLogin(perfil);
+      await signInWithEmailAndPassword(auth, email, password);
+      // No hace falta hacer nada más aquí: en cuanto la sesión queda activa,
+      // AppInner detecta el cambio y carga los datos solo.
     } catch (err) {
       setError("Usuario o contraseña incorrectos.");
       setLoading(false);
     }
   }
+  const mensajeError = error || externalError;
   return (
     <div style={{ minHeight: "100vh", background: `linear-gradient(135deg,${T.ink} 0%,#2D1B69 50%,#1A2E4A 100%)`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter',-apple-system,sans-serif", padding: 20 }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
@@ -732,7 +729,7 @@ function LoginScreen({ onLogin, users }) {
               <button onClick={() => setShowPass(!showPass)} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "rgba(200,184,162,0.6)", cursor: "pointer", fontSize: 16 }}>{showPass ? "🙈" : "👁"}</button>
             </div>
           </div>
-          {error && (<div style={{ padding: "10px 14px", background: "rgba(232,93,74,0.15)", border: "1px solid rgba(232,93,74,0.3)", borderRadius: 8, color: "#FF8A7A", fontSize: 13, fontWeight: 600, marginBottom: 20 }}>⚠ {error}</div>)}
+          {mensajeError && (<div style={{ padding: "10px 14px", background: "rgba(232,93,74,0.15)", border: "1px solid rgba(232,93,74,0.3)", borderRadius: 8, color: "#FF8A7A", fontSize: 13, fontWeight: 600, marginBottom: 20 }}>⚠ {mensajeError}</div>)}
           <button onClick={handleLogin} disabled={loading}
             style={{ width: "100%", padding: "13px", background: loading ? "rgba(200,184,162,0.3)" : `linear-gradient(135deg,${T.seam},${T.seamDark})`, border: "none", borderRadius: 10, color: T.ink, fontWeight: 800, fontSize: 15, cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit" }}
           >{loading ? "Verificando..." : "Ingresar →"}</button>
@@ -6549,12 +6546,47 @@ function AppInner() {
   const [promoteProto, setPromoteProto] = useState(null);
   const [newRefCap, setNewRefCap] = useState(null);
   const [toasts, setToasts] = useState([]);
+  const [loginError, setLoginError] = useState("");
   useEffect(() => {
-    const unsubs = [];
-    async function bootstrap() {
+    let unsubsDatos = [];
+    // Fase C de la migración de seguridad: antes, todos los datos de
+    // Firestore se cargaban apenas se abría la app, sin importar si había
+    // sesión iniciada — eso hacía imposible exigir "usuario autenticado" en
+    // las reglas de seguridad sin romper la propia pantalla de login. Ahora
+    // la carga de datos NUNCA arranca sola: la dispara onAuthStateChanged,
+    // que Firebase llama automáticamente en cuanto hay una sesión real
+    // (login exitoso, o una sesión que ya estaba activa al recargar la
+    // página) — y la detiene (limpiando los listeners) en cuanto la sesión
+    // se cierra.
+    const unsubAuth = onAuthStateChanged(auth, (fbUser) => {
+      unsubsDatos.forEach((fn) => fn());
+      unsubsDatos = [];
+      if (!fbUser) {
+        setCurrentUser(null);
+        setAppState("login");
+        return;
+      }
+      setLoginError("");
+      setAppState("loading");
+      cargarDatos(fbUser);
+    });
+    async function cargarDatos(fbUser) {
       try {
         let dbUsers = await fsGet("users");
-        if (!dbUsers.length) { await fsBatch("users", INIT_USERS); dbUsers = INIT_USERS; setUsers(dbUsers); }
+        if (!dbUsers.length) { await fsBatch("users", INIT_USERS); dbUsers = INIT_USERS; }
+        setUsers(dbUsers);
+        // El perfil de la app (nombre, rol, isAdmin, etc.) se busca por
+        // `authUid` — el campo que la migración de Fase A le agregó a cada
+        // documento de `users` al crear su cuenta real de Firebase Auth. Si
+        // no aparece (cuenta de Firebase Auth sin documento correspondiente
+        // en Firestore, caso raro), no se deja entrar.
+        const perfil = dbUsers.find((u) => u.authUid === fbUser.uid);
+        if (!perfil) {
+          setLoginError("Tu cuenta no tiene un perfil asociado en el sistema. Contacta a un administrador.");
+          await signOut(auth);
+          return;
+        }
+        setCurrentUser(perfil);
         const unsubUsers = onSnapshot(collection(db, "users"), (snap) => {
           const updatedUsers = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
           setUsers(updatedUsers);
@@ -6564,7 +6596,7 @@ function AppInner() {
             return fresh ? { ...cu, ...fresh } : cu;
           });
         });
-        unsubs.push(unsubUsers);
+        unsubsDatos.push(unsubUsers);
         // "config" se sincroniza en vivo (igual que users/protos/capsulas/pedidos)
         // en vez de leerse una sola vez con fsGet al abrir la app. Antes, una
         // pestaña vieja con una copia local desactualizada de config podía, al
@@ -6622,22 +6654,22 @@ function AppInner() {
           const mainDoc = snap.docs.find((d) => d.id === "main") || snap.docs[0];
           setConfig({ ...INIT_CONFIG, ...mainDoc.data() });
         });
-        unsubs.push(unsubConfig);
+        unsubsDatos.push(unsubConfig);
         const unsubProtos = onSnapshot(collection(db, "prototipos"), (snap) => { setProtos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
-        unsubs.push(unsubProtos);
+        unsubsDatos.push(unsubProtos);
         const unsubCapsulas = onSnapshot(collection(db, "capsulas"), (snap) => { setCapsulas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
-        unsubs.push(unsubCapsulas);
+        unsubsDatos.push(unsubCapsulas);
         const unsubHistorial = onSnapshot(collection(db, "historial_diseno"), (snap) => { setHistorial(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
-        unsubs.push(unsubHistorial);
+        unsubsDatos.push(unsubHistorial);
         const unsubCronogramaMuestras = onSnapshot(collection(db, "cronograma_muestras"), (snap) => { setCronogramaMuestras(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
-        unsubs.push(unsubCronogramaMuestras);
+        unsubsDatos.push(unsubCronogramaMuestras);
         // "pedidos_activos" reemplaza a la vieja colección "pedidos" (y a
         // "corte_pedidos" del módulo Corte, que nunca se llegó a usar): es la
         // única fuente de verdad ahora, alimentada por "🧊 Congelar como base
         // de Corte" en Vigentes por Cliente — tanto Pedidos como Corte leen
         // de aquí.
         const unsubPedidos = onSnapshot(collection(db, "pedidos_activos"), (snap) => { setPedidos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
-        unsubs.push(unsubPedidos);
+        unsubsDatos.push(unsubPedidos);
         // Mismo motivo que "config": pedidoConfig (clientes/vendedores de
         // Pedidos) se sincroniza en vivo en vez de leerse una sola vez con
         // fsGet, para que una pestaña vieja no pueda pisar con una copia
@@ -6652,22 +6684,21 @@ function AppInner() {
           const mainDoc = snap.docs.find((d) => d.id === "main") || snap.docs[0];
           setPedidoConfig((c) => ({ ...c, ...mainDoc.data() }));
         });
-        unsubs.push(unsubPedidoConfig);
+        unsubsDatos.push(unsubPedidoConfig);
         const unsubBitacora = onSnapshot(collection(db, "bitacora_envios"), (snap) => { setBitacoraEnvios(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
-        unsubs.push(unsubBitacora);
+        unsubsDatos.push(unsubBitacora);
         const unsubKpiPuestos = onSnapshot(collection(db, "kpi_puestos"), (snap) => { setKpiPuestos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
-        unsubs.push(unsubKpiPuestos);
+        unsubsDatos.push(unsubKpiPuestos);
         const unsubKpiPersonas = onSnapshot(collection(db, "kpi_personas"), (snap) => { setKpiPersonas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
-        unsubs.push(unsubKpiPersonas);
+        unsubsDatos.push(unsubKpiPersonas);
         const unsubKpiCatalogo = onSnapshot(collection(db, "kpi_catalogo"), (snap) => { setKpiCatalogo(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
-        unsubs.push(unsubKpiCatalogo);
+        unsubsDatos.push(unsubKpiCatalogo);
         const unsubKpiRegistros = onSnapshot(collection(db, "kpi_registros"), (snap) => { setKpiRegistros(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
-        unsubs.push(unsubKpiRegistros);
-        setAppState("login");
+        unsubsDatos.push(unsubKpiRegistros);
+        setAppState("ready");
       } catch (e) { console.error("Firebase error:", e); setAppState("login"); }
     }
-    bootstrap();
-    return () => unsubs.forEach((fn) => fn());
+    return () => { unsubAuth(); unsubsDatos.forEach((fn) => fn()); };
   }, []);
   function notify(n) { setToasts((t) => [...t, n]); setTimeout(() => setToasts((t) => t.filter((x) => x.id !== n.id)), 5000); }
   async function saveUsers(newUsers) {
@@ -7135,7 +7166,7 @@ function AppInner() {
   const isPlaneadorPuro = canAccessCorte && !canAccessPedidos && !canAccessProtos && !canAccessCapsulas && !canAccessPedidosClientes && !canAccessStats && !perms.editar && !perms.aprobar && !currentUser?.isAdmin;
   const isContabilidadPura = canAccessContabilidad && !canAccessDiseno;
   if (appState === "loading") return <LoadingScreen message="Conectando con Firebase..." />;
-  if (appState === "login" || !currentUser) return <LoginScreen onLogin={(u) => { setCurrentUser(u); setAppState("ready"); }} users={users} />;
+  if (appState === "login" || !currentUser) return <LoginScreen externalError={loginError} />;
   if (isPlaneadorPuro) {
     return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
