@@ -16,6 +16,7 @@ import {
   onSnapshot,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { getAuth, signInWithEmailAndPassword, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -29,6 +30,9 @@ const db = getFirestore(fbApp);
 // Cliente de Cloud Functions — usado por el Informe de Pedidos Vigentes por
 // Cliente para llamar getPedidosVigentesBusint (consulta Busint en vivo).
 const functionsClient = getFunctions(fbApp);
+// Cliente de Firebase Authentication — usado por el login real (Fase B de la
+// migración de seguridad) y por los flujos de cambio/reseteo de contraseña.
+const auth = getAuth(fbApp);
 async function fsGet(col) {
   const snap = await getDocs(collection(db, col));
   return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
@@ -666,14 +670,32 @@ function LoginScreen({ onLogin, users }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPass, setShowPass] = useState(false);
-  function handleLogin() {
+  // Login real con Firebase Authentication (Fase B de la migración de
+  // seguridad — antes esto comparaba la clave en texto plano contra la
+  // colección `users`). Como acá se entra con nombre de usuario y no correo,
+  // se arma el mismo correo sintético que usó la migración de Fase A:
+  // usuario@techpack-yanko.local. Firebase valida la clave real — este
+  // archivo ya no la compara él mismo.
+  async function handleLogin() {
     if (!username || !password) { setError("Ingresa usuario y contraseña."); return; }
     setLoading(true);
     setError("");
-    setTimeout(() => {
-      const user = users.find((u) => u.username === username.toLowerCase().trim() && u.password === password);
-      if (user) { onLogin(user); } else { setError("Usuario o contraseña incorrectos."); setLoading(false); }
-    }, 600);
+    const usernameNorm = username.toLowerCase().trim();
+    const email = `${usernameNorm}@techpack-yanko.local`;
+    try {
+      const cred = await signInWithEmailAndPassword(auth, email, password);
+      const perfil = users.find((u) => u.authUid === cred.user.uid || u.username === usernameNorm);
+      if (!perfil) {
+        setError("Tu cuenta no tiene un perfil asociado en el sistema. Contacta a un administrador.");
+        await signOut(auth);
+        setLoading(false);
+        return;
+      }
+      onLogin(perfil);
+    } catch (err) {
+      setError("Usuario o contraseña incorrectos.");
+      setLoading(false);
+    }
   }
   return (
     <div style={{ minHeight: "100vh", background: `linear-gradient(135deg,${T.ink} 0%,#2D1B69 50%,#1A2E4A 100%)`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter',-apple-system,sans-serif", padding: 20 }}>
@@ -4122,12 +4144,27 @@ function CambiarClaveModal({ currentUser, onSave, onClose }) {
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
   const [show, setShow] = useState(false);
-  function save() {
-    if (current !== currentUser.password) { setError("La contraseña actual no es correcta."); return; }
+  const [guardando, setGuardando] = useState(false);
+  // Cambia la clave real en Firebase Authentication (Fase B). Antes esto
+  // comparaba contra el campo `password` en texto plano de Firestore — ahora
+  // se reautentica contra la cuenta real (para confirmar que "current" es
+  // correcta) y luego se actualiza ahí mismo, nunca en Firestore.
+  async function save() {
+    setError("");
     if (!nueva.trim() || nueva.length < 6) { setError("La nueva contraseña debe tener al menos 6 caracteres."); return; }
     if (nueva !== confirm) { setError("Las contraseñas no coinciden."); return; }
-    onSave(nueva.trim());
-    onClose();
+    setGuardando(true);
+    try {
+      const email = `${currentUser.username}@techpack-yanko.local`;
+      const credential = EmailAuthProvider.credential(email, current);
+      await reauthenticateWithCredential(auth.currentUser, credential);
+      await updatePassword(auth.currentUser, nueva.trim());
+      onSave(nueva.trim());
+      onClose();
+    } catch (err) {
+      setError(err?.code === "auth/invalid-credential" || err?.code === "auth/wrong-password" ? "La contraseña actual no es correcta." : (err?.message || "No se pudo cambiar la contraseña."));
+    }
+    setGuardando(false);
   }
   return (
     <Modal title="Cambiar mi contraseña" onClose={onClose} width={420}>
@@ -4142,7 +4179,7 @@ function CambiarClaveModal({ currentUser, onSave, onClose }) {
       {error && <div style={{ padding: "8px 12px", background: T.coralBg, borderRadius: 8, fontSize: 13, color: T.coral, fontWeight: 600, marginBottom: 12 }}>⚠ {error}</div>}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn variant="success" onClick={save}>Cambiar contraseña</Btn>
+        <Btn variant="success" onClick={save} disabled={guardando}>{guardando ? "Guardando..." : "Cambiar contraseña"}</Btn>
       </div>
     </Modal>
   );
@@ -4182,6 +4219,13 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
   const [newPwd, setNewPwd] = useState("");
   const [showPwd, setShowPwd] = useState(false);
   const [error, setError] = useState("");
+  // --- Fase B: crear usuario y resetear clave de otro pasan por Cloud
+  // Functions (adminCrearUsuario / adminCambiarClaveUsuario) — el navegador
+  // del admin no puede crear ni tocar la cuenta de Firebase Auth de otra
+  // persona directamente, solo la propia.
+  const [creando, setCreando] = useState(false);
+  const [cambiandoClave, setCambiandoClave] = useState(false);
+  const [errorClave, setErrorClave] = useState("");
   const roleOptions = config.roles.map((r) => r.name);
   // --- Migración a Firebase Authentication (Fase A, temporal) ---
   // Botón de un solo uso para crear, por detrás, una cuenta real de Firebase
@@ -4206,26 +4250,59 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
     setMigrando(false);
   }
   function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false }); setEditUser(null); setShowForm(true); setError(""); }
-  function openEdit(u) { setForm({ name: u.name, username: u.username, password: u.password, role: u.role, isAdmin: u.isAdmin }); setEditUser(u); setShowForm(true); setError(""); }
-  function saveUser() {
-    if (!form.name || !form.username || !form.password) { setError("Todos los campos son obligatorios."); return; }
-    const dup = users.find((u) => u.username === form.username.toLowerCase() && u.id !== editUser?.id);
-    if (dup) { setError("Ese usuario ya existe."); return; }
-    const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-    if (editUser) {
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, ...form, username: form.username.toLowerCase(), avatar } : u)));
-    } else {
-      onUpdateUsers([...users, { id: uid(), ...form, username: form.username.toLowerCase(), avatar }]);
-    }
-    setShowForm(false);
+  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin }); setEditUser(u); setShowForm(true); setError(""); }
+  // Crear usuario nuevo pasa por la Cloud Function `adminCrearUsuario` (Fase
+  // B): a diferencia de editar, crear SÍ necesita generar una cuenta real de
+  // Firebase Auth para que esa persona pueda entrar — eso no lo puede hacer
+  // el navegador directamente (crearla desde el cliente dejaría al admin
+  // logueado como el usuario nuevo en vez de como él mismo), así que lo hace
+  // una función con permisos de administrador. Editar un usuario existente
+  // (nombre/rol/admin) sigue siendo una escritura directa a Firestore — el
+  // usuario y la contraseña de acceso ya NO se tocan ahí (para eso está
+  // "🔑 Clave"; el nombre de usuario no se puede cambiar una vez creado,
+  // porque es lo que arma el correo de la cuenta de Firebase Auth).
+  async function saveUser() {
     setError("");
+    if (editUser) {
+      if (!form.name) { setError("El nombre es obligatorio."); return; }
+      const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, avatar } : u)));
+      setShowForm(false);
+      return;
+    }
+    if (!form.name || !form.username || !form.password) { setError("Todos los campos son obligatorios."); return; }
+    if (form.password.length < 6) { setError("La contraseña debe tener al menos 6 caracteres."); return; }
+    const dup = users.find((u) => u.username === form.username.toLowerCase());
+    if (dup) { setError("Ese usuario ya existe."); return; }
+    setCreando(true);
+    try {
+      const llamar = httpsCallable(functionsClient, "adminCrearUsuario");
+      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin });
+      setShowForm(false);
+    } catch (err) {
+      setError(err?.message || "No se pudo crear el usuario.");
+    }
+    setCreando(false);
   }
   function deleteUser(id) { if (id === "u1") return; onUpdateUsers(users.filter((u) => u.id !== id)); }
-  function changePassword() {
-    if (!newPwd.trim()) return;
-    onUpdateUsers(users.map((u) => (u.id === changePwdId ? { ...u, password: newPwd.trim() } : u)));
-    setChangePwdId(null);
-    setNewPwd("");
+  // Resetear la clave de OTRO usuario también pasa por una Cloud Function
+  // (Fase B) — el navegador del admin no tiene permiso para cambiar la clave
+  // de otra cuenta de Firebase Auth directamente, solo la propia. La función
+  // `adminCambiarClaveUsuario` verifica que quien llama sea administrador
+  // antes de actualizarla.
+  async function changePassword() {
+    if (!newPwd.trim() || newPwd.trim().length < 6) { setErrorClave("La contraseña debe tener al menos 6 caracteres."); return; }
+    setErrorClave("");
+    setCambiandoClave(true);
+    try {
+      const llamar = httpsCallable(functionsClient, "adminCambiarClaveUsuario");
+      await llamar({ userId: changePwdId, nuevaClave: newPwd.trim() });
+      setChangePwdId(null);
+      setNewPwd("");
+    } catch (err) {
+      setErrorClave(err?.message || "No se pudo cambiar la contraseña.");
+    }
+    setCambiandoClave(false);
   }
   return (
     <div>
@@ -4283,11 +4360,16 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
             </div>
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Usuario</label>
-              <input value={form.username} onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))} placeholder="Ej: laura" style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+              <input value={form.username} onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))} placeholder="Ej: laura" disabled={!!editUser} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: editUser ? T.canvas : T.white, outline: "none", fontFamily: "inherit", cursor: editUser ? "not-allowed" : "text" }} />
+              {editUser && <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>No se puede cambiar una vez creado.</div>}
             </div>
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Contraseña</label>
-              <input type="text" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="Mínimo 6 caracteres" style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+              {editUser ? (
+                <div style={{ padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 12, color: T.slate, background: T.canvas }}>Usa el botón "🔑 Clave" para cambiarla.</div>
+              ) : (
+                <input type="text" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="Mínimo 6 caracteres" style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+              )}
             </div>
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Rol</label>
@@ -4304,7 +4386,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
           {error && <div style={{ marginTop: 12, padding: "8px 12px", background: T.coralBg, borderRadius: 8, fontSize: 13, color: T.coral, fontWeight: 600 }}>⚠ {error}</div>}
           <div style={{ display: "flex", gap: 10, marginTop: 16, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => { setShowForm(false); setError(""); }}>Cancelar</Btn>
-            <Btn onClick={saveUser}>{editUser ? "Guardar cambios" : "Crear Usuario"}</Btn>
+            <Btn onClick={saveUser} disabled={creando}>{creando ? "Creando..." : (editUser ? "Guardar cambios" : "Crear Usuario")}</Btn>
           </div>
         </div>
       )}
@@ -4316,9 +4398,10 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
               <input type={showPwd ? "text" : "password"} value={newPwd} onChange={(e) => setNewPwd(e.target.value)} onKeyDown={(e) => e.key === "Enter" && changePassword()} placeholder="Nueva contraseña..." style={{ width: "100%", padding: "9px 40px 9px 12px", border: `1.5px solid ${T.amber}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
               <button onClick={() => setShowPwd(!showPwd)} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 14 }}>{showPwd ? "🙈" : "👁"}</button>
             </div>
-            <Btn variant="amber" onClick={changePassword}>Guardar</Btn>
-            <Btn variant="secondary" onClick={() => { setChangePwdId(null); setNewPwd(""); }}>Cancelar</Btn>
+            <Btn variant="amber" onClick={changePassword} disabled={cambiandoClave}>{cambiandoClave ? "Guardando..." : "Guardar"}</Btn>
+            <Btn variant="secondary" onClick={() => { setChangePwdId(null); setNewPwd(""); setErrorClave(""); }}>Cancelar</Btn>
           </div>
+          {errorClave && <div style={{ marginTop: 10, padding: "8px 12px", background: T.coralBg, borderRadius: 8, fontSize: 13, color: T.coral, fontWeight: 600 }}>⚠ {errorClave}</div>}
         </div>
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -7054,22 +7137,22 @@ function AppInner() {
   if (appState === "loading") return <LoadingScreen message="Conectando con Firebase..." />;
   if (appState === "login" || !currentUser) return <LoginScreen onLogin={(u) => { setCurrentUser(u); setAppState("ready"); }} users={users} />;
   if (isPlaneadorPuro) {
-    return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); }} />;
+    return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (isContabilidadPura) {
-    return <ModuloContabilidad currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); }} />;
+    return <ModuloContabilidad currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (canAccessCorte && moduloActivo === "corte") {
-    return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); }} onVolver={() => setModuloActivo("diseno")} />;
+    return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} onVolver={() => setModuloActivo("diseno")} />;
   }
   if (moduloActivo === "contabilidad") {
-    return <ModuloContabilidad currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); }} />;
+    return <ModuloContabilidad currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "planeacion") {
-    return <ModuloPlaneacion currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); }} />;
+    return <ModuloPlaneacion currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "planta") {
-    return <ModuloPlanta currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); }} />;
+    return <ModuloPlanta currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   return (
     <div style={{ minHeight: "100vh", background: T.canvas, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,sans-serif" }}>
@@ -7077,9 +7160,8 @@ function AppInner() {
       <Toast items={toasts} onDismiss={(id) => setToasts((t) => t.filter((x) => x.id !== id))} />
       {showCambiarClave && (
         <CambiarClaveModal currentUser={currentUser}
-          onSave={async (nuevaClave) => {
-            await saveUsers(users.map((u) => (u.id === currentUser.id ? { ...u, password: nuevaClave } : u)));
-            setCurrentUser((c) => ({ ...c, password: nuevaClave }));
+          onSave={() => {
+            notify({ id: uid(), icon: "🔑", title: "Contraseña actualizada", msg: "Tu nueva contraseña ya quedó activa." });
           }}
           onClose={() => setShowCambiarClave(false)}
         />
@@ -7101,7 +7183,7 @@ function AppInner() {
               <div style={{ fontSize: 11, fontWeight: 700, color: T.white, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{currentUser.name}</div>
               <div style={{ fontSize: 10, color: T.seam }}>{currentUser.role}</div>
             </div>
-            <button onClick={() => { setCurrentUser(null); setAppState("login"); }} title="Cerrar sesión" style={{ background: "none", border: "none", color: "rgba(200,184,162,0.4)", cursor: "pointer", fontSize: 15, padding: 0 }}>⏏</button>
+            <button onClick={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} title="Cerrar sesión" style={{ background: "none", border: "none", color: "rgba(200,184,162,0.4)", cursor: "pointer", fontSize: 15, padding: 0 }}>⏏</button>
           </div>
           <button onClick={() => setShowCambiarClave(true)} style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "6px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: "transparent", color: "rgba(200,184,162,0.5)", fontWeight: 600, fontSize: 11, marginBottom: 12, textAlign: "left" }}>🔑 Cambiar contraseña</button>
           <button onClick={() => setView("dashboard")} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: view === "dashboard" ? T.seam : "transparent", color: view === "dashboard" ? T.ink : "#8888AA", fontWeight: view === "dashboard" ? 800 : 500, fontSize: 13, textAlign: "left", marginBottom: 8 }}><span style={{ fontSize: 15 }}>◉</span> Dashboard</button>
