@@ -1339,6 +1339,8 @@ function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadistica
     horaInicioEstimada: grupo.horaInicioEstimada || "",
     horaFinEstimada: grupo.horaFinEstimada || "",
   });
+  // Tablero de disponibilidad de mesones (ver más abajo, tableroMesones).
+  const [showTablero, setShowTablero] = useState(false);
 
   const plantaSel = plantas.find((p) => p.nombre === form.planta);
   const mesones = plantaSel?.mesones || [];
@@ -1362,7 +1364,35 @@ function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadistica
   // que se excluyen TODOS sus docs (no solo uno) al calcular lo ya reservado
   // en el mesón — si no, el propio trazo se restaría de la capacidad.
   const idsGrupo = grupo.colores.map((c) => c.id);
-  const usados = mesonSel ? metrosUsadosMeson(form.fechaProgramada, form.planta, form.meson, mesonSel.grupoId, idsGrupo) : 0;
+  // Horas estimadas — obligatorias para guardar. Además de bloquear el
+  // guardado (ver horasFaltantes/horasInvalidas más abajo), son las que
+  // definen qué otros cortes de ese mesón "compiten" por el mismo espacio.
+  const horasFaltantes = !form.horaInicioEstimada || !form.horaFinEstimada;
+  const horasInvalidas = !horasFaltantes && form.horaFinEstimada <= form.horaInicioEstimada;
+  // Qué más hay ya programado (con horario) en este mismo mesón ese día —
+  // para el timeline visual y para calcular disponibilidad real. Se
+  // excluyen los propios colores del grupo.
+  const ocupadosMeson = mesonSel
+    ? itemsUsadosMeson(form.fechaProgramada, form.planta, form.meson, mesonSel.grupoId, idsGrupo)
+    : [];
+  // Un mesón NO se ocupa el día entero por un solo trazo — se ocupa solo
+  // durante la franja de horario en la que está tendido/en corte. Por eso la
+  // disponibilidad real se compara contra los cortes cuyo horario SE CRUZA
+  // con el horario que se está programando ahora mismo (ej: si un trazo de
+  // 10m ya ocupó el mesón de 8 a 10, de 10 a 12 el mesón vuelve a estar
+  // libre por completo), no contra el total del día. Un corte sin horario
+  // conocido (de antes de que fuera obligatorio) se asume conservadoramente
+  // que ocupa todo el día, para no arriesgar un choque real. Mientras en
+  // este formulario todavía no se haya elegido horario, se muestra el total
+  // ocupado del día completo como referencia — no bloquea nada, para eso ya
+  // está horasFaltantes en el botón de Guardar.
+  function seCruzaConHorario(item) {
+    if (!item.horaInicioEstimada || !item.horaFinEstimada) return true;
+    if (horasFaltantes) return true;
+    return form.horaInicioEstimada < item.horaFinEstimada && item.horaInicioEstimada < form.horaFinEstimada;
+  }
+  const ocupadosQueCruzan = ocupadosMeson.filter(seCruzaConHorario);
+  const usados = ocupadosQueCruzan.reduce((s, it) => s + (it.largoTrazo || 0), 0);
   const disponible = capacidad !== null ? capacidad - usados : null;
   const excedeCapacidad = disponible !== null && largoTrazoNum > disponible;
 
@@ -1376,15 +1406,24 @@ function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadistica
   const tiempoTotalEstimadoMin = tendidoEstimadoMin !== null ? tendidoEstimadoMin + (tiempoTeorico || 0) : null;
   const telasDatalistId = `telas-prog-hecha-${grupo.pedidoId}-${grupo.ref}`;
   const cantidadTotal = grupo.colores.reduce((s, c) => s + (c.cantidadProgramada ?? c.cantidadPendiente ?? 0), 0);
-  // Horas estimadas — ahora obligatorias para guardar, para poder dibujar el
-  // timeline del mesón con datos reales de todo lo programado.
-  const horasFaltantes = !form.horaInicioEstimada || !form.horaFinEstimada;
-  const horasInvalidas = !horasFaltantes && form.horaFinEstimada <= form.horaInicioEstimada;
-  // Qué más hay ya programado (con horario) en este mismo mesón ese día —
-  // para el timeline visual. Se excluyen los propios colores del grupo.
-  const ocupadosMeson = mesonSel
-    ? itemsUsadosMeson(form.fechaProgramada, form.planta, form.meson, mesonSel.grupoId, idsGrupo)
-    : [];
+  // Tablero de disponibilidad: lista los mesones/grupos de esta planta (los
+  // que comparten capacidad, como "Mesón 2+3", se muestran una sola vez) con
+  // su ocupación real ese día, para decidir cuál usar sin tener que ir
+  // probando uno por uno.
+  const tableroMesones = [];
+  if (plantaSel) {
+    const vistosGrupo = new Set();
+    mesones.forEach((m) => {
+      if (m.grupoId) {
+        if (vistosGrupo.has(m.grupoId)) return;
+        vistosGrupo.add(m.grupoId);
+        const g = (plantaSel.grupos || []).find((gr) => gr.id === m.grupoId);
+        if (g) tableroMesones.push({ id: m.id, mesonId: m.id, grupoId: g.id, nombre: g.nombre, capacidad: g.metros, compartido: true });
+        return;
+      }
+      tableroMesones.push({ id: m.id, mesonId: m.id, grupoId: null, nombre: m.nombre, capacidad: m.metros, compartido: false });
+    });
+  }
 
   function autocompletarHoraFin() {
     if (!form.horaInicioEstimada || !tiempoTotalEstimadoMin) return;
@@ -1475,6 +1514,44 @@ function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadistica
         </Field>
       </div>
 
+      {plantaSel && (
+        <div style={{ marginBottom: 16 }}>
+          <Btn variant="secondary" onClick={() => setShowTablero((v) => !v)}>
+            {showTablero ? "Ocultar disponibilidad de mesones" : "📋 Ver disponibilidad de todos los mesones"}
+          </Btn>
+        </div>
+      )}
+
+      {showTablero && plantaSel && (
+        <div style={{ marginBottom: 16, padding: 12, borderRadius: 10, border: `1.5px solid ${C.denim}`, background: C.denimBg }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.denim, marginBottom: 10 }}>
+            Mesones de {plantaSel.nombre} el {fmtFechaISO(form.fechaProgramada)}
+            {!horasFaltantes && ` — franja resaltada en violeta: ${form.horaInicioEstimada} a ${form.horaFinEstimada}`}
+            {horasFaltantes && " — elige primero la hora de inicio/fin abajo para ver resaltada tu franja."}
+          </div>
+          {tableroMesones.map((fila) => (
+            <div key={fila.id}>
+              <MesonTimeline
+                nombre={fila.nombre}
+                capacidad={fila.capacidad}
+                compartido={fila.compartido}
+                ocupados={itemsUsadosMeson(form.fechaProgramada, form.planta, fila.mesonId, fila.grupoId, idsGrupo)}
+                inicioActual={form.horaInicioEstimada}
+                finActual={form.horaFinEstimada}
+              />
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: -10, marginBottom: 10 }}>
+                <Btn
+                  variant={form.meson === fila.mesonId ? "success" : "secondary"}
+                  onClick={() => { setForm((f) => ({ ...f, meson: fila.mesonId })); setShowTablero(false); }}
+                >
+                  {form.meson === fila.mesonId ? "✓ Este mesón está seleccionado" : "Usar este mesón"}
+                </Btn>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {mesonSel && capacidad !== null && (
         <div
           style={{
@@ -1490,7 +1567,8 @@ function ProgramacionHechaModal({ grupo, plantas, cortadores, telas, estadistica
           {excedeCapacidad ? "⚠ " : "✓ "}
           {grupoMeson ? `${grupoMeson.nombre}: ` : `${mesonSel.nombre}: `}
           {usados}m de trazo ya reservados de {capacidad}m {grupoMeson ? "compartidos" : "de mesa"} el {fmtFechaISO(form.fechaProgramada)}
-          {excedeCapacidad && ` — este trazo de ${largoTrazoNum}m no cabe (quedan ${Math.max(0, disponible)}m disponibles). Puedes apilar las capas que quieras, lo que no cabe es el largo del trazo.`}
+          {horasFaltantes && " (sin horario elegido todavía — se muestra el total del día como referencia)"}
+          {excedeCapacidad && ` — este trazo de ${largoTrazoNum}m no cabe en esa franja (quedan ${Math.max(0, disponible)}m disponibles). Puedes apilar las capas que quieras, lo que no cabe es el largo del trazo.`}
         </div>
       )}
 
@@ -5689,4 +5767,3 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver }) {
     </div>
   );
 }
-
