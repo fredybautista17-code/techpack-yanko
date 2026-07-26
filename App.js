@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import ModuloCorte from "./modulo-corte";
 import ModuloContabilidad from "./modulo-contabilidad";
 import ModuloPlaneacion from "./modulo-planeacion";
+import ModuloPlanta from "./modulo-planta";
 import { initializeApp } from "firebase/app";
 import {
   getFirestore,
@@ -9,10 +10,13 @@ import {
   doc,
   getDocs,
   setDoc,
+  updateDoc,
   deleteDoc,
   writeBatch,
   onSnapshot,
 } from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -23,12 +27,35 @@ const firebaseConfig = {
 };
 const fbApp = initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
+// Cliente de Cloud Functions — usado por el Informe de Pedidos Vigentes por
+// Cliente para llamar getPedidosVigentesBusint (consulta Busint en vivo).
+const functionsClient = getFunctions(fbApp);
+// Cliente de Firebase Authentication — usado por el login real (Fase B de la
+// migración de seguridad) y por los flujos de cambio/reseteo de contraseña.
+const auth = getAuth(fbApp);
 async function fsGet(col) {
   const snap = await getDocs(collection(db, col));
   return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
 }
 async function fsSave(col, id, data) {
   await setDoc(doc(db, col, id), data, { merge: true });
+}
+// A diferencia de fsSave (que espera el documento COMPLETO y por eso, si
+// quien llama tiene una copia local desactualizada de campos que no está
+// tocando, esos campos viejos pisan los datos reales de Firestore), fsUpdate
+// solo escribe las llaves presentes en `patch` — el resto del documento
+// (p.ej. "clientes" cuando solo se está cambiando "roles") queda intacto sin
+// importar qué tan vieja esté la copia local del resto. Esto es lo que evita
+// que guardar un cambio de roles/etapas/categorías borre la lista de
+// clientes por una condición de carrera con otra pestaña/usuario.
+async function fsUpdate(col, id, patch) {
+  try {
+    await updateDoc(doc(db, col, id), patch);
+  } catch (e) {
+    // El documento aún no existe (p.ej. antes de que termine de sembrarse) —
+    // se crea con merge como respaldo, sin arriesgar el resto del documento.
+    await setDoc(doc(db, col, id), patch, { merge: true });
+  }
 }
 async function fsDelete(col, id) {
   await deleteDoc(doc(db, col, id));
@@ -54,6 +81,7 @@ async function exportHojaDeVidaXLSX(item, kind, capsulaName) {
     en_revision: "En revisión",
     enviado_cotizacion: "En cotización",
     enviar_cliente: "Enviar al Cliente",
+    preparada_para_enviar: "Preparada para Enviar",
     enviado: "Enviado",
     recibido_cliente: "Recibido por Cliente",
     borrador: "Borrador",
@@ -228,6 +256,9 @@ function exportHojaDeVidaHTML(item, kind, capsulaName) {
     en_proceso: "#3D6B9E",
     en_revision: "#C47C1A",
     enviado_cotizacion: "#7B5EA7",
+    enviar_cliente: "#0E7490",
+    preparada_para_enviar: "#2D9E6B",
+    enviado: "#0369A1",
     borrador: "#5A5A7A",
   };
   const statusLabel = {
@@ -236,6 +267,9 @@ function exportHojaDeVidaHTML(item, kind, capsulaName) {
     en_proceso: "En proceso",
     en_revision: "En revisión",
     enviado_cotizacion: "En cotización",
+    enviar_cliente: "Enviar al Cliente",
+    preparada_para_enviar: "Preparada para Enviar",
+    enviado: "Enviado",
     borrador: "Borrador",
   };
   const stColor = statusColors[item.status] || "#5A5A7A";
@@ -375,6 +409,9 @@ function exportToExcel(protos, capsulas) {
     en_revision: "En revisión",
     aprobado: "Aprobado",
     enviado_cotizacion: "En cotización",
+    enviar_cliente: "Enviar al Cliente",
+    preparada_para_enviar: "Preparada para Enviar",
+    enviado: "Enviado",
     declinado: "Declinado",
     bloqueado: "Bloqueado",
   };
@@ -478,10 +515,20 @@ const INIT_CONFIG = {
     { id: "corte", label: "Corte", short: "CORT", days: 4 },
     { id: "confeccion", label: "Confección", short: "CONF", days: 5 },
     { id: "cotizacion", label: "Cotización", short: "COT", days: 1 },
+    { id: "por_enviar", label: "Por Enviar", short: "P.ENV", days: 2 },
   ],
   categorias: ["Cachetero","Byker","Capry","Leggins","Camiseta","Sisa","Top","Buso","Short","Enterizo","Body","Conjunto","Vestido","Blusa","Pantaloneta","Jogger","Traje de Baño","Bóxer","Pantys"],
   siluetas: ["Slimfit","Regularfit","Silueta Amplia","Oversize","Super Oversize","Estándar"],
   rangos: ["Normal (S,M,L,XL)","Doble Talla (S/M - M/L)","Talla U","Plus","Plus (1XL-2XL-3XL)"],
+  disenadores: [],
+  // Áreas de la compañía usadas en el módulo de KPIs (ver KPIsView), que
+  // cubre TODA la empresa, no solo Diseño. Cada Puesto (colección
+  // `kpi_puestos`) pertenece a UNA de estas áreas; cada persona y cada KPI
+  // del catálogo heredan el área de su puesto — así se puede filtrar y
+  // comparar por área o por puesto, y detectar KPIs solapados entre puestos.
+  kpiAreas: ["Diseño", "Corte", "Ventas", "Contabilidad", "Planeación"],
+  talleresMuestra: [],
+  prioridadesMuestra: ["Media", "Urgente", "Súper urgente", "Espera", "Modificación"],
   roles: [
     { id: "r1", name: "Equipo Interno", perms: ["editar", "aprobar", "declinar", "admin", "corte"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "corte", "stats", "historial", "contabilidad"] },
     { id: "r2", name: "Cliente", perms: ["aprobar", "declinar"], modulos: ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial"] },
@@ -500,11 +547,67 @@ const STATUS = {
   aprobado: { label: "Aprobado", color: T.jade, bg: T.jadeBg },
   enviado_cotizacion: { label: "En cotización", color: T.violet, bg: T.violetBg },
   enviar_cliente: { label: "Enviar al Cliente", color: "#0E7490", bg: "#ECFEFF" },
+  // Solo aplica a referencias DENTRO de una cápsula: en vez de registrar su
+  // envío individual, queda "en espera" hasta que toda la cápsula esté lista
+  // y se registre un solo envío agrupado (ver CapsulasView).
+  preparada_para_enviar: { label: "Preparada para Enviar", color: T.jade, bg: T.jadeBg },
   enviado: { label: "Enviado", color: "#0369A1", bg: "#EFF6FF" },
   recibido_cliente: { label: "Recibido por Cliente", color: T.jade, bg: T.jadeBg },
   declinado: { label: "Declinado", color: T.coral, bg: T.coralBg },
   bloqueado: { label: "Bloqueado", color: "#888", bg: "#F0F0F0" },
 };
+// --- Cronograma de Muestras ---
+// Estado propio de cada envío a taller de muestra (independiente del status
+// del prototipo/referencia en Diseño). Elegir un taller en el formulario no
+// significa que el taller ya la vaya a hacer — muchas veces el taller tiene
+// cola de muestras y todavía no la ha tomado. Por eso el flujo tiene 5
+// pasos: arranca "pendiente" ("Sin asignar" — ya se eligió taller, pero el
+// taller aún no confirmó que la va a hacer), pasa a "asignado" ("Asignado" —
+// el taller ya la tomó) cuando alguien lo marca a mano, luego a "aprobado" o
+// "modificar" según lo que vuelva del taller, y "enviado" se pone solo
+// cuando el prototipo/referencia pasa a status "enviado" en Diseño (ver
+// syncCronogramaEnviado) — no se elige a mano.
+const ESTADO_MUESTRA = {
+  pendiente: { label: "Sin asignar", color: T.slate, bg: "#EDEDF2" },
+  asignado: { label: "Asignado", color: T.amber, bg: T.amberBg },
+  aprobado: { label: "Aprobado", color: T.jade, bg: T.jadeBg },
+  modificar: { label: "Modificar", color: T.coral, bg: T.coralBg },
+  enviado: { label: "Enviado", color: "#0369A1", bg: "#EFF6FF" },
+};
+// La lista de prioridades (Media, Urgente, etc.) ahora vive en
+// config.prioridadesMuestra — editable en Administrador General, igual que
+// Diseñadores y Talleres de Muestra — en vez de quedar fija en el código.
+// Este mapa de colores es solo una guía visual: una prioridad agregada desde
+// Admin que no esté aquí simplemente se ve con el color neutro (T.border).
+const PRIORIDAD_MUESTRA_COLOR = { "Media": T.denim, "Urgente": T.amber, "Súper urgente": T.coral, "Espera": T.slate, "Modificación": T.violet };
+const TIPO_GENERO_MUESTRA = ["Dama", "Caballero", "Niña", "Niño"];
+const TIPO_DESARROLLO_MUESTRA = ["Cápsula nueva", "Contramuestra para producción", "Tela nueva"];
+// Aprobación de Ilustración a nivel de Cápsula: una cápsula se puede crear
+// libremente (nombre/temporada/cliente, sin referencias), pero para
+// agregarle referencias — sea creando una nueva o promoviendo un prototipo —
+// la Dirección Creativa debe aprobar primero la ilustración/concepto de la
+// cápsula completa. Empieza "pendiente", puede ir a "en_revision" (con nota
+// obligatoria) y finalmente "aprobado".
+const ILUSTRACION_CAPSULA_ESTADO = {
+  pendiente: { label: "Ilustración pendiente de aprobación", color: T.amber, bg: T.amberBg },
+  en_revision: { label: "Ilustración en revisión", color: T.coral, bg: T.coralBg },
+  aprobado: { label: "Ilustración aprobada", color: T.jade, bg: T.jadeBg },
+};
+// Compatibilidad con cápsulas creadas antes de este control: si nunca se le
+// asignó "ilustracionEstado", se trata como ya aprobada (no se le retiene
+// retroactivamente la posibilidad de agregar referencias).
+function ilustracionAprobada(cap) { return !cap.ilustracionEstado || cap.ilustracionEstado === "aprobado"; }
+// Busca en las observaciones de un ítem la fecha real en la que pasó a un
+// estado dado (ej. "Aprobado"), usada por el backfill de Historial para
+// reconstruir fechas reales en vez de usar "hoy" para ítems que ya estaban
+// aprobados/declinados antes de que existiera el registro de Historial.
+function buscarFechaEstado(item, status) {
+  const label = STATUS[status]?.label;
+  if (!label) return null;
+  const texto = `Estado → "${label}".`;
+  const obs = (item.observations || []).filter((o) => o.type === "update" && o.text === texto);
+  return obs.length ? obs[obs.length - 1].date : null;
+}
 function uid() { return Math.random().toString(36).slice(2, 9); }
 function daysAgo(d) { return Math.floor((Date.now() - new Date(d)) / 86400000); }
 function isOverdue(item, stages) {
@@ -527,7 +630,7 @@ function nowISO() { return new Date().toISOString(); }
 // Corte, sin Prototipos ni Cápsulas).
 // Claves granulares de sección dentro de Diseño (Corte y Contabilidad siempre
 // se gestionan como llaves independientes, nunca implícitas en "diseno").
-const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial"];
+const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial", "cronograma_muestras", "bitacora"];
 function moduloVisible(roleData, mod, isAdmin) {
   if (isAdmin) return true;
   if (!roleData) return false;
@@ -561,21 +664,36 @@ function LoadingScreen({ message }) {
     </div>
   );
 }
-function LoginScreen({ onLogin, users }) {
+function LoginScreen({ externalError }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPass, setShowPass] = useState(false);
-  function handleLogin() {
+  // Login real con Firebase Authentication (Fase B/C de la migración de
+  // seguridad — antes esto comparaba la clave en texto plano contra la
+  // colección `users`). Como acá se entra con nombre de usuario y no correo,
+  // se arma el mismo correo sintético que usó la migración de Fase A:
+  // usuario@techpack-yanko.local. Ya no hace falta leer la colección `users`
+  // aquí para nada — Firebase valida la clave real, y una vez la sesión
+  // queda activa, es AppInner (vía onAuthStateChanged) quien carga los datos
+  // y encuentra el perfil correspondiente.
+  async function handleLogin() {
     if (!username || !password) { setError("Ingresa usuario y contraseña."); return; }
     setLoading(true);
     setError("");
-    setTimeout(() => {
-      const user = users.find((u) => u.username === username.toLowerCase().trim() && u.password === password);
-      if (user) { onLogin(user); } else { setError("Usuario o contraseña incorrectos."); setLoading(false); }
-    }, 600);
+    const usernameNorm = username.toLowerCase().trim();
+    const email = `${usernameNorm}@techpack-yanko.local`;
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+      // No hace falta hacer nada más aquí: en cuanto la sesión queda activa,
+      // AppInner detecta el cambio y carga los datos solo.
+    } catch (err) {
+      setError("Usuario o contraseña incorrectos.");
+      setLoading(false);
+    }
   }
+  const mensajeError = error || externalError;
   return (
     <div style={{ minHeight: "100vh", background: `linear-gradient(135deg,${T.ink} 0%,#2D1B69 50%,#1A2E4A 100%)`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter',-apple-system,sans-serif", padding: 20 }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
@@ -611,7 +729,7 @@ function LoginScreen({ onLogin, users }) {
               <button onClick={() => setShowPass(!showPass)} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "rgba(200,184,162,0.6)", cursor: "pointer", fontSize: 16 }}>{showPass ? "🙈" : "👁"}</button>
             </div>
           </div>
-          {error && (<div style={{ padding: "10px 14px", background: "rgba(232,93,74,0.15)", border: "1px solid rgba(232,93,74,0.3)", borderRadius: 8, color: "#FF8A7A", fontSize: 13, fontWeight: 600, marginBottom: 20 }}>⚠ {error}</div>)}
+          {mensajeError && (<div style={{ padding: "10px 14px", background: "rgba(232,93,74,0.15)", border: "1px solid rgba(232,93,74,0.3)", borderRadius: 8, color: "#FF8A7A", fontSize: 13, fontWeight: 600, marginBottom: 20 }}>⚠ {mensajeError}</div>)}
           <button onClick={handleLogin} disabled={loading}
             style={{ width: "100%", padding: "13px", background: loading ? "rgba(200,184,162,0.3)" : `linear-gradient(135deg,${T.seam},${T.seamDark})`, border: "none", borderRadius: 10, color: T.ink, fontWeight: 800, fontSize: 15, cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit" }}
           >{loading ? "Verificando..." : "Ingresar →"}</button>
@@ -879,7 +997,7 @@ function NewProtoModal({ onSave, onClose, config }) {
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: C-003" /></Field>
-        <Field label="Responsable"><FInput value={form.assignedTo} onChange={set("assignedTo")} placeholder="Ej: María García" /></Field>
+        <Field label="Responsable"><FSel value={form.assignedTo} onChange={set("assignedTo")} options={config.disenadores} /></Field>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Tipo de Tela"><FInput value={form.tipoTela} onChange={set("tipoTela")} placeholder="Ej: Diamante, Lycra" /></Field>
@@ -892,8 +1010,8 @@ function NewProtoModal({ onSave, onClose, config }) {
     </Modal>
   );
 }
-function EditRefModal({ ref: refItem, onSave, onClose, config }) {
-  const [form, setForm] = useState({ name: refItem.name || "", reference: refItem.reference || "", assignedTo: refItem.assignedTo || "", categoria: refItem.categoria || "", silueta: refItem.silueta || "", colores: refItem.colores?.[0] || "", tallas: refItem.tallas?.[0] || "", tipoTela: refItem.tipoTela || "", baseMolderia: refItem.baseMolderia || "" });
+function EditRefModal({ refData: refItem, onSave, onClose, config }) {
+  const [form, setForm] = useState({ name: refItem?.name || "", reference: refItem?.reference || "", assignedTo: refItem?.assignedTo || "", categoria: refItem?.categoria || "", silueta: refItem?.silueta || "", colores: refItem?.colores?.[0] || "", tallas: refItem?.tallas?.[0] || "", tipoTela: refItem?.tipoTela || "", baseMolderia: refItem?.baseMolderia || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function save() {
     if (!form.name || !form.reference) return;
@@ -901,7 +1019,7 @@ function EditRefModal({ ref: refItem, onSave, onClose, config }) {
     onClose();
   }
   return (
-    <Modal title={`Editar Referencia — ${refItem.reference}`} onClose={onClose} width={560}>
+    <Modal title={`Editar Referencia — ${refItem?.reference}`} onClose={onClose} width={560}>
       <Field label="Nombre"><FInput value={form.name} onChange={set("name")} placeholder="Nombre de la referencia" /></Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Categoría"><FSel value={form.categoria} onChange={set("categoria")} options={config.categorias} /></Field>
@@ -912,7 +1030,7 @@ function EditRefModal({ ref: refItem, onSave, onClose, config }) {
         <Field label="Cliente"><FSel value={form.colores} onChange={set("colores")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label="Responsable"><FInput value={form.assignedTo} onChange={set("assignedTo")} placeholder="Ej: Pedro Martínez" /></Field>
+        <Field label="Responsable"><FSel value={form.assignedTo} onChange={set("assignedTo")} options={config.disenadores} /></Field>
         <Field label="Rango de Tallas"><FSel value={form.tallas} onChange={set("tallas")} options={config.rangos} /></Field>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -927,7 +1045,7 @@ function EditRefModal({ ref: refItem, onSave, onClose, config }) {
   );
 }
 function EditProtoModal({ proto, onSave, onClose, config }) {
-  const [form, setForm] = useState({ name: proto.name || "", categoria: proto.categoria || "", silueta: proto.silueta || "", rango: proto.rango || "", reference: proto.reference || "", assignedTo: proto.assignedTo || "", cliente: proto.cliente || "", tipoTela: proto.tipoTela || "", baseMolderia: proto.baseMolderia || "" });
+  const [form, setForm] = useState({ name: proto?.name || "", categoria: proto?.categoria || "", silueta: proto?.silueta || "", rango: proto?.rango || "", reference: proto?.reference || "", assignedTo: proto?.assignedTo || "", cliente: proto?.cliente || "", tipoTela: proto?.tipoTela || "", baseMolderia: proto?.baseMolderia || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function save() { if (!form.name || !form.reference) return; onSave(form); onClose(); }
   return (
@@ -943,7 +1061,7 @@ function EditProtoModal({ proto, onSave, onClose, config }) {
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: C-003" /></Field>
-        <Field label="Responsable"><FInput value={form.assignedTo} onChange={set("assignedTo")} placeholder="Ej: María García" /></Field>
+        <Field label="Responsable"><FSel value={form.assignedTo} onChange={set("assignedTo")} options={config.disenadores} /></Field>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Tipo de Tela"><FInput value={form.tipoTela} onChange={set("tipoTela")} placeholder="Ej: Diamante, Lycra" /></Field>
@@ -956,14 +1074,18 @@ function EditProtoModal({ proto, onSave, onClose, config }) {
     </Modal>
   );
 }
-function NewCapsulaModal({ onSave, onClose }) {
-  const [form, setForm] = useState({ name: "", season: "" });
+function NewCapsulaModal({ onSave, onClose, config }) {
+  const [form, setForm] = useState({ name: "", season: "", cliente: "", assignedTo: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
-  function save() { if (!form.name) return; onSave({ id: uid(), ...form, createdAt: today(), referencias: [] }); onClose(); }
+  function save() { if (!form.name) return; onSave({ id: uid(), ...form, createdAt: today(), referencias: [], ilustracionEstado: "pendiente", observacionesIlustracion: [] }); onClose(); }
   return (
     <Modal title="Nueva Cápsula" onClose={onClose}>
       <Field label="Nombre"><FInput value={form.name} onChange={set("name")} placeholder="Ej: Cápsula Otoño 2025" /></Field>
-      <Field label="Temporada / Código"><FInput value={form.season} onChange={set("season")} placeholder="Ej: AW25 o C0127" /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Temporada / Código"><FInput value={form.season} onChange={set("season")} placeholder="Ej: AW25 o C0127" /></Field>
+        <Field label="Responsable"><FSel value={form.assignedTo} onChange={set("assignedTo")} options={config?.disenadores || []} /></Field>
+      </div>
+      <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config?.clientes || []).map((c) => c.nombre)} /></Field>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn onClick={save}>Crear Cápsula</Btn>
@@ -995,7 +1117,7 @@ function NewRefModal({ capsula, onSave, onClose, config }) {
         <Field label="Cliente"><FSel value={form.colores} onChange={set("colores")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label="Responsable"><FInput value={form.assignedTo} onChange={set("assignedTo")} placeholder="Ej: Pedro Martínez" /></Field>
+        <Field label="Responsable"><FSel value={form.assignedTo} onChange={set("assignedTo")} options={config.disenadores} /></Field>
         <Field label="Rango de Tallas"><FSel value={form.tallas} onChange={set("tallas")} options={config.rangos} /></Field>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -1015,7 +1137,7 @@ function EnviadoModal({ onSave, onClose }) {
   function save() { if (!form.empresa.trim()) return; onSave(form); onClose(); }
   return (
     <Modal title="Registrar Envío" onClose={onClose} width={420}>
-      <div style={{ padding: "10px 14px", background: T.denimBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.denim, fontWeight: 600 }}>📦 Registra los datos del envío al cliente</div>
+      <div style={{ padding: "10px 14px", background: T.denimBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.denim, fontWeight: 600 }}>📦 Registra los datos del envío al cliente — esto también queda guardado en la Bitácora de Envíos</div>
       <Field label="Empresa de Transporte"><FInput value={form.empresa} onChange={set("empresa")} placeholder="Ej: Servientrega, Deprisa, TCC" /></Field>
       <Field label="Fecha de Envío">
         <input type="date" value={form.fecha} onChange={(e) => setForm((f) => ({ ...f, fecha: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
@@ -1028,8 +1150,110 @@ function EnviadoModal({ onSave, onClose }) {
     </Modal>
   );
 }
+// Modal para crear un ENVÍO agrupado (varias referencias/prototipos juntos,
+// p.ej. toda una colección) desde Prototipos/Cápsulas cuando ya están listos
+// para el cliente. A diferencia de EnviadoModal (que solo pide datos de
+// transporte para UNA referencia), este arma el registro completo que
+// después se puede exportar como el ANEXO que se manda al cliente:
+// encabezado (colección, cliente, n° pedido, fechas, carta de colores) + por
+// cada ítem seleccionado, las cantidades/precio/observaciones que no se
+// guardan en la referencia misma. No reemplaza "Registrar Envío" — es un
+// flujo adicional pensado para cuando se manda un lote/colección completa.
+function NuevoEnvioModal({ items, config, onSave, onClose }) {
+  const primero = items[0];
+  const [header, setHeader] = useState({
+    coleccion: primero?.capsulaNombre || "",
+    cliente: primero?.cliente || primero?.colores?.[0] || "",
+    numPedido: "",
+    fechaEnviado: today(),
+    empresaTransporte: "",
+    guia: "",
+    cartaColores: null,
+  });
+  const [filas, setFilas] = useState(
+    items.map((it) => ({
+      id: it.id,
+      _consumo: "",
+      _tipo: "",
+      _colombiaCurva: "",
+      _colombiaCantidad: "",
+      _venezuelaCurva: "",
+      _venezuelaCantidad: "",
+      _precio: "",
+      _observacionesCliente: "",
+    }))
+  );
+  const setH = (k) => (v) => setHeader((h) => ({ ...h, [k]: v }));
+  function setFila(id, campo, val) {
+    setFilas((fs) => fs.map((f) => (f.id === id ? { ...f, [campo]: val } : f)));
+  }
+  function save() {
+    const itemsConDatos = items.map((it) => ({ ...it, ...filas.find((f) => f.id === it.id) }));
+    onSave(header, itemsConDatos);
+    onClose();
+  }
+  return (
+    <Modal title={`Crear Envío — ${items.length} referencia${items.length !== 1 ? "s" : ""}`} onClose={onClose} width={860}>
+      <div style={{ padding: "10px 14px", background: T.denimBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.denim, fontWeight: 600 }}>
+        📜 Esto arma el registro de Bitácora (encabezado + tabla por referencia) y marca cada ítem como "Enviado".
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Colección / Nombre del Envío"><FInput value={header.coleccion} onChange={setH("coleccion")} placeholder="Ej: Colección Kamila Girls N°2" /></Field>
+        <Field label="Cliente"><FSel value={header.cliente} onChange={setH("cliente")} options={(config?.clientes || []).map((c) => c.nombre)} /></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="N° Pedido"><FInput value={header.numPedido} onChange={setH("numPedido")} placeholder="Ej: 4521" /></Field>
+        <Field label="Fecha de Envío">
+          <input type="date" value={header.fechaEnviado} onChange={(e) => setHeader((h) => ({ ...h, fechaEnviado: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+        </Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Empresa de Transporte (opcional)"><FInput value={header.empresaTransporte} onChange={setH("empresaTransporte")} placeholder="Ej: Servientrega" /></Field>
+        <Field label="Número de Guía (opcional)"><FInput value={header.guia} onChange={setH("guia")} placeholder="Ej: 9234567890" /></Field>
+      </div>
+      <ImageUploader image={header.cartaColores} onImage={(img) => setHeader((h) => ({ ...h, cartaColores: img }))} />
+      <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, letterSpacing: "0.06em", textTransform: "uppercase", marginTop: 8, marginBottom: 10 }}>Referencias en este envío</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14, maxHeight: 420, overflowY: "auto", paddingRight: 4 }}>
+        {items.map((it) => {
+          const f = filas.find((x) => x.id === it.id);
+          return (
+            <div key={it.id} style={{ border: `1.5px solid ${T.border}`, borderRadius: 10, padding: 14 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10 }}>
+                {it.image && <img src={it.image} alt="" style={{ width: 40, height: 40, borderRadius: 6, objectFit: "cover" }} />}
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: 13, color: T.ink }}>{it.reference} — {it.name}</div>
+                  <div style={{ fontSize: 11, color: T.slate }}>{it.categoria || "—"} · {it.silueta || "—"} · {it.rango || it.tallas?.[0] || "—"} · {it.tipoTela || "—"}</div>
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <Field label="Tipo"><FInput value={f._tipo} onChange={(v) => setFila(it.id, "_tipo", v)} placeholder="Niña, Niño..." /></Field>
+                <Field label="Consumo"><FInput value={f._consumo} onChange={(v) => setFila(it.id, "_consumo", v)} placeholder="Ej: 0.45 kg" /></Field>
+                <Field label="Precio $"><FInput value={f._precio} onChange={(v) => setFila(it.id, "_precio", v)} placeholder="Ej: 18950" /></Field>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8 }}>
+                <Field label="Curva Colombia"><FInput value={f._colombiaCurva} onChange={(v) => setFila(it.id, "_colombiaCurva", v)} placeholder="Ej: 8-10-12-14" /></Field>
+                <Field label="Cantidad Colombia"><FInput value={f._colombiaCantidad} onChange={(v) => setFila(it.id, "_colombiaCantidad", v)} placeholder="Ej: 24" /></Field>
+                <Field label="Curva Venezuela"><FInput value={f._venezuelaCurva} onChange={(v) => setFila(it.id, "_venezuelaCurva", v)} placeholder="Ej: 8-10-12-14" /></Field>
+                <Field label="Cantidad Venezuela"><FInput value={f._venezuelaCantidad} onChange={(v) => setFila(it.id, "_venezuelaCantidad", v)} placeholder="Ej: 12" /></Field>
+              </div>
+              <Field label="Observaciones Cliente"><FInput value={f._observacionesCliente} onChange={(v) => setFila(it.id, "_observacionesCliente", v)} placeholder="Ej: Ajuste en laterales" /></Field>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn variant="success" onClick={save}>✓ Crear Envío</Btn>
+      </div>
+    </Modal>
+  );
+}
 function PromoteModal({ proto, capsulas, onSave, onClose, config }) {
-  const [capId, setCapId] = useState(capsulas[0]?.id || "");
+  // Solo se puede promover a una cápsula cuya ilustración/concepto ya haya
+  // sido aprobado por la Dirección Creativa (las creadas antes de este
+  // control se tratan como aprobadas, ver ilustracionAprobada).
+  const capsulasDisponibles = capsulas.filter(ilustracionAprobada);
+  const [capId, setCapId] = useState(capsulasDisponibles[0]?.id || "");
   const [refName, setRefName] = useState(proto.name);
   const [refCode, setRefCode] = useState("");
   const [cliente, setCliente] = useState("");
@@ -1045,11 +1269,15 @@ function PromoteModal({ proto, capsulas, onSave, onClose, config }) {
   return (
     <Modal title={`Promover "${proto.name}" → Referencia`} onClose={onClose} width={520}>
       <div style={{ padding: "10px 14px", background: T.jadeBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.jade, fontWeight: 600 }}>✓ BOM, POM, Categoría y Silueta se copiarán automáticamente</div>
-      <Field label="Cápsula destino">
-        <select value={capId} onChange={(e) => setCapId(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
-          {capsulas.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.season})</option>)}
-        </select>
-      </Field>
+      {!capsulasDisponibles.length ? (
+        <div style={{ padding: "10px 14px", background: T.coralBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.coral, fontWeight: 600 }}>⚠ No hay cápsulas con ilustración aprobada todavía. Pide a la Dirección Creativa que apruebe una cápsula antes de promover.</div>
+      ) : (
+        <Field label="Cápsula destino">
+          <select value={capId} onChange={(e) => setCapId(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
+            {capsulasDisponibles.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.season})</option>)}
+          </select>
+        </Field>
+      )}
       <Field label="Nombre de la referencia"><FInput value={refName} onChange={setRefName} placeholder="Nombre final" /></Field>
       <Field label="Código de referencia"><FInput value={refCode} onChange={setRefCode} placeholder="Ej: BC-002" /></Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -1058,25 +1286,163 @@ function PromoteModal({ proto, capsulas, onSave, onClose, config }) {
       </div>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn variant="success" onClick={save}>⬆ Promover</Btn>
+        <Btn variant="success" onClick={save} disabled={!capsulasDisponibles.length}>⬆ Promover</Btn>
       </div>
     </Modal>
   );
 }
 
-function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, onPromote, notify, onLogHistorial, capsula, stages, currentUser, config }) {
+// Envía (o actualiza) el registro de este prototipo/referencia en el
+// Cronograma de Muestras: taller asignado, fecha de entrega esperada,
+// prioridad, tipo (género) y tipo de desarrollo. Si ya existe un registro
+// activo para este ítem (`existing`), edita esos datos en vez de crear uno
+// nuevo.
+function EnviarTallerModal({ item, existing, ultimoTaller, config, onSave, onClose }) {
+  // "existing" es null cuando el registro anterior ya quedó en "Enviado"
+  // (se va a crear una ronda nueva). Aun así, el Taller/Prioridad/Tipo se
+  // rellenan con lo último conocido (ultimoTaller) para no dejar el campo
+  // Taller vacío y bloquear el botón Guardar solo por eso — sobre todo
+  // cuando lo único que se quiere es dejar una nota de Modificar.
+  const [form, setForm] = useState({
+    taller: existing?.taller || ultimoTaller?.taller || "",
+    fechaEntrega: existing?.fechaEntrega || "",
+    prioridad: existing?.prioridad || ultimoTaller?.prioridad || "Media",
+    tipo: existing?.tipo || ultimoTaller?.tipo || "",
+    tipoDesarrollo: existing?.tipoDesarrollo || ultimoTaller?.tipoDesarrollo || "",
+    estado: existing?.estado || "pendiente",
+    notaModificar: existing?.notaModificar || "",
+  });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  // Si elige "Modificar", tiene que quedar escrito qué sucedió o qué hay que
+  // cambiar — ese texto se guarda en la entrada del cronograma y, si el
+  // ítem existe en el aplicativo, también queda como Observación ahí mismo.
+  const necesitaNota = form.estado === "modificar";
+  function save() {
+    if (!form.taller) return;
+    if (necesitaNota && !form.notaModificar.trim()) return;
+    onSave(form);
+    onClose();
+  }
+  return (
+    <Modal title={existing ? "Actualizar Taller de Muestra" : "Enviar a Taller de Muestra"} onClose={onClose} width={480}>
+      <div style={{ padding: "10px 14px", background: T.denimBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.denim, fontWeight: 600 }}>🧵 {item.name} — {item.reference}</div>
+      <Field label="Taller de Muestra"><FSel value={form.taller} onChange={set("taller")} options={config?.talleresMuestra || []} /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Fecha de Entrega Esperada">
+          <input type="date" value={form.fechaEntrega} onChange={(e) => set("fechaEntrega")(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+        </Field>
+        <Field label="Prioridad"><FSel value={form.prioridad} onChange={set("prioridad")} options={config?.prioridadesMuestra || []} /></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Tipo"><FSel value={form.tipo} onChange={set("tipo")} options={TIPO_GENERO_MUESTRA} /></Field>
+        <Field label="Tipo de Desarrollo"><FSel value={form.tipoDesarrollo} onChange={set("tipoDesarrollo")} options={TIPO_DESARROLLO_MUESTRA} /></Field>
+      </div>
+      <Field label="Estado">
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {Object.entries(ESTADO_MUESTRA).map(([v, def]) => (
+            <button key={v} type="button" onClick={() => set("estado")(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${form.estado === v ? def.color : T.border}`, background: form.estado === v ? def.bg : T.white, color: form.estado === v ? def.color : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{def.label}</button>
+          ))}
+        </div>
+      </Field>
+      {necesitaNota && (
+        <Field label="¿Qué sucedió o qué hay que modificar?">
+          <textarea value={form.notaModificar} onChange={(e) => set("notaModificar")(e.target.value)} rows={3} placeholder="Escribe el detalle de la modificación..." style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.coral}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical" }} />
+        </Field>
+      )}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={save} disabled={!form.taller || (necesitaNota && !form.notaModificar.trim())}>{existing ? "Guardar cambios" : "🧵 Enviar a Taller"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+// Nota obligatoria al devolver una pieza "En revisión" mientras está en la
+// etapa de Ilustración — permite medir por diseñador cuántas veces la
+// Dirección Creativa le pidió cambios a la propuesta inicial (Estadísticas).
+function NotaRevisionModal({ title, hint, onSave, onClose }) {
+  const [nota, setNota] = useState("");
+  function save() {
+    if (!nota.trim()) return;
+    onSave(nota.trim());
+    onClose();
+  }
+  return (
+    <Modal title={title || "Enviar a Revisión — Ilustración"} onClose={onClose} width={460}>
+      <div style={{ padding: "10px 14px", background: T.amberBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.amber, fontWeight: 600 }}>{hint || "🎨 Registra qué hay que cambiar en la propuesta — queda en Observaciones y cuenta para las Estadísticas del diseñador."}</div>
+      <Field label="¿Qué hay que cambiar?">
+        <textarea value={nota} onChange={(e) => setNota(e.target.value)} rows={4} placeholder="Ej: ajustar proporción de manga, cambiar tono de color, revisar cuello..." style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.coral}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical" }} />
+      </Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn variant="amber" onClick={save} disabled={!nota.trim()}>Enviar a Revisión</Btn>
+      </div>
+    </Modal>
+  );
+}
+// Precio de cotización de una referencia/prototipo — se pide al mandarlo a
+// "En cotización" (botón 📤 Cotización), y también se puede editar después
+// mientras siga en ese tramo del flujo de envío (clic sobre la píldora del
+// precio). Queda guardado en el propio ítem (`precioCotizacion`).
+function PrecioCotizacionModal({ item, onSave, onClose }) {
+  const [precio, setPrecio] = useState(item.precioCotizacion != null ? String(item.precioCotizacion) : "");
+  const num = Number(precio);
+  const valido = precio !== "" && !isNaN(num) && num > 0;
+  function save() {
+    if (!valido) return;
+    onSave(num);
+  }
+  return (
+    <Modal title="Precio de Cotización" onClose={onClose} width={400}>
+      <div style={{ padding: "10px 14px", background: T.violetBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.violet, fontWeight: 600 }}>💲 Precio cotizado para {item.reference || item.name}</div>
+      <Field label="Precio (COP)">
+        <FInput type="number" value={precio} onChange={setPrecio} placeholder="Ej: 45000" />
+      </Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={save} disabled={!valido}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+// Hilo de Observaciones propio de la Cápsula (no de cada referencia): queda
+// aquí el ida y vuelta de aprobación de la ilustración/concepto completo —
+// separado de la Hoja de Vida de las referencias individuales. Reutiliza el
+// mismo ChatPanel que ya se usa para observaciones de Prototipos/Referencias.
+function ObservacionesCapsulaModal({ capsula, currentUser, role, onSend, onMarkDone, onClose }) {
+  return (
+    <Modal title={`Observaciones de Ilustración — ${capsula.name}`} onClose={onClose} width={520}>
+      <ChatPanel observations={capsula.observacionesIlustracion || []} currentUser={currentUser} role={role}
+        onSend={(texto) => onSend(capsula.id, texto)}
+        onMarkDone={(obsId) => onMarkDone(capsula.id, obsId)}
+      />
+    </Modal>
+  );
+}
+function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, onPromote, notify, onLogHistorial, capsula, stages, currentUser, config, cronogramaMuestras, onSendTaller, onUpdateTaller, onCrearEnvio }) {
   const [tab, setTab] = useState("overview");
   const [showEdit, setShowEdit] = useState(false);
   const [showEnviado, setShowEnviado] = useState(false);
+  const [showTaller, setShowTaller] = useState(false);
+  const [showRevision, setShowRevision] = useState(false);
+  const [showPrecioCotizacion, setShowPrecioCotizacion] = useState(false);
+  // Registro más reciente de este ítem en el Cronograma de Muestras (si
+  // existe). Se usa para mostrar su estado aquí mismo y para que el botón
+  // "Enviar a Taller de Muestra" edite ese registro en vez de duplicarlo.
+  const tallerMasReciente = (cronogramaMuestras || [])
+    .filter((c) => c.itemId === item.id)
+    .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0] || null;
   const overdue = isOverdue(item, stages);
   const canEdit = perms.editar;
   const canAprobar = perms.aprobar;
   const canDeclinar = perms.declinar;
   const stageIdx = stages.findIndex((s) => s.id === item.currentStage);
   function patch(p) { onUpdateItem(p); }
-  function changeStatus(s, extraData) {
+  // extraObs: observaciones adicionales a insertar en la Hoja de Vida en el
+  // MISMO patch que el cambio de estado (para no perder ninguna de las dos
+  // por escribir el estado local desactualizado en dos llamadas seguidas).
+  function changeStatus(s, extraData, extraObs) {
     const obs = { id: uid(), user: currentUser, role, text: `Estado → "${STATUS[s]?.label}".`, date: nowISO(), type: "update", done: false };
-    patch({ status: s, ...(extraData || {}), observations: [...item.observations, obs] });
+    patch({ status: s, ...(extraData || {}), observations: [...item.observations, ...(extraObs || []), obs] });
     if (s === "aprobado") notify({ id: uid(), icon: "✅", title: "Aprobado", msg: item.name });
     // Historial por cliente/mes: un prototipo se registra al Aprobarse (se
     // promueva o no después a una cápsula); una referencia de cápsula se
@@ -1097,13 +1463,98 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
       });
     }
   }
-  function handleCotizacion() { changeStatus("enviado_cotizacion"); }
+  // Al mandar a "En cotización" se pide el precio en un modal (ver
+  // PrecioCotizacionModal) y queda guardado en el mismo patch que el cambio
+  // de estado — no en dos escrituras separadas.
+  function handleCotizacion(precio) { changeStatus("enviado_cotizacion", { precioCotizacion: precio }); }
+  // Solo para referencias de cápsula (kind === "ref"): marca la referencia
+  // como lista para enviar SIN crear todavía el envío/bitácora — eso se
+  // registra en conjunto, una sola vez, cuando TODAS las referencias de la
+  // cápsula lleguen a este estado (ver CapsulasView). De paso, si existe la
+  // etapa "Por Enviar" en la barra de etapas y esta referencia todavía no
+  // llegó ahí, la avanza — así la barra refleja visualmente que ya está en
+  // la recta final, después de Confección.
+  function handleMarcarPreparada() {
+    const targetIdx = stages.findIndex((s) => s.id === "por_enviar");
+    const curIdx = stages.findIndex((s) => s.id === item.currentStage);
+    const extra = targetIdx >= 0 && targetIdx > curIdx ? { currentStage: "por_enviar", stageStartedAt: today() } : {};
+    changeStatus("preparada_para_enviar", extra);
+  }
+  // Deshacer un "Marcar Preparada para Enviar" hecho por error: regresa a
+  // "Enviar al Cliente" y, si la etapa había avanzado automáticamente a "Por
+  // Enviar", la retrocede a la etapa anterior (simétrico a handleMarcarPreparada).
+  function handleDesmarcarPreparada() {
+    const porEnviarIdx = stages.findIndex((s) => s.id === "por_enviar");
+    const extra =
+      porEnviarIdx > 0 && item.currentStage === "por_enviar"
+        ? { currentStage: stages[porEnviarIdx - 1].id, stageStartedAt: today() }
+        : {};
+    changeStatus("enviar_cliente", extra);
+  }
+  // Cuando la Dirección Creativa devuelve una pieza que está en la etapa de
+  // Ilustración, se exige escribir qué hay que cambiar — queda como
+  // Observación (Hoja de Vida) y con un "type" propio (revision_ilustracion)
+  // para poder contar en Estadísticas cuántas rondas de revisión tuvo cada
+  // diseñador en esa etapa, sin depender de leer el texto.
+  function handleMarcarRevision(nota) {
+    const obsNota = { id: uid(), user: currentUser, role, text: `🎨 Revisión de Ilustración: ${nota}`, date: nowISO(), type: "revision_ilustracion", done: false };
+    changeStatus("en_revision", {}, [obsNota]);
+    setTab("chat");
+  }
+  // Enviar UNA sola referencia desde el Detalle pasa por el MISMO mecanismo
+  // que el envío por casillas (crearEnvioBitacora) — así cualquier envío,
+  // individual o agrupado, siempre queda registrado en la Bitácora, sin dos
+  // caminos distintos que confundan (antes esto solo cambiaba el estado
+  // localmente y no dejaba nada en la Bitácora).
   function handleEnviado(transporteData) {
-    const obs = { id: uid(), user: currentUser, role, text: `Enviado — Empresa: ${transporteData.empresa} · Guía: ${transporteData.guia || "N/A"} · Fecha: ${transporteData.fecha}`, date: nowISO(), type: "update", done: false };
-    patch({ status: "enviado", envioEmpresa: transporteData.empresa, envioFecha: transporteData.fecha, envioGuia: transporteData.guia || "", observations: [...item.observations, obs] });
-    notify({ id: uid(), icon: "📦", title: "Enviado al Cliente", msg: `${item.reference} — ${transporteData.empresa}` });
+    const header = {
+      coleccion: kind === "ref" ? capsula?.name || "" : item.name || "",
+      cliente: item.cliente || item.colores?.[0] || "",
+      numPedido: "",
+      fechaEnviado: transporteData.fecha,
+      empresaTransporte: transporteData.empresa,
+      guia: transporteData.guia || "",
+      cartaColores: null,
+    };
+    const itemConDatos = { ...item, kind, capsulaId: kind === "ref" ? capsula?.id : null };
+    onCrearEnvio(header, [itemConDatos]);
+  }
+  // Si ya hay un registro de taller activo (no "enviado") para este ítem, lo
+  // edita; si no, crea uno nuevo con los datos del prototipo/referencia
+  // (cliente, categoría, silueta, tela, foto) copiados automáticamente.
+  function handleGuardarTaller(data) {
+    // Si marcan "Modificar", la nota que escriben queda como Observación de
+    // este ítem (Hoja de Vida) y la vista salta directo a la pestaña
+    // Observaciones — así queda registrado qué pasó, no solo el estado.
+    if (data.estado === "modificar" && data.notaModificar?.trim()) {
+      const obs = { id: uid(), user: currentUser, role, text: `🧵 Modificar (Taller de Muestra): ${data.notaModificar.trim()}`, date: nowISO(), type: "info", done: false };
+      patch({ observations: [...item.observations, obs] });
+      setTab("chat");
+    }
+    if (tallerMasReciente && tallerMasReciente.estado !== "enviado") {
+      onUpdateTaller(tallerMasReciente.id, data);
+      return;
+    }
+    onSendTaller({
+      itemId: item.id,
+      kind,
+      capsulaId: kind === "ref" ? capsula?.id : null,
+      nombre: item.name,
+      referencia: item.reference,
+      cliente: item.cliente || item.colores?.[0] || "",
+      categoria: item.categoria || "",
+      silueta: item.silueta || "",
+      rango: item.rango || item.tallas?.[0] || "",
+      tela: item.tipoTela || "",
+      image: item.image || null,
+      ...data,
+    });
   }
   const canAdmin = currentUser?.isAdmin || perms.admin;
+  // Igual que canAdminIlustracion en CapsulasView: permiso dedicado para
+  // aprobar/devolver ilustración, independiente de "admin", pensado para un
+  // rol tipo "Directora Creativa". El dueño del sistema conserva respaldo.
+  const canRevisarIlustracion = currentUser?.isAdmin || perms.ilustracion;
   function advanceStage() {
     if (!canAdmin) return;
     if (stageIdx >= stages.length - 1) return;
@@ -1137,8 +1588,11 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
   return (
     <div>
       {showEdit && kind === "proto" && <EditProtoModal proto={item} config={config} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
-      {showEdit && kind === "ref" && <EditRefModal ref={item} config={config} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
+      {showEdit && kind === "ref" && <EditRefModal refData={item} config={config} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
       {showEnviado && <EnviadoModal onSave={handleEnviado} onClose={() => setShowEnviado(false)} />}
+      {showTaller && <EnviarTallerModal item={item} existing={tallerMasReciente?.estado !== "enviado" ? tallerMasReciente : null} ultimoTaller={tallerMasReciente} config={config} onSave={handleGuardarTaller} onClose={() => setShowTaller(false)} />}
+      {showRevision && <NotaRevisionModal onSave={handleMarcarRevision} onClose={() => setShowRevision(false)} />}
+      {showPrecioCotizacion && <PrecioCotizacionModal item={item} onSave={(precio) => { handleCotizacion(precio); setShowPrecioCotizacion(false); }} onClose={() => setShowPrecioCotizacion(false)} />}
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
         <button onClick={onBack} style={{ background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, color: T.ink }}>← Volver</button>
         <div style={{ flex: 1 }}>
@@ -1187,21 +1641,71 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
             {noFinalState && canDeclinar && <Btn variant="danger" onClick={() => changeStatus("declinado")}>✕ Declinar</Btn>}
             {canAdmin && (
               <>
-                {noFinalState && !["enviado_cotizacion", "enviar_cliente", "enviado"].includes(st) && (
+                {noFinalState && !["enviado_cotizacion", "enviar_cliente", "preparada_para_enviar", "enviado"].includes(st) && (
                   <>
                     <Btn variant="ghost" onClick={() => changeStatus("en_proceso")}>En proceso</Btn>
-                    <Btn variant="amber" onClick={() => changeStatus("en_revision")}>En revisión</Btn>
+                    {item.currentStage !== "ilustracion" && (
+                      <Btn variant="amber" onClick={() => changeStatus("en_revision")}>En revisión</Btn>
+                    )}
                   </>
                 )}
-                {noFinalState && st !== "enviado_cotizacion" && st !== "enviar_cliente" && st !== "enviado" && <Btn variant="ghost" onClick={handleCotizacion}>📤 Cotización</Btn>}
+                {noFinalState && st !== "enviado_cotizacion" && st !== "enviar_cliente" && st !== "preparada_para_enviar" && st !== "enviado" && <Btn variant="ghost" onClick={() => setShowPrecioCotizacion(true)}>📤 Cotización</Btn>}
+                {/* Píldora del precio cotizado: visible desde que se manda a
+                    cotización en adelante (todo el tramo de envío), y
+                    editable con un clic mientras no esté ya Enviado. */}
+                {item.precioCotizacion != null && ["enviado_cotizacion", "enviar_cliente", "preparada_para_enviar", "enviado"].includes(st) && (
+                  <button
+                    onClick={() => st !== "enviado" && setShowPrecioCotizacion(true)}
+                    style={{ padding: "9px 18px", background: T.violetBg, color: T.violet, border: `1.5px solid ${T.violet}`, borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: st !== "enviado" ? "pointer" : "default" }}
+                  >
+                    💲 {fmtCOP(item.precioCotizacion)}
+                  </button>
+                )}
                 {st === "enviado_cotizacion" && <button onClick={() => changeStatus("enviar_cliente")} style={{ padding: "9px 18px", background: "#ECFEFF", color: "#0E7490", border: "1.5px solid #0E7490", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>✈ Enviar al Cliente</button>}
-                {st === "enviar_cliente" && <button onClick={() => setShowEnviado(true)} style={{ padding: "9px 18px", background: "#EFF6FF", color: "#0369A1", border: "1.5px solid #0369A1", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>📦 Registrar Envío</button>}
+                {/* Un prototipo suelto sigue enviándose solo (abre el modal de
+                    Registrar Envío de una vez). Una referencia DENTRO de una
+                    cápsula, en cambio, no se envía sola: el clic solo la deja
+                    "preparada para enviar" — el envío real de la cápsula se
+                    registra en conjunto desde CapsulasView cuando TODAS sus
+                    referencias lleguen a ese estado. */}
+                {st === "enviar_cliente" && kind === "proto" && <button onClick={() => setShowEnviado(true)} style={{ padding: "9px 18px", background: "#EFF6FF", color: "#0369A1", border: "1.5px solid #0369A1", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>📦 Registrar Envío</button>}
+                {st === "enviar_cliente" && kind === "ref" && <button onClick={handleMarcarPreparada} style={{ padding: "9px 18px", background: T.jadeBg, color: T.jade, border: `1.5px solid ${T.jade}`, borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>✅ Marcar Preparada para Enviar</button>}
+                {st === "preparada_para_enviar" && kind === "ref" && (
+                  <>
+                    <span style={{ padding: "9px 18px", background: T.jadeBg, color: T.jade, border: `1.5px solid ${T.jade}`, borderRadius: 8, fontWeight: 700, fontSize: 13 }}>✅ Preparada — se envía junto con la cápsula</span>
+                    <Btn variant="ghost" onClick={handleDesmarcarPreparada}>← Deshacer</Btn>
+                  </>
+                )}
                 {kind === "proto" && item.status === "aprobado" && !item.promotedTo && capsulas.length > 0 && <Btn variant="success" onClick={() => onPromote(item)}>⬆ Promover</Btn>}
               </>
             )}
+            {/* Botón "En revisión" para etapa Ilustración: independiente del
+                bloque de canAdmin de arriba, gated por canRevisarIlustracion
+                (permiso dedicado "ilustracion" o dueño del sistema), para que
+                una Directora Creativa sin permiso "admin" general igual lo vea. */}
+            {canRevisarIlustracion && item.currentStage === "ilustracion" && noFinalState && !["enviado_cotizacion", "enviar_cliente", "enviado"].includes(st) && (
+              <Btn variant="amber" onClick={() => setShowRevision(true)}>En revisión</Btn>
+            )}
             {!canAdmin && canEdit && kind === "proto" && item.status === "aprobado" && !item.promotedTo && capsulas.length > 0 && <Btn variant="success" onClick={() => onPromote(item)}>⬆ Promover</Btn>}
             {kind === "proto" && item.promotedTo && <span style={{ padding: "6px 12px", background: T.jadeBg, color: T.jade, borderRadius: 8, fontSize: 12, fontWeight: 700 }}>✓ Promovido</span>}
+            {canEdit && <Btn variant="ghost" onClick={() => setShowTaller(true)}>🧵 {tallerMasReciente && tallerMasReciente.estado !== "enviado" ? "Actualizar Taller de Muestra" : "Enviar a Taller de Muestra"}</Btn>}
           </div>
+          {tallerMasReciente && (
+            <div style={{ marginTop: 10, padding: "10px 14px", background: ESTADO_MUESTRA[tallerMasReciente.estado]?.bg, borderRadius: 8, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: ESTADO_MUESTRA[tallerMasReciente.estado]?.color }}>🧵 {ESTADO_MUESTRA[tallerMasReciente.estado]?.label}</span>
+              <span style={{ fontSize: 12, color: T.slate }}>Taller: <strong style={{ color: T.ink }}>{tallerMasReciente.taller}</strong></span>
+              {tallerMasReciente.fechaEntrega && <span style={{ fontSize: 12, color: T.slate }}>Entrega: <strong style={{ color: T.ink }}>{tallerMasReciente.fechaEntrega}</strong></span>}
+              {tallerMasReciente.estado !== "enviado" && (
+                <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+                  <button onClick={() => onUpdateTaller(tallerMasReciente.id, { estado: "aprobado" })} style={{ padding: "4px 10px", background: T.jade, color: T.white, border: "none", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✓ Aprobar muestra</button>
+                  {/* "Modificar" siempre pasa por el modal (botón de arriba) porque
+                      exige escribir qué sucedió — no es un cambio de un solo clic
+                      como Aprobar, para no perder ese detalle. */}
+                  <button onClick={() => setShowTaller(true)} style={{ padding: "4px 10px", background: T.coral, color: T.white, border: "none", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>✕ Modificar</button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
       {kind === "ref" && (item.colores?.length > 0 || item.tallas?.length > 0) && (
@@ -1376,11 +1880,60 @@ function Card({ item, kind, onClick, onPromote, role, perms, stages }) {
     </div>
   );
 }
-function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas, stages }) {
+function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas, stages, isAdmin, onDeleteProto, config, onCrearEnvio }) {
   const [filter, setFilter] = useState("todos");
-  const filtered = filter === "todos" ? protos : protos.filter((p) => p.status === filter);
+  const [clienteFiltro, setClienteFiltro] = useState("todos");
+  const [confirmDel, setConfirmDel] = useState(null);
+  // Selección múltiple para armar un envío/bitácora agrupado — solo tiene
+  // sentido en la pestaña "Enviar al Cliente". Se limpia al cambiar de
+  // pestaña para no arrastrar selección de un filtro a otro.
+  const [seleccionados, setSeleccionados] = useState([]);
+  const [showNuevoEnvio, setShowNuevoEnvio] = useState(false);
+  function cambiarFiltro(v) { setFilter(v); setSeleccionados([]); }
+  function toggleSel(id) { setSeleccionados((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id])); }
+  // Cuántos prototipos ACTIVOS tiene cada cliente — igual criterio que la
+  // pestaña "Todos" de estado (excluye Aprobados/Declinados), para que el
+  // número refleje la carga de trabajo pendiente y no arrastre prototipos
+  // ya cerrados hace tiempo.
+  const protosActivos = protos.filter((p) => !["aprobado", "declinado"].includes(p.status));
+  const conteoPorCliente = {};
+  protosActivos.forEach((p) => {
+    const c = p.cliente || p.colores?.[0];
+    if (!c) return;
+    conteoPorCliente[c] = (conteoPorCliente[c] || 0) + 1;
+  });
+  // Solo se listan los clientes que tienen al menos un prototipo activo
+  // ahora mismo (conteoPorCliente > 0) — antes se mostraba TODO el maestro
+  // de Clientes de Administrador General, aunque el cliente no tuviera nada
+  // pendiente, lo que hacía el desplegable innecesariamente largo.
+  const clientesDisponibles = Object.keys(conteoPorCliente).sort((a, b) => a.localeCompare(b));
+  // "Todos" oculta Aprobados/Promovidos/Declinados para no saturar el tablero
+  // (un prototipo promovido sigue con status "aprobado", así que basta con
+  // excluir aprobado/declinado). Siguen disponibles en sus propias pestañas.
+  const porEstado = filter === "todos" ? protos.filter((p) => !["aprobado", "declinado"].includes(p.status)) : protos.filter((p) => p.status === filter);
+  const filtered = clienteFiltro === "todos" ? porEstado : porEstado.filter((p) => (p.cliente || p.colores?.[0]) === clienteFiltro);
   return (
     <div>
+      {confirmDel && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar el prototipo <strong>"{confirmDel.name}"</strong>? Esta acción no se puede deshacer.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={() => { onDeleteProto(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+            </div>
+          </div>
+        </div>
+      )}
+      {showNuevoEnvio && (
+        <NuevoEnvioModal
+          items={protos.filter((p) => seleccionados.includes(p.id)).map((p) => ({ ...p, kind: "proto" }))}
+          config={config}
+          onSave={onCrearEnvio}
+          onClose={() => { setShowNuevoEnvio(false); setSeleccionados([]); }}
+        />
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Prototipos</h2>
@@ -1391,55 +1944,894 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
           {perms.editar && <Btn onClick={onNew}>+ Nuevo Prototipo</Btn>}
         </div>
       </div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: T.slate }}>🏢 Clientes</span>
+        <select value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)} style={{ padding: "7px 12px", border: `1.5px solid ${clienteFiltro !== "todos" ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: clienteFiltro !== "todos" ? T.denim : T.ink, background: clienteFiltro !== "todos" ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer" }}>
+          <option value="todos">Todos ({protosActivos.length})</option>
+          {clientesDisponibles.map((c) => <option key={c} value={c}>{c} ({conteoPorCliente[c] || 0})</option>)}
+        </select>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
         {[["todos", "Todos"], ["aprobado", "Aprobados"], ["declinado", "Declinados"], ["en_proceso", "En proceso"], ["en_revision", "En revisión"], ["enviado_cotizacion", "En cotización"], ["enviar_cliente", "Enviar al Cliente"], ["enviado", "Enviado"]].map(([v, label]) => (
-          <button key={v} onClick={() => setFilter(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filter === v ? T.ink : T.border}`, background: filter === v ? T.ink : T.white, color: filter === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
+          <button key={v} onClick={() => cambiarFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filter === v ? T.ink : T.border}`, background: filter === v ? T.ink : T.white, color: filter === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
+        {filter === "enviar_cliente" && seleccionados.length > 0 && (
+          <button onClick={() => setShowNuevoEnvio(true)} style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: "#0E7490", color: T.white, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+            📜 Crear Envío ({seleccionados.length})
+          </button>
+        )}
       </div>
       {!filtered.length && <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>No hay prototipos con este filtro.</div>}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 14 }}>
-        {filtered.map((p) => <Card key={p.id} item={p} kind="proto" onClick={() => onSelect(p.id)} onPromote={onPromote} role={role} perms={perms} stages={stages} />)}
+        {filtered.map((p) => (
+          <div key={p.id} style={{ position: "relative" }}>
+            {isAdmin && (
+              <button onClick={(e) => { e.stopPropagation(); setConfirmDel(p); }} title="Borrar prototipo (solo administrador)"
+                style={{ position: "absolute", top: 8, right: 8, zIndex: 2, width: 26, height: 26, borderRadius: "50%", background: T.white, border: `1.5px solid ${T.coral}`, color: T.coral, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 6px rgba(26,26,46,0.12)" }}
+              >🗑</button>
+            )}
+            {filter === "enviar_cliente" && (
+              <input
+                type="checkbox"
+                checked={seleccionados.includes(p.id)}
+                onChange={(e) => { e.stopPropagation(); toggleSel(p.id); }}
+                onClick={(e) => e.stopPropagation()}
+                title="Seleccionar para envío"
+                style={{ position: "absolute", top: 8, left: 8, zIndex: 2, width: 20, height: 20, cursor: "pointer" }}
+              />
+            )}
+            <Card item={p} kind="proto" onClick={() => onSelect(p.id)} onPromote={onPromote} role={role} perms={perms} stages={stages} />
+          </div>
+        ))}
       </div>
     </div>
   );
 }
-function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewRef, stages }) {
+function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio }) {
   const [filter, setFilter] = useState("todos");
+  const [clienteFiltro, setClienteFiltro] = useState("todos");
+  const [editCap, setEditCap] = useState(null);
+  const [confirmDel, setConfirmDel] = useState(null);
+  const [revisionCap, setRevisionCap] = useState(null);
+  const [obsCapsula, setObsCapsula] = useState(null);
+  // Selección múltiple para armar un envío/bitácora agrupado — una selección
+  // por cápsula (cada cápsula es su propia "colección"), solo tiene sentido
+  // en la pestaña "Enviar al Cliente". `envioCapsula` guarda la cápsula para
+  // la que se está armando el envío (para saber qué referencias mostrar en
+  // el modal).
+  const [seleccionados, setSeleccionados] = useState({});
+  const [envioCapsula, setEnvioCapsula] = useState(null);
+  function cambiarFiltro(v) { setFilter(v); setSeleccionados({}); }
+  function toggleSel(capId, refId) {
+    setSeleccionados((s) => {
+      const actual = s[capId] || [];
+      const nuevo = actual.includes(refId) ? actual.filter((x) => x !== refId) : [...actual, refId];
+      return { ...s, [capId]: nuevo };
+    });
+  }
+  // Permiso dedicado "ilustracion" (pensado para un rol tipo "Directora
+  // Creativa"), separado del permiso general "admin" — así se puede limitar
+  // quién aprueba/devuelve ilustración sin darle todos los demás permisos de
+  // administrador. El dueño del sistema (isAdmin) siempre conserva acceso de
+  // respaldo por si la Directora Creativa no está disponible.
+  const canAdminIlustracion = isAdmin || perms.ilustracion;
   const FILTERS = [["todos", "Todos"], ["aprobado", "Aprobadas"], ["declinado", "Declinadas"], ["en_proceso", "En proceso"], ["en_revision", "En revisión"], ["enviado_cotizacion", "En cotización"], ["enviar_cliente", "Enviar al Cliente"], ["enviado", "Enviado"]];
-  const visibleCapsulas = filter === "todos" ? capsulas : capsulas.filter((cap) => cap.referencias.some((r) => r.status === filter));
-  function filteredRefs(cap) { return filter === "todos" ? cap.referencias : cap.referencias.filter((r) => r.status === filter); }
+  // El cliente de la cápsula (elegido al crearla) manda sobre el cliente
+  // suelto de cada referencia — así toda la cápsula queda atribuida a un solo
+  // cliente aunque alguna referencia vieja no tenga el suyo propio bien puesto.
+  // Referencias de la cápsula que van "rumbo a envío" — se ignoran las que ya
+  // quedaron Aprobadas o Declinadas, porque esas nunca pasan por el flujo de
+  // envío al cliente. La cápsula se considera lista para un envío agrupado
+  // cuando TODAS esas referencias relevantes llegaron a "preparada_para_enviar".
+  function refsRumboAEnvio(cap) {
+    return cap.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status));
+  }
+  function capsulaListaParaEnviar(cap) {
+    const relevantes = refsRumboAEnvio(cap);
+    return relevantes.length > 0 && relevantes.every((r) => r.status === "preparada_para_enviar");
+  }
+  // Preselecciona automáticamente TODAS las referencias "preparada_para_enviar"
+  // de la cápsula (sin que el usuario tenga que ir a la pestaña "Enviar al
+  // Cliente" a marcarlas una por una) y abre el mismo modal de envío agrupado
+  // que ya existe.
+  function enviarCapsulaCompleta(cap) {
+    const ids = cap.referencias.filter((r) => r.status === "preparada_para_enviar").map((r) => r.id);
+    setSeleccionados((s) => ({ ...s, [cap.id]: ids }));
+    setEnvioCapsula(cap);
+  }
+  function refCliente(cap, r) { return cap.cliente || r.cliente || r.colores?.[0]; }
+  // Cliente de la cápsula completa: el propio si lo tiene, si no se infiere
+  // de la primera de sus referencias que tenga uno (dato viejo).
+  function capCliente(cap) {
+    if (cap.cliente) return cap.cliente;
+    const conRef = cap.referencias.find((r) => r.cliente || r.colores?.[0]);
+    return conRef ? (conRef.cliente || conRef.colores?.[0]) : null;
+  }
+  // Una cápsula cuenta como "activa" si le queda al menos una referencia sin
+  // resolver (o si todavía no tiene ninguna referencia cargada) — igual
+  // criterio que la pestaña "Todos" de estado. Las cápsulas 100% Aprobadas o
+  // Declinadas ya no suman aquí, para que el número refleje trabajo
+  // pendiente y no arrastre cápsulas cerradas hace tiempo.
+  const capsulasActivas = capsulas.filter((cap) => cap.referencias.length === 0 || cap.referencias.some((r) => !["aprobado", "declinado"].includes(r.status)));
+  // Cuántas cápsulas activas tiene cada cliente.
+  const conteoPorCliente = {};
+  capsulasActivas.forEach((cap) => {
+    const c = capCliente(cap);
+    if (!c) return;
+    conteoPorCliente[c] = (conteoPorCliente[c] || 0) + 1;
+  });
+  // Solo se listan los clientes que tienen al menos una cápsula activa
+  // ahora mismo (conteoPorCliente > 0) — antes se mostraba TODO el maestro
+  // de Clientes de Administrador General, aunque el cliente no tuviera nada
+  // pendiente, lo que hacía el desplegable innecesariamente largo.
+  const clientesDisponibles = Object.keys(conteoPorCliente).sort((a, b) => a.localeCompare(b));
+  // "Todos" oculta referencias Aprobadas/Declinadas (y cápsulas que solo
+  // tengan referencias en esos estados) para no saturar el tablero. Siguen
+  // disponibles en las pestañas "Aprobadas"/"Declinadas". El filtro de
+  // cliente se combina (AND) con el de estado.
+  function filteredRefs(cap) {
+    let refs = filter === "todos" ? cap.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status)) : cap.referencias.filter((r) => r.status === filter);
+    if (clienteFiltro !== "todos") refs = refs.filter((r) => refCliente(cap, r) === clienteFiltro);
+    return refs;
+  }
+  // Una cápsula recién creada empieza con referencias: [] — sin este OR
+  // quedaba oculta en TODAS las pestañas de filtro (nunca cumple
+  // filteredRefs(cap).length > 0) y el usuario no podía volver a encontrarla
+  // para agregarle referencias. Una cápsula vacía siempre se muestra, sin
+  // importar el filtro de estado/cliente activo.
+  const visibleCapsulas = capsulas.filter((cap) => cap.referencias.length === 0 || filteredRefs(cap).length > 0);
   return (
     <div>
+      {editCap && (
+        <EditNombreModal item={editCap} tipo="capsula" config={config}
+          onSave={(p) => { onEditCapsula(editCap.id, p); setEditCap(null); }}
+          onClose={() => setEditCap(null)}
+        />
+      )}
+      {confirmDel && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar la cápsula <strong>"{confirmDel.name}"</strong>, sus {confirmDel.referencias?.length || 0} referencia{confirmDel.referencias?.length !== 1 ? "s" : ""} y los envíos de Bitácora registrados para esta cápsula? Esta acción no se puede deshacer.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={() => { onDeleteCapsula(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+            </div>
+          </div>
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Cápsulas</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Colecciones con múltiples referencias</p></div>
         {perms.editar && <Btn onClick={onNewCapsula}>+ Nueva Cápsula</Btn>}
       </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: T.slate }}>🏢 Clientes</span>
+        <select value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)} style={{ padding: "7px 12px", border: `1.5px solid ${clienteFiltro !== "todos" ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: clienteFiltro !== "todos" ? T.denim : T.ink, background: clienteFiltro !== "todos" ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer" }}>
+          <option value="todos">Todos ({capsulasActivas.length})</option>
+          {clientesDisponibles.map((c) => <option key={c} value={c}>{c} ({conteoPorCliente[c] || 0})</option>)}
+        </select>
+      </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
         {FILTERS.map(([v, label]) => (
-          <button key={v} onClick={() => setFilter(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filter === v ? T.ink : T.border}`, background: filter === v ? T.ink : T.white, color: filter === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
+          <button key={v} onClick={() => cambiarFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filter === v ? T.ink : T.border}`, background: filter === v ? T.ink : T.white, color: filter === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
+      {envioCapsula && (
+        <NuevoEnvioModal
+          items={envioCapsula.referencias
+            .filter((r) => (seleccionados[envioCapsula.id] || []).includes(r.id))
+            .map((r) => ({ ...r, kind: "ref", capsulaId: envioCapsula.id, capsulaNombre: envioCapsula.name, cliente: refCliente(envioCapsula, r) }))}
+          config={config}
+          onSave={onCrearEnvio}
+          onClose={() => { setEnvioCapsula(null); setSeleccionados((s) => ({ ...s, [envioCapsula.id]: [] })); }}
+        />
+      )}
       {!visibleCapsulas.length && <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>No hay cápsulas con este filtro.</div>}
       {visibleCapsulas.map((cap) => {
         const refs = filteredRefs(cap);
         const od = cap.referencias.filter((r) => isOverdue(r, stages)).length;
+        const aprobada = ilustracionAprobada(cap);
+        const estadoIlustracion = ILUSTRACION_CAPSULA_ESTADO[cap.ilustracionEstado] || ILUSTRACION_CAPSULA_ESTADO.aprobado;
+        const rondasIlustracion = (cap.observacionesIlustracion || []).filter((o) => o.type === "revision_ilustracion_capsula").length;
         return (
           <div key={cap.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 20, overflow: "hidden" }}>
-            <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas }}>
+            <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, flexWrap: "wrap", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: 20 }}>🗂</span>
-                <div><div style={{ fontWeight: 800, fontSize: 16, color: T.ink }}>{cap.name}</div><div style={{ fontSize: 12, color: T.slate }}>{cap.season} · {cap.referencias.length} ref · {cap.createdAt}</div></div>
+                <div><div style={{ fontWeight: 800, fontSize: 16, color: T.ink }}>{cap.name}</div><div style={{ fontSize: 12, color: T.slate }}>{cap.cliente ? `${cap.cliente} · ` : ""}{cap.season} · {cap.referencias.length} ref · {cap.createdAt}{cap.assignedTo ? ` · 👤 ${cap.assignedTo}` : ""}</div></div>
               </div>
-              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 {od > 0 && <span style={{ padding: "3px 10px", background: T.coralBg, color: T.coral, borderRadius: 6, fontSize: 12, fontWeight: 700 }}>⚑ {od}</span>}
-                {perms.editar && <Btn small onClick={() => onNewRef(cap)}>+ Referencia</Btn>}
+                {!aprobada && <span title="La ilustración/concepto de la cápsula debe ser aprobado antes de poder agregarle referencias" style={{ padding: "3px 10px", background: estadoIlustracion.bg, color: estadoIlustracion.color, borderRadius: 6, fontSize: 11, fontWeight: 700 }}>🎨 {estadoIlustracion.label}{rondasIlustracion > 0 ? ` · ${rondasIlustracion} revisión${rondasIlustracion !== 1 ? "es" : ""}` : ""}</span>}
+                {/* Cuando TODA la cápsula (todas sus referencias rumbo a
+                    envío) ya está "preparada_para_enviar", este botón
+                    reemplaza a "Observaciones" — deja de tener sentido pedir
+                    observaciones de ilustración a esta altura, y es el
+                    momento de registrar el envío agrupado de una vez. En
+                    cualquier otro momento, "Observaciones" se muestra normal. */}
+                {capsulaListaParaEnviar(cap) ? (
+                  <button onClick={() => enviarCapsulaCompleta(cap)} style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: T.jade, color: T.white, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+                    📦 Registrar Envío de Cápsula
+                  </button>
+                ) : (
+                  <Btn small variant="ghost" onClick={() => setObsCapsula(cap)}>💬 Observaciones{cap.observacionesIlustracion?.length ? ` (${cap.observacionesIlustracion.length})` : ""}</Btn>
+                )}
+                {!aprobada && canAdminIlustracion && (
+                  <>
+                    <Btn small variant="success" onClick={() => onSetIlustracion(cap.id, "aprobado", null)}>✓ Aprobar Ilustración</Btn>
+                    {/* Disponible aunque ya esté "en_revision": permite dejar una
+                        NUEVA ronda de revisión (con su propia nota) si al volver a
+                        mirar la ilustración corregida todavía hay que pedir más
+                        cambios — no solo la primera vez. */}
+                    <Btn small variant="danger" onClick={() => setRevisionCap(cap)}>✕ En revisión</Btn>
+                  </>
+                )}
+                {perms.editar && <Btn small variant="ghost" onClick={() => setEditCap(cap)}>✏ Editar</Btn>}
+                {perms.editar && (aprobada ? <Btn small onClick={() => onNewRef(cap)}>+ Referencia</Btn> : <span title="Requiere aprobación de Ilustración de la Dirección Creativa"><Btn small disabled>+ Referencia</Btn></span>)}
+                {filter === "enviar_cliente" && (seleccionados[cap.id] || []).length > 0 && (
+                  <button onClick={() => setEnvioCapsula(cap)} style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: "#0E7490", color: T.white, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+                    📜 Crear Envío ({(seleccionados[cap.id] || []).length})
+                  </button>
+                )}
+                {isAdmin && <Btn small variant="danger" onClick={() => setConfirmDel(cap)}>🗑 Borrar</Btn>}
               </div>
             </div>
             {!refs.length ? (
               <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>Sin referencias con este filtro.</div>
             ) : (
               <div style={{ padding: 16, display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 12 }}>
-                {refs.map((r) => <Card key={r.id} item={r} kind="ref" onClick={() => onSelectRef(cap.id, r.id)} role={role} perms={perms} stages={stages} />)}
+                {refs.map((r) => (
+                  <div key={r.id} style={{ position: "relative" }}>
+                    {filter === "enviar_cliente" && (
+                      <input
+                        type="checkbox"
+                        checked={(seleccionados[cap.id] || []).includes(r.id)}
+                        onChange={(e) => { e.stopPropagation(); toggleSel(cap.id, r.id); }}
+                        onClick={(e) => e.stopPropagation()}
+                        title="Seleccionar para envío"
+                        style={{ position: "absolute", top: 8, left: 8, zIndex: 2, width: 20, height: 20, cursor: "pointer" }}
+                      />
+                    )}
+                    <Card item={r} kind="ref" onClick={() => onSelectRef(cap.id, r.id)} role={role} perms={perms} stages={stages} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {revisionCap && (
+        <NotaRevisionModal
+          title={`Ilustración en revisión — ${revisionCap.name}`}
+          hint="🎨 Registra qué hay que cambiar en la ilustración/concepto de la cápsula — queda en sus Observaciones de Ilustración."
+          onSave={(nota) => onSetIlustracion(revisionCap.id, "en_revision", nota)}
+          onClose={() => setRevisionCap(null)}
+        />
+      )}
+      {obsCapsula && (
+        <ObservacionesCapsulaModal
+          capsula={capsulas.find((c) => c.id === obsCapsula.id) || obsCapsula}
+          currentUser={currentUser}
+          role={role}
+          onSend={onSendObsCapsula}
+          onMarkDone={onMarkDoneObsCapsula}
+          onClose={() => setObsCapsula(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Alta manual al Cronograma de Muestras de un producto que el cliente todavía
+// no ha mandado en foto/físico (no existe aún como Prototipo/Referencia en el
+// aplicativo) — mismos campos descriptivos que se usan en el resto del
+// aplicativo (categoría, silueta, rango, cliente), más los propios del
+// cronograma (taller, fecha de entrega, prioridad, tipo, tipo de desarrollo).
+function NuevoCronogramaLibreModal({ config, onSave, onClose }) {
+  const [form, setForm] = useState({ nombre: "", referencia: "", cliente: "", categoria: "", silueta: "", rango: "", tela: "", tipo: "", tipoDesarrollo: "", taller: "", fechaEntrega: "", prioridad: "Media" });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  function save() {
+    if (!form.nombre.trim() || !form.taller) return;
+    onSave({ ...form, itemId: null, kind: null, capsulaId: null });
+    onClose();
+  }
+  return (
+    <Modal title="Agregar al Cronograma de Muestras" onClose={onClose} width={580}>
+      <div style={{ padding: "10px 14px", background: T.amberBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.amber, fontWeight: 600 }}>🧵 Para productos que el cliente aún no envió en foto o físico</div>
+      <Field label="Nombre"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Pantaloneta Bloques" /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Categoría"><FSel value={form.categoria} onChange={set("categoria")} options={config?.categorias || []} /></Field>
+        <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config?.siluetas || []} /></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Referencia"><FInput value={form.referencia} onChange={set("referencia")} placeholder="Ej: PTGM160" /></Field>
+        <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config?.clientes || []).map((c) => c.nombre)} /></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Rango de Tallas"><FSel value={form.rango} onChange={set("rango")} options={config?.rangos || []} /></Field>
+        <Field label="Tela"><FInput value={form.tela} onChange={set("tela")} placeholder="Ej: Four Way" /></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Tipo"><FSel value={form.tipo} onChange={set("tipo")} options={TIPO_GENERO_MUESTRA} /></Field>
+        <Field label="Tipo de Desarrollo"><FSel value={form.tipoDesarrollo} onChange={set("tipoDesarrollo")} options={TIPO_DESARROLLO_MUESTRA} /></Field>
+      </div>
+      <Field label="Taller de Muestra"><FSel value={form.taller} onChange={set("taller")} options={config?.talleresMuestra || []} /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Fecha de Entrega Esperada">
+          <input type="date" value={form.fechaEntrega} onChange={(e) => set("fechaEntrega")(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+        </Field>
+        <Field label="Prioridad"><FSel value={form.prioridad} onChange={set("prioridad")} options={config?.prioridadesMuestra || []} /></Field>
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={save} disabled={!form.nombre.trim() || !form.taller}>🧵 Agregar</Btn>
+      </div>
+    </Modal>
+  );
+}
+// Detalle/edición rápida de una entrada del Cronograma de Muestras: cambiar
+// taller/fecha/prioridad, marcar Aprobado/Modificar, ir al prototipo o
+// referencia vinculado (si lo tiene), o borrarla (solo administrador).
+function CronogramaDetalleModal({ entry, config, isAdmin, onUpdate, onDelete, onGoToItem, onModificarNota, onClose }) {
+  const [form, setForm] = useState({ taller: entry.taller || "", fechaEntrega: entry.fechaEntrega || "", prioridad: entry.prioridad || "Media", estado: entry.estado || "pendiente", notaModificar: entry.notaModificar || "" });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  const est = ESTADO_MUESTRA[entry.estado] || ESTADO_MUESTRA.pendiente;
+  // Igual que en "Enviar a Taller": si elige "Modificar" tiene que escribir
+  // qué sucedió — y si esta entrada está vinculada a un prototipo/referencia,
+  // esa nota también queda como Observación ahí (onModificarNota).
+  const necesitaNota = form.estado === "modificar";
+  function guardar() {
+    if (necesitaNota && !form.notaModificar.trim()) return;
+    onUpdate(entry.id, form);
+    if (necesitaNota && form.notaModificar.trim() && entry.itemId && onModificarNota) onModificarNota(entry, form.notaModificar.trim());
+    onClose();
+  }
+  return (
+    <Modal title={entry.nombre || entry.referencia || "Muestra"} onClose={onClose} width={480}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+        {entry.categoria && <CatTag text={entry.categoria} />}
+        {entry.referencia && <span style={{ fontSize: 12, color: T.slate }}>{entry.referencia}</span>}
+        {entry.cliente && <span style={{ padding: "2px 8px", borderRadius: 3, background: T.violetBg, color: T.violet, fontSize: 10, fontWeight: 800 }}>{entry.cliente}</span>}
+        <span style={{ padding: "2px 8px", borderRadius: 3, background: est.bg, color: est.color, fontSize: 10, fontWeight: 800 }}>{est.label}</span>
+      </div>
+      <Field label="Taller de Muestra"><FSel value={form.taller} onChange={set("taller")} options={config?.talleresMuestra || []} /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Fecha de Entrega Esperada">
+          <input type="date" value={form.fechaEntrega} onChange={(e) => set("fechaEntrega")(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+        </Field>
+        <Field label="Prioridad"><FSel value={form.prioridad} onChange={set("prioridad")} options={config?.prioridadesMuestra || []} /></Field>
+      </div>
+      {entry.estado !== "enviado" && (
+        <Field label="Estado">
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {Object.entries(ESTADO_MUESTRA).map(([v, def]) => (
+              <button key={v} type="button" onClick={() => set("estado")(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${form.estado === v ? def.color : T.border}`, background: form.estado === v ? def.bg : T.white, color: form.estado === v ? def.color : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{def.label}</button>
+            ))}
+          </div>
+        </Field>
+      )}
+      {necesitaNota && (
+        <Field label="¿Qué sucedió o qué hay que modificar?">
+          <textarea value={form.notaModificar} onChange={(e) => set("notaModificar")(e.target.value)} rows={3} placeholder="Escribe el detalle de la modificación..." style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.coral}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical" }} />
+        </Field>
+      )}
+      <div style={{ display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
+        <div style={{ display: "flex", gap: 8 }}>
+          {entry.itemId && <Btn variant="ghost" small onClick={() => { onGoToItem(entry); onClose(); }}>→ Ver prototipo/referencia</Btn>}
+          {isAdmin && <Btn variant="danger" small onClick={() => { onDelete(entry.id); onClose(); }}>🗑 Borrar</Btn>}
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
+          <Btn onClick={guardar} disabled={necesitaNota && !form.notaModificar.trim()}>Guardar</Btn>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+// Cronograma de Muestras: tablero visual por semana (lunes a sábado, igual al
+// calendario de taller que ya manejaban en Excel), con navegación
+// anterior/siguiente y una vista por mes (varias semanas apiladas). Las
+// entradas "Aprobadas" se separan a su propia pestaña (funcionan como
+// historial de muestras ya resueltas); "Sin fecha" agrupa lo que aún no
+// tiene fecha de entrega asignada, para que nada quede invisible.
+function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, onUpdate, onDelete, onGoToItem, onModificarNota }) {
+  const [vista, setVista] = useState("semana");
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [monthOffset, setMonthOffset] = useState(0);
+  const [tab, setTab] = useState("activas");
+  const [showNuevo, setShowNuevo] = useState(false);
+  const [detalle, setDetalle] = useState(null);
+  const DIA_LABELS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+  function mondayOf(d) {
+    const x = new Date(d);
+    const day = x.getDay();
+    x.setDate(x.getDate() + (day === 0 ? -6 : 1 - day));
+    x.setHours(0, 0, 0, 0);
+    return x;
+  }
+  function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+  function isoDate(d) { return d.toISOString().slice(0, 10); }
+  const hoy = new Date();
+  const hoyIso = isoDate(hoy);
+  const visibles = cronogramaMuestras.filter((c) => (tab === "activas" ? c.estado !== "aprobado" : c.estado === "aprobado"));
+  function itemsForDay(ds) { return visibles.filter((c) => c.fechaEntrega === ds).sort((a, b) => (a.prioridad || "").localeCompare(b.prioridad || "")); }
+  const sinFecha = visibles.filter((c) => !c.fechaEntrega);
+  // Cuántas muestras tiene cada taller en este momento (ni aprobadas ni ya
+  // enviadas al cliente) — para ver de un vistazo qué taller está saturado
+  // antes de mandarle una muestra nueva.
+  const cargaPorTaller = (() => {
+    const activos = cronogramaMuestras.filter((c) => c.estado !== "aprobado" && c.estado !== "enviado");
+    const mapa = new Map();
+    activos.forEach((c) => {
+      const t = c.taller || "(Sin taller)";
+      mapa.set(t, (mapa.get(t) || 0) + 1);
+    });
+    return [...mapa.entries()].sort((a, b) => b[1] - a[1]);
+  })();
+  function renderCard(c) {
+    const est = ESTADO_MUESTRA[c.estado] || ESTADO_MUESTRA.pendiente;
+    const colorPrioridad = PRIORIDAD_MUESTRA_COLOR[c.prioridad] || T.border;
+    return (
+      <div key={c.id} onClick={() => setDetalle(c)}
+        style={{ background: T.white, border: `1.5px solid ${colorPrioridad}`, borderRadius: 8, padding: "8px 10px", marginBottom: 6, cursor: "pointer" }}
+        onMouseEnter={(e) => (e.currentTarget.style.boxShadow = "0 2px 8px rgba(26,26,46,0.1)")}
+        onMouseLeave={(e) => (e.currentTarget.style.boxShadow = "none")}
+      >
+        <div style={{ fontSize: 11, fontWeight: 800, color: T.ink, lineHeight: 1.3 }}>{c.nombre}</div>
+        <div style={{ fontSize: 10, color: T.slate, marginTop: 1 }}>{c.referencia}{c.cliente ? ` · ${c.cliente}` : ""}</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 5, gap: 6 }}>
+          <span style={{ fontSize: 9, fontWeight: 800, color: est.color, background: est.bg, padding: "1px 6px", borderRadius: 10 }}>{est.label}</span>
+          {c.taller && <span style={{ fontSize: 9, color: T.slate, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>🧵 {c.taller}</span>}
+        </div>
+      </div>
+    );
+  }
+  function renderWeekRow(monday, key) {
+    const dias = Array.from({ length: 6 }, (_, i) => addDays(monday, i));
+    return (
+      <div key={key} style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 10, marginBottom: 14 }}>
+        {dias.map((d, i) => {
+          const ds = isoDate(d);
+          const items = itemsForDay(ds);
+          const esHoy = ds === hoyIso;
+          return (
+            <div key={ds} style={{ background: T.canvas, borderRadius: 10, padding: 10, minHeight: 100, border: esHoy ? `1.5px solid ${T.denim}` : `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: esHoy ? T.denim : T.slate, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>{DIA_LABELS[i]} {d.getDate()}</div>
+              {items.map(renderCard)}
+              {!items.length && <div style={{ fontSize: 10, color: T.border }}>—</div>}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+  const semanaMonday = addDays(mondayOf(hoy), weekOffset * 7);
+  const mesBase = new Date(hoy.getFullYear(), hoy.getMonth() + monthOffset, 1);
+  const mesInicioLunes = mondayOf(mesBase);
+  const mesFin = new Date(mesBase.getFullYear(), mesBase.getMonth() + 1, 0);
+  const semanasDelMes = [];
+  { let cur = mesInicioLunes; let guard = 0; while (cur <= mesFin && guard < 8) { semanasDelMes.push(new Date(cur)); cur = addDays(cur, 7); guard++; } }
+  const rangoLabel = vista === "semana"
+    ? `${semanaMonday.getDate()} ${MONTHS_SHORT[semanaMonday.getMonth()]} — ${addDays(semanaMonday, 5).getDate()} ${MONTHS_SHORT[addDays(semanaMonday, 5).getMonth()]} ${addDays(semanaMonday, 5).getFullYear()}`
+    : mesBase.toLocaleDateString("es-CO", { month: "long", year: "numeric" });
+  return (
+    <div>
+      {showNuevo && <NuevoCronogramaLibreModal config={config} onSave={onAdd} onClose={() => setShowNuevo(false)} />}
+      {detalle && <CronogramaDetalleModal entry={detalle} config={config} isAdmin={isAdmin} onUpdate={onUpdate} onDelete={onDelete} onGoToItem={onGoToItem} onModificarNota={onModificarNota} onClose={() => setDetalle(null)} />}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Cronograma de Muestras</h2>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Prototipos y referencias enviados a taller de muestra</p>
+        </div>
+        <Btn onClick={() => setShowNuevo(true)}>🧵 + Agregar al Cronograma</Btn>
+      </div>
+      {cargaPorTaller.length > 0 && (
+        <div style={{ marginBottom: 16, padding: "12px 16px", background: T.white, borderRadius: 12, border: `1px solid ${T.border}` }}>
+          <div style={{ fontWeight: 800, fontSize: 12, color: T.slate, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>🏭 Muestras en Planta (activas por taller)</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {cargaPorTaller.map(([taller, n]) => (
+              <span key={taller} style={{ padding: "5px 12px", borderRadius: 20, fontSize: 12, fontWeight: 700, background: n >= 5 ? T.coralBg : T.amberBg, color: n >= 5 ? T.coral : T.amber }}>
+                {taller} · {n}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["activas", "Activas"], ["aprobadas", "✓ Aprobadas (Historial)"]].map(([v, label]) => (
+            <button key={v} onClick={() => setTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${tab === v ? T.denim : T.border}`, background: tab === v ? T.denimBg : T.white, color: tab === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["semana", "Semana"], ["mes", "Mes"]].map(([v, label]) => (
+            <button key={v} onClick={() => setVista(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${vista === v ? T.ink : T.border}`, background: vista === v ? T.ink : T.white, color: vista === v ? T.white : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
+          ))}
+        </div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o - 1) : setMonthOffset((o) => o - 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>← Anterior</button>
+        <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, textTransform: "capitalize" }}>{rangoLabel}</div>
+        <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o + 1) : setMonthOffset((o) => o + 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>Siguiente →</button>
+      </div>
+      {vista === "semana" ? renderWeekRow(semanaMonday, "w") : semanasDelMes.map((m, i) => renderWeekRow(m, i))}
+      {sinFecha.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <div style={{ fontWeight: 800, fontSize: 13, color: T.slate, marginBottom: 10 }}>🗓 Sin fecha de entrega asignada ({sinFecha.length})</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10 }}>
+            {sinFecha.map(renderCard)}
+          </div>
+        </div>
+      )}
+      {!visibles.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>{tab === "activas" ? "No hay muestras activas." : "Todavía no hay muestras aprobadas."}</div>}
+    </div>
+  );
+}
+
+// Historial de aprobaciones/declinaciones. Un prototipo se registra al
+// llegar a "Aprobado" (se promueva o no después a una cápsula) y una
+// referencia de cápsula se registra tanto al llegar a "Aprobado" como a
+// "Declinado" (ver changeStatus en DetailView). Se muestra con la misma
+// Card visual que Prototipos/Cápsulas, buscando el ítem vivo detrás de cada
+// entrada — sin agrupar por mes (las estadísticas mensuales viven en
+// Estadísticas), pero sí se puede FILTRAR por mes. Modo "Clientes": selector
+// de cliente → sus tarjetas. Modo "Todos": todas las tarjetas, seccionadas
+// por cliente. Además marca (🚫 Sin pedido) las piezas Aprobadas cuyo código
+// de referencia nunca apareció en ningún Pedido cargado — para detectar
+// diseño aprobado que nunca se llegó a producir.
+// Exporta un envío de la Bitácora a Excel reproduciendo EXACTAMENTE el
+// layout del ANEXO que el cliente ya conoce (el archivo de ejemplo que
+// subieron: "COLECCIÓN KAMILA GIRLS N°2..."): 4 filas de encabezado (nombre
+// de colección; fecha enviado/recibido y marca/n° pedido; encabezados de
+// columna; sub-encabezados CURVA/CANTIDAD bajo COLOMBIA y VENEZUELA) y luego
+// una fila por referencia, en las mismas 17 columnas (A-Q) y en el mismo
+// orden que ese archivo. La librería "xlsx" (SheetJS, edición community) que
+// ya usa el resto de la app no soporta incrustar imágenes, así que
+// Foto/Carta de Colores quedan como nota de texto en vez de la imagen real
+// (que sí se ve dentro de la app, en la Bitácora).
+async function exportBitacoraEnvioToExcel(envio) {
+  // "xlsx-js-style" es un fork de SheetJS (mismo núcleo 0.18.5 que ya usa el
+  // resto de la app, mismo API) que además soporta escribir estilos de
+  // celda (relleno, fuente, bordes) — la librería "xlsx" normal (edición
+  // community) no permite esto al generar el archivo. Se usa SOLO aquí, sin
+  // tocar los demás exportadores de la app, que siguen igual con "xlsx".
+  const XLSX = await import("xlsx-js-style");
+  // Los campos de cantidad/precio se escriben como número (no texto) cuando
+  // se puede — así el numFmt de moneda de más abajo realmente se ve en
+  // Excel (un numFmt sobre una celda de texto no tiene efecto visual), y de
+  // paso el cliente puede sumarlos directamente en la hoja si quiere.
+  function numOTexto(v) {
+    if (v === "" || v === null || v === undefined) return "";
+    const n = Number(v);
+    return Number.isNaN(n) ? v : n;
+  }
+  const wsData = [
+    ["COLECCIÓN (NOMBRE)", envio.coleccion || "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["FECHA ENVIADO", envio.fechaEnviado || "", "", "", "FECHA RECIBIDO CLIENTE", envio.fechaRecibidoCliente || "", "", "", "", "MARCA", envio.cliente || "", "", "", "N° PEDIDO", envio.numPedido || "", "", ""],
+    ["FOTO", "REF", "ESTADO", "CONSUMO", "TIPO", "CATEGORIA", "SILUETA", "RANGO (TALLA)", "TELA", "COLOMBIA", "", "VENEZUELA", "", "PRECIO $", "OBSERVACIONES CLIENTE", "", "CARTA DE COLORES"],
+    ["", "", "", "", "", "", "", "", "", "CURVA ", "CANTIDAD", "CURVA", "CANTIDAD", "", "", "", ""],
+    ...envio.items.map((it) => [
+      it.foto ? "(ver en la app)" : "",
+      it.referencia || "",
+      it.estado || "",
+      it.consumo || "",
+      it.tipo || "",
+      it.categoria || "",
+      it.silueta || "",
+      it.rango || "",
+      it.tela || "",
+      it.colombiaCurva || "",
+      numOTexto(it.colombiaCantidad),
+      it.venezuelaCurva || "",
+      numOTexto(it.venezuelaCantidad),
+      numOTexto(it.precio),
+      it.observacionesCliente || "",
+      "",
+      envio.cartaColores ? "(ver en la app)" : "",
+    ]),
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  // Réplica exacta de las fusiones de celdas del archivo de ejemplo: las
+  // celdas de VALOR de la fila 1-2 (colección, fecha enviado, fecha
+  // recibido, marca, n° pedido) se fusionan para dar espacio al texto;
+  // COLOMBIA/VENEZUELA/OBSERVACIONES CLIENTE ocupan 2 columnas en la fila de
+  // encabezado; las columnas de un solo valor (Foto, Ref, Estado...) quedan
+  // fusionadas verticalmente entre la fila de encabezado y la de
+  // sub-encabezado (CURVA/CANTIDAD); y Observaciones Cliente sigue
+  // ocupando 2 columnas en cada fila de datos, igual que en el original.
+  ws["!merges"] = [
+    { s: { r: 0, c: 1 }, e: { r: 0, c: 16 } }, // valor Colección
+    { s: { r: 1, c: 1 }, e: { r: 1, c: 3 } }, // valor Fecha Enviado
+    { s: { r: 1, c: 4 }, e: { r: 1, c: 5 } }, // etiqueta Fecha Recibido Cliente
+    { s: { r: 1, c: 6 }, e: { r: 1, c: 8 } }, // valor Fecha Recibido Cliente
+    { s: { r: 1, c: 10 }, e: { r: 1, c: 12 } }, // valor Marca
+    { s: { r: 1, c: 14 }, e: { r: 1, c: 16 } }, // valor N° Pedido
+    { s: { r: 2, c: 0 }, e: { r: 3, c: 0 } },
+    { s: { r: 2, c: 1 }, e: { r: 3, c: 1 } },
+    { s: { r: 2, c: 2 }, e: { r: 3, c: 2 } },
+    { s: { r: 2, c: 3 }, e: { r: 3, c: 3 } },
+    { s: { r: 2, c: 4 }, e: { r: 3, c: 4 } },
+    { s: { r: 2, c: 5 }, e: { r: 3, c: 5 } },
+    { s: { r: 2, c: 6 }, e: { r: 3, c: 6 } },
+    { s: { r: 2, c: 7 }, e: { r: 3, c: 7 } },
+    { s: { r: 2, c: 8 }, e: { r: 3, c: 8 } },
+    { s: { r: 2, c: 9 }, e: { r: 2, c: 10 } },
+    { s: { r: 2, c: 11 }, e: { r: 2, c: 12 } },
+    { s: { r: 2, c: 13 }, e: { r: 3, c: 13 } },
+    { s: { r: 2, c: 14 }, e: { r: 3, c: 15 } },
+    { s: { r: 2, c: 16 }, e: { r: 3, c: 16 } },
+    ...envio.items.map((_, i) => ({ s: { r: 4 + i, c: 14 }, e: { r: 4 + i, c: 15 } })),
+  ];
+  ws["!cols"] = [
+    { wch: 10 }, { wch: 12 }, { wch: 14 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 11 }, { wch: 13 },
+    { wch: 10 }, { wch: 10 }, { wch: 11 }, { wch: 10 }, { wch: 11 }, { wch: 10 }, { wch: 24 }, { wch: 4 }, { wch: 14 },
+  ];
+  ws["!rows"] = [{ hpt: 24 }, { hpt: 20 }, { hpt: 24 }, { hpt: 20 }, ...envio.items.map(() => ({ hpt: 36 }))];
+  // Colores de marca de TechPack (mismos tokens T.* que usa el resto de la
+  // app): fondo oscuro + texto beige en los encabezados, filas de datos
+  // alternadas para que sea más fácil seguir cada referencia, y un borde
+  // fino en toda la tabla — igual a como se ve el "Informe de Seguimiento" y
+  // los demás informes dentro de la app, pero ahora también en el Excel.
+  const COLOR_INK = "1A1A2E";
+  const COLOR_SEAM = "C8B8A2";
+  const COLOR_CANVAS = "F7F4F0";
+  const COLOR_BORDER = "E8E2DB";
+  const THIN = { style: "thin", color: { rgb: COLOR_BORDER } };
+  const BOX = { top: THIN, bottom: THIN, left: THIN, right: THIN };
+  const COLS_CENTRADAS = new Set([0, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 16]);
+  const totalCols = 17;
+  const totalRows = wsData.length;
+  for (let r = 0; r < totalRows; r++) {
+    for (let c = 0; c < totalCols; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (!ws[addr]) ws[addr] = { t: "s", v: "" };
+      const centrada = COLS_CENTRADAS.has(c);
+      let style = { border: BOX, alignment: { vertical: "center", horizontal: centrada ? "center" : "left", wrapText: true } };
+      if (r === 0) {
+        // Título — nombre de la colección.
+        style.font = { bold: true, sz: 13, color: { rgb: COLOR_INK } };
+        style.fill = { patternType: "solid", fgColor: { rgb: COLOR_CANVAS } };
+      } else if (r === 1) {
+        // Fila de etiquetas (Fecha Enviado / Recibido, Marca, N° Pedido).
+        const esEtiqueta = c === 0 || c === 4 || c === 9 || c === 13;
+        style.font = { bold: esEtiqueta, sz: 11, color: { rgb: COLOR_INK } };
+        if (esEtiqueta) style.fill = { patternType: "solid", fgColor: { rgb: COLOR_CANVAS } };
+      } else if (r === 2 || r === 3) {
+        // Encabezados de columna (FOTO/REF/...) y sub-encabezados (CURVA/CANTIDAD).
+        style.fill = { patternType: "solid", fgColor: { rgb: COLOR_INK } };
+        style.font = { bold: true, sz: 10, color: { rgb: COLOR_SEAM } };
+        style.alignment = { vertical: "center", horizontal: "center", wrapText: true };
+      } else {
+        // Filas de datos, alternadas.
+        const filaDato = r - 4;
+        style.fill = { patternType: "solid", fgColor: { rgb: filaDato % 2 === 0 ? "FFFFFF" : COLOR_CANVAS } };
+        style.font = { sz: 10, color: { rgb: COLOR_INK } };
+        if (c === 13 && ws[addr].v !== "") style.numFmt = "$#,##0";
+      }
+      ws[addr].s = style;
+    }
+  }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "ANEXO");
+  const nombreArchivo = `Envio_${(envio.coleccion || envio.cliente || "bitacora").replace(/[^a-zA-Z0-9]+/g, "_")}_${envio.fechaEnviado || today()}.xlsx`;
+  XLSX.writeFile(wb, nombreArchivo);
+}
+// Envuelve las dos bitácoras (Envíos / Aprobados sin Pedido) en pestañas
+// dentro de un solo ítem de menú "Bitácoras" — antes eran dos entradas
+// sueltas, ahora comparten pantalla como ya hace Historial con sus propias
+// pestañas internas.
+function BitacorasView(props) {
+  const [tab, setTab] = useState("envios");
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 20 }}>
+        {[["envios", "📦 Bitácora de Envíos"], ["sin_pedido", "🚫 Bitácora de Aprobados sin Pedido"]].map(([v, label]) => (
+          <button key={v} onClick={() => setTab(v)} style={{ padding: "8px 16px", borderRadius: 8, border: `1.5px solid ${tab === v ? T.ink : T.border}`, background: tab === v ? T.ink : T.white, color: tab === v ? T.white : T.ink, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{label}</button>
+        ))}
+      </div>
+      {tab === "envios" ? <BitacoraEnviosView {...props} /> : <BitacoraAprobadosSinPedidoView {...props} />}
+    </div>
+  );
+}
+function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial, onGoHistorial }) {
+  const [subTab, setSubTab] = useState("pendientes");
+  const [kindFiltro, setKindFiltro] = useState("todos");
+  const [busqueda, setBusqueda] = useState("");
+  const [mesFiltro, setMesFiltro] = useState("");
+  const [expandido, setExpandido] = useState(null);
+  const hoy = new Date();
+  const hoyIso = hoy.toISOString().slice(0, 10);
+  function diasDesde(fechaISO) {
+    if (!fechaISO) return null;
+    const d = new Date(fechaISO);
+    if (isNaN(d.getTime())) return null;
+    return Math.floor((hoy - d) / 86400000);
+  }
+  // Busca el prototipo/referencia VIVO detrás de cada ítem del envío (por
+  // itemId/capsulaId) para saber su estado ACTUAL — el "estado" guardado en
+  // el envío es solo la foto del momento en que se mandó, no se actualiza.
+  function liveItemFor(it) {
+    if (it.kind === "proto") return protos.find((p) => p.id === it.itemId);
+    const cap = capsulas.find((c) => c.id === it.capsulaId);
+    return cap?.referencias.find((r) => r.id === it.itemId);
+  }
+  function itemResuelto(it) {
+    const live = liveItemFor(it);
+    return !!live && ["aprobado", "declinado"].includes(live.status);
+  }
+  // Cada envío se enriquece con: cuántas de sus referencias siguen sin
+  // resolver, hace cuántos días se envió (solo relevante si sigue habiendo
+  // pendientes), y si es de prototipos o de cápsula (según sus items — un
+  // envío siempre sale homogéneo, se arma desde Prototipos o desde Cápsulas,
+  // nunca mezclado).
+  const enriquecidos = envios.map((envio) => {
+    const pendientes = envio.items.filter((it) => !itemResuelto(it));
+    const dias = pendientes.length ? diasDesde(envio.fechaEnviado) : null;
+    const kind = envio.items[0]?.kind === "proto" ? "proto" : "ref";
+    return { ...envio, _pendientes: pendientes.length, _dias: dias, _kind: kind };
+  });
+  const q = busqueda.trim().toLowerCase();
+  const mesDe = (e) => (e.fechaEnviado || "").slice(0, 7);
+  const base = enriquecidos.filter(
+    (e) =>
+      (!q || (e.coleccion || "").toLowerCase().includes(q) || (e.cliente || "").toLowerCase().includes(q) || (e.numPedido || "").toLowerCase?.().includes(q)) &&
+      (!mesFiltro || mesDe(e) === mesFiltro)
+  );
+  const porTab = subTab === "pendientes" ? base.filter((e) => e._pendientes > 0) : base;
+  const countProto = porTab.filter((e) => e._kind === "proto").length;
+  const countCapsula = porTab.filter((e) => e._kind === "ref").length;
+  const filtrados = porTab
+    .filter((e) => kindFiltro === "todos" || e._kind === kindFiltro)
+    .sort((a, b) =>
+      subTab === "pendientes"
+        ? (b._dias ?? 0) - (a._dias ?? 0)
+        : (b.fechaEnviado || "").localeCompare(a.fechaEnviado || "") || (b.createdAt || "").localeCompare(a.createdAt || "")
+    );
+  const mesActual = hoyIso.slice(0, 7);
+  const declinadasEsteMes = (historial || []).filter((h) => h.resultado === "declinado" && h.mes === mesActual).length;
+  const mesesDisponibles = [...new Set(envios.map((e) => mesDe(e)).filter(Boolean))].sort((a, b) => b.localeCompare(a));
+  function labelMes(m) { return new Date(m + "-02").toLocaleDateString("es-CO", { month: "long", year: "numeric" }); }
+  return (
+    <div>
+      {declinadasEsteMes > 0 && onGoHistorial && (
+        <div
+          onClick={onGoHistorial}
+          style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 8, padding: "10px 16px", background: T.coralBg, borderRadius: 10, border: `1px solid ${T.coral}44`, marginBottom: 16, fontSize: 13, fontWeight: 700, color: T.coral }}
+        >
+          ❌ {declinadasEsteMes} declinada{declinadasEsteMes !== 1 ? "s" : ""} este mes · Ver en Historial →
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Bitácora de Envíos</h2>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Historial de colecciones/lotes enviados al cliente</p>
+        </div>
+        <input
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="Buscar por colección, cliente o N° pedido..."
+          style={{ padding: "9px 14px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, minWidth: 260, outline: "none", fontFamily: "inherit" }}
+        />
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+        {[["pendientes", "⏳ Pendientes"], ["todos", "Todos"]].map(([v, label]) => (
+          <button key={v} onClick={() => setSubTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${subTab === v ? T.denim : T.border}`, background: subTab === v ? T.denimBg : T.white, color: subTab === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[["todos", `Todos (${porTab.length})`], ["proto", `Prototipos (${countProto})`], ["ref", `Cápsulas (${countCapsula})`]].map(([v, label]) => (
+            <button key={v} onClick={() => setKindFiltro(v)} style={{ padding: "5px 12px", borderRadius: 6, border: `1.5px solid ${kindFiltro === v ? T.ink : T.border}`, background: kindFiltro === v ? T.ink : T.white, color: kindFiltro === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
+          ))}
+        </div>
+        {mesesDisponibles.length > 0 && (
+          <select value={mesFiltro} onChange={(e) => setMesFiltro(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", textTransform: "capitalize" }}>
+            <option value="">Todos los meses</option>
+            {mesesDisponibles.map((m) => <option key={m} value={m}>{labelMes(m)}</option>)}
+          </select>
+        )}
+      </div>
+      {!filtrados.length && (
+        <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
+          {!envios.length
+            ? "Todavía no hay envíos registrados. Se crean desde Prototipos/Cápsulas, pestaña \"Enviar al Cliente\", seleccionando referencias y usando \"Crear Envío\"."
+            : subTab === "pendientes"
+            ? "No hay envíos con referencias pendientes de aprobación. 🎉"
+            : "Ningún envío coincide con la búsqueda."}
+        </div>
+      )}
+      {filtrados.map((envio) => {
+        const abierto = expandido === envio.id;
+        const totalUnidades = envio.items.reduce((s, it) => s + (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0), 0);
+        return (
+          <div key={envio.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
+            <div
+              onClick={() => setExpandido(abierto ? null : envio.id)}
+              style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, cursor: "pointer", flexWrap: "wrap", gap: 10 }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 20 }}>{abierto ? "📂" : "📁"}</span>
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: T.ink, display: "flex", alignItems: "center", gap: 8 }}>
+                    {envio.coleccion || "(Sin nombre de colección)"}
+                    <span style={{ fontSize: 10, fontWeight: 700, color: envio._kind === "proto" ? T.violet : T.denim, background: envio._kind === "proto" ? T.violetBg : T.denimBg, padding: "1px 8px", borderRadius: 10 }}>
+                      {envio._kind === "proto" ? "Prototipo" : "Cápsula"}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: T.slate }}>{envio.cliente || "Sin cliente"} · {envio.items.length} ref · {fmtNum(totalUnidades)} unid. · Enviado {envio.fechaEnviado}{envio.numPedido ? ` · Pedido ${envio.numPedido}` : ""}</div>
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                {envio._pendientes > 0 ? (
+                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: envio._dias >= 15 ? T.coralBg : T.amberBg, color: envio._dias >= 15 ? T.coral : T.amber }}>
+                    ⏳ {envio._pendientes} sin resolver · {envio._dias}d esperando
+                  </span>
+                ) : (
+                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✓ Todo resuelto</span>
+                )}
+                <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: envio.fechaRecibidoCliente ? T.jadeBg : T.amberBg, color: envio.fechaRecibidoCliente ? T.jade : T.amber }}>
+                  {envio.fechaRecibidoCliente ? `✓ Recibido ${envio.fechaRecibidoCliente}` : "⏳ Sin confirmar recibido"}
+                </span>
+                <button onClick={(e) => { e.stopPropagation(); exportBitacoraEnvioToExcel(envio); }} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", background: "#217346", color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>📊 Exportar</button>
+              </div>
+            </div>
+            {abierto && (
+              <div style={{ padding: 20 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12, marginBottom: 20 }}>
+                  <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Empresa Transporte</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{envio.empresaTransporte || "—"}</div></div>
+                  <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>N° Guía</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{envio.guia || "—"}</div></div>
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Fecha Recibido Cliente</div>
+                    <input
+                      type="date"
+                      value={envio.fechaRecibidoCliente || ""}
+                      onChange={(e) => onUpdateEnvio(envio.id, { fechaRecibidoCliente: e.target.value })}
+                      style={{ padding: "6px 10px", border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit" }}
+                    />
+                  </div>
+                  {envio.cartaColores && (
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Carta de Colores</div>
+                      <img src={envio.cartaColores} alt="Carta de colores" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, border: `1px solid ${T.border}` }} />
+                    </div>
+                  )}
+                </div>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ background: T.ink }}>
+                        {["Foto", "Ref", "Nombre", "Estado Actual", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Obs. Cliente"].map((h) => (
+                          <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {envio.items.map((it, i) => {
+                        const live = liveItemFor(it);
+                        return (
+                          <tr key={it.itemId} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
+                            <td style={{ padding: "6px 10px" }}>{it.foto ? <img src={it.foto} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
+                            <td style={{ padding: "6px 10px", fontWeight: 700 }}>{it.referencia}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.nombre}</td>
+                            <td style={{ padding: "6px 10px" }}>{live ? <Badge status={live.status} /> : <span style={{ color: T.slate, fontStyle: "italic" }}>—</span>}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.consumo || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.tipo || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.categoria || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.silueta || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.rango || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.tela || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.colombiaCurva || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.colombiaCantidad || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.venezuelaCurva || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.venezuelaCantidad || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.precio || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.observacionesCliente || "—"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>
@@ -1448,89 +2840,791 @@ function CapsulasView({ capsulas, role, perms, onSelectRef, onNewCapsula, onNewR
     </div>
   );
 }
-
-// Historial de aprobaciones/declinaciones, agrupado por cliente y luego por
-// mes: un prototipo se registra al llegar a "Aprobado" (se promueva o no
-// después a una cápsula) y una referencia de cápsula se registra tanto al
-// llegar a "Aprobado" como a "Declinado" (ver changeStatus en DetailView).
-function HistorialDisenoView({ historial, protos, capsulas }) {
-  const [clienteFiltro, setClienteFiltro] = useState("");
-  const clientesDisponibles = [...new Set(historial.map((h) => h.cliente))].sort((a, b) => a.localeCompare(b));
-  const filtrado = clienteFiltro ? historial.filter((h) => h.cliente === clienteFiltro) : historial;
-  const porCliente = {};
-  filtrado.forEach((h) => {
-    if (!porCliente[h.cliente]) porCliente[h.cliente] = {};
-    if (!porCliente[h.cliente][h.mes]) porCliente[h.cliente][h.mes] = [];
-    porCliente[h.cliente][h.mes].push(h);
-  });
-  const clientesOrdenados = Object.keys(porCliente).sort((a, b) => a.localeCompare(b));
-  function promocionInfo(h) {
-    if (h.tipo !== "proto") return null;
-    const p = protos.find((x) => x.id === h.itemId);
-    if (!p) return null;
-    if (!p.promotedTo) return "Sin promover";
-    const cap = capsulas.find((c) => c.id === p.promotedTo);
-    return `Promovido a ${cap?.name || "cápsula"}`;
+// Bitácora de Aprobados sin Pedido: cápsulas cuyas referencias YA llegaron a
+// "Aprobado" pero cuyo código nunca apareció en ningún Pedido cargado — la
+// misma señal que ya usa Historial con el badge "🚫 Sin pedido", pero acá
+// presentada con el mismo formato de tabla (foto/ref/nombre/categoría/...)
+// que usa la Bitácora de Envíos, agrupada por cápsula.
+function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef }) {
+  const [busqueda, setBusqueda] = useState("");
+  function usedInPedido(refCode) {
+    if (!refCode) return false;
+    const target = String(refCode).trim().toLowerCase();
+    return (pedidos || []).some((p) => (p.referencias || []).some((r) => String(r.ref || "").trim().toLowerCase() === target));
   }
+  const q = busqueda.trim().toLowerCase();
+  const capsulasConSinPedido = (capsulas || [])
+    .map((cap) => ({
+      cap,
+      refs: (cap.referencias || []).filter((r) => r.status === "aprobado" && !usedInPedido(r.reference)),
+    }))
+    .filter(({ cap, refs }) => refs.length > 0 && (!q || (cap.name || "").toLowerCase().includes(q) || (cap.cliente || "").toLowerCase().includes(q)))
+    .sort((a, b) => (a.cap.name || "").localeCompare(b.cap.name || ""));
+  const totalRefs = capsulasConSinPedido.reduce((s, c) => s + c.refs.length, 0);
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
         <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Historial</h2>
-          <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Prototipos aprobados y referencias de cápsula aprobadas/declinadas, por cliente y mes</p>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Bitácora de Aprobados sin Pedido</h2>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Cápsulas con referencias aprobadas que nunca se usaron en un pedido — {totalRefs} referencia{totalRefs !== 1 ? "s" : ""}</p>
         </div>
-        <select value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
-          <option value="">Todos los clientes</option>
-          {clientesDisponibles.map((c) => <option key={c} value={c}>{c}</option>)}
-        </select>
+        <input
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="Buscar por cápsula o cliente..."
+          style={{ padding: "9px 14px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, minWidth: 260, outline: "none", fontFamily: "inherit" }}
+        />
       </div>
-      {!clientesOrdenados.length ? (
-        <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Aún no hay historial registrado.</div>
-      ) : (
-        clientesOrdenados.map((cliente) => {
-          const meses = Object.keys(porCliente[cliente]).sort((a, b) => b.localeCompare(a));
-          return (
-            <div key={cliente} style={{ marginBottom: 28 }}>
-              <div style={{ fontWeight: 800, fontSize: 16, color: T.ink, marginBottom: 12 }}>{cliente}</div>
-              {meses.map((mes) => {
-                const items = [...porCliente[cliente][mes]].sort((a, b) => b.fecha.localeCompare(a.fecha));
-                return (
-                  <div key={mes} style={{ marginBottom: 16 }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "capitalize", marginBottom: 8 }}>
-                      {new Date(mes + "-02").toLocaleDateString("es-CO", { month: "long", year: "numeric" })}
+      {!capsulasConSinPedido.length && (
+        <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
+          No hay referencias aprobadas sin usar en pedido. 🎉
+        </div>
+      )}
+      {capsulasConSinPedido.map(({ cap, refs }) => (
+        <div key={cap.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
+          <div style={{ padding: "16px 20px", background: T.canvas }}>
+            <div style={{ fontWeight: 800, fontSize: 15, color: T.ink }}>🗂 {cap.name || "Cápsula"}</div>
+            <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{cap.cliente || "Sin cliente"}{cap.season ? ` · ${cap.season}` : ""} · {refs.length} referencia{refs.length !== 1 ? "s" : ""} sin pedido</div>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: T.ink }}>
+                  {["Foto", "Ref", "Nombre", "Categoría", "Silueta", "Rango", "Tela"].map((h) => (
+                    <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {refs.map((r, i) => (
+                  <tr
+                    key={r.id}
+                    onClick={() => onSelectRef && onSelectRef(cap.id, r.id)}
+                    style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}`, cursor: onSelectRef ? "pointer" : "default" }}
+                  >
+                    <td style={{ padding: "6px 10px" }}>{r.image ? <img src={r.image} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
+                    <td style={{ padding: "6px 10px", fontWeight: 700 }}>{r.reference || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{r.name || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{r.categoria || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{r.silueta || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{r.rango || r.tallas?.[0] || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{r.tipoTela || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+// Funciones asignadas de un puesto: antes era un solo texto libre, ahora es
+// una lista numerada (un renglón por función). `funcionesArray` normaliza
+// cualquiera de las dos formas — soporta puestos viejos que todavía tengan
+// `funciones` guardado como string plano — para que tanto el modal de
+// edición como las vistas de solo lectura trabajen siempre con un array.
+function funcionesArray(funciones) {
+  if (Array.isArray(funciones)) return funciones.filter((f) => f && f.trim());
+  if (typeof funciones === "string" && funciones.trim()) return [funciones.trim()];
+  return [];
+}
+// Lista numerada de solo lectura (Puestos, Registro Mensual, Catálogo de
+// KPIs) — no se repite el numerado a mano en cada vista.
+function FuncionesPreview({ funciones, style }) {
+  const lista = funcionesArray(funciones);
+  if (!lista.length) return null;
+  return (
+    <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: T.slate, ...style }}>
+      {lista.map((f, i) => (
+        <li key={i} style={{ marginBottom: 2 }}>{f}</li>
+      ))}
+    </ol>
+  );
+}
+// Alta/edición de un Puesto de trabajo: nombre + área (de config.kpiAreas) +
+// funciones asignadas (responsabilidades esperadas), ahora como lista
+// numerada — cada función es su propio renglón, se agrega/quita con
+// botones y el consecutivo (1, 2, 3...) se pone solo según el orden de la
+// lista. Es la base de todo el módulo — Personas y KPIs del catálogo se
+// cuelgan de un puesto.
+function PuestoKpiModal({ puesto, areas, onSave, onClose }) {
+  const [nombre, setNombre] = useState(puesto?.nombre || "");
+  const [area, setArea] = useState(puesto?.area || "");
+  const [funciones, setFunciones] = useState(() => {
+    const arr = funcionesArray(puesto?.funciones);
+    return arr.length ? arr : [""];
+  });
+  function actualizarFuncion(i, val) {
+    setFunciones((fs) => fs.map((f, idx) => (idx === i ? val : f)));
+  }
+  function agregarFuncion() {
+    setFunciones((fs) => [...fs, ""]);
+  }
+  function quitarFuncion(i) {
+    setFunciones((fs) => (fs.length === 1 ? fs : fs.filter((_, idx) => idx !== i)));
+  }
+  function save() {
+    if (!nombre.trim() || !area) return;
+    const limpio = funciones.map((f) => f.trim()).filter(Boolean);
+    onSave({ nombre: nombre.trim(), area, funciones: limpio });
+  }
+  return (
+    <Modal title={puesto ? "Editar Puesto" : "Nuevo Puesto"} onClose={onClose} width={520}>
+      <Field label="Nombre del puesto"><FInput value={nombre} onChange={setNombre} placeholder="Ej: Patronista" /></Field>
+      <Field label="Área">
+        {areas.length ? (
+          <FSel value={area} onChange={setArea} options={areas} />
+        ) : (
+          <div style={{ padding: "10px 14px", background: T.amberBg, borderRadius: 8, fontSize: 12, color: T.amber, fontWeight: 600 }}>No hay áreas configuradas — agrégalas en Administrador General → Áreas (KPI).</div>
+        )}
+      </Field>
+      <Field label="Funciones asignadas (responsabilidades esperadas)">
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 8 }}>
+          {funciones.map((f, i) => (
+            <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ width: 20, flexShrink: 0, textAlign: "right", fontSize: 12, fontWeight: 700, color: T.slate }}>{i + 1}.</span>
+              <input
+                value={f}
+                onChange={(e) => actualizarFuncion(i, e.target.value)}
+                placeholder="Ej: Elaborar moldes base según ficha técnica"
+                style={{ flex: 1, padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}
+              />
+              <button
+                onClick={() => quitarFuncion(i)}
+                disabled={funciones.length === 1}
+                title="Quitar función"
+                style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "6px 9px", color: T.coral, fontWeight: 700, cursor: funciones.length === 1 ? "not-allowed" : "pointer", opacity: funciones.length === 1 ? 0.5 : 1, flexShrink: 0 }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+        <button
+          onClick={agregarFuncion}
+          style={{ background: "none", border: `1px solid ${T.denim}`, borderRadius: 6, padding: "5px 12px", color: T.denim, fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+        >
+          + Agregar función
+        </button>
+      </Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={save} disabled={!nombre.trim() || !area}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+// Selector de puesto agrupado por área — usado tanto en PersonaKpiModal como
+// en KpiCatalogoModal, para no repetir el mismo <select> con <optgroup> dos
+// veces.
+function SelectorPuesto({ value, onChange, puestos }) {
+  const porArea = {};
+  puestos.forEach((p) => { (porArea[p.area] = porArea[p.area] || []).push(p); });
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
+      <option value="">— Seleccionar —</option>
+      {Object.entries(porArea).map(([area, ps]) => (
+        <optgroup key={area} label={area}>
+          {ps.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+        </optgroup>
+      ))}
+    </select>
+  );
+}
+function PersonaKpiModal({ persona, puestos, onSave, onClose }) {
+  const [nombre, setNombre] = useState(persona?.nombre || "");
+  const [puestoId, setPuestoId] = useState(persona?.puestoId || "");
+  function save() {
+    if (!nombre.trim() || !puestoId) return;
+    onSave({ nombre: nombre.trim(), puestoId });
+  }
+  return (
+    <Modal title={persona ? "Editar Persona" : "Nueva Persona"} onClose={onClose} width={420}>
+      <Field label="Nombre"><FInput value={nombre} onChange={setNombre} placeholder="Ej: María García" /></Field>
+      <Field label="Puesto"><SelectorPuesto value={puestoId} onChange={setPuestoId} puestos={puestos} /></Field>
+      {!puestos.length && (
+        <div style={{ padding: "10px 14px", background: T.amberBg, borderRadius: 8, marginTop: 8, fontSize: 12, color: T.amber, fontWeight: 600 }}>Todavía no hay puestos creados — ve a la pestaña "Puestos" primero.</div>
+      )}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={save} disabled={!nombre.trim() || !puestoId}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+// Alta/edición de un KPI del catálogo. Cada KPI pertenece a UN puesto — si al
+// guardar el nombre ya existe en OTRO puesto, se avisa (no se bloquea, por si
+// de verdad quieres repetirlo, pero queda claro que hay solapamiento).
+function KpiCatalogoModal({ kpi, puestos, catalogo, onSave, onClose }) {
+  const [nombre, setNombre] = useState(kpi?.nombre || "");
+  const [descripcion, setDescripcion] = useState(kpi?.descripcion || "");
+  const [puestoId, setPuestoId] = useState(kpi?.puestoId || "");
+  const [unidad, setUnidad] = useState(kpi?.unidad || "");
+  const [meta, setMeta] = useState(kpi?.meta != null ? String(kpi.meta) : "");
+  const nombreKey = nombre.trim().toLowerCase();
+  const puestosConMismoNombre = [
+    ...new Set(
+      catalogo
+        .filter((k) => k.id !== kpi?.id && k.puestoId !== puestoId && nombreKey && (k.nombre || "").trim().toLowerCase() === nombreKey)
+        .map((k) => puestos.find((p) => p.id === k.puestoId)?.nombre || "(puesto eliminado)")
+    ),
+  ];
+  function save() {
+    if (!nombre.trim() || !puestoId) return;
+    onSave({ nombre: nombre.trim(), descripcion: descripcion.trim(), puestoId, unidad: unidad.trim(), meta: meta === "" ? null : Number(meta) });
+  }
+  return (
+    <Modal title={kpi ? "Editar KPI" : "Nuevo KPI"} onClose={onClose} width={460}>
+      <Field label="Nombre del KPI"><FInput value={nombre} onChange={setNombre} placeholder="Ej: Referencias completadas por mes" /></Field>
+      {puestosConMismoNombre.length > 0 && (
+        <div style={{ padding: "10px 14px", background: T.amberBg, borderRadius: 8, marginBottom: 14, fontSize: 12, color: T.amber, fontWeight: 600 }}>
+          ⚠ Este KPI ya existe en: {puestosConMismoNombre.join(", ")}. Puede que se esté midiendo lo mismo en dos puestos.
+        </div>
+      )}
+      <Field label="Puesto"><SelectorPuesto value={puestoId} onChange={setPuestoId} puestos={puestos} /></Field>
+      {!puestos.length && (
+        <div style={{ padding: "10px 14px", background: T.amberBg, borderRadius: 8, marginBottom: 14, fontSize: 12, color: T.amber, fontWeight: 600 }}>Todavía no hay puestos creados — ve a la pestaña "Puestos" primero.</div>
+      )}
+      <Field label="Descripción (opcional)"><FInput value={descripcion} onChange={setDescripcion} placeholder="Ej: Cuenta las referencias que llegaron a Aprobado" /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Unidad"><FInput value={unidad} onChange={setUnidad} placeholder="Ej: referencias, días, %" /></Field>
+        <Field label="Meta (opcional)"><FInput type="number" value={meta} onChange={setMeta} placeholder="Ej: 10" /></Field>
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={save} disabled={!nombre.trim() || !puestoId}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+// --- Módulo KPIs (toda la compañía) ---
+// Cuatro pestañas: Registro (matriz mensual persona × KPI, agrupada por
+// puesto — comparativo directo entre personas del mismo puesto), Catálogo
+// (qué KPIs tiene cada puesto, con aviso si un KPI se repite en otro
+// puesto), Personas (el roster) y Puestos (el catálogo de puestos con su
+// área y funciones asignadas — la base de todo lo demás). Un selector de
+// Área arriba filtra las cuatro pestañas a la vez. Solo Administrador
+// crea/edita/borra puestos, catálogo y personas; el registro de valores
+// mensuales lo puede hacer cualquiera con acceso al módulo.
+function KPIsView({ areas, puestos, personas, catalogo, registros, isAdmin, onAddPuesto, onUpdatePuesto, onDeletePuesto, onAddPersona, onUpdatePersona, onDeletePersona, onAddKpi, onUpdateKpi, onDeleteKpi, onGuardarRegistro }) {
+  const [tab, setTab] = useState("registro");
+  const [areaFiltro, setAreaFiltro] = useState("todas");
+  const [periodo, setPeriodo] = useState(() => today().slice(0, 7));
+  const [editPersona, setEditPersona] = useState(null);
+  const [showNuevaPersona, setShowNuevaPersona] = useState(false);
+  const [confirmDelPersona, setConfirmDelPersona] = useState(null);
+  const [editKpi, setEditKpi] = useState(null);
+  const [showNuevoKpi, setShowNuevoKpi] = useState(false);
+  const [confirmDelKpi, setConfirmDelKpi] = useState(null);
+  const [editPuesto, setEditPuesto] = useState(null);
+  const [showNuevoPuesto, setShowNuevoPuesto] = useState(false);
+  const [confirmDelPuesto, setConfirmDelPuesto] = useState(null);
+  const [valoresLocales, setValoresLocales] = useState({});
+
+  function puestoDe(id) { return puestos.find((p) => p.id === id); }
+  const puestosFiltrados = areaFiltro === "todas" ? puestos : puestos.filter((p) => p.area === areaFiltro);
+  const puestosFiltradosIds = new Set(puestosFiltrados.map((p) => p.id));
+  const personasFiltradas = personas.filter((p) => puestosFiltradosIds.has(p.puestoId));
+  const catalogoFiltrado = catalogo.filter((k) => puestosFiltradosIds.has(k.puestoId));
+
+  function valorDe(personaId, kpiId) {
+    const local = valoresLocales[`${personaId}__${kpiId}__${periodo}`];
+    if (local !== undefined) return local;
+    const r = registros.find((r) => r.personaId === personaId && r.kpiId === kpiId && r.periodo === periodo);
+    return r?.valor != null ? String(r.valor) : "";
+  }
+  function setValorLocal(personaId, kpiId, val) {
+    setValoresLocales((v) => ({ ...v, [`${personaId}__${kpiId}__${periodo}`]: val }));
+  }
+  function guardarCelda(personaId, kpiId) {
+    const val = valorDe(personaId, kpiId);
+    if (val === "") return;
+    onGuardarRegistro({ personaId, kpiId, periodo, valor: Number(val) });
+  }
+
+  // Puestos (dentro del filtro de área) que efectivamente tienen personas Y
+  // kpis, para no mostrar bloques vacíos en el registro.
+  const puestosConDatos = puestosFiltrados.filter((p) => personas.some((per) => per.puestoId === p.id) && catalogo.some((k) => k.puestoId === p.id));
+
+  // Detección de nombres de KPI repetidos entre puestos DISTINTOS (posible
+  // solapamiento) — se calcula sobre TODO el catálogo, sin importar el
+  // filtro de área, porque el solapamiento puede darse entre dos áreas.
+  const kpisPorNombre = {};
+  catalogo.forEach((k) => {
+    const key = (k.nombre || "").trim().toLowerCase();
+    if (!key) return;
+    kpisPorNombre[key] = kpisPorNombre[key] || new Set();
+    kpisPorNombre[key].add(k.puestoId);
+  });
+  const nombresConSolapamiento = new Set(Object.entries(kpisPorNombre).filter(([, s]) => s.size > 1).map(([k]) => k));
+
+  return (
+    <div>
+      {showNuevoPuesto && <PuestoKpiModal areas={areas} onSave={(p) => { onAddPuesto(p); setShowNuevoPuesto(false); }} onClose={() => setShowNuevoPuesto(false)} />}
+      {editPuesto && <PuestoKpiModal puesto={editPuesto} areas={areas} onSave={(p) => { onUpdatePuesto(editPuesto.id, p); setEditPuesto(null); }} onClose={() => setEditPuesto(null)} />}
+      {showNuevaPersona && <PersonaKpiModal puestos={puestos} onSave={(p) => { onAddPersona(p); setShowNuevaPersona(false); }} onClose={() => setShowNuevaPersona(false)} />}
+      {editPersona && <PersonaKpiModal persona={editPersona} puestos={puestos} onSave={(p) => { onUpdatePersona(editPersona.id, p); setEditPersona(null); }} onClose={() => setEditPersona(null)} />}
+      {showNuevoKpi && <KpiCatalogoModal puestos={puestos} catalogo={catalogo} onSave={(k) => { onAddKpi(k); setShowNuevoKpi(false); }} onClose={() => setShowNuevoKpi(false)} />}
+      {editKpi && <KpiCatalogoModal kpi={editKpi} puestos={puestos} catalogo={catalogo} onSave={(k) => { onUpdateKpi(editKpi.id, k); setEditKpi(null); }} onClose={() => setEditKpi(null)} />}
+      {confirmDelPuesto && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar el puesto <strong>"{confirmDelPuesto.nombre}"</strong>? Las personas y KPIs que ya lo tengan asignado NO se borran, pero quedarán sin puesto válido hasta que los reasignes.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmDelPuesto(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={() => { onDeletePuesto(confirmDelPuesto.id); setConfirmDelPuesto(null); }}>Sí, eliminar</Btn>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmDelPersona && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar a <strong>"{confirmDelPersona.nombre}"</strong> del roster de KPIs, junto con sus registros mensuales? Esta acción no se puede deshacer.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmDelPersona(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={() => { onDeletePersona(confirmDelPersona.id); setConfirmDelPersona(null); }}>Sí, eliminar</Btn>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmDelKpi && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar el KPI <strong>"{confirmDelKpi.nombre}"</strong> del catálogo, junto con los registros mensuales que ya tenga? Esta acción no se puede deshacer.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmDelKpi(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={() => { onDeleteKpi(confirmDelKpi.id); setConfirmDelKpi(null); }}>Sí, eliminar</Btn>
+            </div>
+          </div>
+        </div>
+      )}
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>KPIs</h2>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Indicadores por área y persona en toda la compañía — funciones asignadas, catálogo de KPIs y seguimiento mensual, pensado para ver de un vistazo si hay solapamiento entre puestos.</p>
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 20, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["registro", "📈 Registro Mensual"], ["catalogo", "📋 Catálogo de KPIs"], ["personas", "👤 Personas"], ["puestos", "🧑‍💼 Puestos"]].map(([v, label]) => (
+            <button key={v} onClick={() => setTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${tab === v ? T.ink : T.border}`, background: tab === v ? T.ink : T.white, color: tab === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+          <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Área</label>
+          <select value={areaFiltro} onChange={(e) => setAreaFiltro(e.target.value)} style={{ padding: "7px 12px", border: `1.5px solid ${areaFiltro !== "todas" ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: areaFiltro !== "todas" ? T.denim : T.ink, background: areaFiltro !== "todas" ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer" }}>
+            <option value="todas">Todas</option>
+            {areas.map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {tab === "registro" && (
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
+            <label style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Periodo</label>
+            <input type="month" value={periodo} onChange={(e) => setPeriodo(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, fontFamily: "inherit" }} />
+          </div>
+          {!puestosConDatos.length ? (
+            <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
+              Todavía no hay puestos (en esta área) con personas Y KPIs asignados. Ve a las pestañas "Puestos", "Catálogo de KPIs" y "Personas" para configurarlos.
+            </div>
+          ) : (
+            puestosConDatos.map((puesto) => {
+              const personasDelPuesto = personas.filter((p) => p.puestoId === puesto.id);
+              const kpisDelPuesto = catalogo.filter((k) => k.puestoId === puesto.id);
+              return (
+                <div key={puesto.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 20, overflow: "hidden" }}>
+                  <div style={{ padding: "14px 18px", background: T.canvas, borderBottom: `1px solid ${T.border}` }}>
+                    <div style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>
+                      {puesto.nombre} <span style={{ fontWeight: 600, fontSize: 11, color: T.denim, padding: "2px 8px", background: T.denimBg, borderRadius: 20, marginLeft: 6 }}>{puesto.area}</span>
                     </div>
-                    <div style={{ background: T.white, borderRadius: 12, border: `1px solid ${T.border}`, overflow: "hidden" }}>
-                      {items.map((h, i) => (
-                        <div key={h.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderBottom: i < items.length - 1 ? `1px solid ${T.border}` : "none" }}>
-                          <div>
-                            <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{h.nombre} <span style={{ fontSize: 11, color: T.slate, fontWeight: 400 }}>{h.referencia}</span></div>
-                            <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>
-                              {h.tipo === "proto" ? "Prototipo" : `Cápsula: ${h.capsulaName || "—"}`}
-                              {h.tipo === "proto" && promocionInfo(h) ? ` · ${promocionInfo(h)}` : ""}
+                    <FuncionesPreview funciones={puesto.funciones} style={{ marginTop: 4 }} />
+                  </div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ background: T.canvas }}>
+                          <th style={{ padding: "8px 12px", textAlign: "left", fontWeight: 700, fontSize: 10, color: T.slate, textTransform: "uppercase" }}>Persona</th>
+                          {kpisDelPuesto.map((k) => (
+                            <th key={k.id} style={{ padding: "8px 12px", textAlign: "center", fontWeight: 700, fontSize: 10, color: T.slate, textTransform: "uppercase" }}>
+                              {k.nombre}{k.unidad ? ` (${k.unidad})` : ""}{k.meta != null ? <div style={{ fontWeight: 400, fontSize: 9, color: T.slate }}>meta: {k.meta}</div> : null}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {personasDelPuesto.map((persona) => (
+                          <tr key={persona.id} style={{ borderBottom: `1px solid ${T.border}` }}>
+                            <td style={{ padding: "8px 12px", fontWeight: 700, color: T.ink }}>{persona.nombre}</td>
+                            {kpisDelPuesto.map((k) => {
+                              const val = valorDe(persona.id, k.id);
+                              const bajoMeta = k.meta != null && val !== "" && Number(val) < k.meta;
+                              return (
+                                <td key={k.id} style={{ padding: "6px 10px", textAlign: "center" }}>
+                                  <input
+                                    type="number"
+                                    value={val}
+                                    onChange={(e) => setValorLocal(persona.id, k.id, e.target.value)}
+                                    onBlur={() => guardarCelda(persona.id, k.id)}
+                                    style={{ width: 80, padding: "6px 8px", border: `1.5px solid ${bajoMeta ? T.amber : T.border}`, borderRadius: 6, fontSize: 13, textAlign: "center", color: T.ink, background: bajoMeta ? T.amberBg : T.white, fontFamily: "inherit" }}
+                                  />
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {tab === "catalogo" && (
+        <div>
+          {isAdmin && (
+            <div style={{ marginBottom: 20 }}>
+              <Btn onClick={() => setShowNuevoKpi(true)} disabled={!puestos.length}>+ Nuevo KPI</Btn>
+            </div>
+          )}
+          {!puestosFiltrados.length ? (
+            <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>No hay puestos configurados en esta área todavía. Agrégalos en la pestaña "Puestos".</div>
+          ) : (
+            puestosFiltrados.map((puesto) => {
+              const kpisDelPuesto = catalogo.filter((k) => k.puestoId === puesto.id);
+              return (
+                <div key={puesto.id} style={{ marginBottom: 24 }}>
+                  <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, marginBottom: 2 }}>
+                    {puesto.nombre} <span style={{ fontWeight: 600, fontSize: 11, color: T.denim, padding: "2px 8px", background: T.denimBg, borderRadius: 20, marginLeft: 4 }}>{puesto.area}</span> <span style={{ fontWeight: 400, color: T.slate, fontSize: 12 }}>({kpisDelPuesto.length} KPI{kpisDelPuesto.length !== 1 ? "s" : ""})</span>
+                  </div>
+                  <FuncionesPreview funciones={puesto.funciones} style={{ marginBottom: 10 }} />
+                  {!kpisDelPuesto.length ? (
+                    <div style={{ padding: "12px 16px", background: T.canvas, borderRadius: 10, color: T.slate, fontSize: 13, marginTop: 8 }}>Sin KPIs asignados todavía.</div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+                      {kpisDelPuesto.map((k) => {
+                        const repetido = nombresConSolapamiento.has((k.nombre || "").trim().toLowerCase());
+                        return (
+                          <div key={k.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: T.white, border: `1px solid ${repetido ? T.amber : T.border}`, borderRadius: 10 }}>
+                            <div>
+                              <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>
+                                {k.nombre}
+                                {repetido && <span title="Este mismo nombre de KPI aparece en más de un puesto" style={{ marginLeft: 8, fontSize: 11, fontWeight: 700, color: T.amber }}>⚠ Solapado</span>}
+                              </div>
+                              {k.descripcion && <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{k.descripcion}</div>}
+                              <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{k.unidad ? `Unidad: ${k.unidad}` : ""}{k.meta != null ? ` · Meta: ${k.meta}` : ""}</div>
                             </div>
+                            {isAdmin && (
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <Btn small variant="ghost" onClick={() => setEditKpi(k)}>✏ Editar</Btn>
+                                <Btn small variant="danger" onClick={() => setConfirmDelKpi(k)}>🗑</Btn>
+                              </div>
+                            )}
                           </div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                            <span style={{ fontSize: 11, color: T.slate }}>{new Date(h.fecha).toLocaleDateString("es-CO")}</span>
-                            <Badge status={h.resultado} />
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {tab === "personas" && (
+        <div>
+          {isAdmin && (
+            <div style={{ marginBottom: 20 }}>
+              <Btn onClick={() => setShowNuevaPersona(true)} disabled={!puestos.length}>+ Nueva Persona</Btn>
+            </div>
+          )}
+          {!personasFiltradas.length ? (
+            <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Todavía no hay personas en el roster{areaFiltro !== "todas" ? " para esta área" : ""}.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {personasFiltradas.map((p) => {
+                const su = puestoDe(p.puestoId);
+                return (
+                  <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{p.nombre}</div>
+                      <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{su ? `${su.nombre} · ${su.area}` : "(puesto eliminado)"}</div>
+                    </div>
+                    {isAdmin && (
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <Btn small variant="ghost" onClick={() => setEditPersona(p)}>✏ Editar</Btn>
+                        <Btn small variant="danger" onClick={() => setConfirmDelPersona(p)}>🗑</Btn>
+                      </div>
+                    )}
                   </div>
                 );
               })}
             </div>
-          );
-        })
+          )}
+        </div>
+      )}
+
+      {tab === "puestos" && (
+        <div>
+          {isAdmin && (
+            <div style={{ marginBottom: 20 }}>
+              <Btn onClick={() => setShowNuevoPuesto(true)} disabled={!areas.length}>+ Nuevo Puesto</Btn>
+              {!areas.length && <span style={{ marginLeft: 10, fontSize: 12, color: T.amber, fontWeight: 600 }}>Agrega primero áreas en Administrador General → Áreas (KPI).</span>}
+            </div>
+          )}
+          {!puestosFiltrados.length ? (
+            <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Todavía no hay puestos{areaFiltro !== "todas" ? " en esta área" : ""}.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {puestosFiltrados.map((p) => (
+                <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "14px 16px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 10 }}>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{p.nombre} <span style={{ fontWeight: 600, fontSize: 11, color: T.denim, padding: "2px 8px", background: T.denimBg, borderRadius: 20, marginLeft: 4 }}>{p.area}</span></div>
+                    {funcionesArray(p.funciones).length ? (
+                      <FuncionesPreview funciones={p.funciones} style={{ marginTop: 6, maxWidth: 560 }} />
+                    ) : (
+                      <div style={{ fontSize: 12, color: T.slate, marginTop: 6, fontStyle: "italic" }}>Sin funciones asignadas descritas todavía.</div>
+                    )}
+                  </div>
+                  {isAdmin && (
+                    <div style={{ display: "flex", gap: 6, flexShrink: 0, marginLeft: 12 }}>
+                      <Btn small variant="ghost" onClick={() => setEditPuesto(p)}>✏ Editar</Btn>
+                      <Btn small variant="danger" onClick={() => setConfirmDelPuesto(p)}>🗑</Btn>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
 }
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessDiseno, onGoArea, protos, capsulas, pedidos }) {
+function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms, stages, isAdmin, onBackfill, onSelectProto, onSelectRef, onPromote, initialResultado, initialTipoFiltro }) {
+  const [modo, setModo] = useState("todos");
+  const [clienteSel, setClienteSel] = useState("");
+  const [resultado, setResultado] = useState(initialResultado || "todos");
+  const [tipoFiltro, setTipoFiltro] = useState(initialTipoFiltro || "todos");
+  const [mesFiltro, setMesFiltro] = useState("");
+  const [soloSinPedido, setSoloSinPedido] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
+  // Cápsulas expandidas en la vista de lista (solo aplica cuando el filtro
+  // de tipo es "capsula_ref"): en vez de listar cada referencia suelta, se
+  // agrupan por cápsula y solo se despliegan las referencias de la cápsula
+  // que el usuario selecciona.
+  const [expandedCaps, setExpandedCaps] = useState(() => new Set());
+  function toggleCap(capId) {
+    setExpandedCaps((prev) => {
+      const next = new Set(prev);
+      if (next.has(capId)) next.delete(capId); else next.add(capId);
+      return next;
+    });
+  }
+  async function handleBackfill() {
+    setBackfilling(true);
+    await onBackfill();
+    setBackfilling(false);
+  }
+  function liveItem(h) {
+    if (h.tipo === "proto") return protos.find((p) => p.id === h.itemId);
+    const cap = capsulas.find((c) => c.id === h.capsulaId);
+    return cap?.referencias.find((r) => r.id === h.itemId);
+  }
+  // ¿El código de referencia de esta pieza aparece en algún Pedido ya
+  // cargado (de cualquier cliente)? Comparación por texto, sin mayúsculas ni
+  // espacios extra.
+  function usedInPedido(refCode) {
+    if (!refCode) return false;
+    const target = String(refCode).trim().toLowerCase();
+    return (pedidos || []).some((p) => (p.referencias || []).some((r) => String(r.ref || "").trim().toLowerCase() === target));
+  }
+  // Une cada entrada de historial con su ítem vivo (omite las que ya no
+  // tienen ítem, p.ej. si se eliminó), dedupe por itemId quedándose con la
+  // entrada más reciente, filtra "sin pedido" si el toggle está activo, y
+  // ordena por fecha descendente.
+  function itemsFor(lista) {
+    const porItem = new Map();
+    lista.forEach((h) => {
+      const item = liveItem(h);
+      if (!item) return;
+      const prev = porItem.get(h.itemId);
+      if (!prev || h.fecha > prev.h.fecha) porItem.set(h.itemId, { h, item });
+    });
+    let arr = [...porItem.values()];
+    if (soloSinPedido) arr = arr.filter(({ h, item }) => h.resultado === "aprobado" && !usedInPedido(item.reference));
+    return arr.sort((a, b) => b.h.fecha.localeCompare(a.h.fecha));
+  }
+  // Fila compacta de un ítem (sin imagen): nombre, referencia, cliente/fecha
+  // y estado. Al hacer clic se abre el detalle completo (ahí sí aparece la
+  // imagen). Se reutiliza tanto en la lista plana como dentro de cada
+  // cápsula desplegada.
+  function renderRow(h, item) {
+    const sinPedido = h.resultado === "aprobado" && !usedInPedido(item.reference);
+    return (
+      <div key={h.id} onClick={() => (h.tipo === "proto" ? onSelectProto(item.id) : onSelectRef(h.capsulaId, item.id))}
+        style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: T.white, cursor: "pointer" }}
+        onMouseEnter={(e) => (e.currentTarget.style.background = T.canvas)}
+        onMouseLeave={(e) => (e.currentTarget.style.background = T.white)}
+      >
+        <span style={{ fontSize: 16, width: 20, textAlign: "center", flexShrink: 0 }}>{h.tipo === "proto" ? "🧪" : "📋"}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{item.name}</span>
+            <span style={{ fontSize: 11, color: T.slate }}>{item.reference}</span>
+            {sinPedido && <span style={{ padding: "1px 7px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700, fontSize: 10, border: `1px solid ${T.coral}44` }}>🚫 Sin pedido</span>}
+          </div>
+          <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{h.cliente}{h.fecha ? ` · ${h.fecha}` : ""}</div>
+        </div>
+        <Badge status={item.status} />
+        <span style={{ color: T.slate, fontSize: 14, flexShrink: 0 }}>›</span>
+      </div>
+    );
+  }
+  // Lista compacta (sin imagen) en vez de la grilla de tarjetas: evita que el
+  // Historial quede muy largo. Cuando el filtro de tipo es "Cápsulas", en vez
+  // de listar cada referencia suelta se agrupa por cápsula: primero aparece
+  // el listado de cápsulas, y solo al seleccionar una se despliegan sus
+  // referencias (cada una llevando al detalle con la imagen al hacer clic).
+  function renderList(lista) {
+    if (!lista.length) return <div style={{ textAlign: "center", padding: 32, color: T.slate, fontSize: 13 }}>Sin resultados.</div>;
+    if (tipoFiltro === "capsula_ref") {
+      const porCap = new Map();
+      lista.forEach(({ h, item }) => {
+        if (!porCap.has(h.capsulaId)) porCap.set(h.capsulaId, []);
+        porCap.get(h.capsulaId).push({ h, item });
+      });
+      const capIds = [...porCap.keys()].sort((a, b) => {
+        const nameA = capsulas.find((c) => c.id === a)?.name || "";
+        const nameB = capsulas.find((c) => c.id === b)?.name || "";
+        return nameA.localeCompare(nameB);
+      });
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {capIds.map((capId) => {
+            const cap = capsulas.find((c) => c.id === capId);
+            const refs = porCap.get(capId);
+            const expanded = expandedCaps.has(capId);
+            const sinPedidoCount = refs.filter(({ h, item }) => h.resultado === "aprobado" && !usedInPedido(item.reference)).length;
+            return (
+              <div key={capId} style={{ background: T.white, borderRadius: 10, border: `1px solid ${T.border}`, overflow: "hidden" }}>
+                <div onClick={() => toggleCap(capId)}
+                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", cursor: "pointer", background: expanded ? T.canvas : T.white }}
+                >
+                  <span style={{ fontSize: 16, width: 20, textAlign: "center", flexShrink: 0 }}>🗂</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>{cap?.name || "Cápsula"}</div>
+                    <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>
+                      {cap?.season ? `${cap.season} · ` : ""}{refs.length} referencia{refs.length !== 1 ? "s" : ""}
+                      {sinPedidoCount > 0 ? ` · 🚫 ${sinPedidoCount} sin pedido` : ""}
+                    </div>
+                  </div>
+                  <span style={{ color: T.slate, fontSize: 14, flexShrink: 0, transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>›</span>
+                </div>
+                {expanded && (
+                  <div style={{ borderTop: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 1, background: T.border }}>
+                    {refs.map(({ h, item }) => renderRow(h, item))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, borderRadius: 10, overflow: "hidden", border: `1px solid ${T.border}` }}>
+        {lista.map(({ h, item }) => renderRow(h, item))}
+      </div>
+    );
+  }
+  const filtradoResultado = historial.filter((h) => {
+    if (resultado !== "todos" && h.resultado !== resultado) return false;
+    if (tipoFiltro !== "todos" && h.tipo !== tipoFiltro) return false;
+    if (mesFiltro && h.mes !== mesFiltro) return false;
+    return true;
+  });
+  const clientesDisponibles = [...new Set(historial.map((h) => h.cliente))].sort((a, b) => a.localeCompare(b));
+  const mesesDisponibles = [...new Set(historial.map((h) => h.mes).filter(Boolean))].sort((a, b) => b.localeCompare(a));
+  function labelMes(m) { return new Date(m + "-02").toLocaleDateString("es-CO", { month: "long", year: "numeric" }); }
+  const clienteItems = clienteSel ? itemsFor(filtradoResultado.filter((h) => h.cliente === clienteSel)) : [];
+  const porClienteTodos = {};
+  filtradoResultado.forEach((h) => {
+    if (!porClienteTodos[h.cliente]) porClienteTodos[h.cliente] = [];
+    porClienteTodos[h.cliente].push(h);
+  });
+  const clientesOrdenadosTodos = Object.keys(porClienteTodos).sort((a, b) => a.localeCompare(b));
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Historial</h2>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Prototipos y referencias que llegaron a Aprobado o Declinado</p>
+        </div>
+        {isAdmin && (
+          <Btn variant="ghost" small onClick={handleBackfill} disabled={backfilling}>
+            {backfilling ? "Completando..." : "↻ Completar con aprobados/declinados existentes"}
+          </Btn>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+        {[["todos", "Todos"], ["clientes", "Clientes"]].map(([v, label]) => (
+          <button key={v} onClick={() => setModo(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${modo === v ? T.denim : T.border}`, background: modo === v ? T.denimBg : T.white, color: modo === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        {[["todos", "Todos"], ["aprobado", "Aprobados"], ["declinado", "Declinados"]].map(([v, label]) => (
+          <button key={v} onClick={() => setResultado(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${resultado === v ? T.ink : T.border}`, background: resultado === v ? T.ink : T.white, color: resultado === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[["todos", "Todos"], ["proto", "Prototipos"], ["capsula_ref", "Cápsulas"]].map(([v, label]) => (
+            <button key={v} onClick={() => setTipoFiltro(v)} style={{ padding: "5px 12px", borderRadius: 6, border: `1.5px solid ${tipoFiltro === v ? T.denim : T.border}`, background: tipoFiltro === v ? T.denimBg : T.white, color: tipoFiltro === v ? T.denim : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
+          ))}
+        </div>
+        <select value={mesFiltro} onChange={(e) => setMesFiltro(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", textTransform: "capitalize" }}>
+          <option value="">Todos los meses</option>
+          {mesesDisponibles.map((m) => <option key={m} value={m}>{labelMes(m)}</option>)}
+        </select>
+        {modo === "clientes" && (
+          <select value={clienteSel} onChange={(e) => setClienteSel(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
+            <option value="">Selecciona un cliente...</option>
+            {clientesDisponibles.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        )}
+        <button onClick={() => setSoloSinPedido((v) => !v)} title="Aprobados cuyo código de referencia nunca apareció en un Pedido cargado" style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${soloSinPedido ? T.coral : T.border}`, background: soloSinPedido ? T.coralBg : T.white, color: soloSinPedido ? T.coral : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>🚫 Sin usar en pedido</button>
+      </div>
+      {modo === "clientes" ? (
+        !clienteSel ? (
+          <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Selecciona un cliente para ver su historial.</div>
+        ) : renderList(clienteItems)
+      ) : !clientesOrdenadosTodos.length ? (
+        <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>{historial.length ? "Sin resultados para estos filtros." : "Aún no hay historial registrado."}</div>
+      ) : (
+        clientesOrdenadosTodos.map((cliente) => (
+          <div key={cliente} style={{ marginBottom: 28 }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.ink, marginBottom: 12 }}>{cliente}</div>
+            {renderList(itemsFor(porClienteTodos[cliente]))}
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessDiseno, canAccessKpis, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
-  const pedidosVencidos = pedidos.filter((p) => p.fechaDespacho && new Date(p.fechaDespacho) < hoy && p.estado !== "cumplido").length;
+  const pedidosVencidos = pedidos.filter((p) => p.fechaDespacho && new Date(p.fechaDespacho) < hoy && p.estado !== "cerrado").length;
   const AREAS_CARDS = [
     {
       id: "diseno", icon: "🎨", label: "Diseño", desc: "Prototipos, Cápsulas, Pedidos, Corte y seguimiento de producción", color: T.denim, bg: T.denimBg,
@@ -1551,6 +3645,16 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
       id: "planeacion_area", icon: "📋", label: "Planeación", desc: "Informes de producción de planta a partir de Hoja1", color: T.violet, bg: T.violetBg,
       stats: [],
       permiso: canAccessPlaneacion,
+    },
+    {
+      id: "planta_area", icon: "🏭", label: "Planta", desc: "Programación diaria y cumplimiento de Planta Industrias Yanko", color: T.amber, bg: T.amberBg,
+      stats: [],
+      permiso: canAccessPlanta,
+    },
+    {
+      id: "kpis_area", icon: "🎯", label: "KPIs", desc: "Indicadores por área y persona en toda la compañía — Diseño, Corte, Ventas, Contabilidad, Planeación...", color: T.coral, bg: T.coralBg,
+      stats: [],
+      permiso: canAccessKpis,
     },
   ].filter((a) => a.permiso);
   return (
@@ -1689,7 +3793,7 @@ function DashboardView({ protos, capsulas, pedidos, onGoProtos, onGoCapsulas, on
   );
 }
 
-function EstadisticasView({ protos, capsulas }) {
+function EstadisticasView({ protos, capsulas, stages, config }) {
   const currentYear = new Date().getFullYear().toString();
   const [yearFilter, setYearFilter] = useState(currentYear);
   const [monthFilter, setMonthFilter] = useState("todos");
@@ -1697,7 +3801,12 @@ function EstadisticasView({ protos, capsulas }) {
   const allRefs = capsulas.flatMap((c) => c.referencias);
   const allItems = [...protos, ...allRefs];
   const years = [...new Set(allItems.map((x) => x.createdAt?.slice(0, 4)).filter(Boolean))].sort().reverse();
-  const responsables = [...new Set(allItems.map((x) => x.assignedTo).filter(Boolean))].sort();
+  // El filtro de Responsable sale del maestro de Diseñadores (Administrador
+  // General), no solo de los nombres que ya aparecen en prototipos/referencias
+  // — así un diseñador recién agregado aparece aunque todavía no tenga nada
+  // asignado. Se suman también nombres sueltos que ya existan en los datos
+  // aunque no estén en el maestro (compatibilidad con datos viejos).
+  const responsables = [...new Set([...(config?.disenadores || []), ...allItems.map((x) => x.assignedTo).filter(Boolean)])].sort((a, b) => a.localeCompare(b));
   const clientesUnicos = [...new Set(allRefs.flatMap((r) => r.colores || []).filter(Boolean))].sort();
   function applyFilters(arr) {
     return arr.filter((x) => {
@@ -1711,6 +3820,61 @@ function EstadisticasView({ protos, capsulas }) {
   const total = filtered.length, aprobados = filtered.filter((x) => x.status === "aprobado").length, declinados = filtered.filter((x) => x.status === "declinado").length,
     enProceso = filtered.filter((x) => ["en_proceso", "en_revision", "borrador"].includes(x.status)).length;
   const pctAp = total ? Math.round((aprobados / total) * 100) : 0, pctDec = total ? Math.round((declinados / total) * 100) : 0;
+  // "Certeza": a diferencia de pctAp (que divide por el total, incluyendo lo
+  // que aún está en proceso y todavía no tiene un resultado), esto solo
+  // compara aprobados contra lo que YA se resolvió (aprobado o declinado).
+  // Es la métrica que responde "de lo que se definió, qué tan certero fue".
+  const resueltosGlobal = aprobados + declinados;
+  const certezaGlobal = resueltosGlobal ? Math.round((aprobados / resueltosGlobal) * 100) : null;
+  const protosFiltered = applyFilters(protos), refsFiltered = applyFilters(allRefs);
+  const activosFiltered = filtered.filter((x) => !["aprobado", "declinado"].includes(x.status));
+  const vencidosActuales = activosFiltered.filter((x) => isOverdue(x, stages)).length;
+  const pctVencidos = activosFiltered.length ? Math.round((vencidosActuales / activosFiltered.length) * 100) : 0;
+  // Una cápsula se considera "cumplida" solo si el 100% de sus referencias
+  // quedó Aprobada (ninguna Declinada, ninguna pendiente). Si tiene
+  // referencias sin resolver, está "en curso"; si ya se resolvieron todas
+  // pero al menos una quedó Declinada, nunca puede llegar a cumplida.
+  function estadoCapsula(c) {
+    const refs = c.referencias || [];
+    if (!refs.length) return "sin_referencias";
+    const pendientes = refs.filter((r) => !["aprobado", "declinado"].includes(r.status)).length;
+    if (pendientes > 0) return "en_curso";
+    return refs.some((r) => r.status === "declinado") ? "con_declinaciones" : "cumplida";
+  }
+  const capsulasFiltradas = capsulas.filter((c) => {
+    const byYear = !yearFilter || c.createdAt?.slice(0, 4) === yearFilter;
+    const byMonth = monthFilter === "todos" || parseInt(c.createdAt?.slice(5, 7)) - 1 === parseInt(monthFilter);
+    const byPerson = personFilter === "todos" || (c.referencias || []).some((r) => r.assignedTo === personFilter);
+    return byYear && byMonth && byPerson;
+  });
+  const capsulasCumplidas = capsulasFiltradas.filter((c) => estadoCapsula(c) === "cumplida").length;
+  const capsulasEnCurso = capsulasFiltradas.filter((c) => estadoCapsula(c) === "en_curso").length;
+  const capsulasConDeclinaciones = capsulasFiltradas.filter((c) => estadoCapsula(c) === "con_declinaciones").length;
+  const capsulasTotalFiltradas = capsulasFiltradas.length;
+  const pctCumplCapsulas = capsulasTotalFiltradas ? Math.round((capsulasCumplidas / capsulasTotalFiltradas) * 100) : 0;
+  // Rondas de revisión de Ilustración a nivel de Cápsula: cuántas veces la
+  // Dirección Creativa devolvió la ilustración/concepto de una cápsula antes
+  // de aprobarla. Es aparte del Puntaje (no se le atribuye a un solo
+  // diseñador, igual criterio que el resto de métricas de Cápsulas).
+  const rondasIlustracionTotal = capsulasFiltradas.reduce((sum, c) => sum + (c.observacionesIlustracion || []).filter((o) => o.type === "revision_ilustracion_capsula").length, 0);
+  const promRondasIlustracion = capsulasTotalFiltradas ? Math.round((rondasIlustracionTotal / capsulasTotalFiltradas) * 10) / 10 : 0;
+  const capsulasPendientesIlustracion = capsulasFiltradas.filter((c) => !ilustracionAprobada(c)).length;
+  // Puntaje de Diseño (0-100): combina tres cosas que ya se calculan arriba
+  // — Certeza 40% (qué tan seguido acierta con lo que propone), Cumplimiento
+  // de cápsulas 35% (colecciones que llegan completas al 100% aprobadas, no
+  // solo piezas sueltas) y Cumplimiento de plazos 25% (qué tanto de lo
+  // activo NO está vencido). El volumen (cuánto se produjo) queda fuera a
+  // propósito: sin una meta/cuota definida, "hacer más" no es comparable de
+  // forma justa entre períodos o personas.
+  const pctPlazoGlobal = 100 - pctVencidos;
+  const puntajeDiseno = certezaGlobal === null ? null : Math.round(certezaGlobal * 0.4 + pctCumplCapsulas * 0.35 + pctPlazoGlobal * 0.25);
+  // Revisa si el ítem alguna vez llegó a la etapa de cotización/envío al
+  // cliente (aunque hoy ya esté Aprobado o Declinado y su status actual ya
+  // no lo muestre), buscando el registro exacto en su Hoja de Vida.
+  function pasoPorCotizacion(item) {
+    if (["enviado_cotizacion", "enviar_cliente", "enviado", "recibido_cliente"].includes(item.status)) return true;
+    return !!buscarFechaEstado(item, "enviado_cotizacion");
+  }
   function monthlyData() {
     const base = allItems.filter((x) => (!yearFilter || x.createdAt?.slice(0, 4) === yearFilter) && (personFilter === "todos" || x.assignedTo === personFilter));
     return MONTHS_SHORT.map((m, i) => {
@@ -1735,7 +3899,27 @@ function EstadisticasView({ protos, capsulas }) {
     return responsables.map((p) => {
       const items = base.filter((x) => x.assignedTo === p);
       const t = items.length, ap = items.filter((x) => x.status === "aprobado").length, dec = items.filter((x) => x.status === "declinado").length, en = t - ap - dec;
-      return { name: p, t, ap, dec, en, pctAp: t ? Math.round((ap / t) * 100) : 0, pctDec: t ? Math.round((dec / t) * 100) : 0 };
+      const resueltos = ap + dec;
+      const enviados = items.filter((x) => pasoPorCotizacion(x)).length;
+      const activosP = items.filter((x) => !["aprobado", "declinado"].includes(x.status));
+      const vencidos = activosP.filter((x) => isOverdue(x, stages)).length;
+      const certeza = resueltos ? Math.round((ap / resueltos) * 100) : null;
+      const pctPlazoP = activosP.length ? Math.round(((activosP.length - vencidos) / activosP.length) * 100) : 100;
+      // Mismo puntaje que a nivel de área (Certeza + Cumplimiento de plazos),
+      // pero sin el componente de "cápsulas cumplidas": una cápsula es un
+      // trabajo compartido entre varias personas, así que no se le puede
+      // atribuir en justicia a un solo diseñador. Los dos pesos que quedan
+      // (Certeza 40 y Plazos 25) se reescalan para que sigan sumando 100%,
+      // conservando la misma importancia relativa entre ellos.
+      const puntaje = certeza === null ? null : Math.round((certeza * 40 + pctPlazoP * 25) / 65);
+      // Rondas de revisión en Ilustración: cuántas veces la Dirección
+      // Creativa devolvió una propuesta de este diseñador con cambios,
+      // pedidos desde el botón "En revisión" mientras la pieza estaba en
+      // esa etapa. Es aparte del Puntaje (no lo penaliza) — es una señal de
+      // proceso, no de resultado final.
+      const rondasRevision = items.reduce((sum, x) => sum + (x.observations || []).filter((o) => o.type === "revision_ilustracion").length, 0);
+      const promRevision = t ? Math.round((rondasRevision / t) * 10) / 10 : 0;
+      return { name: p, t, ap, dec, en, enviados, vencidos, puntaje, pctAp: t ? Math.round((ap / t) * 100) : 0, pctDec: t ? Math.round((dec / t) * 100) : 0, certeza, rondasRevision, promRevision };
     }).filter((x) => x.t > 0).sort((a, b) => b.t - a.t);
   }
   const protosPorResp = porResponsable(protos);
@@ -1750,6 +3934,19 @@ function EstadisticasView({ protos, capsulas }) {
     }).filter((x) => x.refsTotal > 0).sort((a, b) => b.refsTotal - a.refsTotal);
   }
   const clienteStats = porCliente();
+  // Igual que porCliente(), pero para Prototipos — que usan un solo campo
+  // "cliente" (texto) en vez del arreglo "colores" que usan las referencias.
+  const clientesUnicosProtos = [...new Set(protos.map((p) => p.cliente).filter(Boolean))].sort();
+  function porClienteProtos() {
+    const base = protos.filter((x) => (!yearFilter || x.createdAt?.slice(0, 4) === yearFilter) && (monthFilter === "todos" || parseInt(x.createdAt?.slice(5, 7)) - 1 === parseInt(monthFilter)));
+    return clientesUnicosProtos.map((cli) => {
+      const items = base.filter((p) => p.cliente === cli);
+      const t = items.length, ap = items.filter((x) => x.status === "aprobado").length, dec = items.filter((x) => x.status === "declinado").length, en = t - ap - dec;
+      const promovidos = items.filter((x) => x.status === "aprobado" && x.promotedTo).length;
+      return { name: cli, total: t, ap, dec, en, promovidos, pctAp: t ? Math.round((ap / t) * 100) : 0 };
+    }).filter((x) => x.total > 0).sort((a, b) => b.total - a.total);
+  }
+  const clienteProtoStats = porClienteProtos();
   function PersonBlock({ data, label }) {
     return !data.length ? (
       <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin datos de {label.toLowerCase()}.</div>
@@ -1757,11 +3954,17 @@ function EstadisticasView({ protos, capsulas }) {
       data.map((p) => (
         <div key={p.name} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 0", borderBottom: `1px solid ${T.border}` }}>
           <Avatar name={p.name} size={34} />
-          <div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{p.name}</div><div style={{ fontSize: 11, color: T.slate }}>{p.t} {label.toLowerCase()}</div></div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{p.name}</div>
+            <div style={{ fontSize: 11, color: T.slate }}>{p.t} {label.toLowerCase()} · {p.enviados} enviado{p.enviados !== 1 ? "s" : ""} a cotización/cliente{p.vencidos > 0 ? ` · ⚑ ${p.vencidos} vencido${p.vencidos !== 1 ? "s" : ""}` : ""}</div>
+          </div>
           <div style={{ display: "flex", gap: 6, fontSize: 11, flexWrap: "wrap" }}>
-            <span style={{ padding: "2px 8px", borderRadius: 20, background: T.jadeBg, color: T.jade, fontWeight: 700 }}>✓ {p.ap} ({p.pctAp}%)</span>
+            <span style={{ padding: "2px 8px", borderRadius: 20, background: T.jadeBg, color: T.jade, fontWeight: 700 }}>✓ {p.ap}</span>
             <span style={{ padding: "2px 8px", borderRadius: 20, background: T.denimBg, color: T.denim, fontWeight: 700 }}>⚙ {p.en}</span>
-            <span style={{ padding: "2px 8px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700 }}>✕ {p.dec} ({p.pctDec}%)</span>
+            <span style={{ padding: "2px 8px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700 }}>✕ {p.dec}</span>
+            <span title="Certeza: aprobados sobre lo ya resuelto (aprobado+declinado)" style={{ padding: "2px 8px", borderRadius: 20, background: T.violetBg, color: T.violet, fontWeight: 700 }}>🎯 {p.certeza === null ? "—" : `${p.certeza}%`}</span>
+            <span title="Rondas de revisión en Ilustración: veces que la Dirección Creativa devolvió una propuesta con cambios · promedio por pieza" style={{ padding: "2px 8px", borderRadius: 20, background: T.amberBg, color: T.amber, fontWeight: 700 }}>🎨 {p.rondasRevision} ({p.promRevision}/pieza)</span>
+            <span title="Puntaje individual: Certeza + Cumplimiento de plazos" style={{ padding: "2px 8px", borderRadius: 20, background: T.ink, color: T.white, fontWeight: 700 }}>⭐ {p.puntaje === null ? "—" : p.puntaje}</span>
           </div>
         </div>
       ))
@@ -1778,13 +3981,26 @@ function EstadisticasView({ protos, capsulas }) {
           <button onClick={() => { setMonthFilter("todos"); setPersonFilter("todos"); }} style={{ padding: "9px 14px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 8, color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>✕ Limpiar</button>
         )}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 14, marginBottom: 24 }}>
+      <div style={{ background: T.ink, borderRadius: 16, padding: "24px 28px", marginBottom: 24, display: "flex", alignItems: "center", gap: 28, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.6)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>⭐ Puntaje de Diseño</div>
+          <div style={{ fontSize: 44, fontWeight: 900, color: T.white, lineHeight: 1, marginTop: 4 }}>{puntajeDiseno === null ? "—" : puntajeDiseno}</div>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", marginTop: 4 }}>{periodLabel}</div>
+        </div>
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap", fontSize: 12, color: "rgba(255,255,255,0.85)" }}>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>{certezaGlobal === null ? "—" : `${certezaGlobal}%`}</div><div style={{ color: "rgba(255,255,255,0.55)" }}>Certeza (40%)</div></div>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>{pctCumplCapsulas}%</div><div style={{ color: "rgba(255,255,255,0.55)" }}>Cápsulas cumplidas (35%)</div></div>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>{pctPlazoGlobal}%</div><div style={{ color: "rgba(255,255,255,0.55)" }}>Cumplimiento de plazos (25%)</div></div>
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 14, marginBottom: 24 }}>
         {[
-          { label: "Total", value: total, icon: "📦", color: T.slate, bg: "#EDEDF2" },
-          { label: "En proceso", value: enProceso, icon: "⚙", color: T.denim, bg: T.denimBg },
-          { label: "Aprobados", value: aprobados, icon: "✓", color: T.jade, bg: T.jadeBg },
-          { label: "Declinados", value: declinados, icon: "✕", color: T.coral, bg: T.coralBg },
-          { label: "% Aprobación", value: `${pctAp}%`, icon: "📈", color: T.violet, bg: T.violetBg },
+          { label: "Prototipos hechos", value: protosFiltered.length, icon: "🧪", color: T.denim, bg: T.denimBg },
+          { label: "Referencias hechas", value: refsFiltered.length, icon: "📋", color: T.denim, bg: T.denimBg },
+          { label: "Cápsulas cumplidas", value: `${capsulasCumplidas}/${capsulasTotalFiltradas}`, icon: "🗂", color: T.jade, bg: T.jadeBg },
+          { label: "% Cumplimiento cápsulas", value: `${pctCumplCapsulas}%`, icon: "✅", color: T.jade, bg: T.jadeBg },
+          { label: "% Certeza (de lo resuelto)", value: certezaGlobal === null ? "—" : `${certezaGlobal}%`, icon: "🎯", color: T.violet, bg: T.violetBg },
+          { label: "% Vencidas (activas)", value: `${pctVencidos}%`, icon: "⚑", color: T.coral, bg: T.coralBg },
         ].map((k) => (
           <div key={k.label} style={{ background: k.bg, borderRadius: 12, padding: "16px 18px", border: `1px solid ${k.color}22` }}>
             <div style={{ fontSize: 22, marginBottom: 4 }}>{k.icon}</div>
@@ -1795,7 +4011,7 @@ function EstadisticasView({ protos, capsulas }) {
       </div>
       {total > 0 && (
         <div style={{ marginBottom: 20, padding: "10px 16px", background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}`, fontSize: 13, color: T.slate }}>
-          Período: <strong style={{ color: T.ink }}>{periodLabel}</strong> · <span style={{ color: T.jade, fontWeight: 700 }}>{pctAp}% aprobación</span> · <span style={{ color: T.coral, fontWeight: 700 }}>{pctDec}% declinados</span>
+          Período: <strong style={{ color: T.ink }}>{periodLabel}</strong> · <span style={{ color: T.violet, fontWeight: 700 }}>{certezaGlobal === null ? "—" : `${certezaGlobal}%`} certeza</span> (de {resueltosGlobal} ya resuelto{resueltosGlobal !== 1 ? "s" : ""}) · <span style={{ color: T.slate }}>{enProceso} aún en proceso</span>
         </div>
       )}
       <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 24, marginBottom: 24 }}>
@@ -1837,6 +4053,64 @@ function EstadisticasView({ protos, capsulas }) {
           <PersonBlock data={refsPorResp} label="Referencias" />
         </div>
       </div>
+      <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 24, marginBottom: 24 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 4 }}>🗂 Cápsulas — Cumplimiento</div>
+        <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>{periodLabel} · Cumplida = 100% de sus referencias Aprobadas</div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+          <span style={{ padding: "3px 10px", borderRadius: 20, background: T.jadeBg, color: T.jade, fontWeight: 700, fontSize: 12 }}>✓ {capsulasCumplidas} cumplida{capsulasCumplidas !== 1 ? "s" : ""}</span>
+          <span style={{ padding: "3px 10px", borderRadius: 20, background: T.denimBg, color: T.denim, fontWeight: 700, fontSize: 12 }}>⚙ {capsulasEnCurso} en curso</span>
+          <span style={{ padding: "3px 10px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700, fontSize: 12 }}>✕ {capsulasConDeclinaciones} con declinaciones</span>
+          <span title="Veces que la Dirección Creativa devolvió la ilustración/concepto de una cápsula antes de aprobarla · promedio por cápsula" style={{ padding: "3px 10px", borderRadius: 20, background: T.amberBg, color: T.amber, fontWeight: 700, fontSize: 12 }}>🎨 {rondasIlustracionTotal} revisión{rondasIlustracionTotal !== 1 ? "es" : ""} de ilustración ({promRondasIlustracion}/cápsula){capsulasPendientesIlustracion > 0 ? ` · ${capsulasPendientesIlustracion} pendiente${capsulasPendientesIlustracion !== 1 ? "s" : ""} de aprobar` : ""}</span>
+        </div>
+        {!capsulasFiltradas.length ? (
+          <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin cápsulas para este período.</div>
+        ) : (
+          capsulasFiltradas.map((c) => {
+            const est = estadoCapsula(c);
+            const ap = c.referencias.filter((r) => r.status === "aprobado").length;
+            const badge = est === "cumplida"
+              ? { label: "✓ Cumplida", color: T.jade, bg: T.jadeBg }
+              : est === "en_curso"
+                ? { label: "⚙ En curso", color: T.denim, bg: T.denimBg }
+                : est === "con_declinaciones"
+                  ? { label: "✕ Con declinaciones", color: T.coral, bg: T.coralBg }
+                  : { label: "— Sin referencias", color: T.slate, bg: "#EDEDF2" };
+            const estIlustracion = ILUSTRACION_CAPSULA_ESTADO[c.ilustracionEstado] || ILUSTRACION_CAPSULA_ESTADO.aprobado;
+            const rondasIlustracionCap = (c.observacionesIlustracion || []).filter((o) => o.type === "revision_ilustracion_capsula").length;
+            return (
+              <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 0", borderBottom: `1px solid ${T.border}` }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{c.name}</div>
+                  <div style={{ fontSize: 11, color: T.slate }}>{c.season} · {ap}/{c.referencias.length} referencias aprobadas</div>
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {!ilustracionAprobada(c) && <span style={{ padding: "3px 10px", borderRadius: 20, background: estIlustracion.bg, color: estIlustracion.color, fontWeight: 700, fontSize: 11 }}>🎨 {estIlustracion.label}{rondasIlustracionCap > 0 ? ` · ${rondasIlustracionCap}` : ""}</span>}
+                  <span style={{ padding: "3px 10px", borderRadius: 20, background: badge.bg, color: badge.color, fontWeight: 700, fontSize: 11 }}>{badge.label}</span>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+      <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 24, marginBottom: 24 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 4 }}>🧪 Por Cliente — Prototipos</div>
+        <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>{periodLabel}</div>
+        {!clienteProtoStats.length ? (
+          <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 24 }}>Sin datos de clientes para este período. Asigna un cliente a tus prototipos.</div>
+        ) : (
+          clienteProtoStats.map((c) => (
+            <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 0", borderBottom: `1px solid ${T.border}` }}>
+              <Avatar name={c.name} size={38} />
+              <div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{c.name}</div><div style={{ fontSize: 12, color: T.slate }}>{c.total} prototipo{c.total !== 1 ? "s" : ""}{c.promovidos > 0 ? ` · ${c.promovidos} promovido${c.promovidos !== 1 ? "s" : ""} a cápsula` : ""}</div></div>
+              <div style={{ display: "flex", gap: 8, fontSize: 12, flexWrap: "wrap" }}>
+                <span style={{ padding: "3px 10px", borderRadius: 20, background: T.jadeBg, color: T.jade, fontWeight: 700 }}>✓ {c.ap} ({c.pctAp}%)</span>
+                <span style={{ padding: "3px 10px", borderRadius: 20, background: T.denimBg, color: T.denim, fontWeight: 700 }}>⚙ {c.en}</span>
+                <span style={{ padding: "3px 10px", borderRadius: 20, background: T.coralBg, color: T.coral, fontWeight: 700 }}>✕ {c.dec}</span>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
       <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 24 }}>
         <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 4 }}>🏢 Por Cliente — Cápsulas y Referencias</div>
         <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>{periodLabel}</div>
@@ -1867,12 +4141,27 @@ function CambiarClaveModal({ currentUser, onSave, onClose }) {
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
   const [show, setShow] = useState(false);
-  function save() {
-    if (current !== currentUser.password) { setError("La contraseña actual no es correcta."); return; }
+  const [guardando, setGuardando] = useState(false);
+  // Cambia la clave real en Firebase Authentication (Fase B). Antes esto
+  // comparaba contra el campo `password` en texto plano de Firestore — ahora
+  // se reautentica contra la cuenta real (para confirmar que "current" es
+  // correcta) y luego se actualiza ahí mismo, nunca en Firestore.
+  async function save() {
+    setError("");
     if (!nueva.trim() || nueva.length < 6) { setError("La nueva contraseña debe tener al menos 6 caracteres."); return; }
     if (nueva !== confirm) { setError("Las contraseñas no coinciden."); return; }
-    onSave(nueva.trim());
-    onClose();
+    setGuardando(true);
+    try {
+      const email = `${currentUser.username}@techpack-yanko.local`;
+      const credential = EmailAuthProvider.credential(email, current);
+      await reauthenticateWithCredential(auth.currentUser, credential);
+      await updatePassword(auth.currentUser, nueva.trim());
+      onSave(nueva.trim());
+      onClose();
+    } catch (err) {
+      setError(err?.code === "auth/invalid-credential" || err?.code === "auth/wrong-password" ? "La contraseña actual no es correcta." : (err?.message || "No se pudo cambiar la contraseña."));
+    }
+    setGuardando(false);
   }
   return (
     <Modal title="Cambiar mi contraseña" onClose={onClose} width={420}>
@@ -1887,19 +4176,31 @@ function CambiarClaveModal({ currentUser, onSave, onClose }) {
       {error && <div style={{ padding: "8px 12px", background: T.coralBg, borderRadius: 8, fontSize: 13, color: T.coral, fontWeight: 600, marginBottom: 12 }}>⚠ {error}</div>}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn variant="success" onClick={save}>Cambiar contraseña</Btn>
+        <Btn variant="success" onClick={save} disabled={guardando}>{guardando ? "Guardando..." : "Cambiar contraseña"}</Btn>
       </div>
     </Modal>
   );
 }
-function EditNombreModal({ item, tipo, onSave, onClose }) {
-  const [nombre, setNombre] = useState(item.name || "");
-  const [season, setSeason] = useState(item.season || "");
-  function save() { if (!nombre.trim()) return; onSave({ name: nombre.trim(), ...(tipo === "capsula" ? { season: season.trim() } : {}) }); onClose(); }
+function EditNombreModal({ item, tipo, config, onSave, onClose }) {
+  const [nombre, setNombre] = useState(item?.name || "");
+  const [season, setSeason] = useState(item?.season || "");
+  const [assignedTo, setAssignedTo] = useState(item?.assignedTo || "");
+  const [cliente, setCliente] = useState(item?.cliente || "");
+  function save() {
+    if (!nombre.trim()) return;
+    onSave({ name: nombre.trim(), ...(tipo === "capsula" ? { season: season.trim(), assignedTo, cliente } : {}) });
+    onClose();
+  }
   return (
     <Modal title={`Editar ${tipo === "capsula" ? "Cápsula" : "Prototipo"}`} onClose={onClose} width={420}>
       <Field label="Nombre"><input value={nombre} onChange={(e) => setNombre(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} /></Field>
+      {tipo === "capsula" && (
+        <Field label="Cliente">
+          <FSel value={cliente} onChange={setCliente} options={(config?.clientes || []).map((c) => c.nombre)} />
+        </Field>
+      )}
       {tipo === "capsula" && <Field label="Temporada / Código"><input value={season} onChange={(e) => setSeason(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} /></Field>}
+      {tipo === "capsula" && <Field label="Responsable"><FSel value={assignedTo} onChange={setAssignedTo} options={config?.disenadores || []} /></Field>}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn onClick={save}>Guardar cambios</Btn>
@@ -1907,7 +4208,7 @@ function EditNombreModal({ item, tipo, onSave, onClose }) {
     </Modal>
   );
 }
-function UsersTab({ users, onUpdateUsers, config }) {
+function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState(null);
   const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false });
@@ -1915,35 +4216,137 @@ function UsersTab({ users, onUpdateUsers, config }) {
   const [newPwd, setNewPwd] = useState("");
   const [showPwd, setShowPwd] = useState(false);
   const [error, setError] = useState("");
+  // --- Fase B: crear usuario y resetear clave de otro pasan por Cloud
+  // Functions (adminCrearUsuario / adminCambiarClaveUsuario) — el navegador
+  // del admin no puede crear ni tocar la cuenta de Firebase Auth de otra
+  // persona directamente, solo la propia.
+  const [creando, setCreando] = useState(false);
+  const [cambiandoClave, setCambiandoClave] = useState(false);
+  const [errorClave, setErrorClave] = useState("");
   const roleOptions = config.roles.map((r) => r.name);
-  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false }); setEditUser(null); setShowForm(true); setError(""); }
-  function openEdit(u) { setForm({ name: u.name, username: u.username, password: u.password, role: u.role, isAdmin: u.isAdmin }); setEditUser(u); setShowForm(true); setError(""); }
-  function saveUser() {
-    if (!form.name || !form.username || !form.password) { setError("Todos los campos son obligatorios."); return; }
-    const dup = users.find((u) => u.username === form.username.toLowerCase() && u.id !== editUser?.id);
-    if (dup) { setError("Ese usuario ya existe."); return; }
-    const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-    if (editUser) {
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, ...form, username: form.username.toLowerCase(), avatar } : u)));
-    } else {
-      onUpdateUsers([...users, { id: uid(), ...form, username: form.username.toLowerCase(), avatar }]);
+  // --- Migración a Firebase Authentication (Fase A, temporal) ---
+  // Botón de un solo uso para crear, por detrás, una cuenta real de Firebase
+  // Auth para cada usuario que hoy solo existe como documento en Firestore
+  // (con clave en texto plano). No toca el login actual — es seguro de
+  // correr varias veces (los ya migrados se saltan). Se puede quitar este
+  // bloque una vez completada la migración de todo el equipo.
+  const [migrando, setMigrando] = useState(false);
+  const [resultadoMigracion, setResultadoMigracion] = useState(null);
+  async function migrarAuth() {
+    const clave = window.prompt("Clave de migración (la que configuraste con 'firebase functions:secrets:set MIGRACION_CLAVE'):");
+    if (!clave) return;
+    setMigrando(true);
+    setResultadoMigracion(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "migrarUsuariosAFirebaseAuth");
+      const resp = await llamar({ clave });
+      setResultadoMigracion(resp.data);
+    } catch (err) {
+      setResultadoMigracion({ error: err?.message || String(err) });
     }
-    setShowForm(false);
+    setMigrando(false);
+  }
+  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false }); setEditUser(null); setShowForm(true); setError(""); }
+  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin }); setEditUser(u); setShowForm(true); setError(""); }
+  // Crear usuario nuevo pasa por la Cloud Function `adminCrearUsuario` (Fase
+  // B): a diferencia de editar, crear SÍ necesita generar una cuenta real de
+  // Firebase Auth para que esa persona pueda entrar — eso no lo puede hacer
+  // el navegador directamente (crearla desde el cliente dejaría al admin
+  // logueado como el usuario nuevo en vez de como él mismo), así que lo hace
+  // una función con permisos de administrador. Editar un usuario existente
+  // (nombre/rol/admin) sigue siendo una escritura directa a Firestore — el
+  // usuario y la contraseña de acceso ya NO se tocan ahí (para eso está
+  // "🔑 Clave"; el nombre de usuario no se puede cambiar una vez creado,
+  // porque es lo que arma el correo de la cuenta de Firebase Auth).
+  async function saveUser() {
     setError("");
+    if (editUser) {
+      if (!form.name) { setError("El nombre es obligatorio."); return; }
+      const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, avatar } : u)));
+      setShowForm(false);
+      return;
+    }
+    if (!form.name || !form.username || !form.password) { setError("Todos los campos son obligatorios."); return; }
+    if (form.password.length < 6) { setError("La contraseña debe tener al menos 6 caracteres."); return; }
+    const dup = users.find((u) => u.username === form.username.toLowerCase());
+    if (dup) { setError("Ese usuario ya existe."); return; }
+    setCreando(true);
+    try {
+      const llamar = httpsCallable(functionsClient, "adminCrearUsuario");
+      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin });
+      setShowForm(false);
+    } catch (err) {
+      setError(err?.message || "No se pudo crear el usuario.");
+    }
+    setCreando(false);
   }
   function deleteUser(id) { if (id === "u1") return; onUpdateUsers(users.filter((u) => u.id !== id)); }
-  function changePassword() {
-    if (!newPwd.trim()) return;
-    onUpdateUsers(users.map((u) => (u.id === changePwdId ? { ...u, password: newPwd.trim() } : u)));
-    setChangePwdId(null);
-    setNewPwd("");
+  // Resetear la clave de OTRO usuario también pasa por una Cloud Function
+  // (Fase B) — el navegador del admin no tiene permiso para cambiar la clave
+  // de otra cuenta de Firebase Auth directamente, solo la propia. La función
+  // `adminCambiarClaveUsuario` verifica que quien llama sea administrador
+  // antes de actualizarla.
+  async function changePassword() {
+    if (!newPwd.trim() || newPwd.trim().length < 6) { setErrorClave("La contraseña debe tener al menos 6 caracteres."); return; }
+    setErrorClave("");
+    setCambiandoClave(true);
+    try {
+      const llamar = httpsCallable(functionsClient, "adminCambiarClaveUsuario");
+      await llamar({ userId: changePwdId, nuevaClave: newPwd.trim() });
+      setChangePwdId(null);
+      setNewPwd("");
+    } catch (err) {
+      setErrorClave(err?.message || "No se pudo cambiar la contraseña.");
+    }
+    setCambiandoClave(false);
   }
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div><div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>Gestión de Usuarios</div><div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{users.length} usuario{users.length !== 1 ? "s" : ""}</div></div>
-        <Btn onClick={openNew}>+ Nuevo Usuario</Btn>
+        <div style={{ display: "flex", gap: 8 }}>
+          {isAdmin && (
+            <Btn variant="amber" onClick={migrarAuth} disabled={migrando}>
+              {migrando ? "Migrando..." : "🔐 Migrar a Firebase Auth"}
+            </Btn>
+          )}
+          <Btn onClick={openNew}>+ Nuevo Usuario</Btn>
+        </div>
       </div>
+      {resultadoMigracion && (
+        <div
+          style={{
+            padding: "12px 16px",
+            borderRadius: 10,
+            marginBottom: 20,
+            fontSize: 13,
+            fontWeight: 600,
+            background: resultadoMigracion.error ? T.coralBg : T.jadeBg,
+            color: resultadoMigracion.error ? T.coral : T.jade,
+            border: `1px solid ${resultadoMigracion.error ? T.coral : T.jade}44`,
+          }}
+        >
+          {resultadoMigracion.error ? (
+            `⚠ ${resultadoMigracion.error}`
+          ) : (
+            <div>
+              <div>
+                ✓ {resultadoMigracion.migrados.length} usuario{resultadoMigracion.migrados.length !== 1 ? "s" : ""} migrado{resultadoMigracion.migrados.length !== 1 ? "s" : ""}
+                {resultadoMigracion.migrados.length ? `: ${resultadoMigracion.migrados.join(", ")}` : ""}
+              </div>
+              {resultadoMigracion.yaExistian.length > 0 && (
+                <div style={{ marginTop: 4 }}>Ya estaban migrados: {resultadoMigracion.yaExistian.join(", ")}</div>
+              )}
+              {resultadoMigracion.errores.length > 0 && (
+                <div style={{ marginTop: 4, color: T.coral }}>
+                  ⚠ {resultadoMigracion.errores.length} con error: {resultadoMigracion.errores.map((e) => `${e.username || e.id} (${e.motivo})`).join(" · ")}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {showForm && (
         <div style={{ background: T.canvas, borderRadius: 12, padding: 20, border: `1.5px solid ${T.denim}`, marginBottom: 20 }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 16 }}>{editUser ? `Editar: ${editUser.name}` : "Nuevo Usuario"}</div>
@@ -1954,11 +4357,16 @@ function UsersTab({ users, onUpdateUsers, config }) {
             </div>
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Usuario</label>
-              <input value={form.username} onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))} placeholder="Ej: laura" style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+              <input value={form.username} onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))} placeholder="Ej: laura" disabled={!!editUser} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: editUser ? T.canvas : T.white, outline: "none", fontFamily: "inherit", cursor: editUser ? "not-allowed" : "text" }} />
+              {editUser && <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>No se puede cambiar una vez creado.</div>}
             </div>
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Contraseña</label>
-              <input type="text" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="Mínimo 6 caracteres" style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+              {editUser ? (
+                <div style={{ padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 12, color: T.slate, background: T.canvas }}>Usa el botón "🔑 Clave" para cambiarla.</div>
+              ) : (
+                <input type="text" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="Mínimo 6 caracteres" style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+              )}
             </div>
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Rol</label>
@@ -1975,7 +4383,7 @@ function UsersTab({ users, onUpdateUsers, config }) {
           {error && <div style={{ marginTop: 12, padding: "8px 12px", background: T.coralBg, borderRadius: 8, fontSize: 13, color: T.coral, fontWeight: 600 }}>⚠ {error}</div>}
           <div style={{ display: "flex", gap: 10, marginTop: 16, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => { setShowForm(false); setError(""); }}>Cancelar</Btn>
-            <Btn onClick={saveUser}>{editUser ? "Guardar cambios" : "Crear Usuario"}</Btn>
+            <Btn onClick={saveUser} disabled={creando}>{creando ? "Creando..." : (editUser ? "Guardar cambios" : "Crear Usuario")}</Btn>
           </div>
         </div>
       )}
@@ -1987,9 +4395,10 @@ function UsersTab({ users, onUpdateUsers, config }) {
               <input type={showPwd ? "text" : "password"} value={newPwd} onChange={(e) => setNewPwd(e.target.value)} onKeyDown={(e) => e.key === "Enter" && changePassword()} placeholder="Nueva contraseña..." style={{ width: "100%", padding: "9px 40px 9px 12px", border: `1.5px solid ${T.amber}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
               <button onClick={() => setShowPwd(!showPwd)} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 14 }}>{showPwd ? "🙈" : "👁"}</button>
             </div>
-            <Btn variant="amber" onClick={changePassword}>Guardar</Btn>
-            <Btn variant="secondary" onClick={() => { setChangePwdId(null); setNewPwd(""); }}>Cancelar</Btn>
+            <Btn variant="amber" onClick={changePassword} disabled={cambiandoClave}>{cambiandoClave ? "Guardando..." : "Guardar"}</Btn>
+            <Btn variant="secondary" onClick={() => { setChangePwdId(null); setNewPwd(""); setErrorClave(""); }}>Cancelar</Btn>
           </div>
+          {errorClave && <div style={{ marginTop: 10, padding: "8px 12px", background: T.coralBg, borderRadius: 8, fontSize: 13, color: T.coral, fontWeight: 600 }}>⚠ {errorClave}</div>}
         </div>
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -2015,6 +4424,175 @@ function UsersTab({ users, onUpdateUsers, config }) {
     </div>
   );
 }
+// Quita tildes, pasa a mayúsculas, quita puntos/comas y normaliza espacios —
+// para poder comparar "Kamila Group S.A.S." contra "KAMILA GROUP SAS" y
+// reconocerlos como el mismo nombre.
+function normalizarNombreCliente(s) {
+  return (s || "")
+    .toString()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toUpperCase()
+    .replace(/[.,]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Compara un nombre de Busint contra la lista de clientes ya guardados en
+// Administración: "exacto" si coincide igual (normalizado) — no hace falta
+// revisarlo; "parecido" si uno contiene al otro (posible duplicado por
+// nombre escrito distinto) — se le pregunta al usuario; "nuevo" si no se
+// parece a nada — se agrega directo.
+function buscarPosibleDuplicado(nombreBusint, clientesExistentes) {
+  const norm = normalizarNombreCliente(nombreBusint);
+  for (const c of clientesExistentes) {
+    if (normalizarNombreCliente(c.nombre) === norm) return { tipo: "exacto", cliente: c };
+  }
+  for (const c of clientesExistentes) {
+    const normC = normalizarNombreCliente(c.nombre);
+    if (normC.length >= 4 && norm.length >= 4 && (normC.includes(norm) || norm.includes(normC))) {
+      return { tipo: "parecido", cliente: c };
+    }
+  }
+  return { tipo: "nuevo", cliente: null };
+}
+
+// Trae en vivo el maestro de clientes de Busint (getClientesBusint) y deja
+// que el usuario decida, uno por uno, qué hacer con cada nombre parecido a
+// uno que ya existe — nada se guarda hasta que el usuario confirme.
+function ImportarClientesBusintModal({ clientesExistentes, onImportar, onClose }) {
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
+  const [filas, setFilas] = useState([]);
+
+  useEffect(() => {
+    let cancelado = false;
+    (async () => {
+      setCargando(true);
+      setError("");
+      try {
+        const llamar = httpsCallable(functionsClient, "getClientesBusint");
+        const resp = await llamar({});
+        if (cancelado) return;
+        const procesadas = (resp.data?.clientes || [])
+          .map((c) => {
+            const match = buscarPosibleDuplicado(c.nombre, clientesExistentes);
+            return { ...c, match, accion: match.tipo === "nuevo" ? "agregar" : "omitir" };
+          })
+          .filter((f) => f.match.tipo !== "exacto");
+        setFilas(procesadas);
+      } catch (err) {
+        if (!cancelado) {
+          setError(
+            err?.message ||
+              "No se pudo consultar el maestro de clientes de Busint. Verifica que la función getClientesBusint esté desplegada."
+          );
+        }
+      }
+      if (!cancelado) setCargando(false);
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, []);
+
+  function setAccion(idx, accion) {
+    setFilas((fs) => fs.map((f, i) => (i === idx ? { ...f, accion } : f)));
+  }
+
+  function guardar() {
+    const nuevos = [];
+    const reemplazos = new Map();
+    filas.forEach((f) => {
+      if (f.accion === "agregar") {
+        nuevos.push({ id: uid(), nombre: f.nombre, contacto: f.contacto, email: f.email, telefono: f.telefono });
+      } else if (f.accion === "reemplazar" && f.match.cliente) {
+        reemplazos.set(f.match.cliente.id, {
+          nombre: f.nombre,
+          contacto: f.match.cliente.contacto || f.contacto,
+          email: f.match.cliente.email || f.email,
+          telefono: f.match.cliente.telefono || f.telefono,
+        });
+      }
+    });
+    onImportar({ nuevos, reemplazos });
+    onClose();
+  }
+
+  const totalAccion = filas.filter((f) => f.accion === "agregar" || f.accion === "reemplazar").length;
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ background: T.white, borderRadius: 14, padding: 28, maxWidth: 720, width: "100%", maxHeight: "85vh", overflow: "auto", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <div style={{ fontWeight: 800, fontSize: 16, color: T.ink }}>Importar Clientes desde Busint</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 20, color: T.slate, cursor: "pointer" }}>✕</button>
+        </div>
+        <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>
+          Se consulta el maestro de clientes en vivo. Revisa cada uno — nada se agrega ni se cambia hasta que confirmes.
+        </div>
+        {cargando && <div style={{ textAlign: "center", padding: 40, color: T.slate }}>Consultando Busint…</div>}
+        {error && (
+          <div style={{ padding: "12px 16px", background: T.coralBg, borderRadius: 10, color: T.coral, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
+            {error}
+          </div>
+        )}
+        {!cargando && !error && (
+          <>
+            {!filas.length ? (
+              <div style={{ textAlign: "center", padding: 32, color: T.slate }}>
+                No hay clientes nuevos ni parecidos — tu lista ya coincide con el maestro de Busint.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
+                {filas.map((f, i) => (
+                  <div
+                    key={f.nombre + i}
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 10,
+                      border: `1px solid ${f.match.tipo === "parecido" ? T.amber : T.border}`,
+                      background: f.match.tipo === "parecido" ? T.amberBg : T.canvas,
+                    }}
+                  >
+                    <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>
+                      {f.nombre}
+                      {!f.activo && <span style={{ marginLeft: 8, fontSize: 10, color: T.slate, fontWeight: 400, fontStyle: "italic" }}>(inactivo en Busint)</span>}
+                    </div>
+                    {f.match.tipo === "parecido" && (
+                      <div style={{ fontSize: 11, color: T.amber, fontWeight: 600, marginTop: 2 }}>
+                        ⚠ Se parece a "{f.match.cliente.nombre}" — ¿es el mismo cliente?
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 14, marginTop: 8, fontSize: 12, flexWrap: "wrap" }}>
+                      {f.match.tipo === "parecido" ? (
+                        ["omitir", "reemplazar", "agregar"].map((op) => (
+                          <label key={op} style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", color: T.ink }}>
+                            <input type="radio" name={`accion-${i}`} checked={f.accion === op} onChange={() => setAccion(i, op)} />
+                            {op === "omitir" ? "Omitir" : op === "reemplazar" ? `Reemplazar nombre de "${f.match.cliente.nombre}"` : "Son distintos, agregar como nuevo"}
+                          </label>
+                        ))
+                      ) : (
+                        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", color: T.ink, fontWeight: 600 }}>
+                          <input type="checkbox" checked={f.accion === "agregar"} onChange={(e) => setAccion(i, e.target.checked ? "agregar" : "omitir")} />
+                          Agregar como cliente nuevo
+                        </label>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+              <Btn onClick={guardar} disabled={!totalAccion}>Guardar{totalAccion > 0 ? ` (${totalAccion})` : ""}</Btn>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 function ClientesTab({ config, onUpdateConfig }) {
   const [showForm, setShowForm] = useState(false);
   const [editIdx, setEditIdx] = useState(null);
@@ -2025,16 +4603,31 @@ function ClientesTab({ config, onUpdateConfig }) {
   function save() {
     if (!form.nombre.trim()) return;
     const updated = editIdx !== null ? clientes.map((c, i) => (i === editIdx ? { ...form } : c)) : [...clientes, { ...form, id: uid() }];
-    onUpdateConfig({ ...config, clientes: updated });
+    onUpdateConfig({ clientes: updated });
     setShowForm(false);
   }
-  function del(i) { onUpdateConfig({ ...config, clientes: clientes.filter((_, idx) => idx !== i) }); }
+  function del(i) { onUpdateConfig({ clientes: clientes.filter((_, idx) => idx !== i) }); }
+  const [showImportar, setShowImportar] = useState(false);
+  function aplicarImportacion({ nuevos, reemplazos }) {
+    const actualizados = clientes.map((c) => (reemplazos.has(c.id) ? { ...c, ...reemplazos.get(c.id) } : c));
+    onUpdateConfig({ clientes: [...actualizados, ...nuevos] });
+  }
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div><div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>Clientes</div><div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>{clientes.length} cliente{clientes.length !== 1 ? "s" : ""}</div></div>
-        <Btn onClick={openNew}>+ Nuevo Cliente</Btn>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn variant="secondary" onClick={() => setShowImportar(true)}>⬇ Importar de Busint</Btn>
+          <Btn onClick={openNew}>+ Nuevo Cliente</Btn>
+        </div>
       </div>
+      {showImportar && (
+        <ImportarClientesBusintModal
+          clientesExistentes={clientes}
+          onImportar={aplicarImportacion}
+          onClose={() => setShowImportar(false)}
+        />
+      )}
       {showForm && (
         <div style={{ background: T.canvas, borderRadius: 12, padding: 20, border: `1.5px solid ${T.denim}`, marginBottom: 20 }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 16 }}>{editIdx !== null ? "Editar Cliente" : "Nuevo Cliente"}</div>
@@ -2070,22 +4663,22 @@ function ClientesTab({ config, onUpdateConfig }) {
   );
 }
 
-function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula }) {
+function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula, isAdmin }) {
   const [tab, setTab] = useState("etapas");
   const [newItem, setNewItem] = useState("");
   const [editItem, setEditItem] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
-  function addToList(key) { if (!newItem.trim()) return; onUpdateConfig({ ...config, [key]: [...config[key], newItem.trim()] }); setNewItem(""); }
-  function removeFromList(key, val) { onUpdateConfig({ ...config, [key]: config[key].filter((x) => x !== val) }); }
+  function addToList(key) { if (!newItem.trim()) return; onUpdateConfig({ [key]: [...config[key], newItem.trim()] }); setNewItem(""); }
+  function removeFromList(key, val) { onUpdateConfig({ [key]: config[key].filter((x) => x !== val) }); }
   function updateStageDays(id, days) {
-    onUpdateConfig({ ...config, stages: config.stages.map((s) => (s.id === id ? { ...s, days: Math.max(1, parseInt(days) || 1) } : s)) });
+    onUpdateConfig({ stages: config.stages.map((s) => (s.id === id ? { ...s, days: Math.max(1, parseInt(days) || 1) } : s)) });
   }
   function addRole() {
     if (!newItem.trim()) return;
-    onUpdateConfig({ ...config, roles: [...config.roles, { id: uid(), name: newItem.trim(), perms: ["editar"], modulos: [...DISENO_SUBMODULOS] }] });
+    onUpdateConfig({ roles: [...config.roles, { id: uid(), name: newItem.trim(), perms: ["editar"], modulos: [...DISENO_SUBMODULOS] }] });
     setNewItem("");
   }
-  function removeRole(id) { onUpdateConfig({ ...config, roles: config.roles.filter((r) => r.id !== id) }); }
+  function removeRole(id) { onUpdateConfig({ roles: config.roles.filter((r) => r.id !== id) }); }
   // Módulos visibles por rol, por sección independiente (Prototipos, Cápsulas,
   // Pedidos, Clientes, Corte, Estadísticas, Contabilidad), separado de los
   // permisos de flujo de trabajo. Si el rol no tiene "modulos" aún, se
@@ -2105,7 +4698,6 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   }
   function toggleModulo(roleId, mod) {
     onUpdateConfig({
-      ...config,
       roles: config.roles.map((r) => {
         if (r.id !== roleId) return r;
         const current = effectiveModulos(r);
@@ -2119,7 +4711,6 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // para que marcar/desmarcar "Diseño" no le dé de rebote poderes de admin.
   function toggleDisenoGroup(roleId) {
     onUpdateConfig({
-      ...config,
       roles: config.roles.map((r) => {
         if (r.id !== roleId) return r;
         const current = effectiveModulos(r);
@@ -2135,10 +4726,16 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     ["pedidos", "📦 Pedidos"],
     ["pedidos_clientes", "🏢 Clientes"],
     ["corte", "✂ Corte"],
+    ["historial", "🕘 Historial"],
+    ["cronograma_muestras", "🧵 Cronograma de Muestras"],
+    ["bitacora", "📜 Bitácoras"],
     ["stats", "📊 Estadísticas"],
   ];
-  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"]];
-  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
+  // KPIs ahora es un módulo de compañía completo (no solo Diseño — cubre
+  // Corte, Ventas, Contabilidad, Planeación, etc.), por eso su permiso vive
+  // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
+  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["kpis", "🎯 KPIs"]];
+  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
   function ListEditor({ listKey, title }) {
     return (
       <div>
@@ -2161,7 +4758,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   return (
     <div>
       {editItem && (
-        <EditNombreModal item={editItem.item} tipo={editItem.tipo}
+        <EditNombreModal item={editItem.item} tipo={editItem.tipo} config={config}
           onSave={(p) => { if (editItem.tipo === "proto") onUpdateProto(editItem.item.id, p); else onUpdateCapsula(editItem.item.id, p); setEditItem(null); }}
           onClose={() => setEditItem(null)}
         />
@@ -2210,6 +4807,17 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
         {tab === "categorias" && <ListEditor listKey="categorias" title="Categorías" />}
         {tab === "siluetas" && <ListEditor listKey="siluetas" title="Siluetas" />}
         {tab === "rangos" && <ListEditor listKey="rangos" title="Rangos" />}
+        {tab === "disenadores" && <ListEditor listKey="disenadores" title="Diseñadores" />}
+        {tab === "kpi_areas" && (
+          <div>
+            <ListEditor listKey="kpiAreas" title="Áreas (KPI)" />
+            <div style={{ marginTop: 16, padding: "10px 14px", background: T.denimBg, borderRadius: 8, fontSize: 13, color: T.denim, fontWeight: 600 }}>
+              Los puestos dentro de cada área (con sus funciones asignadas) se gestionan directamente en el módulo KPIs, pestaña "Puestos" — no aquí.
+            </div>
+          </div>
+        )}
+        {tab === "talleres" && <ListEditor listKey="talleresMuestra" title="Talleres de Muestra" />}
+        {tab === "prioridades" && <ListEditor listKey="prioridadesMuestra" title="Prioridades de Muestra" />}
         {tab === "roles" && (
           <div>
             <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 16 }}>Roles</div>
@@ -2227,8 +4835,8 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                       <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{r.name}</div>
                       <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10, marginBottom: 4 }}>Permisos de flujo de trabajo</div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {["editar", "aprobar", "declinar", "admin", "corte"].map((perm) => (
-                          <span key={perm} onClick={() => onUpdateConfig({ ...config, roles: config.roles.map((x) => (x.id !== r.id ? x : { ...x, perms: x.perms.includes(perm) ? x.perms.filter((p) => p !== perm) : [...x.perms, perm] })) })}
+                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte"].map((perm) => (
+                          <span key={perm} onClick={() => onUpdateConfig({ roles: config.roles.map((x) => (x.id !== r.id ? x : { ...x, perms: x.perms.includes(perm) ? x.perms.filter((p) => p !== perm) : [...x.perms, perm] })) })}
                             style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: r.perms.includes(perm) ? T.jadeBg : "#EDEDF2", color: r.perms.includes(perm) ? T.jade : T.slate, border: `1px solid ${r.perms.includes(perm) ? T.jade : T.border}` }}
                           >{perm}</span>
                         ))}
@@ -2289,7 +4897,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
             </div>
           </div>
         )}
-        {tab === "usuarios" && <UsersTab users={users} onUpdateUsers={onUpdateUsers} config={config} />}
+        {tab === "usuarios" && <UsersTab users={users} onUpdateUsers={onUpdateUsers} config={config} isAdmin={isAdmin} />}
         {tab === "clientes" && <ClientesTab config={config} onUpdateConfig={onUpdateConfig} />}
         {tab === "contenido" && (
           <div>
@@ -2304,7 +4912,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                       <div style={{ fontSize: 11, color: T.slate }}>{p.reference} · {p.categoria} · <span style={{ color: STATUS[p.status]?.color, fontWeight: 700 }}>{STATUS[p.status]?.label}</span></div>
                     </div>
                     <button onClick={() => setEditItem({ item: p, tipo: "proto" })} style={{ padding: "5px 10px", background: T.denimBg, border: `1px solid ${T.denim}44`, borderRadius: 6, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>✏ Editar</button>
-                    <button onClick={() => setConfirmDel({ id: p.id, tipo: "proto", name: p.name })} style={{ padding: "5px 10px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 6, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>🗑 Borrar</button>
+                    {isAdmin && <button onClick={() => setConfirmDel({ id: p.id, tipo: "proto", name: p.name })} style={{ padding: "5px 10px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 6, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>🗑 Borrar</button>}
                   </div>
                 ))}
                 {!protos.length && <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin prototipos.</div>}
@@ -2320,7 +4928,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                       <div style={{ fontSize: 11, color: T.slate }}>{c.season} · {c.referencias.length} referencia{c.referencias.length !== 1 ? "s" : ""}</div>
                     </div>
                     <button onClick={() => setEditItem({ item: c, tipo: "capsula" })} style={{ padding: "5px 10px", background: T.denimBg, border: `1px solid ${T.denim}44`, borderRadius: 6, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>✏ Editar</button>
-                    <button onClick={() => setConfirmDel({ id: c.id, tipo: "capsula", name: c.name })} style={{ padding: "5px 10px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 6, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>🗑 Borrar</button>
+                    {isAdmin && <button onClick={() => setConfirmDel({ id: c.id, tipo: "capsula", name: c.name })} style={{ padding: "5px 10px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 6, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>🗑 Borrar</button>}
                   </div>
                 ))}
                 {!capsulas.length && <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin cápsulas.</div>}
@@ -2395,7 +5003,7 @@ function fmtCOP(n) { return `$${fmtNum(Math.round(n || 0))}`; }
 function refsAprobadasPendientesDePedido(capsulas, pedidos) { return []; }
 function capsulasPendientesDePedido(capsulas, pedidos) { return []; }
 
-function SubirPedidoModal2({ onSave, onClose, pedidoConfig }) {
+function SubirPedidoModal2({ onSave, onClose, pedidoConfig, pedidos, clientes }) {
   const [paso, setPaso] = useState(1);
   const [pedido, setPedido] = useState(null);
   const [error, setError] = useState("");
@@ -2433,7 +5041,13 @@ function SubirPedidoModal2({ onSave, onClose, pedidoConfig }) {
     });
   }
   function save() {
-    if (!pedido.cliente || !pedido.referencias.length) { setError("Completa el cliente y al menos una referencia."); return; }
+    if (!pedido.numero?.trim() || !pedido.cliente || !pedido.referencias.length) { setError("Completa el N° de Pedido, el cliente y al menos una referencia."); return; }
+    // Evita que un mismo N° de Pedido quede cargado dos veces (crearía un
+    // pedido duplicado para el cliente) — se compara contra TODOS los
+    // pedidos existentes, sin importar si están Activos, Terminados o en
+    // Histórico.
+    const yaExiste = (pedidos || []).some((p) => String(p.numero).trim().toLowerCase() === pedido.numero.trim().toLowerCase());
+    if (yaExiste) { setError(`El N° de Pedido "${pedido.numero.trim()}" ya existe. Usa un número diferente para no duplicar el pedido.`); return; }
     onSave(pedido);
     onClose();
   }
@@ -2464,10 +5078,10 @@ function SubirPedidoModal2({ onSave, onClose, pedidoConfig }) {
             <Field label="Cliente">
               <select value={pedido.cliente} onChange={(e) => setPedido((p) => ({ ...p, cliente: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
                 <option value="">— Seleccionar cliente —</option>
-                {(pedidoConfig?.clientes || []).map((c) => <option key={c.id} value={c.nombre}>{c.nombre}</option>)}
-                <option value={pedido.cliente && !(pedidoConfig?.clientes || []).find((c) => c.nombre === pedido.cliente) ? pedido.cliente : "__otro__"}>Otro (texto libre)</option>
+                {(clientes || []).map((c) => <option key={c.id} value={c.nombre}>{c.nombre}</option>)}
+                <option value={pedido.cliente && !(clientes || []).find((c) => c.nombre === pedido.cliente) ? pedido.cliente : "__otro__"}>Otro (texto libre)</option>
               </select>
-              {!pedidoConfig?.clientes?.find((c) => c.nombre === pedido.cliente) && pedido.cliente !== "" && (
+              {!(clientes || []).find((c) => c.nombre === pedido.cliente) && pedido.cliente !== "" && (
                 <FInput value={pedido.cliente} onChange={(v) => setPedido((p) => ({ ...p, cliente: v }))} placeholder="Nombre del cliente" />
               )}
             </Field>
@@ -2535,7 +5149,12 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido }) {
     return exc;
   }
   function toggleEtapa(stage) { onUpdatePedido({ ...pedido, seguimiento: { ...pedido.seguimiento, [stage]: !pedido.seguimiento?.[stage] } }); }
-  function marcarCumplido() { onUpdatePedido({ ...pedido, estado: "cumplido", fechaCumplido: today() }); onBack(); }
+  // "cerrado" es el único estado de cierre desde el rediseño (antes había
+  // "cumplido"/"cancelado_busint"/"venta_perdida_busint" por separado). Se
+  // guarda el motivo en motivoCierre — "manual" cuando se marca aquí a
+  // mano; "facturado"/"venta_perdida"/"ya_no_vigente" cuando lo cierra solo
+  // el botón "Congelar como base de Corte" en Vigentes por Cliente.
+  function marcarCumplido() { onUpdatePedido({ ...pedido, estado: "cerrado", motivoCierre: "manual", fechaCumplido: today() }); onBack(); }
   function marcarTerminado() { onUpdatePedido({ ...pedido, estado: "terminado" }); }
   function deshacerTerminado() { onUpdatePedido({ ...pedido, estado: "activo" }); }
   return (
@@ -2565,8 +5184,8 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido }) {
         <Btn variant="ghost" small onClick={() => setShowEdit(true)}>✏ Editar</Btn>
         {pedido.estado === "activo" && <Btn variant="amber" onClick={marcarTerminado}>🏁 Marcar Terminado</Btn>}
         {pedido.estado === "terminado" && <Btn variant="secondary" small onClick={deshacerTerminado}>↩ Deshacer Terminado</Btn>}
-        {pedido.estado === "cumplido" && <Btn variant="secondary" small onClick={() => onUpdatePedido({ ...pedido, estado: "activo", fechaCumplido: null })}>↩ Reactivar</Btn>}
-        {pedido.estado !== "cumplido" && <Btn variant="success" onClick={() => setShowConfirmCumplido(true)}>✓ Cumplido</Btn>}
+        {pedido.estado === "cerrado" && <Btn variant="secondary" small onClick={() => onUpdatePedido({ ...pedido, estado: "activo", motivoCierre: null, fechaCumplido: null })}>↩ Reactivar</Btn>}
+        {pedido.estado !== "cerrado" && <Btn variant="success" onClick={() => setShowConfirmCumplido(true)}>✓ Cumplido</Btn>}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 20 }}>
         {[
@@ -2712,30 +5331,60 @@ function EditPedidoModal({ pedido, onSave, onClose }) {
   );
 }
 
-function ClientesPedidosView({ pedidoConfig, pedidos }) {
+function ClientesPedidosView({ clientes: clientesProp, pedidos, protos, capsulas }) {
   const [buscar, setBuscar] = useState("");
-  const clientes = pedidoConfig.clientes || [];
-  const filtrados = buscar ? clientes.filter((c) => c.nombre?.toLowerCase().includes(buscar.toLowerCase()) || c.empresa?.toLowerCase().includes(buscar.toLowerCase()) || c.contacto?.toLowerCase().includes(buscar.toLowerCase())) : clientes;
+  // Por defecto solo se muestran los clientes que todavía tienen algo sin
+  // resolver — un prototipo suelto o una referencia dentro de una cápsula
+  // que no haya llegado a un estado final (Aprobado/Declinado). El toggle
+  // "Mostrar todos" deja ver el maestro completo cuando haga falta.
+  const [soloPendientes, setSoloPendientes] = useState(true);
+  const clientes = clientesProp || [];
   function pedidosDelCliente(nombre) { return pedidos.filter((p) => p.cliente === nombre); }
+  // Cliente "efectivo" de una referencia dentro de una cápsula: el de la
+  // cápsula manda, y si no tiene se usa el de la referencia (mismo criterio
+  // que capCliente/refCliente en CapsulasView).
+  function tienePendiente(nombre) {
+    const protoPendiente = (protos || []).some((p) => p.cliente === nombre && !["aprobado", "declinado"].includes(p.status));
+    if (protoPendiente) return true;
+    return (capsulas || []).some((cap) =>
+      (cap.referencias || []).some((r) => {
+        const clienteRef = cap.cliente || r.cliente || r.colores?.[0];
+        return clienteRef === nombre && !["aprobado", "declinado"].includes(r.status);
+      })
+    );
+  }
+  const buscados = buscar ? clientes.filter((c) => c.nombre?.toLowerCase().includes(buscar.toLowerCase()) || c.empresa?.toLowerCase().includes(buscar.toLowerCase()) || c.contacto?.toLowerCase().includes(buscar.toLowerCase())) : clientes;
+  const filtrados = soloPendientes ? buscados.filter((c) => tienePendiente(c.nombre)) : buscados;
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Clientes</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>{clientes.length} cliente{clientes.length !== 1 ? "s" : ""} registrado{clientes.length !== 1 ? "s" : ""}</p></div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
+        <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Clientes</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>{filtrados.length} de {clientes.length} cliente{clientes.length !== 1 ? "s" : ""}</p></div>
         <input value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Buscar cliente..." style={{ padding: "9px 14px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, width: 220, outline: "none", fontFamily: "inherit" }} />
       </div>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: T.slate, fontWeight: 600, marginBottom: 20, cursor: "pointer" }}>
+        <input type="checkbox" checked={soloPendientes} onChange={(e) => setSoloPendientes(e.target.checked)} />
+        Mostrar solo clientes con algo pendiente (protos o referencias sin Aprobar/Declinar)
+      </label>
       {!clientes.length && (
         <div style={{ textAlign: "center", padding: 48, color: T.slate }}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>🏢</div>
           <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 8 }}>Sin clientes registrados</div>
-          <div style={{ fontSize: 13 }}>Ve a <strong>Administración</strong> en el menú para agregar clientes.</div>
+          <div style={{ fontSize: 13 }}>Ve a <strong>Administrador General → Clientes</strong> en el menú para agregar clientes.</div>
+        </div>
+      )}
+      {!!clientes.length && !filtrados.length && (
+        <div style={{ textAlign: "center", padding: 48, color: T.slate }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 8 }}>Ningún cliente tiene algo pendiente ahora mismo</div>
+          <div style={{ fontSize: 13 }}>Desmarca "Mostrar solo clientes con algo pendiente" para ver el listado completo.</div>
         </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 14 }}>
         {filtrados.map((c, i) => {
           const peds = pedidosDelCliente(c.nombre);
           const activos = peds.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
-          const historico = peds.filter((p) => p.estado === "cumplido").length;
-          const totalPrendas = peds.filter((p) => p.estado !== "cumplido").reduce((s, p) => s + p.referencias.reduce((a, r) => a + r.total, 0), 0);
+          const historico = peds.filter((p) => p.estado === "cerrado").length;
+          const totalPrendas = peds.filter((p) => p.estado !== "cerrado").reduce((s, p) => s + p.referencias.reduce((a, r) => a + r.total, 0), 0);
           return (
             <div key={c.id || i} style={{ background: T.white, borderRadius: 12, padding: 20, border: `1px solid ${T.border}` }}
               onMouseEnter={(e) => (e.currentTarget.style.boxShadow = "0 4px 20px rgba(26,26,46,0.09)")}
@@ -2774,28 +5423,32 @@ function ClientesPedidosView({ pedidoConfig, pedidos }) {
   );
 }
 
-function AdminPedidosView({ pedidoConfig, onSave }) {
+function AdminPedidosView({ pedidoConfig, onSave, config, onSaveConfig }) {
   const [tab, setTab] = useState("clientes");
-  const [newCliente, setNewCliente] = useState({ nombre: "", empresa: "", contacto: "", email: "" });
+  const [newCliente, setNewCliente] = useState({ nombre: "", contacto: "", email: "", telefono: "" });
   const [newVendedor, setNewVendedor] = useState("");
   const [editIdx, setEditIdx] = useState(null);
-  const clientes = pedidoConfig.clientes || [];
+  // Los clientes (a diferencia de los vendedores) ya no son propios de
+  // Pedidos: se gestionan sobre la misma lista que Administrador General →
+  // Clientes (config.clientes), para que ambas pantallas siempre muestren
+  // los mismos clientes.
+  const clientes = config.clientes || [];
   const vendedores = pedidoConfig.vendedores || [];
   function addCliente() {
     if (!newCliente.nombre.trim()) return;
     const updated = editIdx !== null ? clientes.map((c, i) => (i === editIdx ? { ...newCliente } : c)) : [...clientes, { ...newCliente, id: uid() }];
-    onSave({ ...pedidoConfig, clientes: updated });
-    setNewCliente({ nombre: "", empresa: "", contacto: "", email: "" });
+    onSaveConfig({ clientes: updated });
+    setNewCliente({ nombre: "", contacto: "", email: "", telefono: "" });
     setEditIdx(null);
   }
   function editCliente(i) { setNewCliente({ ...clientes[i] }); setEditIdx(i); }
-  function delCliente(i) { onSave({ ...pedidoConfig, clientes: clientes.filter((_, idx) => idx !== i) }); }
+  function delCliente(i) { onSaveConfig({ clientes: clientes.filter((_, idx) => idx !== i) }); }
   function addVendedor() {
     if (!newVendedor.trim()) return;
-    onSave({ ...pedidoConfig, vendedores: [...vendedores, { id: uid(), nombre: newVendedor.trim() }] });
+    onSave({ vendedores: [...vendedores, { id: uid(), nombre: newVendedor.trim() }] });
     setNewVendedor("");
   }
-  function delVendedor(id) { onSave({ ...pedidoConfig, vendedores: vendedores.filter((v) => v.id !== id) }); }
+  function delVendedor(id) { onSave({ vendedores: vendedores.filter((v) => v.id !== id) }); }
   return (
     <div>
       <h2 style={{ margin: "0 0 20px", fontSize: 20, fontWeight: 800, color: T.ink }}>Admin Pedidos</h2>
@@ -2810,12 +5463,12 @@ function AdminPedidosView({ pedidoConfig, onSave }) {
             <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 14 }}>{editIdx !== null ? "Editar Cliente" : "Nuevo Cliente"}</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <Field label="Nombre / Empresa"><FInput value={newCliente.nombre} onChange={(v) => setNewCliente((c) => ({ ...c, nombre: v }))} placeholder="Ej: INVERSIONES CONBOT SAS" /></Field>
-              <Field label="Código / Alias"><FInput value={newCliente.empresa} onChange={(v) => setNewCliente((c) => ({ ...c, empresa: v }))} placeholder="Ej: CONBOT" /></Field>
+              <Field label="Teléfono"><FInput value={newCliente.telefono} onChange={(v) => setNewCliente((c) => ({ ...c, telefono: v }))} placeholder="+57 300 000 0000" /></Field>
               <Field label="Contacto"><FInput value={newCliente.contacto} onChange={(v) => setNewCliente((c) => ({ ...c, contacto: v }))} placeholder="Nombre contacto" /></Field>
               <Field label="Email"><FInput value={newCliente.email} onChange={(v) => setNewCliente((c) => ({ ...c, email: v }))} placeholder="correo@ejemplo.com" /></Field>
             </div>
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 12 }}>
-              {editIdx !== null && <Btn variant="secondary" onClick={() => { setNewCliente({ nombre: "", empresa: "", contacto: "", email: "" }); setEditIdx(null); }}>Cancelar</Btn>}
+              {editIdx !== null && <Btn variant="secondary" onClick={() => { setNewCliente({ nombre: "", contacto: "", email: "", telefono: "" }); setEditIdx(null); }}>Cancelar</Btn>}
               <Btn onClick={addCliente}>{editIdx !== null ? "Guardar cambios" : "+ Agregar Cliente"}</Btn>
             </div>
           </div>
@@ -2829,7 +5482,7 @@ function AdminPedidosView({ pedidoConfig, onSave }) {
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 800, color: T.ink }}>{c.nombre}</div>
-                  <div style={{ fontSize: 12, color: T.slate }}>{[c.empresa, c.contacto, c.email].filter(Boolean).join(" · ")}</div>
+                  <div style={{ fontSize: 12, color: T.slate }}>{[c.telefono, c.contacto, c.email].filter(Boolean).join(" · ")}</div>
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <button onClick={() => editCliente(i)} style={{ padding: "5px 10px", background: T.denimBg, border: `1px solid ${T.denim}44`, borderRadius: 6, color: T.denim, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>✏</button>
@@ -2861,11 +5514,855 @@ function AdminPedidosView({ pedidoConfig, onSave }) {
   );
 }
 
+// ─── INFORME DE PEDIDOS VIGENTES POR CLIENTE (Busint en vivo) ────────────────
+// A diferencia del resto de "Pedidos" (que lee la colección `pedidos` ya
+// sincronizada en Firestore), este informe consulta la API de Busint EN VIVO
+// cada vez que el usuario pulsa "Consultar Busint", para el rango de fechas
+// exacto que escoja — no depende de lo que ya esté guardado localmente.
+// Solo muestra los pedidos cuya fecha de despacho es hoy o está en el
+// futuro (es decir, los que siguen vigentes / pendientes de entrega),
+// agrupados por cliente. Requiere que la Cloud Function
+// `getPedidosVigentesBusint` esté desplegada y los secrets BUSINT_TOKEN /
+// BUSINT_BASE_URL ya configurados (los mismos que usa la sincronización
+// automática cada 6 horas) — ver README_BUSINT_SYNC.md.
+function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
+  const [fechaInicio, setFechaInicio] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().slice(0, 10);
+  });
+  const [fechaFin, setFechaFin] = useState(today());
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState("");
+  const [resultado, setResultado] = useState(null);
+  const [expandidos, setExpandidos] = useState(new Set());
+  const [pedidosDetalle, setPedidosDetalle] = useState(new Set());
+  // Pedidos que Busint está generando mal (p. ej. por algo interno de
+  // facturación aún sin identificar) y que el administrador decidió ocultar
+  // DEL APLICATIVO mientras se resuelve con Busint — no se toca nada en
+  // Busint, solo se guarda el número en esta colección y tanto el backend
+  // (getPedidosVigentesBusint) como esta pantalla lo filtran.
+  const [ocultos, setOcultos] = useState([]);
+  const [confirmOcultar, setConfirmOcultar] = useState(null);
+  const [showOcultosPanel, setShowOcultosPanel] = useState(false);
+  // Última carga del reporte "Ventas Perdidas" (subido a mano — ningún
+  // endpoint de la API genérica de Busint trae Cumplido/Ventas Perdidas). Se
+  // guarda un doc nuevo por cada subida en "ventas_perdidas_cargas" y aquí
+  // se toma siempre el más reciente por creadoTs, igual que Planeación con
+  // sus cargas.
+  const [ventasPerdidasCargas, setVentasPerdidasCargas] = useState([]);
+  // Cargas de lotes del módulo Planeación ("planeacion_cargas" — la misma
+  // colección que llena Planta al subir su archivo de producción). Cada lote
+  // trae "Cant Cortada" por pedido+referencia — es la única fuente que
+  // confirma con certeza que algo YA se cortó, sin importar si Busint todavía
+  // no lo factura ni lo traslada (p. ej. sigue en planta de confección).
+  const [planeacionCargas, setPlaneacionCargas] = useState([]);
+  const [subiendoVP, setSubiendoVP] = useState(false);
+  const [congelando, setCongelando] = useState(false);
+  const [resultCongelar, setResultCongelar] = useState(null);
+  const vpInputRef = useRef(null);
+  // Panel temporal de depuración (solo admin) para ver, crudo, qué quedó
+  // guardado en planeacion_cargas para un pedido puntual — usado para
+  // encontrar por qué "Cant Cortada" no está cruzando para ciertas
+  // referencias. Se puede quitar una vez resuelto.
+  const [debugPedido, setDebugPedido] = useState("");
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "pedidos_ocultos_busint"), (snap) => {
+      setOcultos(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, []);
+  const ocultosSet = new Set(ocultos.map((o) => o.numero));
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "ventas_perdidas_cargas"), (snap) => {
+      setVentasPerdidasCargas(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_cargas"), (snap) => {
+      setPlaneacionCargas(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, []);
+  const ultimaCargaVP = ventasPerdidasCargas.reduce((max, c) => (!max || (c.creadoTs || 0) > (max.creadoTs || 0) ? c : max), null);
+  const vpMap = new Map((ultimaCargaVP?.filas || []).map((f) => [String(f.numero).trim(), f]));
+  // Por pedido+referencia — permite calcular cuánto de cada referencia ya
+  // quedó resuelto en Busint (facturado + traslados + venta perdida) sin
+  // depender de que Corte haya registrado el corte a mano en el aplicativo.
+  const vpRefMap = new Map((ultimaCargaVP?.filasPorRef || []).map((f) => [`${f.numero}__${f.ref}`, f]));
+  // Carga más reciente de Planeación (solo para mostrar la fecha en pantalla
+  // — el cálculo de abajo NO se limita a esta, ver nota siguiente).
+  const ultimaCargaPlaneacion = [...planeacionCargas].sort((a, b) =>
+    String(b.creadoEn || b.fecha || "").localeCompare(String(a.creadoEn || a.fecha || ""))
+  )[0] || null;
+  // Unidades ya cortadas por pedido+referencia, revisando TODAS las cargas de
+  // Planeación guardadas (no solo la última). Cada carga es una foto del
+  // reporte de producción del día en que se subió — un lote que ya se
+  // terminó y se facturó puede dejar de aparecer en las cargas más nuevas,
+  // así que quedarse solo con la última carga pierde el registro de que ese
+  // lote SÍ se cortó. Para evitarlo: primero se agrupa por número de lote
+  // (un mismo lote puede aparecer en varias cargas a medida que avanza) y se
+  // toma el mayor valor visto para ese lote en cualquier carga; luego se
+  // suma por pedido+referencia entre los distintos lotes.
+  //
+  // El campo "Cant Cortada" del archivo llega en 0 en las cargas reales (no
+  // lo está poblando el reporte que se sube a diario) — confirmado con el
+  // usuario. Lo que SÍ trae el dato confiable es el inventario por etapa
+  // (Corte, BMP, Planta, BPT, Semiterminado): si un lote tiene unidades en
+  // cualquiera de esas etapas, es porque YA se cortó (no se puede estar en
+  // planta de confección sin haber pasado por corte primero). Por eso el
+  // "cortado" de cada lote es el máximo entre Cant Cortada y la suma de esas
+  // columnas de inventario en proceso.
+  const lotesCortadoMap = new Map();
+  {
+    const porNumLote = new Map();
+    planeacionCargas.forEach((carga) => {
+      (carga.lotes || []).forEach((l) => {
+        const numPedido = String(l.numPedido ?? "").trim();
+        const ref = String(l.referencia ?? "").trim();
+        if (!numPedido || !ref) return;
+        const numLote = String(l.numLote ?? "").trim() || `${numPedido}__${ref}__sinlote`;
+        const enProceso =
+          (Number(l.invCorte) || 0) +
+          (Number(l.invBMP) || 0) +
+          (Number(l.invPlanta) || 0) +
+          (Number(l.invBPT) || 0) +
+          (Number(l.invSemiterminado) || 0);
+        const cantidad = Math.max(Number(l.cantCortada) || 0, enProceso);
+        const actual = porNumLote.get(numLote);
+        if (!actual || cantidad > actual.cantidad) {
+          porNumLote.set(numLote, { numPedido, ref, cantidad });
+        }
+      });
+    });
+    porNumLote.forEach(({ numPedido, ref, cantidad }) => {
+      const clave = `${numPedido}__${ref}`;
+      lotesCortadoMap.set(clave, (lotesCortadoMap.get(clave) || 0) + cantidad);
+    });
+  }
+  // Un pedido cuenta como visible en pantalla solo si no está oculto a mano
+  // Y Busint no lo marca ya "Cumplido" en el reporte de Ventas Perdidas
+  // (aunque la API de órdenes lo siga devolviendo).
+  function esVisible(p) {
+    return !ocultosSet.has(p.numero) && !vpMap.get(String(p.numero).trim())?.cumplido;
+  }
+  async function subirVentasPerdidas(file) {
+    if (!file) return;
+    setSubiendoVP(true);
+    try {
+      const { porPedido, porReferencia } = await parseVentasPerdidasBusint(file);
+      await fsSave("ventas_perdidas_cargas", uid(), { creadoEn: today(), creadoTs: Date.now(), filas: porPedido, filasPorRef: porReferencia });
+    } catch (err) {
+      setError(err?.message || "No se pudo leer el archivo. Verifica que sea el reporte de Ventas Perdidas de Busint (.xlsx).");
+    }
+    setSubiendoVP(false);
+  }
+  // "Congelar" toma la lista vigente que se ve en pantalla (ya filtrada por
+  // ocultos + Ventas Perdidas) y la escribe en pedidos_activos — la única
+  // colección que leen tanto Pedidos como Corte desde ahora. Los pedidos que
+  // ya existían conservan cortesRealizados/seguimiento/precio de corte
+  // (fusión, no reemplazo); los que estaban activos y ya no aparecen en esta
+  // consulta se cierran solos con un motivo.
+  async function congelarBaseDeCorte() {
+    if (!resultado) return;
+    setCongelando(true);
+    setResultCongelar(null);
+    try {
+      const vigentesFiltrados = [];
+      resultado.porCliente.forEach((g) => {
+        g.pedidos.forEach((p) => {
+          if (!esVisible(p)) return;
+          vigentesFiltrados.push({ ...p, cliente: g.cliente });
+        });
+      });
+      const numerosNuevos = new Set(vigentesFiltrados.map((p) => String(p.numero).trim()));
+      const existentesPorNumero = new Map((pedidosActivos || []).map((p) => [String(p.numero || "").trim(), p]));
+      let nuevos = 0, actualizados = 0, cerrados = 0;
+      for (const p of vigentesFiltrados) {
+        const numero = String(p.numero).trim();
+        const existente = existentesPorNumero.get(numero);
+        const precioPorRef = new Map((existente?.referencias || []).map((r) => [r.ref, r.precioCortePrenda || 0]));
+        const referencias = (p.referencias || []).map((r) => ({
+          id: r.id || uid(),
+          ref: r.ref,
+          descripcion: r.descripcion,
+          tallas: { ...r.tallas },
+          total: r.total,
+          precioCortePrenda: precioPorRef.get(r.ref) || 0,
+        }));
+        const doc = {
+          id: numero,
+          numero,
+          cliente: p.cliente,
+          fechaPedido: p.fechaPedido,
+          fechaDespacho: p.fechaDespacho,
+          referencias,
+          cortesRealizados: existente?.cortesRealizados || [],
+          seguimiento: existente?.seguimiento || {},
+          estado: existente?.estado === "terminado" ? "terminado" : "activo",
+          motivoCierre: null,
+          fechaCumplido: null,
+          origen: "busint_vigentes",
+          congeladoEn: today(),
+          creadoEn: existente?.creadoEn || today(),
+        };
+        await fsSave("pedidos_activos", numero, doc);
+        if (existente) actualizados++; else nuevos++;
+      }
+      for (const existente of pedidosActivos || []) {
+        if (existente.estado === "cerrado") continue;
+        const numero = String(existente.numero || "").trim();
+        if (!numero || numerosNuevos.has(numero)) continue;
+        const vp = vpMap.get(numero);
+        const motivoCierre = vp?.cumplido ? (vp.totalVentasPerdidas > 0 ? "venta_perdida" : "facturado") : "ya_no_vigente";
+        await fsSave("pedidos_activos", existente.id, { ...existente, estado: "cerrado", motivoCierre, fechaCumplido: today() });
+        cerrados++;
+      }
+      setResultCongelar({ total: vigentesFiltrados.length, nuevos, actualizados, cerrados });
+    } catch (err) {
+      setResultCongelar({ error: err?.message || "No se pudo congelar la lista." });
+    }
+    setCongelando(false);
+  }
+
+  async function ocultarPedido(numero) {
+    await fsSave("pedidos_ocultos_busint", numero, { numero, ocultadoEn: today() });
+    setConfirmOcultar(null);
+  }
+  async function restaurarPedido(numero) {
+    await fsDelete("pedidos_ocultos_busint", numero);
+  }
+
+  function toggleExpand(cliente) {
+    setExpandidos((s) => {
+      const next = new Set(s);
+      if (next.has(cliente)) next.delete(cliente);
+      else next.add(cliente);
+      return next;
+    });
+  }
+
+  function toggleDetalle(numero) {
+    setPedidosDetalle((s) => {
+      const next = new Set(s);
+      if (next.has(numero)) next.delete(numero);
+      else next.add(numero);
+      return next;
+    });
+  }
+
+  // Mapa numero → doc de pedidos_activos, para cruzar cada pedido vigente
+  // con lo que ya se cortó (si es que ya se congeló al menos una vez).
+  const pedidosActivosPorNumero = new Map((pedidosActivos || []).map((pa) => [String(pa.numero || "").trim(), pa]));
+
+  // Arma la tabla horizontal de detalle de un pedido: una fila por
+  // referencia (sumando variantes de color/pinta), con una columna por cada
+  // talla que aparezca en ese pedido, más Total/Cortado/Pendiente.
+  //
+  // "Cortado" ya NO depende solo de que Corte haya registrado el corte a
+  // mano en el aplicativo (esa disciplina no se estaba dando de forma
+  // confiable). Se cruzan hasta tres fuentes y se toma la que reporte MÁS
+  // unidades cortadas para esa referencia (nunca se subestima si una fuente
+  // no tiene el dato):
+  //   1) Planeación (Cant Cortada por lote, archivo de Planta) — confirma
+  //      corte físico real aunque Busint todavía no factura ni traslada esa
+  //      referencia (p. ej. sigue en planta de confección, bodega de materia
+  //      prima o inventario de corte). Es la fuente más confiable cuando
+  //      existe, porque no depende de que Busint ya haya resuelto la venta.
+  //   2) Ventas Perdidas (Busint) — lo que Busint ya facturó, trasladó
+  //      (externo o consignación) o dio de baja como venta perdida.
+  //   3) Corte (registrado a mano en el aplicativo) — último respaldo si
+  //      ninguna de las dos anteriores trae esa referencia para ese pedido.
+  function detalleHorizontal(p, pedidoActivo, vpRefMap, lotesCortadoMap) {
+    const porRef = new Map();
+    p.referencias.forEach((r) => {
+      if (!porRef.has(r.ref)) porRef.set(r.ref, { ref: r.ref, descripcion: r.descripcion, tallas: {}, total: 0 });
+      const acc = porRef.get(r.ref);
+      Object.entries(r.tallas || {}).forEach(([talla, cant]) => {
+        if (!(cant > 0)) return;
+        acc.tallas[talla] = (acc.tallas[talla] || 0) + cant;
+        acc.total += cant;
+      });
+    });
+    const cortadoPorRefApp = new Map();
+    (pedidoActivo?.cortesRealizados || []).forEach((c) => {
+      (c.refs || []).forEach((cr) => {
+        const suma = Object.values(cr.tallas || {}).reduce((a, b) => a + (b || 0), 0);
+        cortadoPorRefApp.set(cr.ref, (cortadoPorRefApp.get(cr.ref) || 0) + suma);
+      });
+    });
+    const tallasDistintas = [];
+    porRef.forEach((r) => {
+      Object.keys(r.tallas).forEach((t) => { if (!tallasDistintas.includes(t)) tallasDistintas.push(t); });
+    });
+    const filas = [...porRef.values()].map((r) => {
+      const clave = `${p.numero}__${r.ref}`;
+      const vp = vpRefMap?.get(clave);
+      const cortadoVP = vp ? (vp.totalFacturada || 0) + (vp.totalTrasExt || 0) + (vp.totalTrasCon || 0) + Math.abs(vp.totalVentasPerdidas || 0) : null;
+      const cortadoPlanta = lotesCortadoMap?.has(clave) ? lotesCortadoMap.get(clave) : null;
+      const cortadoApp = cortadoPorRefApp.get(r.ref) || 0;
+      const candidatos = [{ valor: cortadoApp, fuente: "app" }];
+      if (cortadoVP !== null) candidatos.push({ valor: cortadoVP, fuente: "busint" });
+      if (cortadoPlanta !== null) candidatos.push({ valor: cortadoPlanta, fuente: "planta" });
+      const mejor = candidatos.reduce((max, c) => (c.valor > max.valor ? c : max), candidatos[0]);
+      const cortado = mejor.valor;
+      const fuente = mejor.fuente;
+      return { ...r, cortado, pendiente: Math.max(0, r.total - cortado), fuente };
+    });
+    return { tallasDistintas, filas };
+  }
+
+  async function consultar() {
+    setError("");
+    setCargando(true);
+    setResultado(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getPedidosVigentesBusint");
+      const resp = await llamar({ fechaInicio, fechaFin });
+      setResultado(resp.data);
+      setExpandidos(new Set((resp.data.porCliente || []).map((g) => g.cliente)));
+    } catch (err) {
+      setError(
+        err?.message ||
+          "No se pudo consultar la API de Busint. Verifica que la función getPedidosVigentesBusint esté desplegada y las credenciales configuradas."
+      );
+    }
+    setCargando(false);
+  }
+
+  return (
+    <div>
+      {confirmOcultar && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 420, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.ink, marginBottom: 12 }}>⚠ Ocultar pedido #{confirmOcultar}</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>
+              Esto solo lo quita de este aplicativo — <strong>no borra ni modifica nada en Busint</strong>. Úsalo mientras se resuelve con Busint por qué se está creando este pedido. Lo puedes restaurar en cualquier momento desde "👁 Ocultos" arriba.
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmOcultar(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={() => ocultarPedido(confirmOcultar)}>Sí, ocultar</Btn>
+            </div>
+          </div>
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 10, flexWrap: "wrap" }}>
+        <div>
+          <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+            Fecha Inicio
+          </label>
+          <input
+            type="date"
+            value={fechaInicio}
+            onChange={(e) => setFechaInicio(e.target.value)}
+            style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, fontFamily: "inherit" }}
+          />
+        </div>
+        <div>
+          <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+            Fecha Fin
+          </label>
+          <input
+            type="date"
+            value={fechaFin}
+            onChange={(e) => setFechaFin(e.target.value)}
+            style={{ padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, fontFamily: "inherit" }}
+          />
+        </div>
+        <Btn onClick={consultar} disabled={cargando}>
+          {cargando ? "Consultando…" : "📡 Consultar Busint"}
+        </Btn>
+        {isAdmin && ocultos.length > 0 && (
+          <Btn variant="secondary" onClick={() => setShowOcultosPanel((v) => !v)}>
+            👁 Ocultos ({ocultos.length})
+          </Btn>
+        )}
+        {isAdmin && (
+          <>
+            <input
+              type="file"
+              ref={vpInputRef}
+              accept=".xlsx,.xls,.csv"
+              style={{ display: "none" }}
+              onChange={(e) => { const f = e.target.files?.[0]; subirVentasPerdidas(f); e.target.value = ""; }}
+            />
+            <Btn variant="secondary" onClick={() => vpInputRef.current?.click()} disabled={subiendoVP}>
+              {subiendoVP ? "Procesando..." : "📤 Actualizar Ventas Perdidas"}
+            </Btn>
+          </>
+        )}
+        {isAdmin && resultado && (
+          <Btn onClick={congelarBaseDeCorte} disabled={congelando}>
+            {congelando ? "Congelando..." : "🧊 Congelar como base de Corte"}
+          </Btn>
+        )}
+      </div>
+      {ultimaCargaVP && (
+        <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>
+          Último reporte de Ventas Perdidas subido: {ultimaCargaVP.creadoEn} — se usa automáticamente para ocultar de esta lista los pedidos que Busint ya marca "Cumplido" ahí.
+        </div>
+      )}
+      {ultimaCargaPlaneacion && (
+        <div style={{ fontSize: 11, color: T.slate, marginBottom: 10 }}>
+          Planeación: {planeacionCargas.length} carga{planeacionCargas.length === 1 ? "" : "s"} disponible{planeacionCargas.length === 1 ? "" : "s"} para "Cortado" (la más reciente es del {ultimaCargaPlaneacion.creadoEn || ultimaCargaPlaneacion.fecha}) — se revisan todas para no perder lotes que ya salieron del reporte más nuevo.
+        </div>
+      )}
+      {isAdmin && (
+        <div style={{ border: `1px dashed ${T.border}`, borderRadius: 10, padding: 10, marginBottom: 16, background: T.canvas }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 6 }}>
+            🔍 Depurar Planeación (temporal) — escribe un número de pedido para ver crudo qué hay guardado en las {planeacionCargas.length} cargas
+          </div>
+          <input
+            value={debugPedido}
+            onChange={(e) => setDebugPedido(e.target.value)}
+            placeholder="Ej: 1149"
+            style={{ padding: "6px 10px", borderRadius: 8, border: `1px solid ${T.border}`, fontSize: 12, width: 160 }}
+          />
+          {debugPedido.trim() && (() => {
+            const objetivo = debugPedido.trim();
+            const encontrados = [];
+            planeacionCargas.forEach((carga, ci) => {
+              (carga.lotes || []).forEach((l) => {
+                const numPedidoStr = String(l.numPedido ?? "").trim();
+                if (numPedidoStr === objetivo) {
+                  encontrados.push({ ...l, cargaFecha: carga.creadoEn || carga.fecha, cargaIdx: ci });
+                }
+              });
+            });
+            encontrados.sort((a, b) => String(b.cargaFecha || "").localeCompare(String(a.cargaFecha || "")));
+            const conEnProceso = encontrados.map((l) => ({
+              ...l,
+              enProceso:
+                (Number(l.invCorte) || 0) +
+                (Number(l.invBMP) || 0) +
+                (Number(l.invPlanta) || 0) +
+                (Number(l.invBPT) || 0) +
+                (Number(l.invSemiterminado) || 0),
+            }));
+            const maxPorLote = new Map();
+            conEnProceso.forEach((l) => {
+              const key = String(l.numLote ?? "");
+              const cantidad = Math.max(Number(l.cantCortada) || 0, l.enProceso);
+              if (!maxPorLote.has(key) || cantidad > maxPorLote.get(key).cantidad) {
+                maxPorLote.set(key, { numLote: l.numLote, referencia: l.referencia, cantidad });
+              }
+            });
+            return (
+              <div style={{ marginTop: 8, fontSize: 11 }}>
+                <div style={{ color: T.slate, marginBottom: 4 }}>
+                  {encontrados.length === 0
+                    ? `No se encontró ningún lote con numPedido === "${objetivo}" (comparando como texto) en ninguna de las ${planeacionCargas.length} cargas.`
+                    : `${encontrados.length} fila(s) encontradas (ordenadas de carga más reciente a más vieja). Resumen — máximo cortado visto por lote, tomando max(cantCortada, inventario en proceso) — esto es lo que usa el cruce:`}
+                </div>
+                {maxPorLote.size > 0 && (
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10, marginBottom: 10 }}>
+                    <thead>
+                      <tr style={{ color: T.slate, textAlign: "left" }}>
+                        <th style={{ padding: 4 }}>numLote</th>
+                        <th style={{ padding: 4 }}>referencia</th>
+                        <th style={{ padding: 4 }}>MAX cortado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...maxPorLote.values()].map((l, i) => (
+                        <tr key={i} style={{ borderTop: `1px solid ${T.border}`, fontWeight: 700 }}>
+                          <td style={{ padding: 4 }}>{JSON.stringify(l.numLote)}</td>
+                          <td style={{ padding: 4 }}>{JSON.stringify(l.referencia)}</td>
+                          <td style={{ padding: 4, color: l.cantidad > 0 ? T.jade : T.coral }}>{l.cantidad}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                {encontrados.length > 0 && (
+                  <>
+                    <div style={{ color: T.slate, marginBottom: 4 }}>Detalle crudo por carga (más reciente primero):</div>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                      <thead>
+                        <tr style={{ color: T.slate, textAlign: "left" }}>
+                          <th style={{ padding: 4 }}>numLote</th>
+                          <th style={{ padding: 4 }}>referencia</th>
+                          <th style={{ padding: 4 }}>cantCortada</th>
+                          <th style={{ padding: 4 }}>en proceso (Inv*)</th>
+                          <th style={{ padding: 4 }}>carga</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {conEnProceso.map((l, i) => (
+                          <tr key={i} style={{ borderTop: `1px solid ${T.border}` }}>
+                            <td style={{ padding: 4 }}>{JSON.stringify(l.numLote)}</td>
+                            <td style={{ padding: 4 }}>{JSON.stringify(l.referencia)}</td>
+                            <td style={{ padding: 4 }}>{JSON.stringify(l.cantCortada)}</td>
+                            <td style={{ padding: 4 }}>{l.enProceso}</td>
+                            <td style={{ padding: 4 }}>{l.cargaFecha}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
+                )}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+      {resultCongelar && (
+        <div style={{ padding: "10px 16px", background: resultCongelar.error ? T.coralBg : T.jadeBg, borderRadius: 10, border: `1px solid ${resultCongelar.error ? T.coral : T.jade}44`, color: resultCongelar.error ? T.coral : T.jade, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
+          {resultCongelar.error
+            ? `⚠ ${resultCongelar.error}`
+            : `✓ Congelado: ${resultCongelar.total} pedidos vigentes (${resultCongelar.nuevos} nuevos, ${resultCongelar.actualizados} actualizados) — ${resultCongelar.cerrados} pedido${resultCongelar.cerrados === 1 ? "" : "s"} que ya no está${resultCongelar.cerrados === 1 ? "" : "n"} vigente${resultCongelar.cerrados === 1 ? "" : "s"} se cerró${resultCongelar.cerrados === 1 ? "" : "n"} automáticamente. Ya puedes verlos/cortarlos en Pedidos y en Corte.`}
+        </div>
+      )}
+      {showOcultosPanel && (
+        <div style={{ background: T.canvas, borderRadius: 12, border: `1px solid ${T.border}`, padding: 16, marginBottom: 16 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: T.ink, marginBottom: 10 }}>Pedidos ocultos en este aplicativo</div>
+          {!ocultos.length ? (
+            <div style={{ fontSize: 13, color: T.slate }}>No hay pedidos ocultos.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {ocultos.map((o) => (
+                <div key={o.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: T.white, borderRadius: 8, border: `1px solid ${T.border}` }}>
+                  <div style={{ fontSize: 13, color: T.ink }}>
+                    <strong>#{o.numero}</strong>
+                    <span style={{ color: T.slate, fontSize: 11, marginLeft: 8 }}>ocultado {o.ocultadoEn || ""}</span>
+                  </div>
+                  <Btn small variant="ghost" onClick={() => restaurarPedido(o.numero)}>↺ Restaurar</Btn>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>
+        Consulta la API de Busint en vivo (no la base de datos local) y muestra los pedidos que todavía no se han facturado ni despachado (factura normal, traslado externo o en consignación). Para los que faltan, cruza con la carga más reciente de Planeación para mostrar en qué etapa van, o si aún no tienen lote ("sin cortar"). Los que ya vencieron su fecha de despacho sin facturar aparecen primero, marcados como <strong style={{ color: T.coral }}>vencidos</strong>.
+      </div>
+      {resultado?.avisoFacturacion && (
+        <div style={{ padding: "12px 16px", background: T.amberBg, borderRadius: 10, border: `1px solid ${T.amber}44`, color: T.amber, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
+          ⚠ {resultado.avisoFacturacion}
+        </div>
+      )}
+      {error && (
+        <div style={{ padding: "12px 16px", background: T.coralBg, borderRadius: 10, border: `1px solid ${T.coral}44`, color: T.coral, fontWeight: 600, fontSize: 13, marginBottom: 16 }}>
+          {error}
+        </div>
+      )}
+      {resultado && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 20 }}>
+            <div style={{ background: T.denimBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.denim}22` }}>
+              <div style={{ fontSize: 22, fontWeight: 900, color: T.denim }}>
+                {resultado.porCliente.reduce((s, g) => s + g.pedidos.filter(esVisible).length, 0)}
+              </div>
+              <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>Pedidos vigentes</div>
+            </div>
+            <div style={{ background: T.coralBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.coral}22` }}>
+              <div style={{ fontSize: 22, fontWeight: 900, color: T.coral }}>
+                {resultado.porCliente.reduce((s, g) => s + g.pedidos.filter((p) => p.vencido && esVisible(p)).length, 0)}
+              </div>
+              <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>Vencidos sin cortar</div>
+            </div>
+            <div style={{ background: T.violetBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.violet}22` }}>
+              <div style={{ fontSize: 22, fontWeight: 900, color: T.violet }}>
+                {resultado.porCliente.filter((g) => g.pedidos.some(esVisible)).length}
+              </div>
+              <div style={{ fontSize: 11, color: T.slate, fontWeight: 600 }}>Clientes</div>
+            </div>
+            <div style={{ background: T.jadeBg, borderRadius: 12, padding: "14px 16px", border: `1px solid ${T.jade}22` }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: T.jade }}>
+                {resultado.fechaInicio} → {resultado.fechaFin}
+              </div>
+              <div style={{ fontSize: 11, color: T.slate, fontWeight: 600, marginTop: 4 }}>Rango consultado</div>
+            </div>
+          </div>
+          {!resultado.porCliente.length ? (
+            <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
+              No hay pedidos vigentes (todos ya están 100% cortados o no hay pedidos de Busint en ese rango de fechas).
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {resultado.porCliente.map((g) => {
+                const expandido = expandidos.has(g.cliente);
+                const pedidosVisibles = g.pedidos.filter(esVisible);
+                return (
+                  <div key={g.cliente} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, overflow: "hidden" }}>
+                    <div
+                      onClick={() => toggleExpand(g.cliente)}
+                      style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: 18, cursor: "pointer" }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 800, fontSize: 15, color: T.ink }}>{g.cliente}</div>
+                        <div style={{ fontSize: 12, color: T.slate, marginTop: 2 }}>
+                          {pedidosVisibles.length} pedido{pedidosVisibles.length !== 1 ? "s" : ""} · {fmtNum(pedidosVisibles.reduce((s, p) => s + p.totalUnidades, 0))} unidades
+                        </div>
+                      </div>
+                      <span style={{ fontSize: 18, color: T.slate, transform: expandido ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>
+                        ›
+                      </span>
+                    </div>
+                    {expandido && (
+                      <div style={{ padding: "0 18px 18px" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                          <thead>
+                            <tr style={{ background: T.canvas }}>
+                              {(isAdmin ? ["", "N° Pedido", "Fecha Pedido", "Fecha Despacho", "Referencias", "Unidades", "Estado", ""] : ["", "N° Pedido", "Fecha Pedido", "Fecha Despacho", "Referencias", "Unidades", "Estado"]).map((h, hi) => (
+                                <th
+                                  key={h + hi}
+                                  style={{
+                                    padding: "8px 10px",
+                                    textAlign: h === "Unidades" ? "right" : "left",
+                                    fontWeight: 700,
+                                    fontSize: 10,
+                                    color: T.slate,
+                                    textTransform: "uppercase",
+                                    width: hi === 0 ? 24 : undefined,
+                                  }}
+                                >
+                                  {h}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {pedidosVisibles.map((p) => {
+                              const detalleAbierto = pedidosDetalle.has(p.numero);
+                              return (
+                                <React.Fragment key={p.numero}>
+                                  <tr
+                                    onClick={() => toggleDetalle(p.numero)}
+                                    style={{
+                                      borderBottom: detalleAbierto ? "none" : `1px solid ${T.border}`,
+                                      background: p.vencido ? T.coralBg : "transparent",
+                                      cursor: "pointer",
+                                    }}
+                                  >
+                                    <td style={{ padding: "8px 4px", textAlign: "center", color: T.slate }}>
+                                      <span style={{ display: "inline-block", transform: detalleAbierto ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>›</span>
+                                    </td>
+                                    <td style={{ padding: "8px 10px", fontWeight: 800, color: T.denim }}>#{p.numero}</td>
+                                    <td style={{ padding: "8px 10px", color: T.ink }}>{p.fechaPedido || "—"}</td>
+                                    <td style={{ padding: "8px 10px", color: p.vencido ? T.coral : T.ink, fontWeight: p.vencido ? 800 : 400 }}>
+                                      {p.fechaDespacho || "—"}
+                                      {p.vencido && (
+                                        <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, color: T.coral }}>🚨 VENCIDO</span>
+                                      )}
+                                    </td>
+                                    <td style={{ padding: "8px 10px", color: T.slate }}>
+                                      {p.referencias.map((r) => r.ref).filter(Boolean).join(", ") || "—"}
+                                    </td>
+                                    <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, color: T.ink }}>{fmtNum(p.totalUnidades)}</td>
+                                    <td style={{ padding: "8px 10px", color: T.slate, minWidth: 140 }}>
+                                      {p.tieneLote ? (
+                                        <span style={{ padding: "3px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: T.amberBg, color: T.amber, whiteSpace: "nowrap" }}>
+                                          {p.etapas.join(", ")}
+                                        </span>
+                                      ) : (
+                                        <span style={{ padding: "3px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: T.coralBg, color: T.coral, whiteSpace: "nowrap" }}>
+                                          🔴 Sin cortar
+                                        </span>
+                                      )}
+                                      {p.pctFacturado > 0 && (
+                                        <div style={{ fontSize: 10, color: T.slate, marginTop: 3 }}>
+                                          {p.pctFacturado}% facturado
+                                        </div>
+                                      )}
+                                    </td>
+                                    {isAdmin && (
+                                      <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setConfirmOcultar(p.numero);
+                                          }}
+                                          title="Ocultar este pedido del aplicativo (no afecta Busint)"
+                                          style={{ padding: "5px 10px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 6, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+                                        >
+                                          🗑 Ocultar
+                                        </button>
+                                      </td>
+                                    )}
+                                  </tr>
+                                  {detalleAbierto && (() => {
+                                    const pedidoActivo = pedidosActivosPorNumero.get(String(p.numero).trim());
+                                    const { tallasDistintas, filas } = detalleHorizontal(p, pedidoActivo, vpRefMap, lotesCortadoMap);
+                                    const algunaFuentePlanta = filas.some((r) => r.fuente === "planta");
+                                    const algunaFuenteApp = filas.some((r) => r.fuente === "app");
+                                    return (
+                                    <tr style={{ borderBottom: `1px solid ${T.border}` }}>
+                                      <td colSpan={isAdmin ? 8 : 7} style={{ padding: "0 10px 12px 34px", background: T.canvas }}>
+                                        <div style={{ fontSize: 10, color: T.slate, margin: "6px 0" }}>
+                                          "Cortado"/"Pendiente" se calculan tomando el máximo entre lo que confirma Planeación (Cant Cortada por lote, incluye lo que ya se cortó aunque siga en planta o bodega sin facturar), lo que confirma el reporte de Ventas Perdidas (facturado + traslados + venta perdida) y lo registrado a mano en Corte
+                                          {algunaFuentePlanta ? "; las referencias marcadas (planta) toman el dato de Planeación" : ""}
+                                          {algunaFuenteApp ? "; las referencias marcadas (app) no aparecen en Planeación ni en Ventas Perdidas y usan lo registrado en Corte" : ""}.
+                                        </div>
+                                        <div style={{ overflowX: "auto" }}>
+                                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                                            <thead>
+                                              <tr>
+                                                {["Referencia", "Descripción", ...tallasDistintas, "Total", "Cortado", "Pendiente"].map((h) => (
+                                                  <th
+                                                    key={h}
+                                                    style={{
+                                                      padding: "6px 8px",
+                                                      textAlign: h === "Referencia" || h === "Descripción" ? "left" : "right",
+                                                      fontWeight: 700,
+                                                      fontSize: 9,
+                                                      color: T.slate,
+                                                      textTransform: "uppercase",
+                                                      borderBottom: `1px solid ${T.border}`,
+                                                      whiteSpace: "nowrap",
+                                                    }}
+                                                  >
+                                                    {h}
+                                                  </th>
+                                                ))}
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {filas.map((r) => (
+                                                <tr key={r.ref}>
+                                                  <td style={{ padding: "5px 8px", color: T.ink, fontWeight: 700 }}>{r.ref}</td>
+                                                  <td style={{ padding: "5px 8px", color: T.slate }}>{r.descripcion}</td>
+                                                  {tallasDistintas.map((t) => (
+                                                    <td key={t} style={{ padding: "5px 8px", textAlign: "right", color: r.tallas[t] ? T.ink : T.border }}>{r.tallas[t] || "—"}</td>
+                                                  ))}
+                                                  <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 800, color: T.denim }}>{fmtNum(r.total)}</td>
+                                                  <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 700, color: T.jade }}>
+                                                    {fmtNum(r.cortado)}
+                                                    {r.fuente === "planta" && <span style={{ color: T.slate, fontWeight: 600, marginLeft: 4 }}>(planta)</span>}
+                                                    {r.fuente === "app" && <span style={{ color: T.slate, fontWeight: 600, marginLeft: 4 }}>(app)</span>}
+                                                  </td>
+                                                  <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 700, color: r.pendiente > 0 ? T.coral : T.jade }}>{fmtNum(r.pendiente)}</td>
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                    );
+                                  })()}
+                                </React.Fragment>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// Parsea el reporte "Ventas Perdidas" que exportan los asesores de Busint
+// desde su módulo de Ventas (una fila por referencia/talla/color, con
+// columnas "Num Ped", "Referencia", "Cumplido" (S/N), "Cant Pedida", "Cant
+// Facturada", "Cant TrasExt", "Cant TrasCon", "Cant Ventas Perdidas", entre
+// otras). Se confirmó con datos reales que "Cumplido" es el MISMO valor en
+// todas las filas de un mismo pedido, así que basta con tomarlo de
+// cualquiera de sus filas — es la señal propia de Busint de que el pedido
+// ya está cerrado, ya sea porque se facturó completo o porque se dio de
+// baja como venta perdida (el pedido #1445 es justo este segundo caso: 1
+// unidad pedida, 0 facturada, -1 en "Cant Ventas Perdidas", y aun así
+// Cumplido="S"). Ningún endpoint de la API genérica de Busint (revisados
+// los 12 documentados) trae estos campos, por eso este reporte se sube a
+// mano en vez de consultarse en vivo.
+//
+// Además del agregado por pedido (para el chequeo de "Cumplido"), esta
+// función agrega TAMBIÉN por pedido+referencia — es lo que permite mostrar
+// en Vigentes por Cliente cuánto de cada referencia ya se facturó, se
+// trasladó o se dio de baja como venta perdida, y por lo tanto cuánto
+// realmente falta por cortar SIN depender de que Corte haya registrado el
+// corte a mano en el aplicativo (esa disciplina manual es justo lo que no
+// se estaba dando, según explicó el usuario con el pedido de las
+// referencias C-5031/C-5046).
+async function parseVentasPerdidasBusint(file) {
+  const XLSX = await import("xlsx");
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+  const porPedido = new Map();
+  const porReferencia = new Map();
+  rows.forEach((r) => {
+    const numero = String(r["Num Ped"] ?? "").trim();
+    if (!numero) return;
+    if (!porPedido.has(numero)) {
+      porPedido.set(numero, {
+        numero,
+        cliente: String(r["Razon Social"] || r["Nombre Comercial"] || "").trim(),
+        cumplido: String(r["Cumplido"] ?? "").trim().toUpperCase() === "S",
+        totalPedida: 0,
+        totalFacturada: 0,
+        totalVentasPerdidas: 0,
+      });
+    }
+    const acc = porPedido.get(numero);
+    acc.totalPedida += Number(r["Cant Pedida"]) || 0;
+    acc.totalFacturada += Number(r["Cant Facturada"]) || 0;
+    acc.totalVentasPerdidas += Math.abs(Number(r["Cant Ventas Perdidas"]) || 0);
+
+    const ref = String(r["Referencia"] ?? "").trim();
+    if (!ref) return;
+    const claveRef = `${numero}__${ref}`;
+    if (!porReferencia.has(claveRef)) {
+      porReferencia.set(claveRef, {
+        numero,
+        ref,
+        totalPedida: 0,
+        totalFacturada: 0,
+        totalTrasExt: 0,
+        totalTrasCon: 0,
+        totalVentasPerdidas: 0,
+      });
+    }
+    const accRef = porReferencia.get(claveRef);
+    accRef.totalPedida += Number(r["Cant Pedida"]) || 0;
+    accRef.totalFacturada += Number(r["Cant Facturada"]) || 0;
+    accRef.totalTrasExt += Number(r["Cant TrasExt"]) || 0;
+    accRef.totalTrasCon += Number(r["Cant TrasCon"]) || 0;
+    accRef.totalVentasPerdidas += Math.abs(Number(r["Cant Ventas Perdidas"]) || 0);
+  });
+  return { porPedido: [...porPedido.values()], porReferencia: [...porReferencia.values()] };
+}
+
+// Devuelve ícono/color/etiqueta para mostrar por qué se cerró un pedido en
+// pedidos_activos (campo motivoCierre). "manual" es cuando alguien le da clic
+// a "✓ Cumplido" en el detalle del pedido; los otros tres los pone solo el
+// botón "Congelar como base de Corte" en Vigentes por Cliente, comparando
+// contra la consulta en vivo de Busint (y, si está subido, el reporte de
+// Ventas Perdidas).
+function motivoCierreInfo(motivo) {
+  switch (motivo) {
+    case "venta_perdida":
+      return { icon: "💸", color: T.amber, bg: T.amberBg, label: "Venta Perdida (Busint)", desc: "Cerrado por Busint desde" };
+    case "facturado":
+      return { icon: "✅", color: T.jade, bg: T.jadeBg, label: "Facturado (Busint)", desc: "Cerrado por Busint desde" };
+    case "ya_no_vigente":
+      return { icon: "🚫", color: T.coral, bg: T.coralBg, label: "Ya no vigente en Busint", desc: "Dejó de aparecer en Busint desde" };
+    default:
+      return { icon: "✅", color: T.jade, bg: T.jadeBg, label: "Cumplido", desc: "Cumplido" };
+  }
+}
+
 function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, pedidoConfig, onSavePedidoConfig, isAdmin }) {
   const [filtro, setFiltro] = useState("activos");
   const [editPedido, setEditPedido] = useState(null);
   const activos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado");
-  const historico = pedidos.filter((p) => p.estado === "cumplido");
+  // Un único estado de cierre ("cerrado"), con el motivo en motivoCierre — ya
+  // no hay "cumplido"/"cancelado_busint"/"venta_perdida_busint" por separado.
+  // Se cierra automáticamente desde "🧊 Congelar como base de Corte" (pestaña
+  // Vigentes por Cliente) cuando un pedido activo deja de aparecer en la
+  // consulta en vivo de Busint, o a mano desde el detalle del pedido.
+  const historico = pedidos.filter((p) => p.estado === "cerrado");
   const lista = filtro === "activos" ? activos : historico;
   const hoy = new Date();
   const vencidos = activos.filter((p) => p.fechaDespacho && new Date(p.fechaDespacho) < hoy);
@@ -2876,8 +6373,10 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
     <div>
       {editPedido && <EditPedidoModal pedido={editPedido} onSave={(p) => { onUpdatePedido(p); setEditPedido(null); }} onClose={() => setEditPedido(null)} />}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Pedidos</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Seguimiento y control de pedidos Busint</p></div>
-        <Btn onClick={onNewPedido}>+ Cargar Pedido</Btn>
+        <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Pedidos</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Base de pedidos vigentes — se actualiza desde "📡 Vigentes por Cliente (Busint)"</p></div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn variant="secondary" onClick={onNewPedido}>+ Pedido manual</Btn>
+        </div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 20 }}>
         {[
@@ -2921,10 +6420,11 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
         </div>
       )}
       <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
-        {[["activos", `Activos (${activos.length})`], ["historico", `Histórico (${historico.length})`]].map(([v, label]) => (
+        {[["activos", `Activos (${activos.length})`], ["historico", `Histórico (${historico.length})`], ["vigentes_busint", "📡 Vigentes por Cliente (Busint)"]].map(([v, label]) => (
           <button key={v} onClick={() => setFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filtro === v ? T.ink : T.border}`, background: filtro === v ? T.ink : T.white, color: filtro === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
+      {filtro === "vigentes_busint" && <InformeVigentesBusintView isAdmin={isAdmin} pedidosActivos={pedidos} />}
       {filtro === "activos" && lista.length > 0 && (
         <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, overflow: "hidden", marginBottom: 16 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -2979,18 +6479,25 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           {lista.sort((a, b) => (b.fechaCumplido || "").localeCompare(a.fechaCumplido || "")).map((p) => {
             const totalP = p.referencias.reduce((s, r) => s + r.total, 0);
             const totalC = (p.cortesRealizados || []).reduce((s, c) => s + (c.totalUnidades || 0), 0);
+            const mi = motivoCierreInfo(p.motivoCierre);
             return (
               <div key={p.id} onClick={() => onSelectPedido(p.id)} style={{ display: "flex", alignItems: "center", gap: 16, padding: "14px 18px", background: T.white, borderRadius: 12, border: `1px solid ${T.border}`, cursor: "pointer" }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = T.canvas)}
                 onMouseLeave={(e) => (e.currentTarget.style.background = T.white)}
               >
-                <div style={{ width: 40, height: 40, borderRadius: "50%", background: T.jadeBg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>✅</div>
+                <div style={{ width: 40, height: 40, borderRadius: "50%", background: mi.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>{mi.icon}</div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 800, color: T.ink }}>Pedido #{p.numero} — {p.cliente}</div>
-                  <div style={{ fontSize: 12, color: T.slate }}>Cumplido: {p.fechaCumplido || "—"} · {fmtNum(totalP)} uds pedidas · {fmtNum(totalC)} cortadas</div>
+                  <div style={{ fontWeight: 800, color: T.ink, display: "flex", alignItems: "center", gap: 8 }}>
+                    Pedido #{p.numero} — {p.cliente}
+                    <span style={{ fontSize: 10, fontWeight: 800, color: mi.color, background: mi.bg, padding: "1px 8px", borderRadius: 10 }}>{mi.label}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: T.slate }}>
+                    {mi.desc}: {p.fechaCumplido || "—"} · {fmtNum(totalP)} uds pedidas · {fmtNum(totalC)} cortadas
+                    {p.motivoCierre === "venta_perdida" && p.ventasPerdidasUds ? ` · ${fmtNum(p.ventasPerdidasUds)} uds dadas de baja` : ""}
+                  </div>
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={(e) => { e.stopPropagation(); onUpdatePedido({ ...p, estado: "activo", fechaCumplido: null }); }} style={{ background: T.amberBg, border: `1px solid ${T.amber}44`, borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, color: T.amber, cursor: "pointer" }}>↩ Reactivar</button>
+                  <button onClick={(e) => { e.stopPropagation(); onUpdatePedido({ ...p, estado: "activo", motivoCierre: null, fechaCumplido: null }); }} style={{ background: T.amberBg, border: `1px solid ${T.amber}44`, borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, color: T.amber, cursor: "pointer" }}>↩ Reactivar</button>
                   <button onClick={(e) => { e.stopPropagation(); setEditPedido(p); }} style={{ background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 6, padding: "4px 8px", fontSize: 11, fontWeight: 700, color: T.slate, cursor: "pointer" }}>✏</button>
                 </div>
               </div>
@@ -3003,7 +6510,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   );
 }
 
-export default function App() {
+function AppInner() {
   const [appState, setAppState] = useState("loading");
   const [currentUser, setCurrentUser] = useState(null);
   const [users, setUsers] = useState([]);
@@ -3011,8 +6518,24 @@ export default function App() {
   const [protos, setProtos] = useState([]);
   const [capsulas, setCapsulas] = useState([]);
   const [historial, setHistorial] = useState([]);
+  const [cronogramaMuestras, setCronogramaMuestras] = useState([]);
   const [pedidos, setPedidos] = useState([]);
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
+  const [bitacoraEnvios, setBitacoraEnvios] = useState([]);
+  // Al entrar a Historial desde el enlace "❌ N declinadas" de Bitácora, se
+  // usa esto para que abra ya filtrado en Declinados (HistorialDisenoView lo
+  // lee una sola vez, al montar, vía initialResultado/initialTipoFiltro).
+  const [historialFiltroInicial, setHistorialFiltroInicial] = useState(null);
+  // --- Módulo KPIs (toda la compañía, no solo Diseño) ---
+  // kpiPuestos: puestos de trabajo, cada uno con su área y sus funciones
+  // asignadas (responsabilidades esperadas). kpiPersonas: roster de personas,
+  // cada una ligada a un puesto por `puestoId`. kpiCatalogo: catálogo de
+  // KPIs, cada uno ligado a un puesto por `puestoId`. kpiRegistros: valores
+  // mensuales digitados a mano por persona/KPI/periodo (ver KPIsView).
+  const [kpiPuestos, setKpiPuestos] = useState([]);
+  const [kpiPersonas, setKpiPersonas] = useState([]);
+  const [kpiCatalogo, setKpiCatalogo] = useState([]);
+  const [kpiRegistros, setKpiRegistros] = useState([]);
   const [view, setView] = useState("dashboard");
   const [selProtoId, setSelProtoId] = useState(null);
   const [selCapId, setSelCapId] = useState(null);
@@ -3023,12 +6546,47 @@ export default function App() {
   const [promoteProto, setPromoteProto] = useState(null);
   const [newRefCap, setNewRefCap] = useState(null);
   const [toasts, setToasts] = useState([]);
+  const [loginError, setLoginError] = useState("");
   useEffect(() => {
-    const unsubs = [];
-    async function bootstrap() {
+    let unsubsDatos = [];
+    // Fase C de la migración de seguridad: antes, todos los datos de
+    // Firestore se cargaban apenas se abría la app, sin importar si había
+    // sesión iniciada — eso hacía imposible exigir "usuario autenticado" en
+    // las reglas de seguridad sin romper la propia pantalla de login. Ahora
+    // la carga de datos NUNCA arranca sola: la dispara onAuthStateChanged,
+    // que Firebase llama automáticamente en cuanto hay una sesión real
+    // (login exitoso, o una sesión que ya estaba activa al recargar la
+    // página) — y la detiene (limpiando los listeners) en cuanto la sesión
+    // se cierra.
+    const unsubAuth = onAuthStateChanged(auth, (fbUser) => {
+      unsubsDatos.forEach((fn) => fn());
+      unsubsDatos = [];
+      if (!fbUser) {
+        setCurrentUser(null);
+        setAppState("login");
+        return;
+      }
+      setLoginError("");
+      setAppState("loading");
+      cargarDatos(fbUser);
+    });
+    async function cargarDatos(fbUser) {
       try {
         let dbUsers = await fsGet("users");
-        if (!dbUsers.length) { await fsBatch("users", INIT_USERS); dbUsers = INIT_USERS; setUsers(dbUsers); }
+        if (!dbUsers.length) { await fsBatch("users", INIT_USERS); dbUsers = INIT_USERS; }
+        setUsers(dbUsers);
+        // El perfil de la app (nombre, rol, isAdmin, etc.) se busca por
+        // `authUid` — el campo que la migración de Fase A le agregó a cada
+        // documento de `users` al crear su cuenta real de Firebase Auth. Si
+        // no aparece (cuenta de Firebase Auth sin documento correspondiente
+        // en Firestore, caso raro), no se deja entrar.
+        const perfil = dbUsers.find((u) => u.authUid === fbUser.uid);
+        if (!perfil) {
+          setLoginError("Tu cuenta no tiene un perfil asociado en el sistema. Contacta a un administrador.");
+          await signOut(auth);
+          return;
+        }
+        setCurrentUser(perfil);
         const unsubUsers = onSnapshot(collection(db, "users"), (snap) => {
           const updatedUsers = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
           setUsers(updatedUsers);
@@ -3038,24 +6596,109 @@ export default function App() {
             return fresh ? { ...cu, ...fresh } : cu;
           });
         });
-        unsubs.push(unsubUsers);
+        unsubsDatos.push(unsubUsers);
+        // "config" se sincroniza en vivo (igual que users/protos/capsulas/pedidos)
+        // en vez de leerse una sola vez con fsGet al abrir la app. Antes, una
+        // pestaña vieja con una copia local desactualizada de config podía, al
+        // guardar cualquier ajuste (roles, etapas, categorías...), reescribir
+        // TODO el documento con esa copia vieja — incluyendo un `clientes`
+        // vacío si esa pestaña se había cargado antes de que se agregaran
+        // clientes en otra sesión. Con onSnapshot, config siempre está al día
+        // antes de guardar, así que ese guardado ya no puede pisar cambios
+        // más recientes de otra sesión.
+        // La comprobación de "¿existe el documento?" se hace UNA sola vez con
+        // fsGet (igual que "users" arriba), ANTES de abrir el listener en
+        // vivo — nunca dentro de él. Antes, esa comprobación vivía dentro del
+        // propio onSnapshot y sembraba INIT_CONFIG (clientes: [], etc.) cada
+        // vez que una lectura llegaba vacía, incluida una lectura transitoria
+        // de caché offline o una reconexión — lo que podía borrar "clientes"
+        // aunque el documento real en el servidor sí tuviera datos. Con el
+        // chequeo fuera del listener, este solo siembra una vez, al arrancar,
+        // y de ahí en adelante el listener SOLO lee, nunca vuelve a escribir.
         let dbConfig = await fsGet("config");
-        if (!dbConfig.length) { await fsSave("config", "main", INIT_CONFIG); setConfig(INIT_CONFIG); } else { setConfig({ ...INIT_CONFIG, ...dbConfig[0] }); }
+        if (!dbConfig.length) { await fsSave("config", "main", INIT_CONFIG); }
+        else {
+          // Migración una sola vez: a los "config" ya guardados antes de que
+          // existiera la etapa "Por Enviar" les falta ese ítem en `stages`
+          // (INIT_CONFIG solo siembra un config nuevo — nunca actualiza uno
+          // que ya existe). "Por Enviar" debe quedar DESPUÉS de "Cotización"
+          // (primero se cotiza, y solo después queda lista para enviar). Si
+          // falta, se inserta ahí; si ya existe pero quedó mal ubicada (una
+          // versión anterior de esta migración la insertaba ANTES de
+          // Cotización, por error), se reubica sin perder los "días" que el
+          // admin le haya configurado. Se guarda con merge (fsSave), sin
+          // tocar el resto del documento (roles, clientes, etc.).
+          const existente = dbConfig.find((c) => c.id === "main") || dbConfig[0];
+          const stagesActuales = existente?.stages || [];
+          const idxPorEnviar = stagesActuales.findIndex((s) => s.id === "por_enviar");
+          const idxCotizacion = stagesActuales.findIndex((s) => s.id === "cotizacion");
+          let stagesCorregidas = null;
+          if (idxPorEnviar === -1) {
+            const nuevaEtapa = { id: "por_enviar", label: "Por Enviar", short: "P.ENV", days: 2 };
+            stagesCorregidas =
+              idxCotizacion >= 0
+                ? [...stagesActuales.slice(0, idxCotizacion + 1), nuevaEtapa, ...stagesActuales.slice(idxCotizacion + 1)]
+                : [...stagesActuales, nuevaEtapa];
+          } else if (idxCotizacion >= 0 && idxPorEnviar < idxCotizacion) {
+            const etapaExistente = stagesActuales[idxPorEnviar];
+            const sinEsa = stagesActuales.filter((s) => s.id !== "por_enviar");
+            const nuevoIdxCot = sinEsa.findIndex((s) => s.id === "cotizacion");
+            stagesCorregidas = [...sinEsa.slice(0, nuevoIdxCot + 1), etapaExistente, ...sinEsa.slice(nuevoIdxCot + 1)];
+          }
+          if (existente && stagesCorregidas) {
+            await fsSave("config", "main", { stages: stagesCorregidas });
+          }
+        }
+        const unsubConfig = onSnapshot(collection(db, "config"), (snap) => {
+          if (!snap.docs.length) { setConfig(INIT_CONFIG); return; }
+          const mainDoc = snap.docs.find((d) => d.id === "main") || snap.docs[0];
+          setConfig({ ...INIT_CONFIG, ...mainDoc.data() });
+        });
+        unsubsDatos.push(unsubConfig);
         const unsubProtos = onSnapshot(collection(db, "prototipos"), (snap) => { setProtos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
-        unsubs.push(unsubProtos);
+        unsubsDatos.push(unsubProtos);
         const unsubCapsulas = onSnapshot(collection(db, "capsulas"), (snap) => { setCapsulas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
-        unsubs.push(unsubCapsulas);
+        unsubsDatos.push(unsubCapsulas);
         const unsubHistorial = onSnapshot(collection(db, "historial_diseno"), (snap) => { setHistorial(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
-        unsubs.push(unsubHistorial);
-        const unsubPedidos = onSnapshot(collection(db, "pedidos"), (snap) => { setPedidos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
-        unsubs.push(unsubPedidos);
-        const dbPedidoConfig = await fsGet("pedidos_config");
-        if (dbPedidoConfig.length) setPedidoConfig((c) => ({ ...c, ...dbPedidoConfig[0] })); else await fsSave("pedidos_config", "main", { clientes: [], vendedores: [] });
-        setAppState("login");
+        unsubsDatos.push(unsubHistorial);
+        const unsubCronogramaMuestras = onSnapshot(collection(db, "cronograma_muestras"), (snap) => { setCronogramaMuestras(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubsDatos.push(unsubCronogramaMuestras);
+        // "pedidos_activos" reemplaza a la vieja colección "pedidos" (y a
+        // "corte_pedidos" del módulo Corte, que nunca se llegó a usar): es la
+        // única fuente de verdad ahora, alimentada por "🧊 Congelar como base
+        // de Corte" en Vigentes por Cliente — tanto Pedidos como Corte leen
+        // de aquí.
+        const unsubPedidos = onSnapshot(collection(db, "pedidos_activos"), (snap) => { setPedidos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubsDatos.push(unsubPedidos);
+        // Mismo motivo que "config": pedidoConfig (clientes/vendedores de
+        // Pedidos) se sincroniza en vivo en vez de leerse una sola vez con
+        // fsGet, para que una pestaña vieja no pueda pisar con una copia
+        // desactualizada los clientes/vendedores agregados desde otra sesión.
+        // Igual que "config" arriba: el chequeo de "¿existe?" se hace una
+        // sola vez con fsGet antes de abrir el listener, que de ahí en
+        // adelante solo lee y nunca vuelve a sembrar/escribir.
+        let dbPedidoConfig = await fsGet("pedidos_config");
+        if (!dbPedidoConfig.length) { await fsSave("pedidos_config", "main", { clientes: [], vendedores: [] }); }
+        const unsubPedidoConfig = onSnapshot(collection(db, "pedidos_config"), (snap) => {
+          if (!snap.docs.length) { return; }
+          const mainDoc = snap.docs.find((d) => d.id === "main") || snap.docs[0];
+          setPedidoConfig((c) => ({ ...c, ...mainDoc.data() }));
+        });
+        unsubsDatos.push(unsubPedidoConfig);
+        const unsubBitacora = onSnapshot(collection(db, "bitacora_envios"), (snap) => { setBitacoraEnvios(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubsDatos.push(unsubBitacora);
+        const unsubKpiPuestos = onSnapshot(collection(db, "kpi_puestos"), (snap) => { setKpiPuestos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubsDatos.push(unsubKpiPuestos);
+        const unsubKpiPersonas = onSnapshot(collection(db, "kpi_personas"), (snap) => { setKpiPersonas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubsDatos.push(unsubKpiPersonas);
+        const unsubKpiCatalogo = onSnapshot(collection(db, "kpi_catalogo"), (snap) => { setKpiCatalogo(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubsDatos.push(unsubKpiCatalogo);
+        const unsubKpiRegistros = onSnapshot(collection(db, "kpi_registros"), (snap) => { setKpiRegistros(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubsDatos.push(unsubKpiRegistros);
+        setAppState("ready");
       } catch (e) { console.error("Firebase error:", e); setAppState("login"); }
     }
-    bootstrap();
-    return () => unsubs.forEach((fn) => fn());
+    return () => { unsubAuth(); unsubsDatos.forEach((fn) => fn()); };
   }, []);
   function notify(n) { setToasts((t) => [...t, n]); setTimeout(() => setToasts((t) => t.filter((x) => x.id !== n.id)), 5000); }
   async function saveUsers(newUsers) {
@@ -3068,15 +6711,262 @@ export default function App() {
     await Promise.all(removedIds.map((id) => fsDelete("users", id)));
     if (newUsers.length) await fsBatch("users", newUsers);
   }
-  async function saveConfig(newConfig) { setConfig(newConfig); await fsSave("config", "main", newConfig); }
-  async function savePedidoConfig(cfg) { setPedidoConfig(cfg); await fsSave("pedidos_config", "main", cfg); }
+  // Recibe solo los campos que cambiaron (p.ej. { roles: [...] }), nunca el
+  // config completo — así una escritura de roles/etapas/categorías nunca
+  // puede pisar "clientes" (u otro campo) con una copia local vieja. Ver
+  // fsUpdate.
+  async function saveConfig(partial) {
+    setConfig((c) => ({ ...c, ...partial }));
+    await fsUpdate("config", "main", partial);
+  }
+  // Igual que saveConfig: recibe solo los campos que cambiaron (p.ej.
+  // { vendedores: [...] }), nunca el objeto completo, para no arriesgar
+  // pisar otros campos con una copia local vieja.
+  async function savePedidoConfig(partial) {
+    setPedidoConfig((c) => ({ ...c, ...partial }));
+    await fsUpdate("pedidos_config", "main", partial);
+  }
   async function addProto(p) { const updated = [...protos, p]; setProtos(updated); await fsSave("prototipos", p.id, p); notify({ id: uid(), icon: "🧪", title: "Prototipo creado", msg: p.name }); }
-  async function updateProto(id, patch) { const updated = protos.map((x) => (x.id === id ? { ...x, ...patch } : x)); setProtos(updated); const item = updated.find((x) => x.id === id); await fsSave("prototipos", id, item); }
+  async function updateProto(id, patch) { const updated = protos.map((x) => (x.id === id ? { ...x, ...patch } : x)); setProtos(updated); const item = updated.find((x) => x.id === id); await fsSave("prototipos", id, item); if (patch.status === "enviado") syncCronogramaEnviado(id); }
   async function addCapsula(c) { const updated = [...capsulas, c]; setCapsulas(updated); await fsSave("capsulas", c.id, c); notify({ id: uid(), icon: "🗂", title: "Cápsula creada", msg: c.name }); }
   async function updateCapsulasAndSave(newCapsulas) { setCapsulas(newCapsulas); await fsBatch("capsulas", newCapsulas); }
   async function addRef(capId, ref) { const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, referencias: [...c.referencias, ref] })); await updateCapsulasAndSave(updated); }
   async function updateRef(capId, refId, patch) {
     const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, referencias: c.referencias.map((r) => (r.id !== refId ? r : { ...r, ...patch })) }));
+    await updateCapsulasAndSave(updated);
+    const cap = updated.find((c) => c.id === capId);
+    await fsSave("capsulas", capId, cap);
+    if (patch.status === "enviado") syncCronogramaEnviado(refId);
+  }
+  // --- Bitácora de Envíos ---
+  // Un registro de bitácora agrupa VARIAS referencias/prototipos enviados
+  // juntos en un solo envío al cliente (p.ej. una colección completa), con
+  // los datos comerciales que pide el ANEXO que manda el cliente: cantidades
+  // por país, precio, observaciones, carta de colores. Es adicional al
+  // "Registrar Envío" de una sola referencia (que sigue existiendo tal cual,
+  // solo para datos de transporte) — este flujo además arma la bitácora.
+  async function addBitacoraEnvio(envio) {
+    const updated = [...bitacoraEnvios, envio];
+    setBitacoraEnvios(updated);
+    await fsSave("bitacora_envios", envio.id, envio);
+  }
+  async function updateBitacoraEnvio(id, patch) {
+    const updated = bitacoraEnvios.map((e) => (e.id === id ? { ...e, ...patch } : e));
+    setBitacoraEnvios(updated);
+    const item = updated.find((e) => e.id === id);
+    await fsSave("bitacora_envios", id, item);
+  }
+  // items: arreglo de prototipos/referencias seleccionados (cada uno ya trae
+  // kind:"proto"|"ref" y, si es "ref", capsulaId — ver NuevoEnvioModal). Crea
+  // UN registro de bitácora con todos, y marca cada ítem como "enviado" con
+  // los mismos campos de transporte que usa EnviadoModal (para que
+  // isOverdue/Cronograma de Muestras y todo lo demás que ya lee
+  // envioEmpresa/envioFecha/envioGuia siga funcionando igual).
+  async function crearEnvioBitacora(header, items) {
+    const envio = {
+      id: uid(),
+      coleccion: header.coleccion || "",
+      cliente: header.cliente || "",
+      numPedido: header.numPedido || "",
+      fechaEnviado: header.fechaEnviado,
+      fechaRecibidoCliente: "",
+      empresaTransporte: header.empresaTransporte || "",
+      guia: header.guia || "",
+      cartaColores: header.cartaColores || null,
+      items: items.map((it) => ({
+        itemId: it.id,
+        kind: it.kind,
+        capsulaId: it.capsulaId || null,
+        referencia: it.reference || "",
+        nombre: it.name || "",
+        foto: it.image || null,
+        estado: STATUS[it.status]?.label || it.status || "",
+        categoria: it.categoria || "",
+        silueta: it.silueta || "",
+        rango: it.rango || it.tallas?.[0] || "",
+        tela: it.tipoTela || "",
+        consumo: it._consumo || "",
+        tipo: it._tipo || "",
+        colombiaCurva: it._colombiaCurva || "",
+        colombiaCantidad: it._colombiaCantidad || "",
+        venezuelaCurva: it._venezuelaCurva || "",
+        venezuelaCantidad: it._venezuelaCantidad || "",
+        precio: it._precio || "",
+        observacionesCliente: it._observacionesCliente || "",
+      })),
+      createdAt: nowISO(),
+      createdBy: currentUser?.name || "",
+    };
+    await addBitacoraEnvio(envio);
+    const obsTexto = `Enviado — Colección: ${envio.coleccion || "N/A"}${envio.numPedido ? ` · N° Pedido: ${envio.numPedido}` : ""}${envio.empresaTransporte ? ` · Empresa: ${envio.empresaTransporte}` : ""}${envio.guia ? ` · Guía: ${envio.guia}` : ""}`;
+    for (const it of items) {
+      const patchData = {
+        status: "enviado",
+        envioEmpresa: envio.empresaTransporte,
+        envioFecha: envio.fechaEnviado,
+        envioGuia: envio.guia,
+        envioBitacoraId: envio.id,
+        observations: [...(it.observations || []), { id: uid(), user: currentUser?.name, role, text: obsTexto, date: nowISO(), type: "update", done: false }],
+      };
+      if (it.kind === "proto") await updateProto(it.id, patchData);
+      else await updateRef(it.capsulaId, it.id, patchData);
+    }
+    notify({ id: uid(), icon: "📦", title: "Envío registrado en Bitácora", msg: `${items.length} referencia${items.length !== 1 ? "s" : ""} — ${envio.coleccion || envio.cliente}` });
+  }
+  // --- Módulo KPIs (toda la compañía) ---
+  // Puestos: { id, area, nombre, funciones }. `area` viene de
+  // config.kpiAreas (lista controlada, editable en Administrador General).
+  // `funciones` es texto libre con las responsabilidades esperadas de ese
+  // puesto — se muestra junto a sus KPIs para poder comparar "lo que debía
+  // hacer" contra lo que realmente se registra. No se borran en cascada las
+  // personas/KPIs que referencian un puesto borrado (quedan con un puestoId
+  // huérfano, KPIsView los filtra al no encontrar el puesto).
+  async function addKpiPuesto(p) {
+    const withId = { ...p, id: uid() };
+    setKpiPuestos((ps) => [...ps, withId]);
+    await fsSave("kpi_puestos", withId.id, withId);
+  }
+  async function updateKpiPuesto(id, patch) {
+    const updated = kpiPuestos.map((p) => (p.id === id ? { ...p, ...patch } : p));
+    setKpiPuestos(updated);
+    await fsSave("kpi_puestos", id, updated.find((p) => p.id === id));
+  }
+  async function deleteKpiPuesto(id) {
+    setKpiPuestos((ps) => ps.filter((p) => p.id !== id));
+    await fsDelete("kpi_puestos", id);
+  }
+  // Roster de personas: { id, nombre, puestoId }. Solo Administrador
+  // agrega/edita/borra personas y KPIs del catálogo (ver KPIsView) — así el
+  // roster y el catálogo quedan controlados centralmente.
+  async function addKpiPersona(p) {
+    const withId = { ...p, id: uid() };
+    setKpiPersonas((ps) => [...ps, withId]);
+    await fsSave("kpi_personas", withId.id, withId);
+  }
+  async function updateKpiPersona(id, patch) {
+    const updated = kpiPersonas.map((p) => (p.id === id ? { ...p, ...patch } : p));
+    setKpiPersonas(updated);
+    await fsSave("kpi_personas", id, updated.find((p) => p.id === id));
+  }
+  async function deleteKpiPersona(id) {
+    setKpiPersonas((ps) => ps.filter((p) => p.id !== id));
+    await fsDelete("kpi_personas", id);
+    // Se borran también los registros mensuales de esa persona — si no,
+    // quedaban números huérfanos de alguien que ya no está en el roster.
+    const registrosDeEsaPersona = kpiRegistros.filter((r) => r.personaId === id);
+    if (registrosDeEsaPersona.length) {
+      setKpiRegistros((rs) => rs.filter((r) => r.personaId !== id));
+      await Promise.all(registrosDeEsaPersona.map((r) => fsDelete("kpi_registros", r.id)));
+    }
+  }
+  // Catálogo: { id, nombre, descripcion, puestoId, unidad, meta }. Cada KPI
+  // pertenece a UN solo puesto (se agrupan por puesto en KPIsView, para que
+  // sea fácil ver de un vistazo si dos puestos terminan midiendo lo mismo).
+  async function addKpiCatalogo(k) {
+    const withId = { ...k, id: uid() };
+    setKpiCatalogo((ks) => [...ks, withId]);
+    await fsSave("kpi_catalogo", withId.id, withId);
+  }
+  async function updateKpiCatalogo(id, patch) {
+    const updated = kpiCatalogo.map((k) => (k.id === id ? { ...k, ...patch } : k));
+    setKpiCatalogo(updated);
+    await fsSave("kpi_catalogo", id, updated.find((k) => k.id === id));
+  }
+  async function deleteKpiCatalogo(id) {
+    setKpiCatalogo((ks) => ks.filter((k) => k.id !== id));
+    await fsDelete("kpi_catalogo", id);
+    const registrosDeEseKpi = kpiRegistros.filter((r) => r.kpiId === id);
+    if (registrosDeEseKpi.length) {
+      setKpiRegistros((rs) => rs.filter((r) => r.kpiId !== id));
+      await Promise.all(registrosDeEseKpi.map((r) => fsDelete("kpi_registros", r.id)));
+    }
+  }
+  // Registros: { id, personaId, kpiId, periodo: "AAAA-MM", valor, nota,
+  // registradoPor, fecha }. Un registro por (persona, KPI, periodo) — guardar
+  // uno existente lo actualiza en vez de duplicarlo (upsert por esa llave).
+  async function guardarKpiRegistro({ personaId, kpiId, periodo, valor, nota }) {
+    const existente = kpiRegistros.find((r) => r.personaId === personaId && r.kpiId === kpiId && r.periodo === periodo);
+    const item = {
+      id: existente?.id || uid(),
+      personaId,
+      kpiId,
+      periodo,
+      valor,
+      nota: nota || "",
+      registradoPor: currentUser?.name || "",
+      fecha: nowISO(),
+    };
+    setKpiRegistros((rs) => (existente ? rs.map((r) => (r.id === item.id ? item : r)) : [...rs, item]));
+    await fsSave("kpi_registros", item.id, item);
+  }
+  // --- Cronograma de Muestras ---
+  async function addCronogramaMuestra(entry) {
+    const withId = { ...entry, id: uid(), estado: entry.estado || "pendiente", createdAt: today() };
+    setCronogramaMuestras((cs) => [...cs, withId]);
+    await fsSave("cronograma_muestras", withId.id, withId);
+    notify({ id: uid(), icon: "🧵", title: "Enviado a taller de muestra", msg: withId.nombre || withId.taller });
+    return withId;
+  }
+  async function updateCronogramaMuestra(id, patch) {
+    setCronogramaMuestras((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+    await fsUpdate("cronograma_muestras", id, patch);
+  }
+  async function deleteCronogramaMuestra(id) {
+    setCronogramaMuestras((cs) => cs.filter((c) => c.id !== id));
+    await fsDelete("cronograma_muestras", id);
+  }
+  // Cuando un prototipo/referencia pasa a status "enviado", su entrada activa
+  // en el Cronograma de Muestras (si tiene una y todavía no está en
+  // "enviado") se actualiza sola — sin tener que ir a cambiarla a mano en
+  // las dos pantallas.
+  function syncCronogramaEnviado(itemId) {
+    const activa = cronogramaMuestras.find((c) => c.itemId === itemId && c.estado !== "enviado");
+    if (activa) updateCronogramaMuestra(activa.id, { estado: "enviado" });
+  }
+  // Cuando desde el Cronograma (no desde el detalle del prototipo/capsula)
+  // marcan una entrada vinculada como "Modificar", la nota también se deja
+  // como Observación en el prototipo/referencia — mismo formato que
+  // DetailView.handleGuardarTaller, para que quede en un solo lugar.
+  function addObservacionCronograma(entry, texto) {
+    const obs = { id: uid(), user: currentUser?.name, role, text: `🧵 Modificar (Taller de Muestra): ${texto}`, date: nowISO(), type: "info", done: false };
+    if (entry.kind === "proto") {
+      const item = protos.find((p) => p.id === entry.itemId);
+      if (item) updateProto(item.id, { observations: [...(item.observations || []), obs] });
+    } else if (entry.kind === "ref") {
+      const cap = capsulas.find((c) => c.id === entry.capsulaId);
+      const ref = cap?.referencias.find((r) => r.id === entry.itemId);
+      if (cap && ref) updateRef(cap.id, ref.id, { observations: [...(ref.observations || []), obs] });
+    }
+  }
+  // --- Aprobación de Ilustración en Cápsulas ---
+  // Antes de poder agregarle referencias a una cápsula (crear una nueva o
+  // promover un prototipo), la Dirección Creativa aprueba primero la
+  // ilustración/concepto de la cápsula completa. Cambia cap.ilustracionEstado
+  // Y agrega la observación correspondiente en UN solo patch (evita perder
+  // uno de los dos cambios por closures desactualizados si se llamaran por
+  // separado).
+  async function setIlustracionCapsula(capId, estado, nota) {
+    const obsCap = {
+      id: uid(), user: currentUser?.name, role,
+      text: `${estado === "aprobado" ? "✓ Ilustración aprobada" : "🎨 Ilustración en revisión"}${nota ? `: ${nota}` : ""}`,
+      date: nowISO(), type: estado === "en_revision" ? "revision_ilustracion_capsula" : "info", done: false,
+    };
+    const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, ilustracionEstado: estado, observacionesIlustracion: [...(c.observacionesIlustracion || []), obsCap] }));
+    await updateCapsulasAndSave(updated);
+    const cap = updated.find((c) => c.id === capId);
+    await fsSave("capsulas", capId, cap);
+  }
+  // Comentario libre (no ligado a aprobar/devolver) en el hilo de
+  // Observaciones de Ilustración de la cápsula.
+  async function sendObservacionCapsula(capId, texto) {
+    const obs = { id: uid(), user: currentUser?.name, role, text: texto, date: nowISO(), type: "info", done: false };
+    const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, observacionesIlustracion: [...(c.observacionesIlustracion || []), obs] }));
+    await updateCapsulasAndSave(updated);
+    const cap = updated.find((c) => c.id === capId);
+    await fsSave("capsulas", capId, cap);
+  }
+  async function markDoneObservacionCapsula(capId, obsId) {
+    const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, observacionesIlustracion: (c.observacionesIlustracion || []).map((o) => (o.id === obsId ? { ...o, done: true } : o)) }));
     await updateCapsulasAndSave(updated);
     const cap = updated.find((c) => c.id === capId);
     await fsSave("capsulas", capId, cap);
@@ -3086,26 +6976,76 @@ export default function App() {
     setHistorial((h) => [...h, withId]);
     await fsSave("historial_diseno", withId.id, withId);
   }
+  // Backfill de un solo uso: agrega al Historial los prototipos y referencias
+  // de cápsula que YA estaban en Aprobado/Declinado antes de que existiera
+  // esta función (el registro automático solo captura transiciones nuevas).
+  // Reconstruye la fecha real desde las observaciones del ítem cuando existe.
+  async function backfillHistorial() {
+    const existentes = new Set(historial.map((h) => `${h.tipo}__${h.itemId}__${h.resultado}`));
+    const nuevos = [];
+    protos.forEach((p) => {
+      if (p.status !== "aprobado") return;
+      const key = `proto__${p.id}__aprobado`;
+      if (existentes.has(key)) return;
+      const fecha = buscarFechaEstado(p, "aprobado") || p.createdAt || nowISO();
+      nuevos.push({
+        id: uid(), tipo: "proto", itemId: p.id, capsulaId: null, capsulaName: null,
+        nombre: p.name, referencia: p.reference, cliente: p.cliente || p.colores?.[0] || "(Sin cliente)",
+        resultado: "aprobado", mes: String(fecha).slice(0, 7), fecha,
+      });
+    });
+    capsulas.forEach((cap) => {
+      (cap.referencias || []).forEach((r) => {
+        if (r.status !== "aprobado" && r.status !== "declinado") return;
+        const key = `capsula_ref__${r.id}__${r.status}`;
+        if (existentes.has(key)) return;
+        const fecha = buscarFechaEstado(r, r.status) || cap.createdAt || nowISO();
+        nuevos.push({
+          id: uid(), tipo: "capsula_ref", itemId: r.id, capsulaId: cap.id, capsulaName: cap.name,
+          nombre: r.name, referencia: r.reference, cliente: r.cliente || r.colores?.[0] || "(Sin cliente)",
+          resultado: r.status, mes: String(fecha).slice(0, 7), fecha,
+        });
+      });
+    });
+    if (!nuevos.length) { notify({ id: uid(), icon: "ℹ", title: "Historial", msg: "No había ítems pendientes por agregar." }); return; }
+    setHistorial((h) => [...h, ...nuevos]);
+    await Promise.all(nuevos.map((n) => fsSave("historial_diseno", n.id, n)));
+    notify({ id: uid(), icon: "🕘", title: "Historial completado", msg: `${nuevos.length} ítem(s) agregado(s) al historial.` });
+  }
   async function promoteToCapsula(capId, ref, protoId) {
     await addRef(capId, ref);
     await updateProto(protoId, { promotedTo: capId });
     notify({ id: uid(), icon: "⬆", title: "Promovido", msg: `${ref.name} añadida.` });
   }
   async function deleteProto(id) { setProtos((ps) => ps.filter((p) => p.id !== id)); await fsDelete("prototipos", id); }
-  async function deleteCapsula(id) { setCapsulas((cs) => cs.filter((c) => c.id !== id)); await fsDelete("capsulas", id); }
+  // Borrar cápsula es una acción solo de Administrador (ver botón "🗑 Borrar"
+  // en CapsulasView, gateado por isAdmin). Al borrarla, también se borran los
+  // envíos de Bitácora que tengan referencias de ESA cápsula — si no,
+  // quedaban registros huérfanos apuntando a una cápsula que ya no existe.
+  async function deleteCapsula(id) {
+    setCapsulas((cs) => cs.filter((c) => c.id !== id));
+    await fsDelete("capsulas", id);
+    const enviosDeEstaCapsula = bitacoraEnvios.filter((e) => (e.items || []).some((it) => it.capsulaId === id));
+    if (enviosDeEstaCapsula.length) {
+      setBitacoraEnvios((es) => es.filter((e) => !enviosDeEstaCapsula.some((x) => x.id === e.id)));
+      await Promise.all(enviosDeEstaCapsula.map((e) => fsDelete("bitacora_envios", e.id)));
+    }
+  }
   async function updateProtoName(id, patch) { await updateProto(id, patch); }
   async function updateCapsulaName(id, patch) { const updated = capsulas.map((c) => (c.id !== id ? c : { ...c, ...patch })); setCapsulas(updated); const cap = updated.find((c) => c.id === id); await fsSave("capsulas", id, cap); }
   async function addPedido(p) {
     const updated = [...pedidos, p];
     setPedidos(updated);
-    await fsSave("pedidos", p.id, p);
+    await fsSave("pedidos_activos", p.id, p);
+    // Los clientes de Pedidos usan la misma lista que Administrador General →
+    // Clientes (config.clientes) — un cliente nuevo cargado desde un pedido
+    // se registra ahí, no en una lista aparte (pedidoConfig ya no guarda
+    // clientes, solo vendedores).
     if (p.cliente && p.cliente.trim()) {
-      const yaExiste = (pedidoConfig.clientes || []).some((c) => c.nombre?.toLowerCase() === p.cliente.toLowerCase());
+      const yaExiste = (config.clientes || []).some((c) => c.nombre?.toLowerCase() === p.cliente.toLowerCase());
       if (!yaExiste) {
-        const nuevoCliente = { id: uid(), nombre: p.cliente.trim(), empresa: "", contacto: "", email: "" };
-        const cfgActualizada = { ...pedidoConfig, clientes: [...(pedidoConfig.clientes || []), nuevoCliente] };
-        setPedidoConfig(cfgActualizada);
-        await fsSave("pedidos_config", "main", cfgActualizada);
+        const nuevoCliente = { id: uid(), nombre: p.cliente.trim(), contacto: "", email: "", telefono: "" };
+        await saveConfig({ clientes: [...(config.clientes || []), nuevoCliente] });
       }
     }
     notify({ id: uid(), icon: "📦", title: "Pedido creado", msg: p.cliente || p.numero });
@@ -3113,7 +7053,7 @@ export default function App() {
   async function updatePedido(updatedPedido) {
     const updated = pedidos.map((p) => (p.id === updatedPedido.id ? updatedPedido : p));
     setPedidos(updated);
-    await fsSave("pedidos", updatedPedido.id, updatedPedido);
+    await fsSave("pedidos_activos", updatedPedido.id, updatedPedido);
   }
   const selProto = protos.find((p) => p.id === selProtoId);
   const selCap = capsulas.find((c) => c.id === selCapId);
@@ -3128,6 +7068,15 @@ export default function App() {
     declinar: userRoleData?.perms?.includes("declinar") ?? false,
     admin: userRoleData?.perms?.includes("admin") ?? false,
     corte: userRoleData?.perms?.includes("corte") ?? false,
+    // Permiso dedicado para aprobar/devolver ilustración (Cápsulas y
+    // Prototipos/Referencias en etapa Ilustración), pensado para un rol tipo
+    // "Directora Creativa" sin darle el resto de permisos de "admin".
+    ilustracion: userRoleData?.perms?.includes("ilustracion") ?? false,
+    // Permiso dedicado para aprobar la Programación de Mesones en Corte (el
+    // "analista" que revisa lo que el cortador ingresó como datos teóricos
+    // antes de que cuente como confirmado) — separado de "aprobar" genérico
+    // para no mezclarlo con la aprobación de Pedidos/Prototipos.
+    aprobarCorte: userRoleData?.perms?.includes("aprobar_corte") ?? false,
   };
   // Visibilidad de módulos, decidida sección por sección con moduloVisible en
   // vez de reutilizar directamente perms.corte / perms.admin — así cada
@@ -3140,14 +7089,21 @@ export default function App() {
   const canAccessPedidosClientes = moduloVisible(userRoleData, "pedidos_clientes", currentUser?.isAdmin);
   const canAccessStats = moduloVisible(userRoleData, "stats", currentUser?.isAdmin);
   const canAccessHistorial = moduloVisible(userRoleData, "historial", currentUser?.isAdmin);
+  const canAccessCronograma = moduloVisible(userRoleData, "cronograma_muestras", currentUser?.isAdmin);
+  const canAccessBitacora = moduloVisible(userRoleData, "bitacora", currentUser?.isAdmin);
+  const canAccessKpis = moduloVisible(userRoleData, "kpis", currentUser?.isAdmin);
   const canAccessCorte = moduloVisible(userRoleData, "corte", currentUser?.isAdmin);
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
   const canAccessPlaneacion = moduloVisible(userRoleData, "planeacion", currentUser?.isAdmin);
+  const canAccessPlanta = moduloVisible(userRoleData, "planta", currentUser?.isAdmin);
   // "admin_diseno" es un permiso aparte del admin general: da entrada al panel
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
   const canAccessAdminDiseno = moduloVisible(userRoleData, "admin_diseno", currentUser?.isAdmin);
-  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessHistorial || canAccessCorte || canAccessAdminDiseno || !!currentUser?.isAdmin;
+  // KPIs ya NO cuenta para canAccessDiseno — es su propia área de nivel
+  // superior en el menú (ver AREAS abajo), porque cubre toda la compañía
+  // (Corte, Ventas, Contabilidad, Planeación...), no solo Diseño.
+  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessHistorial || canAccessCronograma || canAccessBitacora || canAccessCorte || canAccessAdminDiseno || !!currentUser?.isAdmin;
   const [moduloActivo, setModuloActivo] = useState("diseno");
   const AREAS = [
     ...(canAccessDiseno
@@ -3160,6 +7116,8 @@ export default function App() {
             ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
             ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
             ...(canAccessHistorial ? [{ id: "historial", icon: "🕘", label: "Historial" }] : []),
+            ...(canAccessBitacora ? [{ id: "bitacora", icon: "📜", label: "Bitácoras" }] : []),
+            ...(canAccessCronograma ? [{ id: "cronograma_muestras", icon: "🧵", label: "Cronograma de Muestras" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
             ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
             // "Administrador General" siempre queda al final de la lista, sin
@@ -3174,6 +7132,18 @@ export default function App() {
     ...(canAccessPlaneacion
       ? [{ id: "planeacion_area", icon: "📋", label: "Planeación", items: [{ id: "planeacion_area", icon: "📋", label: "Módulo Planeación" }] }]
       : []),
+    ...(canAccessPlanta
+      ? [{ id: "planta_area", icon: "🏭", label: "Planta", items: [{ id: "planta_area", icon: "🏭", label: "Módulo Planta" }] }]
+      : []),
+    // KPIs es su propia área de nivel superior (cubre toda la compañía).
+    // A diferencia de Contabilidad/Planeación, no es un módulo externo aparte
+    // (moduloActivo) — se renderiza dentro del layout normal usando el mismo
+    // mecanismo de "view" que Prototipos/Cápsulas/Bitácora, por eso el id del
+    // ítem interno es simplemente "kpis" (sin necesitar un caso especial en
+    // isViewActive/navClick).
+    ...(canAccessKpis
+      ? [{ id: "kpis_area", icon: "🎯", label: "KPIs", items: [{ id: "kpis", icon: "🎯", label: "Módulo KPIs" }] }]
+      : []),
   ];
   const [areaAbierta, setAreaAbierta] = useState("diseno");
   function isViewActive(itemId) {
@@ -3185,12 +7155,14 @@ export default function App() {
     if (itemId === "__corte__") return moduloActivo === "corte";
     if (itemId === "contabilidad_area") return moduloActivo === "contabilidad";
     if (itemId === "planeacion_area") return moduloActivo === "planeacion";
+    if (itemId === "planta_area") return moduloActivo === "planta";
     return view === itemId;
   }
   function navClick(itemId) {
     if (itemId === "__corte__") { setModuloActivo("corte"); return; }
     if (itemId === "contabilidad_area") { setModuloActivo("contabilidad"); return; }
     if (itemId === "planeacion_area") { setModuloActivo("planeacion"); return; }
+    if (itemId === "planta_area") { setModuloActivo("planta"); return; }
     setView(itemId);
   }
   // "Planeador puro": solo tiene Corte y NINGUNA otra sección de Diseño (ni
@@ -3199,21 +7171,24 @@ export default function App() {
   const isPlaneadorPuro = canAccessCorte && !canAccessPedidos && !canAccessProtos && !canAccessCapsulas && !canAccessPedidosClientes && !canAccessStats && !perms.editar && !perms.aprobar && !currentUser?.isAdmin;
   const isContabilidadPura = canAccessContabilidad && !canAccessDiseno;
   if (appState === "loading") return <LoadingScreen message="Conectando con Firebase..." />;
-  if (appState === "login" || !currentUser) return <LoginScreen onLogin={(u) => { setCurrentUser(u); setAppState("ready"); }} users={users} />;
+  if (appState === "login" || !currentUser) return <LoginScreen externalError={loginError} />;
   if (isPlaneadorPuro) {
-    return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); }} />;
+    return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} puedeAprobarCorte={perms.aprobarCorte} />;
   }
   if (isContabilidadPura) {
-    return <ModuloContabilidad currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); }} />;
+    return <ModuloContabilidad currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (canAccessCorte && moduloActivo === "corte") {
-    return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); }} onVolver={() => setModuloActivo("diseno")} />;
+    return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} onVolver={() => setModuloActivo("diseno")} puedeAprobarCorte={perms.aprobarCorte} />;
   }
   if (moduloActivo === "contabilidad") {
-    return <ModuloContabilidad currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); }} />;
+    return <ModuloContabilidad currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "planeacion") {
-    return <ModuloPlaneacion currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); }} />;
+    return <ModuloPlaneacion currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+  }
+  if (moduloActivo === "planta") {
+    return <ModuloPlanta currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   return (
     <div style={{ minHeight: "100vh", background: T.canvas, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,sans-serif" }}>
@@ -3221,18 +7196,17 @@ export default function App() {
       <Toast items={toasts} onDismiss={(id) => setToasts((t) => t.filter((x) => x.id !== id))} />
       {showCambiarClave && (
         <CambiarClaveModal currentUser={currentUser}
-          onSave={async (nuevaClave) => {
-            await saveUsers(users.map((u) => (u.id === currentUser.id ? { ...u, password: nuevaClave } : u)));
-            setCurrentUser((c) => ({ ...c, password: nuevaClave }));
+          onSave={() => {
+            notify({ id: uid(), icon: "🔑", title: "Contraseña actualizada", msg: "Tu nueva contraseña ya quedó activa." });
           }}
           onClose={() => setShowCambiarClave(false)}
         />
       )}
       {modal === "new-proto" && <NewProtoModal onSave={addProto} onClose={() => setModal(null)} config={config} />}
-      {modal === "new-capsula" && <NewCapsulaModal onSave={addCapsula} onClose={() => setModal(null)} />}
+      {modal === "new-capsula" && <NewCapsulaModal onSave={addCapsula} onClose={() => setModal(null)} config={config} />}
       {modal === "new-ref" && newRefCap && <NewRefModal capsula={newRefCap} onSave={addRef} onClose={() => { setModal(null); setNewRefCap(null); }} config={config} />}
       {modal === "promote" && promoteProto && <PromoteModal proto={promoteProto} capsulas={capsulas} onSave={promoteToCapsula} onClose={() => { setModal(null); setPromoteProto(null); }} config={config} />}
-      {modal === "new-pedido" && <SubirPedidoModal2 onSave={addPedido} onClose={() => setModal(null)} pedidoConfig={pedidoConfig} />}
+      {modal === "new-pedido" && <SubirPedidoModal2 onSave={addPedido} onClose={() => setModal(null)} pedidoConfig={pedidoConfig} pedidos={pedidos} clientes={config.clientes} />}
       <div style={{ display: "flex", minHeight: "100vh" }}>
         <div style={{ width: 230, background: T.ink, color: T.white, padding: "20px 12px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
           <div style={{ marginBottom: 16, padding: "0 4px" }}>
@@ -3245,7 +7219,7 @@ export default function App() {
               <div style={{ fontSize: 11, fontWeight: 700, color: T.white, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{currentUser.name}</div>
               <div style={{ fontSize: 10, color: T.seam }}>{currentUser.role}</div>
             </div>
-            <button onClick={() => { setCurrentUser(null); setAppState("login"); }} title="Cerrar sesión" style={{ background: "none", border: "none", color: "rgba(200,184,162,0.4)", cursor: "pointer", fontSize: 15, padding: 0 }}>⏏</button>
+            <button onClick={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} title="Cerrar sesión" style={{ background: "none", border: "none", color: "rgba(200,184,162,0.4)", cursor: "pointer", fontSize: 15, padding: 0 }}>⏏</button>
           </div>
           <button onClick={() => setShowCambiarClave(true)} style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "6px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: "transparent", color: "rgba(200,184,162,0.5)", fontWeight: 600, fontSize: 11, marginBottom: 12, textAlign: "left" }}>🔑 Cambiar contraseña</button>
           <button onClick={() => setView("dashboard")} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: view === "dashboard" ? T.seam : "transparent", color: view === "dashboard" ? T.ink : "#8888AA", fontWeight: view === "dashboard" ? 800 : 500, fontSize: 13, textAlign: "left", marginBottom: 8 }}><span style={{ fontSize: 15 }}>◉</span> Dashboard</button>
@@ -3285,10 +7259,12 @@ export default function App() {
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
             {view === "dashboard" && (
-              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessDiseno={canAccessDiseno}
+              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessDiseno={canAccessDiseno} canAccessKpis={canAccessKpis}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
                   else if (id === "planeacion_area") { setModuloActivo("planeacion"); }
+                  else if (id === "planta_area") { setModuloActivo("planta"); }
+                  else if (id === "kpis_area") { setAreaAbierta("kpis_area"); setView("kpis"); }
                   else if (id === "diseno") {
                     setAreaAbierta("diseno");
                     // Entra a la primera sección de Diseño realmente habilitada
@@ -3300,6 +7276,8 @@ export default function App() {
                     else if (canAccessPedidosClientes) setView("pedidos_clientes");
                     else if (canAccessStats) setView("stats");
                     else if (canAccessHistorial) setView("historial");
+                    else if (canAccessBitacora) setView("bitacora");
+                    else if (canAccessCronograma) setView("cronograma_muestras");
                     else if (canAccessCorte) setModuloActivo("corte");
                   }
                   else { setView(id); }
@@ -3313,14 +7291,54 @@ export default function App() {
                 onNew={() => setModal("new-proto")}
                 onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
                 stages={config.stages}
+                isAdmin={currentUser?.isAdmin} onDeleteProto={deleteProto} config={config}
+                onCrearEnvio={crearEnvioBitacora}
               />
             )}
             {view === "capsulas" && (
-              <CapsulasView capsulas={capsulas} role={role} perms={perms}
+              <CapsulasView capsulas={capsulas} role={role} perms={perms} currentUser={currentUser?.name}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
                 onNewCapsula={() => setModal("new-capsula")}
                 onNewRef={(cap) => { setNewRefCap(cap); setModal("new-ref"); }}
+                onEditCapsula={updateCapsulaName}
                 stages={config.stages}
+                isAdmin={currentUser?.isAdmin} onDeleteCapsula={deleteCapsula} config={config}
+                onSetIlustracion={setIlustracionCapsula}
+                onSendObsCapsula={sendObservacionCapsula}
+                onMarkDoneObsCapsula={markDoneObservacionCapsula}
+                onCrearEnvio={crearEnvioBitacora}
+              />
+            )}
+            {view === "bitacora" && (
+              <BitacorasView
+                envios={bitacoraEnvios}
+                onUpdateEnvio={updateBitacoraEnvio}
+                protos={protos}
+                capsulas={capsulas}
+                pedidos={pedidos}
+                historial={historial}
+                onGoHistorial={() => { setHistorialFiltroInicial({ resultado: "declinado", tipo: "todos" }); setView("historial"); }}
+                onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
+              />
+            )}
+            {view === "kpis" && (
+              <KPIsView
+                areas={config.kpiAreas || []}
+                puestos={kpiPuestos}
+                personas={kpiPersonas}
+                catalogo={kpiCatalogo}
+                registros={kpiRegistros}
+                isAdmin={currentUser?.isAdmin}
+                onAddPuesto={addKpiPuesto}
+                onUpdatePuesto={updateKpiPuesto}
+                onDeletePuesto={deleteKpiPuesto}
+                onAddPersona={addKpiPersona}
+                onUpdatePersona={updateKpiPersona}
+                onDeletePersona={deleteKpiPersona}
+                onAddKpi={addKpiCatalogo}
+                onUpdateKpi={updateKpiCatalogo}
+                onDeleteKpi={deleteKpiCatalogo}
+                onGuardarRegistro={guardarKpiRegistro}
               />
             )}
             {view === "proto-detail" && selProto && (
@@ -3330,6 +7348,8 @@ export default function App() {
                 onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
                 onLogHistorial={logHistorial}
                 notify={notify} stages={config.stages} currentUser={currentUser.name} config={config}
+                cronogramaMuestras={cronogramaMuestras} onSendTaller={addCronogramaMuestra} onUpdateTaller={updateCronogramaMuestra}
+                onCrearEnvio={crearEnvioBitacora}
               />
             )}
             {view === "ref-detail" && selRef && selCap && (
@@ -3338,6 +7358,8 @@ export default function App() {
                 onUpdateItem={(p) => updateRef(selCap.id, selRef.id, p)}
                 onLogHistorial={logHistorial}
                 notify={notify} stages={config.stages} currentUser={currentUser.name} config={config}
+                cronogramaMuestras={cronogramaMuestras} onSendTaller={addCronogramaMuestra} onUpdateTaller={updateCronogramaMuestra}
+                onCrearEnvio={crearEnvioBitacora}
               />
             )}
             {view === "pedidos" && (
@@ -3351,13 +7373,33 @@ export default function App() {
               />
             )}
             {view === "pedido-detail" && selPedido && <PedidoDetailView pedido={selPedido} onBack={() => setView("pedidos")} onUpdatePedido={updatePedido} />}
-            {view === "pedidos_admin" && currentUser?.isAdmin && <AdminPedidosView pedidoConfig={pedidoConfig} onSave={savePedidoConfig} />}
-            {view === "pedidos_clientes" && <ClientesPedidosView pedidoConfig={pedidoConfig} pedidos={pedidos} />}
-            {view === "stats" && <EstadisticasView protos={protos} capsulas={capsulas} />}
-            {view === "historial" && <HistorialDisenoView historial={historial} protos={protos} capsulas={capsulas} />}
+            {view === "pedidos_admin" && currentUser?.isAdmin && <AdminPedidosView pedidoConfig={pedidoConfig} onSave={savePedidoConfig} config={config} onSaveConfig={saveConfig} />}
+            {view === "pedidos_clientes" && <ClientesPedidosView clientes={config.clientes} pedidos={pedidos} protos={protos} capsulas={capsulas} />}
+            {view === "stats" && <EstadisticasView protos={protos} capsulas={capsulas} stages={config.stages} config={config} />}
+            {view === "historial" && (
+              <HistorialDisenoView historial={historial} protos={protos} capsulas={capsulas} pedidos={pedidos} role={role} perms={perms} stages={config.stages}
+                isAdmin={currentUser?.isAdmin} onBackfill={backfillHistorial}
+                onSelectProto={(id) => { setSelProtoId(id); setView("proto-detail"); }}
+                onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
+                onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
+                initialResultado={historialFiltroInicial?.resultado}
+                initialTipoFiltro={historialFiltroInicial?.tipo}
+              />
+            )}
+            {view === "cronograma_muestras" && (
+              <CronogramaMuestrasView cronogramaMuestras={cronogramaMuestras} config={config} isAdmin={currentUser?.isAdmin}
+                onAdd={addCronogramaMuestra} onUpdate={updateCronogramaMuestra} onDelete={deleteCronogramaMuestra}
+                onModificarNota={addObservacionCronograma}
+                onGoToItem={(entry) => {
+                  if (entry.kind === "proto") { setSelProtoId(entry.itemId); setView("proto-detail"); }
+                  else if (entry.kind === "ref") { setSelCapId(entry.capsulaId); setSelRefId(entry.itemId); setView("ref-detail"); }
+                }}
+              />
+            )}
             {view === "admin" && (currentUser?.isAdmin || canAccessAdminDiseno) && (
               <AdminView config={config} onUpdateConfig={saveConfig} users={users} onUpdateUsers={saveUsers} protos={protos} capsulas={capsulas}
                 onUpdateProto={updateProtoName} onUpdateCapsula={updateCapsulaName} onDeleteProto={deleteProto} onDeleteCapsula={deleteCapsula}
+                isAdmin={currentUser?.isAdmin}
               />
             )}
             {view === "admin" && !currentUser?.isAdmin && !canAccessAdminDiseno && (
@@ -3371,5 +7413,43 @@ export default function App() {
         </div>
       </div>
     </div>
+  );
+}
+// Red de seguridad: si algo lanza un error inesperado durante el render (por
+// ejemplo una extensión del navegador tipo Google Translate o un bloqueador
+// de anuncios que modifica el HTML por fuera de React, lo que después hace
+// que React no pueda actualizar ese mismo nodo y lance errores como "Failed
+// to execute 'removeChild'"), esto evita que TODA la aplicación se quede en
+// blanco — en vez de eso muestra un mensaje con un botón para recargar.
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(error, info) {
+    console.error("TechPack — error capturado por ErrorBoundary:", error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16, padding: 24, fontFamily: "system-ui, sans-serif", textAlign: "center", background: "#FAF7F2" }}>
+          <div style={{ fontSize: 40 }}>⚠️</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: "#1A1A2E" }}>Algo salió mal al mostrar esta pantalla</div>
+          <div style={{ fontSize: 14, color: "#5C5C70", maxWidth: 420 }}>Esto a veces lo causa una extensión del navegador (como Google Translate o un bloqueador de anuncios). Prueba recargar la página; si sigue pasando, avísale a soporte.</div>
+          <button onClick={() => window.location.reload()} style={{ padding: "10px 20px", background: "#1A1A2E", color: "#fff", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 14, cursor: "pointer" }}>Recargar</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
   );
 }
