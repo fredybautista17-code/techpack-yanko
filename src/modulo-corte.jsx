@@ -3875,6 +3875,10 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // Qué corte real está expandido en "Históricos" (id del corte dentro de
   // cortesRealizados) — null si ninguno.
   const [historicoAbierto, setHistoricoAbierto] = useState(null);
+  // Qué corte real está expandido en "Cortes Aprobados" — el patronista
+  // primero hace clic para ver el detalle completo (tendido, corte, tallas)
+  // y ahí adentro pone el lote, en vez de un input suelto en la fila.
+  const [aprobadoAbierto, setAprobadoAbierto] = useState(null);
 
   // Click sobre un grupo (una referencia con todos sus colores) de
   // "Cronograma de Corte" o "Cortes Vencidos": si TODOS sus colores ya
@@ -4903,7 +4907,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             return (
               <div>
                 <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
-                  Cortes ya registrados en Entrada de Corte, listos para que el patronista los ingrese a Busint y les ponga número de lote. Al guardar el lote, pasan a "Históricos".
+                  Cortes ya registrados en Entrada de Corte. Clic en uno para revisar el detalle completo de lo que se cortó, y ahí mismo ponerle el número de lote antes de ingresarlo a Busint. Al guardar el lote, pasa a "Históricos".
                 </p>
                 {!sinLote.length && (
                   <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
@@ -4913,37 +4917,80 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                 {!!sinLote.length && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {sinLote.map((c) => {
+                      const abierto = aprobadoAbierto === c.id;
                       const texto = loteInputs[c.id] ?? "";
                       const dup = loteDuplicado(c, texto);
                       const refsTxt = (c.refs || []).map((r) => r.ref).join(", ");
                       return (
-                        <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.white, flexWrap: "wrap" }}>
-                          <div>
-                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{c.cliente} · #{c.numeroPedido} · {refsTxt}</div>
-                            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
-                              {fmtNum(c.totalUnidades)} unid. · {c.planta}{c.meson ? ` · ${c.meson}` : ""} · cortado el {fmtFechaISO(c.fecha)}
+                        <div key={c.id} style={{ borderRadius: 10, border: `1.5px solid ${C.border}`, overflow: "hidden" }}>
+                          <div
+                            onClick={() => setAprobadoAbierto(abierto ? null : c.id)}
+                            style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", cursor: "pointer", background: C.white }}
+                          >
+                            <div>
+                              <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{c.cliente} · #{c.numeroPedido} · {refsTxt}</div>
+                              <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+                                {fmtNum(c.totalUnidades)} unid. · {c.planta}{c.meson ? ` · ${c.meson}` : ""} · cortado el {fmtFechaISO(c.fecha)}
+                              </div>
                             </div>
+                            <span style={{ fontSize: 11, color: C.slate }}>{abierto ? "▲ Ocultar" : "▼ Revisar y poner lote"}</span>
                           </div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <input
-                              value={texto}
-                              onChange={(e) => setLoteInputs((s) => ({ ...s, [c.id]: e.target.value }))}
-                              placeholder="Número de lote"
-                              style={{ padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${dup ? C.red : C.border}`, fontSize: 13, width: 160, color: C.ink, outline: "none", fontFamily: "inherit" }}
-                            />
-                            <Btn
-                              variant="success"
-                              disabled={!texto.trim() || dup}
-                              onClick={async () => {
-                                await onAsignarLoteReal(c.pedidoId, c.id, texto.trim());
-                                setLoteInputs((s) => { const n = { ...s }; delete n[c.id]; return n; });
-                              }}
-                            >
-                              Guardar lote
-                            </Btn>
-                          </div>
-                          {dup && (
-                            <div style={{ width: "100%", fontSize: 11, color: C.red, fontWeight: 700 }}>⚠ Ese número de lote ya está en uso — usa uno diferente.</div>
+                          {abierto && (
+                            <div style={{ padding: "14px 16px", background: C.canvas, borderTop: `1px solid ${C.border}` }}>
+                              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 12, fontSize: 12, color: C.ink }}>
+                                <div><b>Planta:</b> {c.planta || "—"}</div>
+                                <div><b>Mesón:</b> {c.meson || "—"}</div>
+                                <div><b>Cortador:</b> {c.cortador || "—"}</div>
+                                <div><b>Tela:</b> {c.tipoTela || "—"}</div>
+                                <div><b>Trazo:</b> {c.largoTrazo ? `${c.largoTrazo} m` : "—"}</div>
+                                <div><b>Capas:</b> {c.capas ?? "—"}</div>
+                                <div><b>Metros tendido:</b> {c.metrosTendido ? `${c.metrosTendido} m` : "—"}</div>
+                                <div><b>Horario:</b> {c.horaInicio || "—"} a {c.horaFin || "—"} ({c.minutos ?? "—"} min)</div>
+                                <div><b>Ingreso corte:</b> {fmtCOP(c.ingresoCorte || 0)}</div>
+                              </div>
+                              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 14 }}>
+                                <thead>
+                                  <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                                    <th style={{ textAlign: "left", padding: "4px 8px", color: C.slate, fontSize: 10, textTransform: "uppercase" }}>Referencia</th>
+                                    <th style={{ textAlign: "left", padding: "4px 8px", color: C.slate, fontSize: 10, textTransform: "uppercase" }}>Tallas</th>
+                                    <th style={{ textAlign: "right", padding: "4px 8px", color: C.slate, fontSize: 10, textTransform: "uppercase" }}>Total</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {(c.refs || []).map((r) => (
+                                    <tr key={r.refId} style={{ borderBottom: `1px solid ${C.border}` }}>
+                                      <td style={{ padding: "6px 8px", fontWeight: 700 }}>{r.ref}{r.descripcion ? ` — ${r.descripcion}` : ""}</td>
+                                      <td style={{ padding: "6px 8px", color: C.slate }}>
+                                        {Object.entries(r.tallas || {}).filter(([, cant]) => cant > 0).map(([t, cant]) => `${t}:${cant}`).join(", ")}
+                                      </td>
+                                      <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700 }}>{fmtNum(r.total)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                <input
+                                  value={texto}
+                                  onChange={(e) => setLoteInputs((s) => ({ ...s, [c.id]: e.target.value }))}
+                                  placeholder="Número de lote"
+                                  style={{ padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${dup ? C.red : C.border}`, fontSize: 13, width: 160, color: C.ink, outline: "none", fontFamily: "inherit" }}
+                                />
+                                <Btn
+                                  variant="success"
+                                  disabled={!texto.trim() || dup}
+                                  onClick={async () => {
+                                    await onAsignarLoteReal(c.pedidoId, c.id, texto.trim());
+                                    setLoteInputs((s) => { const n = { ...s }; delete n[c.id]; return n; });
+                                    setAprobadoAbierto(null);
+                                  }}
+                                >
+                                  Guardar lote
+                                </Btn>
+                              </div>
+                              {dup && (
+                                <div style={{ marginTop: 8, fontSize: 11, color: C.red, fontWeight: 700 }}>⚠ Ese número de lote ya está en uso — usa uno diferente.</div>
+                              )}
+                            </div>
                           )}
                         </div>
                       );
