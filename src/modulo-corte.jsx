@@ -1320,22 +1320,59 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
     cortador: grupo.cortador || "",
     tipoTela: grupo.tipoTela || "",
     largoTrazo: grupo.largoTrazo ? String(grupo.largoTrazo) : "",
-    capas: grupo.capas ? String(grupo.capas) : "",
     horaInicioEstimada: grupo.horaInicioEstimada || "",
     horaFinEstimada: grupo.horaFinEstimada || "",
   });
   // Tablero de disponibilidad de mesones (ver más abajo, tableroMesones).
   const [showTablero, setShowTablero] = useState(false);
+  // Tallas involucradas en esta referencia (unión de las tallas de todos los
+  // colores) — ordenadas con el mismo criterio que el resto del sistema.
+  const tallasGrupo = ordenarTallas([...new Set(grupo.colores.flatMap((c) => Object.keys(c.tallas || {})))]);
+  // Curva de tallas: cuántas veces se marca cada talla dentro de un mismo
+  // trazo — es UNA sola para todo el trazo, compartida por todos los
+  // colores (todos se tienden y cortan juntos con la misma disposición).
+  const [curva, setCurva] = useState(() => {
+    const c = {};
+    tallasGrupo.forEach((t) => {
+      c[t] = grupo.curva?.[t] ? String(grupo.curva[t]) : "";
+    });
+    return c;
+  });
+  // Capas por color — a diferencia de planta/mesón/tela/horario (que se
+  // comparten entre colores porque se tienden juntos en el mismo trazo),
+  // cada color puede tener una cantidad distinta de capas apiladas (ej. más
+  // capas de negro que de amarillo si se necesita más negro).
+  const [capasPorColor, setCapasPorColor] = useState(() => {
+    const c = {};
+    grupo.colores.forEach((color) => {
+      c[color.id] = color.capas ? String(color.capas) : "";
+    });
+    return c;
+  });
 
   const plantaSel = plantas.find((p) => p.nombre === form.planta);
   const mesones = plantaSel?.mesones || [];
   const mesonSel = mesones.find((m) => m.id === form.meson);
   const grupoMeson = mesonSel?.grupoId ? (plantaSel?.grupos || []).find((g) => g.id === mesonSel.grupoId) : null;
 
+  // Marcadas = suma de la curva (cuántas prendas salen por cada capa que se
+  // corta, sumando todas las tallas). Con eso y las capas de cada color se
+  // calcula cuánto sale cortado — la comprobación es contra lo que
+  // realmente pidió el cliente para ese color (grupo.colores[i].tallas /
+  // cantidadProgramada), no al revés: el pedido manda, la curva es ayuda
+  // para decidir cuántas capas tender.
+  const marcadas = tallasGrupo.reduce((s, t) => s + (parseInt(curva[t]) || 0), 0);
+  function calcColor(color) {
+    const capasColor = parseFloat(capasPorColor[color.id]) || 0;
+    const prendasCalculadas = capasColor * marcadas;
+    const metrosColor = (parseFloat(form.largoTrazo) || 0) * capasColor;
+    const cantidadReal = color.cantidadProgramada ?? color.cantidadPendiente ?? 0;
+    return { capasColor, prendasCalculadas, metrosColor, cantidadReal, diff: prendasCalculadas - cantidadReal };
+  }
+  // Metros totales del trazo = suma de los metros de cada color (mismo largo
+  // de trazo, distinta cantidad de capas cada uno).
   function metrosTotales() {
-    const trazo = parseFloat(form.largoTrazo) || 0;
-    const capas = parseInt(form.capas) || 0;
-    return trazo * capas;
+    return grupo.colores.reduce((s, c) => s + calcColor(c).metrosColor, 0);
   }
 
   // La capacidad del mesón (10m, 14m compartidos entre Mesón 2+3...) es el
@@ -1456,6 +1493,14 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
   // uno conservando su propia cantidad (ya definida por color al programar).
   function save() {
     if (!form.planta || !form.meson || !form.cortador || !form.fechaProgramada || excedeCapacidad || horasFaltantes || horasInvalidas) return;
+    // Curva limpia: solo tallas con un número puesto, guardada como objeto
+    // { talla: cantidad } para poder mostrarla igual en Ingreso de Corte
+    // Real / Históricos.
+    const curvaLimpia = {};
+    tallasGrupo.forEach((t) => {
+      const v = parseInt(curva[t]) || 0;
+      if (v > 0) curvaLimpia[t] = v;
+    });
     const datosComunes = {
       fechaProgramada: form.fechaProgramada,
       planta: form.planta,
@@ -1464,7 +1509,8 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
       cortador: form.cortador,
       tipoTela: form.tipoTela,
       largoTrazo: parseFloat(form.largoTrazo) || 0,
-      capas: parseInt(form.capas) || 0,
+      curva: curvaLimpia,
+      marcadas,
       metrosTendido: metrosTotales(),
       horaInicioEstimada: form.horaInicioEstimada,
       horaFinEstimada: form.horaFinEstimada,
@@ -1480,7 +1526,12 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
       ingresadoPor: usuarioActual || null,
       ingresadoFechaISO: new Date().toISOString(),
     };
-    grupo.colores.forEach((c) => onSave(c.id, datosComunes));
+    // Capas es por color: cada color guarda su propia cantidad de capas y
+    // sus propios metros calculados (mismo largo de trazo para todos).
+    grupo.colores.forEach((c) => {
+      const { capasColor, metrosColor } = calcColor(c);
+      onSave(c.id, { ...datosComunes, capas: capasColor, metrosTendido: metrosColor });
+    });
     // Al guardar (a diferencia de "‹ Volver a la lista", que solo
     // deselecciona) se navega directo a "Ingreso de Corte Real" — ahí
     // queda visible en cola (todavía como "sin aprobar"/"falta lote" hasta
@@ -1583,7 +1634,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
             </Field>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
             <Field label="Tipo de Tela">
               <FInput
                 value={form.tipoTela}
@@ -1605,15 +1656,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
                 placeholder="4.5"
               />
             </Field>
-            <Field label="Capas">
-              <FInput
-                type="number"
-                value={form.capas}
-                onChange={(v) => setForm((f) => ({ ...f, capas: v }))}
-                placeholder="40"
-              />
-            </Field>
-            <Field label="Metros de Tela (trazo × capas)">
+            <Field label="Metros de Tela (total, todos los colores)">
               <div
                 style={{
                   padding: "9px 12px",
@@ -1628,6 +1671,90 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
                 {metrosTotales() > 0 ? `${metrosTotales().toLocaleString("es-CO")} m` : "—"}
               </div>
             </Field>
+          </div>
+
+          {/* Curva de tallas: una sola para todo el trazo, compartida por
+              todos los colores — cuántas veces se repite cada talla dentro
+              de una capa/marcada. La suma da "marcadas". */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: C.slate, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.3 }}>
+              Curva de Tallas (repeticiones por trazo)
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end" }}>
+              {tallasGrupo.map((t) => (
+                <Field key={t} label={t}>
+                  <FInput
+                    type="number"
+                    value={curva[t] || ""}
+                    onChange={(v) => setCurva((c) => ({ ...c, [t]: v }))}
+                    placeholder="0"
+                  />
+                </Field>
+              ))}
+              <div
+                style={{
+                  padding: "9px 12px",
+                  borderRadius: 8,
+                  border: `1.5px solid ${C.border}`,
+                  background: C.canvas,
+                  fontWeight: 800,
+                  color: marcadas > 0 ? C.violet : C.slate,
+                  fontSize: 13,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Marcadas: {marcadas || "—"}
+              </div>
+            </div>
+          </div>
+
+          {/* Capas por color: cada color puede tender una cantidad distinta
+              de capas. Con capas × marcadas se calcula cuánto sale
+              cortado, como comprobación contra la cantidad real del pedido
+              (no la reemplaza). */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: C.slate, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.3 }}>
+              Capas por Color
+            </div>
+            <div style={{ display: "grid", gap: 8 }}>
+              {grupo.colores.map((c) => {
+                const calc = calcColor(c);
+                const coincide = marcadas > 0 && calc.capasColor > 0 && calc.diff === 0;
+                const hayDatos = marcadas > 0 && calc.capasColor > 0;
+                return (
+                  <div
+                    key={c.id}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1.2fr 0.8fr 1fr 1fr auto",
+                      gap: 10,
+                      alignItems: "center",
+                      padding: "8px 12px",
+                      borderRadius: 8,
+                      border: `1.5px solid ${C.border}`,
+                      background: C.canvas,
+                    }}
+                  >
+                    <div style={{ fontWeight: 800, color: C.ink, fontSize: 13 }}>{c.descripcion || c.ref || c.color || "—"}</div>
+                    <FInput
+                      type="number"
+                      value={capasPorColor[c.id] || ""}
+                      onChange={(v) => setCapasPorColor((s) => ({ ...s, [c.id]: v }))}
+                      placeholder="Capas"
+                    />
+                    <div style={{ fontSize: 12, color: C.slate }}>
+                      {calc.metrosColor > 0 ? `${calc.metrosColor.toLocaleString("es-CO")} m` : "—"}
+                    </div>
+                    <div style={{ fontSize: 12, color: C.slate }}>
+                      Calc: <b style={{ color: C.ink }}>{hayDatos ? fmtNum(calc.prendasCalculadas) : "—"}</b> / Real: <b style={{ color: C.ink }}>{fmtNum(calc.cantidadReal)}</b>
+                    </div>
+                    <div style={{ fontSize: 16, textAlign: "center" }}>
+                      {!hayDatos ? "" : coincide ? <span style={{ color: C.green }}>✓</span> : <span title={`Diferencia: ${calc.diff > 0 ? "+" : ""}${calc.diff}`} style={{ color: C.amber }}>⚠</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
           {tiempoTotalEstimadoMin !== null && (
@@ -4108,6 +4235,9 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
       horaInicioEstimada: g.colores[0]?.horaInicioEstimada || "",
       horaFinEstimada: g.colores[0]?.horaFinEstimada || "",
       fechaProgramada: g.colores[0]?.fechaProgramada || "",
+      // La curva de tallas (cuántas veces se marca cada talla en el trazo)
+      // es compartida por todo el trazo, igual que planta/mesón/tela.
+      curva: g.colores[0]?.curva || null,
     }));
   }
   function datosDelDia(fechaISO) {
