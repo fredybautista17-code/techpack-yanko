@@ -331,11 +331,30 @@ function FSel({ value, onChange, options }) {
 // ampliar (arrastrando la esquina inferior derecha) — útil para formularios
 // largos como Programar Corte, donde a veces conviene verlo más grande o
 // correrlo a un lado para comparar con lo que hay detrás.
-function Modal({ title, onClose, children, width = 600 }) {
+function Modal({ title, onClose, children, width = 600, inline = false }) {
   const [pos, setPos] = useState({ x: 0, y: 0 });
   const [size, setSize] = useState({ width, height: null });
   const dragState = useRef(null);
   const resizeState = useRef(null);
+
+  // Modo inline: se usa cuando esto se abre DENTRO de otra pantalla (ej.
+  // "Ingreso de Corte Real" en Producción Corte) — en vez de una ventana
+  // flotante con fondo oscuro, se muestra como una tarjeta normal en el
+  // flujo de la página, igual que el panel de Programación de Mesones, así
+  // el cortador no siente que "salió" de donde estaba.
+  if (inline) {
+    return (
+      <div style={{ border: `1.5px solid ${C.border}`, borderRadius: 14, background: C.white, padding: 20, marginBottom: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, gap: 12 }}>
+          <span style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>{title}</span>
+          <Btn variant="secondary" onClick={onClose}>
+            ‹ Volver a la lista
+          </Btn>
+        </div>
+        {children}
+      </div>
+    );
+  }
 
   function onHeaderMouseDown(e) {
     if (e.target.closest("button")) return;
@@ -635,7 +654,7 @@ async function parseTelas(file) {
   return nombres;
 }
 
-function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, lotesExistentes, onGuardarLote, preseleccion, onSave, onClose, onGuardado }) {
+function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, lotesExistentes, onGuardarLote, preseleccion, onSave, onClose, onGuardado, inline }) {
   const mes = new Date().getMonth() + 1;
   const anio = new Date().getFullYear();
   // Si el ítem viene de "Programación Hecha" (preseleccion trae planta,
@@ -657,7 +676,12 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     // a mano, para que la estadística por tipo de tela sea consistente.
     tipoTela: preselColor0?.tipoTela || "",
     largoTrazo: preselColor0?.largoTrazo ? String(preselColor0.largoTrazo) : "",
-    capas: preselColor0?.capas ? String(preselColor0.capas) : "",
+    // Desde que se empieza a tender la tela hasta que queda lista para
+    // cortar (no incluye el corte en sí) — antes solo se calculaba
+    // teórico en Programación de Mesones; ahora también se registra real
+    // acá, para que la estadística de tendido salga de datos reales.
+    horaInicioTendido: preselColor0?.horaInicioEstimada || "",
+    horaFinTendido: "",
     // Etapa 2 — Corte: desde que el cortador empieza hasta que termina de
     // cortar todas las capas del trazo (no incluye empaque ni entrega).
     horaInicio: preselColor0?.horaInicioEstimada || "",
@@ -698,6 +722,19 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           c[r.id].tallas[t] = cant;
         });
       }
+    });
+    return c;
+  });
+  // Capas reales por color — igual que en Programación de Mesones, cada
+  // color puede llevar una cantidad distinta de capas. Se precarga con la
+  // capas TEÓRICA que se propuso allá (colorPresel.capas) para que el
+  // cortador solo tenga que confirmar o ajustar, no escribir de cero.
+  const [capasPorRef, setCapasPorRef] = useState(() => {
+    const c = {};
+    const coloresPresel = preseleccion?.colores || (preseleccion ? [preseleccion] : []);
+    pedido.referencias.forEach((r) => {
+      const colorPresel = coloresPresel.find((pc) => (pc.refId ? pc.refId === r.id : pc.ref === r.ref));
+      c[r.id] = colorPresel?.capas ? String(colorPresel.capas) : "";
     });
     return c;
   });
@@ -746,14 +783,36 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     return h2 * 60 + m2 - (h1 * 60 + m1);
   }
 
-  // Metros totales de tela = largo del trazo (una sola capa) × número de
-  // capas apiladas. Ya no se escribe a mano — se calcula solo para que el
-  // dato sea consistente entre cortes y sirva para las estadísticas por
-  // tipo de tela.
+  // Tiempo real de tendido — desde que se empieza a tender la tela hasta
+  // que queda lista para cortar. Se registra aparte del tiempo de corte
+  // (misma lógica: hora inicio/fin, resta en minutos) para que la
+  // estadística pueda distinguir cuánto tardó cada etapa.
+  function minutosTendido() {
+    if (!form.horaInicioTendido || !form.horaFinTendido) return 0;
+    const [h1, m1] = form.horaInicioTendido.split(":").map(Number);
+    const [h2, m2] = form.horaFinTendido.split(":").map(Number);
+    return h2 * 60 + m2 - (h1 * 60 + m1);
+  }
+
+  // Marcadas de la curva propuesta en Mesones (suma de la curva) — se usa
+  // para comprobar, por color, si las capas reales que se están poniendo
+  // aquí dan la misma cantidad de prendas que se está escribiendo en la
+  // grilla de tallas de al lado.
+  const marcadas = preseleccion?.curva
+    ? Object.values(preseleccion.curva).reduce((s, v) => s + (parseInt(v) || 0), 0)
+    : 0;
+
+  function capasSumaTotal() {
+    return Object.values(capasPorRef).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+  }
+
+  // Metros totales de tela = largo del trazo (una sola capa) × capas de
+  // cada color, sumado entre todos los colores que se están cortando — ya
+  // no es una sola capas compartida, cada color puede llevar distinta
+  // cantidad (igual que en Programación de Mesones).
   function metrosTotales() {
     const trazo = parseFloat(form.largoTrazo) || 0;
-    const capas = parseInt(form.capas) || 0;
-    return trazo * capas;
+    return pedido.referencias.reduce((s, r) => s + trazo * (parseFloat(capasPorRef[r.id]) || 0), 0);
   }
 
   async function save() {
@@ -769,6 +828,10 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           (a, b) => a + b,
           0
         ),
+        // Capas reales de este color — antes era un solo campo compartido
+        // para todo el corte, ahora es por color (igual que en
+        // Programación de Mesones).
+        capas: parseFloat(capasPorRef[r.id]) || 0,
       }))
       .filter((r) => r.total > 0);
 
@@ -782,8 +845,14 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       cortador: form.cortador,
       tipoTela: form.tipoTela,
       largoTrazo: parseFloat(form.largoTrazo) || 0,
-      capas: parseInt(form.capas) || 0,
+      // Capas total = suma de las capas reales de todos los colores que se
+      // están registrando en este corte — el detalle por color queda en
+      // cada entrada de `refs`.
+      capas: capasSumaTotal(),
       metrosTendido: metrosTotales(),
+      horaInicioTendido: form.horaInicioTendido,
+      horaFinTendido: form.horaFinTendido,
+      minutosTendido: minutosTendido(),
       horaInicio: form.horaInicio,
       horaFin: form.horaFin,
       minutos: minutosTotales(),
@@ -801,12 +870,63 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     else onClose();
   }
 
+  // Nombre del mesón programado en Mesones (preselColor0.meson guarda el id,
+  // no el nombre) — se busca en `plantas` directo, sin depender de
+  // `form.planta`/`form.meson` actuales, porque este panel muestra lo
+  // ORIGINAL que se programó, no lo que el cortador esté editando ahora.
+  const nombreMesonPresel = (() => {
+    if (!preselColor0?.meson) return "";
+    const pl = (plantas || []).find((p) => p.nombre === preselColor0.planta);
+    const m = pl?.mesones?.find((mm) => mm.id === preselColor0.meson);
+    return m?.nombre || preselColor0.meson;
+  })();
+
   return (
     <Modal
       title={`Entrada de Corte — Pedido ${pedido.numero}`}
       onClose={onClose}
       width={760}
+      inline={inline}
     >
+      {/* PASO 1: resumen de lo programado en Mesones — solo referencia, no
+          se edita acá. Le muestra al cortador qué se planeó (planta, mesón,
+          cortador, tela, trazo, curva de tallas) antes de registrar lo
+          real. Solo aparece si el ítem viene de un grupo programado. */}
+      {preseleccion && (
+        <div
+          style={{
+            background: C.violetBg,
+            border: `1.5px solid ${C.violet}55`,
+            borderRadius: 10,
+            padding: "12px 16px",
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10, fontSize: 11, fontWeight: 800, color: C.violet, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+            📋 Programado en Mesones (referencia)
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, fontSize: 12, color: C.ink, marginBottom: marcadas > 0 ? 10 : 0 }}>
+            <div><b>Planta:</b> {preselColor0?.planta || "—"}</div>
+            <div><b>Mesón:</b> {nombreMesonPresel || "—"}</div>
+            <div><b>Cortador:</b> {preselColor0?.cortador || "—"}</div>
+            <div><b>Tela / Trazo:</b> {preselColor0?.tipoTela || "—"}{preselColor0?.largoTrazo ? ` · ${preselColor0.largoTrazo}m` : ""}</div>
+          </div>
+          {marcadas > 0 && (
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 800, color: C.violet, marginBottom: 4 }}>CURVA DE TALLAS</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                {ordenarTallas(Object.keys(preseleccion.curva)).map((t) => (
+                  <span key={t} style={{ background: C.white, color: C.violet, fontSize: 11, fontWeight: 800, padding: "3px 10px", borderRadius: 8 }}>
+                    {t} {preseleccion.curva[t]}
+                  </span>
+                ))}
+                <span style={{ fontSize: 11, color: C.slate }}>marcadas: {marcadas}</span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div
         style={{
           display: "grid",
@@ -855,7 +975,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "1.3fr 1fr 1fr 1fr",
+          gridTemplateColumns: "1.3fr 1fr 1fr",
           gap: 12,
           marginBottom: 16,
         }}
@@ -881,15 +1001,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
             placeholder="4.5"
           />
         </Field>
-        <Field label="Capas">
-          <FInput
-            type="number"
-            value={form.capas}
-            onChange={(v) => setForm((f) => ({ ...f, capas: v }))}
-            placeholder="40"
-          />
-        </Field>
-        <Field label="Metros de Tela (trazo × capas)">
+        <Field label="Metros de Tela (total, todos los colores)">
           <div
             style={{
               padding: "9px 12px",
@@ -902,6 +1014,57 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
             }}
           >
             {metrosTotales() > 0 ? `${metrosTotales().toLocaleString("es-CO")} m` : "—"}
+          </div>
+        </Field>
+      </div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, marginTop: -8 }}>
+        Las capas ahora se ponen por color, en "Unidades a cortar" más abajo — cada color puede llevar una cantidad distinta.
+      </div>
+
+      {/* Horario real de tendido — desde que se empieza a tender la tela
+          hasta que queda lista para cortar. Antes solo existía el estimado
+          teórico (Programación de Mesones); esto es lo real. */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr 1fr",
+          gap: 12,
+          marginBottom: 16,
+        }}
+      >
+        <Field label="Hora Inicio Tendido">
+          <FInput
+            type="time"
+            value={form.horaInicioTendido}
+            onChange={(v) => setForm((f) => ({ ...f, horaInicioTendido: v }))}
+          />
+        </Field>
+        <Field label="Hora Fin Tendido (listo para cortar)">
+          <FInput
+            type="time"
+            value={form.horaFinTendido}
+            onChange={(v) => {
+              // Si la hora de inicio de corte todavía está vacía, se
+              // precarga con la misma — lo normal es que el corte arranque
+              // justo cuando termina el tendido, y queda editable por si no
+              // fue así.
+              setForm((f) => ({ ...f, horaFinTendido: v, horaInicio: f.horaInicio || v }));
+            }}
+          />
+        </Field>
+        <Field label="Duración Tendido">
+          <div
+            style={{
+              padding: "9px 12px",
+              borderRadius: 8,
+              border: `1.5px solid ${C.border}`,
+              background: C.canvas,
+              fontWeight: 800,
+              color: minutosTendido() > 0 ? C.violet : C.slate,
+              fontSize: 13,
+            }}
+          >
+            {minutosTendido() > 0 ? `${minutosTendido()} min` : "—"}
           </div>
         </Field>
       </div>
@@ -954,7 +1117,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           primero, y el patronista lo asigna después en "Producción Corte" →
           "Cortes Aprobados", ya con los datos reales de lo que se cortó. */}
 
-      {minutosTotales() > 0 && metrosTotales() > 0 && (
+      {(minutosTendido() > 0 || (minutosTotales() > 0 && metrosTotales() > 0)) && (
         <div
           style={{
             padding: "10px 16px",
@@ -966,8 +1129,23 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
             fontWeight: 700,
           }}
         >
-          ⏱ {minutosTotales()} min de corte · {(minutosTotales() / metrosTotales()).toFixed(1)} min/metro
-          {parseInt(form.capas) > 0 && ` · ${(minutosTotales() / parseInt(form.capas)).toFixed(1)} min/capa`}
+          {minutosTendido() > 0 && (
+            <div>
+              🧵 {minutosTendido()} min de tendido
+              {metrosTotales() > 0 && ` · ${(minutosTendido() / metrosTotales()).toFixed(1)} min/metro`}
+            </div>
+          )}
+          {minutosTotales() > 0 && metrosTotales() > 0 && (
+            <div style={{ marginTop: minutosTendido() > 0 ? 4 : 0 }}>
+              ✂ {minutosTotales()} min de corte · {(minutosTotales() / metrosTotales()).toFixed(1)} min/metro
+              {capasSumaTotal() > 0 && ` · ${(minutosTotales() / capasSumaTotal()).toFixed(1)} min/capa`}
+            </div>
+          )}
+          {minutosTendido() > 0 && minutosTotales() > 0 && (
+            <div style={{ marginTop: 4, fontWeight: 900 }}>
+              ⏱ Total: {minutosTendido() + minutosTotales()} min (tendido + corte)
+            </div>
+          )}
         </div>
       )}
 
@@ -990,6 +1168,16 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           const pend = pendiente(ref);
           const totalPend = Object.values(pend).reduce((a, b) => a + b, 0);
           if (totalPend === 0) return null;
+          // Capas reales de este color — comprobación: capas × marcadas
+          // (de la curva propuesta en Mesones) debería dar la misma
+          // cantidad que se está escribiendo en la grilla de tallas de al
+          // lado. Sin curva (ítem sin preselección) no hay con qué
+          // comparar, así que solo queda el input suelto.
+          const capasColorVal = parseFloat(capasPorRef[ref.id]) || 0;
+          const prendasCalc = capasColorVal * marcadas;
+          const cantidadIngresada = Object.values(cantidades[ref.id]?.tallas || {}).reduce((a, b) => a + b, 0);
+          const hayComprobacion = marcadas > 0 && capasColorVal > 0;
+          const coincideCapas = hayComprobacion && prendasCalc === cantidadIngresada;
           return (
             <div
               key={ref.id}
@@ -1054,65 +1242,106 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
                   </div>
                 </div>
               </div>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(5,1fr)",
-                  gap: 6,
-                }}
-              >
-                {ordenarTallas(Object.keys(pend)).map((t) =>
-                  pend[t] > 0 ? (
-                    <div key={t}>
-                      <div
-                        style={{
-                          fontSize: 9,
-                          color: C.slate,
-                          fontWeight: 700,
-                          marginBottom: 2,
-                        }}
-                      >
-                        {t}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 14, alignItems: "start" }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(5,1fr)",
+                    gap: 6,
+                  }}
+                >
+                  {ordenarTallas(Object.keys(pend)).map((t) =>
+                    pend[t] > 0 ? (
+                      <div key={t}>
+                        <div
+                          style={{
+                            fontSize: 9,
+                            color: C.slate,
+                            fontWeight: 700,
+                            marginBottom: 2,
+                          }}
+                        >
+                          {t}
+                        </div>
+                        <div
+                          style={{ fontSize: 9, color: C.amber, marginBottom: 2 }}
+                        >
+                          Pend: {pend[t]}
+                        </div>
+                        <input
+                          type="number"
+                          min={0}
+                          max={pend[t]}
+                          value={cantidades[ref.id]?.tallas[t] || 0}
+                          onChange={(e) => {
+                            const val = Math.min(
+                              parseInt(e.target.value) || 0,
+                              pend[t]
+                            );
+                            setCantidades((c) => ({
+                              ...c,
+                              [ref.id]: {
+                                ...c[ref.id],
+                                tallas: { ...c[ref.id].tallas, [t]: val },
+                              },
+                            }));
+                          }}
+                          style={{
+                            width: "100%",
+                            padding: "5px",
+                            border: `1px solid ${C.border}`,
+                            borderRadius: 6,
+                            fontSize: 12,
+                            textAlign: "center",
+                            background:
+                              cantidades[ref.id]?.tallas[t] > 0
+                                ? C.blueBg
+                                : C.white,
+                          }}
+                        />
                       </div>
-                      <div
-                        style={{ fontSize: 9, color: C.amber, marginBottom: 2 }}
-                      >
-                        Pend: {pend[t]}
+                    ) : null
+                  )}
+                </div>
+
+                {/* Capas reales de este color — al lado de la grilla de
+                    tallas de arriba, que no se toca. Precargada con la
+                    capas teórica de Mesones; se compara contra lo que se
+                    está escribiendo en la grilla (capas × marcadas). */}
+                <div style={{ minWidth: 140, borderLeft: `1px solid ${C.border}`, paddingLeft: 14 }}>
+                  <div style={{ fontSize: 9, color: C.slate, fontWeight: 700, marginBottom: 2 }}>
+                    CAPAS REALES
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    value={capasPorRef[ref.id] || ""}
+                    placeholder="0"
+                    onChange={(e) => setCapasPorRef((c) => ({ ...c, [ref.id]: e.target.value }))}
+                    style={{
+                      width: "100%",
+                      padding: "5px",
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 6,
+                      fontSize: 12,
+                      textAlign: "center",
+                      background: capasColorVal > 0 ? C.blueBg : C.white,
+                      marginBottom: 6,
+                    }}
+                  />
+                  {hayComprobacion ? (
+                    <div style={{ fontSize: 10, color: C.slate }}>
+                      Calc: <b style={{ color: C.ink }}>{fmtNum(prendasCalc)}</b> / Real: <b style={{ color: C.ink }}>{fmtNum(cantidadIngresada)}</b>
+                      <div style={{ marginTop: 2, fontWeight: 800, color: coincideCapas ? C.green : C.amber }}>
+                        {coincideCapas ? "✓ Coincide" : `⚠ dif ${prendasCalc - cantidadIngresada > 0 ? "+" : ""}${prendasCalc - cantidadIngresada}`}
                       </div>
-                      <input
-                        type="number"
-                        min={0}
-                        max={pend[t]}
-                        value={cantidades[ref.id]?.tallas[t] || 0}
-                        onChange={(e) => {
-                          const val = Math.min(
-                            parseInt(e.target.value) || 0,
-                            pend[t]
-                          );
-                          setCantidades((c) => ({
-                            ...c,
-                            [ref.id]: {
-                              ...c[ref.id],
-                              tallas: { ...c[ref.id].tallas, [t]: val },
-                            },
-                          }));
-                        }}
-                        style={{
-                          width: "100%",
-                          padding: "5px",
-                          border: `1px solid ${C.border}`,
-                          borderRadius: 6,
-                          fontSize: 12,
-                          textAlign: "center",
-                          background:
-                            cantidades[ref.id]?.tallas[t] > 0
-                              ? C.blueBg
-                              : C.white,
-                        }}
-                      />
                     </div>
-                  ) : null
-                )}
+                  ) : (
+                    <div style={{ fontSize: 10, color: C.slate }}>
+                      {marcadas > 0 ? "Falta poner capas" : "Sin curva para comprobar"}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           );
@@ -3442,11 +3671,12 @@ function EstadisticasTela({ pedidos }) {
   const byTela = {};
   const combos = new Map(); // "tela||rango" -> acumulado, para el ranking
   allCortes.forEach((c) => {
-    if (!byTela[c.tipoTela]) byTela[c.tipoTela] = { cortes: 0, metros: 0, minutos: 0, capas: 0, unidades: 0, porRango: {} };
+    if (!byTela[c.tipoTela]) byTela[c.tipoTela] = { cortes: 0, metros: 0, minutos: 0, minutosTendido: 0, capas: 0, unidades: 0, porRango: {} };
     const t = byTela[c.tipoTela];
     t.cortes++;
     t.metros += c.metrosTendido || 0;
     t.minutos += c.minutos || 0;
+    t.minutosTendido += c.minutosTendido || 0;
     t.capas += c.capas || 0;
     t.unidades += c.totalUnidades || 0;
 
@@ -3485,11 +3715,12 @@ function EstadisticasTela({ pedidos }) {
   );
   const byCortador = {};
   allCortesConCortador.forEach((c) => {
-    if (!byCortador[c.cortador]) byCortador[c.cortador] = { cortes: 0, unidades: 0, minutos: 0, metros: 0 };
+    if (!byCortador[c.cortador]) byCortador[c.cortador] = { cortes: 0, unidades: 0, minutos: 0, minutosTendido: 0, metros: 0 };
     const d = byCortador[c.cortador];
     d.cortes++;
     d.unidades += c.totalUnidades || 0;
     d.minutos += c.minutos || 0;
+    d.minutosTendido += c.minutosTendido || 0;
     d.metros += c.metrosTendido || 0;
   });
   const rankingCortadores = Object.entries(byCortador)
@@ -3588,7 +3819,8 @@ function EstadisticasTela({ pedidos }) {
                     <th style={{ textAlign: "left", padding: "5px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Cortador</th>
                     <th style={{ textAlign: "right", padding: "5px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Cortes</th>
                     <th style={{ textAlign: "right", padding: "5px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Unidades</th>
-                    <th style={{ textAlign: "right", padding: "5px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Minutos</th>
+                    <th style={{ textAlign: "right", padding: "5px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Min. Tendido</th>
+                    <th style={{ textAlign: "right", padding: "5px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Min. Corte</th>
                     <th style={{ textAlign: "right", padding: "5px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Prendas/min</th>
                     <th style={{ textAlign: "right", padding: "5px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Min/Corte</th>
                   </tr>
@@ -3599,6 +3831,7 @@ function EstadisticasTela({ pedidos }) {
                       <td style={{ padding: "6px 8px", fontWeight: 700, color: C.ink }}>{c.cortador}</td>
                       <td style={{ padding: "6px 8px", textAlign: "right" }}>{c.cortes}</td>
                       <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700 }}>{fmtNum(c.unidades)}</td>
+                      <td style={{ padding: "6px 8px", textAlign: "right", color: C.blue }}>{c.minutosTendido > 0 ? c.minutosTendido : "—"}</td>
                       <td style={{ padding: "6px 8px", textAlign: "right" }}>{c.minutos}</td>
                       <td style={{ padding: "6px 8px", textAlign: "right", color: C.green, fontWeight: 700 }}>{c.unidadesPorMin.toFixed(2)}</td>
                       <td style={{ padding: "6px 8px", textAlign: "right", color: C.violet, fontWeight: 700 }}>{c.minPorCorte.toFixed(1)}</td>
@@ -3651,31 +3884,38 @@ function EstadisticasTela({ pedidos }) {
               .sort((a, b) => b[1].metros - a[1].metros)
               .map(([tela, data]) => {
                 const minPorMetro = data.metros > 0 ? (data.minutos / data.metros).toFixed(1) : "—";
+                const minPorMetroTendido = data.metros > 0 && data.minutosTendido > 0 ? (data.minutosTendido / data.metros).toFixed(1) : null;
                 const capasPromedio = data.cortes > 0 ? (data.capas / data.cortes).toFixed(0) : "—";
                 const unidadesPorMin = data.minutos > 0 ? (data.unidades / data.minutos).toFixed(2) : "—";
                 const rangos = ORDEN_RANGOS.filter((r) => data.porRango[r]);
                 return (
                   <div key={tela} style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
                       <div>
                         <div style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>🧵 {tela}</div>
                         <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
                           {data.cortes} corte{data.cortes !== 1 ? "s" : ""} registrado{data.cortes !== 1 ? "s" : ""}
                         </div>
                       </div>
-                      <div style={{ display: "flex", gap: 8 }}>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        {minPorMetroTendido && (
+                          <div style={{ padding: "8px 16px", background: C.blueBg, borderRadius: 20, color: C.blue, fontWeight: 900, fontSize: 18 }}>
+                            🧵 {minPorMetroTendido} min/m tendido
+                          </div>
+                        )}
                         <div style={{ padding: "8px 16px", background: C.violetBg, borderRadius: 20, color: C.violet, fontWeight: 900, fontSize: 18 }}>
-                          {minPorMetro} min/m
+                          ✂ {minPorMetro} min/m corte
                         </div>
                         <div style={{ padding: "8px 16px", background: C.greenBg, borderRadius: 20, color: C.green, fontWeight: 900, fontSize: 18 }}>
                           {unidadesPorMin} u/min
                         </div>
                       </div>
                     </div>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 14 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 10, marginBottom: 14 }}>
                       {[
                         { label: "Total Metros", value: `${data.metros.toFixed(1)}m`, color: C.blue },
-                        { label: "Total Minutos", value: `${data.minutos} min`, color: C.amber },
+                        { label: "Total Min. Tendido", value: data.minutosTendido > 0 ? `${data.minutosTendido} min` : "—", color: C.blue },
+                        { label: "Total Min. Corte", value: `${data.minutos} min`, color: C.amber },
                         { label: "Capas Promedio", value: capasPromedio, color: C.cyan },
                         { label: "Unidades Cortadas", value: fmtNum(data.unidades), color: C.green },
                       ].map((k) => (
@@ -4137,7 +4377,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onCortarProgramado, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Selección por talla: Map key `${pedidoId}__${ref}__${talla}` -> { ...contexto, cantidad }
   // (cantidad es editable, por si no alcanza la tela para toda la talla).
@@ -4193,6 +4433,10 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // referencias que ya tienen Programación de Mesones hecha y están listas
   // para cargar el corte real (unidades, lote).
   const [corteRealFecha, setCorteRealFecha] = useState(today());
+  // Ítem "Listo para cortar" que está abierto en Ingreso de Corte Real — se
+  // despliega inline debajo de la lista (igual que Programación de
+  // Mesones), en vez de abrir una ventana modal aparte.
+  const [corteRealSelKey, setCorteRealSelKey] = useState(null);
   // Texto que el patronista va escribiendo por fila en "Cortes Aprobados"
   // antes de guardar el número de lote — separado por key de grupo.
   const [loteInputs, setLoteInputs] = useState({});
@@ -4224,9 +4468,18 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // colores).
   function abrirFlujoCorte(grupo) {
     const listo = grupo.colores.every((c) => c.etapa === "programacion_hecha");
-    if (listo) { onCortarProgramado(grupo); return; }
     const fecha = grupo.colores[0]?.fechaProgramada || grupo.fechaProgramada || today();
     const key = grupo.key || `${grupo.pedidoId}__${grupo.ref}`;
+    if (listo) {
+      // Ya tiene Programación de Mesones lista — se manda a "Ingreso de
+      // Corte Real" con esa referencia ya desplegada, en vez de abrir una
+      // ventana aparte.
+      setCorteRealFecha(fecha);
+      setCorteRealSelKey(key);
+      setSubTab("produccion");
+      setProduccionSubTab("corte_real");
+      return;
+    }
     setMesonesFecha(fecha);
     setMesonesGrupoKey(key);
     setSubTab("produccion");
@@ -4256,10 +4509,25 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // desglose horizontal por talla (igual formato que el informe de Vigentes
   // en Diseño → Pedidos) — se excluye lo que ya tenga una programación
   // activa (para reprogramar hay que cancelar antes).
+  //
+  // EXCEPCIÓN: si esa programación activa YA se usó para un corte real
+  // (aunque haya sido parcial, ej. se cortaron 50 de 130) y todavía queda
+  // pendiente, sí se vuelve a mostrar — la entrada de Mesones original ya
+  // cumplió su función (produjo un corte) y no sirve para programar una
+  // segunda ronda; si no se hiciera esta excepción, el color quedaría
+  // escondido de "Programar" para siempre aunque falte por cortar, porque
+  // esa entrada solo se marca "cumplido" cuando el pendiente llega a 0.
   const porCliente = new Map(); // cliente -> Map(pedidoId -> { pedido, filas })
   activos.forEach((p) => {
     const { porRef } = calcularCortadoPendiente(p, vpRefMap, lotesCortadoMap);
-    const filas = porRef.filter((r) => r.pendiente > 0 && !yaProgramados.has(`${p.id}__${r.refId}`));
+    const filas = porRef.filter((r) => {
+      if (!(r.pendiente > 0)) return false;
+      if (!yaProgramados.has(`${p.id}__${r.refId}`)) return true;
+      const yaSeCortoAlgo = (p.cortesRealizados || []).some((c) =>
+        (c.refs || []).some((cr) => cr.refId === r.refId)
+      );
+      return yaSeCortoAlgo;
+    });
     if (!filas.length) return;
     const clienteKey = p.cliente || "Sin cliente";
     if (!porCliente.has(clienteKey)) porCliente.set(clienteKey, new Map());
@@ -5184,6 +5452,8 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             // todavía están en "Falta ingresar" se resuelven en la otra
             // sub-pestaña.
             const listos = datosCorteReal.grupos.filter((g) => g.etapa === "programacion_hecha");
+            const corteRealSel = corteRealSelKey ? listos.find((g) => g.key === corteRealSelKey) : null;
+            const pedidoDelCorteReal = corteRealSel ? pedidos.find((p) => p.id === corteRealSel.pedidoId) : null;
             return (
               <div>
                 <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
@@ -5191,9 +5461,9 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                 </p>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
                   <Field label="Día">
-                    <FInput type="date" value={corteRealFecha} onChange={(v) => setCorteRealFecha(v)} />
+                    <FInput type="date" value={corteRealFecha} onChange={(v) => { setCorteRealFecha(v); setCorteRealSelKey(null); }} />
                   </Field>
-                  <Btn variant="secondary" onClick={() => setCorteRealFecha(today())}>
+                  <Btn variant="secondary" onClick={() => { setCorteRealFecha(today()); setCorteRealSelKey(null); }}>
                     Hoy
                   </Btn>
                 </div>
@@ -5205,22 +5475,24 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                 )}
 
                 {!!listos.length && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: corteRealSel ? 24 : 0 }}>
                     {listos.map((g) => {
                       const aprobadoG = g.colores.every((c) => c.aprobado === true);
                       const estado = !aprobadoG ? "sin_aprobar" : "listo";
+                      const seleccionado = g.key === corteRealSelKey;
                       return (
                         <div
                           key={g.key}
                           onClick={() => {
                             if (estado === "sin_aprobar") { setProduccionSubTab("mesones"); setMesonesFecha(g.colores[0]?.fechaProgramada || today()); setMesonesGrupoKey(g.key); return; }
-                            onCortarProgramado(g);
+                            setCorteRealSelKey(seleccionado ? null : g.key);
                           }}
-                          title={estado === "sin_aprobar" ? "Falta aprobación — ir a Programación de Mesones" : "Ir a Entrada de Corte"}
+                          title={estado === "sin_aprobar" ? "Falta aprobación — ir a Programación de Mesones" : "Ver / registrar corte real"}
                           style={{
                             display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
                             padding: "12px 16px", borderRadius: 10, cursor: "pointer",
-                            border: `1.5px solid ${C.border}`, background: C.white,
+                            border: `1.5px solid ${seleccionado ? C.cyan : C.border}`,
+                            background: seleccionado ? C.blueBg : C.white,
                           }}
                         >
                           <div>
@@ -5236,6 +5508,25 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                       );
                     })}
                   </div>
+                )}
+
+                {corteRealSel && pedidoDelCorteReal && (
+                  <ProgramarCorteModal
+                    inline
+                    pedido={pedidoDelCorteReal}
+                    plantas={plantasConfig || []}
+                    cortadores={cortadoresConfig || []}
+                    telas={telas || []}
+                    preciosMap={preciosMap}
+                    lotesExistentes={lotesExistentes}
+                    preseleccion={corteRealSel}
+                    onSave={(corte) => onRegistrarCorteReal(corteRealSel.pedidoId, corte)}
+                    onClose={() => setCorteRealSelKey(null)}
+                    onGuardado={() => {
+                      setCorteRealSelKey(null);
+                      setProduccionSubTab("aprobados");
+                    }}
+                  />
                 )}
               </div>
             );
@@ -5298,7 +5589,8 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                 <div><b>Trazo:</b> {c.largoTrazo ? `${c.largoTrazo} m` : "—"}</div>
                                 <div><b>Capas:</b> {c.capas ?? "—"}</div>
                                 <div><b>Metros tendido:</b> {c.metrosTendido ? `${c.metrosTendido} m` : "—"}</div>
-                                <div><b>Horario:</b> {c.horaInicio || "—"} a {c.horaFin || "—"} ({c.minutos ?? "—"} min)</div>
+                                <div><b>Horario Tendido:</b> {c.horaInicioTendido || "—"} a {c.horaFinTendido || "—"} ({c.minutosTendido ?? "—"} min)</div>
+                                <div><b>Horario Corte:</b> {c.horaInicio || "—"} a {c.horaFin || "—"} ({c.minutos ?? "—"} min)</div>
                                 <div><b>Ingreso corte:</b> {fmtCOP(c.ingresoCorte || 0)}</div>
                               </div>
                               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 14 }}>
@@ -5401,7 +5693,8 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                 <div><b>Trazo:</b> {c.largoTrazo ? `${c.largoTrazo} m` : "—"}</div>
                                 <div><b>Capas:</b> {c.capas ?? "—"}</div>
                                 <div><b>Metros tendido:</b> {c.metrosTendido ? `${c.metrosTendido} m` : "—"}</div>
-                                <div><b>Horario:</b> {c.horaInicio || "—"} a {c.horaFin || "—"} ({c.minutos ?? "—"} min)</div>
+                                <div><b>Horario Tendido:</b> {c.horaInicioTendido || "—"} a {c.horaFinTendido || "—"} ({c.minutosTendido ?? "—"} min)</div>
+                                <div><b>Horario Corte:</b> {c.horaInicio || "—"} a {c.horaFin || "—"} ({c.minutos ?? "—"} min)</div>
                                 <div><b>Ingreso corte:</b> {fmtCOP(c.ingresoCorte || 0)}</div>
                               </div>
                               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -6072,12 +6365,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
   // Cortar" en Programados Pendientes) — se usa para abrir Programar Corte
   // ya con la referencia/tallas/cantidades de esa programación cargadas.
   const [preseleccionCorte, setPreseleccionCorte] = useState(null);
-  // Ítem "Listo para cortar" en Ingreso de Corte Real: al hacer clic ya NO se
-  // navega a la pantalla completa del pedido (eso sacaba al cortador de
-  // Producción Corte y lo aterrizaba en el dashboard del pedido entero) —
-  // se abre el mismo formulario de Entrada de Corte pero como overlay,
-  // quedándose en "Producción Corte" todo el tiempo.
-  const [corteRealOverlay, setCorteRealOverlay] = useState(null);
   // Qué sub-pestaña de "Producción Corte" abrir la próxima vez que se
   // muestre la vista "programacion" — se usa para, tras registrar un corte
   // real en Entrada de Corte, volver directo a "Cortes Aprobados" (en vez
@@ -6721,7 +7008,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
                 setSelPedidoId(id);
                 setView("detalle");
               }}
-              onCortarProgramado={(prog) => setCorteRealOverlay(prog)}
+              onRegistrarCorteReal={registrarCorteReal}
               plantasConfig={corteConfig.plantas || []}
               cortadoresConfig={cortadoresUnificados}
               telas={corteConfig.telas || []}
@@ -6740,32 +7027,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               isAdmin={isAdmin}
             />
           )}
-          {/* Entrada de Corte lanzada desde "Ingreso de Corte Real": se abre
-              como overlay encima de Producción Corte (sin navegar a la
-              pantalla completa del pedido, que sacaba al cortador de dónde
-              estaba). Al guardar, se cierra y salta a "Cortes Aprobados". */}
-          {corteRealOverlay && (() => {
-            const pedidoDelCorte = pedidos.find((p) => p.id === corteRealOverlay.pedidoId);
-            if (!pedidoDelCorte) return null;
-            return (
-              <ProgramarCorteModal
-                pedido={pedidoDelCorte}
-                plantas={corteConfig.plantas || []}
-                cortadores={cortadoresUnificados}
-                telas={corteConfig.telas || []}
-                preciosMap={preciosMap}
-                lotesExistentes={lotesExistentes}
-                onGuardarLote={guardarLoteCorte}
-                preseleccion={corteRealOverlay}
-                onSave={(corte) => registrarCorteReal(corteRealOverlay.pedidoId, corte)}
-                onClose={() => setCorteRealOverlay(null)}
-                onGuardado={() => {
-                  setCorteRealOverlay(null);
-                  setNavProduccion({ subTab: "produccion", produccionSubTab: "aprobados", ts: Date.now() });
-                }}
-              />
-            );
-          })()}
           {view === "costo" && (
             <CentroCosto pedidos={pedidos} trabajadores={corteConfig.nomina?.trabajadores || []} />
           )}
