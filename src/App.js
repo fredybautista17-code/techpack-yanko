@@ -1861,7 +1861,7 @@ function Card({ item, kind, onClick, onPromote, role, perms, stages }) {
             {pending > 0 && <span style={{ fontSize: 10, background: T.amberBg, color: T.amber, padding: "1px 6px", borderRadius: 10, fontWeight: 700 }}>💬 {pending}</span>}
           </div>
           <div style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>{item.name}</div>
-          {item.silueta && <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{item.silueta}{item.rango ? ` · ${item.rango}` : ""}</div>}
+          {(item.silueta || item.mes) && <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{item.silueta}{item.rango ? ` · ${item.rango}` : ""}{item.mes ? ` · ${item.mes}` : ""}</div>}
         </div>
         {overdue && <span style={{ color: T.coral, fontSize: 18 }}>⚑</span>}
       </div>
@@ -1888,6 +1888,7 @@ function Card({ item, kind, onClick, onPromote, role, perms, stages }) {
 function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas, stages, isAdmin, onDeleteProto, config, onCrearEnvio }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
+  const [mesFiltro, setMesFiltro] = useState("todos");
   const [confirmDel, setConfirmDel] = useState(null);
   // Selección múltiple para armar un envío/bitácora agrupado — solo tiene
   // sentido en la pestaña "Enviar al Cliente". Se limpia al cambiar de
@@ -1912,11 +1913,21 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
   // de Clientes de Administrador General, aunque el cliente no tuviera nada
   // pendiente, lo que hacía el desplegable innecesariamente largo.
   const clientesDisponibles = Object.keys(conteoPorCliente).sort((a, b) => a.localeCompare(b));
+  // Mismo criterio que clientesDisponibles pero por mes — solo meses con al
+  // menos un prototipo activo, ordenados por el orden calendario (MONTHS_ES)
+  // y no alfabético.
+  const conteoPorMes = {};
+  protosActivos.forEach((p) => {
+    if (!p.mes) return;
+    conteoPorMes[p.mes] = (conteoPorMes[p.mes] || 0) + 1;
+  });
+  const mesesDisponibles = MONTHS_ES.filter((m) => conteoPorMes[m] > 0);
   // "Todos" oculta Aprobados/Promovidos/Declinados para no saturar el tablero
   // (un prototipo promovido sigue con status "aprobado", así que basta con
   // excluir aprobado/declinado). Siguen disponibles en sus propias pestañas.
   const porEstado = filter === "todos" ? protos.filter((p) => !["aprobado", "declinado"].includes(p.status)) : protos.filter((p) => p.status === filter);
-  const filtered = clienteFiltro === "todos" ? porEstado : porEstado.filter((p) => (p.cliente || p.colores?.[0]) === clienteFiltro);
+  const porCliente = clienteFiltro === "todos" ? porEstado : porEstado.filter((p) => (p.cliente || p.colores?.[0]) === clienteFiltro);
+  const filtered = mesFiltro === "todos" ? porCliente : porCliente.filter((p) => p.mes === mesFiltro);
   return (
     <div>
       {confirmDel && (
@@ -1954,6 +1965,11 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
         <select value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)} style={{ padding: "7px 12px", border: `1.5px solid ${clienteFiltro !== "todos" ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: clienteFiltro !== "todos" ? T.denim : T.ink, background: clienteFiltro !== "todos" ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer" }}>
           <option value="todos">Todos ({protosActivos.length})</option>
           {clientesDisponibles.map((c) => <option key={c} value={c}>{c} ({conteoPorCliente[c] || 0})</option>)}
+        </select>
+        <span style={{ fontSize: 12, fontWeight: 700, color: T.slate, marginLeft: 8 }}>📅 Mes</span>
+        <select value={mesFiltro} onChange={(e) => setMesFiltro(e.target.value)} style={{ padding: "7px 12px", border: `1.5px solid ${mesFiltro !== "todos" ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: mesFiltro !== "todos" ? T.denim : T.ink, background: mesFiltro !== "todos" ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer" }}>
+          <option value="todos">Todos</option>
+          {mesesDisponibles.map((m) => <option key={m} value={m}>{m} ({conteoPorMes[m] || 0})</option>)}
         </select>
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
@@ -1995,6 +2011,7 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
 function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
+  const [mesFiltro, setMesFiltro] = useState("todos");
   const [editCap, setEditCap] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
   const [revisionCap, setRevisionCap] = useState(null);
@@ -2070,13 +2087,22 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
   // de Clientes de Administrador General, aunque el cliente no tuviera nada
   // pendiente, lo que hacía el desplegable innecesariamente largo.
   const clientesDisponibles = Object.keys(conteoPorCliente).sort((a, b) => a.localeCompare(b));
+  // Mismo criterio que conteoPorCliente pero por mes — el mes vive a nivel de
+  // cápsula (no por referencia), así que se cuenta directo sobre cap.mes.
+  const conteoPorMes = {};
+  capsulasActivas.forEach((cap) => {
+    if (!cap.mes) return;
+    conteoPorMes[cap.mes] = (conteoPorMes[cap.mes] || 0) + 1;
+  });
+  const mesesDisponibles = MONTHS_ES.filter((m) => conteoPorMes[m] > 0);
   // "Todos" oculta referencias Aprobadas/Declinadas (y cápsulas que solo
   // tengan referencias en esos estados) para no saturar el tablero. Siguen
   // disponibles en las pestañas "Aprobadas"/"Declinadas". El filtro de
-  // cliente se combina (AND) con el de estado.
+  // cliente y el de mes se combinan (AND) con el de estado.
   function filteredRefs(cap) {
     let refs = filter === "todos" ? cap.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status)) : cap.referencias.filter((r) => r.status === filter);
     if (clienteFiltro !== "todos") refs = refs.filter((r) => refCliente(cap, r) === clienteFiltro);
+    if (mesFiltro !== "todos") refs = mesFiltro === cap.mes ? refs : [];
     return refs;
   }
   // Una cápsula recién creada empieza con referencias: [] — sin este OR
@@ -2115,6 +2141,11 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
           <option value="todos">Todos ({capsulasActivas.length})</option>
           {clientesDisponibles.map((c) => <option key={c} value={c}>{c} ({conteoPorCliente[c] || 0})</option>)}
         </select>
+        <span style={{ fontSize: 12, fontWeight: 700, color: T.slate, marginLeft: 8 }}>📅 Mes</span>
+        <select value={mesFiltro} onChange={(e) => setMesFiltro(e.target.value)} style={{ padding: "7px 12px", border: `1.5px solid ${mesFiltro !== "todos" ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: mesFiltro !== "todos" ? T.denim : T.ink, background: mesFiltro !== "todos" ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer" }}>
+          <option value="todos">Todos</option>
+          {mesesDisponibles.map((m) => <option key={m} value={m}>{m} ({conteoPorMes[m] || 0})</option>)}
+        </select>
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
         {FILTERS.map(([v, label]) => (
@@ -2143,7 +2174,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
             <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, flexWrap: "wrap", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: 20 }}>🗂</span>
-                <div><div style={{ fontWeight: 800, fontSize: 16, color: T.ink }}>{cap.name}</div><div style={{ fontSize: 12, color: T.slate }}>{cap.cliente ? `${cap.cliente} · ` : ""}{cap.season} · {cap.referencias.length} ref · {cap.createdAt}{cap.assignedTo ? ` · 👤 ${cap.assignedTo}` : ""}</div></div>
+                <div><div style={{ fontWeight: 800, fontSize: 16, color: T.ink }}>{cap.name}</div><div style={{ fontSize: 12, color: T.slate }}>{cap.cliente ? `${cap.cliente} · ` : ""}{cap.mes ? `${cap.mes} · ` : ""}{cap.season} · {cap.referencias.length} ref · {cap.createdAt}{cap.assignedTo ? ` · 👤 ${cap.assignedTo}` : ""}</div></div>
               </div>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 {od > 0 && <span style={{ padding: "3px 10px", background: T.coralBg, color: T.coral, borderRadius: 6, fontSize: 12, fontWeight: 700 }}>⚑ {od}</span>}
