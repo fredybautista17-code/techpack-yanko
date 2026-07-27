@@ -2401,7 +2401,29 @@ function DetallePedido({
 }
 
 // ─── ADMIN CORTE ──────────────────────────────────────────────────────────────
-function AdminCorte({ config, onSave }) {
+function AdminCorte({ config, onSave, onReiniciarCortes }) {
+  const [reiniciando, setReiniciando] = useState(false);
+  const [resultReinicio, setResultReinicio] = useState(null);
+  // Botón temporal de limpieza de pruebas — borra TODO lo registrado de
+  // cortes (lotes, Programación de Mesones, cortes reales de cada pedido).
+  // Es irreversible, por eso pide doble confirmación antes de tocar nada.
+  async function handleReiniciarCortes() {
+    const ok1 = window.confirm(
+      "Esto borra TODOS los lotes, TODA la Programación de Mesones (planta/mesón/trazo/aprobaciones) y vacía los cortes reales registrados en TODOS los pedidos. No se puede deshacer.\n\n¿Seguro que quieres continuar?"
+    );
+    if (!ok1) return;
+    const ok2 = window.confirm("Última confirmación: esto reinicia TODO lo de Corte a cero. ¿Confirmas?");
+    if (!ok2) return;
+    setReiniciando(true);
+    setResultReinicio(null);
+    try {
+      await onReiniciarCortes();
+      setResultReinicio({ ok: true, msg: "Listo — se borraron todos los lotes, toda la Programación de Mesones y todos los cortes reales quedaron en cero." });
+    } catch (err) {
+      setResultReinicio({ ok: false, msg: err?.message || "No se pudo completar el reinicio." });
+    }
+    setReiniciando(false);
+  }
   const [tab, setTab] = useState("plantas");
   const [newPlanta, setNewPlanta] = useState("");
   const [newCortador, setNewCortador] = useState("");
@@ -2668,6 +2690,21 @@ function AdminCorte({ config, onSave }) {
             {label}
           </button>
         ))}
+      </div>
+
+      <div style={{ marginBottom: 24, padding: 16, borderRadius: 12, border: `1.5px solid ${C.red}`, background: C.redBg }}>
+        <div style={{ fontWeight: 800, fontSize: 13, color: C.red, marginBottom: 4 }}>🧹 Reiniciar Cortes (solo pruebas)</div>
+        <div style={{ fontSize: 12, color: C.red, marginBottom: 10 }}>
+          Borra todos los lotes, toda la Programación de Mesones y todos los cortes reales registrados — para limpiar lo que hayas dejado probando. Es irreversible.
+        </div>
+        <Btn variant="danger" onClick={handleReiniciarCortes} disabled={reiniciando}>
+          {reiniciando ? "Borrando..." : "🧹 Reiniciar todos los Cortes"}
+        </Btn>
+        {resultReinicio && (
+          <div style={{ marginTop: 10, fontSize: 12, fontWeight: 700, color: resultReinicio.ok ? C.green : C.red }}>
+            {resultReinicio.ok ? "✓ " : "✗ "}{resultReinicio.msg}
+          </div>
+        )}
       </div>
 
       {tab === "plantas" && (
@@ -5821,6 +5858,30 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
   async function asignarLoteCorte(ids, lote) {
     await Promise.all(ids.map((id) => fsSave("corte_programacion", id, { loteAsignado: lote })));
   }
+  // Reinicio completo de pruebas (temporal, solo admin) — borra TODA la
+  // colección corte_lotes, TODA corte_programacion (Programación de
+  // Mesones), y vacía cortesRealizados de cada pedido activo (revirtiendo a
+  // "activo" el que haya quedado "terminado" solo por eso). Irreversible —
+  // AdminCorte pide doble confirmación antes de llamar esto.
+  async function reiniciarTodosLosCortes() {
+    const [lotesSnap, progSnap] = await Promise.all([
+      getDocs(collection(db, "corte_lotes")),
+      getDocs(collection(db, "corte_programacion")),
+    ]);
+    await Promise.all(lotesSnap.docs.map((d) => deleteDoc(d.ref)));
+    await Promise.all(progSnap.docs.map((d) => deleteDoc(d.ref)));
+    await Promise.all(
+      pedidos
+        .filter((p) => (p.cortesRealizados || []).length > 0)
+        .map((p) =>
+          fsSave("pedidos_activos", p.id, {
+            cortesRealizados: [],
+            estado: p.estado === "terminado" ? "activo" : p.estado,
+            fechaCumplido: null,
+          })
+        )
+    );
+  }
   // Revisión automática de cumplimiento: cada vez que cambian los pedidos o
   // las fuentes que definen "pendiente" (Ventas Perdidas, Planeación), se
   // recalcula el pendiente de la referencia puntual de cada ítem programado
@@ -6142,7 +6203,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
             <CentroCosto pedidos={pedidos} trabajadores={corteConfig.nomina?.trabajadores || []} />
           )}
           {view === "admin" && isAdmin && (
-            <AdminCorte config={corteConfig} onSave={saveConfig} />
+            <AdminCorte config={corteConfig} onSave={saveConfig} onReiniciarCortes={reiniciarTodosLosCortes} />
           )}
         </div>
       </div>
