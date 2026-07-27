@@ -4007,6 +4007,17 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // y ahí adentro pone el lote, en vez de un input suelto en la fila.
   const [aprobadoAbierto, setAprobadoAbierto] = useState(null);
 
+  // Los cortes reales (cortesRealizados) guardan el ID interno del mesón
+  // (form.meson usa m.id, no m.nombre), así que para mostrarlo hay que
+  // resolverlo contra la planta correspondiente — si no se encuentra (o es
+  // un dato viejo sin id válido), se muestra el id crudo como respaldo.
+  function nombreMeson(plantaNombre, mesonId) {
+    if (!mesonId) return "";
+    const pl = (plantasConfig || []).find((p) => p.nombre === plantaNombre);
+    const m = pl?.mesones?.find((mm) => mm.id === mesonId);
+    return m?.nombre || mesonId;
+  }
+
   // Click sobre un grupo (una referencia con todos sus colores) de
   // "Cronograma de Corte" o "Cortes Vencidos": si TODOS sus colores ya
   // tienen Programación Hecha, va directo a Entrada de Corte con el grupo
@@ -5075,7 +5086,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                             <div>
                               <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{c.cliente} · #{c.numeroPedido} · {refsTxt}</div>
                               <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
-                                {fmtNum(c.totalUnidades)} unid. · {c.planta}{c.meson ? ` · ${c.meson}` : ""} · cortado el {fmtFechaISO(c.fecha)}
+                                {fmtNum(c.totalUnidades)} unid. · {c.planta}{c.meson ? ` · ${nombreMeson(c.planta, c.meson)}` : ""} · cortado el {fmtFechaISO(c.fecha)}
                               </div>
                             </div>
                             <span style={{ fontSize: 11, color: C.slate }}>{abierto ? "▲ Ocultar" : "▼ Revisar y poner lote"}</span>
@@ -5084,7 +5095,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                             <div style={{ padding: "14px 16px", background: C.canvas, borderTop: `1px solid ${C.border}` }}>
                               <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 12, fontSize: 12, color: C.ink }}>
                                 <div><b>Planta:</b> {c.planta || "—"}</div>
-                                <div><b>Mesón:</b> {c.meson || "—"}</div>
+                                <div><b>Mesón:</b> {nombreMeson(c.planta, c.meson) || "—"}</div>
                                 <div><b>Cortador:</b> {c.cortador || "—"}</div>
                                 <div><b>Tela:</b> {c.tipoTela || "—"}</div>
                                 <div><b>Trazo:</b> {c.largoTrazo ? `${c.largoTrazo} m` : "—"}</div>
@@ -5185,8 +5196,9 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                           {abierto && (
                             <div style={{ padding: "14px 16px", background: C.canvas, borderTop: `1px solid ${C.border}` }}>
                               <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 12, fontSize: 12, color: C.ink }}>
+                                <div><b>Lote:</b> {c.lote || "—"}</div>
                                 <div><b>Planta:</b> {c.planta || "—"}</div>
-                                <div><b>Mesón:</b> {c.meson || "—"}</div>
+                                <div><b>Mesón:</b> {nombreMeson(c.planta, c.meson) || "—"}</div>
                                 <div><b>Cortador:</b> {c.cortador || "—"}</div>
                                 <div><b>Tela:</b> {c.tipoTela || "—"}</div>
                                 <div><b>Trazo:</b> {c.largoTrazo ? `${c.largoTrazo} m` : "—"}</div>
