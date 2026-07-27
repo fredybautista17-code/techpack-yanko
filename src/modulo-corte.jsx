@@ -4251,11 +4251,24 @@ function calcularCortadoPendiente(pedido, vpRefMap, lotesCortadoMap) {
   // si se cruzara por ref, cortar un color contaría como si se hubiera
   // cortado también en los demás colores que comparten ese mismo código.
   const cortadoPorRefApp = new Map();
+  // Igual que cortadoPorRefApp pero desglosado por talla — se usa para que
+  // "Disponible para Programar" ofrezca lo que REALMENTE falta por talla
+  // (no el pedido original completo) cuando una referencia ya se cortó
+  // parcialmente y se está programando un segundo lote. Ventas Perdidas y
+  // Planeación no tienen desglose por talla, así que esto solo puede salir
+  // de los cortes reales de la app (cortesRealizados) — es la única fuente
+  // con ese detalle.
+  const cortadoTallaPorRefApp = new Map();
   (pedido.cortesRealizados || []).forEach((c) => {
     (c.refs || []).forEach((cr) => {
       const suma = Object.values(cr.tallas || {}).reduce((a, b) => a + (b || 0), 0);
       const clave = cr.refId || cr.ref;
       cortadoPorRefApp.set(clave, (cortadoPorRefApp.get(clave) || 0) + suma);
+      if (!cortadoTallaPorRefApp.has(clave)) cortadoTallaPorRefApp.set(clave, {});
+      const acc = cortadoTallaPorRefApp.get(clave);
+      Object.entries(cr.tallas || {}).forEach(([t, cant]) => {
+        acc[t] = (acc[t] || 0) + (cant || 0);
+      });
     });
   });
   let totalPedido = 0;
@@ -4278,7 +4291,15 @@ function calcularCortadoPendiente(pedido, vpRefMap, lotesCortadoMap) {
     if (cortadoPlanta !== null) candidatos.push(cortadoPlanta);
     const cortado = Math.max(...candidatos);
     totalCortado += cortado;
-    return { refId: r.id, ref: r.ref, descripcion: r.descripcion, tallas: r.tallas || {}, total, cortado, pendiente: Math.max(0, total - cortado) };
+    // Tallas que realmente faltan por cortar — el pedido original menos lo
+    // ya registrado en cortesRealizados para esa talla puntual (no el total
+    // parejo, para no restar de una talla que no se tocó).
+    const tallasCortadas = cortadoTallaPorRefApp.get(r.id) || {};
+    const tallasRestantes = {};
+    Object.keys(r.tallas || {}).forEach((t) => {
+      tallasRestantes[t] = Math.max(0, (r.tallas[t] || 0) - (tallasCortadas[t] || 0));
+    });
+    return { refId: r.id, ref: r.ref, descripcion: r.descripcion, tallas: tallasRestantes, total, cortado, pendiente: Math.max(0, total - cortado) };
   });
   return { totalPedido, totalCortado, totalPendiente: Math.max(0, totalPedido - totalCortado), porRef };
 }
