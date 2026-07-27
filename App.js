@@ -977,7 +977,7 @@ function PomTable({ pom, tallas }) {
 }
 
 function NewProtoModal({ onSave, onClose, config }) {
-  const [form, setForm] = useState({ name: "", categoria: "", silueta: "", rango: "", reference: "", assignedTo: "", cliente: "", tipoTela: "", baseMolderia: "" });
+  const [form, setForm] = useState({ name: "", categoria: "", silueta: "", rango: "", reference: "", assignedTo: "", cliente: "", mes: "", tipoTela: "", baseMolderia: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function save() {
     if (!form.name || !form.reference) return;
@@ -991,9 +991,10 @@ function NewProtoModal({ onSave, onClose, config }) {
         <Field label="Categoría"><FSel value={form.categoria} onChange={set("categoria")} options={config.categorias} /></Field>
         <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config.siluetas} /></Field>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
         <Field label="Rango"><FSel value={form.rango} onChange={set("rango")} options={config.rangos} /></Field>
         <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
+        <Field label="Mes"><FSel value={form.mes} onChange={set("mes")} options={MONTHS_ES} /></Field>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: C-003" /></Field>
@@ -1045,7 +1046,7 @@ function EditRefModal({ refData: refItem, onSave, onClose, config }) {
   );
 }
 function EditProtoModal({ proto, onSave, onClose, config }) {
-  const [form, setForm] = useState({ name: proto?.name || "", categoria: proto?.categoria || "", silueta: proto?.silueta || "", rango: proto?.rango || "", reference: proto?.reference || "", assignedTo: proto?.assignedTo || "", cliente: proto?.cliente || "", tipoTela: proto?.tipoTela || "", baseMolderia: proto?.baseMolderia || "" });
+  const [form, setForm] = useState({ name: proto?.name || "", categoria: proto?.categoria || "", silueta: proto?.silueta || "", rango: proto?.rango || "", reference: proto?.reference || "", assignedTo: proto?.assignedTo || "", cliente: proto?.cliente || "", mes: proto?.mes || "", tipoTela: proto?.tipoTela || "", baseMolderia: proto?.baseMolderia || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function save() { if (!form.name || !form.reference) return; onSave(form); onClose(); }
   return (
@@ -1055,9 +1056,10 @@ function EditProtoModal({ proto, onSave, onClose, config }) {
         <Field label="Categoría"><FSel value={form.categoria} onChange={set("categoria")} options={config.categorias} /></Field>
         <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config.siluetas} /></Field>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
         <Field label="Rango"><FSel value={form.rango} onChange={set("rango")} options={config.rangos} /></Field>
         <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
+        <Field label="Mes"><FSel value={form.mes} onChange={set("mes")} options={MONTHS_ES} /></Field>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: C-003" /></Field>
@@ -1075,7 +1077,7 @@ function EditProtoModal({ proto, onSave, onClose, config }) {
   );
 }
 function NewCapsulaModal({ onSave, onClose, config }) {
-  const [form, setForm] = useState({ name: "", season: "", cliente: "", assignedTo: "" });
+  const [form, setForm] = useState({ name: "", season: "", cliente: "", mes: "", assignedTo: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function save() { if (!form.name) return; onSave({ id: uid(), ...form, createdAt: today(), referencias: [], ilustracionEstado: "pendiente", observacionesIlustracion: [] }); onClose(); }
   return (
@@ -1085,7 +1087,10 @@ function NewCapsulaModal({ onSave, onClose, config }) {
         <Field label="Temporada / Código"><FInput value={form.season} onChange={set("season")} placeholder="Ej: AW25 o C0127" /></Field>
         <Field label="Responsable"><FSel value={form.assignedTo} onChange={set("assignedTo")} options={config?.disenadores || []} /></Field>
       </div>
-      <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config?.clientes || []).map((c) => c.nombre)} /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config?.clientes || []).map((c) => c.nombre)} /></Field>
+        <Field label="Mes"><FSel value={form.mes} onChange={set("mes")} options={MONTHS_ES} /></Field>
+      </div>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn onClick={save}>Crear Cápsula</Btn>
@@ -4186,18 +4191,24 @@ function EditNombreModal({ item, tipo, config, onSave, onClose }) {
   const [season, setSeason] = useState(item?.season || "");
   const [assignedTo, setAssignedTo] = useState(item?.assignedTo || "");
   const [cliente, setCliente] = useState(item?.cliente || "");
+  const [mes, setMes] = useState(item?.mes || "");
   function save() {
     if (!nombre.trim()) return;
-    onSave({ name: nombre.trim(), ...(tipo === "capsula" ? { season: season.trim(), assignedTo, cliente } : {}) });
+    onSave({ name: nombre.trim(), ...(tipo === "capsula" ? { season: season.trim(), assignedTo, cliente, mes } : {}) });
     onClose();
   }
   return (
     <Modal title={`Editar ${tipo === "capsula" ? "Cápsula" : "Prototipo"}`} onClose={onClose} width={420}>
       <Field label="Nombre"><input value={nombre} onChange={(e) => setNombre(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} /></Field>
       {tipo === "capsula" && (
-        <Field label="Cliente">
-          <FSel value={cliente} onChange={setCliente} options={(config?.clientes || []).map((c) => c.nombre)} />
-        </Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Cliente">
+            <FSel value={cliente} onChange={setCliente} options={(config?.clientes || []).map((c) => c.nombre)} />
+          </Field>
+          <Field label="Mes">
+            <FSel value={mes} onChange={setMes} options={MONTHS_ES} />
+          </Field>
+        </div>
       )}
       {tipo === "capsula" && <Field label="Temporada / Código"><input value={season} onChange={(e) => setSeason(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} /></Field>}
       {tipo === "capsula" && <Field label="Responsable"><FSel value={assignedTo} onChange={setAssignedTo} options={config?.disenadores || []} /></Field>}
