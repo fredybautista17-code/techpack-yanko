@@ -663,8 +663,10 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     horaInicio: preselColor0?.horaInicioEstimada || "",
     horaFin: preselColor0?.horaFinEstimada || "",
     // Número de lote del corte — obligatorio y nunca se puede repetir (ver
-    // validación en save()). Se genera un lote por cada corte registrado.
-    lote: "",
+    // validación en save()). Si el patronista ya lo asignó en "Cortes
+    // Aprobados" (Producción Corte), llega precargado acá — queda editable
+    // por si algo cambió al momento real de cortar.
+    lote: preselColor0?.loteAsignado || "",
   });
   const plantaSel = plantas.find((pl) => pl.nombre === form.planta);
   const mesonesDisponibles = plantaSel?.mesones || [];
@@ -3792,7 +3794,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onCortarProgramado, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, isAdmin }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onCortarProgramado, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLote, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Selección por talla: Map key `${pedidoId}__${ref}__${talla}` -> { ...contexto, cantidad }
   // (cantidad es editable, por si no alcanza la tela para toda la talla).
@@ -3823,17 +3825,28 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   }
   const [editandoCumplidoId, setEditandoCumplidoId] = useState(null);
   const [edicionCumplido, setEdicionCumplido] = useState({ cantidad: 0, fecha: "" });
-  // Fecha y grupo seleccionados en la pestaña "Programación de Mesones" —
-  // ahí es donde ahora se ingresan los datos teóricos del corte (antes se
-  // hacía en un modal encima de "Programados Pendientes").
+  // "Producción Corte" agrupa dos pestañas internas: "Programación de
+  // Mesones" (datos teóricos del corte) e "Ingreso de Corte Real" (lo que
+  // antes era ir directo al detalle del pedido a cargar Entrada de Corte).
+  const [produccionSubTab, setProduccionSubTab] = useState("mesones");
+  // Fecha y grupo seleccionados en "Programación de Mesones" — ahí es donde
+  // ahora se ingresan los datos teóricos del corte (antes se hacía en un
+  // modal encima de "Programados Pendientes").
   const [mesonesFecha, setMesonesFecha] = useState(today());
   const [mesonesGrupoKey, setMesonesGrupoKey] = useState(null);
+  // Fecha elegida en "Ingreso de Corte Real" — lista, por día, las
+  // referencias que ya tienen Programación de Mesones hecha y están listas
+  // para cargar el corte real (unidades, lote).
+  const [corteRealFecha, setCorteRealFecha] = useState(today());
+  // Texto que el patronista va escribiendo por fila en "Cortes Aprobados"
+  // antes de guardar el número de lote — separado por key de grupo.
+  const [loteInputs, setLoteInputs] = useState({});
 
   // Click sobre un grupo (una referencia con todos sus colores) de
-  // "Programados Pendientes" o "Cortes Vencidos": si TODOS sus colores ya
+  // "Cronograma de Corte" o "Cortes Vencidos": si TODOS sus colores ya
   // tienen Programación Hecha, va directo a Entrada de Corte con el grupo
-  // completo; si falta alguno, se manda a la pestaña "Programación de
-  // Mesones" (con la fecha y el grupo ya preseleccionados) para completar
+  // completo; si falta alguno, se manda a "Producción Corte" → "Programación
+  // de Mesones" (con la fecha y el grupo ya preseleccionados) para completar
   // ahí los datos teóricos (planta/mesón/tela/trazo/capas, compartidos entre
   // colores).
   function abrirFlujoCorte(grupo) {
@@ -3843,7 +3856,8 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     const key = grupo.key || `${grupo.pedidoId}__${grupo.ref}`;
     setMesonesFecha(fecha);
     setMesonesGrupoKey(key);
-    setSubTab("mesones");
+    setSubTab("produccion");
+    setProduccionSubTab("mesones");
   }
 
   const activos = pedidos.filter((p) => p.estado === "activo");
@@ -4008,12 +4022,14 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // estimado suma y si eso alcanza a cubrir el costo diario del centro de
   // costo (el mismo indicador ✓/⚠ que ya se usaba al seleccionar, ahora
   // visible por día directo en el calendario).
-  function datosDelDia(fechaISO) {
-    const items = porDiaPendientes.get(fechaISO) || [];
-    const ingreso = items.reduce((s, it) => s + (it.cantidadProgramada ?? it.cantidadPendiente ?? 0) * precioRef(it.ref), 0);
-    // Agrupa los ítems (uno por color) en un solo "grupo" por referencia —
-    // así el calendario muestra un chip por ref con la cantidad TOTAL
-    // sumada entre colores, en vez de un chip repetido por cada color.
+  // Agrupa una lista cualquiera de ítems (uno por color) en "grupos" por
+  // referencia (pedidoId + ref) — así se muestra un chip/fila por ref con la
+  // cantidad TOTAL sumada entre colores, en vez de uno repetido por cada
+  // color. Reusable tanto para un solo día (calendario) como para TODOS los
+  // pendientes sin importar el día (ej. "Cortes Aprobados", que no filtra
+  // por fecha porque el patronista puede necesitar poner lote a cosas de
+  // varios días distintos).
+  function agruparPorRef(items) {
     const gruposMap = new Map();
     items.forEach((it) => {
       const gkey = `${it.pedidoId}__${it.ref}`;
@@ -4034,12 +4050,17 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
       g.cantidadTotal += it.cantidadProgramada ?? it.cantidadPendiente ?? 0;
       if (it.vencido) g.vencido = true;
     });
-    const grupos = [...gruposMap.values()].map((g) => ({
+    return [...gruposMap.values()].map((g) => ({
       ...g,
       etapa: g.colores.every((c) => c.etapa === "programacion_hecha") ? "programacion_hecha" : "en_programacion",
       planta: g.colores[0]?.planta || "",
       meson: g.colores[0]?.meson || "",
     }));
+  }
+  function datosDelDia(fechaISO) {
+    const items = porDiaPendientes.get(fechaISO) || [];
+    const ingreso = items.reduce((s, it) => s + (it.cantidadProgramada ?? it.cantidadPendiente ?? 0) * precioRef(it.ref), 0);
+    const grupos = agruparPorRef(items);
     return { items, ingreso, cubre: items.length > 0 && ingreso >= costoDia, grupos };
   }
 
@@ -4119,19 +4140,13 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
           onClick={() => setSubTab("pendientes")}
           style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: subTab === "pendientes" ? C.ink : C.white, color: subTab === "pendientes" ? C.seam : C.ink, border: `1px solid ${subTab === "pendientes" ? C.ink : C.border}` }}
         >
-          PROGRAMADOS PENDIENTES {pendientesProg.length > 0 && `(${pendientesProg.length})`}
+          📆 CRONOGRAMA DE CORTE {pendientesProg.length > 0 && `(${pendientesProg.length})`}
         </div>
         <div
-          onClick={() => setSubTab("mesones")}
-          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: subTab === "mesones" ? C.violet : C.white, color: subTab === "mesones" ? C.white : C.violet, border: `1px solid ${subTab === "mesones" ? C.violet : C.violetBg}` }}
+          onClick={() => setSubTab("produccion")}
+          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: subTab === "produccion" ? C.violet : C.white, color: subTab === "produccion" ? C.white : C.violet, border: `1px solid ${subTab === "produccion" ? C.violet : C.violetBg}` }}
         >
-          🔧 PROGRAMACIÓN DE MESONES {mesonesPendientesCount > 0 && `(${mesonesPendientesCount})`}
-        </div>
-        <div
-          onClick={() => setSubTab("cumplidos")}
-          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: subTab === "cumplidos" ? C.ink : C.white, color: subTab === "cumplidos" ? C.seam : C.ink, border: `1px solid ${subTab === "cumplidos" ? C.ink : C.border}` }}
-        >
-          HISTORIAL DE CUMPLIDOS
+          🏭 PRODUCCIÓN CORTE {mesonesPendientesCount > 0 && `(${mesonesPendientesCount})`}
         </div>
         <div
           onClick={() => setSubTab("vencidos")}
@@ -4659,83 +4674,248 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
           ))}
         </div>
       )}
-      {subTab === "mesones" && (() => {
-        const datosMesones = datosDelDia(mesonesFecha);
-        const grupoSel = mesonesGrupoKey ? datosMesones.grupos.find((g) => g.key === mesonesGrupoKey) : null;
-        return (
-          <div>
-            <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
-              Elige un día para ver lo programado ahí (a futuro, para que el cortador vaya ingresando los datos teóricos con anticipación) y entra a cada referencia para poner mesón, trazo, capas y horario. Un analista revisa y aprueba antes de que quede confirmado.
-            </p>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-              <Field label="Día">
-                <FInput type="date" value={mesonesFecha} onChange={(v) => { setMesonesFecha(v); setMesonesGrupoKey(null); }} />
-              </Field>
-              <Btn variant="secondary" onClick={() => { setMesonesFecha(today()); setMesonesGrupoKey(null); }}>
-                Hoy
-              </Btn>
+      {subTab === "produccion" && (
+        <div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+            <div
+              onClick={() => setProduccionSubTab("mesones")}
+              style={{ cursor: "pointer", padding: "8px 14px", borderRadius: 8, fontWeight: 800, fontSize: 11, background: produccionSubTab === "mesones" ? C.violet : C.violetBg, color: produccionSubTab === "mesones" ? C.white : C.violet }}
+            >
+              🔧 PROGRAMACIÓN DE MESONES
             </div>
-
-            {!datosMesones.grupos.length && (
-              <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
-                No hay nada programado para el {fmtFechaISO(mesonesFecha)}.
-              </div>
-            )}
-
-            {!!datosMesones.grupos.length && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: grupoSel ? 24 : 0 }}>
-                {datosMesones.grupos.map((g) => {
-                  const aprobadoG = g.etapa === "programacion_hecha" && g.colores.every((c) => c.aprobado === true);
-                  const estadoLabel = g.etapa !== "programacion_hecha" ? "Falta ingresar" : aprobadoG ? "Aprobado" : "Pendiente de aprobación";
-                  const estadoColor = g.etapa !== "programacion_hecha" ? C.violet : aprobadoG ? C.green : C.amber;
-                  const estadoBg = g.etapa !== "programacion_hecha" ? C.violetBg : aprobadoG ? C.greenBg : C.amberBg;
-                  const seleccionado = g.key === mesonesGrupoKey;
-                  return (
-                    <div
-                      key={g.key}
-                      onClick={() => setMesonesGrupoKey(g.key)}
-                      style={{
-                        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
-                        padding: "12px 16px", borderRadius: 10, cursor: "pointer",
-                        border: `1.5px solid ${seleccionado ? C.violet : C.border}`,
-                        background: seleccionado ? C.violetBg : C.white,
-                      }}
-                    >
-                      <div>
-                        <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{g.cliente} · #{g.numero} · {g.ref}</div>
-                        <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
-                          {g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid.
-                          {g.etapa === "programacion_hecha" && ` · ${g.planta}${g.meson ? " · " + g.meson : ""}`}
-                        </div>
-                      </div>
-                      <span style={{ fontSize: 10, fontWeight: 800, color: estadoColor, background: estadoBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
-                        {estadoLabel}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {grupoSel && (
-              <ProgramacionMesonPanel
-                grupo={grupoSel}
-                plantas={plantasConfig || []}
-                cortadores={cortadoresConfig || []}
-                telas={telas || []}
-                estadisticasTela={estadisticasTela || {}}
-                metrosUsadosMeson={metrosUsadosMeson}
-                itemsUsadosMeson={itemsUsadosMeson}
-                onSave={onGuardarProgramacionHecha}
-                onClose={() => setMesonesGrupoKey(null)}
-                puedeAprobar={puedeAprobarCorte}
-                onAprobar={() => onAprobarProgramacionHecha(grupoSel.colores.map((c) => c.id), usuarioActual)}
-                usuarioActual={usuarioActual}
-              />
-            )}
+            <div
+              onClick={() => setProduccionSubTab("aprobados")}
+              style={{ cursor: "pointer", padding: "8px 14px", borderRadius: 8, fontWeight: 800, fontSize: 11, background: produccionSubTab === "aprobados" ? C.green : C.greenBg, color: produccionSubTab === "aprobados" ? C.white : C.green }}
+            >
+              📦 CORTES APROBADOS
+            </div>
+            <div
+              onClick={() => setProduccionSubTab("corte_real")}
+              style={{ cursor: "pointer", padding: "8px 14px", borderRadius: 8, fontWeight: 800, fontSize: 11, background: produccionSubTab === "corte_real" ? C.cyan : C.blueBg, color: produccionSubTab === "corte_real" ? C.white : C.cyan }}
+            >
+              ✂ INGRESO DE CORTE REAL
+            </div>
           </div>
-        );
-      })()}
+
+          {produccionSubTab === "mesones" && (() => {
+            const datosMesones = datosDelDia(mesonesFecha);
+            const grupoSel = mesonesGrupoKey ? datosMesones.grupos.find((g) => g.key === mesonesGrupoKey) : null;
+            return (
+              <div>
+                <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
+                  Elige un día para ver lo programado ahí (a futuro, para que el cortador vaya ingresando los datos teóricos con anticipación) y entra a cada referencia para poner mesón, trazo, capas y horario. Un analista revisa y aprueba antes de que quede confirmado.
+                </p>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+                  <Field label="Día">
+                    <FInput type="date" value={mesonesFecha} onChange={(v) => { setMesonesFecha(v); setMesonesGrupoKey(null); }} />
+                  </Field>
+                  <Btn variant="secondary" onClick={() => { setMesonesFecha(today()); setMesonesGrupoKey(null); }}>
+                    Hoy
+                  </Btn>
+                </div>
+
+                {!datosMesones.grupos.length && (
+                  <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
+                    No hay nada programado para el {fmtFechaISO(mesonesFecha)}.
+                  </div>
+                )}
+
+                {!!datosMesones.grupos.length && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: grupoSel ? 24 : 0 }}>
+                    {datosMesones.grupos.map((g) => {
+                      const aprobadoG = g.etapa === "programacion_hecha" && g.colores.every((c) => c.aprobado === true);
+                      const estadoLabel = g.etapa !== "programacion_hecha" ? "Falta ingresar" : aprobadoG ? "Aprobado" : "Pendiente de aprobación";
+                      const estadoColor = g.etapa !== "programacion_hecha" ? C.violet : aprobadoG ? C.green : C.amber;
+                      const estadoBg = g.etapa !== "programacion_hecha" ? C.violetBg : aprobadoG ? C.greenBg : C.amberBg;
+                      const seleccionado = g.key === mesonesGrupoKey;
+                      return (
+                        <div
+                          key={g.key}
+                          onClick={() => setMesonesGrupoKey(g.key)}
+                          style={{
+                            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+                            padding: "12px 16px", borderRadius: 10, cursor: "pointer",
+                            border: `1.5px solid ${seleccionado ? C.violet : C.border}`,
+                            background: seleccionado ? C.violetBg : C.white,
+                          }}
+                        >
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{g.cliente} · #{g.numero} · {g.ref}</div>
+                            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+                              {g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid.
+                              {g.etapa === "programacion_hecha" && ` · ${g.planta}${g.meson ? " · " + g.meson : ""}`}
+                            </div>
+                          </div>
+                          <span style={{ fontSize: 10, fontWeight: 800, color: estadoColor, background: estadoBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
+                            {estadoLabel}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {grupoSel && (
+                  <ProgramacionMesonPanel
+                    grupo={grupoSel}
+                    plantas={plantasConfig || []}
+                    cortadores={cortadoresConfig || []}
+                    telas={telas || []}
+                    estadisticasTela={estadisticasTela || {}}
+                    metrosUsadosMeson={metrosUsadosMeson}
+                    itemsUsadosMeson={itemsUsadosMeson}
+                    onSave={onGuardarProgramacionHecha}
+                    onClose={() => setMesonesGrupoKey(null)}
+                    puedeAprobar={puedeAprobarCorte}
+                    onAprobar={() => onAprobarProgramacionHecha(grupoSel.colores.map((c) => c.id), usuarioActual)}
+                    usuarioActual={usuarioActual}
+                  />
+                )}
+              </div>
+            );
+          })()}
+
+          {produccionSubTab === "aprobados" && (() => {
+            // No se filtra por día a propósito: el patronista va poniendo
+            // lote a lo que ya está aprobado sin importar para qué fecha
+            // esté programado, así puede ir adelantando trabajo de varios
+            // días a la vez.
+            const aprobadosGrupos = agruparPorRef(pendientesConEstado)
+              .filter((g) => g.etapa === "programacion_hecha" && g.colores.every((c) => c.aprobado === true))
+              .sort((a, b) => (a.colores[0]?.fechaProgramada || "").localeCompare(b.colores[0]?.fechaProgramada || ""));
+            function loteDeGrupo(g) {
+              return g.colores.find((c) => c.loteAsignado)?.loteAsignado || "";
+            }
+            function loteDuplicado(g, texto) {
+              const val = texto.trim().toUpperCase();
+              if (!val) return false;
+              if (lotesExistentes?.has(val)) return true;
+              return programacion.some(
+                (p) => p.loteAsignado && `${p.pedidoId}__${p.ref}` !== g.key && String(p.loteAsignado).trim().toUpperCase() === val
+              );
+            }
+            return (
+              <div>
+                <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
+                  Referencias ya aprobadas por el analista, listas para que el patronista les ponga número de lote (el mismo que se registra en Busint al marcar "Al Cortar"). Ese lote queda precargado después en Ingreso de Corte Real.
+                </p>
+                {!aprobadosGrupos.length && (
+                  <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
+                    Todavía no hay nada aprobado esperando lote.
+                  </div>
+                )}
+                {!!aprobadosGrupos.length && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {aprobadosGrupos.map((g) => {
+                      const loteActual = loteDeGrupo(g);
+                      const texto = loteInputs[g.key] ?? loteActual;
+                      const dup = loteDuplicado(g, texto);
+                      const cambiado = texto.trim() !== loteActual.trim();
+                      return (
+                        <div
+                          key={g.key}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.white, flexWrap: "wrap" }}
+                        >
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{g.cliente} · #{g.numero} · {g.ref}</div>
+                            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+                              {g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid. · {g.planta}{g.meson ? ` · ${g.meson}` : ""} · programado el {fmtFechaISO(g.colores[0]?.fechaProgramada)}
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <input
+                              value={texto}
+                              onChange={(e) => setLoteInputs((s) => ({ ...s, [g.key]: e.target.value }))}
+                              placeholder="Número de lote"
+                              style={{ padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${dup ? C.red : C.border}`, fontSize: 13, width: 160, color: C.ink, outline: "none", fontFamily: "inherit" }}
+                            />
+                            <Btn
+                              variant={loteActual ? "secondary" : "success"}
+                              disabled={!texto.trim() || dup || !cambiado}
+                              onClick={async () => {
+                                await onAsignarLote(g.colores.map((c) => c.id), texto.trim());
+                                setLoteInputs((s) => { const n = { ...s }; delete n[g.key]; return n; });
+                              }}
+                            >
+                              {loteActual ? "Actualizar lote" : "Guardar lote"}
+                            </Btn>
+                          </div>
+                          {dup && (
+                            <div style={{ width: "100%", fontSize: 11, color: C.red, fontWeight: 700 }}>⚠ Ese número de lote ya está en uso — usa uno diferente.</div>
+                          )}
+                          {loteActual && !cambiado && (
+                            <div style={{ width: "100%", fontSize: 11, color: C.green, fontWeight: 700 }}>✓ Lote asignado: {loteActual}</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {produccionSubTab === "corte_real" && (() => {
+            const datosCorteReal = datosDelDia(corteRealFecha);
+            // Solo las referencias que ya tienen Programación de Mesones
+            // hecha están listas para Ingreso de Corte Real — las que
+            // todavía están en "Falta ingresar" se resuelven en la otra
+            // sub-pestaña.
+            const listos = datosCorteReal.grupos.filter((g) => g.etapa === "programacion_hecha");
+            return (
+              <div>
+                <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
+                  Elige el día para ver las referencias que ya tienen Programación de Mesones lista — clic en una te lleva al pedido para cargar el corte real (unidades y lote), igual que hoy.
+                </p>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+                  <Field label="Día">
+                    <FInput type="date" value={corteRealFecha} onChange={(v) => setCorteRealFecha(v)} />
+                  </Field>
+                  <Btn variant="secondary" onClick={() => setCorteRealFecha(today())}>
+                    Hoy
+                  </Btn>
+                </div>
+
+                {!listos.length && (
+                  <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
+                    No hay referencias listas para Ingreso de Corte Real el {fmtFechaISO(corteRealFecha)}.
+                  </div>
+                )}
+
+                {!!listos.length && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {listos.map((g) => {
+                      const aprobadoG = g.colores.every((c) => c.aprobado === true);
+                      return (
+                        <div
+                          key={g.key}
+                          onClick={() => onCortarProgramado(g)}
+                          title="Ir a Entrada de Corte"
+                          style={{
+                            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+                            padding: "12px 16px", borderRadius: 10, cursor: "pointer",
+                            border: `1.5px solid ${C.border}`, background: C.white,
+                          }}
+                        >
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{g.cliente} · #{g.numero} · {g.ref}</div>
+                            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+                              {g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid. · {g.planta}{g.meson ? ` · ${g.meson}` : ""}
+                            </div>
+                          </div>
+                          <span style={{ fontSize: 10, fontWeight: 800, color: aprobadoG ? C.green : C.amber, background: aprobadoG ? C.greenBg : C.amberBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
+                            {aprobadoG ? "✓ Aprobado" : "⏳ Sin aprobar todavía"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </div>
+      )}
       {subTab === "cumplidos" && (
         !cumplidosProg.length ? (
           <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>Todavía no hay referencias cumplidas.</div>
@@ -5633,6 +5813,14 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     const fecha = new Date().toISOString();
     await Promise.all(ids.map((id) => fsSave("corte_programacion", id, { aprobado: true, aprobadoPor: aprobadoPor || null, aprobadoFechaISO: fecha })));
   }
+  // El patronista asigna el número de lote en "Cortes Aprobados", ANTES de
+  // cortar (para registrarlo también en Busint como "Al Cortar"). Es el
+  // mismo lote que después se usa en Entrada de Corte — ahí llega
+  // precargado (ProgramarCorteModal lee `loteAsignado` del grupo
+  // preseleccionado), así no se vuelve a inventar un número nuevo.
+  async function asignarLoteCorte(ids, lote) {
+    await Promise.all(ids.map((id) => fsSave("corte_programacion", id, { loteAsignado: lote })));
+  }
   // Revisión automática de cumplimiento: cada vez que cambian los pedidos o
   // las fuentes que definen "pendiente" (Ventas Perdidas, Planeación), se
   // recalcula el pendiente de la referencia puntual de cada ítem programado
@@ -5945,6 +6133,8 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               onAprobarProgramacionHecha={aprobarProgramacionHecha}
               puedeAprobarCorte={puedeAprobarCorte || isAdmin}
               usuarioActual={currentUser?.name || currentUser?.username || ""}
+              lotesExistentes={lotesExistentes}
+              onAsignarLote={asignarLoteCorte}
               isAdmin={isAdmin}
             />
           )}
