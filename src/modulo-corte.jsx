@@ -1329,7 +1329,7 @@ function MesonTimeline({ nombre, capacidad, compartido, ocupados, inicioActual, 
 // analista con el permiso "aprobar_corte" revisa y aprueba antes de que
 // cuente como confirmado. `onClose` ahora es "volver a la lista" (deseleccionar),
 // no cerrar una ventana emergente.
-function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onSave, onClose, puedeAprobar, onAprobar, usuarioActual }) {
+function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onSave, onClose, onGuardado, puedeAprobar, onAprobar, usuarioActual }) {
   const aprobado = grupo.colores.every((c) => c.etapa === "programacion_hecha" && c.aprobado === true);
   const pendienteAprobacion = grupo.colores.every((c) => c.etapa === "programacion_hecha") && !aprobado;
   const aprobadoPorTxt = grupo.colores.find((c) => c.aprobadoPor)?.aprobadoPor;
@@ -1503,7 +1503,12 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
       ingresadoFechaISO: new Date().toISOString(),
     };
     grupo.colores.forEach((c) => onSave(c.id, datosComunes));
-    onClose();
+    // Al guardar (a diferencia de "‹ Volver a la lista", que solo
+    // deselecciona) se navega directo a "Ingreso de Corte Real" — ahí
+    // queda visible en cola (todavía como "sin aprobar"/"falta lote" hasta
+    // que el analista y el patronista hagan lo suyo).
+    if (onGuardado) onGuardado();
+    else onClose();
   }
 
   return (
@@ -1524,7 +1529,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
 
       {aprobado && (
         <div style={{ padding: "10px 14px", borderRadius: 8, marginBottom: 16, fontSize: 12, fontWeight: 700, background: C.greenBg, color: C.green }}>
-          ✓ Aprobado{aprobadoPorTxt ? ` por ${aprobadoPorTxt}` : ""}{aprobadoFechaTxt ? ` el ${fmtFechaISO(aprobadoFechaTxt.slice(0, 10))}` : ""}. Si cambias y guardas los datos, vuelve a quedar pendiente de aprobación.
+          ✓ Aprobada Analista{aprobadoPorTxt ? ` por ${aprobadoPorTxt}` : ""}{aprobadoFechaTxt ? ` el ${fmtFechaISO(aprobadoFechaTxt.slice(0, 10))}` : ""}. Si cambias y guardas los datos, vuelve a quedar pendiente de aprobación.
         </div>
       )}
       {pendienteAprobacion && (
@@ -3871,6 +3876,9 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // Texto que el patronista va escribiendo por fila en "Cortes Aprobados"
   // antes de guardar el número de lote — separado por key de grupo.
   const [loteInputs, setLoteInputs] = useState({});
+  // Qué corte real está expandido en "Históricos" (id del corte dentro de
+  // cortesRealizados) — null si ninguno.
+  const [historicoAbierto, setHistoricoAbierto] = useState(null);
 
   // Click sobre un grupo (una referencia con todos sus colores) de
   // "Cronograma de Corte" o "Cortes Vencidos": si TODOS sus colores ya
@@ -4725,6 +4733,12 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             >
               ✂ INGRESO DE CORTE REAL
             </div>
+            <div
+              onClick={() => setProduccionSubTab("historicos")}
+              style={{ cursor: "pointer", padding: "8px 14px", borderRadius: 8, fontWeight: 800, fontSize: 11, background: produccionSubTab === "historicos" ? C.ink : C.canvas, color: produccionSubTab === "historicos" ? C.white : C.ink }}
+            >
+              📚 HISTÓRICOS
+            </div>
           </div>
 
           {produccionSubTab === "mesones" && (() => {
@@ -4754,7 +4768,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                   <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: grupoSel ? 24 : 0 }}>
                     {datosMesones.grupos.map((g) => {
                       const aprobadoG = g.etapa === "programacion_hecha" && g.colores.every((c) => c.aprobado === true);
-                      const estadoLabel = g.etapa !== "programacion_hecha" ? "Falta ingresar" : aprobadoG ? "Aprobado" : "Pendiente de aprobación";
+                      const estadoLabel = g.etapa !== "programacion_hecha" ? "Falta ingresar" : aprobadoG ? "Aprobada Analista" : "Pendiente de aprobación";
                       const estadoColor = g.etapa !== "programacion_hecha" ? C.violet : aprobadoG ? C.green : C.amber;
                       const estadoBg = g.etapa !== "programacion_hecha" ? C.violetBg : aprobadoG ? C.greenBg : C.amberBg;
                       const seleccionado = g.key === mesonesGrupoKey;
@@ -4796,6 +4810,11 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     itemsUsadosMeson={itemsUsadosMeson}
                     onSave={onGuardarProgramacionHecha}
                     onClose={() => setMesonesGrupoKey(null)}
+                    onGuardado={() => {
+                      setCorteRealFecha(grupoSel.colores[0]?.fechaProgramada || mesonesFecha);
+                      setMesonesGrupoKey(null);
+                      setProduccionSubTab("corte_real");
+                    }}
                     puedeAprobar={puedeAprobarCorte}
                     onAprobar={() => onAprobarProgramacionHecha(grupoSel.colores.map((c) => c.id), usuarioActual)}
                     usuarioActual={usuarioActual}
@@ -4942,6 +4961,87 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                           <span style={{ fontSize: 10, fontWeight: 800, color: estado === "listo" ? C.green : C.amber, background: estado === "listo" ? C.greenBg : C.amberBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
                             {estado === "sin_aprobar" ? "⏳ Sin aprobar todavía" : estado === "sin_lote" ? "🔒 Falta lote" : "✓ Listo para cortar"}
                           </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {produccionSubTab === "historicos" && (() => {
+            // Se arma directo de cortesRealizados de cada pedido — ahí ya
+            // queda todo lo que se necesita (cliente por el pedido, lote,
+            // refs con sus tallas, planta/mesón/cortador/tela/horas). No
+            // hace falta una colección nueva.
+            const todosLosCortes = pedidos
+              .flatMap((p) => (p.cortesRealizados || []).map((c) => ({ ...c, cliente: p.cliente, numeroPedido: p.numero })))
+              .sort((a, b) => (b.creadoEn || b.fecha || "").localeCompare(a.creadoEn || a.fecha || ""));
+            return (
+              <div>
+                <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
+                  Todo lo que ya se cortó de verdad — cliente, pedido, lote, referencia y cantidad. Clic en una fila para ver el detalle completo (planta, mesón, cortador, tela, trazo, capas, horario).
+                </p>
+                {!todosLosCortes.length && (
+                  <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
+                    Todavía no hay cortes reales registrados.
+                  </div>
+                )}
+                {!!todosLosCortes.length && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {todosLosCortes.map((c) => {
+                      const abierto = historicoAbierto === c.id;
+                      const refsTxt = (c.refs || []).map((r) => r.ref).join(", ");
+                      return (
+                        <div key={c.id} style={{ borderRadius: 10, border: `1.5px solid ${C.border}`, overflow: "hidden" }}>
+                          <div
+                            onClick={() => setHistoricoAbierto(abierto ? null : c.id)}
+                            style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", cursor: "pointer", background: C.white }}
+                          >
+                            <div>
+                              <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{c.cliente} · #{c.numeroPedido} · {refsTxt}</div>
+                              <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+                                Lote {c.lote || "—"} · {fmtNum(c.totalUnidades)} unid. · {fmtFechaISO(c.fecha)}
+                              </div>
+                            </div>
+                            <span style={{ fontSize: 11, color: C.slate }}>{abierto ? "▲ Ocultar" : "▼ Ver detalle"}</span>
+                          </div>
+                          {abierto && (
+                            <div style={{ padding: "14px 16px", background: C.canvas, borderTop: `1px solid ${C.border}` }}>
+                              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 12, fontSize: 12, color: C.ink }}>
+                                <div><b>Planta:</b> {c.planta || "—"}</div>
+                                <div><b>Mesón:</b> {c.meson || "—"}</div>
+                                <div><b>Cortador:</b> {c.cortador || "—"}</div>
+                                <div><b>Tela:</b> {c.tipoTela || "—"}</div>
+                                <div><b>Trazo:</b> {c.largoTrazo ? `${c.largoTrazo} m` : "—"}</div>
+                                <div><b>Capas:</b> {c.capas ?? "—"}</div>
+                                <div><b>Metros tendido:</b> {c.metrosTendido ? `${c.metrosTendido} m` : "—"}</div>
+                                <div><b>Horario:</b> {c.horaInicio || "—"} a {c.horaFin || "—"} ({c.minutos ?? "—"} min)</div>
+                                <div><b>Ingreso corte:</b> {fmtCOP(c.ingresoCorte || 0)}</div>
+                              </div>
+                              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                                <thead>
+                                  <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                                    <th style={{ textAlign: "left", padding: "4px 8px", color: C.slate, fontSize: 10, textTransform: "uppercase" }}>Referencia</th>
+                                    <th style={{ textAlign: "left", padding: "4px 8px", color: C.slate, fontSize: 10, textTransform: "uppercase" }}>Tallas</th>
+                                    <th style={{ textAlign: "right", padding: "4px 8px", color: C.slate, fontSize: 10, textTransform: "uppercase" }}>Total</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {(c.refs || []).map((r) => (
+                                    <tr key={r.refId} style={{ borderBottom: `1px solid ${C.border}` }}>
+                                      <td style={{ padding: "6px 8px", fontWeight: 700 }}>{r.ref}{r.descripcion ? ` — ${r.descripcion}` : ""}</td>
+                                      <td style={{ padding: "6px 8px", color: C.slate }}>
+                                        {Object.entries(r.tallas || {}).filter(([, cant]) => cant > 0).map(([t, cant]) => `${t}:${cant}`).join(", ")}
+                                      </td>
+                                      <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700 }}>{fmtNum(r.total)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
