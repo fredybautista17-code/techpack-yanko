@@ -1349,6 +1349,10 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
     });
     return c;
   });
+  // Qué color tiene desplegado su desglose por talla (curva × capas de ESE
+  // color, comparado talla por talla contra lo real del pedido) — null si
+  // ninguno. Solo un color abierto a la vez para no saturar la pantalla.
+  const [colorAbierto, setColorAbierto] = useState(null);
 
   const plantaSel = plantas.find((p) => p.nombre === form.planta);
   const mesones = plantaSel?.mesones || [];
@@ -1716,41 +1720,94 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
             <div style={{ fontSize: 12, fontWeight: 800, color: C.slate, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.3 }}>
               Capas por Color
             </div>
+            <div style={{ fontSize: 11, color: C.slate, marginBottom: 8 }}>
+              Clic en un color para ver el desglose por talla (curva × capas de ese color, comparado talla por talla contra lo real del pedido).
+            </div>
             <div style={{ display: "grid", gap: 8 }}>
               {grupo.colores.map((c) => {
                 const calc = calcColor(c);
                 const coincide = marcadas > 0 && calc.capasColor > 0 && calc.diff === 0;
                 const hayDatos = marcadas > 0 && calc.capasColor > 0;
+                const abierto = colorAbierto === c.id;
                 return (
                   <div
                     key={c.id}
                     style={{
-                      display: "grid",
-                      gridTemplateColumns: "1.2fr 0.8fr 1fr 1fr auto",
-                      gap: 10,
-                      alignItems: "center",
-                      padding: "8px 12px",
                       borderRadius: 8,
                       border: `1.5px solid ${C.border}`,
                       background: C.canvas,
+                      overflow: "hidden",
                     }}
                   >
-                    <div style={{ fontWeight: 800, color: C.ink, fontSize: 13 }}>{c.descripcion || c.ref || c.color || "—"}</div>
-                    <FInput
-                      type="number"
-                      value={capasPorColor[c.id] || ""}
-                      onChange={(v) => setCapasPorColor((s) => ({ ...s, [c.id]: v }))}
-                      placeholder="Capas"
-                    />
-                    <div style={{ fontSize: 12, color: C.slate }}>
-                      {calc.metrosColor > 0 ? `${calc.metrosColor.toLocaleString("es-CO")} m` : "—"}
+                    <div
+                      onClick={() => setColorAbierto(abierto ? null : c.id)}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1.2fr 0.8fr 1fr 1fr auto auto",
+                        gap: 10,
+                        alignItems: "center",
+                        padding: "8px 12px",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <div style={{ fontWeight: 800, color: C.ink, fontSize: 13 }}>{c.descripcion || c.ref || c.color || "—"}</div>
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <FInput
+                          type="number"
+                          value={capasPorColor[c.id] || ""}
+                          onChange={(v) => setCapasPorColor((s) => ({ ...s, [c.id]: v }))}
+                          placeholder="Capas"
+                        />
+                      </div>
+                      <div style={{ fontSize: 12, color: C.slate }}>
+                        {calc.metrosColor > 0 ? `${calc.metrosColor.toLocaleString("es-CO")} m` : "—"}
+                      </div>
+                      <div style={{ fontSize: 12, color: C.slate }}>
+                        Calc: <b style={{ color: C.ink }}>{hayDatos ? fmtNum(calc.prendasCalculadas) : "—"}</b> / Real: <b style={{ color: C.ink }}>{fmtNum(calc.cantidadReal)}</b>
+                      </div>
+                      <div style={{ fontSize: 16, textAlign: "center" }}>
+                        {!hayDatos ? "" : coincide ? <span style={{ color: C.green }}>✓</span> : <span title={`Diferencia: ${calc.diff > 0 ? "+" : ""}${calc.diff}`} style={{ color: C.amber }}>⚠</span>}
+                      </div>
+                      <div style={{ fontSize: 11, color: C.slate }}>{abierto ? "▲" : "▼"}</div>
                     </div>
-                    <div style={{ fontSize: 12, color: C.slate }}>
-                      Calc: <b style={{ color: C.ink }}>{hayDatos ? fmtNum(calc.prendasCalculadas) : "—"}</b> / Real: <b style={{ color: C.ink }}>{fmtNum(calc.cantidadReal)}</b>
-                    </div>
-                    <div style={{ fontSize: 16, textAlign: "center" }}>
-                      {!hayDatos ? "" : coincide ? <span style={{ color: C.green }}>✓</span> : <span title={`Diferencia: ${calc.diff > 0 ? "+" : ""}${calc.diff}`} style={{ color: C.amber }}>⚠</span>}
-                    </div>
+                    {abierto && (
+                      <div style={{ padding: "10px 12px", borderTop: `1px solid ${C.border}`, background: C.white }}>
+                        {!tallasGrupo.length ? (
+                          <div style={{ fontSize: 12, color: C.slate }}>Todavía no hay tallas en la curva.</div>
+                        ) : (
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                            <thead>
+                              <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                                <th style={{ textAlign: "left", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Talla</th>
+                                <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Curva</th>
+                                <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Calculado</th>
+                                <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Real (pedido)</th>
+                                <th style={{ textAlign: "right", padding: "4px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Dif</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {tallasGrupo.map((t) => {
+                                const curvaVal = parseInt(curva[t]) || 0;
+                                const calculado = calc.capasColor * curvaVal;
+                                const real = c.tallas?.[t] || 0;
+                                const diffTalla = calculado - real;
+                                return (
+                                  <tr key={t} style={{ borderBottom: `1px solid ${C.border}` }}>
+                                    <td style={{ padding: "5px 8px", fontWeight: 700, color: C.ink }}>{t}</td>
+                                    <td style={{ padding: "5px 8px", textAlign: "right", color: C.slate }}>{curvaVal || "—"}</td>
+                                    <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 700 }}>{calc.capasColor > 0 ? calculado : "—"}</td>
+                                    <td style={{ padding: "5px 8px", textAlign: "right" }}>{fmtNum(real)}</td>
+                                    <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 700, color: !calc.capasColor ? C.slate : diffTalla === 0 ? C.green : C.amber }}>
+                                      {calc.capasColor > 0 ? `${diffTalla > 0 ? "+" : ""}${diffTalla}` : "—"}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -3358,6 +3415,10 @@ function AdminCorte({ config, onSave, onReiniciarCortes }) {
 
 // ─── ESTADÍSTICAS TELA ────────────────────────────────────────────────────────
 function EstadisticasTela({ pedidos }) {
+  // "tela" = análisis original por tipo de tela + largo de trazo; "cortador"
+  // = ranking de cortadores por velocidad (prendas/min) y por volumen
+  // (unidades totales cortadas).
+  const [modoStats, setModoStats] = useState("tela");
   // Rango de largo de trazo — agrupa los cortes reales para poder comparar,
   // dentro de una misma tela, si un trazo corto o largo rinde más. Los
   // cortes de un mismo tipo de tela pueden variar mucho de largo de trazo
@@ -3415,16 +3476,140 @@ function EstadisticasTela({ pedidos }) {
   const masRendidores = rankingCombos.slice(0, 3);
   const menosRendidores = [...rankingCombos].reverse().slice(0, 3);
 
+  // Estadísticas por cortador — para saber quién corta más rápido (prendas
+  // por minuto) y quién corta más volumen (total de unidades), aparte de
+  // por tela. No exige tipoTela (allCortes sí lo exige) porque el cortador
+  // y el tiempo/unidades quedan registrados aunque falte ese dato.
+  const allCortesConCortador = pedidos.flatMap((p) =>
+    (p.cortesRealizados || []).filter((c) => c.cortador && c.minutos > 0)
+  );
+  const byCortador = {};
+  allCortesConCortador.forEach((c) => {
+    if (!byCortador[c.cortador]) byCortador[c.cortador] = { cortes: 0, unidades: 0, minutos: 0, metros: 0 };
+    const d = byCortador[c.cortador];
+    d.cortes++;
+    d.unidades += c.totalUnidades || 0;
+    d.minutos += c.minutos || 0;
+    d.metros += c.metrosTendido || 0;
+  });
+  const rankingCortadores = Object.entries(byCortador)
+    .map(([cortador, d]) => ({
+      cortador,
+      ...d,
+      unidadesPorMin: d.minutos > 0 ? d.unidades / d.minutos : 0,
+      minPorCorte: d.cortes > 0 ? d.minutos / d.cortes : 0,
+    }))
+    .sort((a, b) => b.unidades - a.unidades);
+  // Velocidad solo se compara con al menos 2 cortes — mismo criterio que
+  // los combos de tela, para que un solo corte suelto no distorsione.
+  const masRapidos = [...rankingCortadores].filter((c) => c.cortes >= 2).sort((a, b) => b.unidadesPorMin - a.unidadesPorMin).slice(0, 3);
+  const masLentos = [...rankingCortadores].filter((c) => c.cortes >= 2).sort((a, b) => a.unidadesPorMin - b.unidadesPorMin).slice(0, 3);
+  const masVolumen = rankingCortadores.slice(0, 3);
+
   return (
     <div>
       <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
         📊 Estadística de Tendido y Corte
       </h2>
-      <p style={{ margin: "0 0 20px", fontSize: 13, color: C.slate, maxWidth: 700 }}>
-        Con cada corte real registrado (Entrada de Corte) se va afinando esto solo. Compara tela + largo de trazo para saber qué combinación rinde más, tanto en velocidad de corte (min/metro) como en prendas cortadas por minuto.
+      <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 700 }}>
+        Con cada corte real registrado (Entrada de Corte) se va afinando esto solo. Compara tela + largo de trazo, o cortador, para saber qué rinde más — tanto en velocidad de corte como en prendas cortadas.
       </p>
 
-      {!Object.keys(byTela).length ? (
+      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+        <button
+          onClick={() => setModoStats("tela")}
+          style={{ cursor: "pointer", padding: "8px 16px", borderRadius: 8, fontWeight: 800, fontSize: 12, border: "none", background: modoStats === "tela" ? C.violet : C.violetBg, color: modoStats === "tela" ? C.white : C.violet }}
+        >
+          🧵 Por Tela
+        </button>
+        <button
+          onClick={() => setModoStats("cortador")}
+          style={{ cursor: "pointer", padding: "8px 16px", borderRadius: 8, fontWeight: 800, fontSize: 12, border: "none", background: modoStats === "cortador" ? C.violet : C.violetBg, color: modoStats === "cortador" ? C.white : C.violet }}
+        >
+          ✂ Por Cortador
+        </button>
+      </div>
+
+      {modoStats === "cortador" ? (
+        !Object.keys(byCortador).length ? (
+          <div style={{ textAlign: "center", padding: 48, color: C.slate }}>
+            Sin datos de cortadores registrados aún. Aparecerán cuando registres cortes con cortador y horario.
+          </div>
+        ) : (
+          <>
+            {(masRapidos.length > 0 || masVolumen.length > 0) && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
+                <div style={{ background: C.greenBg, borderRadius: 12, padding: 16, border: `1px solid ${C.green}33` }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: C.green, textTransform: "uppercase", marginBottom: 10 }}>
+                    🏆 Más rápidos (prendas/min)
+                  </div>
+                  {masRapidos.length ? masRapidos.map((c) => (
+                    <div key={c.cortador} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: `1px solid ${C.green}22` }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>✂ {c.cortador}</span>
+                      <span style={{ fontSize: 12, fontWeight: 900, color: C.green }}>{c.unidadesPorMin.toFixed(2)} u/min</span>
+                    </div>
+                  )) : <div style={{ fontSize: 12, color: C.slate }}>Necesita al menos 2 cortes por cortador.</div>}
+                </div>
+                <div style={{ background: C.blueBg, borderRadius: 12, padding: 16, border: `1px solid ${C.cyan}33` }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: C.cyan, textTransform: "uppercase", marginBottom: 10 }}>
+                    🥇 Mayor volumen (unidades cortadas)
+                  </div>
+                  {masVolumen.map((c) => (
+                    <div key={c.cortador} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: `1px solid ${C.cyan}22` }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>✂ {c.cortador}</span>
+                      <span style={{ fontSize: 12, fontWeight: 900, color: C.cyan }}>{fmtNum(c.unidades)} u</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {masLentos.length > 0 && (
+              <div style={{ background: C.redBg, borderRadius: 12, padding: 16, border: `1px solid ${C.red}33`, marginBottom: 20 }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: C.red, textTransform: "uppercase", marginBottom: 10 }}>
+                  🐢 Más lentos (prendas/min)
+                </div>
+                {masLentos.map((c) => (
+                  <div key={c.cortador} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: `1px solid ${C.red}22` }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>✂ {c.cortador}</span>
+                    <span style={{ fontSize: 12, fontWeight: 900, color: C.red }}>{c.unidadesPorMin.toFixed(2)} u/min</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20 }}>
+              <div style={{ fontSize: 11, fontWeight: 800, color: C.slate, textTransform: "uppercase", marginBottom: 10 }}>
+                Todos los cortadores (ordenado por unidades cortadas)
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                    <th style={{ textAlign: "left", padding: "5px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Cortador</th>
+                    <th style={{ textAlign: "right", padding: "5px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Cortes</th>
+                    <th style={{ textAlign: "right", padding: "5px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Unidades</th>
+                    <th style={{ textAlign: "right", padding: "5px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Minutos</th>
+                    <th style={{ textAlign: "right", padding: "5px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Prendas/min</th>
+                    <th style={{ textAlign: "right", padding: "5px 8px", fontSize: 10, color: C.slate, textTransform: "uppercase" }}>Min/Corte</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rankingCortadores.map((c) => (
+                    <tr key={c.cortador} style={{ borderBottom: `1px solid ${C.border}` }}>
+                      <td style={{ padding: "6px 8px", fontWeight: 700, color: C.ink }}>{c.cortador}</td>
+                      <td style={{ padding: "6px 8px", textAlign: "right" }}>{c.cortes}</td>
+                      <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700 }}>{fmtNum(c.unidades)}</td>
+                      <td style={{ padding: "6px 8px", textAlign: "right" }}>{c.minutos}</td>
+                      <td style={{ padding: "6px 8px", textAlign: "right", color: C.green, fontWeight: 700 }}>{c.unidadesPorMin.toFixed(2)}</td>
+                      <td style={{ padding: "6px 8px", textAlign: "right", color: C.violet, fontWeight: 700 }}>{c.minPorCorte.toFixed(1)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )
+      ) : !Object.keys(byTela).length ? (
         <div style={{ textAlign: "center", padding: 48, color: C.slate }}>
           Sin datos de corte registrados aún. Los datos aparecerán cuando registres cortes con tipo de tela, largo de trazo y tiempos.
         </div>
