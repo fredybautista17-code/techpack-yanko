@@ -4091,8 +4091,23 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     return [...gruposMap.values()].map((g) => ({
       ...g,
       etapa: g.colores.every((c) => c.etapa === "programacion_hecha") ? "programacion_hecha" : "en_programacion",
+      // Antes solo se copiaban planta/mesón acá — al reabrir una referencia
+      // YA guardada (ej. el analista entrando a aprobar lo que el cortador
+      // acaba de guardar), ProgramacionMesonPanel arranca su formulario
+      // leyendo grupo.tipoTela/largoTrazo/capas/horas/cortador/fechaProgramada
+      // directo del grupo (no de colores[0]) — como esos campos no se
+      // copiaban, el formulario se veía vacío aunque el dato sí estaba
+      // guardado en cada color. Se copian todos los campos teóricos acá para
+      // que cualquier grupo armado con agruparPorRef traiga todo completo.
       planta: g.colores[0]?.planta || "",
       meson: g.colores[0]?.meson || "",
+      cortador: g.colores[0]?.cortador || "",
+      tipoTela: g.colores[0]?.tipoTela || "",
+      largoTrazo: g.colores[0]?.largoTrazo || null,
+      capas: g.colores[0]?.capas || null,
+      horaInicioEstimada: g.colores[0]?.horaInicioEstimada || "",
+      horaFinEstimada: g.colores[0]?.horaFinEstimada || "",
+      fechaProgramada: g.colores[0]?.fechaProgramada || "",
     }));
   }
   function datosDelDia(fechaISO) {
