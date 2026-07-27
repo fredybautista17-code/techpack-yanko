@@ -3952,7 +3952,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onCortarProgramado, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, subTabInicial, produccionSubTabInicial, isAdmin }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onCortarProgramado, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Selección por talla: Map key `${pedidoId}__${ref}__${talla}` -> { ...contexto, cantidad }
   // (cantidad es editable, por si no alcanza la tela para toda la talla).
@@ -3987,6 +3987,18 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // Mesones" (datos teóricos del corte) e "Ingreso de Corte Real" (lo que
   // antes era ir directo al detalle del pedido a cargar Entrada de Corte).
   const [produccionSubTab, setProduccionSubTab] = useState(produccionSubTabInicial || "mesones");
+  // Este componente ya NO se desmonta cuando se registra un corte real desde
+  // "Ingreso de Corte Real" (antes se iba a la pantalla completa del pedido
+  // y volvía, lo que forzaba un remount que releía subTabInicial/
+  // produccionSubTabInicial como estado inicial). Como ahora se queda
+  // montado todo el tiempo, hay que reaccionar explícitamente cada vez que
+  // el padre pide saltar de pestaña (navProduccionTs cambia con cada pedido
+  // nuevo, aunque el destino sea el mismo de la vez anterior).
+  useEffect(() => {
+    if (!navProduccionTs) return;
+    if (subTabInicial) setSubTab(subTabInicial);
+    if (produccionSubTabInicial) setProduccionSubTab(produccionSubTabInicial);
+  }, [navProduccionTs]);
   // Fecha y grupo seleccionados en "Programación de Mesones" — ahí es donde
   // ahora se ingresan los datos teóricos del corte (antes se hacía en un
   // modal encima de "Programados Pendientes").
@@ -4943,7 +4955,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                             <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{g.cliente} · #{g.numero} · {g.ref}</div>
                             <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
                               {g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid.
-                              {g.etapa === "programacion_hecha" && ` · ${g.planta}${g.meson ? " · " + g.meson : ""}`}
+                              {g.etapa === "programacion_hecha" && ` · ${g.planta}${g.meson ? " · " + nombreMeson(g.planta, g.meson) : ""}`}
                             </div>
                           </div>
                           <span style={{ fontSize: 10, fontWeight: 800, color: estadoColor, background: estadoBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
@@ -5029,7 +5041,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                           <div>
                             <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{g.cliente} · #{g.numero} · {g.ref}</div>
                             <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
-                              {g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid. · {g.planta}{g.meson ? ` · ${g.meson}` : ""}
+                              {g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid. · {g.planta}{g.meson ? ` · ${nombreMeson(g.planta, g.meson)}` : ""}
                             </div>
                           </div>
                           <span style={{ fontSize: 10, fontWeight: 800, color: estado === "listo" ? C.green : C.amber, background: estado === "listo" ? C.greenBg : C.amberBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
@@ -5380,7 +5392,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                       {p.etapa === "programacion_hecha" && (
                         <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 800, color: C.cyan, background: C.blueBg, padding: "2px 6px", borderRadius: 10 }}>
                           ✓ {p.planta}
-                          {p.meson ? ` · ${p.meson}` : ""}
+                          {p.meson ? ` · ${nombreMeson(p.planta, p.meson)}` : ""}
                         </span>
                       )}
                     </td>
@@ -5875,6 +5887,12 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
   // Cortar" en Programados Pendientes) — se usa para abrir Programar Corte
   // ya con la referencia/tallas/cantidades de esa programación cargadas.
   const [preseleccionCorte, setPreseleccionCorte] = useState(null);
+  // Ítem "Listo para cortar" en Ingreso de Corte Real: al hacer clic ya NO se
+  // navega a la pantalla completa del pedido (eso sacaba al cortador de
+  // Producción Corte y lo aterrizaba en el dashboard del pedido entero) —
+  // se abre el mismo formulario de Entrada de Corte pero como overlay,
+  // quedándose en "Producción Corte" todo el tiempo.
+  const [corteRealOverlay, setCorteRealOverlay] = useState(null);
   // Qué sub-pestaña de "Producción Corte" abrir la próxima vez que se
   // muestre la vista "programacion" — se usa para, tras registrar un corte
   // real en Entrada de Corte, volver directo a "Cortes Aprobados" (en vez
@@ -6076,6 +6094,27 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
         : [...ps, pedido]
     );
     await fsSave("pedidos_activos", pedido.id, pedido);
+  }
+
+  // Registra un corte real (Entrada de Corte) directamente desde "Ingreso de
+  // Corte Real", SIN pasar por la pantalla completa del pedido — así el
+  // cortador no pierde de vista dónde estaba. Misma lógica que
+  // `registrarCorte` dentro de DetallePedido, pero buscando el pedido en
+  // `pedidos` en vez de tenerlo ya en props.
+  function registrarCorteReal(pedidoId, corte) {
+    const pedido = pedidos.find((p) => p.id === pedidoId);
+    if (!pedido) return;
+    const updated = {
+      ...pedido,
+      cortesRealizados: [...(pedido.cortesRealizados || []), corte],
+    };
+    const totalPedido = pedido.referencias.reduce((s, r) => s + r.total, 0);
+    const totalC = updated.cortesRealizados.reduce((s, c) => s + (c.totalUnidades || 0), 0);
+    if (totalC >= totalPedido && updated.estado === "activo") {
+      updated.estado = "terminado";
+      updated.fechaCumplido = today();
+    }
+    savePedido(updated);
   }
 
   // Programa en lote una o varias referencias puntuales (no el pedido
@@ -6451,7 +6490,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               }}
               onSave={savePedido}
               onCorteRegistrado={() => {
-                setNavProduccion({ subTab: "produccion", produccionSubTab: "aprobados" });
+                setNavProduccion({ subTab: "produccion", produccionSubTab: "aprobados", ts: Date.now() });
                 setView("programacion");
                 setSelPedidoId(null);
                 setPreseleccionCorte(null);
@@ -6497,11 +6536,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
                 setSelPedidoId(id);
                 setView("detalle");
               }}
-              onCortarProgramado={(prog) => {
-                setPreseleccionCorte(prog);
-                setSelPedidoId(prog.pedidoId);
-                setView("detalle");
-              }}
+              onCortarProgramado={(prog) => setCorteRealOverlay(prog)}
               plantasConfig={corteConfig.plantas || []}
               cortadoresConfig={cortadoresUnificados}
               telas={corteConfig.telas || []}
@@ -6516,9 +6551,36 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               onAsignarLoteReal={confirmarLoteCorteReal}
               subTabInicial={navProduccion?.subTab}
               produccionSubTabInicial={navProduccion?.produccionSubTab}
+              navProduccionTs={navProduccion?.ts}
               isAdmin={isAdmin}
             />
           )}
+          {/* Entrada de Corte lanzada desde "Ingreso de Corte Real": se abre
+              como overlay encima de Producción Corte (sin navegar a la
+              pantalla completa del pedido, que sacaba al cortador de dónde
+              estaba). Al guardar, se cierra y salta a "Cortes Aprobados". */}
+          {corteRealOverlay && (() => {
+            const pedidoDelCorte = pedidos.find((p) => p.id === corteRealOverlay.pedidoId);
+            if (!pedidoDelCorte) return null;
+            return (
+              <ProgramarCorteModal
+                pedido={pedidoDelCorte}
+                plantas={corteConfig.plantas || []}
+                cortadores={cortadoresUnificados}
+                telas={corteConfig.telas || []}
+                preciosMap={preciosMap}
+                lotesExistentes={lotesExistentes}
+                onGuardarLote={guardarLoteCorte}
+                preseleccion={corteRealOverlay}
+                onSave={(corte) => registrarCorteReal(corteRealOverlay.pedidoId, corte)}
+                onClose={() => setCorteRealOverlay(null)}
+                onGuardado={() => {
+                  setCorteRealOverlay(null);
+                  setNavProduccion({ subTab: "produccion", produccionSubTab: "aprobados", ts: Date.now() });
+                }}
+              />
+            );
+          })()}
           {view === "costo" && (
             <CentroCosto pedidos={pedidos} trabajadores={corteConfig.nomina?.trabajadores || []} />
           )}
