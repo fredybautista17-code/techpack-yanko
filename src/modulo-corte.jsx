@@ -662,11 +662,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     // cortar todas las capas del trazo (no incluye empaque ni entrega).
     horaInicio: preselColor0?.horaInicioEstimada || "",
     horaFin: preselColor0?.horaFinEstimada || "",
-    // Número de lote del corte — obligatorio y nunca se puede repetir (ver
-    // validación en save()). Si el patronista ya lo asignó en "Cortes
-    // Aprobados" (Producción Corte), llega precargado acá — queda editable
-    // por si algo cambió al momento real de cortar.
-    lote: preselColor0?.loteAsignado || "",
   });
   const plantaSel = plantas.find((pl) => pl.nombre === form.planta);
   const mesonesDisponibles = plantaSel?.mesones || [];
@@ -706,8 +701,11 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     });
     return c;
   });
-  const loteTrim = form.lote.trim();
-  const loteRepetido = loteTrim && lotesExistentes?.has(loteTrim.toUpperCase());
+  // El lote ya no se escribe acá — viene de lo que asignó el patronista en
+  // "Cortes Aprobados" (Producción Corte). Si por alguna vía vieja (botón
+  // "✂ Programar Corte" directo, sin pasar por Ingreso de Corte Real) no
+  // hubiera ninguno asignado, se guarda igual sin lote.
+  const loteFinal = preselColor0?.loteAsignado || "";
 
   // Referencias (colores) que se programaron específicamente en el grupo
   // preseleccionado — si existe, la tabla de "Unidades a cortar" se filtra
@@ -766,7 +764,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
 
   async function save() {
     if (!form.planta || !form.cortador || !form.fecha) return;
-    if (!loteTrim || loteRepetido) return;
     const refs = pedido.referencias
       .map((r) => ({
         refId: r.id,
@@ -796,23 +793,27 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       horaInicio: form.horaInicio,
       horaFin: form.horaFin,
       minutos: minutosTotales(),
-      lote: loteTrim,
+      lote: loteFinal,
       refs,
       ingresoCorte: ingresoTotal(),
       totalUnidades: totalCortando(),
       creadoEn: new Date().toISOString(),
     };
-    // Cada corte registrado genera su propio lote — registro simple con lo
-    // que se cortó, para poder controlar que el número nunca se repita.
-    await onGuardarLote?.({
-      numero: loteTrim,
-      pedidoId: pedido.id,
-      numeroPedido: pedido.numero,
-      cliente: pedido.cliente,
-      cantidad: totalCortando(),
-      fecha: form.fecha,
-      creadoEn: new Date().toISOString(),
-    });
+    // Registro simple del lote para estadística/control — solo si hay uno
+    // (lo normal, ya que "Ingreso de Corte Real" no deja entrar aquí sin
+    // lote asignado). Si no hay lote (vía vieja sin pasar por ahí), se
+    // guarda el corte igual, simplemente sin registro de lote.
+    if (loteFinal) {
+      await onGuardarLote?.({
+        numero: loteFinal,
+        pedidoId: pedido.id,
+        numeroPedido: pedido.numero,
+        cliente: pedido.cliente,
+        cantidad: totalCortando(),
+        fecha: form.fecha,
+        creadoEn: new Date().toISOString(),
+      });
+    }
     onSave(corte);
     onClose();
   }
@@ -966,22 +967,14 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
         </Field>
       </div>
 
-      {/* Número de lote — obligatorio, nunca se puede repetir. Cada corte
-          registrado genera su propio lote (registro simple de control). */}
-      <div style={{ marginBottom: 16 }}>
-        <Field label="Número de Lote (obligatorio, único)">
-          <FInput
-            value={form.lote}
-            onChange={(v) => setForm((f) => ({ ...f, lote: v }))}
-            placeholder="Ej: L-0234"
-          />
-        </Field>
-        {loteRepetido && (
-          <div style={{ marginTop: 6, fontSize: 12, color: C.red, fontWeight: 700 }}>
-            ⚠ Ese número de lote ya existe — usa uno diferente.
-          </div>
-        )}
-      </div>
+      {/* El número de lote ya NO se pide acá — lo asigna el patronista en
+          "Producción Corte" → "Cortes Aprobados" antes de llegar a este
+          punto. Acá solo se muestra de referencia (si hay uno). */}
+      {loteFinal && (
+        <div style={{ padding: "10px 16px", background: C.greenBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: C.green, fontWeight: 700 }}>
+          📦 Lote: {loteFinal}
+        </div>
+      )}
 
       {minutosTotales() > 0 && metrosTotales() > 0 && (
         <div
@@ -1193,7 +1186,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
         <Btn
           variant="success"
           onClick={save}
-          disabled={totalCortando() === 0 || !form.planta || !form.cortador || !loteTrim || loteRepetido}
+          disabled={totalCortando() === 0 || !form.planta || !form.cortador}
         >
           ✓ Entrada de Corte
         </Btn>
@@ -4902,7 +4895,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             return (
               <div>
                 <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
-                  Elige el día para ver las referencias que ya tienen Programación de Mesones lista — clic en una te lleva al pedido para cargar el corte real (unidades y lote), igual que hoy.
+                  Elige el día para ver las referencias que ya tienen Programación de Mesones lista. Solo se puede entrar a cargar el corte real cuando ya tiene lote asignado — si falta aprobación o lote, el clic te lleva a resolverlo primero.
                 </p>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
                   <Field label="Día">
@@ -4923,11 +4916,17 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {listos.map((g) => {
                       const aprobadoG = g.colores.every((c) => c.aprobado === true);
+                      const tieneLote = aprobadoG && g.colores.every((c) => c.loteAsignado);
+                      const estado = !aprobadoG ? "sin_aprobar" : !tieneLote ? "sin_lote" : "listo";
                       return (
                         <div
                           key={g.key}
-                          onClick={() => onCortarProgramado(g)}
-                          title="Ir a Entrada de Corte"
+                          onClick={() => {
+                            if (estado === "sin_aprobar") { setProduccionSubTab("mesones"); setMesonesFecha(g.colores[0]?.fechaProgramada || today()); setMesonesGrupoKey(g.key); return; }
+                            if (estado === "sin_lote") { setProduccionSubTab("aprobados"); return; }
+                            onCortarProgramado(g);
+                          }}
+                          title={estado === "sin_aprobar" ? "Falta aprobación — ir a Programación de Mesones" : estado === "sin_lote" ? "Falta lote — ir a Cortes Aprobados" : "Ir a Entrada de Corte"}
                           style={{
                             display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
                             padding: "12px 16px", borderRadius: 10, cursor: "pointer",
@@ -4940,8 +4939,8 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                               {g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid. · {g.planta}{g.meson ? ` · ${g.meson}` : ""}
                             </div>
                           </div>
-                          <span style={{ fontSize: 10, fontWeight: 800, color: aprobadoG ? C.green : C.amber, background: aprobadoG ? C.greenBg : C.amberBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
-                            {aprobadoG ? "✓ Aprobado" : "⏳ Sin aprobar todavía"}
+                          <span style={{ fontSize: 10, fontWeight: 800, color: estado === "listo" ? C.green : C.amber, background: estado === "listo" ? C.greenBg : C.amberBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
+                            {estado === "sin_aprobar" ? "⏳ Sin aprobar todavía" : estado === "sin_lote" ? "🔒 Falta lote" : "✓ Listo para cortar"}
                           </span>
                         </div>
                       );
