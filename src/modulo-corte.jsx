@@ -635,7 +635,7 @@ async function parseTelas(file) {
   return nombres;
 }
 
-function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, lotesExistentes, onGuardarLote, preseleccion, onSave, onClose }) {
+function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, lotesExistentes, onGuardarLote, preseleccion, onSave, onClose, onGuardado }) {
   const mes = new Date().getMonth() + 1;
   const anio = new Date().getFullYear();
   // Si el ítem viene de "Programación Hecha" (preseleccion trae planta,
@@ -701,12 +701,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     });
     return c;
   });
-  // El lote ya no se escribe acá — viene de lo que asignó el patronista en
-  // "Cortes Aprobados" (Producción Corte). Si por alguna vía vieja (botón
-  // "✂ Programar Corte" directo, sin pasar por Ingreso de Corte Real) no
-  // hubiera ninguno asignado, se guarda igual sin lote.
-  const loteFinal = preselColor0?.loteAsignado || "";
-
   // Referencias (colores) que se programaron específicamente en el grupo
   // preseleccionado — si existe, la tabla de "Unidades a cortar" se filtra
   // para no mostrar el resto del pedido, solo lo que realmente se programó.
@@ -793,29 +787,18 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       horaInicio: form.horaInicio,
       horaFin: form.horaFin,
       minutos: minutosTotales(),
-      lote: loteFinal,
+      // El lote ya NO se pone acá — se corta primero, y el patronista lo
+      // asigna después en "Cortes Aprobados" (Producción Corte), ya viendo
+      // los datos reales de lo que se cortó.
+      lote: "",
       refs,
       ingresoCorte: ingresoTotal(),
       totalUnidades: totalCortando(),
       creadoEn: new Date().toISOString(),
     };
-    // Registro simple del lote para estadística/control — solo si hay uno
-    // (lo normal, ya que "Ingreso de Corte Real" no deja entrar aquí sin
-    // lote asignado). Si no hay lote (vía vieja sin pasar por ahí), se
-    // guarda el corte igual, simplemente sin registro de lote.
-    if (loteFinal) {
-      await onGuardarLote?.({
-        numero: loteFinal,
-        pedidoId: pedido.id,
-        numeroPedido: pedido.numero,
-        cliente: pedido.cliente,
-        cantidad: totalCortando(),
-        fecha: form.fecha,
-        creadoEn: new Date().toISOString(),
-      });
-    }
     onSave(corte);
-    onClose();
+    if (onGuardado) onGuardado();
+    else onClose();
   }
 
   return (
@@ -967,14 +950,9 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
         </Field>
       </div>
 
-      {/* El número de lote ya NO se pide acá — lo asigna el patronista en
-          "Producción Corte" → "Cortes Aprobados" antes de llegar a este
-          punto. Acá solo se muestra de referencia (si hay uno). */}
-      {loteFinal && (
-        <div style={{ padding: "10px 16px", background: C.greenBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: C.green, fontWeight: 700 }}>
-          📦 Lote: {loteFinal}
-        </div>
-      )}
+      {/* El número de lote ya no se pide ni se muestra acá — se corta
+          primero, y el patronista lo asigna después en "Producción Corte" →
+          "Cortes Aprobados", ya con los datos reales de lo que se cortó. */}
 
       {minutosTotales() > 0 && metrosTotales() > 0 && (
         <div
@@ -1538,8 +1516,17 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
             ⏳ Pendiente de aprobación{ingresadoPorTxt ? ` — ingresado por ${ingresadoPorTxt}` : ""}. Un analista con permiso de aprobar Corte debe revisarlo.
           </span>
           {puedeAprobar && (
-            <Btn variant="success" onClick={onAprobar}>
-              ✓ Aprobar programación
+            <Btn
+              variant="success"
+              onClick={async () => {
+                await onAprobar();
+                // Al aprobar, se navega directo a "Ingreso de Corte Real" —
+                // ahí ya queda "Listo para cortar".
+                if (onGuardado) onGuardado();
+                else onClose();
+              }}
+            >
+              ✓ Aprobado por Analista
             </Btn>
           )}
         </div>
@@ -1814,6 +1801,7 @@ function DetallePedido({
   onConsumirPreseleccion,
   onBack,
   onSave,
+  onCorteRegistrado,
 }) {
   const [showCorte, setShowCorte] = useState(false);
   // Si venimos del botón "✂ Cortar" de un ítem ya programado, abrir el
@@ -1901,6 +1889,14 @@ function DetallePedido({
           onClose={() => {
             setShowCorte(false);
             if (preseleccion) onConsumirPreseleccion?.();
+          }}
+          onGuardado={() => {
+            setShowCorte(false);
+            if (preseleccion) onConsumirPreseleccion?.();
+            // Al terminar de registrar el corte real, se va directo a
+            // "Cortes Aprobados" para que el patronista lo ingrese a Busint
+            // y le ponga el lote.
+            onCorteRegistrado?.();
           }}
         />
       )}
@@ -3829,7 +3825,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onCortarProgramado, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLote, isAdmin }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onCortarProgramado, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, subTabInicial, produccionSubTabInicial, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Selección por talla: Map key `${pedidoId}__${ref}__${talla}` -> { ...contexto, cantidad }
   // (cantidad es editable, por si no alcanza la tela para toda la talla).
@@ -3839,7 +3835,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // sus referencias y elegir qué tallas programar.
   const [clienteSel, setClienteSel] = useState("");
   const [pedidoSel, setPedidoSel] = useState("");
-  const [subTab, setSubTab] = useState("programar");
+  const [subTab, setSubTab] = useState(subTabInicial || "programar");
   // Vista de calendario de "Programados Pendientes" — semana o mes completo.
   const [vista, setVista] = useState("semana");
   // Fecha ancla del calendario (qué semana/mes se está mostrando) — no tiene
@@ -3863,7 +3859,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // "Producción Corte" agrupa dos pestañas internas: "Programación de
   // Mesones" (datos teóricos del corte) e "Ingreso de Corte Real" (lo que
   // antes era ir directo al detalle del pedido a cargar Entrada de Corte).
-  const [produccionSubTab, setProduccionSubTab] = useState("mesones");
+  const [produccionSubTab, setProduccionSubTab] = useState(produccionSubTabInicial || "mesones");
   // Fecha y grupo seleccionados en "Programación de Mesones" — ahí es donde
   // ahora se ingresan los datos teóricos del corte (antes se hacía en un
   // modal encima de "Programados Pendientes").
@@ -4824,86 +4820,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             );
           })()}
 
-          {produccionSubTab === "aprobados" && (() => {
-            // No se filtra por día a propósito: el patronista va poniendo
-            // lote a lo que ya está aprobado sin importar para qué fecha
-            // esté programado, así puede ir adelantando trabajo de varios
-            // días a la vez.
-            const aprobadosGrupos = agruparPorRef(pendientesConEstado)
-              .filter((g) => g.etapa === "programacion_hecha" && g.colores.every((c) => c.aprobado === true))
-              .sort((a, b) => (a.colores[0]?.fechaProgramada || "").localeCompare(b.colores[0]?.fechaProgramada || ""));
-            function loteDeGrupo(g) {
-              return g.colores.find((c) => c.loteAsignado)?.loteAsignado || "";
-            }
-            function loteDuplicado(g, texto) {
-              const val = texto.trim().toUpperCase();
-              if (!val) return false;
-              if (lotesExistentes?.has(val)) return true;
-              return programacion.some(
-                (p) => p.loteAsignado && `${p.pedidoId}__${p.ref}` !== g.key && String(p.loteAsignado).trim().toUpperCase() === val
-              );
-            }
-            return (
-              <div>
-                <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
-                  Referencias ya aprobadas por el analista, listas para que el patronista les ponga número de lote (el mismo que se registra en Busint al marcar "Al Cortar"). Ese lote queda precargado después en Ingreso de Corte Real.
-                </p>
-                {!aprobadosGrupos.length && (
-                  <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
-                    Todavía no hay nada aprobado esperando lote.
-                  </div>
-                )}
-                {!!aprobadosGrupos.length && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {aprobadosGrupos.map((g) => {
-                      const loteActual = loteDeGrupo(g);
-                      const texto = loteInputs[g.key] ?? loteActual;
-                      const dup = loteDuplicado(g, texto);
-                      const cambiado = texto.trim() !== loteActual.trim();
-                      return (
-                        <div
-                          key={g.key}
-                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.white, flexWrap: "wrap" }}
-                        >
-                          <div>
-                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{g.cliente} · #{g.numero} · {g.ref}</div>
-                            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
-                              {g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid. · {g.planta}{g.meson ? ` · ${g.meson}` : ""} · programado el {fmtFechaISO(g.colores[0]?.fechaProgramada)}
-                            </div>
-                          </div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <input
-                              value={texto}
-                              onChange={(e) => setLoteInputs((s) => ({ ...s, [g.key]: e.target.value }))}
-                              placeholder="Número de lote"
-                              style={{ padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${dup ? C.red : C.border}`, fontSize: 13, width: 160, color: C.ink, outline: "none", fontFamily: "inherit" }}
-                            />
-                            <Btn
-                              variant={loteActual ? "secondary" : "success"}
-                              disabled={!texto.trim() || dup || !cambiado}
-                              onClick={async () => {
-                                await onAsignarLote(g.colores.map((c) => c.id), texto.trim());
-                                setLoteInputs((s) => { const n = { ...s }; delete n[g.key]; return n; });
-                              }}
-                            >
-                              {loteActual ? "Actualizar lote" : "Guardar lote"}
-                            </Btn>
-                          </div>
-                          {dup && (
-                            <div style={{ width: "100%", fontSize: 11, color: C.red, fontWeight: 700 }}>⚠ Ese número de lote ya está en uso — usa uno diferente.</div>
-                          )}
-                          {loteActual && !cambiado && (
-                            <div style={{ width: "100%", fontSize: 11, color: C.green, fontWeight: 700 }}>✓ Lote asignado: {loteActual}</div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-
           {produccionSubTab === "corte_real" && (() => {
             const datosCorteReal = datosDelDia(corteRealFecha);
             // Solo las referencias que ya tienen Programación de Mesones
@@ -4914,7 +4830,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             return (
               <div>
                 <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
-                  Elige el día para ver las referencias que ya tienen Programación de Mesones lista. Solo se puede entrar a cargar el corte real cuando ya tiene lote asignado — si falta aprobación o lote, el clic te lleva a resolverlo primero.
+                  Elige el día para ver las referencias que ya tienen Programación de Mesones lista. Solo hace falta que el analista haya aprobado — el lote se pone después, en "Cortes Aprobados", ya con lo que realmente se cortó.
                 </p>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
                   <Field label="Día">
@@ -4935,17 +4851,15 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {listos.map((g) => {
                       const aprobadoG = g.colores.every((c) => c.aprobado === true);
-                      const tieneLote = aprobadoG && g.colores.every((c) => c.loteAsignado);
-                      const estado = !aprobadoG ? "sin_aprobar" : !tieneLote ? "sin_lote" : "listo";
+                      const estado = !aprobadoG ? "sin_aprobar" : "listo";
                       return (
                         <div
                           key={g.key}
                           onClick={() => {
                             if (estado === "sin_aprobar") { setProduccionSubTab("mesones"); setMesonesFecha(g.colores[0]?.fechaProgramada || today()); setMesonesGrupoKey(g.key); return; }
-                            if (estado === "sin_lote") { setProduccionSubTab("aprobados"); return; }
                             onCortarProgramado(g);
                           }}
-                          title={estado === "sin_aprobar" ? "Falta aprobación — ir a Programación de Mesones" : estado === "sin_lote" ? "Falta lote — ir a Cortes Aprobados" : "Ir a Entrada de Corte"}
+                          title={estado === "sin_aprobar" ? "Falta aprobación — ir a Programación de Mesones" : "Ir a Entrada de Corte"}
                           style={{
                             display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
                             padding: "12px 16px", borderRadius: 10, cursor: "pointer",
@@ -4959,7 +4873,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                             </div>
                           </div>
                           <span style={{ fontSize: 10, fontWeight: 800, color: estado === "listo" ? C.green : C.amber, background: estado === "listo" ? C.greenBg : C.amberBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
-                            {estado === "sin_aprobar" ? "⏳ Sin aprobar todavía" : estado === "sin_lote" ? "🔒 Falta lote" : "✓ Listo para cortar"}
+                            {estado === "sin_aprobar" ? "⏳ Sin aprobar todavía" : "✓ Listo para cortar"}
                           </span>
                         </div>
                       );
@@ -4970,13 +4884,82 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             );
           })()}
 
+          {produccionSubTab === "aprobados" && (() => {
+            // Ahora "Cortes Aprobados" lista los cortes REALES (ya
+            // registrados en Entrada de Corte) que todavía no tienen lote —
+            // el patronista los ve acá con los datos reales de lo que se
+            // cortó, los ingresa a Busint y les pone el lote.
+            const sinLote = pedidos
+              .flatMap((p) => (p.cortesRealizados || []).filter((c) => !c.lote).map((c) => ({ ...c, cliente: p.cliente, numeroPedido: p.numero, pedidoId: p.id })))
+              .sort((a, b) => (a.creadoEn || a.fecha || "").localeCompare(b.creadoEn || b.fecha || ""));
+            function loteDuplicado(corteActual, texto) {
+              const val = texto.trim().toUpperCase();
+              if (!val) return false;
+              if (lotesExistentes?.has(val)) return true;
+              return pedidos.some((p) =>
+                (p.cortesRealizados || []).some((c) => c.id !== corteActual.id && c.lote && String(c.lote).trim().toUpperCase() === val)
+              );
+            }
+            return (
+              <div>
+                <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
+                  Cortes ya registrados en Entrada de Corte, listos para que el patronista los ingrese a Busint y les ponga número de lote. Al guardar el lote, pasan a "Históricos".
+                </p>
+                {!sinLote.length && (
+                  <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
+                    No hay cortes esperando lote todavía.
+                  </div>
+                )}
+                {!!sinLote.length && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {sinLote.map((c) => {
+                      const texto = loteInputs[c.id] ?? "";
+                      const dup = loteDuplicado(c, texto);
+                      const refsTxt = (c.refs || []).map((r) => r.ref).join(", ");
+                      return (
+                        <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.white, flexWrap: "wrap" }}>
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{c.cliente} · #{c.numeroPedido} · {refsTxt}</div>
+                            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+                              {fmtNum(c.totalUnidades)} unid. · {c.planta}{c.meson ? ` · ${c.meson}` : ""} · cortado el {fmtFechaISO(c.fecha)}
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <input
+                              value={texto}
+                              onChange={(e) => setLoteInputs((s) => ({ ...s, [c.id]: e.target.value }))}
+                              placeholder="Número de lote"
+                              style={{ padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${dup ? C.red : C.border}`, fontSize: 13, width: 160, color: C.ink, outline: "none", fontFamily: "inherit" }}
+                            />
+                            <Btn
+                              variant="success"
+                              disabled={!texto.trim() || dup}
+                              onClick={async () => {
+                                await onAsignarLoteReal(c.pedidoId, c.id, texto.trim());
+                                setLoteInputs((s) => { const n = { ...s }; delete n[c.id]; return n; });
+                              }}
+                            >
+                              Guardar lote
+                            </Btn>
+                          </div>
+                          {dup && (
+                            <div style={{ width: "100%", fontSize: 11, color: C.red, fontWeight: 700 }}>⚠ Ese número de lote ya está en uso — usa uno diferente.</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           {produccionSubTab === "historicos" && (() => {
-            // Se arma directo de cortesRealizados de cada pedido — ahí ya
-            // queda todo lo que se necesita (cliente por el pedido, lote,
-            // refs con sus tallas, planta/mesón/cortador/tela/horas). No
-            // hace falta una colección nueva.
+            // Se arma directo de cortesRealizados de cada pedido, filtrando
+            // solo los que YA tienen lote (los que todavía no, están en
+            // "Cortes Aprobados" esperando que el patronista lo ponga).
             const todosLosCortes = pedidos
-              .flatMap((p) => (p.cortesRealizados || []).map((c) => ({ ...c, cliente: p.cliente, numeroPedido: p.numero })))
+              .flatMap((p) => (p.cortesRealizados || []).filter((c) => c.lote).map((c) => ({ ...c, cliente: p.cliente, numeroPedido: p.numero })))
               .sort((a, b) => (b.creadoEn || b.fecha || "").localeCompare(a.creadoEn || a.fecha || ""));
             return (
               <div>
@@ -5688,6 +5671,15 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
   // Cortar" en Programados Pendientes) — se usa para abrir Programar Corte
   // ya con la referencia/tallas/cantidades de esa programación cargadas.
   const [preseleccionCorte, setPreseleccionCorte] = useState(null);
+  // Qué sub-pestaña de "Producción Corte" abrir la próxima vez que se
+  // muestre la vista "programacion" — se usa para, tras registrar un corte
+  // real en Entrada de Corte, volver directo a "Cortes Aprobados" (en vez
+  // de caer siempre en "Programar"). Se limpia solo después de usarse (ver
+  // useEffect más abajo) para no quedar pegado en visitas futuras.
+  const [navProduccion, setNavProduccion] = useState(null);
+  useEffect(() => {
+    if (view === "programacion" && navProduccion) setNavProduccion(null);
+  }, [view]);
 
   useEffect(() => {
     const unsubs = [];
@@ -5949,13 +5941,30 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     const fecha = new Date().toISOString();
     await Promise.all(ids.map((id) => fsSave("corte_programacion", id, { aprobado: true, aprobadoPor: aprobadoPor || null, aprobadoFechaISO: fecha })));
   }
-  // El patronista asigna el número de lote en "Cortes Aprobados", ANTES de
-  // cortar (para registrarlo también en Busint como "Al Cortar"). Es el
-  // mismo lote que después se usa en Entrada de Corte — ahí llega
-  // precargado (ProgramarCorteModal lee `loteAsignado` del grupo
-  // preseleccionado), así no se vuelve a inventar un número nuevo.
-  async function asignarLoteCorte(ids, lote) {
-    await Promise.all(ids.map((id) => fsSave("corte_programacion", id, { loteAsignado: lote })));
+  // El patronista asigna el número de lote en "Cortes Aprobados" DESPUÉS de
+  // cortar (una vez ya se ve lo que realmente se cortó), para registrarlo
+  // también en Busint como "Al Cortar". El corte real vive dentro de
+  // `cortesRealizados` de cada pedido — no se puede actualizar un solo
+  // elemento del arreglo directo en Firestore, así que se reconstruye el
+  // arreglo completo con ese corte puntual actualizado. También se guarda
+  // un registro simple en corte_lotes (igual que antes) para llevar control
+  // de que el número nunca se repita y para las estadísticas por lote.
+  async function confirmarLoteCorteReal(pedidoId, corteId, lote) {
+    const pedido = pedidos.find((p) => p.id === pedidoId);
+    if (!pedido) return;
+    const corte = (pedido.cortesRealizados || []).find((c) => c.id === corteId);
+    if (!corte) return;
+    const actualizado = pedido.cortesRealizados.map((c) => (c.id === corteId ? { ...c, lote } : c));
+    await fsSave("pedidos_activos", pedidoId, { cortesRealizados: actualizado });
+    await guardarLoteCorte({
+      numero: lote,
+      pedidoId,
+      numeroPedido: pedido.numero,
+      cliente: pedido.cliente,
+      cantidad: corte.totalUnidades || 0,
+      fecha: corte.fecha,
+      creadoEn: new Date().toISOString(),
+    });
   }
   // Reinicio completo de pruebas (temporal, solo admin) — borra TODA la
   // colección corte_lotes, TODA corte_programacion (Programación de
@@ -6237,6 +6246,12 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
                 setPreseleccionCorte(null);
               }}
               onSave={savePedido}
+              onCorteRegistrado={() => {
+                setNavProduccion({ subTab: "produccion", produccionSubTab: "aprobados" });
+                setView("programacion");
+                setSelPedidoId(null);
+                setPreseleccionCorte(null);
+              }}
             />
           )}
           {view === "cola" && (
@@ -6294,7 +6309,9 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               puedeAprobarCorte={puedeAprobarCorte || isAdmin}
               usuarioActual={currentUser?.name || currentUser?.username || ""}
               lotesExistentes={lotesExistentes}
-              onAsignarLote={asignarLoteCorte}
+              onAsignarLoteReal={confirmarLoteCorteReal}
+              subTabInicial={navProduccion?.subTab}
+              produccionSubTabInicial={navProduccion?.produccionSubTab}
               isAdmin={isAdmin}
             />
           )}
