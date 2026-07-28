@@ -302,7 +302,7 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onCanc
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Programación Diaria — Planta Yanko</h2>
         <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
           {cargaActiva
-            ? `Datos de Planeación · Carga del ${cargaActiva.fecha}${cargaActiva.creadoEn ? ` · Actualizado ${fmtFechaHora(cargaActiva.creadoEn)}` : ""}`
+            ? `Datos de Planeación · Carga del ${cargaActiva.fecha}${cargaActiva.creadoEn ? ` · Actualizado ${fmtFechaHora(cargaActiva.creadoEn)}` : ""}${cargaActiva.subidoPor ? ` · Subido por ${cargaActiva.subidoPor}` : ""}`
             : "Aún no hay ninguna carga de Hoja1 en Planeación — sube una allí para ver qué hay en Planta Yanko."}
         </p>
       </div>
@@ -610,7 +610,7 @@ function DashboardEntregasView({ cargaActiva, onSubir, isAdmin }) {
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Dashboard de Entregas</h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
             {cargaActiva
-              ? `Carga del ${cargaActiva.fecha}${cargaActiva.creadoEn ? ` · Actualizado ${fmtFechaHora(cargaActiva.creadoEn)}` : ""}`
+              ? `Carga del ${cargaActiva.fecha}${cargaActiva.creadoEn ? ` · Actualizado ${fmtFechaHora(cargaActiva.creadoEn)}` : ""}${cargaActiva.subidoPor ? ` · Subido por ${cargaActiva.subidoPor}` : ""}`
               : "Aún no hay ninguna carga de Entradas de Planta — sube el Excel para ver el dashboard."}
           </p>
         </div>
@@ -798,6 +798,7 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
       id: uid(),
       fecha: today(),
       creadoEn: new Date().toISOString(),
+      subidoPor: currentUser?.name || "—",
       entradas,
     };
     setCargasEntradas((cs) => [...cs, nueva]);
@@ -909,4 +910,3 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
     </div>
   );
 }
-

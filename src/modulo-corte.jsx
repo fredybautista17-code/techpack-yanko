@@ -2808,7 +2808,7 @@ function DetallePedido({
 }
 
 // ─── ADMIN CORTE ──────────────────────────────────────────────────────────────
-function AdminCorte({ config, onSave, onReiniciarCortes }) {
+function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCargaPrecios }) {
   const [reiniciando, setReiniciando] = useState(false);
   const [resultReinicio, setResultReinicio] = useState(null);
   // Botón temporal de limpieza de pruebas — borra TODO lo registrado de
@@ -3039,6 +3039,7 @@ function AdminCorte({ config, onSave, onReiniciarCortes }) {
       await fsSave("precios_corte_cargas", uid(), {
         creadoEn: today(),
         creadoTs: Date.now(),
+        subidoPor: currentUser?.name || "—",
         precios,
       });
       setResultPrecios({ total: precios.length });
@@ -3575,6 +3576,11 @@ function AdminCorte({ config, onSave, onReiniciarCortes }) {
           <Btn onClick={() => preciosInputRef.current?.click()} disabled={subiendoPrecios}>
             {subiendoPrecios ? "Leyendo..." : "📤 Subir archivo de precios de corte"}
           </Btn>
+          {ultimaCargaPrecios && (
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 8 }}>
+              Última carga: {ultimaCargaPrecios.creadoEn}{ultimaCargaPrecios.subidoPor ? ` · Subido por ${ultimaCargaPrecios.subidoPor}` : ""}
+            </div>
+          )}
           {resultPrecios && (
             <div
               style={{
@@ -7052,7 +7058,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
             <CentroCosto pedidos={pedidos} trabajadores={corteConfig.nomina?.trabajadores || []} />
           )}
           {view === "admin" && isAdmin && (
-            <AdminCorte config={corteConfig} onSave={saveConfig} onReiniciarCortes={reiniciarTodosLosCortes} />
+            <AdminCorte config={corteConfig} onSave={saveConfig} onReiniciarCortes={reiniciarTodosLosCortes} currentUser={currentUser} ultimaCargaPrecios={ultimaCargaPrecios} />
           )}
         </div>
       </div>
