@@ -5567,7 +5567,7 @@ function AdminPedidosView({ pedidoConfig, onSave, config, onSaveConfig }) {
 // `getPedidosVigentesBusint` esté desplegada y los secrets BUSINT_TOKEN /
 // BUSINT_BASE_URL ya configurados (los mismos que usa la sincronización
 // automática cada 6 horas) — ver README_BUSINT_SYNC.md.
-function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
+function InformeVigentesBusintView({ isAdmin, pedidosActivos, currentUser }) {
   const [fechaInicio, setFechaInicio] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
@@ -5696,7 +5696,7 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
     setSubiendoVP(true);
     try {
       const { porPedido, porReferencia } = await parseVentasPerdidasBusint(file);
-      await fsSave("ventas_perdidas_cargas", uid(), { creadoEn: today(), creadoTs: Date.now(), filas: porPedido, filasPorRef: porReferencia });
+      await fsSave("ventas_perdidas_cargas", uid(), { creadoEn: today(), creadoTs: Date.now(), subidoPor: currentUser?.name || "—", filas: porPedido, filasPorRef: porReferencia });
     } catch (err) {
       setError(err?.message || "No se pudo leer el archivo. Verifica que sea el reporte de Ventas Perdidas de Busint (.xlsx).");
     }
@@ -5727,8 +5727,18 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
         const numero = String(p.numero).trim();
         const existente = existentesPorNumero.get(numero);
         const precioPorRef = new Map((existente?.referencias || []).map((r) => [r.ref, r.precioCortePrenda || 0]));
+        // El reporte de Busint nunca trae un id propio para cada referencia
+        // (r.id siempre llega vacío), así que sin esto se generaba un uid()
+        // NUEVO en cada recarga — incluso para referencias que ya existían.
+        // Programación de Mesones y los cortes ya registrados guardan el id
+        // de la referencia (refId), así que al cambiar ese id en cada
+        // "Congelar" perdían con qué referencia coincidir y desaparecían de
+        // la pantalla. Reutilizamos el id ya guardado (buscado por código de
+        // ref, igual que ya se hace con el precio) y solo generamos uno
+        // nuevo si la referencia es realmente nueva.
+        const idPorRef = new Map((existente?.referencias || []).map((r) => [r.ref, r.id]));
         const referencias = (p.referencias || []).map((r) => ({
-          id: r.id || uid(),
+          id: idPorRef.get(r.ref) || r.id || uid(),
           ref: r.ref,
           descripcion: r.descripcion,
           tallas: { ...r.tallas },
@@ -5944,7 +5954,7 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
       </div>
       {ultimaCargaVP && (
         <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>
-          Último reporte de Ventas Perdidas subido: {ultimaCargaVP.creadoEn} — se usa automáticamente para ocultar de esta lista los pedidos que Busint ya marca "Cumplido" ahí.
+          Último reporte de Ventas Perdidas subido: {ultimaCargaVP.creadoEn}{ultimaCargaVP.subidoPor ? ` · Subido por ${ultimaCargaVP.subidoPor}` : ""} — se usa automáticamente para ocultar de esta lista los pedidos que Busint ya marca "Cumplido" ahí.
         </div>
       )}
       {ultimaCargaPlaneacion && (
@@ -6395,7 +6405,7 @@ function motivoCierreInfo(motivo) {
   }
 }
 
-function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, pedidoConfig, onSavePedidoConfig, isAdmin }) {
+function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, pedidoConfig, onSavePedidoConfig, isAdmin, currentUser }) {
   const [filtro, setFiltro] = useState("activos");
   const [editPedido, setEditPedido] = useState(null);
   const activos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado");
@@ -6466,7 +6476,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           <button key={v} onClick={() => setFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filtro === v ? T.ink : T.border}`, background: filtro === v ? T.ink : T.white, color: filtro === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
-      {filtro === "vigentes_busint" && <InformeVigentesBusintView isAdmin={isAdmin} pedidosActivos={pedidos} />}
+      {filtro === "vigentes_busint" && <InformeVigentesBusintView isAdmin={isAdmin} pedidosActivos={pedidos} currentUser={currentUser} />}
       {filtro === "activos" && lista.length > 0 && (
         <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, overflow: "hidden", marginBottom: 16 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -7412,6 +7422,7 @@ function AppInner() {
                 pedidoConfig={pedidoConfig}
                 onSavePedidoConfig={savePedidoConfig}
                 isAdmin={currentUser?.isAdmin}
+                currentUser={currentUser}
               />
             )}
             {view === "pedido-detail" && selPedido && <PedidoDetailView pedido={selPedido} onBack={() => setView("pedidos")} onUpdatePedido={updatePedido} />}
