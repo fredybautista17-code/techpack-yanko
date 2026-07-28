@@ -428,6 +428,24 @@ function generarBMP(lotes) {
     }))
     .sort((a, b) => a.categoria.localeCompare(b.categoria) || a.cliente.localeCompare(b.cliente));
 }
+// Mismo criterio que generarBMP, pero para lotes que ya llegaron a Bodega de
+// Producto Terminado (invBPT, columna AG del Excel) — listos para despacho.
+function generarBPT(lotes) {
+  return lotes
+    .filter((l) => l.invBPT > 0)
+    .map((l) => ({
+      categoria: l.categoria,
+      cliente: l.nombreCliente,
+      referencia: l.referencia,
+      numLote: l.numLote,
+      cantidadBPT: l.invBPT,
+      fechaCorte: l.fechaCorteISO,
+      diasParaCorte: diasEntre(l.fechaCorteISO),
+      fechaEntregaPedido: l.fechaEntregaPedidoISO,
+      diasRestantesPedido: diasEntre(l.fechaEntregaPedidoISO),
+    }))
+    .sort((a, b) => a.categoria.localeCompare(b.categoria) || a.cliente.localeCompare(b.cliente));
+}
 function generarProgramacionYanko(lotes) {
   const filas = lotes
     .filter((l) => l.nombrePlanta === PLANTA_YANKO && l.invPlanta > 0)
@@ -772,6 +790,7 @@ const REPORTES = [
   { id: "cronograma", label: "Cronograma Entrega", icon: "📅" },
   { id: "por_pedido", label: "Por Pedido", icon: "📦" },
   { id: "bmp", label: "BMP", icon: "🧵" },
+  { id: "bpt", label: "BPT", icon: "🏬" },
   { id: "programacion_yanko", label: "Programación Yanko", icon: "🎯" },
 ];
 function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser }) {
@@ -794,6 +813,7 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
   const reporteCronograma = useMemo(() => generarCronograma(lotes), [lotes]);
   const reportePorPedido = useMemo(() => generarPorPedido(lotes), [lotes]);
   const reporteBMP = useMemo(() => generarBMP(lotes), [lotes]);
+  const reporteBPT = useMemo(() => generarBPT(lotes), [lotes]);
   const reporteYanko = useMemo(() => generarProgramacionYanko(lotes), [lotes]);
   const kpis = useMemo(
     () => ({
@@ -1051,6 +1071,22 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
                 { key: "diasRestantesPedido", label: "Días Rest. Pedido", align: "right", render: (f) => (f.diasRestantesPedido ?? "—"), color: (f) => (f.diasRestantesPedido < 0 ? C.red : C.ink) },
               ]}
               filas={reporteBMP}
+            />
+          )}
+          {tab === "bpt" && (
+            <Tabla
+              vacio="Sin lotes en BPT."
+              columnas={[
+                { key: "categoria", label: "Categoría" },
+                { key: "cliente", label: "Cliente" },
+                { key: "referencia", label: "Referencia" },
+                { key: "numLote", label: "Num Lote" },
+                { key: "cantidadBPT", label: "Cantidad BPT", align: "right", render: (f) => fmtNum(f.cantidadBPT) },
+                { key: "fechaCorte", label: "Fecha Corte", render: (f) => fmtFechaISO(f.fechaCorte) || "—" },
+                { key: "fechaEntregaPedido", label: "Fecha Entrega Pedido", render: (f) => fmtFechaISO(f.fechaEntregaPedido) || "—" },
+                { key: "diasRestantesPedido", label: "Días Rest. Pedido", align: "right", render: (f) => (f.diasRestantesPedido ?? "—"), color: (f) => (f.diasRestantesPedido < 0 ? C.red : C.ink) },
+              ]}
+              filas={reporteBPT}
             />
           )}
           {tab === "programacion_yanko" && (
