@@ -361,6 +361,15 @@ function generarAgrupadoPlanta(lotes, campoAgrupador) {
       numLote: l.numLote,
       referencia: l.referencia,
       cantidad: l.invPlanta,
+      fechaEntregaPedido: l.fechaEntregaPedidoISO,
+      // Días que lleva atrasado respecto a la fecha de entrega del pedido —
+      // diasEntre da negativo cuando ya se pasó la fecha, así que se invierte
+      // para mostrar un número positivo de días de atraso (0 si no está
+      // vencido o no tiene fecha).
+      diasAtraso: (() => {
+        const d = diasEntre(l.fechaEntregaPedidoISO);
+        return d !== null && d < 0 ? -d : 0;
+      })(),
     }))
     .sort((a, b) => a.grupo.localeCompare(b.grupo) || a.categoria.localeCompare(b.categoria));
   const gruposUnicos = [...new Set(filas.map((f) => f.grupo))].sort((a, b) => a.localeCompare(b));
@@ -581,21 +590,16 @@ function Tabla({ columnas, filas, vacio }) {
   );
 }
 function BloqueAgrupado({ titulo, primeraColLabel, data }) {
+  // Grupo (planta/cliente/cliente agrupado) que el usuario abrió desde el
+  // resumen — null si ninguno. Al hacer clic en una fila del resumen se
+  // despliega, debajo, el detalle de lotes de ESE grupo puntual (en vez de
+  // tener que buscarlo a mano en la tabla completa de abajo).
+  const [grupoAbierto, setGrupoAbierto] = useState(null);
+  const filasGrupoAbierto = grupoAbierto ? data.filas.filter((f) => f.grupo === grupoAbierto) : [];
   return (
     <div>
-      <Tabla
-        vacio="Sin lotes en planta."
-        columnas={[
-          { key: "grupo", label: primeraColLabel },
-          { key: "categoria", label: "Categoría" },
-          { key: "numLote", label: "Num Lote", align: "right" },
-          { key: "referencia", label: "Referencia" },
-          { key: "cantidad", label: "Cant. en Planta", align: "right", render: (f) => fmtNum(f.cantidad) },
-        ]}
-        filas={data.filas}
-      />
       {data.resumen.length > 0 && (
-        <div style={{ marginTop: 20 }}>
+        <div style={{ marginBottom: 24 }}>
           <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>RESUMEN POR {titulo.toUpperCase()}</div>
           <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -608,7 +612,16 @@ function BloqueAgrupado({ titulo, primeraColLabel, data }) {
               </thead>
               <tbody>
                 {data.resumen.map((r, i) => (
-                  <tr key={r.grupo} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                  <tr
+                    key={r.grupo}
+                    onClick={() => setGrupoAbierto(grupoAbierto === r.grupo ? null : r.grupo)}
+                    title="Ver lotes de este grupo"
+                    style={{
+                      background: grupoAbierto === r.grupo ? C.violetBg : i % 2 === 0 ? C.canvas : C.white,
+                      borderBottom: `1px solid ${C.border}`,
+                      cursor: "pointer",
+                    }}
+                  >
                     <td style={{ padding: "7px 12px" }}>{r.grupo}</td>
                     <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
                     <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
@@ -626,6 +639,35 @@ function BloqueAgrupado({ titulo, primeraColLabel, data }) {
           </div>
         </div>
       )}
+      {grupoAbierto && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>LOTES DE "{grupoAbierto}"</div>
+          <Tabla
+            vacio="Sin lotes en este grupo."
+            columnas={[
+              { key: "categoria", label: "Categoría" },
+              { key: "numLote", label: "Num Lote", align: "right" },
+              { key: "referencia", label: "Referencia" },
+              { key: "cantidad", label: "Cant. en Planta", align: "right", render: (f) => fmtNum(f.cantidad) },
+              { key: "diasAtraso", label: "Días de Atraso", align: "right", render: (f) => (f.diasAtraso > 0 ? f.diasAtraso : "—"), color: (f) => (f.diasAtraso > 0 ? C.red : C.slate) },
+            ]}
+            filas={filasGrupoAbierto}
+          />
+        </div>
+      )}
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>DETALLE COMPLETO</div>
+      <Tabla
+        vacio="Sin lotes en planta."
+        columnas={[
+          { key: "grupo", label: primeraColLabel },
+          { key: "categoria", label: "Categoría" },
+          { key: "numLote", label: "Num Lote", align: "right" },
+          { key: "referencia", label: "Referencia" },
+          { key: "cantidad", label: "Cant. en Planta", align: "right", render: (f) => fmtNum(f.cantidad) },
+          { key: "diasAtraso", label: "Días de Atraso", align: "right", render: (f) => (f.diasAtraso > 0 ? f.diasAtraso : "—"), color: (f) => (f.diasAtraso > 0 ? C.red : C.slate) },
+        ]}
+        filas={data.filas}
+      />
     </div>
   );
 }
