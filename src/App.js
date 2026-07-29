@@ -4253,7 +4253,7 @@ function EditNombreModal({ item, tipo, config, onSave, onClose }) {
 function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState(null);
-  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false });
+  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "" });
   const [changePwdId, setChangePwdId] = useState(null);
   const [newPwd, setNewPwd] = useState("");
   const [showPwd, setShowPwd] = useState(false);
@@ -4288,8 +4288,8 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
     }
     setMigrando(false);
   }
-  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false }); setEditUser(null); setShowForm(true); setError(""); }
-  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin }); setEditUser(u); setShowForm(true); setError(""); }
+  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "" }); setEditUser(null); setShowForm(true); setError(""); }
+  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "" }); setEditUser(u); setShowForm(true); setError(""); }
   // Crear usuario nuevo pasa por la Cloud Function `adminCrearUsuario` (Fase
   // B): a diferencia de editar, crear SÍ necesita generar una cuenta real de
   // Firebase Auth para que esa persona pueda entrar — eso no lo puede hacer
@@ -4305,7 +4305,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
     if (editUser) {
       if (!form.name) { setError("El nombre es obligatorio."); return; }
       const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, avatar } : u)));
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", avatar } : u)));
       setShowForm(false);
       return;
     }
@@ -4316,7 +4316,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
     setCreando(true);
     try {
       const llamar = httpsCallable(functionsClient, "adminCrearUsuario");
-      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin });
+      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado });
       setShowForm(false);
     } catch (err) {
       setError(err?.message || "No se pudo crear el usuario.");
@@ -4415,6 +4415,14 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
               <select value={form.role} onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
                 {roleOptions.map((r) => <option key={r} value={r}>{r}</option>)}
               </select>
+            </div>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Cliente asociado (opcional)</label>
+              <select value={form.clienteAsociado} onChange={(e) => setForm((f) => ({ ...f, clienteAsociado: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
+                <option value="">— Ninguno (ve todos los clientes) —</option>
+                {(config.clientes || []).map((c) => <option key={c.nombre} value={c.nombre}>{c.nombre}</option>)}
+              </select>
+              <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Si eliges un cliente, este usuario solo verá prototipos, cápsulas, pedidos y estadísticas de ese cliente.</div>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
@@ -6598,6 +6606,25 @@ function AppInner() {
   const [historial, setHistorial] = useState([]);
   const [cronogramaMuestras, setCronogramaMuestras] = useState([]);
   const [pedidos, setPedidos] = useState([]);
+  // Cliente asociado (opcional) del usuario logueado — cuentas de acceso
+  // restringido a UN cliente puntual, para que ese cliente no vea el
+  // trabajo que se hace para otros. Se filtran acá, una sola vez, las
+  // mismas listas base que alimentan todo el módulo de Diseño (Prototipos,
+  // Cápsulas, Pedidos, Pedidos por Cliente, Estadísticas, Historial,
+  // Bitácora y Cronograma de Muestras), así que basta con usar las
+  // versiones "Visibles" en cada pantalla para que la restricción aplique
+  // en todas a la vez. Si el usuario no tiene cliente asociado, ve todo
+  // igual que hoy.
+  const clienteAsociado = currentUser?.clienteAsociado || "";
+  function capsulaCliente(cap) {
+    if (cap.cliente) return cap.cliente;
+    const conRef = (cap.referencias || []).find((r) => r.cliente || r.colores?.[0]);
+    return conRef ? (conRef.cliente || conRef.colores?.[0]) : null;
+  }
+  const protosVisibles = clienteAsociado ? protos.filter((p) => (p.cliente || p.colores?.[0]) === clienteAsociado) : protos;
+  const capsulasVisibles = clienteAsociado ? capsulas.filter((cap) => capsulaCliente(cap) === clienteAsociado) : capsulas;
+  const pedidosVisibles = clienteAsociado ? pedidos.filter((p) => p.cliente === clienteAsociado) : pedidos;
+  const cronogramaMuestrasVisibles = clienteAsociado ? cronogramaMuestras.filter((c) => c.cliente === clienteAsociado) : cronogramaMuestras;
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
   const [bitacoraEnvios, setBitacoraEnvios] = useState([]);
   // Al entrar a Historial desde el enlace "❌ N declinadas" de Bitácora, se
@@ -7360,11 +7387,11 @@ function AppInner() {
                   }
                   else { setView(id); }
                 }}
-                protos={protos} capsulas={capsulas} pedidos={pedidos}
+                protos={protosVisibles} capsulas={capsulasVisibles} pedidos={pedidosVisibles}
               />
             )}
             {view === "protos" && (
-              <ProtosView protos={protos} role={role} perms={perms} capsulas={capsulas}
+              <ProtosView protos={protosVisibles} role={role} perms={perms} capsulas={capsulasVisibles}
                 onSelect={(id) => { setSelProtoId(id); setView("proto-detail"); }}
                 onNew={() => setModal("new-proto")}
                 onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
@@ -7374,7 +7401,7 @@ function AppInner() {
               />
             )}
             {view === "capsulas" && (
-              <CapsulasView capsulas={capsulas} role={role} perms={perms} currentUser={currentUser?.name}
+              <CapsulasView capsulas={capsulasVisibles} role={role} perms={perms} currentUser={currentUser?.name}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
                 onNewCapsula={() => setModal("new-capsula")}
                 onNewRef={(cap) => { setNewRefCap(cap); setModal("new-ref"); }}
@@ -7391,9 +7418,9 @@ function AppInner() {
               <BitacorasView
                 envios={bitacoraEnvios}
                 onUpdateEnvio={updateBitacoraEnvio}
-                protos={protos}
-                capsulas={capsulas}
-                pedidos={pedidos}
+                protos={protosVisibles}
+                capsulas={capsulasVisibles}
+                pedidos={pedidosVisibles}
                 historial={historial}
                 onGoHistorial={() => { setHistorialFiltroInicial({ resultado: "declinado", tipo: "todos" }); setView("historial"); }}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
@@ -7441,7 +7468,7 @@ function AppInner() {
               />
             )}
             {view === "pedidos" && (
-              <PedidosView pedidos={pedidos}
+              <PedidosView pedidos={pedidosVisibles}
                 onSelectPedido={(id) => { setSelPedidoId(id); setView("pedido-detail"); }}
                 onNewPedido={() => setModal("new-pedido")}
                 onUpdatePedido={updatePedido}
@@ -7453,10 +7480,10 @@ function AppInner() {
             )}
             {view === "pedido-detail" && selPedido && <PedidoDetailView pedido={selPedido} onBack={() => setView("pedidos")} onUpdatePedido={updatePedido} />}
             {view === "pedidos_admin" && currentUser?.isAdmin && <AdminPedidosView pedidoConfig={pedidoConfig} onSave={savePedidoConfig} config={config} onSaveConfig={saveConfig} />}
-            {view === "pedidos_clientes" && <ClientesPedidosView clientes={config.clientes} pedidos={pedidos} protos={protos} capsulas={capsulas} />}
-            {view === "stats" && <EstadisticasView protos={protos} capsulas={capsulas} stages={config.stages} config={config} />}
+            {view === "pedidos_clientes" && <ClientesPedidosView clientes={config.clientes} pedidos={pedidosVisibles} protos={protosVisibles} capsulas={capsulasVisibles} />}
+            {view === "stats" && <EstadisticasView protos={protosVisibles} capsulas={capsulasVisibles} stages={config.stages} config={config} />}
             {view === "historial" && (
-              <HistorialDisenoView historial={historial} protos={protos} capsulas={capsulas} pedidos={pedidos} role={role} perms={perms} stages={config.stages}
+              <HistorialDisenoView historial={historial} protos={protosVisibles} capsulas={capsulasVisibles} pedidos={pedidosVisibles} role={role} perms={perms} stages={config.stages}
                 isAdmin={currentUser?.isAdmin} onBackfill={backfillHistorial}
                 onSelectProto={(id) => { setSelProtoId(id); setView("proto-detail"); }}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
@@ -7466,7 +7493,7 @@ function AppInner() {
               />
             )}
             {view === "cronograma_muestras" && (
-              <CronogramaMuestrasView cronogramaMuestras={cronogramaMuestras} config={config} isAdmin={currentUser?.isAdmin}
+              <CronogramaMuestrasView cronogramaMuestras={cronogramaMuestrasVisibles} config={config} isAdmin={currentUser?.isAdmin}
                 onAdd={addCronogramaMuestra} onUpdate={updateCronogramaMuestra} onDelete={deleteCronogramaMuestra}
                 onModificarNota={addObservacionCronograma}
                 onGoToItem={(entry) => {
