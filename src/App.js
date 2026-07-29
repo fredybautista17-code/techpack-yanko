@@ -5726,24 +5726,50 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos, currentUser }) {
       for (const p of vigentesFiltrados) {
         const numero = String(p.numero).trim();
         const existente = existentesPorNumero.get(numero);
-        const precioPorRef = new Map((existente?.referencias || []).map((r) => [r.ref, r.precioCortePrenda || 0]));
+        // Una misma referencia (código `ref`) puede traer VARIOS colores —
+        // lo que distingue a cada color es la descripción, no el ref. Usar
+        // solo `r.ref` como clave (como se hacía antes) colapsaba todos los
+        // colores de una misma referencia sobre el mismo precio/id: el
+        // último color procesado pisaba a los demás, y tras "Congelar" todos
+        // los colores de esa referencia terminaban compartiendo el MISMO id
+        // interno — por eso, al marcar la talla de un color en Programar, se
+        // marcaban también las tallas de los demás colores (comparten id).
+        // La clave correcta es ref + descripción (el color).
+        const claveColor = (r) => `${r.ref}__${r.descripcion}`;
+        const precioPorRef = new Map((existente?.referencias || []).map((r) => [claveColor(r), r.precioCortePrenda || 0]));
         // El reporte de Busint nunca trae un id propio para cada referencia
         // (r.id siempre llega vacío), así que sin esto se generaba un uid()
         // NUEVO en cada recarga — incluso para referencias que ya existían.
         // Programación de Mesones y los cortes ya registrados guardan el id
         // de la referencia (refId), así que al cambiar ese id en cada
         // "Congelar" perdían con qué referencia coincidir y desaparecían de
-        // la pantalla. Reutilizamos el id ya guardado (buscado por código de
-        // ref, igual que ya se hace con el precio) y solo generamos uno
-        // nuevo si la referencia es realmente nueva.
-        const idPorRef = new Map((existente?.referencias || []).map((r) => [r.ref, r.id]));
+        // la pantalla. Reutilizamos el id ya guardado (buscado por ref+color,
+        // igual que ya se hace con el precio) y solo generamos uno nuevo si
+        // la referencia es realmente nueva.
+        // Saneamiento: si el bug anterior ya dejó dos colores compartiendo
+        // el mismo id (ej. 7 colores de una referencia con el mismo id
+        // interno), aquí solo el PRIMERO que aparece se queda con ese id —
+        // a los demás, aunque tengan un id guardado, no se les reutiliza (se
+        // les genera uno nuevo abajo) para separarlos de una vez. Esto puede
+        // hacer que la Programación de Mesones ya guardada para esos colores
+        // "extra" quede huérfana, igual que la vez pasada — es el costo de
+        // reparar la colisión.
+        const idsYaUsados = new Set();
+        const idPorRef = new Map();
+        (existente?.referencias || []).forEach((r) => {
+          const clave = claveColor(r);
+          if (r.id && !idsYaUsados.has(r.id)) {
+            idPorRef.set(clave, r.id);
+            idsYaUsados.add(r.id);
+          }
+        });
         const referencias = (p.referencias || []).map((r) => ({
-          id: idPorRef.get(r.ref) || r.id || uid(),
+          id: idPorRef.get(claveColor(r)) || r.id || uid(),
           ref: r.ref,
           descripcion: r.descripcion,
           tallas: { ...r.tallas },
           total: r.total,
-          precioCortePrenda: precioPorRef.get(r.ref) || 0,
+          precioCortePrenda: precioPorRef.get(claveColor(r)) || 0,
         }));
         const doc = {
           id: numero,
