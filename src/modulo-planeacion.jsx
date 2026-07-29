@@ -361,13 +361,13 @@ function generarAgrupadoPlanta(lotes, campoAgrupador) {
       numLote: l.numLote,
       referencia: l.referencia,
       cantidad: l.invPlanta,
-      fechaEntregaPedido: l.fechaEntregaPedidoISO,
-      // Días que lleva atrasado respecto a la fecha de entrega del pedido —
-      // diasEntre da negativo cuando ya se pasó la fecha, así que se invierte
-      // para mostrar un número positivo de días de atraso (0 si no está
-      // vencido o no tiene fecha).
+      fechaEntregaConf: l.fechaEntregaConfISO,
+      // Días que lleva atrasado respecto a la fecha de entrega de
+      // CONFECCIÓN (no la del pedido) — diasEntre da negativo cuando ya se
+      // pasó la fecha, así que se invierte para mostrar un número positivo
+      // de días de atraso (0 si no está vencido o no tiene fecha).
       diasAtraso: (() => {
-        const d = diasEntre(l.fechaEntregaPedidoISO);
+        const d = diasEntre(l.fechaEntregaConfISO);
         return d !== null && d < 0 ? -d : 0;
       })(),
     }))
@@ -640,8 +640,10 @@ function BloqueAgrupado({ titulo, primeraColLabel, data }) {
         </div>
       )}
       {grupoAbierto && (
-        <div style={{ marginBottom: 20 }}>
-          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>LOTES DE "{grupoAbierto}"</div>
+        <Modal title={`Lotes de "${grupoAbierto}"`} onClose={() => setGrupoAbierto(null)} width={720}>
+          <div style={{ marginBottom: 14, fontSize: 12, color: C.slate }}>
+            {filasGrupoAbierto.length} lote{filasGrupoAbierto.length !== 1 ? "s" : ""} · {fmtNum(filasGrupoAbierto.reduce((s, f) => s + f.cantidad, 0))} unidades en total
+          </div>
           <Tabla
             vacio="Sin lotes en este grupo."
             columnas={[
@@ -653,7 +655,7 @@ function BloqueAgrupado({ titulo, primeraColLabel, data }) {
             ]}
             filas={filasGrupoAbierto}
           />
-        </div>
+        </Modal>
       )}
       <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>DETALLE COMPLETO</div>
       <Tabla
