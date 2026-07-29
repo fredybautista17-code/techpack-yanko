@@ -61,8 +61,13 @@ async function fsDelete(col, id) {
   await deleteDoc(doc(db, col, id));
 }
 async function fsBatch(col, items) {
+  // merge: true — así, si un documento tiene campos que la app no maneja
+  // (p.ej. "authUid", que solo se agrega desde Firebase Console o Cloud
+  // Functions), una reescritura masiva de items (como al editar CUALQUIER
+  // usuario en la pestaña Usuarios, que reescribe TODOS los usuarios) no
+  // borra esos campos aunque la copia local en memoria no los tenga.
   const batch = writeBatch(db);
-  items.forEach((item) => batch.set(doc(db, col, item.id), item));
+  items.forEach((item) => batch.set(doc(db, col, item.id), item, { merge: true }));
   await batch.commit();
 }
 
