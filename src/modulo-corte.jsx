@@ -1271,13 +1271,13 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
                         <input
                           type="number"
                           min={0}
-                          max={pend[t]}
                           value={cantidades[ref.id]?.tallas[t] || 0}
                           onChange={(e) => {
-                            const val = Math.min(
-                              parseInt(e.target.value) || 0,
-                              pend[t]
-                            );
+                            // Sin tope en pend[t]: a veces salen más
+                            // unidades de las programadas (p.ej. una capa
+                            // de más) y hay que poder ingresar la cantidad
+                            // real, aunque supere lo "Pendiente".
+                            const val = Math.max(0, parseInt(e.target.value) || 0);
                             setCantidades((c) => ({
                               ...c,
                               [ref.id]: {
@@ -1299,6 +1299,19 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
                                 : C.white,
                           }}
                         />
+                        {(cantidades[ref.id]?.tallas[t] || 0) > pend[t] && (
+                          <div
+                            style={{
+                              fontSize: 8,
+                              color: C.red,
+                              fontWeight: 700,
+                              marginTop: 2,
+                              lineHeight: 1.2,
+                            }}
+                          >
+                            ⚠ Recuerda cambiar el pedido en Busint
+                          </div>
+                        )}
                       </div>
                     ) : null
                   )}
