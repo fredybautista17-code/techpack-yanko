@@ -636,7 +636,6 @@ function DashboardEntregasView({ cargaActiva, onSubir, isAdmin }) {
           <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
             {[
               { id: "resumen", icon: "📊", label: "Resumen" },
-              { id: "comparativo", icon: "📅", label: "Comparativo Entradas" },
               { id: "precio", icon: "🔎", label: "Verificador de Precio de Confección" },
             ].map((t) => (
               <button
@@ -658,7 +657,6 @@ function DashboardEntregasView({ cargaActiva, onSubir, isAdmin }) {
               </button>
             ))}
           </div>
-          {subTab === "comparativo" && <ComparativoEntradasView entradas={entradas} />}
           {subTab === "precio" && <VerificadorPrecioConfeccionView entradas={entradas} />}
         </>
       )}
@@ -742,88 +740,6 @@ function DashboardEntregasView({ cargaActiva, onSubir, isAdmin }) {
     </div>
   );
 }
-// ─── COMPARATIVO DE ENTRADAS (día a día / mes a mes) ─────────────────────────────
-// Toma TODAS las entradas cargadas (no solo el mes elegido en Resumen) y arma una
-// matriz día del mes × mes, para comparar de un vistazo cómo estuvo el mismo día
-// en distintos meses, con el total de cada mes al final.
-function ComparativoEntradasView({ entradas }) {
-  const meses = useMemo(
-    () => [...new Set(entradas.map((e) => (e.fecha || "").slice(0, 7)).filter(Boolean))].sort(),
-    [entradas]
-  );
-  const matriz = useMemo(() => {
-    const m = {};
-    entradas.forEach((e) => {
-      if (!e.fecha) return;
-      const mes = e.fecha.slice(0, 7);
-      const dia = e.fecha.slice(8, 10);
-      if (!dia) return;
-      if (!m[dia]) m[dia] = {};
-      m[dia][mes] = (m[dia][mes] || 0) + e.cantidad;
-    });
-    return m;
-  }, [entradas]);
-  const totalesPorMes = useMemo(() => {
-    const t = {};
-    meses.forEach((mes) => {
-      t[mes] = entradas.filter((e) => (e.fecha || "").slice(0, 7) === mes).reduce((s, e) => s + e.cantidad, 0);
-    });
-    return t;
-  }, [entradas, meses]);
-  const dias = Array.from({ length: 31 }, (_, i) => String(i + 1).padStart(2, "0"));
-  if (!meses.length) {
-    return (
-      <div style={{ textAlign: "center", padding: 60, color: C.slate, fontSize: 13, background: C.white, borderRadius: 14, border: `1px solid ${C.border}` }}>
-        Sin datos para comparar.
-      </div>
-    );
-  }
-  return (
-    <div>
-      <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>
-        Unidades entradas por día, comparadas mes a mes. La fila de abajo suma el total de cada mes.
-      </div>
-      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-          <thead>
-            <tr style={{ background: C.ink, position: "sticky", top: 0 }}>
-              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Día</th>
-              {meses.map((mes) => (
-                <th key={mes} style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
-                  {mes}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {dias.map((dia, i) => {
-              const hayDato = meses.some((mes) => matriz[dia]?.[mes] > 0);
-              if (!hayDato) return null;
-              return (
-                <tr key={dia} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                  <td style={{ padding: "7px 12px", fontWeight: 700, color: C.ink }}>{dia}</td>
-                  {meses.map((mes) => (
-                    <td key={mes} style={{ padding: "7px 12px", textAlign: "right", color: C.ink }}>
-                      {matriz[dia]?.[mes] ? fmtNum(matriz[dia][mes]) : "—"}
-                    </td>
-                  ))}
-                </tr>
-              );
-            })}
-            <tr style={{ background: C.canvas, borderTop: `2px solid ${C.border}` }}>
-              <td style={{ padding: "9px 12px", fontWeight: 900, color: C.ink }}>TOTAL MES</td>
-              {meses.map((mes) => (
-                <td key={mes} style={{ padding: "9px 12px", textAlign: "right", fontWeight: 900, color: C.blue }}>
-                  {fmtNum(totalesPorMes[mes])}
-                </td>
-              ))}
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
 // ─── VERIFICADOR DE PRECIO DE CONFECCIÓN ─────────────────────────────────────────
 // Busca por referencia y muestra las últimas 5 entradas con precio teórico
 // (ValPlanta, fijo por referencia — se pacta al hacer la ficha técnica) vs. precio
@@ -884,13 +800,12 @@ function VerificadorPrecioConfeccionView({ entradas }) {
   );
 }
 // ─── ESTADÍSTICAS DE PLANTA ───────────────────────────────────────────────────────
-// Se elige una planta (y opcionalmente una categoría) y se arma, mes a mes, el
-// total de unidades entregadas por esa planta y cuál categoría fue la que más
-// entregó ese mes (esta última siempre se calcula con TODAS las categorías de la
-// planta ese mes, sin importar el filtro de categoría elegido, porque el objetivo
-// es ver cuál domina).
+// Dos modos: "planta" (se elige una planta y, opcionalmente, una categoría — se
+// arma una tabla horizontal con los meses en columnas) y "todas" (matriz de todas
+// las plantas que han entregado este año × mes, para comparar plantas entre sí).
 function EstadisticasPlantaView({ cargaActiva }) {
   const entradas = cargaActiva?.entradas || [];
+  const [modo, setModo] = useState("planta");
   const plantas = useMemo(
     () => [...new Set(entradas.map((e) => e.nombrePlanta).filter(Boolean))].sort(),
     [entradas]
@@ -916,29 +831,55 @@ function EstadisticasPlantaView({ cargaActiva }) {
     () => [...new Set(deLaPlanta.map((e) => (e.fecha || "").slice(0, 7)).filter(Boolean))].sort(),
     [deLaPlanta]
   );
-  const filas = useMemo(() => {
-    return meses
-      .map((mes) => {
-        const delMes = deLaPlanta.filter((e) => (e.fecha || "").slice(0, 7) === mes);
-        const unidades = delMes.reduce((s, e) => s + e.cantidad, 0);
-        const delMesTodasCategorias = entradas.filter((e) => e.nombrePlanta === planta && (e.fecha || "").slice(0, 7) === mes);
-        const porCategoria = new Map();
-        delMesTodasCategorias.forEach((e) => {
-          porCategoria.set(e.categoria, (porCategoria.get(e.categoria) || 0) + e.cantidad);
-        });
-        let topCategoria = "—";
-        let topUnidades = 0;
-        porCategoria.forEach((u, cat) => {
-          if (u > topUnidades) {
-            topUnidades = u;
-            topCategoria = cat;
-          }
-        });
-        return { mes, unidades, topCategoria, topUnidades };
-      })
-      .sort((a, b) => b.mes.localeCompare(a.mes));
+  const porMes = useMemo(() => {
+    const m = {};
+    meses.forEach((mes) => {
+      const delMes = deLaPlanta.filter((e) => (e.fecha || "").slice(0, 7) === mes);
+      const unidades = delMes.reduce((s, e) => s + e.cantidad, 0);
+      const delMesTodasCategorias = entradas.filter((e) => e.nombrePlanta === planta && (e.fecha || "").slice(0, 7) === mes);
+      const porCategoria = new Map();
+      delMesTodasCategorias.forEach((e) => {
+        porCategoria.set(e.categoria, (porCategoria.get(e.categoria) || 0) + e.cantidad);
+      });
+      let topCategoria = "—";
+      let topUnidades = 0;
+      porCategoria.forEach((u, cat) => {
+        if (u > topUnidades) {
+          topUnidades = u;
+          topCategoria = cat;
+        }
+      });
+      m[mes] = { unidades, topCategoria, topUnidades };
+    });
+    return m;
   }, [meses, deLaPlanta, entradas, planta]);
-  const totalGeneral = filas.reduce((s, f) => s + f.unidades, 0);
+  const totalGeneral = meses.reduce((s, mes) => s + (porMes[mes]?.unidades || 0), 0);
+
+  // Modo "todas las plantas": matriz planta × mes, solo con entradas del año en
+  // curso (today() ya existe en el archivo y evita líos de zona horaria).
+  const anioActual = today().slice(0, 4);
+  const entradasEsteAnio = useMemo(
+    () => entradas.filter((e) => (e.fecha || "").slice(0, 4) === anioActual),
+    [entradas, anioActual]
+  );
+  const mesesEsteAnio = useMemo(
+    () => [...new Set(entradasEsteAnio.map((e) => (e.fecha || "").slice(0, 7)).filter(Boolean))].sort(),
+    [entradasEsteAnio]
+  );
+  const plantasEsteAnio = useMemo(
+    () => [...new Set(entradasEsteAnio.map((e) => e.nombrePlanta).filter(Boolean))].sort(),
+    [entradasEsteAnio]
+  );
+  const matrizPlantas = useMemo(() => {
+    const m = {};
+    entradasEsteAnio.forEach((e) => {
+      const mes = (e.fecha || "").slice(0, 7);
+      if (!mes) return;
+      if (!m[e.nombrePlanta]) m[e.nombrePlanta] = {};
+      m[e.nombrePlanta][mes] = (m[e.nombrePlanta][mes] || 0) + e.cantidad;
+    });
+    return m;
+  }, [entradasEsteAnio]);
 
   return (
     <div>
@@ -954,46 +895,148 @@ function EstadisticasPlantaView({ cargaActiva }) {
         </div>
       ) : (
         <>
-          <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-            <select
-              value={planta}
-              onChange={(e) => setPlanta(e.target.value)}
-              style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontWeight: 700, color: C.ink, background: C.white, fontFamily: "inherit" }}
-            >
-              {plantas.map((p) => (
-                <option key={p} value={p}>{p}</option>
-              ))}
-            </select>
-            <select
-              value={categoria}
-              onChange={(e) => setCategoria(e.target.value)}
-              style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontWeight: 700, color: C.ink, background: C.white, fontFamily: "inherit" }}
-            >
-              <option value="todas">Todas las categorías</option>
-              {categoriasDePlanta.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+          <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
+            {[
+              { id: "planta", label: "Por planta" },
+              { id: "todas", label: `Todas las plantas (${anioActual})` },
+            ].map((m) => (
+              <button
+                key={m.id}
+                onClick={() => setModo(m.id)}
+                style={{
+                  padding: "8px 14px",
+                  borderRadius: 20,
+                  border: `1.5px solid ${modo === m.id ? C.ink : C.border}`,
+                  background: modo === m.id ? C.ink : C.white,
+                  color: modo === m.id ? C.white : C.ink,
+                  fontWeight: 700,
+                  fontSize: 12,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {m.label}
+              </button>
+            ))}
           </div>
-          <div style={{ marginBottom: 20 }}>
-            <KPI
-              icon="📦"
-              label={categoria === "todas" ? "Total entregado" : `Total entregado (${categoria})`}
-              value={fmtNum(totalGeneral)}
-              color={C.ink}
-              bg={C.canvas}
-            />
-          </div>
-          <Tabla
-            vacio="Sin entregas para esta planta."
-            columnas={[
-              { key: "mes", label: "Mes" },
-              { key: "unidades", label: categoria === "todas" ? "Unidades entregadas" : `Unidades (${categoria})`, align: "right", render: (f) => fmtNum(f.unidades) },
-              { key: "topCategoria", label: "Categoría más entregada" },
-              { key: "topUnidades", label: "Unidades de esa categoría", align: "right", render: (f) => fmtNum(f.topUnidades) },
-            ]}
-            filas={filas}
-          />
+          {modo === "planta" ? (
+            <>
+              <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+                <select
+                  value={planta}
+                  onChange={(e) => setPlanta(e.target.value)}
+                  style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontWeight: 700, color: C.ink, background: C.white, fontFamily: "inherit" }}
+                >
+                  {plantas.map((p) => (
+                    <option key={p} value={p}>{p}</option>
+                  ))}
+                </select>
+                <select
+                  value={categoria}
+                  onChange={(e) => setCategoria(e.target.value)}
+                  style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontWeight: 700, color: C.ink, background: C.white, fontFamily: "inherit" }}
+                >
+                  <option value="todas">Todas las categorías</option>
+                  {categoriasDePlanta.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ marginBottom: 20 }}>
+                <KPI
+                  icon="📦"
+                  label={categoria === "todas" ? "Total entregado" : `Total entregado (${categoria})`}
+                  value={fmtNum(totalGeneral)}
+                  color={C.ink}
+                  bg={C.canvas}
+                />
+              </div>
+              {!meses.length ? (
+                <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13, background: C.white, borderRadius: 14, border: `1px solid ${C.border}` }}>
+                  Sin entregas para esta planta.
+                </div>
+              ) : (
+                <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ background: C.ink, position: "sticky", top: 0 }}>
+                        <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}></th>
+                        {meses.map((mes) => (
+                          <th key={mes} style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
+                            {mes}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr style={{ background: C.canvas, borderBottom: `1px solid ${C.border}` }}>
+                        <td style={{ padding: "7px 12px", fontWeight: 800, color: C.ink, whiteSpace: "nowrap" }}>
+                          {categoria === "todas" ? "Unidades entregadas" : `Unidades (${categoria})`}
+                        </td>
+                        {meses.map((mes) => (
+                          <td key={mes} style={{ padding: "7px 12px", textAlign: "right", fontWeight: 700, color: C.blue }}>
+                            {fmtNum(porMes[mes]?.unidades || 0)}
+                          </td>
+                        ))}
+                      </tr>
+                      <tr style={{ background: C.white, borderBottom: `1px solid ${C.border}` }}>
+                        <td style={{ padding: "7px 12px", fontWeight: 800, color: C.ink, whiteSpace: "nowrap" }}>Categoría más entregada</td>
+                        {meses.map((mes) => (
+                          <td key={mes} style={{ padding: "7px 12px", textAlign: "right", color: C.ink }}>
+                            {porMes[mes]?.topCategoria || "—"}
+                          </td>
+                        ))}
+                      </tr>
+                      <tr style={{ background: C.canvas }}>
+                        <td style={{ padding: "7px 12px", fontWeight: 800, color: C.ink, whiteSpace: "nowrap" }}>Unidades de esa categoría</td>
+                        {meses.map((mes) => (
+                          <td key={mes} style={{ padding: "7px 12px", textAlign: "right", color: C.ink }}>
+                            {fmtNum(porMes[mes]?.topUnidades || 0)}
+                          </td>
+                        ))}
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          ) : !mesesEsteAnio.length ? (
+            <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13, background: C.white, borderRadius: 14, border: `1px solid ${C.border}` }}>
+              Sin entregas registradas en {anioActual}.
+            </div>
+          ) : (
+            <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: C.ink, position: "sticky", top: 0 }}>
+                    <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Planta</th>
+                    {mesesEsteAnio.map((mes) => (
+                      <th key={mes} style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
+                        {mes}
+                      </th>
+                    ))}
+                    <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {plantasEsteAnio.map((p, i) => {
+                    const totalPlanta = mesesEsteAnio.reduce((s, mes) => s + (matrizPlantas[p]?.[mes] || 0), 0);
+                    return (
+                      <tr key={p} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                        <td style={{ padding: "7px 12px", fontWeight: 700, color: C.ink, whiteSpace: "nowrap" }}>{p}</td>
+                        {mesesEsteAnio.map((mes) => (
+                          <td key={mes} style={{ padding: "7px 12px", textAlign: "right", color: C.ink }}>
+                            {matrizPlantas[p]?.[mes] ? fmtNum(matrizPlantas[p][mes]) : "—"}
+                          </td>
+                        ))}
+                        <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 900, color: C.blue }}>{fmtNum(totalPlanta)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </>
       )}
     </div>
