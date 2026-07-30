@@ -453,8 +453,18 @@ async function parseEntradasPlanta(file) {
       facturado,
       numLote: row["Numlote"] ?? null,
       refN: row["RefN"] ?? "",
+      // RefExt es el código de referencia con el que se conoce en el resto de
+      // la app (mismo formato que usan Pedidos/Corte, p.ej. "GM1002"); RefN
+      // es un código interno distinto, se guarda solo como respaldo.
+      refExt: String(row["RefExt"] ?? row["RefN"] ?? "").trim(),
       nPedido: row["Nped"] ?? null,
       diasCumplimiento,
+      // ValPlanta = precio teórico de confección pactado por referencia (se
+      // mantiene fijo); CostoFT = precio real de esa entrada puntual (varía
+      // entrada a entrada) — vienen del mismo Excel de Entradas de Planta,
+      // hoja "Hoja3", solo que antes no se leían.
+      precioTeorico: Number(row["ValPlanta"]) || 0,
+      precioEntrada: Number(row["CostoFT"]) || 0,
     });
   });
   return entradas;
@@ -542,6 +552,7 @@ function SubirEntradasModal({ onConfirm, onClose }) {
 // Ftpla (ya verificado que coincide con "cxp" del ERP).
 function DashboardEntregasView({ cargaActiva, onSubir, isAdmin }) {
   const [subiendo, setSubiendo] = useState(false);
+  const [subTab, setSubTab] = useState("resumen");
   const entradas = cargaActiva?.entradas || [];
   const meses = useMemo(
     () => [...new Set(entradas.map((e) => (e.fecha || "").slice(0, 7)).filter(Boolean))].sort().reverse(),
@@ -622,6 +633,37 @@ function DashboardEntregasView({ cargaActiva, onSubir, isAdmin }) {
         </div>
       ) : (
         <>
+          <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
+            {[
+              { id: "resumen", icon: "📊", label: "Resumen" },
+              { id: "comparativo", icon: "📅", label: "Comparativo Entradas" },
+              { id: "precio", icon: "🔎", label: "Verificador de Precio de Confección" },
+            ].map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setSubTab(t.id)}
+                style={{
+                  padding: "8px 14px",
+                  borderRadius: 20,
+                  border: `1.5px solid ${subTab === t.id ? C.ink : C.border}`,
+                  background: subTab === t.id ? C.ink : C.white,
+                  color: subTab === t.id ? C.white : C.ink,
+                  fontWeight: 700,
+                  fontSize: 12,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {t.icon} {t.label}
+              </button>
+            ))}
+          </div>
+          {subTab === "comparativo" && <ComparativoEntradasView entradas={entradas} />}
+          {subTab === "precio" && <VerificadorPrecioConfeccionView entradas={entradas} />}
+        </>
+      )}
+      {cargaActiva && subTab === "resumen" && (
+        <>
           {meses.length > 1 && (
             <div style={{ marginBottom: 18 }}>
               <select
@@ -695,6 +737,147 @@ function DashboardEntregasView({ cargaActiva, onSubir, isAdmin }) {
               </div>
             </div>
           </div>
+        </>
+      )}
+    </div>
+  );
+}
+// ─── COMPARATIVO DE ENTRADAS (día a día / mes a mes) ─────────────────────────────
+// Toma TODAS las entradas cargadas (no solo el mes elegido en Resumen) y arma una
+// matriz día del mes × mes, para comparar de un vistazo cómo estuvo el mismo día
+// en distintos meses, con el total de cada mes al final.
+function ComparativoEntradasView({ entradas }) {
+  const meses = useMemo(
+    () => [...new Set(entradas.map((e) => (e.fecha || "").slice(0, 7)).filter(Boolean))].sort(),
+    [entradas]
+  );
+  const matriz = useMemo(() => {
+    const m = {};
+    entradas.forEach((e) => {
+      if (!e.fecha) return;
+      const mes = e.fecha.slice(0, 7);
+      const dia = e.fecha.slice(8, 10);
+      if (!dia) return;
+      if (!m[dia]) m[dia] = {};
+      m[dia][mes] = (m[dia][mes] || 0) + e.cantidad;
+    });
+    return m;
+  }, [entradas]);
+  const totalesPorMes = useMemo(() => {
+    const t = {};
+    meses.forEach((mes) => {
+      t[mes] = entradas.filter((e) => (e.fecha || "").slice(0, 7) === mes).reduce((s, e) => s + e.cantidad, 0);
+    });
+    return t;
+  }, [entradas, meses]);
+  const dias = Array.from({ length: 31 }, (_, i) => String(i + 1).padStart(2, "0"));
+  if (!meses.length) {
+    return (
+      <div style={{ textAlign: "center", padding: 60, color: C.slate, fontSize: 13, background: C.white, borderRadius: 14, border: `1px solid ${C.border}` }}>
+        Sin datos para comparar.
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>
+        Unidades entradas por día, comparadas mes a mes. La fila de abajo suma el total de cada mes.
+      </div>
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: C.ink, position: "sticky", top: 0 }}>
+              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Día</th>
+              {meses.map((mes) => (
+                <th key={mes} style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
+                  {mes}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {dias.map((dia, i) => {
+              const hayDato = meses.some((mes) => matriz[dia]?.[mes] > 0);
+              if (!hayDato) return null;
+              return (
+                <tr key={dia} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                  <td style={{ padding: "7px 12px", fontWeight: 700, color: C.ink }}>{dia}</td>
+                  {meses.map((mes) => (
+                    <td key={mes} style={{ padding: "7px 12px", textAlign: "right", color: C.ink }}>
+                      {matriz[dia]?.[mes] ? fmtNum(matriz[dia][mes]) : "—"}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
+            <tr style={{ background: C.canvas, borderTop: `2px solid ${C.border}` }}>
+              <td style={{ padding: "9px 12px", fontWeight: 900, color: C.ink }}>TOTAL MES</td>
+              {meses.map((mes) => (
+                <td key={mes} style={{ padding: "9px 12px", textAlign: "right", fontWeight: 900, color: C.blue }}>
+                  {fmtNum(totalesPorMes[mes])}
+                </td>
+              ))}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+// ─── VERIFICADOR DE PRECIO DE CONFECCIÓN ─────────────────────────────────────────
+// Busca por referencia y muestra las últimas 5 entradas con precio teórico
+// (ValPlanta, fijo por referencia — se pacta al hacer la ficha técnica) vs. precio
+// de entrada real (CostoFT, puede variar entrada a entrada) — para detectar cuándo
+// una planta cobró distinto a lo pactado.
+function VerificadorPrecioConfeccionView({ entradas }) {
+  const [busqueda, setBusqueda] = useState("");
+  const resultado = useMemo(() => {
+    const q = busqueda.trim().toLowerCase();
+    if (!q) return [];
+    return entradas
+      .filter((e) => (e.refExt || "").toLowerCase() === q || String(e.refN || "").toLowerCase() === q)
+      .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
+      .slice(0, 5);
+  }, [entradas, busqueda]);
+  const planta = resultado[0]?.nombrePlanta || null;
+  return (
+    <div>
+      <div style={{ marginBottom: 18, maxWidth: 360 }}>
+        <input
+          type="text"
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="Escribe la referencia (ej. GM1002)"
+          style={{ width: "100%", padding: "10px 14px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
+        />
+      </div>
+      {!busqueda.trim() ? (
+        <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Escribe una referencia para ver sus últimas entradas.</div>
+      ) : !resultado.length ? (
+        <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>No se encontraron entradas con esa referencia.</div>
+      ) : (
+        <>
+          {planta && (
+            <div style={{ marginBottom: 14, fontSize: 13, color: C.slate }}>
+              Planta: <span style={{ fontWeight: 800, color: C.ink }}>{planta}</span>
+            </div>
+          )}
+          <Tabla
+            vacio="Sin entradas para esa referencia."
+            columnas={[
+              { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+              { key: "nombrePlanta", label: "Planta" },
+              { key: "precioTeorico", label: "Precio teórico", align: "right", render: (f) => `$${fmtNum(f.precioTeorico)}` },
+              {
+                key: "precioEntrada",
+                label: "Precio de entrada",
+                align: "right",
+                render: (f) => `$${fmtNum(f.precioEntrada)}`,
+                color: (f) => (f.precioEntrada !== f.precioTeorico ? C.red : C.green),
+              },
+            ]}
+            filas={resultado}
+          />
         </>
       )}
     </div>
