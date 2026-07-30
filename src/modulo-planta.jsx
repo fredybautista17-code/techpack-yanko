@@ -883,6 +883,122 @@ function VerificadorPrecioConfeccionView({ entradas }) {
     </div>
   );
 }
+// ─── ESTADÍSTICAS DE PLANTA ───────────────────────────────────────────────────────
+// Se elige una planta (y opcionalmente una categoría) y se arma, mes a mes, el
+// total de unidades entregadas por esa planta y cuál categoría fue la que más
+// entregó ese mes (esta última siempre se calcula con TODAS las categorías de la
+// planta ese mes, sin importar el filtro de categoría elegido, porque el objetivo
+// es ver cuál domina).
+function EstadisticasPlantaView({ cargaActiva }) {
+  const entradas = cargaActiva?.entradas || [];
+  const plantas = useMemo(
+    () => [...new Set(entradas.map((e) => e.nombrePlanta).filter(Boolean))].sort(),
+    [entradas]
+  );
+  const [planta, setPlanta] = useState("");
+  useEffect(() => {
+    if (plantas.length && !plantas.includes(planta)) setPlanta(plantas[0]);
+  }, [plantas]);
+  const categoriasDePlanta = useMemo(
+    () => [...new Set(entradas.filter((e) => e.nombrePlanta === planta).map((e) => e.categoria).filter(Boolean))].sort(),
+    [entradas, planta]
+  );
+  const [categoria, setCategoria] = useState("todas");
+  useEffect(() => {
+    setCategoria("todas");
+  }, [planta]);
+
+  const deLaPlanta = useMemo(
+    () => entradas.filter((e) => e.nombrePlanta === planta && (categoria === "todas" || e.categoria === categoria)),
+    [entradas, planta, categoria]
+  );
+  const meses = useMemo(
+    () => [...new Set(deLaPlanta.map((e) => (e.fecha || "").slice(0, 7)).filter(Boolean))].sort(),
+    [deLaPlanta]
+  );
+  const filas = useMemo(() => {
+    return meses
+      .map((mes) => {
+        const delMes = deLaPlanta.filter((e) => (e.fecha || "").slice(0, 7) === mes);
+        const unidades = delMes.reduce((s, e) => s + e.cantidad, 0);
+        const delMesTodasCategorias = entradas.filter((e) => e.nombrePlanta === planta && (e.fecha || "").slice(0, 7) === mes);
+        const porCategoria = new Map();
+        delMesTodasCategorias.forEach((e) => {
+          porCategoria.set(e.categoria, (porCategoria.get(e.categoria) || 0) + e.cantidad);
+        });
+        let topCategoria = "—";
+        let topUnidades = 0;
+        porCategoria.forEach((u, cat) => {
+          if (u > topUnidades) {
+            topUnidades = u;
+            topCategoria = cat;
+          }
+        });
+        return { mes, unidades, topCategoria, topUnidades };
+      })
+      .sort((a, b) => b.mes.localeCompare(a.mes));
+  }, [meses, deLaPlanta, entradas, planta]);
+  const totalGeneral = filas.reduce((s, f) => s + f.unidades, 0);
+
+  return (
+    <div>
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Estadísticas de Planta</h2>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
+          Total entregado por mes según planta — y la categoría que más entregó cada mes.
+        </p>
+      </div>
+      {!plantas.length ? (
+        <div style={{ textAlign: "center", padding: 60, color: C.slate, fontSize: 13, background: C.white, borderRadius: 14, border: `1px solid ${C.border}` }}>
+          Sube el archivo de Entradas de Planta (en Dashboard de Entregas) para ver estadísticas.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+            <select
+              value={planta}
+              onChange={(e) => setPlanta(e.target.value)}
+              style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontWeight: 700, color: C.ink, background: C.white, fontFamily: "inherit" }}
+            >
+              {plantas.map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </select>
+            <select
+              value={categoria}
+              onChange={(e) => setCategoria(e.target.value)}
+              style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontWeight: 700, color: C.ink, background: C.white, fontFamily: "inherit" }}
+            >
+              <option value="todas">Todas las categorías</option>
+              {categoriasDePlanta.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
+          <div style={{ marginBottom: 20 }}>
+            <KPI
+              icon="📦"
+              label={categoria === "todas" ? "Total entregado" : `Total entregado (${categoria})`}
+              value={fmtNum(totalGeneral)}
+              color={C.ink}
+              bg={C.canvas}
+            />
+          </div>
+          <Tabla
+            vacio="Sin entregas para esta planta."
+            columnas={[
+              { key: "mes", label: "Mes" },
+              { key: "unidades", label: categoria === "todas" ? "Unidades entregadas" : `Unidades (${categoria})`, align: "right", render: (f) => fmtNum(f.unidades) },
+              { key: "topCategoria", label: "Categoría más entregada" },
+              { key: "topUnidades", label: "Unidades de esa categoría", align: "right", render: (f) => fmtNum(f.topUnidades) },
+            ]}
+            filas={filas}
+          />
+        </>
+      )}
+    </div>
+  );
+}
 // ─── HOME PLANTA ────────────────────────────────────────────────────────────────
 function HomePlanta({ onGoModulo }) {
   const MODULOS = [
@@ -1009,6 +1125,7 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
     { id: "home", icon: "◉", label: "Inicio" },
     { id: "programacion_diaria", icon: "📅", label: "Programación Diaria" },
     { id: "dashboard_entregas", icon: "📊", label: "Dashboard de Entregas" },
+    { id: "estadisticas_planta", icon: "📈", label: "Estadísticas de Planta" },
   ];
   if (loading) {
     return (
@@ -1087,6 +1204,9 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
               onSubir={agregarCargaEntradas}
               isAdmin={isAdmin}
             />
+          )}
+          {subView === "estadisticas_planta" && (
+            <EstadisticasPlantaView cargaActiva={cargaEntradasActiva} />
           )}
         </div>
       </div>
