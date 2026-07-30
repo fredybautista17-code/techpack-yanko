@@ -459,12 +459,13 @@ async function parseEntradasPlanta(file) {
       refExt: String(row["RefExt"] ?? row["RefN"] ?? "").trim(),
       nPedido: row["Nped"] ?? null,
       diasCumplimiento,
-      // ValPlanta = precio teórico de confección pactado por referencia (se
-      // mantiene fijo); CostoFT = precio real de esa entrada puntual (varía
-      // entrada a entrada) — vienen del mismo Excel de Entradas de Planta,
-      // hoja "Hoja3", solo que antes no se leían.
+      // ValPlanta = precio teórico de confección, el que queda fijado en la
+      // ficha técnica de la referencia; VaEnt = precio real de esa entrada
+      // puntual del lote (puede variar entrada a entrada) — según confirmó
+      // Fredy, la comparación/corrección es ValPlanta vs. VaEnt, no CostoFT.
+      // Vienen del mismo Excel de Entradas de Planta, hoja "Hoja3".
       precioTeorico: Number(row["ValPlanta"]) || 0,
-      precioEntrada: Number(row["CostoFT"]) || 0,
+      precioEntrada: Number(row["VaEnt"]) || 0,
     });
   });
   return entradas;
