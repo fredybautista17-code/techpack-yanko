@@ -4417,7 +4417,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Selección por talla: Map key `${pedidoId}__${ref}__${talla}` -> { ...contexto, cantidad }
   // (cantidad es editable, por si no alcanza la tela para toda la talla).
@@ -4487,6 +4487,10 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // primero hace clic para ver el detalle completo (tendido, corte, tallas)
   // y ahí adentro pone el lote, en vez de un input suelto en la fila.
   const [aprobadoAbierto, setAprobadoAbierto] = useState(null);
+  // Confirmación inline antes de quitar una referencia de un corte real ya
+  // registrado (p.ej. cuando por error se mezclaron 2 referencias en un solo
+  // registro) — key `${corteId}__${refCode}`, null si no hay ninguna abierta.
+  const [confirmQuitarRef, setConfirmQuitarRef] = useState(null);
 
   // Los cortes reales (cortesRealizados) guardan el ID interno del mesón
   // (form.meson usa m.id, no m.nombre), así que para mostrarlo hay que
@@ -5653,6 +5657,46 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                   ))}
                                 </tbody>
                               </table>
+                              {(() => {
+                                const refsUnicos = [...new Set((c.refs || []).map((r) => r.ref))];
+                                if (refsUnicos.length < 2) return null;
+                                return (
+                                  <div style={{ marginBottom: 14, padding: "10px 12px", background: C.amberBg, borderRadius: 8 }}>
+                                    <div style={{ fontSize: 11, fontWeight: 700, color: C.amber, marginBottom: 6 }}>
+                                      Este registro tiene {refsUnicos.length} referencias distintas — si se mezclaron por error, puedes quitar una (vuelve a quedar pendiente por cortar):
+                                    </div>
+                                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                      {refsUnicos.map((refCode) => {
+                                        const key = `${c.id}__${refCode}`;
+                                        const confirmando = confirmQuitarRef === key;
+                                        return confirmando ? (
+                                          <div key={refCode} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                                            <span style={{ color: C.red, fontWeight: 700 }}>¿Quitar {refCode}?</span>
+                                            <Btn
+                                              small
+                                              variant="danger"
+                                              onClick={async () => {
+                                                await onQuitarRefDeCorte(c.pedidoId, c.id, refCode);
+                                                setConfirmQuitarRef(null);
+                                                setAprobadoAbierto(null);
+                                              }}
+                                            >
+                                              Confirmar
+                                            </Btn>
+                                            <Btn small variant="secondary" onClick={() => setConfirmQuitarRef(null)}>
+                                              Cancelar
+                                            </Btn>
+                                          </div>
+                                        ) : (
+                                          <Btn key={refCode} small variant="secondary" onClick={() => setConfirmQuitarRef(key)}>
+                                            Quitar {refCode}
+                                          </Btn>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                );
+                              })()}
                               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                                 <input
                                   value={texto}
@@ -6721,6 +6765,39 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
       creadoEn: new Date().toISOString(),
     });
   }
+  // Quita UNA referencia (todos sus colores) de un corte real ya registrado
+  // pero que todavía no tiene lote — por ejemplo cuando por error se
+  // mezclaron 2 referencias distintas en un mismo registro de Entrada de
+  // Corte. Como "pendiente por cortar" se calcula siempre restando
+  // cortesRealizados contra pedido.referencias (ver `pendiente`/`excedente`
+  // más arriba), con solo sacar esos colores de `refs` la referencia vuelve
+  // sola a quedar pendiente, sin tocar nada más. Si al quitarla no queda
+  // ninguna referencia en el registro, se borra el registro completo (un
+  // corte sin referencias no tiene sentido).
+  async function quitarRefDeCorteReal(pedidoId, corteId, refCode) {
+    const pedido = pedidos.find((p) => p.id === pedidoId);
+    if (!pedido) return;
+    const corte = (pedido.cortesRealizados || []).find((c) => c.id === corteId);
+    if (!corte) return;
+    const refsRestantes = (corte.refs || []).filter((r) => r.ref !== refCode);
+    let cortesActualizados;
+    if (!refsRestantes.length) {
+      cortesActualizados = pedido.cortesRealizados.filter((c) => c.id !== corteId);
+    } else {
+      const totalUnidades = refsRestantes.reduce((s, r) => s + (r.total || 0), 0);
+      cortesActualizados = pedido.cortesRealizados.map((c) =>
+        c.id === corteId ? { ...c, refs: refsRestantes, totalUnidades } : c
+      );
+    }
+    const totalPedido = pedido.referencias.reduce((s, r) => s + r.total, 0);
+    const totalC = cortesActualizados.reduce((s, c) => s + (c.totalUnidades || 0), 0);
+    const patch = { cortesRealizados: cortesActualizados };
+    if (pedido.estado === "terminado" && totalC < totalPedido) {
+      patch.estado = "activo";
+      patch.fechaCumplido = null;
+    }
+    await fsSave("pedidos_activos", pedidoId, patch);
+  }
   // Reinicio completo de pruebas (temporal, solo admin) — borra TODA la
   // colección corte_lotes, TODA corte_programacion (Programación de
   // Mesones), y vacía cortesRealizados de cada pedido activo (revirtiendo a
@@ -7061,6 +7138,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               usuarioActual={currentUser?.name || currentUser?.username || ""}
               lotesExistentes={lotesExistentes}
               onAsignarLoteReal={confirmarLoteCorteReal}
+              onQuitarRefDeCorte={quitarRefDeCorteReal}
               subTabInicial={navProduccion?.subTab}
               produccionSubTabInicial={navProduccion?.produccionSubTab}
               navProduccionTs={navProduccion?.ts}
