@@ -59,18 +59,19 @@
  *
  *   firebase functions:secrets:set BUSINT_TOKEN
  *   firebase functions:secrets:set BUSINT_BASE_URL
- *   firebase functions:secrets:set BUSINT_PROXY_SECRET
  *   firebase functions:secrets:set MIGRACION_CLAVE
  *
- * IMPORTANTE — Busint Cloud exige conectarse por VPN (WireGuard) para poder
- * usar la API; una Cloud Function no puede mantener una VPN abierta por sí
- * sola. Por eso estas funciones NO le hablan directo a Busint: le hablan a
- * una VM-puente (una máquina virtual siempre conectada a la VPN de Busint,
- * que reenvía la petición) — ver vm-busint-relay-startup.sh. En este caso:
- *   - BUSINT_BASE_URL = la dirección de esa VM-puente, ej: http://IP:8080
- *     (SIN "/" al final)
- *   - BUSINT_PROXY_SECRET = el mismo secreto configurado en la VM, para que
- *     solo esta función pueda usar el puente (nadie más que sepa la IP).
+ * (2026-07-30) Busint eliminó el requisito de VPN para consumir esta API —
+ * ahora se le habla DIRECTO a https://api-yanko-gen.busint.info, confirmado
+ * con una prueba real (curl con el token, sin VPN, devolvió pedidos). Antes
+ * era necesario pasar por una VM-puente siempre conectada a la VPN de
+ * Busint (con su propio secreto BUSINT_PROXY_SECRET) porque una Cloud
+ * Function no puede mantener una VPN abierta por sí sola; ya no hace falta
+ * ese puente, así que se quitó del código:
+ *   - BUSINT_BASE_URL ahora es la URL de Busint directamente
+ *     (https://api-yanko-gen.busint.info, SIN "/" al final).
+ *   - Si la VM-puente sigue corriendo, ya se puede apagar una vez se
+ *     confirme que esta versión funciona bien en producción.
  *
  * NOTA: este archivo tenía antes una función programada (`syncPedidosBusint`,
  * corría sola cada 6 horas) que copiaba pedidos de Busint a la colección
@@ -92,7 +93,6 @@ const db = admin.firestore();
 
 const BUSINT_TOKEN = defineSecret("BUSINT_TOKEN");
 const BUSINT_BASE_URL = defineSecret("BUSINT_BASE_URL");
-const BUSINT_PROXY_SECRET = defineSecret("BUSINT_PROXY_SECRET");
 
 function fmtFecha(d) {
   return d.toISOString().slice(0, 10);
@@ -113,7 +113,6 @@ function soloFecha(iso) {
 async function consultarOrdenesBusint(fechaInicio, fechaFin) {
   const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
   const token = BUSINT_TOKEN.value();
-  const proxySecret = BUSINT_PROXY_SECRET.value();
 
   const form = new FormData();
   form.append("Token", token);
@@ -122,7 +121,6 @@ async function consultarOrdenesBusint(fechaInicio, fechaFin) {
 
   const resp = await fetch(`${baseUrl}/consultas/ApiGen_OrdenesDePedidoBusint`, {
     method: "POST",
-    headers: { "X-Proxy-Secret": proxySecret },
     body: form,
   });
 
@@ -193,7 +191,6 @@ function agruparFilasBusintPorPedido(filas) {
 async function consultarFacturadoBusint(fechaInicio, fechaFin) {
   const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
   const token = BUSINT_TOKEN.value();
-  const proxySecret = BUSINT_PROXY_SECRET.value();
 
   const form = new FormData();
   form.append("Token", token);
@@ -202,7 +199,6 @@ async function consultarFacturadoBusint(fechaInicio, fechaFin) {
 
   const resp = await fetch(`${baseUrl}/consultas/ApiGen_FacturadoBusint`, {
     method: "POST",
-    headers: { "X-Proxy-Secret": proxySecret },
     body: form,
   });
 
@@ -227,7 +223,7 @@ function cryptoRandomId() {
 // `httpsCallable(functions, "getPedidosVigentesBusint")({ fechaInicio, fechaFin })`.
 exports.getPedidosVigentesBusint = onCall(
   {
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_PROXY_SECRET],
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 60,
     memory: "256MiB",
   },
@@ -342,7 +338,7 @@ exports.getPedidosVigentesBusint = onCall(
 // pegado como activo para siempre.
 exports.getPedidosExistentesBusint = onCall(
   {
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_PROXY_SECRET],
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 60,
     memory: "256MiB",
   },
@@ -371,7 +367,7 @@ exports.getPedidosExistentesBusint = onCall(
 // datos exactos?" sin adivinar — muestra tal cual lo que Busint responde.
 exports.getOrdenBusintPorNumero = onCall(
   {
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_PROXY_SECRET],
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 60,
     memory: "256MiB",
   },
@@ -409,14 +405,12 @@ exports.getOrdenBusintPorNumero = onCall(
 async function consultarClientesBusint() {
   const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
   const token = BUSINT_TOKEN.value();
-  const proxySecret = BUSINT_PROXY_SECRET.value();
 
   const form = new FormData();
   form.append("Token", token);
 
   const resp = await fetch(`${baseUrl}/consultas/ApiGen_Clientes`, {
     method: "POST",
-    headers: { "X-Proxy-Secret": proxySecret },
     body: form,
   });
 
@@ -438,7 +432,7 @@ async function consultarClientesBusint() {
 // solo entrega los datos crudos de Busint.
 exports.getClientesBusint = onCall(
   {
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_PROXY_SECRET],
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 60,
     memory: "256MiB",
   },
