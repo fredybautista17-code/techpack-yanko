@@ -263,9 +263,39 @@ function ProgramarLoteModal({ lote, onConfirm, onClose }) {
     </Modal>
   );
 }
+function EditarFechaModal({ fila, onConfirm, onClose }) {
+  const [fecha, setFecha] = useState(fila.fechaEnviado || today());
+  function confirmar() {
+    if (!fecha) return;
+    onConfirm(fila.id, fecha);
+    onClose();
+  }
+  return (
+    <Modal title={`Editar fecha — Lote ${fila.numLote}`} onClose={onClose} width={440}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, padding: "12px 14px", background: C.amberBg, borderRadius: 8, marginBottom: 18, fontSize: 12, color: C.amber }}>
+        <div>
+          <div style={{ fontWeight: 700 }}>Referencia</div>
+          <div>{fila.referencia}</div>
+        </div>
+        <div>
+          <div style={{ fontWeight: 700 }}>Cantidad</div>
+          <div>{fmtNum(fila.cantidad)}</div>
+        </div>
+      </div>
+      <Field label="Nueva fecha comprometida de entrega">
+        <FInput type="date" value={fecha} onChange={setFecha} />
+      </Field>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn variant="danger" onClick={confirmar} disabled={!fecha}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
 // ─── PROGRAMACIÓN DIARIA ─────────────────────────────────────────────────────────
-function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onCancelar, isAdmin }) {
+function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onCancelar, onEditarFecha, isAdmin }) {
   const [programando, setProgramando] = useState(null);
+  const [editando, setEditando] = useState(null);
   const [subTab, setSubTab] = useState("pendientes");
   const lotesEnPlantaYanko = useMemo(
     () => (cargaActiva?.lotes || []).filter((l) => l.nombrePlanta === PLANTA_YANKO && l.invPlanta > 0),
@@ -296,6 +326,13 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onCanc
           lote={programando}
           onConfirm={(lote, fecha) => onProgramar(lote, fecha)}
           onClose={() => setProgramando(null)}
+        />
+      )}
+      {editando && (
+        <EditarFechaModal
+          fila={editando}
+          onConfirm={(id, fecha) => onEditarFecha(id, fecha)}
+          onClose={() => setEditando(null)}
         />
       )}
       <div style={{ marginBottom: 20 }}>
@@ -371,13 +408,22 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onCanc
                   key: "accion",
                   label: "",
                   render: (f) => (
-                    <button
-                      onClick={() => onCancelar(f.id)}
-                      title="Cancelar programación"
-                      style={{ background: C.redBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.red, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
-                    >
-                      ✕
-                    </button>
+                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                      <button
+                        onClick={() => setEditando(f)}
+                        title="Editar fecha comprometida"
+                        style={{ background: C.blueBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.blue, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+                      >
+                        ✎
+                      </button>
+                      <button
+                        onClick={() => onCancelar(f.id)}
+                        title="Cancelar programación"
+                        style={{ background: C.redBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.red, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+                      >
+                        ✕
+                      </button>
+                    </div>
                   ),
                 }]
               : []),
@@ -1133,6 +1179,10 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
     setProgramacion((ps) => ps.filter((p) => p.id !== id));
     await fsDelete("planta_programacion", id);
   }
+  async function editarFechaProgramacion(id, nuevaFecha) {
+    setProgramacion((ps) => ps.map((p) => (p.id === id ? { ...p, fechaEnviado: nuevaFecha } : p)));
+    await fsSave("planta_programacion", id, { fechaEnviado: nuevaFecha });
+  }
   // Cada Excel "ENTRADAS DE PLANTA" que se sube es una carga completa nueva;
   // igual que en Planeación con Hoja1, se guarda como un documento nuevo y el
   // dashboard siempre usa la carga más reciente (cargaEntradasActiva).
@@ -1239,6 +1289,7 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
               programacion={programacion}
               onProgramar={programarLote}
               onCancelar={cancelarProgramacion}
+              onEditarFecha={editarFechaProgramacion}
               isAdmin={isAdmin}
             />
           )}
