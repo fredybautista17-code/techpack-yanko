@@ -53,6 +53,10 @@
  *    autenticado Y sea administrador antes de hacer nada — ver
  *    `verificarLlamadorEsAdmin` más abajo.
  *
+ * 7. `buscarReferenciaBusint`: usado por módulo Bodega → Despachos → Montar
+ *    Despacho — al escribir una referencia trae de Busint su descripción,
+ *    precio y códigos de barra por talla/color, para no digitarlos a mano.
+ *
  * CREDENCIALES: el token y la URL base de Busint NUNCA se escriben en este
  * archivo (que queda en un repositorio público) — se leen como "secrets" de
  * Firebase, configurados una sola vez desde la línea de comandos:
@@ -460,6 +464,87 @@ exports.getClientesBusint = onCall(
     clientes.sort((a, b) => a.nombre.localeCompare(b.nombre));
 
     return { generadoEn: new Date().toISOString(), total: clientes.length, clientes };
+  }
+);
+
+// Trae de Busint el maestro completo de referencias ("ApiGen_Referencias") y
+// de códigos de barra ("ApiGen_CodigosDeBarra") — ninguno de los dos acepta
+// filtro en la API de Busint (siempre traen TODO el catálogo), así que se
+// filtra acá adentro por la referencia pedida antes de responder, para no
+// mandarle al navegador miles de filas que no necesita.
+async function consultarCatalogoBusint(endpoint) {
+  const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
+  const token = BUSINT_TOKEN.value();
+  const form = new FormData();
+  form.append("Token", token);
+  const resp = await fetch(`${baseUrl}/consultas/${endpoint}`, { method: "POST", body: form });
+  if (!resp.ok) {
+    const texto = await resp.text().catch(() => "");
+    logger.error(`Busint respondió con error (${endpoint})`, { status: resp.status, texto });
+    throw new Error(`Busint respondió ${resp.status}`);
+  }
+  const filas = await resp.json();
+  return Array.isArray(filas) ? filas : [];
+}
+
+// Usado por módulo Bodega → Despachos → Montar Despacho: al escribir una
+// referencia, autocompleta descripción/precio (ApiGen_Referencias) y los
+// códigos de barra por talla/color (ApiGen_CodigosDeBarra) de esa misma
+// referencia, para no tener que digitarlos a mano.
+exports.buscarReferenciaBusint = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const refBuscada = String(request.data?.ref || "").trim().toUpperCase();
+    if (!refBuscada) {
+      throw new HttpsError("invalid-argument", "Debes indicar una referencia.");
+    }
+
+    let referencias, codigosBarra;
+    try {
+      [referencias, codigosBarra] = await Promise.all([
+        consultarCatalogoBusint("ApiGen_Referencias"),
+        consultarCatalogoBusint("ApiGen_CodigosDeBarra"),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint (buscarReferenciaBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+    }
+
+    const refsCoincidentes = referencias.filter((r) => String(r.ref || "").trim().toUpperCase() === refBuscada);
+    const barrasCoincidentes = codigosBarra
+      .filter((c) => String(c.ref || "").trim().toUpperCase() === refBuscada)
+      .map((c) => ({
+        talla: (c.talla || "").trim(),
+        pinta: (c.pinta || "").trim(),
+        color: (c.color || "").trim(),
+        cbarraI: (c.cbarraI || "").trim(),
+        cbarraE: (c.cbarraE || "").trim(),
+        cbarraM: (c.cbarraM || "").trim(),
+      }));
+
+    if (!refsCoincidentes.length && !barrasCoincidentes.length) {
+      return { encontrada: false, ref: refBuscada, descripcion: "", precioPM: null, precioP: null, costoFT: null, tallas: [], barras: [] };
+    }
+
+    const r0 = refsCoincidentes[0] || {};
+    const tallas = [...new Set(refsCoincidentes.map((r) => (r.tallas || "").trim()).filter(Boolean))];
+
+    return {
+      encontrada: true,
+      ref: refBuscada,
+      descripcion: (r0.descripcionLarga || "").trim(),
+      categoria: (r0.categoria || "").trim(),
+      tipoProducto: (r0.tipoProducto || "").trim(),
+      precioPM: r0.precioPM ?? null,
+      precioP: r0.precioP ?? null,
+      costoFT: r0.costoFT ?? null,
+      tallas,
+      barras: barrasCoincidentes,
+    };
   }
 );
 
