@@ -191,6 +191,19 @@ function estadoDe(dias) {
   if (dias <= 7) return "URGENTE";
   return "EN TIEMPO";
 }
+// Comparación flexible de nombre de cliente para el filtro de "Cliente
+// asociado" (usuarios de acceso restringido a un solo cliente) — no exige
+// coincidencia exacta porque el mismo cliente puede venir con variantes
+// distintas en el Excel de Planeación (p.ej. "KAMILA GROUP SAS-KAMILA
+// COLOMBIA" en vez de "KAMILA COLOMBIA"): ignora mayúsculas/espacios y basta
+// con que uno contenga al otro.
+function coincideCliente(nombre, clienteAsociado) {
+  if (!clienteAsociado) return true;
+  const a = String(nombre || "").trim().toUpperCase();
+  const b = String(clienteAsociado || "").trim().toUpperCase();
+  if (!a || !b) return false;
+  return a === b || a.includes(b) || b.includes(a);
+}
 // Encuentra en qué bloque de proceso (de los 15) quedó el lote: si hay algún
 // bloque con salida pero sin entrega (pendiente), toma el de salida más
 // reciente entre los pendientes; si hay empate prefiere "TERMINACION", si no
@@ -849,7 +862,16 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
     (a, b) => (b.creadoEn || b.fecha).localeCompare(a.creadoEn || a.fecha)
   );
   const cargaActiva = cargaId ? cargasOrdenadas.find((c) => c.id === cargaId) || cargasOrdenadas[0] : cargasOrdenadas[0];
-  const lotes = useMemo(() => cargaActiva?.lotes || [], [cargaActiva]);
+  // Usuario con "Cliente asociado" (acceso restringido a un solo cliente):
+  // se filtra acá, en el único punto donde se arma `lotes` a partir de la
+  // carga — así todos los informes de abajo (por planta, por cliente,
+  // cronograma, BMP, BPT, etc.) ya solo ven los lotes de su cliente, sin
+  // tener que repetir el filtro en cada uno.
+  const clienteAsociado = currentUser?.clienteAsociado || "";
+  const lotes = useMemo(() => {
+    const todos = cargaActiva?.lotes || [];
+    return clienteAsociado ? todos.filter((l) => coincideCliente(l.nombreCliente, clienteAsociado)) : todos;
+  }, [cargaActiva, clienteAsociado]);
   const reporteSemiterminado = useMemo(() => generarSeguimientoSemiterminado(lotes), [lotes]);
   const reportePlanta = useMemo(() => generarAgrupadoPlanta(lotes, "nombrePlanta"), [lotes]);
   const reporteCliente = useMemo(() => generarAgrupadoPlanta(lotes, "nombreCliente"), [lotes]);
