@@ -341,27 +341,33 @@ function generarSeguimientoSemiterminado(lotes) {
       categoria: l.categoria,
       unidades: l.invSemiterminado,
       procesoDondeQuedo: l.procesoDondeQuedo || "(Sin proceso)",
+      cliente: l.nombreCliente || "(Sin cliente)",
       ultimaSalida: l.ultimaSalidaTexto,
     }))
-    .sort((a, b) => a.procesoDondeQuedo.localeCompare(b.procesoDondeQuedo) || a.numLote - b.numLote);
+    .sort((a, b) => a.procesoDondeQuedo.localeCompare(b.procesoDondeQuedo) || a.cliente.localeCompare(b.cliente) || a.numLote - b.numLote);
   const totalLotes = filas.length;
   const totalUnidades = filas.reduce((s, f) => s + f.unidades, 0);
+  // Resumen agrupado por Proceso + Cliente (no solo proceso), para poder ver
+  // cuánto tiene cada cliente dentro de cada proceso.
   const grupos = new Map();
   filas.forEach((f) => {
-    if (!grupos.has(f.procesoDondeQuedo)) grupos.set(f.procesoDondeQuedo, { lotes: 0, unidades: 0 });
-    const g = grupos.get(f.procesoDondeQuedo);
+    const clave = `${f.procesoDondeQuedo}||${f.cliente}`;
+    if (!grupos.has(clave)) grupos.set(clave, { proceso: f.procesoDondeQuedo, cliente: f.cliente, lotes: 0, unidades: 0 });
+    const g = grupos.get(clave);
     g.lotes += 1;
     g.unidades += f.unidades;
   });
-  const resumen = [...grupos.entries()]
-    .map(([proceso, g]) => ({
-      proceso,
+  const resumen = [...grupos.values()]
+    .map((g) => ({
+      proceso: g.proceso,
+      cliente: g.cliente,
       lotes: g.lotes,
       unidades: g.unidades,
       pct: totalUnidades > 0 ? g.unidades / totalUnidades : 0,
     }))
     .sort((a, b) => b.unidades - a.unidades);
-  return { filas, resumen, totalLotes, totalUnidades, procesosDistintos: resumen.length };
+  const procesosDistintos = new Set(filas.map((f) => f.procesoDondeQuedo)).size;
+  return { filas, resumen, totalLotes, totalUnidades, procesosDistintos };
 }
 // Compartido por En Planta / Por Cliente / Cliente Agrupado — solo cambia el
 // campo por el que se agrupa (planta, cliente, o cliente agrupado KAMILA).
@@ -707,6 +713,7 @@ function BloqueSeguimientoSemiterminado({ data }) {
           <thead>
             <tr style={{ background: C.ink }}>
               <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Proceso Donde Quedó</th>
+              <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Cliente</th>
               <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
               <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
               <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
@@ -714,8 +721,9 @@ function BloqueSeguimientoSemiterminado({ data }) {
           </thead>
           <tbody>
             {resumen.map((r, i) => (
-              <tr key={r.proceso} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+              <tr key={`${r.proceso}||${r.cliente}`} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
                 <td style={{ padding: "7px 12px" }}>{r.proceso}</td>
+                <td style={{ padding: "7px 12px" }}>{r.cliente}</td>
                 <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
                 <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
                 <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
@@ -725,6 +733,7 @@ function BloqueSeguimientoSemiterminado({ data }) {
           <tfoot>
             <tr style={{ background: "#FFF2CC" }}>
               <td style={{ padding: "8px 12px", fontWeight: 800, color: C.ink }}>TOTAL</td>
+              <td style={{ padding: "8px 12px" }}></td>
               <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalLotes)}</td>
               <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalUnidades)}</td>
               <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>100%</td>
@@ -737,6 +746,7 @@ function BloqueSeguimientoSemiterminado({ data }) {
         vacio="Sin lotes en semiterminado."
         columnas={[
           { key: "procesoDondeQuedo", label: "Proceso Donde Quedó" },
+          { key: "cliente", label: "Cliente" },
           { key: "numLote", label: "Num Lote", align: "right" },
           { key: "referencia", label: "Referencia" },
           { key: "categoria", label: "Categoría" },
@@ -900,19 +910,19 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
     {
       const { filas: segFilas, resumen: segResumen, totalLotes: segTotalLotes, totalUnidades: segTotalUnidades, procesosDistintos: segProcesos } = reporteSemiterminado;
       const resumenRows = [
-        ["Proceso Donde Quedó", "Lotes", "Unidades", "% Unidades"],
-        ...segResumen.map((r) => [r.proceso, r.lotes, r.unidades, `${Math.round(r.pct * 100)}%`]),
-        ["TOTAL", segTotalLotes, segTotalUnidades, "100%"],
+        ["Proceso Donde Quedó", "Cliente", "Lotes", "Unidades", "% Unidades"],
+        ...segResumen.map((r) => [r.proceso, r.cliente, r.lotes, r.unidades, `${Math.round(r.pct * 100)}%`]),
+        ["TOTAL", "", segTotalLotes, segTotalUnidades, "100%"],
       ];
       const detalleRows = [
-        ["Proceso Donde Quedó", "Num Lote", "Referencia", "Categoría", "Unidades", "Última Salida"],
-        ...segFilas.map((f) => [f.procesoDondeQuedo, f.numLote, f.referencia, f.categoria, f.unidades, f.ultimaSalida]),
+        ["Proceso Donde Quedó", "Cliente", "Num Lote", "Referencia", "Categoría", "Unidades", "Última Salida"],
+        ...segFilas.map((f) => [f.procesoDondeQuedo, f.cliente, f.numLote, f.referencia, f.categoria, f.unidades, f.ultimaSalida]),
       ];
       const maxRows = Math.max(resumenRows.length, detalleRows.length);
       const combined = [];
       for (let i = 0; i < maxRows; i++) {
-        const left = resumenRows[i] || ["", "", "", ""];
-        const right = detalleRows[i] || ["", "", "", "", "", ""];
+        const left = resumenRows[i] || ["", "", "", "", ""];
+        const right = detalleRows[i] || ["", "", "", "", "", "", ""];
         combined.push([...left, "", ...right]);
       }
       XLSX.utils.book_append_sheet(
