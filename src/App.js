@@ -3,6 +3,7 @@ import ModuloCorte from "./modulo-corte";
 import ModuloContabilidad from "./modulo-contabilidad";
 import ModuloPlaneacion from "./modulo-planeacion";
 import ModuloPlanta from "./modulo-planta";
+import ModuloBodega from "./modulo-bodega";
 import { initializeApp } from "firebase/app";
 import {
   getFirestore,
@@ -3661,7 +3662,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     </div>
   );
 }
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessDiseno, canAccessKpis, onGoArea, protos, capsulas, pedidos }) {
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessDiseno, canAccessKpis, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
@@ -3691,6 +3692,11 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
       id: "planta_area", icon: "🏭", label: "Planta", desc: "Programación diaria y cumplimiento de Planta Industrias Yanko", color: T.amber, bg: T.amberBg,
       stats: [],
       permiso: canAccessPlanta,
+    },
+    {
+      id: "bodega_area", icon: "📦", label: "Bodega", desc: "Despachos y abonos de Venezuela — montar, aprobar y llevar el saldo", color: T.violet, bg: T.violetBg,
+      stats: [],
+      permiso: canAccessBodega,
     },
     {
       id: "kpis_area", icon: "🎯", label: "KPIs", desc: "Indicadores por área y persona en toda la compañía — Diseño, Corte, Ventas, Contabilidad, Planeación...", color: T.coral, bg: T.coralBg,
@@ -4789,7 +4795,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // KPIs ahora es un módulo de compañía completo (no solo Diseño — cubre
   // Corte, Ventas, Contabilidad, Planeación, etc.), por eso su permiso vive
   // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
-  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["kpis", "🎯 KPIs"]];
+  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["kpis", "🎯 KPIs"]];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
   function ListEditor({ listKey, title }) {
     return (
@@ -4890,7 +4896,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                       <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{r.name}</div>
                       <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10, marginBottom: 4 }}>Permisos de flujo de trabajo</div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte"].map((perm) => (
+                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte", "aprobar_despacho"].map((perm) => (
                           <span key={perm} onClick={() => onUpdateConfig({ roles: config.roles.map((x) => (x.id !== r.id ? x : { ...x, perms: x.perms.includes(perm) ? x.perms.filter((p) => p !== perm) : [...x.perms, perm] })) })}
                             style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: r.perms.includes(perm) ? T.jadeBg : "#EDEDF2", color: r.perms.includes(perm) ? T.jade : T.slate, border: `1px solid ${r.perms.includes(perm) ? T.jade : T.border}` }}
                           >{perm}</span>
@@ -7187,6 +7193,10 @@ function AppInner() {
     // antes de que cuente como confirmado) — separado de "aprobar" genérico
     // para no mezclarlo con la aprobación de Pedidos/Prototipos.
     aprobarCorte: userRoleData?.perms?.includes("aprobar_corte") ?? false,
+    // Permiso dedicado para aprobar despachos en módulo Bodega (revisa lo que
+    // la persona de bodega montó) — separado de "admin" para poder asignarlo
+    // a alguien puntual sin darle el resto de permisos de administrador.
+    aprobarDespacho: userRoleData?.perms?.includes("aprobar_despacho") ?? false,
   };
   // Visibilidad de módulos, decidida sección por sección con moduloVisible en
   // vez de reutilizar directamente perms.corte / perms.admin — así cada
@@ -7206,6 +7216,7 @@ function AppInner() {
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
   const canAccessPlaneacion = moduloVisible(userRoleData, "planeacion", currentUser?.isAdmin);
   const canAccessPlanta = moduloVisible(userRoleData, "planta", currentUser?.isAdmin);
+  const canAccessBodega = moduloVisible(userRoleData, "bodega", currentUser?.isAdmin);
   // "admin_diseno" es un permiso aparte del admin general: da entrada al panel
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
@@ -7245,6 +7256,9 @@ function AppInner() {
     ...(canAccessPlanta
       ? [{ id: "planta_area", icon: "🏭", label: "Planta", items: [{ id: "planta_area", icon: "🏭", label: "Módulo Planta" }] }]
       : []),
+    ...(canAccessBodega
+      ? [{ id: "bodega_area", icon: "📦", label: "Bodega", items: [{ id: "bodega_area", icon: "📦", label: "Módulo Bodega" }] }]
+      : []),
     // KPIs es su propia área de nivel superior (cubre toda la compañía).
     // A diferencia de Contabilidad/Planeación, no es un módulo externo aparte
     // (moduloActivo) — se renderiza dentro del layout normal usando el mismo
@@ -7266,6 +7280,7 @@ function AppInner() {
     if (itemId === "contabilidad_area") return moduloActivo === "contabilidad";
     if (itemId === "planeacion_area") return moduloActivo === "planeacion";
     if (itemId === "planta_area") return moduloActivo === "planta";
+    if (itemId === "bodega_area") return moduloActivo === "bodega";
     return view === itemId;
   }
   function navClick(itemId) {
@@ -7273,6 +7288,7 @@ function AppInner() {
     if (itemId === "contabilidad_area") { setModuloActivo("contabilidad"); return; }
     if (itemId === "planeacion_area") { setModuloActivo("planeacion"); return; }
     if (itemId === "planta_area") { setModuloActivo("planta"); return; }
+    if (itemId === "bodega_area") { setModuloActivo("bodega"); return; }
     setView(itemId);
   }
   // "Planeador puro": solo tiene Corte y NINGUNA otra sección de Diseño (ni
@@ -7299,6 +7315,9 @@ function AppInner() {
   }
   if (moduloActivo === "planta") {
     return <ModuloPlanta currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+  }
+  if (moduloActivo === "bodega") {
+    return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   return (
     <div style={{ minHeight: "100vh", background: T.canvas, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,sans-serif" }}>
@@ -7369,11 +7388,12 @@ function AppInner() {
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
             {view === "dashboard" && (
-              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessDiseno={canAccessDiseno} canAccessKpis={canAccessKpis}
+              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessDiseno={canAccessDiseno} canAccessKpis={canAccessKpis}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
                   else if (id === "planeacion_area") { setModuloActivo("planeacion"); }
                   else if (id === "planta_area") { setModuloActivo("planta"); }
+                  else if (id === "bodega_area") { setModuloActivo("bodega"); }
                   else if (id === "kpis_area") { setAreaAbierta("kpis_area"); setView("kpis"); }
                   else if (id === "diseno") {
                     setAreaAbierta("diseno");
