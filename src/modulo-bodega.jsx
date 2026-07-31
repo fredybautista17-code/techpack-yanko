@@ -415,6 +415,44 @@ function MontarDespachoView({ despachos, currentUser, onGuardado }) {
     </div>
   );
 }
+// Exporta UN despacho a Excel con el mismo formato visual de las hojas
+// "DESPACHO N" del archivo original: bloque N CONTROL/FECHA/DESPACHO arriba,
+// tabla REF/CANTIDAD/N TRASLADO/N CORTE/N BULTO/DESCRIPCION/MARCA/SEGMENTO/
+// PRECIO/DCTO/TOTAL DCTTO/TOTAL, con una columna de código de barra por cada
+// talla que tenga la referencia (unión de tallas de todas las líneas), y la
+// fila de totales al final — igual a como venía en el Excel de Busint.
+async function exportarDespachoExcel(despacho) {
+  const XLSX = await import("xlsx");
+  const lineas = despacho.lineas || [];
+  const tallas = [];
+  lineas.forEach((l) => (l.barras || []).forEach((b) => { if (b.talla && !tallas.includes(b.talla)) tallas.push(b.talla); }));
+
+  const encabezado = [
+    ["   ", null, null, null, null, null, null, null, null, null, null, null, ...tallas.map(() => null)],
+    [null, "N CONTROL", despacho.numControl || "", "FECHA", despacho.fecha ? fmtFechaISO(despacho.fecha) : "", null, "DESPACHO", despacho.numero],
+    [null, "REF", "CANTIDAD", "N° TRASLADO", "N° DE CORTE", "N° DE BULTO COMO VIENE MARCADOS", "DESCRIPCION", "MARCA", "SEGMENTO", "PRECIO", "DCTO", "TOTAL DCTTO", "TOTAL", ...tallas],
+  ];
+  const filas = lineas.map((l) => {
+    const totalDcto = (Number(l.precio) || 0) - (Number(l.dcto) || 0);
+    const barrasPorTalla = tallas.map((t) => {
+      const b = (l.barras || []).find((x) => x.talla === t);
+      return b ? b.cbarraI || b.cbarraE || b.cbarraM || "" : "";
+    });
+    return [
+      null, l.referencia || "", l.cantidad || 0, l.numTraslado || "", l.numCorte || "", l.numBulto || "",
+      l.descripcion || "", l.marca || "", l.segmento || "", l.precio || 0, l.dcto || 0, totalDcto, l.total || 0,
+      ...barrasPorTalla,
+    ];
+  });
+  const totalUnd = lineas.reduce((s, l) => s + (Number(l.cantidad) || 0), 0);
+  const totalGeneral = lineas.reduce((s, l) => s + (Number(l.total) || 0), 0);
+  const filaTotales = [null, "TOTAL UND", totalUnd, null, "TOTAL BTS", new Set(lineas.map((l) => l.numBulto)).size, null, null, null, null, null, "TOTAL", totalGeneral];
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([...encabezado, ...filas, [], filaTotales]);
+  XLSX.utils.book_append_sheet(wb, ws, `DESPACHO ${despacho.numero}`.slice(0, 31));
+  XLSX.writeFile(wb, `DESPACHO ${despacho.numero}.xlsx`);
+}
 // ─── DETALLE DE UN DESPACHO (compartido: Por Aprobar / Historial) ──────────
 function DetalleDespachoModal({ despacho, onClose, onAprobar, puedeAprobar }) {
   return (
@@ -424,6 +462,9 @@ function DetalleDespachoModal({ despacho, onClose, onAprobar, puedeAprobar }) {
         <div><div style={{ color: C.slate, fontWeight: 700 }}>Fecha</div><div>{fmtFechaISO(despacho.fecha)}</div></div>
         <div><div style={{ color: C.slate, fontWeight: 700 }}>Estado</div><EstadoBadge estado={despacho.estado} /></div>
         <div><div style={{ color: C.slate, fontWeight: 700 }}>Total</div><div style={{ fontWeight: 800 }}>{fmtMoney(despacho.totalDespacho)}</div></div>
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <Btn variant="secondary" small onClick={() => exportarDespachoExcel(despacho)}>⬇ Exportar a Excel</Btn>
       </div>
       <Tabla
         vacio="Sin líneas."
@@ -518,7 +559,7 @@ function HistorialView({ despachos }) {
   );
 }
 // ─── ABONOS (ledger simple) ─────────────────────────────────────────────────
-function AbonosView({ abonos, currentUser }) {
+function AbonosView({ abonos, currentUser, puedeEditar }) {
   const [fecha, setFecha] = useState(today());
   const [monto, setMonto] = useState("");
   const [concepto, setConcepto] = useState("");
@@ -550,17 +591,21 @@ function AbonosView({ abonos, currentUser }) {
 
   return (
     <div>
-      <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: 16, marginBottom: 20 }}>
-        <div style={{ fontWeight: 800, fontSize: 12, color: C.slate, marginBottom: 10 }}>NUEVO ABONO</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr auto", gap: 10, alignItems: "end" }}>
-          <Field label="Fecha"><FInput type="date" value={fecha} onChange={setFecha} /></Field>
-          <Field label="Monto"><FInput type="number" value={monto} onChange={setMonto} /></Field>
-          <Field label="Concepto"><FInput value={concepto} onChange={setConcepto} placeholder="Quién paga / referencia" /></Field>
-          <div style={{ marginBottom: 14 }}>
-            <Btn onClick={agregarAbono} disabled={guardando || !fecha || !Number(monto)}>{guardando ? "Guardando..." : "+ Agregar"}</Btn>
+      {puedeEditar ? (
+        <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: 16, marginBottom: 20 }}>
+          <div style={{ fontWeight: 800, fontSize: 12, color: C.slate, marginBottom: 10 }}>NUEVO ABONO</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr auto", gap: 10, alignItems: "end" }}>
+            <Field label="Fecha"><FInput type="date" value={fecha} onChange={setFecha} /></Field>
+            <Field label="Monto"><FInput type="number" value={monto} onChange={setMonto} /></Field>
+            <Field label="Concepto"><FInput value={concepto} onChange={setConcepto} placeholder="Quién paga / referencia" /></Field>
+            <div style={{ marginBottom: 14 }}>
+              <Btn onClick={agregarAbono} disabled={guardando || !fecha || !Number(monto)}>{guardando ? "Guardando..." : "+ Agregar"}</Btn>
+            </div>
           </div>
         </div>
-      </div>
+      ) : (
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 20 }}>Solo Administración o Contabilidad pueden agregar o borrar abonos — aquí puedes ver el registro.</div>
+      )}
       <div style={{ marginBottom: 12, fontSize: 13, fontWeight: 700, color: C.ink }}>Total abonado: {fmtMoney(totalAbonado)}</div>
       <Tabla
         vacio="Sin abonos registrados."
@@ -571,7 +616,7 @@ function AbonosView({ abonos, currentUser }) {
           { key: "origen", label: "Origen", render: (f) => (f.origen === "importado" ? `Importado (${f.fuenteHoja || ""})` : "Manual") },
           {
             key: "acciones", label: "", align: "right",
-            render: (f) => (f.origen === "manual" ? <span onClick={() => borrarAbono(f)} style={{ cursor: "pointer", color: C.red, fontWeight: 700, fontSize: 11 }}>Borrar</span> : null),
+            render: (f) => (puedeEditar && f.origen === "manual" ? <span onClick={() => borrarAbono(f)} style={{ cursor: "pointer", color: C.red, fontWeight: 700, fontSize: 11 }}>Borrar</span> : null),
           },
         ]}
         filas={ordenados}
@@ -635,7 +680,20 @@ function parseHojaDespacho(rows) {
       if (nv === "REF" || nv === "REFERENCIA") headerStarts.push([r, c]);
     });
   });
+  // Campos que de verdad distinguen una línea de producto real (cantidad,
+  // precio o total) — algunas hojas (formato "FECHA/VALOR/CONCEPTO" de pagos,
+  // ver DESPACHO 100) tienen un bloque de abonos justo debajo de la tabla,
+  // sin fila en blanco ni palabra "ABONO" de por medio, y como la columna REF
+  // queda alineada con la columna de fecha de esos pagos, sin este chequeo
+  // esas filas se colaban como líneas falsas del despacho.
+  const CAMPOS_NUMERICOS = new Set(["cantidad", "precio", "total", "totalConDcto"]);
+  function filaEsLineaValida(row, colIdxs, colmap) {
+    const numericos = colIdxs.filter((c) => CAMPOS_NUMERICOS.has(colmap[c]));
+    if (numericos.length) return numericos.some((c) => numCell(row[c]) !== null);
+    return colIdxs.some((c) => row[c] !== null && row[c] !== undefined && row[c] !== "");
+  }
   const crudas = [];
+  let finTabla = 0;
   headerStarts.forEach(([hr, hc]) => {
     const headerRow = rows[hr] || [];
     const nextSameRow = headerStarts.filter(([r, c]) => r === hr && c > hc).map(([, c]) => c);
@@ -652,27 +710,64 @@ function parseHojaDespacho(rows) {
     while (r < rows.length && blanks < 2) {
       const row = rows[r] || [];
       if (row.some((v) => STOP_KEYWORDS_DESPACHO.has(normCell(v)))) break;
-      const windowVals = colIdxs.map((c) => row[c]).filter((v) => v !== null && v !== undefined && v !== "");
-      if (!windowVals.length) { blanks++; r++; continue; }
+      if (!filaEsLineaValida(row, colIdxs, colmap)) { blanks++; r++; continue; }
       blanks = 0;
       const item = {};
       colIdxs.forEach((c) => { item[colmap[c]] = row[c] ?? null; });
       crudas.push(item);
       r++;
     }
+    finTabla = Math.max(finTabla, r);
   });
-  // Descarta la fila de subtotal/footer de cada tabla: sin referencia y con
-  // un total que coincide con la suma acumulada de las líneas anteriores.
+  // Descarta dos tipos de fila que NO son una línea real:
+  // (a) el subtotal/footer de la tabla — sin referencia, con un total que
+  //     coincide con la suma acumulada de las líneas anteriores;
+  // (b) una fila "resumen" suelta que a veces queda debajo del footer — sin
+  //     referencia y sin total explícito (solo cantidad/precio residual de
+  //     alguna celda vecina) — si se dejara, el total de respaldo
+  //     cantidad×precio la contaría como una línea de más e infla el total
+  //     (visto en DESPACHO 25/26: fila suelta con cantidad total y el último
+  //     precio de la tabla, sin referencia ni total).
   const lineas = [];
   let running = 0;
   crudas.forEach((it) => {
     const ref = normCell(it.referencia);
     const tot = numCell(it.total);
     if (!ref && tot !== null && running > 0 && Math.abs(tot - running) < Math.max(1000, running * 0.01)) return;
+    if (!ref && tot === null) return;
     lineas.push(it);
     running += tot || 0;
   });
-  return { fecha, lineas };
+  return { fecha, lineas, finTabla };
+}
+// Abonos que aparecen DENTRO de cada hoja DESPACHO N (no en las 10 hojas de
+// depósitos aparte — esas por ahora se dejan sin importar). Busca, desde
+// donde terminó la tabla de líneas hasta el final de la hoja: (a) una fecha
+// real seguida de un valor y, si la hay, una tercera celda de texto como
+// concepto (formato "FECHA | VALOR | CONCEPTO", visto en varias hojas); o
+// (b) la etiqueta "ABONO" seguida de un valor, sin fecha (formato de las
+// hojas más antiguas).
+function parseAbonosDentroDeDespacho(rows, desdeFila) {
+  const abonos = [];
+  for (let r = desdeFila; r < rows.length; r++) {
+    const row = rows[r] || [];
+    for (let c = 0; c < row.length; c++) {
+      const v = row[c];
+      if (v instanceof Date) {
+        const valor = numCell(row[c + 1]);
+        if (valor !== null && valor !== 0) {
+          const concepto = row[c + 2] != null && row[c + 2] !== "" ? String(row[c + 2]).trim() : "";
+          abonos.push({ fecha: v, monto: valor, concepto, fila: r, col: c });
+        }
+      } else if (normCell(v) === "ABONO") {
+        const valor = numCell(row[c + 1]);
+        if (valor !== null && valor !== 0) {
+          abonos.push({ fecha: null, monto: valor, concepto: "ABONO", fila: r, col: c });
+        }
+      }
+    }
+  }
+  return abonos;
 }
 function calcularTotalDespachoParseado(lineas) {
   let tot = 0, found = false;
@@ -729,6 +824,7 @@ async function parseDespachosVenezuelaExcel(file) {
   }
 
   const despachos = [];
+  const abonos = [];
   const avisos = [];
   wb.SheetNames.forEach((name) => {
     if (HOJAS_NO_DESPACHO.has(name)) return;
@@ -736,7 +832,19 @@ async function parseDespachosVenezuelaExcel(file) {
     if (!m) return;
     const numero = parseInt(m[1], 10);
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null });
-    const { fecha, lineas } = parseHojaDespacho(rows);
+    const { fecha, lineas, finTabla } = parseHojaDespacho(rows);
+    parseAbonosDentroDeDespacho(rows, finTabla).forEach((a) => {
+      abonos.push({
+        id: `hist-abono-despacho-${numero}-${a.fila}-${a.col}`,
+        fecha: a.fecha ? new Date(a.fecha).toISOString().slice(0, 10) : null,
+        monto: a.monto,
+        concepto: a.concepto,
+        origen: "importado",
+        fuenteHoja: name,
+        despachoRelacionado: numero,
+        creadoEn: new Date().toISOString(),
+      });
+    });
     const totalCalc = calcularTotalDespachoParseado(lineas);
     const totalOficial = resumen[numero] ?? null;
     if (!lineas.length) {
@@ -772,23 +880,10 @@ async function parseDespachosVenezuelaExcel(file) {
     });
   });
 
-  const abonos = [];
-  HOJAS_ABONOS.forEach((name) => {
-    if (!wb.SheetNames.includes(name)) return;
-    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null });
-    parseAbonosGenerico(rows, name).forEach((a) => {
-      abonos.push({
-        id: `hist-abono-${name.replace(/[^a-z0-9]/gi, "")}-${a.fila}-${a.col}`,
-        fecha: a.fecha ? new Date(a.fecha).toISOString().slice(0, 10) : null,
-        monto: a.monto,
-        concepto: "",
-        origen: "importado",
-        fuenteHoja: a.fuenteHoja,
-        creadoEn: new Date().toISOString(),
-      });
-    });
-  });
-
+  // Las 10 hojas de depósitos aparte (ABONO PANELES, DEPOSITOS JULIO, DUBO,
+  // etc.) quedan sin importar por ahora, a propósito — el usuario pidió
+  // dejarlas fuera mientras define cómo quiere incluirlas. La función
+  // parseAbonosGenerico queda lista para cuando se retome ese caso.
   return { despachos, abonos, avisos };
 }
 async function importarADespachosFirestore(despachos, abonos, currentUser) {
@@ -843,6 +938,8 @@ function ImportarHistoricoView({ currentUser, despachosExistentes }) {
     <div>
       <div style={{ fontSize: 13, color: C.slate, marginBottom: 16, lineHeight: 1.6 }}>
         Sube el archivo <strong>DESPACHOS KAMILA VENEZUELA.xlsx</strong>. Se analiza primero (sin guardar nada) para que revises el resultado antes de confirmar. Es seguro volver a correrlo — actualiza los mismos registros en vez de duplicarlos.
+        <br />
+        Los abonos se toman <strong>solo de dentro de cada hoja DESPACHO 2 a 546</strong> (fecha, valor y concepto que ya venían escritos ahí). Las 10 hojas sueltas de depósitos (ABONO PANELES, DEPOSITOS JULIO, DUBO, etc.) todavía no se importan — quedan para cuando definas cómo incluirlas.
       </div>
       {yaImportado && (
         <div style={{ padding: "10px 14px", background: C.amberBg, color: C.amber, borderRadius: 8, fontSize: 12, fontWeight: 700, marginBottom: 16 }}>
@@ -900,7 +997,7 @@ function DashboardBodegaView({ despachos, abonos }) {
   );
 }
 // ─── RAÍZ DEL MÓDULO ────────────────────────────────────────────────────────
-export default function ModuloBodega({ currentUser, puedeAprobarDespacho, onVolver, onLogout }) {
+export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAccessContabilidad, onVolver, onLogout }) {
   const [subView, setSubView] = useState("dashboard");
   const [despachos, setDespachos] = useState([]);
   const [abonos, setAbonos] = useState([]);
@@ -920,6 +1017,10 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, onVolv
   }, []);
   const isAdmin = !!currentUser?.isAdmin;
   const puedeAprobar = isAdmin || !!puedeAprobarDespacho;
+  // Agregar/borrar abonos queda reservado a Administración o a quien tenga
+  // acceso al módulo Contabilidad — el resto de usuarios de Bodega solo ve
+  // el registro y el total, no puede editarlo.
+  const puedeEditarAbonos = isAdmin || !!canAccessContabilidad;
   const pendientesCount = despachos.filter((d) => d.estado === "montado").length;
   const NAV = [
     { id: "dashboard", icon: "◉", label: "Inicio" },
@@ -1000,7 +1101,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, onVolv
           {subView === "montar" && <MontarDespachoView despachos={despachos} currentUser={currentUser} onGuardado={() => setSubView("dashboard")} />}
           {subView === "aprobar" && puedeAprobar && <PorAprobarView despachos={despachos} currentUser={currentUser} puedeAprobar={puedeAprobar} />}
           {subView === "historial" && <HistorialView despachos={despachos} />}
-          {subView === "abonos" && <AbonosView abonos={abonos} currentUser={currentUser} />}
+          {subView === "abonos" && <AbonosView abonos={abonos} currentUser={currentUser} puedeEditar={puedeEditarAbonos} />}
           {subView === "importar" && isAdmin && <ImportarHistoricoView currentUser={currentUser} despachosExistentes={despachos} />}
         </div>
       </div>
