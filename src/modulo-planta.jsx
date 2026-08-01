@@ -403,30 +403,30 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onCanc
             { key: "fechaEnviado", label: "Fecha Comprometida", render: (f) => fmtFechaISO(f.fechaEnviado) },
             { key: "dias", label: "Días", align: "right", render: (f) => (f.dias ?? "—"), color: (f) => (f.dias < 0 ? C.red : C.ink) },
             { key: "estado", label: "Estado", render: (f) => <EstadoBadge estado={f.estado} /> },
-            ...(isAdmin
-              ? [{
-                  key: "accion",
-                  label: "",
-                  render: (f) => (
-                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-                      <button
-                        onClick={() => setEditando(f)}
-                        title="Editar fecha comprometida"
-                        style={{ background: C.blueBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.blue, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
-                      >
-                        ✎
-                      </button>
-                      <button
-                        onClick={() => onCancelar(f.id)}
-                        title="Cancelar programación"
-                        style={{ background: C.redBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.red, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ),
-                }]
-              : []),
+            {
+              key: "accion",
+              label: "",
+              render: (f) => (
+                <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                  <button
+                    onClick={() => setEditando(f)}
+                    title="Editar fecha comprometida"
+                    style={{ background: C.blueBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.blue, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+                  >
+                    ✎
+                  </button>
+                  {isAdmin && (
+                    <button
+                      onClick={() => onCancelar(f.id)}
+                      title="Cancelar programación"
+                      style={{ background: C.redBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.red, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              ),
+            },
           ]}
           filas={pendientesConEstado}
         />
