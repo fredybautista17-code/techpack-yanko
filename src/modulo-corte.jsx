@@ -4417,7 +4417,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onEditarCantidadesCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Selección por talla: Map key `${pedidoId}__${ref}__${talla}` -> { ...contexto, cantidad }
   // (cantidad es editable, por si no alcanza la tela para toda la talla).
@@ -4491,6 +4491,13 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // registrado (p.ej. cuando por error se mezclaron 2 referencias en un solo
   // registro) — key `${corteId}__${refCode}`, null si no hay ninguna abierta.
   const [confirmQuitarRef, setConfirmQuitarRef] = useState(null);
+  // Edición de cantidades por talla en "Cortes Aprobados" (solo admin) — por
+  // si el patronista se equivocó digitando al registrar el corte real. Se
+  // guarda el id del corte en edición y una copia de trabajo de sus `refs`
+  // (con las tallas editables); al guardar se recalculan los totales y se
+  // reemplaza el corte completo dentro de cortesRealizados.
+  const [editandoCantidades, setEditandoCantidades] = useState(null);
+  const [cantidadesEdit, setCantidadesEdit] = useState(null);
 
   // Los cortes reales (cortesRealizados) guardan el ID interno del mesón
   // (form.meson usa m.id, no m.nombre), así que para mostrarlo hay que
@@ -5592,6 +5599,30 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                 (p.cortesRealizados || []).some((c) => c.id !== corteActual.id && c.lote && String(c.lote).trim().toUpperCase() === val)
               );
             }
+            function iniciarEdicionCantidades(c) {
+              setEditandoCantidades(c.id);
+              setCantidadesEdit(JSON.parse(JSON.stringify(c.refs || [])));
+            }
+            function cancelarEdicionCantidades() {
+              setEditandoCantidades(null);
+              setCantidadesEdit(null);
+            }
+            function actualizarTallaEdit(refIdx, tallaKey, valor) {
+              setCantidadesEdit((refs) => {
+                const copia = [...refs];
+                const ref = { ...copia[refIdx], tallas: { ...copia[refIdx].tallas } };
+                const n = Math.max(0, parseInt(valor, 10) || 0);
+                ref.tallas[tallaKey] = n;
+                ref.total = Object.values(ref.tallas).reduce((s, v) => s + (Number(v) || 0), 0);
+                copia[refIdx] = ref;
+                return copia;
+              });
+            }
+            async function guardarCantidadesEdit(pedidoId, corteId) {
+              await onEditarCantidadesCorte(pedidoId, corteId, cantidadesEdit);
+              setEditandoCantidades(null);
+              setCantidadesEdit(null);
+            }
             return (
               <div>
                 <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
@@ -5637,6 +5668,23 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                 <div><b>Horario Corte:</b> {c.horaInicio || "—"} a {c.horaFin || "—"} ({c.minutos ?? "—"} min)</div>
                                 <div><b>Ingreso corte:</b> {fmtCOP(c.ingresoCorte || 0)}</div>
                               </div>
+                              {(() => {
+                                const enEdicion = editandoCantidades === c.id;
+                                return (
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                                    <div style={{ fontSize: 10, color: C.slate, fontWeight: 700, textTransform: "uppercase" }}>Tallas cortadas</div>
+                                    {isAdmin && !enEdicion && (
+                                      <button
+                                        onClick={() => iniciarEdicionCantidades(c)}
+                                        title="Corregir cantidades por talla"
+                                        style={{ background: C.blueBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.blue, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+                                      >
+                                        ✎ Editar cantidades
+                                      </button>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 14 }}>
                                 <thead>
                                   <tr style={{ borderBottom: `1px solid ${C.border}` }}>
@@ -5646,17 +5694,46 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {(c.refs || []).map((r) => (
-                                    <tr key={r.refId} style={{ borderBottom: `1px solid ${C.border}` }}>
-                                      <td style={{ padding: "6px 8px", fontWeight: 700 }}>{r.ref}{r.descripcion ? ` — ${r.descripcion}` : ""}</td>
-                                      <td style={{ padding: "6px 8px", color: C.slate }}>
-                                        {Object.entries(r.tallas || {}).filter(([, cant]) => cant > 0).map(([t, cant]) => `${t}:${cant}`).join(", ")}
-                                      </td>
-                                      <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700 }}>{fmtNum(r.total)}</td>
-                                    </tr>
-                                  ))}
+                                  {editandoCantidades === c.id
+                                    ? (cantidadesEdit || []).map((r, refIdx) => (
+                                        <tr key={r.refId} style={{ borderBottom: `1px solid ${C.border}` }}>
+                                          <td style={{ padding: "6px 8px", fontWeight: 700, verticalAlign: "top" }}>{r.ref}{r.descripcion ? ` — ${r.descripcion}` : ""}</td>
+                                          <td style={{ padding: "6px 8px" }}>
+                                            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                                              {Object.entries(r.tallas || {}).map(([t, cant]) => (
+                                                <div key={t} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                                  <span style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>{t}</span>
+                                                  <input
+                                                    type="number"
+                                                    min={0}
+                                                    value={cant}
+                                                    onChange={(e) => actualizarTallaEdit(refIdx, t, e.target.value)}
+                                                    style={{ width: 56, padding: "3px 6px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, color: C.ink, outline: "none", fontFamily: "inherit" }}
+                                                  />
+                                                </div>
+                                              ))}
+                                            </div>
+                                          </td>
+                                          <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, verticalAlign: "top" }}>{fmtNum(r.total)}</td>
+                                        </tr>
+                                      ))
+                                    : (c.refs || []).map((r) => (
+                                        <tr key={r.refId} style={{ borderBottom: `1px solid ${C.border}` }}>
+                                          <td style={{ padding: "6px 8px", fontWeight: 700 }}>{r.ref}{r.descripcion ? ` — ${r.descripcion}` : ""}</td>
+                                          <td style={{ padding: "6px 8px", color: C.slate }}>
+                                            {Object.entries(r.tallas || {}).filter(([, cant]) => cant > 0).map(([t, cant]) => `${t}:${cant}`).join(", ")}
+                                          </td>
+                                          <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700 }}>{fmtNum(r.total)}</td>
+                                        </tr>
+                                      ))}
                                 </tbody>
                               </table>
+                              {editandoCantidades === c.id && (
+                                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 14 }}>
+                                  <Btn small variant="secondary" onClick={cancelarEdicionCantidades}>Cancelar</Btn>
+                                  <Btn small variant="success" onClick={() => guardarCantidadesEdit(c.pedidoId, c.id)}>Guardar cantidades</Btn>
+                                </div>
+                              )}
                               {(() => {
                                 const refsUnicos = [...new Set((c.refs || []).map((r) => r.ref))];
                                 if (refsUnicos.length < 2) return null;
@@ -6798,6 +6875,32 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     }
     await fsSave("pedidos_activos", pedidoId, patch);
   }
+  // Corrige a mano las cantidades por talla de un corte real ya registrado en
+  // "Cortes Aprobados" (todavía sin lote) — por si el patronista se equivocó
+  // digitando al registrar el corte real en Entrada de Corte. Solo admin
+  // (ver ProgramacionCorteView). Igual que quitarRefDeCorteReal, reconstruye
+  // el arreglo completo de cortesRealizados con ese corte puntual actualizado
+  // — como todo lo demás (Históricos, Cortadores, Estadísticas, Centro de
+  // Costo) lee directo de cortesRealizados, la corrección queda reflejada
+  // automáticamente en todos lados, no hay que tocar nada más.
+  async function editarCantidadesCorteReal(pedidoId, corteId, refsEditados) {
+    const pedido = pedidos.find((p) => p.id === pedidoId);
+    if (!pedido) return;
+    const corte = (pedido.cortesRealizados || []).find((c) => c.id === corteId);
+    if (!corte) return;
+    const totalUnidades = refsEditados.reduce((s, r) => s + (r.total || 0), 0);
+    const cortesActualizados = pedido.cortesRealizados.map((c) =>
+      c.id === corteId ? { ...c, refs: refsEditados, totalUnidades } : c
+    );
+    const totalPedido = pedido.referencias.reduce((s, r) => s + r.total, 0);
+    const totalC = cortesActualizados.reduce((s, c) => s + (c.totalUnidades || 0), 0);
+    const patch = { cortesRealizados: cortesActualizados };
+    if (pedido.estado === "terminado" && totalC < totalPedido) {
+      patch.estado = "activo";
+      patch.fechaCumplido = null;
+    }
+    await fsSave("pedidos_activos", pedidoId, patch);
+  }
   // Reinicio completo de pruebas (temporal, solo admin) — borra TODA la
   // colección corte_lotes, TODA corte_programacion (Programación de
   // Mesones), y vacía cortesRealizados de cada pedido activo (revirtiendo a
@@ -7139,6 +7242,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               lotesExistentes={lotesExistentes}
               onAsignarLoteReal={confirmarLoteCorteReal}
               onQuitarRefDeCorte={quitarRefDeCorteReal}
+              onEditarCantidadesCorte={editarCantidadesCorteReal}
               subTabInicial={navProduccion?.subTab}
               produccionSubTabInicial={navProduccion?.produccionSubTab}
               navProduccionTs={navProduccion?.ts}
