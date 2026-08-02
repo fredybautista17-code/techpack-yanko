@@ -1753,6 +1753,9 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
               { label: "Etapa", value: stages.find((s) => s.id === item.currentStage)?.label },
               { label: "Días en etapa", value: `${daysAgo(item.stageStartedAt)}d` },
               { label: "Materiales BOM", value: item.bom.length },
+              ...(kind === "ref" && item.pedidoVinculado
+                ? [{ label: "Pedido Vinculado", value: `#${item.pedidoVinculado.numero}${item.pedidoVinculado.cliente ? ` — ${item.pedidoVinculado.cliente}` : ""}` }]
+                : []),
             ].map((it) => (
               <div key={it.label} style={{ padding: "12px 14px", background: T.canvas, borderRadius: 8 }}>
                 <div style={{ fontSize: 11, color: T.slate, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>{it.label}</div>
@@ -2887,8 +2890,17 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
 // misma señal que ya usa Historial con el badge "🚫 Sin pedido", pero acá
 // presentada con el mismo formato de tabla (foto/ref/nombre/categoría/...)
 // que usa la Bitácora de Envíos, agrupada por cápsula.
-function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef }) {
+function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVincularPedido, currentUser }) {
   const [busqueda, setBusqueda] = useState("");
+  // Vincular a pedido a mano: cuando el cruce automático (por código exacto
+  // de referencia) no encuentra el pedido — por formato distinto del código,
+  // o porque el pedido quedó registrado bajo otro número tras reprogramarse
+  // en Congelado — se puede buscar el pedido real (mismos `pedidos` que usa
+  // Corte al Congelar, es la misma colección) y marcar la referencia como
+  // vinculada, sin tocar el pedido en sí. `vinculando` guarda {capId, refId}
+  // de la fila que está abierta para vincular; null si ninguna.
+  const [vinculando, setVinculando] = useState(null);
+  const [buscaPedido, setBuscaPedido] = useState("");
   function usedInPedido(refCode) {
     if (!refCode) return false;
     const target = String(refCode).trim().toLowerCase();
@@ -2898,13 +2910,61 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef }) {
   const capsulasConSinPedido = (capsulas || [])
     .map((cap) => ({
       cap,
-      refs: (cap.referencias || []).filter((r) => r.status === "aprobado" && !usedInPedido(r.reference)),
+      refs: (cap.referencias || []).filter((r) => r.status === "aprobado" && !usedInPedido(r.reference) && !r.pedidoVinculado),
     }))
     .filter(({ cap, refs }) => refs.length > 0 && (!q || (cap.name || "").toLowerCase().includes(q) || (cap.cliente || "").toLowerCase().includes(q)))
     .sort((a, b) => (a.cap.name || "").localeCompare(b.cap.name || ""));
   const totalRefs = capsulasConSinPedido.reduce((s, c) => s + c.refs.length, 0);
+  const bq = buscaPedido.trim().toLowerCase();
+  const pedidosEncontrados = bq
+    ? (pedidos || [])
+        .filter((p) => String(p.numero || "").toLowerCase().includes(bq) || (p.cliente || "").toLowerCase().includes(bq))
+        .slice(0, 30)
+    : [];
+  function confirmarVinculo(pedido) {
+    if (!vinculando) return;
+    onVincularPedido(vinculando.capId, vinculando.refId, {
+      pedidoVinculado: {
+        numero: pedido.numero,
+        cliente: pedido.cliente || "",
+        vinculadoPor: currentUser?.name || "",
+        vinculadoEn: nowISO(),
+      },
+    });
+    setVinculando(null);
+    setBuscaPedido("");
+  }
   return (
     <div>
+      {vinculando && (
+        <Modal title="Vincular a pedido" onClose={() => { setVinculando(null); setBuscaPedido(""); }} width={480}>
+          <p style={{ margin: "0 0 12px", fontSize: 13, color: T.slate }}>
+            Busca el pedido al que pertenece esta referencia. No se modifica el pedido — solo se marca la referencia como vinculada y deja de salir en esta Bitácora.
+          </p>
+          <input
+            autoFocus
+            value={buscaPedido}
+            onChange={(e) => setBuscaPedido(e.target.value)}
+            placeholder="Buscar por número de pedido o cliente..."
+            style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, outline: "none", fontFamily: "inherit", marginBottom: 12, boxSizing: "border-box" }}
+          />
+          <div style={{ maxHeight: 320, overflowY: "auto" }}>
+            {bq && !pedidosEncontrados.length && (
+              <div style={{ textAlign: "center", padding: 20, color: T.slate, fontSize: 13 }}>No se encontró ningún pedido con eso.</div>
+            )}
+            {pedidosEncontrados.map((p) => (
+              <div
+                key={p.id}
+                onClick={() => confirmarVinculo(p)}
+                style={{ padding: "10px 12px", borderRadius: 8, border: `1px solid ${T.border}`, marginBottom: 6, cursor: "pointer", background: T.canvas }}
+              >
+                <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>Pedido #{p.numero}</div>
+                <div style={{ fontSize: 12, color: T.slate }}>{p.cliente || "Sin cliente"}{p.fechaPedido ? ` · ${p.fechaPedido}` : ""}{p.estado === "cerrado" ? " · Cerrado" : ""}</div>
+              </div>
+            ))}
+          </div>
+        </Modal>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Bitácora de Aprobados sin Pedido</h2>
@@ -2932,7 +2992,7 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
                 <tr style={{ background: T.ink }}>
-                  {["Foto", "Ref", "Nombre", "Categoría", "Silueta", "Rango", "Tela"].map((h) => (
+                  {["Foto", "Ref", "Nombre", "Categoría", "Silueta", "Rango", "Tela", ""].map((h) => (
                     <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
@@ -2941,16 +3001,23 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef }) {
                 {refs.map((r, i) => (
                   <tr
                     key={r.id}
-                    onClick={() => onSelectRef && onSelectRef(cap.id, r.id)}
-                    style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}`, cursor: onSelectRef ? "pointer" : "default" }}
+                    style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}
                   >
-                    <td style={{ padding: "6px 10px" }}>{r.image ? <img src={r.image} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
-                    <td style={{ padding: "6px 10px", fontWeight: 700 }}>{r.reference || "—"}</td>
-                    <td style={{ padding: "6px 10px" }}>{r.name || "—"}</td>
-                    <td style={{ padding: "6px 10px" }}>{r.categoria || "—"}</td>
-                    <td style={{ padding: "6px 10px" }}>{r.silueta || "—"}</td>
-                    <td style={{ padding: "6px 10px" }}>{r.rango || r.tallas?.[0] || "—"}</td>
-                    <td style={{ padding: "6px 10px" }}>{r.tipoTela || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.image ? <img src={r.image} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", fontWeight: 700, cursor: onSelectRef ? "pointer" : "default" }}>{r.reference || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.name || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.categoria || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.silueta || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.rango || r.tallas?.[0] || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.tipoTela || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>
+                      <button
+                        onClick={() => setVinculando({ capId: cap.id, refId: r.id })}
+                        style={{ background: T.denimBg, border: "none", borderRadius: 6, padding: "4px 8px", color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}
+                      >
+                        🔗 Vincular a pedido
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -7449,6 +7516,8 @@ function AppInner() {
                 historial={historial}
                 onGoHistorial={() => { setHistorialFiltroInicial({ resultado: "declinado", tipo: "todos" }); setView("historial"); }}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
+                onVincularPedido={(capId, refId, patch) => updateRef(capId, refId, patch)}
+                currentUser={currentUser}
               />
             )}
             {view === "kpis" && (
