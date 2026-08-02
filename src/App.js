@@ -2450,6 +2450,32 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
       </div>
     );
   }
+  // Tablero Kanban: alternativa al calendario — una columna por estado
+  // (Sin asignar/Asignado/Modificar/Aprobado/Enviado) con TODAS las muestras
+  // de esa columna, sin importar fecha ni la pestaña Activas/Aprobadas
+  // (por eso esa pestaña se oculta mientras esta vista está activa).
+  function renderTablero() {
+    const cols = Object.entries(ESTADO_MUESTRA);
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols.length},1fr)`, gap: 12, alignItems: "start" }}>
+        {cols.map(([estKey, def]) => {
+          const items = cronogramaMuestras
+            .filter((c) => (c.estado || "pendiente") === estKey)
+            .sort((a, b) => (a.fechaEntrega || "9999").localeCompare(b.fechaEntrega || "9999"));
+          return (
+            <div key={estKey} style={{ background: T.canvas, borderRadius: 10, padding: 10, minHeight: 120, border: `1px solid ${T.border}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <span style={{ fontSize: 11, fontWeight: 800, color: def.color, textTransform: "uppercase", letterSpacing: "0.04em" }}>{def.label}</span>
+                <span style={{ fontSize: 11, fontWeight: 800, color: def.color, background: def.bg, borderRadius: 10, padding: "1px 7px" }}>{items.length}</span>
+              </div>
+              {items.map(renderCard)}
+              {!items.length && <div style={{ fontSize: 10, color: T.border }}>—</div>}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
   const semanaMonday = addDays(mondayOf(hoy), weekOffset * 7);
   const mesBase = new Date(hoy.getFullYear(), hoy.getMonth() + monthOffset, 1);
   const mesInicioLunes = mondayOf(mesBase);
@@ -2483,24 +2509,28 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
         </div>
       )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        {vista !== "tablero" ? (
+          <div style={{ display: "flex", gap: 6 }}>
+            {[["activas", "Activas"], ["aprobadas", "✓ Aprobadas (Historial)"]].map(([v, label]) => (
+              <button key={v} onClick={() => setTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${tab === v ? T.denim : T.border}`, background: tab === v ? T.denimBg : T.white, color: tab === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
+            ))}
+          </div>
+        ) : <div />}
         <div style={{ display: "flex", gap: 6 }}>
-          {[["activas", "Activas"], ["aprobadas", "✓ Aprobadas (Historial)"]].map(([v, label]) => (
-            <button key={v} onClick={() => setTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${tab === v ? T.denim : T.border}`, background: tab === v ? T.denimBg : T.white, color: tab === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
-          ))}
-        </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          {[["semana", "Semana"], ["mes", "Mes"]].map(([v, label]) => (
+          {[["semana", "Semana"], ["mes", "Mes"], ["tablero", "🗂 Tablero"]].map(([v, label]) => (
             <button key={v} onClick={() => setVista(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${vista === v ? T.ink : T.border}`, background: vista === v ? T.ink : T.white, color: vista === v ? T.white : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
           ))}
         </div>
       </div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-        <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o - 1) : setMonthOffset((o) => o - 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>← Anterior</button>
-        <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, textTransform: "capitalize" }}>{rangoLabel}</div>
-        <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o + 1) : setMonthOffset((o) => o + 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>Siguiente →</button>
-      </div>
-      {vista === "semana" ? renderWeekRow(semanaMonday, "w") : semanasDelMes.map((m, i) => renderWeekRow(m, i))}
-      {sinFecha.length > 0 && (
+      {vista !== "tablero" && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o - 1) : setMonthOffset((o) => o - 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>← Anterior</button>
+          <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, textTransform: "capitalize" }}>{rangoLabel}</div>
+          <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o + 1) : setMonthOffset((o) => o + 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>Siguiente →</button>
+        </div>
+      )}
+      {vista === "tablero" ? renderTablero() : vista === "semana" ? renderWeekRow(semanaMonday, "w") : semanasDelMes.map((m, i) => renderWeekRow(m, i))}
+      {vista !== "tablero" && sinFecha.length > 0 && (
         <div style={{ marginTop: 20 }}>
           <div style={{ fontWeight: 800, fontSize: 13, color: T.slate, marginBottom: 10 }}>🗓 Sin fecha de entrega asignada ({sinFecha.length})</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10 }}>
@@ -2508,7 +2538,8 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
           </div>
         </div>
       )}
-      {!visibles.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>{tab === "activas" ? "No hay muestras activas." : "Todavía no hay muestras aprobadas."}</div>}
+      {vista !== "tablero" && !visibles.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>{tab === "activas" ? "No hay muestras activas." : "Todavía no hay muestras aprobadas."}</div>}
+      {vista === "tablero" && !cronogramaMuestras.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>No hay muestras en el cronograma.</div>}
     </div>
   );
 }
