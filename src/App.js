@@ -2943,32 +2943,7 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
             </div>
             {abierto && (
               <div style={{ padding: 20 }}>
-                {g.totalEnvios > 1 ? (
-                  <div style={{ marginBottom: 20 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 8 }}>Envíos incluidos en este grupo ({g.totalEnvios})</div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      {g.envios.map((e) => {
-                        const refsTxt = e.items.map((it) => it.referencia).filter(Boolean).join(", ") || "(sin referencia)";
-                        return (
-                          <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: T.canvas, borderRadius: 8, fontSize: 12, flexWrap: "wrap", gap: 8 }}>
-                            <div onClick={() => setEnvioDetalle(e)} style={{ cursor: "pointer" }} title="Ver detalle de este envío">
-                              Enviado <b>{e.fechaEnviado}</b> · <b style={{ color: T.denim }}>{refsTxt}</b>{e.items.length > 1 ? ` (${e.items.length} refs)` : ""}{e.empresaTransporte ? ` · ${e.empresaTransporte}` : ""}{e.guia ? ` · Guía ${e.guia}` : ""}
-                            </div>
-                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                              <span style={{ color: T.slate }}>Recibido:</span>
-                              <input
-                                type="date"
-                                value={e.fechaRecibidoCliente || ""}
-                                onChange={(ev) => onUpdateEnvio(e.id, { fechaRecibidoCliente: ev.target.value })}
-                                style={{ padding: "4px 8px", border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}
-                              />
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : (
+                {g.totalEnvios > 1 ? null : (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12, marginBottom: 20 }}>
                     <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Empresa Transporte</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{g.envios[0].empresaTransporte || "—"}</div></div>
                     <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>N° Guía</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{g.envios[0].guia || "—"}</div></div>
@@ -3002,7 +2977,12 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
                       {g.items.map((it, i) => {
                         const live = liveItemFor(it);
                         return (
-                          <tr key={`${it._envioId}__${it.itemId}`} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
+                          <tr
+                            key={`${it._envioId}__${it.itemId}`}
+                            onClick={() => setEnvioDetalle(g.envios.find((e) => e.id === it._envioId))}
+                            title="Ver detalle de este envío"
+                            style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}`, cursor: "pointer" }}
+                          >
                             {g.totalEnvios > 1 && <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>{it._fechaEnviado || "—"}</td>}
                             <td style={{ padding: "6px 10px" }}>{it.foto ? <img src={it.foto} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
                             <td style={{ padding: "6px 10px", fontWeight: 700 }}>{it.referencia}</td>
