@@ -456,7 +456,7 @@ async function exportarDespachoExcel(despacho) {
   const encabezado = [
     ["   ", null, null, null, null, null, null, null, null, null, null, null, ...tallas.map(() => null)],
     [null, "N CONTROL", despacho.numControl || "", "FECHA", despacho.fecha ? fmtFechaISO(despacho.fecha) : "", null, "DESPACHO", despacho.numero],
-    [null, "REF", "CANTIDAD", "N° TRASLADO", "N° DE CORTE", "N° DE BULTO COMO VIENE MARCADOS", "DESCRIPCION", "MARCA", "SEGMENTO", "TALLA", "PRECIO", "DCTO", "TOTAL DCTTO", "TOTAL", ...tallas],
+    [null, "REF", "CANTIDAD", "N° TRASLADO", "N° DE CORTE", "N° DE BULTO COMO VIENE MARCADOS", "DESCRIPCION", "MARCA", "SEGMENTO", "PRECIO", "DCTO", "TOTAL DCTTO", "TOTAL", ...tallas],
   ];
   const filas = lineas.map((l) => {
     const totalDcto = (Number(l.precio) || 0) - (Number(l.dcto) || 0);
@@ -466,7 +466,7 @@ async function exportarDespachoExcel(despacho) {
     });
     return [
       null, l.referencia || "", l.cantidad || 0, l.numTraslado || "", l.numCorte || "", l.numBulto || "",
-      l.descripcion || "", l.marca || "", l.segmento || "", l.talla || "", l.precio || 0, l.dcto || 0, totalDcto, l.total || 0,
+      l.descripcion || "", l.marca || "", l.segmento || "", l.precio || 0, l.dcto || 0, totalDcto, l.total || 0,
       ...barrasPorTalla,
     ];
   });
@@ -499,7 +499,6 @@ function DetalleDespachoModal({ despacho, onClose, onAprobar, puedeAprobar }) {
           { key: "descripcion", label: "Descripción" },
           { key: "marca", label: "Marca" },
           { key: "segmento", label: "Segmento" },
-          { key: "talla", label: "Talla" },
           { key: "cantidad", label: "Cant.", align: "right", render: (f) => fmtNum(f.cantidad) },
           { key: "precio", label: "Precio", align: "right", render: (f) => fmtMoney(f.precio) },
           { key: "dcto", label: "Dcto", align: "right", render: (f) => fmtMoney(f.dcto) },
@@ -742,6 +741,16 @@ function parseHojaDespacho(rows) {
     }
     colmap[hc] = "referencia";
     const colIdxs = Object.keys(colmap).map(Number);
+    // Algunas hojas viejas (ej. DESPACHO 2, DESPACHO 320) tienen, en la MISMA
+    // fila, una segunda columna suelta "REFERENCIA"/"CANTIDAD"/"N° DE BULTO"
+    // a la izquierda de la tabla real — un listado de empaque por bulto que
+    // repite las mismas cantidades con el código truncado (ej. "326" en vez
+    // de "98-326"). Sin este filtro, ese bloque se cuela como líneas
+    // duplicadas/erróneas del despacho. Una tabla real siempre trae al menos
+    // una de estas columnas; un bloque que solo tiene referencia+cantidad+
+    // bulto (sin ninguna) se descarta entero.
+    const COLUMNAS_TABLA_REAL = new Set(["descripcion", "precio", "total", "totalConDcto", "marca", "curva", "numControl"]);
+    if (!colIdxs.some((c) => COLUMNAS_TABLA_REAL.has(colmap[c]))) return;
     // Columnas de código de barra por talla: quedan siempre a la derecha de
     // TOTAL, con el nombre de la talla como encabezado (ej. "S - 4 - U -
     // S/M") — no están en HEADER_MAP_DESPACHO porque el texto cambia según
