@@ -2684,6 +2684,12 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
   const [busqueda, setBusqueda] = useState("");
   const [mesFiltro, setMesFiltro] = useState("");
   const [expandido, setExpandido] = useState(null);
+  // Envío puntual abierto en ventana de detalle (dentro del listado "Envíos
+  // incluidos en este grupo") — al agrupar por cápsula, esa lista muestra
+  // varios envíos idénticos a simple vista (misma fecha/transporte, cada uno
+  // de una sola referencia); con esto se ve la referencia en la fila y se
+  // puede abrir el detalle completo de ESE envío puntual con un clic.
+  const [envioDetalle, setEnvioDetalle] = useState(null);
   const hoy = new Date();
   const hoyIso = hoy.toISOString().slice(0, 10);
   function diasDesde(fechaISO) {
@@ -2781,6 +2787,64 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
   function labelMes(m) { return new Date(m + "-02").toLocaleDateString("es-CO", { month: "long", year: "numeric" }); }
   return (
     <div>
+      {envioDetalle && (
+        <Modal title={`Detalle del envío — ${envioDetalle.items.map((it) => it.referencia).filter(Boolean).join(", ") || "(sin referencia)"}`} onClose={() => setEnvioDetalle(null)} width={640}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12, marginBottom: 20 }}>
+            <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Fecha Enviado</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{envioDetalle.fechaEnviado || "—"}</div></div>
+            <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Empresa Transporte</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{envioDetalle.empresaTransporte || "—"}</div></div>
+            <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>N° Guía</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{envioDetalle.guia || "—"}</div></div>
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Fecha Recibido Cliente</div>
+              <input
+                type="date"
+                value={envioDetalle.fechaRecibidoCliente || ""}
+                onChange={(e) => { onUpdateEnvio(envioDetalle.id, { fechaRecibidoCliente: e.target.value }); setEnvioDetalle((d) => (d ? { ...d, fechaRecibidoCliente: e.target.value } : d)); }}
+                style={{ padding: "6px 10px", border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit" }}
+              />
+            </div>
+            {envioDetalle.cartaColores && (
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Carta de Colores</div>
+                <img src={envioDetalle.cartaColores} alt="Carta de colores" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, border: `1px solid ${T.border}` }} />
+              </div>
+            )}
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: T.ink }}>
+                  {["Foto", "Ref", "Nombre", "Estado Actual", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Obs. Cliente"].map((h) => (
+                    <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {envioDetalle.items.map((it, i) => {
+                  const live = liveItemFor(it);
+                  return (
+                    <tr key={it.itemId} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
+                      <td style={{ padding: "6px 10px" }}>{it.foto ? <img src={it.foto} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
+                      <td style={{ padding: "6px 10px", fontWeight: 700 }}>{it.referencia}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.nombre}</td>
+                      <td style={{ padding: "6px 10px" }}>{live ? <Badge status={live.status} /> : <span style={{ color: T.slate, fontStyle: "italic" }}>—</span>}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.categoria || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.silueta || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.rango || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.tela || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.colombiaCurva || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.colombiaCantidad || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.venezuelaCurva || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.venezuelaCantidad || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.precio || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.observacionesCliente || "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Modal>
+      )}
       {declinadasEsteMes > 0 && onGoHistorial && (
         <div
           onClick={onGoHistorial}
@@ -2883,20 +2947,25 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
                   <div style={{ marginBottom: 20 }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 8 }}>Envíos incluidos en este grupo ({g.totalEnvios})</div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      {g.envios.map((e) => (
-                        <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: T.canvas, borderRadius: 8, fontSize: 12, flexWrap: "wrap", gap: 8 }}>
-                          <div>Enviado <b>{e.fechaEnviado}</b> · {e.items.length} ref{e.items.length !== 1 ? "s" : ""}{e.empresaTransporte ? ` · ${e.empresaTransporte}` : ""}{e.guia ? ` · Guía ${e.guia}` : ""}</div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <span style={{ color: T.slate }}>Recibido:</span>
-                            <input
-                              type="date"
-                              value={e.fechaRecibidoCliente || ""}
-                              onChange={(ev) => onUpdateEnvio(e.id, { fechaRecibidoCliente: ev.target.value })}
-                              style={{ padding: "4px 8px", border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}
-                            />
+                      {g.envios.map((e) => {
+                        const refsTxt = e.items.map((it) => it.referencia).filter(Boolean).join(", ") || "(sin referencia)";
+                        return (
+                          <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: T.canvas, borderRadius: 8, fontSize: 12, flexWrap: "wrap", gap: 8 }}>
+                            <div onClick={() => setEnvioDetalle(e)} style={{ cursor: "pointer" }} title="Ver detalle de este envío">
+                              Enviado <b>{e.fechaEnviado}</b> · <b style={{ color: T.denim }}>{refsTxt}</b>{e.items.length > 1 ? ` (${e.items.length} refs)` : ""}{e.empresaTransporte ? ` · ${e.empresaTransporte}` : ""}{e.guia ? ` · Guía ${e.guia}` : ""}
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <span style={{ color: T.slate }}>Recibido:</span>
+                              <input
+                                type="date"
+                                value={e.fechaRecibidoCliente || ""}
+                                onChange={(ev) => onUpdateEnvio(e.id, { fechaRecibidoCliente: ev.target.value })}
+                                style={{ padding: "4px 8px", border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}
+                              />
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 ) : (
