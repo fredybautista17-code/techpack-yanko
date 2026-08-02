@@ -121,6 +121,28 @@ function FInput({ value, onChange, placeholder, type = "text" }) {
     />
   );
 }
+// Desplegable simple (mismo look de FInput) — para catálogos fijos como
+// Marca/Segmento/Talla (hoja "BASE DATOS LISTAS DESP" del Excel original).
+function FSel({ value, onChange, options, placeholder = "Seleccionar..." }) {
+  return (
+    <select
+      value={value || ""}
+      onChange={(e) => onChange(e.target.value)}
+      style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
+    >
+      <option value="">{placeholder}</option>
+      {(options || []).map((o) => (
+        <option key={o} value={o}>{o}</option>
+      ))}
+    </select>
+  );
+}
+// Catálogos fijos de la hoja "BASE DATOS LISTAS DESP" del Excel de despachos
+// Venezuela — mismas listas desplegables que ya usaban ahí para Marca,
+// Segmento y Talla.
+const MARCAS_BODEGA = ["KML", "KAMILA", "MISSOFI"];
+const SEGMENTOS_BODEGA = ["DAMA", "CAB", "NIÑA", "NIÑO"];
+const TALLAS_BODEGA = ["S", "M", "L", "XL", "1XL", "2XL", "3XL", "UNICA", "4", "6", "8", "10", "12", "14", "16"];
 function Modal({ title, onClose, children, width = 560 }) {
   return (
     <div
@@ -215,7 +237,7 @@ function calcularTotalLinea(l) {
 function lineaVacia() {
   return {
     id: uid(), referencia: "", cantidad: "", numTraslado: "", numCorte: "", numBulto: "",
-    descripcion: "", marca: "", segmento: "", precio: "", dcto: "0", barras: [],
+    descripcion: "", marca: "", segmento: "", talla: "", precio: "", dcto: "0", barras: [],
     buscando: false, busintEncontrada: null,
   };
 }
@@ -252,15 +274,18 @@ function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint })
           No se encontró esa referencia en Busint — completa los datos a mano.
         </div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 10 }}>
         <Field label="Descripción">
           <FInput value={linea.descripcion} onChange={(v) => onChange({ ...linea, descripcion: v })} />
         </Field>
         <Field label="Marca">
-          <FInput value={linea.marca} onChange={(v) => onChange({ ...linea, marca: v })} placeholder="KAMILA / KML" />
+          <FSel value={linea.marca} onChange={(v) => onChange({ ...linea, marca: v })} options={MARCAS_BODEGA} />
         </Field>
         <Field label="Segmento">
-          <FInput value={linea.segmento} onChange={(v) => onChange({ ...linea, segmento: v })} placeholder="DAMA / CAB" />
+          <FSel value={linea.segmento} onChange={(v) => onChange({ ...linea, segmento: v })} options={SEGMENTOS_BODEGA} />
+        </Field>
+        <Field label="Talla">
+          <FSel value={linea.talla} onChange={(v) => onChange({ ...linea, talla: v })} options={TALLAS_BODEGA} />
         </Field>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
@@ -352,6 +377,7 @@ function MontarDespachoView({ despachos, currentUser, onGuardado }) {
         descripcion: l.descripcion.trim(),
         marca: l.marca.trim(),
         segmento: l.segmento.trim(),
+        talla: (l.talla || "").trim(),
         precio: Number(l.precio) || 0,
         dcto: Number(l.dcto) || 0,
         total: calcularTotalLinea(l),
@@ -430,7 +456,7 @@ async function exportarDespachoExcel(despacho) {
   const encabezado = [
     ["   ", null, null, null, null, null, null, null, null, null, null, null, ...tallas.map(() => null)],
     [null, "N CONTROL", despacho.numControl || "", "FECHA", despacho.fecha ? fmtFechaISO(despacho.fecha) : "", null, "DESPACHO", despacho.numero],
-    [null, "REF", "CANTIDAD", "N° TRASLADO", "N° DE CORTE", "N° DE BULTO COMO VIENE MARCADOS", "DESCRIPCION", "MARCA", "SEGMENTO", "PRECIO", "DCTO", "TOTAL DCTTO", "TOTAL", ...tallas],
+    [null, "REF", "CANTIDAD", "N° TRASLADO", "N° DE CORTE", "N° DE BULTO COMO VIENE MARCADOS", "DESCRIPCION", "MARCA", "SEGMENTO", "TALLA", "PRECIO", "DCTO", "TOTAL DCTTO", "TOTAL", ...tallas],
   ];
   const filas = lineas.map((l) => {
     const totalDcto = (Number(l.precio) || 0) - (Number(l.dcto) || 0);
@@ -440,7 +466,7 @@ async function exportarDespachoExcel(despacho) {
     });
     return [
       null, l.referencia || "", l.cantidad || 0, l.numTraslado || "", l.numCorte || "", l.numBulto || "",
-      l.descripcion || "", l.marca || "", l.segmento || "", l.precio || 0, l.dcto || 0, totalDcto, l.total || 0,
+      l.descripcion || "", l.marca || "", l.segmento || "", l.talla || "", l.precio || 0, l.dcto || 0, totalDcto, l.total || 0,
       ...barrasPorTalla,
     ];
   });
@@ -472,11 +498,17 @@ function DetalleDespachoModal({ despacho, onClose, onAprobar, puedeAprobar }) {
           { key: "referencia", label: "Ref" },
           { key: "descripcion", label: "Descripción" },
           { key: "marca", label: "Marca" },
+          { key: "segmento", label: "Segmento" },
+          { key: "talla", label: "Talla" },
           { key: "cantidad", label: "Cant.", align: "right", render: (f) => fmtNum(f.cantidad) },
           { key: "precio", label: "Precio", align: "right", render: (f) => fmtMoney(f.precio) },
           { key: "dcto", label: "Dcto", align: "right", render: (f) => fmtMoney(f.dcto) },
           { key: "total", label: "Total", align: "right", render: (f) => fmtMoney(f.total) },
           { key: "numBulto", label: "Bulto" },
+          {
+            key: "barras", label: "Códigos de barra",
+            render: (f) => (f.barras && f.barras.length ? f.barras.map((b) => `${b.talla}: ${b.cbarraI || b.cbarraE || b.cbarraM}`).join(" · ") : "—"),
+          },
         ]}
         filas={despacho.lineas || []}
       />
@@ -667,10 +699,15 @@ const HOJAS_ABONOS = [
 
 function parseHojaDespacho(rows) {
   let fecha = null;
+  let numControlHeader = null;
   for (let r = 0; r < Math.min(8, rows.length); r++) {
     const row = rows[r] || [];
     for (let c = 0; c < row.length; c++) {
-      if (normCell(row[c]).startsWith("FECHA") && row[c + 1] instanceof Date) fecha = row[c + 1];
+      const label = normCell(row[c]);
+      if (label.startsWith("FECHA") && row[c + 1] instanceof Date) fecha = row[c + 1];
+      if (label === "N CONTROL" && row[c + 1] !== null && row[c + 1] !== undefined && row[c + 1] !== "") {
+        numControlHeader = row[c + 1];
+      }
     }
   }
   const headerStarts = [];
@@ -705,6 +742,19 @@ function parseHojaDespacho(rows) {
     }
     colmap[hc] = "referencia";
     const colIdxs = Object.keys(colmap).map(Number);
+    // Columnas de código de barra por talla: quedan siempre a la derecha de
+    // TOTAL, con el nombre de la talla como encabezado (ej. "S - 4 - U -
+    // S/M") — no están en HEADER_MAP_DESPACHO porque el texto cambia según
+    // qué tallas tenga cada referencia, así que se toma cualquier columna con
+    // encabezado no reconocido que quede después de la columna TOTAL.
+    const totalColIdx = Math.max(-1, ...colIdxs.filter((c) => colmap[c] === "total"));
+    const colBarras = [];
+    if (totalColIdx >= 0) {
+      for (let c = totalColIdx + 1; c < windowEnd; c++) {
+        const label = String(headerRow[c] ?? "").trim();
+        if (label) colBarras.push([c, label]);
+      }
+    }
     let blanks = 0;
     let r = hr + 1;
     while (r < rows.length && blanks < 2) {
@@ -714,6 +764,11 @@ function parseHojaDespacho(rows) {
       blanks = 0;
       const item = {};
       colIdxs.forEach((c) => { item[colmap[c]] = row[c] ?? null; });
+      if (colBarras.length) {
+        item.barrasCrudas = colBarras
+          .map(([c, talla]) => ({ talla, valor: row[c] != null ? String(row[c]).trim() : "" }))
+          .filter((b) => b.valor);
+      }
       crudas.push(item);
       r++;
     }
@@ -738,7 +793,7 @@ function parseHojaDespacho(rows) {
     lineas.push(it);
     running += tot || 0;
   });
-  return { fecha, lineas, finTabla };
+  return { fecha, numControlHeader, lineas, finTabla };
 }
 // Abonos que aparecen DENTRO de cada hoja DESPACHO N (no en las 10 hojas de
 // depósitos aparte — esas por ahora se dejan sin importar). Busca, desde
@@ -832,7 +887,7 @@ async function parseDespachosVenezuelaExcel(file) {
     if (!m) return;
     const numero = parseInt(m[1], 10);
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null });
-    const { fecha, lineas, finTabla } = parseHojaDespacho(rows);
+    const { fecha, numControlHeader, lineas, finTabla } = parseHojaDespacho(rows);
     parseAbonosDentroDeDespacho(rows, finTabla).forEach((a) => {
       abonos.push({
         id: `hist-abono-despacho-${numero}-${a.fila}-${a.col}`,
@@ -853,10 +908,11 @@ async function parseDespachosVenezuelaExcel(file) {
       avisos.push(`${name}: calculado ${fmtMoney(totalCalc)} ≠ oficial ${fmtMoney(totalOficial)} — revisar a mano.`);
     }
     const numControlLinea = lineas.find((l) => l.numControl)?.numControl;
+    const numControlFinal = numControlHeader ?? numControlLinea;
     despachos.push({
       id: `hist-${numero}`,
       numero,
-      numControl: numControlLinea ? String(numControlLinea).trim() : "",
+      numControl: numControlFinal ? String(numControlFinal).trim() : "",
       fecha: fecha ? new Date(fecha).toISOString().slice(0, 10) : null,
       estado: "historico",
       lineas: lineas.map((l) => ({
@@ -871,7 +927,11 @@ async function parseDespachosVenezuelaExcel(file) {
         precio: numCell(l.precio) || 0,
         dcto: numCell(l.descuento) || 0,
         total: numCell(l.total) ?? numCell(l.totalConDcto) ?? 0,
-        barras: [],
+        // Códigos de barra por talla que ya venían escritos en la hoja
+        // original (columnas después de TOTAL) — se guardan en el mismo
+        // formato que usa el buscador de Busint (cbarraI) para que el
+        // "Exportar a Excel" del despacho los muestre igual.
+        barras: (l.barrasCrudas || []).map((b) => ({ talla: b.talla, pinta: "", color: "", cbarraI: b.valor, cbarraE: "", cbarraM: "" })),
       })),
       totalDespacho: totalCalc ?? totalOficial ?? 0,
       totalOficial,

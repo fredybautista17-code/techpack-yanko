@@ -96,7 +96,7 @@ async function exportHojaDeVidaXLSX(item, kind, capsulaName) {
     (o) => o.type !== "update" && o.user !== "Sistema"
   );
   const wsData = [
-    ["HOJA DE VIDA — TECHPACK YANKO", "", "", "", "", ""],
+    ["HOJA DE VIDA — ATLAS YANKO", "", "", "", "", ""],
     [
       `${kind === "proto" ? "Prototipo" : "Referencia"} · ${item.reference}`,
       "",
@@ -389,7 +389,7 @@ function exportHojaDeVidaHTML(item, kind, capsulaName) {
     }
   </div>
   <div class="footer">
-    <span>TechPack · Industrias Yanko</span>
+    <span>ATLAS · Industrias Yanko</span>
     <span>Generado el ${new Date().toLocaleDateString("es-CO", { dateStyle: "long" })}</span>
     <button onclick="window.print()" style="background:#1A1A2E;color:#C8B8A2;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:700">🖨 Imprimir / PDF</button>
   </div>
@@ -659,7 +659,7 @@ function LoadingScreen({ message }) {
   return (
     <div style={{ minHeight: "100vh", background: `linear-gradient(135deg,${T.ink} 0%,#2D1B69 50%,#1A2E4A 100%)`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: "'Inter',-apple-system,sans-serif" }}>
       <div style={{ width: 64, height: 64, borderRadius: 16, background: `linear-gradient(135deg,${T.seam},${T.seamDark})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, marginBottom: 24 }}>🧵</div>
-      <div style={{ fontSize: 18, fontWeight: 800, color: T.white, marginBottom: 8 }}>TechPack</div>
+      <div style={{ fontSize: 18, fontWeight: 800, color: T.white, marginBottom: 8 }}>ATLAS</div>
       <div style={{ fontSize: 13, color: "rgba(200,184,162,0.6)", marginBottom: 32 }}>{message || "Cargando..."}</div>
       <div style={{ display: "flex", gap: 6 }}>
         {[0, 1, 2].map((i) => (
@@ -710,7 +710,7 @@ function LoginScreen({ externalError }) {
       <div style={{ width: "100%", maxWidth: 420, position: "relative" }}>
         <div style={{ textAlign: "center", marginBottom: 40 }}>
           <div style={{ width: 64, height: 64, borderRadius: 16, background: `linear-gradient(135deg,${T.seam},${T.seamDark})`, margin: "0 auto 16px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, boxShadow: "0 8px 32px rgba(200,184,162,0.3)" }}>🧵</div>
-          <div style={{ fontSize: 28, fontWeight: 900, color: T.white, letterSpacing: "-0.5px" }}>TechPack</div>
+          <div style={{ fontSize: 28, fontWeight: 900, color: T.white, letterSpacing: "-0.5px" }}>ATLAS</div>
           <div style={{ fontSize: 13, color: "rgba(200,184,162,0.7)", marginTop: 4, letterSpacing: "0.1em", textTransform: "uppercase" }}>Sistema de Gestión</div>
         </div>
         <div style={{ background: "rgba(255,255,255,0.05)", backdropFilter: "blur(20px)", borderRadius: 20, padding: 36, border: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 24px 80px rgba(0,0,0,0.3)" }}>
@@ -739,7 +739,7 @@ function LoginScreen({ externalError }) {
           <button onClick={handleLogin} disabled={loading}
             style={{ width: "100%", padding: "13px", background: loading ? "rgba(200,184,162,0.3)" : `linear-gradient(135deg,${T.seam},${T.seamDark})`, border: "none", borderRadius: 10, color: T.ink, fontWeight: 800, fontSize: 15, cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit" }}
           >{loading ? "Verificando..." : "Ingresar →"}</button>
-          <div style={{ marginTop: 20, textAlign: "center" }}><span style={{ fontSize: 12, color: "rgba(200,184,162,0.4)" }}>TechPack © 2025</span></div>
+          <div style={{ marginTop: 20, textAlign: "center" }}><span style={{ fontSize: 12, color: "rgba(200,184,162,0.4)" }}>ATLAS © 2025</span></div>
         </div>
       </div>
     </div>
@@ -2643,7 +2643,7 @@ async function exportBitacoraEnvioToExcel(envio) {
     { wch: 10 }, { wch: 10 }, { wch: 11 }, { wch: 10 }, { wch: 11 }, { wch: 10 }, { wch: 24 }, { wch: 4 }, { wch: 14 },
   ];
   ws["!rows"] = [{ hpt: 24 }, { hpt: 20 }, { hpt: 24 }, { hpt: 20 }, ...envio.items.map(() => ({ hpt: 36 }))];
-  // Colores de marca de TechPack (mismos tokens T.* que usa el resto de la
+  // Colores de marca de ATLAS (mismos tokens T.* que usa el resto de la
   // app): fondo oscuro + texto beige en los encabezados, filas de datos
   // alternadas para que sea más fácil seguir cada referencia, y un borde
   // fino en toda la tabla — igual a como se ve el "Informe de Seguimiento" y
@@ -7651,7 +7651,7 @@ function AppInner() {
       <div style={{ display: "flex", minHeight: "100vh" }}>
         <div style={{ width: 230, background: T.ink, color: T.white, padding: "20px 12px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
           <div style={{ marginBottom: 16, padding: "0 4px" }}>
-            <div style={{ fontSize: 16, fontWeight: 900, color: T.white }}>TechPack</div>
+            <div style={{ fontSize: 16, fontWeight: 900, color: T.white }}>ATLAS</div>
             <div style={{ fontSize: 10, color: T.seam, marginTop: 1, letterSpacing: "0.1em", textTransform: "uppercase" }}>Industrias Yanko</div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "#2A2A45", borderRadius: 10, marginBottom: 8 }}>
@@ -7881,7 +7881,7 @@ class ErrorBoundary extends React.Component {
     return { hasError: true };
   }
   componentDidCatch(error, info) {
-    console.error("TechPack — error capturado por ErrorBoundary:", error, info);
+    console.error("ATLAS — error capturado por ErrorBoundary:", error, info);
   }
   render() {
     if (this.state.hasError) {
