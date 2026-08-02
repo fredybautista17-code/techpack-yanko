@@ -2722,15 +2722,58 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
       (!q || (e.coleccion || "").toLowerCase().includes(q) || (e.cliente || "").toLowerCase().includes(q) || (e.numPedido || "").toLowerCase?.().includes(q)) &&
       (!mesFiltro || mesDe(e) === mesFiltro)
   );
-  const porTab = subTab === "pendientes" ? base.filter((e) => e._pendientes > 0) : base;
-  const countProto = porTab.filter((e) => e._kind === "proto").length;
-  const countCapsula = porTab.filter((e) => e._kind === "ref").length;
+  // Agrupa por cápsula (mismo capsulaId) los envíos que se mandaron por
+  // separado — antes cada clic en "Enviado" de UNA sola referencia (desde su
+  // Detalle, en vez de usar "Enviar cápsula completa") creaba su propio
+  // registro en la Bitácora, y una misma cápsula terminaba repetida muchas
+  // veces si se fueron mandando las referencias en días distintos. Ahora se
+  // juntan todas bajo un solo folder por cápsula, sin importar cuándo se
+  // mandó cada una — al abrirlo se ve el detalle de cada envío incluido y
+  // todas las referencias juntas. Los prototipos NO se agrupan (cada envío
+  // de prototipo sigue siendo su propia fila, como antes).
+  const gruposMap = new Map();
+  base.forEach((e) => {
+    const capId = e._kind === "ref" ? e.items[0]?.capsulaId : null;
+    const key = capId ? `cap:${capId}` : e._kind === "ref" ? `col:${(e.coleccion || "").toLowerCase()}|${(e.cliente || "").toLowerCase()}` : `envio:${e.id}`;
+    if (!gruposMap.has(key)) gruposMap.set(key, []);
+    gruposMap.get(key).push(e);
+  });
+  const grupos = [...gruposMap.entries()].map(([key, enviosGrupo]) => {
+    const items = enviosGrupo.flatMap((e) => e.items.map((it) => ({ ...it, _envioId: e.id, _fechaEnviado: e.fechaEnviado, _empresaTransporte: e.empresaTransporte, _guia: e.guia })));
+    const totalUnidades = items.reduce((s, it) => s + (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0), 0);
+    const pendientesTotal = enviosGrupo.reduce((s, e) => s + e._pendientes, 0);
+    const diasVals = enviosGrupo.map((e) => e._dias).filter((d) => d !== null);
+    const diasMax = diasVals.length ? Math.max(...diasVals) : null;
+    const fechas = enviosGrupo.map((e) => e.fechaEnviado).filter(Boolean).sort();
+    const recibidos = enviosGrupo.filter((e) => e.fechaRecibidoCliente);
+    const cartaColores = enviosGrupo.find((e) => e.cartaColores)?.cartaColores || null;
+    return {
+      key,
+      coleccion: enviosGrupo[0].coleccion,
+      cliente: enviosGrupo[0].cliente,
+      numPedido: enviosGrupo[0].numPedido,
+      kind: enviosGrupo[0]._kind,
+      envios: enviosGrupo,
+      items,
+      totalUnidades,
+      pendientesTotal,
+      diasMax,
+      fechaMin: fechas[0],
+      fechaMax: fechas[fechas.length - 1],
+      recibidosCount: recibidos.length,
+      totalEnvios: enviosGrupo.length,
+      cartaColores,
+    };
+  });
+  const porTab = subTab === "pendientes" ? grupos.filter((g) => g.pendientesTotal > 0) : grupos;
+  const countProto = porTab.filter((g) => g.kind === "proto").length;
+  const countCapsula = porTab.filter((g) => g.kind === "ref").length;
   const filtrados = porTab
-    .filter((e) => kindFiltro === "todos" || e._kind === kindFiltro)
+    .filter((g) => kindFiltro === "todos" || g.kind === kindFiltro)
     .sort((a, b) =>
       subTab === "pendientes"
-        ? (b._dias ?? 0) - (a._dias ?? 0)
-        : (b.fechaEnviado || "").localeCompare(a.fechaEnviado || "") || (b.createdAt || "").localeCompare(a.createdAt || "")
+        ? (b.diasMax ?? 0) - (a.diasMax ?? 0)
+        : (b.fechaMax || "").localeCompare(a.fechaMax || "")
     );
   const mesActual = hoyIso.slice(0, 7);
   const declinadasEsteMes = (historial || []).filter((h) => h.resultado === "declinado" && h.mes === mesActual).length;
@@ -2785,76 +2828,113 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
             : "Ningún envío coincide con la búsqueda."}
         </div>
       )}
-      {filtrados.map((envio) => {
-        const abierto = expandido === envio.id;
-        const totalUnidades = envio.items.reduce((s, it) => s + (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0), 0);
+      {filtrados.map((g) => {
+        const abierto = expandido === g.key;
         return (
-          <div key={envio.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
+          <div key={g.key} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
             <div
-              onClick={() => setExpandido(abierto ? null : envio.id)}
+              onClick={() => setExpandido(abierto ? null : g.key)}
               style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, cursor: "pointer", flexWrap: "wrap", gap: 10 }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: 20 }}>{abierto ? "📂" : "📁"}</span>
                 <div>
                   <div style={{ fontWeight: 800, fontSize: 15, color: T.ink, display: "flex", alignItems: "center", gap: 8 }}>
-                    {envio.coleccion || "(Sin nombre de colección)"}
-                    <span style={{ fontSize: 10, fontWeight: 700, color: envio._kind === "proto" ? T.violet : T.denim, background: envio._kind === "proto" ? T.violetBg : T.denimBg, padding: "1px 8px", borderRadius: 10 }}>
-                      {envio._kind === "proto" ? "Prototipo" : "Cápsula"}
+                    {g.coleccion || "(Sin nombre de colección)"}
+                    <span style={{ fontSize: 10, fontWeight: 700, color: g.kind === "proto" ? T.violet : T.denim, background: g.kind === "proto" ? T.violetBg : T.denimBg, padding: "1px 8px", borderRadius: 10 }}>
+                      {g.kind === "proto" ? "Prototipo" : "Cápsula"}
                     </span>
                   </div>
-                  <div style={{ fontSize: 12, color: T.slate }}>{envio.cliente || "Sin cliente"} · {envio.items.length} ref · {fmtNum(totalUnidades)} unid. · Enviado {envio.fechaEnviado}{envio.numPedido ? ` · Pedido ${envio.numPedido}` : ""}</div>
+                  <div style={{ fontSize: 12, color: T.slate }}>
+                    {g.cliente || "Sin cliente"} · {g.items.length} ref · {fmtNum(g.totalUnidades)} unid. · Enviado {g.fechaMin === g.fechaMax ? g.fechaMin : `${g.fechaMin} – ${g.fechaMax}`}
+                    {g.totalEnvios > 1 ? ` · ${g.totalEnvios} envíos` : ""}
+                    {g.numPedido ? ` · Pedido ${g.numPedido}` : ""}
+                  </div>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                {envio._pendientes > 0 ? (
-                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: envio._dias >= 15 ? T.coralBg : T.amberBg, color: envio._dias >= 15 ? T.coral : T.amber }}>
-                    ⏳ {envio._pendientes} sin resolver · {envio._dias}d esperando
+                {g.pendientesTotal > 0 ? (
+                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: g.diasMax >= 15 ? T.coralBg : T.amberBg, color: g.diasMax >= 15 ? T.coral : T.amber }}>
+                    ⏳ {g.pendientesTotal} sin resolver{g.diasMax != null ? ` · ${g.diasMax}d esperando` : ""}
                   </span>
                 ) : (
                   <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✓ Todo resuelto</span>
                 )}
-                <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: envio.fechaRecibidoCliente ? T.jadeBg : T.amberBg, color: envio.fechaRecibidoCliente ? T.jade : T.amber }}>
-                  {envio.fechaRecibidoCliente ? `✓ Recibido ${envio.fechaRecibidoCliente}` : "⏳ Sin confirmar recibido"}
+                <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: g.recibidosCount === g.totalEnvios ? T.jadeBg : T.amberBg, color: g.recibidosCount === g.totalEnvios ? T.jade : T.amber }}>
+                  {g.recibidosCount === g.totalEnvios ? "✓ Recibido" : g.recibidosCount > 0 ? `⏳ ${g.recibidosCount}/${g.totalEnvios} recibidos` : "⏳ Sin confirmar recibido"}
                 </span>
-                <button onClick={(e) => { e.stopPropagation(); exportBitacoraEnvioToExcel(envio); }} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", background: "#217346", color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>📊 Exportar</button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    exportBitacoraEnvioToExcel({
+                      coleccion: g.coleccion, cliente: g.cliente, numPedido: g.numPedido,
+                      fechaEnviado: g.fechaMin === g.fechaMax ? g.fechaMin : `${g.fechaMin} – ${g.fechaMax}`,
+                      fechaRecibidoCliente: g.recibidosCount === g.totalEnvios ? (g.envios[0].fechaRecibidoCliente || "") : "",
+                      cartaColores: g.cartaColores, items: g.items,
+                    });
+                  }}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", background: "#217346", color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+                >📊 Exportar</button>
               </div>
             </div>
             {abierto && (
               <div style={{ padding: 20 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12, marginBottom: 20 }}>
-                  <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Empresa Transporte</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{envio.empresaTransporte || "—"}</div></div>
-                  <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>N° Guía</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{envio.guia || "—"}</div></div>
-                  <div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Fecha Recibido Cliente</div>
-                    <input
-                      type="date"
-                      value={envio.fechaRecibidoCliente || ""}
-                      onChange={(e) => onUpdateEnvio(envio.id, { fechaRecibidoCliente: e.target.value })}
-                      style={{ padding: "6px 10px", border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit" }}
-                    />
-                  </div>
-                  {envio.cartaColores && (
-                    <div>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Carta de Colores</div>
-                      <img src={envio.cartaColores} alt="Carta de colores" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, border: `1px solid ${T.border}` }} />
+                {g.totalEnvios > 1 ? (
+                  <div style={{ marginBottom: 20 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 8 }}>Envíos incluidos en este grupo ({g.totalEnvios})</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {g.envios.map((e) => (
+                        <div key={e.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: T.canvas, borderRadius: 8, fontSize: 12, flexWrap: "wrap", gap: 8 }}>
+                          <div>Enviado <b>{e.fechaEnviado}</b> · {e.items.length} ref{e.items.length !== 1 ? "s" : ""}{e.empresaTransporte ? ` · ${e.empresaTransporte}` : ""}{e.guia ? ` · Guía ${e.guia}` : ""}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ color: T.slate }}>Recibido:</span>
+                            <input
+                              type="date"
+                              value={e.fechaRecibidoCliente || ""}
+                              onChange={(ev) => onUpdateEnvio(e.id, { fechaRecibidoCliente: ev.target.value })}
+                              style={{ padding: "4px 8px", border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}
+                            />
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12, marginBottom: 20 }}>
+                    <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Empresa Transporte</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{g.envios[0].empresaTransporte || "—"}</div></div>
+                    <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>N° Guía</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{g.envios[0].guia || "—"}</div></div>
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Fecha Recibido Cliente</div>
+                      <input
+                        type="date"
+                        value={g.envios[0].fechaRecibidoCliente || ""}
+                        onChange={(e) => onUpdateEnvio(g.envios[0].id, { fechaRecibidoCliente: e.target.value })}
+                        style={{ padding: "6px 10px", border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit" }}
+                      />
+                    </div>
+                    {g.cartaColores && (
+                      <div>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Carta de Colores</div>
+                        <img src={g.cartaColores} alt="Carta de colores" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, border: `1px solid ${T.border}` }} />
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                     <thead>
                       <tr style={{ background: T.ink }}>
-                        {["Foto", "Ref", "Nombre", "Estado Actual", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Obs. Cliente"].map((h) => (
+                        {[...(g.totalEnvios > 1 ? ["Enviado"] : []), "Foto", "Ref", "Nombre", "Estado Actual", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Obs. Cliente"].map((h) => (
                           <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {envio.items.map((it, i) => {
+                      {g.items.map((it, i) => {
                         const live = liveItemFor(it);
                         return (
-                          <tr key={it.itemId} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
+                          <tr key={`${it._envioId}__${it.itemId}`} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
+                            {g.totalEnvios > 1 && <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>{it._fechaEnviado || "—"}</td>}
                             <td style={{ padding: "6px 10px" }}>{it.foto ? <img src={it.foto} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
                             <td style={{ padding: "6px 10px", fontWeight: 700 }}>{it.referencia}</td>
                             <td style={{ padding: "6px 10px" }}>{it.nombre}</td>
