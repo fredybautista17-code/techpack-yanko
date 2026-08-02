@@ -3518,7 +3518,7 @@ function KPIsView({ areas, puestos, personas, catalogo, registros, isAdmin, onAd
     </div>
   );
 }
-function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms, stages, isAdmin, onBackfill, onSelectProto, onSelectRef, onPromote, initialResultado, initialTipoFiltro }) {
+function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms, stages, isAdmin, onBackfill, onSelectProto, onSelectRef, onPromote, initialResultado, initialTipoFiltro, onVincularPedido, currentUser }) {
   const [modo, setModo] = useState("todos");
   const [clienteSel, setClienteSel] = useState("");
   const [resultado, setResultado] = useState(initialResultado || "todos");
@@ -3526,6 +3526,23 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
   const [mesFiltro, setMesFiltro] = useState("");
   const [soloSinPedido, setSoloSinPedido] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
+  // Vincular a pedido a mano, igual que en la Bitácora de Aprobados sin
+  // Pedido — `vinculando` guarda {capId, refId} de la fila abierta (solo
+  // aplica a referencias de cápsula, los prototipos no tienen este flujo).
+  const [vinculando, setVinculando] = useState(null);
+  const [buscaPedido, setBuscaPedido] = useState("");
+  const bqHist = buscaPedido.trim().toLowerCase();
+  const pedidosEncontradosHist = bqHist
+    ? (pedidos || []).filter((p) => String(p.numero || "").toLowerCase().includes(bqHist) || (p.cliente || "").toLowerCase().includes(bqHist)).slice(0, 30)
+    : [];
+  function confirmarVinculoHist(pedido) {
+    if (!vinculando) return;
+    onVincularPedido(vinculando.capId, vinculando.refId, {
+      pedidoVinculado: { numero: pedido.numero, cliente: pedido.cliente || "", vinculadoPor: currentUser?.name || "", vinculadoEn: nowISO() },
+    });
+    setVinculando(null);
+    setBuscaPedido("");
+  }
   // Cápsulas expandidas en la vista de lista (solo aplica cuando el filtro
   // de tipo es "capsula_ref"): en vez de listar cada referencia suelta, se
   // agrupan por cápsula y solo se despliegan las referencias de la cápsula
@@ -3556,6 +3573,14 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     const target = String(refCode).trim().toLowerCase();
     return (pedidos || []).some((p) => (p.referencias || []).some((r) => String(r.ref || "").trim().toLowerCase() === target));
   }
+  // Igual que usedInPedido, pero también cuenta como "con pedido" una
+  // referencia vinculada a mano (item.pedidoVinculado) desde la Bitácora de
+  // Aprobados sin Pedido o desde aquí mismo — el cruce automático por código
+  // exacto no siempre encuentra el pedido (formato distinto, o reprogramado
+  // bajo otro número en Congelado).
+  function tienePedido(item) {
+    return usedInPedido(item.reference) || !!item.pedidoVinculado;
+  }
   // Une cada entrada de historial con su ítem vivo (omite las que ya no
   // tienen ítem, p.ej. si se eliminó), dedupe por itemId quedándose con la
   // entrada más reciente, filtra "sin pedido" si el toggle está activo, y
@@ -3569,7 +3594,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
       if (!prev || h.fecha > prev.h.fecha) porItem.set(h.itemId, { h, item });
     });
     let arr = [...porItem.values()];
-    if (soloSinPedido) arr = arr.filter(({ h, item }) => h.resultado === "aprobado" && !usedInPedido(item.reference));
+    if (soloSinPedido) arr = arr.filter(({ h, item }) => h.resultado === "aprobado" && !tienePedido(item));
     return arr.sort((a, b) => b.h.fecha.localeCompare(a.h.fecha));
   }
   // Fila compacta de un ítem (sin imagen): nombre, referencia, cliente/fecha
@@ -3577,7 +3602,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
   // imagen). Se reutiliza tanto en la lista plana como dentro de cada
   // cápsula desplegada.
   function renderRow(h, item) {
-    const sinPedido = h.resultado === "aprobado" && !usedInPedido(item.reference);
+    const sinPedido = h.resultado === "aprobado" && !tienePedido(item);
     return (
       <div key={h.id} onClick={() => (h.tipo === "proto" ? onSelectProto(item.id) : onSelectRef(h.capsulaId, item.id))}
         style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: T.white, cursor: "pointer" }}
@@ -3593,6 +3618,14 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
           </div>
           <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{h.cliente}{h.fecha ? ` · ${h.fecha}` : ""}</div>
         </div>
+        {sinPedido && h.tipo !== "proto" && (
+          <button
+            onClick={(e) => { e.stopPropagation(); setVinculando({ capId: h.capsulaId, refId: item.id }); }}
+            style={{ background: T.denimBg, border: "none", borderRadius: 6, padding: "4px 8px", color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}
+          >
+            🔗 Vincular
+          </button>
+        )}
         <Badge status={item.status} />
         <span style={{ color: T.slate, fontSize: 14, flexShrink: 0 }}>›</span>
       </div>
@@ -3622,7 +3655,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
             const cap = capsulas.find((c) => c.id === capId);
             const refs = porCap.get(capId);
             const expanded = expandedCaps.has(capId);
-            const sinPedidoCount = refs.filter(({ h, item }) => h.resultado === "aprobado" && !usedInPedido(item.reference)).length;
+            const sinPedidoCount = refs.filter(({ h, item }) => h.resultado === "aprobado" && !tienePedido(item)).length;
             return (
               <div key={capId} style={{ background: T.white, borderRadius: 10, border: `1px solid ${T.border}`, overflow: "hidden" }}>
                 <div onClick={() => toggleCap(capId)}
@@ -3673,6 +3706,35 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
   const clientesOrdenadosTodos = Object.keys(porClienteTodos).sort((a, b) => a.localeCompare(b));
   return (
     <div>
+      {vinculando && (
+        <Modal title="Vincular a pedido" onClose={() => { setVinculando(null); setBuscaPedido(""); }} width={480}>
+          <p style={{ margin: "0 0 12px", fontSize: 13, color: T.slate }}>
+            Busca el pedido al que pertenece esta referencia. No se modifica el pedido — solo se marca la referencia como vinculada y deja de mostrar "Sin pedido".
+          </p>
+          <input
+            autoFocus
+            value={buscaPedido}
+            onChange={(e) => setBuscaPedido(e.target.value)}
+            placeholder="Buscar por número de pedido o cliente..."
+            style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, outline: "none", fontFamily: "inherit", marginBottom: 12, boxSizing: "border-box" }}
+          />
+          <div style={{ maxHeight: 320, overflowY: "auto" }}>
+            {bqHist && !pedidosEncontradosHist.length && (
+              <div style={{ textAlign: "center", padding: 20, color: T.slate, fontSize: 13 }}>No se encontró ningún pedido con eso.</div>
+            )}
+            {pedidosEncontradosHist.map((p) => (
+              <div
+                key={p.id}
+                onClick={() => confirmarVinculoHist(p)}
+                style={{ padding: "10px 12px", borderRadius: 8, border: `1px solid ${T.border}`, marginBottom: 6, cursor: "pointer", background: T.canvas }}
+              >
+                <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>Pedido #{p.numero}</div>
+                <div style={{ fontSize: 12, color: T.slate }}>{p.cliente || "Sin cliente"}{p.fechaPedido ? ` · ${p.fechaPedido}` : ""}{p.estado === "cerrado" ? " · Cerrado" : ""}</div>
+              </div>
+            ))}
+          </div>
+        </Modal>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Historial</h2>
@@ -7584,6 +7646,8 @@ function AppInner() {
                 onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
                 initialResultado={historialFiltroInicial?.resultado}
                 initialTipoFiltro={historialFiltroInicial?.tipo}
+                onVincularPedido={(capId, refId, patch) => updateRef(capId, refId, patch)}
+                currentUser={currentUser}
               />
             )}
             {view === "cronograma_muestras" && (
