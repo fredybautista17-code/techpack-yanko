@@ -3871,19 +3871,24 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     </div>
   );
 }
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessDiseno, canAccessKpis, onGoArea, protos, capsulas, pedidos }) {
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessDiseno, canAccessPedidosArea, canAccessKpis, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
   const pedidosVencidos = pedidos.filter((p) => p.fechaDespacho && new Date(p.fechaDespacho) < hoy && p.estado !== "cerrado").length;
   const AREAS_CARDS = [
     {
-      id: "diseno", icon: "🎨", label: "Diseño", desc: "Prototipos, Cápsulas, Pedidos, Corte y seguimiento de producción", color: T.denim, bg: T.denimBg,
-      stats: [{ label: "Prototipos activos", value: protosEnProceso }, { label: "Pedidos activos", value: pedidosActivos, alert: pedidosVencidos > 0 }],
+      id: "diseno", icon: "🎨", label: "Diseño", desc: "Prototipos, Cápsulas, Corte y seguimiento de producción", color: T.denim, bg: T.denimBg,
+      stats: [{ label: "Prototipos activos", value: protosEnProceso }],
       // Antes: perms.editar || perms.aprobar || perms.declinar — mezclaba permisos de
       // flujo de trabajo con visibilidad de módulo. Ahora usa el acceso granular real
       // (si al menos una sección de Diseño está habilitada para el rol).
       permiso: canAccessDiseno,
+    },
+    {
+      id: "pedidos_area", icon: "🧾", label: "Pedidos", desc: "Pedidos cargados de Busint, por cliente y administración", color: T.denim, bg: T.denimBg,
+      stats: [{ label: "Pedidos activos", value: pedidosActivos, alert: pedidosVencidos > 0 }],
+      permiso: canAccessPedidosArea,
     },
     {
       id: "contabilidad_area", icon: "💰", label: "Contabilidad", desc: "Flujo de caja, informes financieros y control contable", color: T.jade, bg: T.jadeBg,
@@ -7433,7 +7438,15 @@ function AppInner() {
   // KPIs ya NO cuenta para canAccessDiseno — es su propia área de nivel
   // superior en el menú (ver AREAS abajo), porque cubre toda la compañía
   // (Corte, Ventas, Contabilidad, Planeación...), no solo Diseño.
-  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessHistorial || canAccessCronograma || canAccessBitacora || canAccessCorte || canAccessAdminDiseno || !!currentUser?.isAdmin;
+  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessStats || canAccessHistorial || canAccessCronograma || canAccessBitacora || canAccessCorte || canAccessAdminDiseno || !!currentUser?.isAdmin;
+  // Pedidos (Pedidos, Clientes, Admin Pedidos) tenía sus 3 secciones
+  // dispersas dentro del menú de Diseño, mezcladas con Prototipos/Historial/
+  // Bitácoras/Corte — quedaba desordenado. Ahora es su propia área de nivel
+  // superior, igual que Contabilidad/Planeación/Planta/Bodega, con las 3
+  // secciones juntas ahí dentro. A diferencia de esas otras áreas (que son
+  // módulos externos con su propio moduloActivo), Pedidos sigue usando el
+  // mecanismo normal de "view" — igual que KPIs.
+  const canAccessPedidosArea = canAccessPedidos || canAccessPedidosClientes || !!currentUser?.isAdmin;
   const [moduloActivo, setModuloActivo] = useState("diseno");
   const AREAS = [
     ...(canAccessDiseno
@@ -7443,16 +7456,23 @@ function AppInner() {
             ...(canAccessProtos ? [{ id: "protos", icon: "⬡", label: "Prototipos" }] : []),
             ...(canAccessCapsulas ? [{ id: "capsulas", icon: "⬢", label: "Cápsulas" }] : []),
             ...(canAccessStats ? [{ id: "stats", icon: "📊", label: "Estadísticas Diseño" }] : []),
-            ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
-            ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
             ...(canAccessHistorial ? [{ id: "historial", icon: "🕘", label: "Historial" }] : []),
             ...(canAccessBitacora ? [{ id: "bitacora", icon: "📜", label: "Bitácoras" }] : []),
             ...(canAccessCronograma ? [{ id: "cronograma_muestras", icon: "🧵", label: "Cronograma de Muestras" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
-            ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
             // "Administrador General" siempre queda al final de la lista, sin
             // importar qué otras secciones estén visibles para el rol.
             ...(canAccessAdminDiseno ? [{ id: "admin", icon: "⚙", label: "Administrador General" }] : []),
+          ],
+        }]
+      : []),
+    ...(canAccessPedidosArea
+      ? [{
+          id: "pedidos_area", icon: "🧾", label: "Pedidos",
+          items: [
+            ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
+            ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
+            ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
           ],
         }]
       : []),
@@ -7597,22 +7617,25 @@ function AppInner() {
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
             {view === "dashboard" && (
-              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessDiseno={canAccessDiseno} canAccessKpis={canAccessKpis}
+              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
                   else if (id === "planeacion_area") { setModuloActivo("planeacion"); }
                   else if (id === "planta_area") { setModuloActivo("planta"); }
                   else if (id === "bodega_area") { setModuloActivo("bodega"); }
                   else if (id === "kpis_area") { setAreaAbierta("kpis_area"); setView("kpis"); }
+                  else if (id === "pedidos_area") {
+                    setAreaAbierta("pedidos_area");
+                    if (canAccessPedidos) setView("pedidos");
+                    else if (canAccessPedidosClientes) setView("pedidos_clientes");
+                    else if (currentUser?.isAdmin) setView("pedidos_admin");
+                  }
                   else if (id === "diseno") {
                     setAreaAbierta("diseno");
                     // Entra a la primera sección de Diseño realmente habilitada
-                    // para el rol (un Planeador sin Prototipos/Cápsulas debe
-                    // caer en Pedidos, no en una vista sin permiso).
+                    // para el rol.
                     if (canAccessProtos) setView("protos");
                     else if (canAccessCapsulas) setView("capsulas");
-                    else if (canAccessPedidos) setView("pedidos");
-                    else if (canAccessPedidosClientes) setView("pedidos_clientes");
                     else if (canAccessStats) setView("stats");
                     else if (canAccessHistorial) setView("historial");
                     else if (canAccessBitacora) setView("bitacora");
