@@ -758,9 +758,13 @@ function BloqueSeguimientoSemiterminado({ data }) {
   const { filas, resumen, resumenClientes, resumenReferencias, totalLotes, totalUnidades, procesosDistintos } = data;
   const [vista, setVista] = useState("proceso");
   const [clienteAbierto, setClienteAbierto] = useState(null);
+  // Proceso puntual seleccionado en la pestaña "Por Proceso" (ej. TERMINACION,
+  // BAJADA DE VINILO) — filtra `filas` a solo los lotes que están ahí.
+  const [procesoSel, setProcesoSel] = useState("");
   if (!totalLotes) {
     return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Sin lotes en semiterminado.</div>;
   }
+  const filasProcesoSel = procesoSel ? filas.filter((f) => f.procesoDondeQuedo === procesoSel) : [];
   // Desglose de procesos del cliente actualmente abierto en el modal —
   // filtra `filas` (que ya trae `cliente`) y agrupa por procesoDondeQuedo.
   const procesosClienteAbierto = (() => {
@@ -838,6 +842,38 @@ function BloqueSeguimientoSemiterminado({ data }) {
               </tfoot>
             </table>
           </div>
+          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>VER UN PROCESO PUNTUAL</div>
+          <div style={{ marginBottom: 14 }}>
+            <select
+              value={procesoSel}
+              onChange={(e) => setProcesoSel(e.target.value)}
+              style={{ padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit", minWidth: 260 }}
+            >
+              <option value="">Selecciona un proceso (ej. TERMINACION, BAJADA DE VINILO)...</option>
+              {resumen.map((r) => (
+                <option key={r.proceso} value={r.proceso}>{r.proceso || "(Sin proceso)"} · {fmtNum(r.unidades)} und</option>
+              ))}
+            </select>
+          </div>
+          {procesoSel && (
+            <div style={{ marginBottom: 24 }}>
+              <div style={{ fontSize: 11, color: C.slate, marginBottom: 8 }}>
+                {fmtNum(filasProcesoSel.length)} lote{filasProcesoSel.length !== 1 ? "s" : ""} · {fmtNum(filasProcesoSel.reduce((s, f) => s + f.unidades, 0))} unidades en "{procesoSel}"
+              </div>
+              <Tabla
+                vacio="Sin lotes en este proceso."
+                columnas={[
+                  { key: "cliente", label: "Cliente" },
+                  { key: "numLote", label: "Num Lote", align: "right" },
+                  { key: "referencia", label: "Referencia" },
+                  { key: "categoria", label: "Categoría" },
+                  { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
+                  { key: "ultimaSalida", label: "Última Salida (sin entrega)" },
+                ]}
+                filas={filasProcesoSel}
+              />
+            </div>
+          )}
         </>
       )}
       {vista === "cliente" && (
