@@ -4327,7 +4327,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onEditarCantidadesCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, onRegistrarCorteManual, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onEditarCantidadesCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Selección por talla: Map key `${pedidoId}__${ref}__${talla}` -> { ...contexto, cantidad }
   // (cantidad es editable, por si no alcanza la tela para toda la talla).
@@ -4408,6 +4408,18 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // reemplaza el corte completo dentro de cortesRealizados.
   const [editandoCantidades, setEditandoCantidades] = useState(null);
   const [cantidadesEdit, setCantidadesEdit] = useState(null);
+  // Cortador corregible desde el mismo panel de "Editar cantidades" — por si
+  // se equivocaron de persona al registrar el corte real.
+  const [cortadorEdit, setCortadorEdit] = useState("");
+  // Color/referencia elegido en el desplegable "+ Agregar color faltante"
+  // (dentro del mismo panel de edición) antes de meterlo a cantidadesEdit.
+  const [colorAAgregar, setColorAAgregar] = useState("");
+  // "Registrar Manual" (nuevo subTab): búsqueda de un pedido por número o
+  // cliente sin importar su estado (activo/terminado/cerrado) — para poder
+  // cargar retroactivamente un corte que se hizo pero nunca se registró en
+  // ATLAS, incluso si el pedido ya no aparece en la cola normal de Corte.
+  const [busquedaManual, setBusquedaManual] = useState("");
+  const [pedidoManualSel, setPedidoManualSel] = useState(null);
   // Los cortes reales (cortesRealizados) guardan el ID interno del mesón
   // (form.meson usa m.id, no m.nombre), así que para mostrarlo hay que
   // resolverlo contra la planta correspondiente — si no se encuentra (o es
@@ -4756,6 +4768,13 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
           style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: subTab === "vencidos" ? C.red : C.white, color: subTab === "vencidos" ? C.white : C.red, border: `1px solid ${subTab === "vencidos" ? C.red : C.redBg}` }}
         >
           ⚠ CORTES VENCIDOS {vencidosCount > 0 && `(${vencidosCount})`}
+        </div>
+        <div
+          onClick={() => setSubTab("manual")}
+          title="Cargar un corte que ya se hizo pero nunca se registró en ATLAS, aunque el pedido ya no aparezca en la cola normal"
+          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: subTab === "manual" ? C.amber : C.white, color: subTab === "manual" ? C.white : C.amber, border: `1px solid ${subTab === "manual" ? C.amber : C.amberBg}` }}
+        >
+          ✎ REGISTRAR MANUAL
         </div>
       </div>
       {subTab === "programar" && (
@@ -5475,10 +5494,14 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             function iniciarEdicionCantidades(c) {
               setEditandoCantidades(c.id);
               setCantidadesEdit(JSON.parse(JSON.stringify(c.refs || [])));
+              setCortadorEdit(c.cortador || "");
+              setColorAAgregar("");
             }
             function cancelarEdicionCantidades() {
               setEditandoCantidades(null);
               setCantidadesEdit(null);
+              setCortadorEdit("");
+              setColorAAgregar("");
             }
             function actualizarTallaEdit(refIdx, tallaKey, valor) {
               setCantidadesEdit((refs) => {
@@ -5491,10 +5514,35 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                 return copia;
               });
             }
+            // Mete al corte un color de la MISMA referencia/pedido que no se
+            // trajo al momento de cortar (ej. se cortó pero se le olvidó
+            // incluirlo) — se precarga con las tallas que trae el pedido
+            // original para ese color, editable después igual que los demás.
+            function agregarColorFaltante(pedidoDelCorte) {
+              if (!colorAAgregar || !pedidoDelCorte) return;
+              const refPedido = (pedidoDelCorte.referencias || []).find((r) => r.id === colorAAgregar);
+              if (!refPedido) return;
+              setCantidadesEdit((refs) => {
+                if ((refs || []).some((r) => r.refId === refPedido.id)) return refs;
+                return [
+                  ...(refs || []),
+                  {
+                    refId: refPedido.id,
+                    ref: refPedido.ref,
+                    descripcion: refPedido.descripcion,
+                    tallas: { ...refPedido.tallas },
+                    total: Object.values(refPedido.tallas || {}).reduce((s, v) => s + (Number(v) || 0), 0),
+                  },
+                ];
+              });
+              setColorAAgregar("");
+            }
             async function guardarCantidadesEdit(pedidoId, corteId) {
-              await onEditarCantidadesCorte(pedidoId, corteId, cantidadesEdit);
+              await onEditarCantidadesCorte(pedidoId, corteId, cantidadesEdit, cortadorEdit);
               setEditandoCantidades(null);
               setCantidadesEdit(null);
+              setCortadorEdit("");
+              setColorAAgregar("");
             }
             return (
               <div>
@@ -5601,6 +5649,47 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                       ))}
                                 </tbody>
                               </table>
+                              {editandoCantidades === c.id && (() => {
+                                const pedidoDelCorte = pedidos.find((p) => p.id === c.pedidoId);
+                                const coloresDisponibles = (pedidoDelCorte?.referencias || []).filter(
+                                  (r) => !(cantidadesEdit || []).some((ce) => ce.refId === r.id)
+                                );
+                                return (
+                                  <div style={{ marginBottom: 14 }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                                      <div style={{ fontSize: 10, color: C.slate, fontWeight: 700, textTransform: "uppercase" }}>Cortador</div>
+                                      <select
+                                        value={cortadorEdit}
+                                        onChange={(e) => setCortadorEdit(e.target.value)}
+                                        style={{ padding: "6px 10px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 12, color: C.ink, outline: "none", fontFamily: "inherit" }}
+                                      >
+                                        <option value="">— Sin asignar —</option>
+                                        {(cortadoresConfig || []).map((ct) => (
+                                          <option key={ct.nombre} value={ct.nombre}>{ct.nombre}</option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                    {!!coloresDisponibles.length && (
+                                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "10px 12px", background: C.blueBg, borderRadius: 8 }}>
+                                        <span style={{ fontSize: 11, fontWeight: 700, color: C.blue }}>+ Agregar color faltante:</span>
+                                        <select
+                                          value={colorAAgregar}
+                                          onChange={(e) => setColorAAgregar(e.target.value)}
+                                          style={{ padding: "6px 10px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 12, color: C.ink, outline: "none", fontFamily: "inherit" }}
+                                        >
+                                          <option value="">Elegir color de {pedidoDelCorte?.numero ? `#${pedidoDelCorte.numero}` : "este pedido"}...</option>
+                                          {coloresDisponibles.map((r) => (
+                                            <option key={r.id} value={r.id}>{r.ref}{r.descripcion ? ` — ${r.descripcion}` : ""}</option>
+                                          ))}
+                                        </select>
+                                        <Btn small variant="secondary" disabled={!colorAAgregar} onClick={() => agregarColorFaltante(pedidoDelCorte)}>
+                                          Agregar
+                                        </Btn>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                               {editandoCantidades === c.id && (
                                 <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 14 }}>
                                   <Btn small variant="secondary" onClick={cancelarEdicionCantidades}>Cancelar</Btn>
@@ -5933,6 +6022,84 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             </tbody>
           </table>
         )
+      )}
+      {subTab === "manual" && (
+        <div>
+          <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
+            Busca un pedido por número o cliente — sin importar si ya está cerrado o terminado — para cargar un corte que sí se hizo pero nunca se registró en ATLAS a tiempo. Al guardar, queda en "Cortes Aprobados" para ponerle lote, igual que cualquier otro corte. Si al pedido le queda algo pendiente después de esto, vuelve solo a la cola normal.
+          </p>
+          {!pedidoManualSel ? (
+            <div>
+              <input
+                value={busquedaManual}
+                onChange={(e) => setBusquedaManual(e.target.value)}
+                placeholder="Número de pedido o cliente..."
+                style={{ width: "100%", maxWidth: 420, padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 14, color: C.ink, outline: "none", fontFamily: "inherit", marginBottom: 14 }}
+              />
+              {busquedaManual.trim().length >= 2 &&
+                (() => {
+                  const q = busquedaManual.trim().toLowerCase();
+                  const resultados = pedidos
+                    .filter((p) => String(p.numero || "").toLowerCase().includes(q) || (p.cliente || "").toLowerCase().includes(q))
+                    .sort((a, b) => String(b.numero).localeCompare(String(a.numero)))
+                    .slice(0, 25);
+                  if (!resultados.length) {
+                    return <div style={{ textAlign: "center", padding: 32, color: C.slate, fontSize: 13 }}>Sin resultados para "{busquedaManual}".</div>;
+                  }
+                  return (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {resultados.map((p) => {
+                        const estadoInfo =
+                          p.estado === "activo"
+                            ? { label: "🟢 Activo", color: C.green }
+                            : p.estado === "terminado"
+                            ? { label: "✅ Terminado", color: C.blue }
+                            : { label: "🔒 Cerrado", color: C.slate };
+                        return (
+                          <div
+                            key={p.id}
+                            onClick={() => setPedidoManualSel(p)}
+                            style={{ cursor: "pointer", padding: "10px 14px", borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.white }}
+                          >
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <span style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{p.cliente} · #{p.numero}</span>
+                              <span style={{ fontSize: 11, fontWeight: 800, color: estadoInfo.color }}>{estadoInfo.label}</span>
+                            </div>
+                            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+                              {(p.referencias || []).length} referencia{(p.referencias || []).length === 1 ? "" : "s"}
+                              {p.motivoCierre ? ` · ${p.motivoCierre}` : ""}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+            </div>
+          ) : (
+            <div>
+              <Btn small variant="secondary" onClick={() => setPedidoManualSel(null)}>← Elegir otro pedido</Btn>
+              <div style={{ marginTop: 14 }}>
+                <ProgramarCorteModal
+                  inline
+                  pedido={pedidoManualSel}
+                  plantas={plantasConfig || []}
+                  cortadores={cortadoresConfig || []}
+                  telas={telas || []}
+                  preciosMap={preciosMap}
+                  lotesExistentes={lotesExistentes}
+                  onSave={(corte) => onRegistrarCorteManual(pedidoManualSel.id, corte)}
+                  onClose={() => setPedidoManualSel(null)}
+                  onGuardado={() => {
+                    setPedidoManualSel(null);
+                    setBusquedaManual("");
+                    setSubTab("aprobados");
+                  }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -6595,6 +6762,36 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     }
     savePedido(updated);
   }
+  // Registro MANUAL/retroactivo de un corte real que sí se hizo pero nunca
+  // se cargó en ATLAS a tiempo — a diferencia de registrarCorteReal (que
+  // solo trabaja con pedidos activos, dentro del flujo normal de
+  // Programación de Mesones), este se puede llamar sobre CUALQUIER pedido
+  // sin importar su estado (incluso uno que Busint ya cerró como facturado/
+  // venta perdida en Vigentes, o que la app ya marcó "terminado"). El estado
+  // final queda automático según lo que quede pendiente después de sumar
+  // este corte: si todavía falta algo por cortar, el pedido vuelve a
+  // "activo" para que reaparezca en la cola normal de Corte; si con esto ya
+  // queda completo, se deja como estaba (Busint ya lo dio por hecho, no hay
+  // que reabrirlo).
+  async function registrarCorteManualHistorico(pedidoId, corte) {
+    const pedido = pedidos.find((p) => p.id === pedidoId);
+    if (!pedido) return;
+    const cortesActualizados = [...(pedido.cortesRealizados || []), corte];
+    const totalPedido = (pedido.referencias || []).reduce((s, r) => s + (r.total || 0), 0);
+    const totalC = cortesActualizados.reduce((s, c) => s + (c.totalUnidades || 0), 0);
+    const patch = { cortesRealizados: cortesActualizados };
+    if (totalC >= totalPedido) {
+      if (pedido.estado === "activo") {
+        patch.estado = "terminado";
+        patch.fechaCumplido = today();
+      }
+    } else if (pedido.estado === "cerrado" || pedido.estado === "terminado") {
+      patch.estado = "activo";
+      patch.motivoCierre = null;
+      patch.fechaCumplido = null;
+    }
+    await fsSave("pedidos_activos", pedidoId, patch);
+  }
   // Programa en lote una o varias referencias puntuales (no el pedido
   // completo) para el mismo día — items viene de ProgramacionCorteView, ya
   // agrupado por pedido+referencia con el desglose de tallas/cantidades que
@@ -6728,20 +6925,29 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
   // — como todo lo demás (Históricos, Cortadores, Estadísticas, Centro de
   // Costo) lee directo de cortesRealizados, la corrección queda reflejada
   // automáticamente en todos lados, no hay que tocar nada más.
-  async function editarCantidadesCorteReal(pedidoId, corteId, refsEditados) {
+  async function editarCantidadesCorteReal(pedidoId, corteId, refsEditados, cortadorNuevo) {
     const pedido = pedidos.find((p) => p.id === pedidoId);
     if (!pedido) return;
     const corte = (pedido.cortesRealizados || []).find((c) => c.id === corteId);
     if (!corte) return;
     const totalUnidades = refsEditados.reduce((s, r) => s + (r.total || 0), 0);
+    // El cortador es opcional de corregir — si no se tocó el desplegable
+    // (undefined) se deja el que ya tenía; si se dejó en blanco a propósito
+    // queda sin asignar.
     const cortesActualizados = pedido.cortesRealizados.map((c) =>
-      c.id === corteId ? { ...c, refs: refsEditados, totalUnidades } : c
+      c.id === corteId ? { ...c, refs: refsEditados, totalUnidades, cortador: cortadorNuevo !== undefined ? cortadorNuevo : c.cortador } : c
     );
     const totalPedido = pedido.referencias.reduce((s, r) => s + r.total, 0);
     const totalC = cortesActualizados.reduce((s, c) => s + (c.totalUnidades || 0), 0);
     const patch = { cortesRealizados: cortesActualizados };
-    if (pedido.estado === "terminado" && totalC < totalPedido) {
+    // Si al corregir cantidades (por ejemplo, quitando lo que se había
+    // agregado de más) el pedido queda de nuevo con algo pendiente, que
+    // vuelva a la cola normal de Corte — sin importar si estaba "terminado"
+    // (lo cerró la app sola) o "cerrado" (lo cerró la sincronización con
+    // Busint/Planeación en Vigentes).
+    if ((pedido.estado === "terminado" || pedido.estado === "cerrado") && totalC < totalPedido) {
       patch.estado = "activo";
+      patch.motivoCierre = null;
       patch.fechaCumplido = null;
     }
     await fsSave("pedidos_activos", pedidoId, patch);
@@ -7067,6 +7273,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
                 setView("detalle");
               }}
               onRegistrarCorteReal={registrarCorteReal}
+              onRegistrarCorteManual={registrarCorteManualHistorico}
               plantasConfig={corteConfig.plantas || []}
               cortadoresConfig={cortadoresUnificados}
               telas={corteConfig.telas || []}
