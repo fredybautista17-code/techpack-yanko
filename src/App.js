@@ -2032,6 +2032,11 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
   // el modal).
   const [seleccionados, setSeleccionados] = useState({});
   const [envioCapsula, setEnvioCapsula] = useState(null);
+  // Cada cápsula arranca colapsada (solo se ve su nombre/encabezado) — clic
+  // en el encabezado despliega la grilla de referencias. `expandidas` guarda
+  // qué cápsulas están abiertas, por id.
+  const [expandidas, setExpandidas] = useState({});
+  function toggleExpandCapsula(capId) { setExpandidas((e) => ({ ...e, [capId]: !e[capId] })); }
   function cambiarFiltro(v) { setFilter(v); setSeleccionados({}); }
   function toggleSel(capId, refId) {
     setSeleccionados((s) => {
@@ -2181,7 +2186,8 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
         return (
           <div key={cap.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 20, overflow: "hidden" }}>
             <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, flexWrap: "wrap", gap: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div onClick={() => toggleExpandCapsula(cap.id)} title={expandidas[cap.id] ? "Clic para colapsar" : "Clic para ver las referencias"} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                <span style={{ fontSize: 12, color: T.slate, width: 14, display: "inline-block" }}>{expandidas[cap.id] ? "▾" : "▸"}</span>
                 <span style={{ fontSize: 20 }}>🗂</span>
                 <div><div style={{ fontWeight: 800, fontSize: 16, color: T.ink }}>{cap.name}</div><div style={{ fontSize: 12, color: T.slate }}>{cap.cliente ? `${cap.cliente} · ` : ""}{cap.mes ? `${cap.mes} · ` : ""}{cap.season} · {cap.referencias.length} ref · {cap.createdAt}{cap.assignedTo ? ` · 👤 ${cap.assignedTo}` : ""}</div></div>
               </div>
@@ -2221,7 +2227,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
                 {isAdmin && <Btn small variant="danger" onClick={() => setConfirmDel(cap)}>🗑 Borrar</Btn>}
               </div>
             </div>
-            {!refs.length ? (
+            {expandidas[cap.id] && (!refs.length ? (
               <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>Sin referencias con este filtro.</div>
             ) : (
               <div style={{ padding: 16, display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 12 }}>
@@ -2241,7 +2247,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
                   </div>
                 ))}
               </div>
-            )}
+            ))}
           </div>
         );
       })}
