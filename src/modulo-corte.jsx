@@ -10,7 +10,6 @@ import {
   writeBatch,
   onSnapshot,
 } from "firebase/firestore";
-
 // ─── FIREBASE ────────────────────────────────────────────────────────────────
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -22,7 +21,6 @@ const firebaseConfig = {
 };
 const fbApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
-
 async function fsGet(col) {
   const snap = await getDocs(collection(db, col));
   return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
@@ -33,7 +31,6 @@ async function fsSave(col, id, data) {
 async function fsDelete(col, id) {
   await deleteDoc(doc(db, col, id));
 }
-
 // ─── TOKENS ──────────────────────────────────────────────────────────────────
 const C = {
   ink: "#1A1A2E",
@@ -56,7 +53,6 @@ const C = {
   cyan: "#0E7490",
   cyanBg: "#ECFEFF",
 };
-
 function uid() {
   return Math.random().toString(36).slice(2, 9);
 }
@@ -134,13 +130,11 @@ function diasLaboralesHastaFecha(fechaISO) {
   }
   return count;
 }
-
 // Días laborales al mes usados para estimar el costo DIARIO del centro de
 // costo (nómina / DIAS_LABORALES_MES) — el usuario indicó que trabaja 20 días
 // al mes, así que se usa ese número fijo en vez del calendario de días
 // hábiles (que da un número distinto, ~21-23).
 const DIAS_LABORALES_MES = 20;
-
 // ─── TALLAS BUSINT ────────────────────────────────────────────────────────────
 // OJO: esta lista de 10 etiquetas es un catálogo viejo que ya NO coincide
 // con lo que realmente manda Busint (que llega como "S", "M", "L", "XL",
@@ -162,7 +156,6 @@ const TALLAS_BUSINT = [
   "18 4XL",
   "20",
 ];
-
 // Orden "natural" para columnas de talla armadas a partir de lo que trae
 // cada referencia (que puede variar de pedido a pedido) — primero las
 // etiquetas conocidas en su orden lógico, luego tallas numéricas de menor a
@@ -206,7 +199,6 @@ function ordenarTallas(tallas) {
     return A.localeCompare(B, "es");
   });
 }
-
 // ─── SEMÁFORO FECHA ───────────────────────────────────────────────────────────
 function semaforo(fechaDespacho) {
   if (!fechaDespacho)
@@ -218,7 +210,6 @@ function semaforo(fechaDespacho) {
   if (dias <= 7) return { color: C.amber, label: `${dias}d`, bg: C.amberBg };
   return { color: C.green, label: `${dias}d`, bg: C.greenBg };
 }
-
 // ─── UI ATOMS ─────────────────────────────────────────────────────────────────
 function Btn({ children, onClick, variant = "primary", small, disabled }) {
   const S = {
@@ -258,7 +249,6 @@ function Btn({ children, onClick, variant = "primary", small, disabled }) {
     </button>
   );
 }
-
 function Field({ label, children }) {
   return (
     <div style={{ marginBottom: 14 }}>
@@ -336,7 +326,6 @@ function Modal({ title, onClose, children, width = 600, inline = false }) {
   const [size, setSize] = useState({ width, height: null });
   const dragState = useRef(null);
   const resizeState = useRef(null);
-
   // Modo inline: se usa cuando esto se abre DENTRO de otra pantalla (ej.
   // "Ingreso de Corte Real" en Producción Corte) — en vez de una ventana
   // flotante con fondo oscuro, se muestra como una tarjeta normal en el
@@ -355,7 +344,6 @@ function Modal({ title, onClose, children, width = 600, inline = false }) {
       </div>
     );
   }
-
   function onHeaderMouseDown(e) {
     if (e.target.closest("button")) return;
     dragState.current = { startX: e.clientX, startY: e.clientY, origX: pos.x, origY: pos.y };
@@ -372,7 +360,6 @@ function Modal({ title, onClose, children, width = 600, inline = false }) {
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   }
-
   function onResizeMouseDown(e) {
     e.stopPropagation();
     e.preventDefault();
@@ -399,7 +386,6 @@ function Modal({ title, onClose, children, width = 600, inline = false }) {
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   }
-
   return (
     <div
       style={{
@@ -540,7 +526,6 @@ function KPICard({ icon, label, value, sub, color, bg }) {
     </div>
   );
 }
-
 // ─── PROGRAMAR CORTE MODAL ────────────────────────────────────────────────────
 // ─── ARCHIVOS: PRECIOS DE CORTE Y NÓMINA (Centro de Costo) ────────────────────
 // Precios de corte por referencia — archivo maestro tipo "gerencia-coleccion"
@@ -572,7 +557,6 @@ async function parsePreciosCorte(file) {
   });
   return [...porRef.entries()].map(([ref, precio]) => ({ ref, precio }));
 }
-
 // Nómina — archivo tipo la hoja "nomina" del Centro de Costo. La fila real de
 // encabezados no está en la primera fila (hay título y filas en blanco
 // antes), así que se busca la fila que tenga "CEDULA" y "NOMBRE" para ubicar
@@ -630,7 +614,6 @@ async function parseNomina(file) {
   }
   return filas;
 }
-
 // Listado de tipo de tela — toma la primera columna con datos de la primera
 // hoja del archivo (sirve tanto si trae encabezado como "Tela"/"Tipo de
 // Tela" como si son solo nombres sin encabezado).
@@ -653,7 +636,6 @@ async function parseTelas(file) {
   if (!nombres.length) throw new Error("No se encontraron nombres de tela en este archivo.");
   return nombres;
 }
-
 function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, lotesExistentes, onGuardarLote, preseleccion, onSave, onClose, onGuardado, inline }) {
   const mes = new Date().getMonth() + 1;
   const anio = new Date().getFullYear();
@@ -744,7 +726,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
   const refIdsPreseleccion = preseleccion?.colores
     ? new Set(preseleccion.colores.map((c) => c.refId).filter(Boolean))
     : null;
-
   function pendiente(ref) {
     const yaCortado = (pedido.cortesRealizados || [])
       .flatMap((c) => c.refs || [])
@@ -761,28 +742,24 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     });
     return pend;
   }
-
   function totalCortando() {
     return Object.values(cantidades).reduce(
       (sum, r) => sum + Object.values(r.tallas).reduce((a, b) => a + b, 0),
       0
     );
   }
-
   function ingresoTotal() {
     return Object.values(cantidades).reduce((sum, r) => {
       const units = Object.values(r.tallas).reduce((a, b) => a + b, 0);
       return sum + units * (r.precio || 0);
     }, 0);
   }
-
   function minutosTotales() {
     if (!form.horaInicio || !form.horaFin) return 0;
     const [h1, m1] = form.horaInicio.split(":").map(Number);
     const [h2, m2] = form.horaFin.split(":").map(Number);
     return h2 * 60 + m2 - (h1 * 60 + m1);
   }
-
   // Tiempo real de tendido — desde que se empieza a tender la tela hasta
   // que queda lista para cortar. Se registra aparte del tiempo de corte
   // (misma lógica: hora inicio/fin, resta en minutos) para que la
@@ -793,7 +770,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     const [h2, m2] = form.horaFinTendido.split(":").map(Number);
     return h2 * 60 + m2 - (h1 * 60 + m1);
   }
-
   // Marcadas de la curva propuesta en Mesones (suma de la curva) — se usa
   // para comprobar, por color, si las capas reales que se están poniendo
   // aquí dan la misma cantidad de prendas que se está escribiendo en la
@@ -801,11 +777,9 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
   const marcadas = preseleccion?.curva
     ? Object.values(preseleccion.curva).reduce((s, v) => s + (parseInt(v) || 0), 0)
     : 0;
-
   function capasSumaTotal() {
     return Object.values(capasPorRef).reduce((s, v) => s + (parseFloat(v) || 0), 0);
   }
-
   // Metros totales de tela = largo del trazo (una sola capa) × capas de
   // cada color, sumado entre todos los colores que se están cortando — ya
   // no es una sola capas compartida, cada color puede llevar distinta
@@ -814,7 +788,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     const trazo = parseFloat(form.largoTrazo) || 0;
     return pedido.referencias.reduce((s, r) => s + trazo * (parseFloat(capasPorRef[r.id]) || 0), 0);
   }
-
   async function save() {
     if (!form.planta || !form.cortador || !form.fecha) return;
     const refs = pedido.referencias
@@ -834,9 +807,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
         capas: parseFloat(capasPorRef[r.id]) || 0,
       }))
       .filter((r) => r.total > 0);
-
     if (!refs.length) return;
-
     const corte = {
       id: uid(),
       fecha: form.fecha,
@@ -869,7 +840,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     if (onGuardado) onGuardado();
     else onClose();
   }
-
   // Nombre del mesón programado en Mesones (preselColor0.meson guarda el id,
   // no el nombre) — se busca en `plantas` directo, sin depender de
   // `form.planta`/`form.meson` actuales, porque este panel muestra lo
@@ -880,7 +850,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     const m = pl?.mesones?.find((mm) => mm.id === preselColor0.meson);
     return m?.nombre || preselColor0.meson;
   })();
-
   return (
     <Modal
       title={`Entrada de Corte — Pedido ${pedido.numero}`}
@@ -926,7 +895,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           )}
         </div>
       )}
-
       <div
         style={{
           display: "grid",
@@ -1020,7 +988,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, marginTop: -8 }}>
         Las capas ahora se ponen por color, en "Unidades a cortar" más abajo — cada color puede llevar una cantidad distinta.
       </div>
-
       {/* Horario real de tendido — desde que se empieza a tender la tela
           hasta que queda lista para cortar. Antes solo existía el estimado
           teórico (Programación de Mesones); esto es lo real. */}
@@ -1068,7 +1035,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           </div>
         </Field>
       </div>
-
       {/* Etapa 2 — Corte: desde que empieza hasta que termina de cortar
           todas las capas del trazo. */}
       <div style={{ fontSize: 11, fontWeight: 800, color: C.blue, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
@@ -1112,11 +1078,9 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           </div>
         </Field>
       </div>
-
       {/* El número de lote ya no se pide ni se muestra acá — se corta
           primero, y el patronista lo asigna después en "Producción Corte" →
           "Cortes Aprobados", ya con los datos reales de lo que se cortó. */}
-
       {(minutosTendido() > 0 || (minutosTotales() > 0 && metrosTotales() > 0)) && (
         <div
           style={{
@@ -1148,7 +1112,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           )}
         </div>
       )}
-
       <div
         style={{
           fontWeight: 700,
@@ -1316,7 +1279,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
                     ) : null
                   )}
                 </div>
-
                 {/* Capas reales de este color — al lado de la grilla de
                     tallas de arriba, que no se toca. Precargada con la
                     capas teórica de Mesones; se compara contra lo que se
@@ -1360,7 +1322,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           );
         })}
       </div>
-
       {totalCortando() > 0 && (
         <div
           style={{
@@ -1391,7 +1352,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           </div>
         </div>
       )}
-
       <div
         style={{
           display: "flex",
@@ -1414,7 +1374,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     </Modal>
   );
 }
-
 // ─── PROGRAMACIÓN HECHA MODAL ──────────────────────────────────────────────────
 // Segunda etapa del corte: ya se sabe qué referencia/talla/cantidad se va a
 // cortar (eso quedó en "En Programación"), acá se define CON QUÉ se va a
@@ -1429,14 +1388,12 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
 const MESON_TIMELINE_INICIO_MIN = 6 * 60;
 const MESON_TIMELINE_FIN_MIN = 20 * 60;
 const MESON_TIMELINE_SPAN_MIN = MESON_TIMELINE_FIN_MIN - MESON_TIMELINE_INICIO_MIN;
-
 function minDesdeHora(hhmm) {
   if (!hhmm) return null;
   const [h, m] = hhmm.split(":").map(Number);
   if (Number.isNaN(h) || Number.isNaN(m)) return null;
   return h * 60 + m;
 }
-
 function bloqueTimelineStyle(inicioMin, finMin) {
   const s = Math.max(MESON_TIMELINE_INICIO_MIN, inicioMin);
   const e = Math.min(MESON_TIMELINE_FIN_MIN, finMin);
@@ -1445,7 +1402,6 @@ function bloqueTimelineStyle(inicioMin, finMin) {
   const width = ((e - s) / MESON_TIMELINE_SPAN_MIN) * 100;
   return { left: `${left}%`, width: `${width}%` };
 }
-
 // "Foto" visual del mesón: nombre + capacidad, y debajo un timeline del día
 // (6am–8pm) con los horarios ya ocupados por otras referencias programadas
 // ahí ese día (según su Hora Inicio/Fin Estimada) en rojo, y el horario que
@@ -1461,7 +1417,6 @@ function MesonTimeline({ nombre, capacidad, compartido, ocupados, inicioActual, 
     inicioActualMin !== null && finActualMin !== null && finActualMin > inicioActualMin
       ? bloqueTimelineStyle(inicioActualMin, finActualMin)
       : null;
-
   return (
     <div style={{ padding: "12px 16px", borderRadius: 8, border: `1.5px solid ${C.border}`, background: C.canvas, marginBottom: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
@@ -1541,7 +1496,6 @@ function MesonTimeline({ nombre, capacidad, compartido, ocupados, inicioActual, 
     </div>
   );
 }
-
 // Antes era un modal que se abría encima de "Programados Pendientes". Ahora
 // es el panel de la pestaña "Programación de Mesones": el cortador entra acá
 // (mirando hacia el futuro, cualquier día que tenga algo programado) a
@@ -1595,12 +1549,10 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
   // color, comparado talla por talla contra lo real del pedido) — null si
   // ninguno. Solo un color abierto a la vez para no saturar la pantalla.
   const [colorAbierto, setColorAbierto] = useState(null);
-
   const plantaSel = plantas.find((p) => p.nombre === form.planta);
   const mesones = plantaSel?.mesones || [];
   const mesonSel = mesones.find((m) => m.id === form.meson);
   const grupoMeson = mesonSel?.grupoId ? (plantaSel?.grupos || []).find((g) => g.id === mesonSel.grupoId) : null;
-
   // Marcadas = suma de la curva (cuántas prendas salen por cada capa que se
   // corta, sumando todas las tallas). Con eso y las capas de cada color se
   // calcula cuánto sale cortado — la comprobación es contra lo que
@@ -1620,7 +1572,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
   function metrosTotales() {
     return grupo.colores.reduce((s, c) => s + calcColor(c).metrosColor, 0);
   }
-
   // La capacidad del mesón (10m, 14m compartidos entre Mesón 2+3...) es el
   // LARGO de la mesa donde se tiende el trazo — no los metros totales de
   // tela consumida. Un trazo de 8m cabe en una mesa de 10m sin importar si
@@ -1692,7 +1643,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
   const usados = calcMesonSel.usados;
   const disponible = calcMesonSel.disponible;
   const excedeCapacidad = disponible !== null && largoTrazoNum > disponible;
-
   const stats = estadisticasTela[form.tipoTela];
   const tiempoTeorico = stats?.minPorMetro && metrosTotales() > 0 ? Math.round(stats.minPorMetro * metrosTotales()) : null;
   // Tendido: no hay historial real todavía (nunca se ha cronometrado), así
@@ -1722,7 +1672,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
         };
       })
     : [];
-
   function autocompletarHoraFin() {
     if (!form.horaInicioEstimada || !tiempoTotalEstimadoMin) return;
     const [h, m] = form.horaInicioEstimada.split(":").map(Number);
@@ -1732,7 +1681,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
     const mm = String(total % 60).padStart(2, "0");
     setForm((f) => ({ ...f, horaFinEstimada: `${hh}:${mm}` }));
   }
-
   // Todos los colores de la referencia se tienden y cortan juntos, así que
   // comparten planta/mesón/cortador/tela/trazo/capas/horas — se guarda el
   // mismo `datosComunes` en cada uno de sus docs de corte_programacion, cada
@@ -1785,7 +1733,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
     if (onGuardado) onGuardado();
     else onClose();
   }
-
   return (
     <div style={{ border: `1.5px solid ${C.border}`, borderRadius: 14, background: C.white, padding: 20 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, gap: 12 }}>
@@ -1801,7 +1748,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
           ‹ Volver a la lista
         </Btn>
       </div>
-
       {aprobado && (
         <div style={{ padding: "10px 14px", borderRadius: 8, marginBottom: 16, fontSize: 12, fontWeight: 700, background: C.greenBg, color: C.green }}>
           ✓ Aprobada Analista{aprobadoPorTxt ? ` por ${aprobadoPorTxt}` : ""}{aprobadoFechaTxt ? ` el ${fmtFechaISO(aprobadoFechaTxt.slice(0, 10))}` : ""}. Si cambias y guardas los datos, vuelve a quedar pendiente de aprobación.
@@ -1828,7 +1774,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
           )}
         </div>
       )}
-
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
         {/* ── Columna izquierda: datos teóricos del corte ── */}
         <div>
@@ -1879,7 +1824,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
               />
             </Field>
           </div>
-
           <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
             <Field label="Tipo de Tela">
               <FInput
@@ -1918,7 +1862,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
               </div>
             </Field>
           </div>
-
           {/* Curva de tallas: una sola para todo el trazo, compartida por
               todos los colores — cuántas veces se repite cada talla dentro
               de una capa/marcada. La suma da "marcadas". */}
@@ -1953,7 +1896,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
               </div>
             </div>
           </div>
-
           {/* Capas por color: cada color puede tender una cantidad distinta
               de capas. Con capas × marcadas se calcula cuánto sale
               cortado, como comprobación contra la cantidad real del pedido
@@ -2055,7 +1997,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
               })}
             </div>
           </div>
-
           {tiempoTotalEstimadoMin !== null && (
             <div style={{ padding: "10px 16px", background: C.violetBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: C.violet, fontWeight: 700 }}>
               ⏱ Tiempo estimado total: ~{tiempoTotalEstimadoMin} min — tendido ~{tendidoEstimadoMin} min
@@ -2064,7 +2005,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
                 : " + corte (todavía sin historial de corte para esta tela, el total solo cuenta el tendido)"}
             </div>
           )}
-
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 4 }}>
             <Field label="Hora Inicio Estimada (obligatorio)">
               <FInput
@@ -2110,7 +2050,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
               Hora Inicio y Hora Fin son obligatorias para guardar — con eso se arma el timeline del mesón.
             </div>
           )}
-
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
             <Btn
               variant="success"
@@ -2121,7 +2060,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
             </Btn>
           </div>
         </div>
-
         {/* ── Columna derecha: el mesón dibujado con su disponibilidad ── */}
         <div>
           {plantaSel && (
@@ -2131,7 +2069,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
               </Btn>
             </div>
           )}
-
           {showTablero && plantaSel && (
             <div style={{ marginBottom: 16, padding: 12, borderRadius: 10, border: `1.5px solid ${C.denim}`, background: C.denimBg }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: C.denim, marginBottom: 10 }}>
@@ -2169,7 +2106,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
               })}
             </div>
           )}
-
           {mesonSel && capacidad !== null && (
             <div
               style={{
@@ -2190,7 +2126,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
               {excedeCapacidad && ` — este trazo de ${largoTrazoNum}m no cabe en esa franja. Puedes apilar las capas que quieras, lo que no cabe es el largo del trazo.`}
             </div>
           )}
-
           {mesonSel && capacidad !== null && (
             <MesonTimeline
               nombre={grupoMeson ? grupoMeson.nombre : mesonSel.nombre}
@@ -2201,7 +2136,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
               finActual={form.horaFinEstimada}
             />
           )}
-
           {!plantaSel && (
             <div style={{ padding: 20, textAlign: "center", color: C.slate, fontSize: 12, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
               Elige una planta a la izquierda para ver los mesones y su disponibilidad acá.
@@ -2212,7 +2146,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
     </div>
   );
 }
-
 // ─── DETALLE PEDIDO ───────────────────────────────────────────────────────────
 function DetallePedido({
   pedido,
@@ -2244,7 +2177,6 @@ function DetallePedido({
     0
   );
   const costoDia = nominaMensual / dh;
-
   const totalPedido = pedido.referencias.reduce((s, r) => s + r.total, 0);
   const totalCortado = (pedido.cortesRealizados || []).reduce(
     (s, c) => s + (c.totalUnidades || 0),
@@ -2253,7 +2185,6 @@ function DetallePedido({
   const pct =
     totalPedido > 0 ? Math.round((totalCortado / totalPedido) * 100) : 0;
   const sem = semaforo(pedido.fechaDespacho);
-
   // Columnas de talla de la tabla de abajo — se arman con las tallas reales
   // que traen las referencias de este pedido (no el catálogo fijo
   // TALLAS_BUSINT, que no coincide con lo que manda Busint), ordenadas de
@@ -2261,7 +2192,6 @@ function DetallePedido({
   const tallasTabla = ordenarTallas([
     ...new Set(pedido.referencias.flatMap((r) => Object.keys(r.tallas || {}))),
   ]);
-
   function excedente(ref) {
     const cortado = (pedido.cortesRealizados || [])
       .flatMap((c) => c.refs || [])
@@ -2278,7 +2208,6 @@ function DetallePedido({
     });
     return exc;
   }
-
   function registrarCorte(corte) {
     const updated = {
       ...pedido,
@@ -2298,7 +2227,6 @@ function DetallePedido({
     }
     onSave(updated);
   }
-
   return (
     <div>
       {showCorte && (
@@ -2402,7 +2330,6 @@ function DetallePedido({
           </Btn>
         )}
       </div>
-
       <div
         style={{
           display: "grid",
@@ -2440,7 +2367,6 @@ function DetallePedido({
           bg={pct === 100 ? C.greenBg : C.blueBg}
         />
       </div>
-
       <div
         style={{
           height: 10,
@@ -2459,7 +2385,6 @@ function DetallePedido({
           }}
         />
       </div>
-
       {/* Referencias con excedentes */}
       <div
         style={{
@@ -2631,7 +2556,6 @@ function DetallePedido({
           </table>
         </div>
       </div>
-
       {/* Historial de cortes */}
       {(pedido.cortesRealizados || []).length > 0 && (
         <div
@@ -2819,7 +2743,6 @@ function DetallePedido({
     </div>
   );
 }
-
 // ─── ADMIN CORTE ──────────────────────────────────────────────────────────────
 function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCargaPrecios }) {
   const [reiniciando, setReiniciando] = useState(false);
@@ -2863,7 +2786,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
   const nominaInputRef = useRef(null);
   const preciosInputRef = useRef(null);
   const telasInputRef = useRef(null);
-
   const plantas = config.plantas || [];
   const cortadores = config.cortadores || [];
   const telas = config.telas || [];
@@ -2872,7 +2794,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
   const mes = new Date().getMonth() + 1;
   const anio = new Date().getFullYear();
   const dh = diasHabiles(mes, anio);
-
   function addPlanta() {
     if (!newPlanta.trim()) return;
     onSave({
@@ -3009,7 +2930,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
       },
     });
   }
-
   // Importar nómina desde Excel: actualiza el sueldo de quien ya esté
   // registrado (comparando por nombre, sin importar mayúsculas/tildes de
   // más o menos espacios) y AGREGA como nuevo a quien no exista todavía. NO
@@ -3042,7 +2962,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
     }
     setSubiendoNomina(false);
   }
-
   async function subirPrecios(file) {
     if (!file) return;
     setSubiendoPrecios(true);
@@ -3061,7 +2980,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
     }
     setSubiendoPrecios(false);
   }
-
   const tabs = [
     ["plantas", "🏭 Plantas"],
     ["cortadores", "✂ Cortadores"],
@@ -3069,7 +2987,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
     ["precios", "💲 Precios Corte"],
     ["telas", "🧵 Telas"],
   ];
-
   return (
     <div>
       <h2
@@ -3112,7 +3029,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
           </button>
         ))}
       </div>
-
       <div style={{ marginBottom: 24, padding: 16, borderRadius: 12, border: `1.5px solid ${C.red}`, background: C.redBg }}>
         <div style={{ fontWeight: 800, fontSize: 13, color: C.red, marginBottom: 4 }}>🧹 Reiniciar Cortes (solo pruebas)</div>
         <div style={{ fontSize: 12, color: C.red, marginBottom: 10 }}>
@@ -3127,7 +3043,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
           </div>
         )}
       </div>
-
       {tab === "plantas" && (
         <div>
           <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
@@ -3184,7 +3099,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
                   Eliminar
                 </button>
               </div>
-
               <div style={{ fontSize: 10, fontWeight: 800, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>
                 Mesones (largo máximo de trazo que cabe en la mesa — no metros de tela)
               </div>
@@ -3231,7 +3145,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
                 </select>
                 <Btn small onClick={() => addMeson(p.id)}>+ Mesón</Btn>
               </div>
-
               <div style={{ fontSize: 10, fontWeight: 800, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>
                 Grupos compartidos (ej: Mesón 2+3 de Yanko, máx 14m de trazo entre los dos)
               </div>
@@ -3272,7 +3185,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
           )}
         </div>
       )}
-
       {tab === "cortadores" && (
         <div>
           <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
@@ -3334,7 +3246,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
           )}
         </div>
       )}
-
       {tab === "nomina" && (
         <div>
           <div
@@ -3453,7 +3364,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
             </div>
             <Btn onClick={addTrabajador}>+ Agregar</Btn>
           </div>
-
           {trabajadores.map((t) => (
             <div
               key={t.id}
@@ -3507,7 +3417,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
               Sin trabajadores registrados.
             </div>
           )}
-
           {trabajadores.length > 0 && (
             <div
               style={{
@@ -3569,7 +3478,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
           )}
         </div>
       )}
-
       {tab === "precios" && (
         <div>
           <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 620 }}>
@@ -3611,7 +3519,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
           )}
         </div>
       )}
-
       {tab === "telas" && (
         <div>
           <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 620 }}>
@@ -3660,7 +3567,6 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
     </div>
   );
 }
-
 // ─── ESTADÍSTICAS TELA ────────────────────────────────────────────────────────
 function EstadisticasTela({ pedidos }) {
   // "tela" = análisis original por tipo de tela + largo de trazo; "cortador"
@@ -3682,11 +3588,9 @@ function EstadisticasTela({ pedidos }) {
     return ">12m";
   }
   const ORDEN_RANGOS = ["≤4m", "4–8m", "8–12m", ">12m", "Sin dato"];
-
   const allCortes = pedidos.flatMap((p) =>
     (p.cortesRealizados || []).filter((c) => c.tipoTela && c.metrosTendido > 0 && c.minutos > 0)
   );
-
   const byTela = {};
   const combos = new Map(); // "tela||rango" -> acumulado, para el ranking
   allCortes.forEach((c) => {
@@ -3698,14 +3602,12 @@ function EstadisticasTela({ pedidos }) {
     t.minutosTendido += c.minutosTendido || 0;
     t.capas += c.capas || 0;
     t.unidades += c.totalUnidades || 0;
-
     const rango = rangoTrazo(c.largoTrazo);
     if (!t.porRango[rango]) t.porRango[rango] = { cortes: 0, metros: 0, minutos: 0, unidades: 0 };
     t.porRango[rango].cortes++;
     t.porRango[rango].metros += c.metrosTendido || 0;
     t.porRango[rango].minutos += c.minutos || 0;
     t.porRango[rango].unidades += c.totalUnidades || 0;
-
     const comboKey = `${c.tipoTela}||${rango}`;
     if (!combos.has(comboKey)) combos.set(comboKey, { tela: c.tipoTela, rango, cortes: 0, metros: 0, minutos: 0, unidades: 0 });
     const cb = combos.get(comboKey);
@@ -3714,7 +3616,6 @@ function EstadisticasTela({ pedidos }) {
     cb.minutos += c.minutos || 0;
     cb.unidades += c.totalUnidades || 0;
   });
-
   // Ranking de rendimiento: prendas cortadas por minuto (mientras más alto,
   // más rendidor) — solo combos con al menos 2 cortes registrados, para que
   // un solo dato suelto no distorsione el ranking.
@@ -3724,7 +3625,6 @@ function EstadisticasTela({ pedidos }) {
     .sort((a, b) => b.unidadesPorMin - a.unidadesPorMin);
   const masRendidores = rankingCombos.slice(0, 3);
   const menosRendidores = [...rankingCombos].reverse().slice(0, 3);
-
   // Estadísticas por cortador — para saber quién corta más rápido (prendas
   // por minuto) y quién corta más volumen (total de unidades), aparte de
   // por tela. No exige tipoTela (allCortes sí lo exige) porque el cortador
@@ -3755,7 +3655,6 @@ function EstadisticasTela({ pedidos }) {
   const masRapidos = [...rankingCortadores].filter((c) => c.cortes >= 2).sort((a, b) => b.unidadesPorMin - a.unidadesPorMin).slice(0, 3);
   const masLentos = [...rankingCortadores].filter((c) => c.cortes >= 2).sort((a, b) => a.unidadesPorMin - b.unidadesPorMin).slice(0, 3);
   const masVolumen = rankingCortadores.slice(0, 3);
-
   return (
     <div>
       <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
@@ -3764,7 +3663,6 @@ function EstadisticasTela({ pedidos }) {
       <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 700 }}>
         Con cada corte real registrado (Entrada de Corte) se va afinando esto solo. Compara tela + largo de trazo, o cortador, para saber qué rinde más — tanto en velocidad de corte como en prendas cortadas.
       </p>
-
       <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
         <button
           onClick={() => setModoStats("tela")}
@@ -3779,7 +3677,6 @@ function EstadisticasTela({ pedidos }) {
           ✂ Por Cortador
         </button>
       </div>
-
       {modoStats === "cortador" ? (
         !Object.keys(byCortador).length ? (
           <div style={{ textAlign: "center", padding: 48, color: C.slate }}>
@@ -3813,7 +3710,6 @@ function EstadisticasTela({ pedidos }) {
                 </div>
               </div>
             )}
-
             {masLentos.length > 0 && (
               <div style={{ background: C.redBg, borderRadius: 12, padding: 16, border: `1px solid ${C.red}33`, marginBottom: 20 }}>
                 <div style={{ fontSize: 11, fontWeight: 800, color: C.red, textTransform: "uppercase", marginBottom: 10 }}>
@@ -3827,7 +3723,6 @@ function EstadisticasTela({ pedidos }) {
                 ))}
               </div>
             )}
-
             <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20 }}>
               <div style={{ fontSize: 11, fontWeight: 800, color: C.slate, textTransform: "uppercase", marginBottom: 10 }}>
                 Todos los cortadores (ordenado por unidades cortadas)
@@ -3897,7 +3792,6 @@ function EstadisticasTela({ pedidos }) {
               </div>
             </div>
           )}
-
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             {Object.entries(byTela)
               .sort((a, b) => b[1].metros - a[1].metros)
@@ -3944,7 +3838,6 @@ function EstadisticasTela({ pedidos }) {
                         </div>
                       ))}
                     </div>
-
                     {rangos.length > 0 && (
                       <div>
                         <div style={{ fontSize: 10, fontWeight: 800, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>
@@ -3981,7 +3874,6 @@ function EstadisticasTela({ pedidos }) {
                         </table>
                       </div>
                     )}
-
                     <div style={{ marginTop: 12, padding: "8px 14px", background: C.amberBg, borderRadius: 8, fontSize: 12, color: C.amber, fontWeight: 600 }}>
                       💡 Sugerencia: para {tela}, programar 1 metro tendido = {minPorMetro} minutos de corte en promedio.
                     </div>
@@ -3994,7 +3886,6 @@ function EstadisticasTela({ pedidos }) {
     </div>
   );
 }
-
 // ─── DASHBOARD CORTE ──────────────────────────────────────────────────────────
 function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido, isAdmin }) {
   // Los pedidos ya no se cargan ni se revisan aquí — vienen listos de
@@ -4011,21 +3902,18 @@ function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido,
   );
   const dh = diasHabiles(mes, anio);
   const costoDia = nominaMensual / dh;
-
   const totalCortadoMes = pedidos
     .flatMap((p) => p.cortesRealizados || [])
     .filter(
       (c) => c.fecha?.slice(0, 7) === `${anio}-${String(mes).padStart(2, "0")}`
     )
     .reduce((s, c) => s + (c.totalUnidades || 0), 0);
-
   const ingresoMes = pedidos
     .flatMap((p) => p.cortesRealizados || [])
     .filter(
       (c) => c.fecha?.slice(0, 7) === `${anio}-${String(mes).padStart(2, "0")}`
     )
     .reduce((s, c) => s + (c.ingresoCorte || 0), 0);
-
   const diasConCorte = new Set(
     pedidos
       .flatMap((p) => p.cortesRealizados || [])
@@ -4035,10 +3923,8 @@ function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido,
       )
       .map((c) => c.fecha)
   ).size;
-
   const costoCorteMes = costoDia * diasConCorte;
   const rentabilidadMes = ingresoMes - costoCorteMes;
-
   return (
     <div>
       <div
@@ -4068,7 +3954,6 @@ function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido,
           </p>
         </div>
       </div>
-
       {/* KPI Mensual */}
       <div
         style={{
@@ -4108,7 +3993,6 @@ function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido,
           sub={rentabilidadMes >= 0 ? "✓ Rentable" : "⚠ Pérdida"}
         />
       </div>
-
       {/* Pedidos activos */}
       {!activos.length ? (
         <div
@@ -4250,7 +4134,6 @@ function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido,
     </div>
   );
 }
-
 // ─── COLA SUGERIDA DE CORTE ─────────────────────────────────────────────────
 // Cuánto falta por cortar de cada referencia de un pedido, cruzando las
 // mismas tres fuentes que usa el informe de Vigentes en Diseño → Pedidos
@@ -4290,25 +4173,53 @@ function calcularCortadoPendiente(pedido, vpRefMap, lotesCortadoMap) {
       });
     });
   });
-  let totalPedido = 0;
-  let totalCortado = 0;
-  const porRef = (pedido.referencias || []).map((r) => {
-    const total = r.total || 0;
-    totalPedido += total;
-    // Ventas Perdidas y Planeación (Busint) solo dan el total por código de
-    // referencia, sin desglose de color — es una limitación de esas fuentes
-    // externas, no de la app; se deja tal cual (por ref, no por refId).
-    const clave = `${pedido.numero}__${r.ref}`;
+  // Ventas Perdidas (Busint) y Planeación solo reportan un total cortado por
+  // CÓDIGO de referencia completo (ej. "CK3000"), sin desglose de color — es
+  // una limitación de esas fuentes externas, no de la app (ver nota arriba).
+  // ANTES ese total se restaba completo a CADA color de la referencia por
+  // separado, como si cada color ya tuviera esa cantidad cortada de forma
+  // individual: el color de mayor volumen "absorbía" el descuento y aun así
+  // quedaba con algo pendiente (por eso se seguía viendo), pero los colores
+  // con menos unidades daban pendiente negativo → 0 y desaparecían de
+  // "Programar Corte" aunque en realidad seguían pendientes (bug real:
+  // referencia CK3000 del pedido #1338, solo aparecía el color Negro).
+  // Ahora ese total externo se calcula UNA vez por código de referencia, se
+  // le resta lo que la app ya explica con certeza (cortesRealizados, sumado
+  // entre todos los colores de esa referencia) y el remanente se reparte
+  // proporcional al tamaño (total de unidades) de cada color — así ningún
+  // color queda escondido, y la suma entre colores sigue cuadrando con el
+  // total reportado por Busint/Planeación para toda la referencia.
+  const totalPorRefCode = new Map();
+  const cortadoAppPorRefCode = new Map();
+  (pedido.referencias || []).forEach((r) => {
+    totalPorRefCode.set(r.ref, (totalPorRefCode.get(r.ref) || 0) + (r.total || 0));
+    cortadoAppPorRefCode.set(r.ref, (cortadoAppPorRefCode.get(r.ref) || 0) + (cortadoPorRefApp.get(r.id) || 0));
+  });
+  const extraExternoPorRefCode = new Map();
+  totalPorRefCode.forEach((_totalRefCode, refCode) => {
+    const clave = `${pedido.numero}__${refCode}`;
     const vp = vpRefMap?.get(clave);
     const cortadoVP = vp
       ? (vp.totalFacturada || 0) + (vp.totalTrasExt || 0) + (vp.totalTrasCon || 0) + Math.abs(vp.totalVentasPerdidas || 0)
       : null;
     const cortadoPlanta = lotesCortadoMap?.has(clave) ? lotesCortadoMap.get(clave) : null;
-    const cortadoApp = cortadoPorRefApp.get(r.id) || 0;
-    const candidatos = [cortadoApp];
+    const cortadoAppRefCode = cortadoAppPorRefCode.get(refCode) || 0;
+    const candidatos = [cortadoAppRefCode];
     if (cortadoVP !== null) candidatos.push(cortadoVP);
     if (cortadoPlanta !== null) candidatos.push(cortadoPlanta);
-    const cortado = Math.max(...candidatos);
+    const cortadoRefCodeFinal = Math.max(...candidatos);
+    extraExternoPorRefCode.set(refCode, Math.max(0, cortadoRefCodeFinal - cortadoAppRefCode));
+  });
+  let totalPedido = 0;
+  let totalCortado = 0;
+  const porRef = (pedido.referencias || []).map((r) => {
+    const total = r.total || 0;
+    totalPedido += total;
+    const cortadoApp = cortadoPorRefApp.get(r.id) || 0;
+    const totalRefCode = totalPorRefCode.get(r.ref) || 0;
+    const extraRefCode = extraExternoPorRefCode.get(r.ref) || 0;
+    const shareColor = totalRefCode > 0 ? total / totalRefCode : 0;
+    const cortado = Math.min(total, cortadoApp + extraRefCode * shareColor);
     totalCortado += cortado;
     // Tallas que realmente faltan por cortar — el pedido original menos lo
     // ya registrado en cortesRealizados para esa talla puntual (no el total
@@ -4322,7 +4233,6 @@ function calcularCortadoPendiente(pedido, vpRefMap, lotesCortadoMap) {
   });
   return { totalPedido, totalCortado, totalPendiente: Math.max(0, totalPedido - totalCortado), porRef };
 }
-
 // Lista de pedidos activos con algo pendiente por cortar, ordenada por
 // fecha de despacho: vencidos primero (los más vencidos arriba), luego los
 // próximos a vencer, y al final los que no tienen fecha. Así el analista no
@@ -4339,7 +4249,6 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
     const fb = b.pedido.fechaDespacho || "9999-12-31";
     return fa.localeCompare(fb);
   });
-
   return (
     <div>
       <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
@@ -4407,7 +4316,6 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
     </div>
   );
 }
-
 // ─── PROGRAMACIÓN DE CORTE (día primero, por cliente y referencia) ────────────
 // Flujo: se elige el día para el que se va a programar, se ve lo disponible
 // agrupado por cliente (cruzando Planeación + Ventas Perdidas + Corte, igual
@@ -4498,7 +4406,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // reemplaza el corte completo dentro de cortesRealizados.
   const [editandoCantidades, setEditandoCantidades] = useState(null);
   const [cantidadesEdit, setCantidadesEdit] = useState(null);
-
   // Los cortes reales (cortesRealizados) guardan el ID interno del mesón
   // (form.meson usa m.id, no m.nombre), así que para mostrarlo hay que
   // resolverlo contra la planta correspondiente — si no se encuentra (o es
@@ -4509,7 +4416,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     const m = pl?.mesones?.find((mm) => mm.id === mesonId);
     return m?.nombre || mesonId;
   }
-
   // Click sobre un grupo (una referencia con todos sus colores) de
   // "Cronograma de Corte" o "Cortes Vencidos": si TODOS sus colores ya
   // tienen Programación Hecha, va directo a Entrada de Corte con el grupo
@@ -4536,7 +4442,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     setSubTab("produccion");
     setProduccionSubTab("mesones");
   }
-
   const activos = pedidos.filter((p) => p.estado === "activo");
   const pendientesProg = programacion.filter((pr) => pr.estado !== "cumplido");
   const cumplidosProg = [...programacion.filter((pr) => pr.estado === "cumplido")].sort(
@@ -4546,7 +4451,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // que puede repetirse entre colores) — con fallback a `ref` solo para
   // registros viejos que se hayan creado antes de guardar refId.
   const yaProgramados = new Set(pendientesProg.map((pr) => `${pr.pedidoId}__${pr.refId || pr.ref}`));
-
   // Costo diario del centro de costo: nómina total entre los días laborales
   // del mes (20, fijo — así trabaja la empresa). Se usa para saber si lo que
   // se va programando/programado en un día alcanza a cubrirlo.
@@ -4555,7 +4459,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   function precioRef(ref) {
     return preciosMap?.get(String(ref).trim()) || 0;
   }
-
   // Disponible para programar, agrupado por cliente → pedido, con el
   // desglose horizontal por talla (igual formato que el informe de Vigentes
   // en Diseño → Pedidos) — se excluye lo que ya tenga una programación
@@ -4621,7 +4524,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     });
     return items;
   }
-
   // Marca/desmarca una talla puntual de una referencia (item ya trae la
   // cantidad por defecto = lo que se ordenó de esa talla).
   function toggleItem(item) {
@@ -4654,12 +4556,10 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     const items = itemsDelCliente(cliente);
     toggleTodaLaRef(items);
   }
-
   // Valor estimado (cantidad seleccionada × precio de corte por referencia)
   // de lo que se tiene seleccionado en este momento — para comparar contra
   // el costo diario del centro de costo antes de confirmar.
   const ingresoSeleccion = [...seleccion.values()].reduce((s, it) => s + it.cantidad * precioRef(it.ref), 0);
-
   // Agrupa la selección (que está a nivel talla) de vuelta a nivel
   // referencia — un solo ítem de Programación por pedido+ref, con el
   // desglose de tallas/cantidades elegidas (puede ser menos que el
@@ -4693,7 +4593,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     onProgramar(items, fechaSel);
     setSeleccion(new Map());
   }
-
   const hoy = today();
   const pendientesConEstado = pendientesProg
     .map((pr) => {
@@ -4703,7 +4602,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     .sort((a, b) => a.fechaProgramada.localeCompare(b.fechaProgramada));
   const vencidosCount = pendientesConEstado.filter((p) => p.vencido).length;
   const vencidosProg = pendientesConEstado.filter((p) => p.vencido);
-
   // Pendientes agrupados por fecha programada — la base del calendario.
   const porDiaPendientes = new Map();
   pendientesConEstado.forEach((p) => {
@@ -4773,7 +4671,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     const grupos = agruparPorRef(items);
     return { items, ingreso, cubre: items.length > 0 && ingreso >= costoDia, grupos };
   }
-
   // Ritmo acumulado del mes: compara lo que YA se cortó de verdad (Entrada
   // de Corte real, no lo simplemente programado) desde el día 1 del mes
   // hasta una fecha puntual, contra lo que se esperaría llevar cortado a
@@ -4790,7 +4687,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
       .reduce((s, c) => s + (c.ingresoCorte || 0), 0);
     return { ritmo: ingresoReal / presupuestoAcumulado, ingresoReal, presupuestoAcumulado };
   }
-
   // Cuadrícula del calendario: una semana (7 días desde el lunes de
   // `calFecha`) o el mes completo de `calFecha` en filas de semana.
   const semanaBase = lunesDeSemanaISO(calFecha);
@@ -4805,7 +4701,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
       cursor = sumarDiasISO(cursor, 7);
     }
   }
-
   // "Programado Mes" — dashboard rápido de cuánto lleva programado el mes
   // que se está mirando en el calendario (pendiente + ya cumplido, ambos
   // cuentan como "programado" ese día) y cuánto hay programado hoy mismo.
@@ -4815,7 +4710,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   const ingresoMes = programacionMes.reduce((s, p) => s + (p.cantidadProgramada ?? p.cantidadPendiente ?? 0) * precioRef(p.ref), 0);
   const itemsHoyHoy = porDiaPendientes.get(hoy) || [];
   const unidadesHoy = itemsHoyHoy.reduce((s, p) => s + (p.cantidadProgramada ?? p.cantidadPendiente ?? 0), 0);
-
   const porSemana = new Map();
   pendientesConEstado.forEach((p) => {
     const lunes = lunesDeSemanaISO(p.fechaProgramada);
@@ -4823,13 +4717,11 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     porSemana.get(lunes).push(p);
   });
   const semanasOrdenadas = [...porSemana.keys()].sort();
-
   // Contador para la pestañita "Programación de Mesones": cuántos ítems
   // pendientes (no cumplidos) todavía necesitan algo ahí — o falta ingresar
   // sus datos teóricos, o ya se ingresaron pero falta que un analista los
   // apruebe.
   const mesonesPendientesCount = pendientesConEstado.filter((p) => !(p.etapa === "programacion_hecha" && p.aprobado === true)).length;
-
   return (
     <div>
       <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
@@ -4838,7 +4730,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
       <p style={{ margin: "0 0 20px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
         Elige el día, marca las referencias que se van a cortar ese día y confirma. El cumplimiento se revisa solo cuando el pendiente de cada referencia llega a 0.
       </p>
-
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
         <div
           onClick={() => setSubTab("programar")}
@@ -4865,7 +4756,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
           ⚠ CORTES VENCIDOS {vencidosCount > 0 && `(${vencidosCount})`}
         </div>
       </div>
-
       {subTab === "programar" && (
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 20, padding: "14px 18px", background: C.ink, borderRadius: 12 }}>
@@ -4884,11 +4774,9 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             </button>
             <span style={{ marginLeft: "auto", fontSize: 12, color: C.seam }}>{fmtFechaISO(fechaSel)}</span>
           </div>
-
           <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>
             DISPONIBLE PARA PROGRAMAR ({totalDisponibles})
           </div>
-
           <div style={{ display: "flex", gap: 16, marginBottom: 90 }}>
             <div style={{ width: 260, flexShrink: 0 }}>
               <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>
@@ -4917,7 +4805,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                   );
                 })}
               </select>
-
               {clienteSel &&
                 (() => {
                   const pedidosMap = porCliente.get(clienteSel);
@@ -4956,7 +4843,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                   );
                 })()}
             </div>
-
             <div style={{ flex: 1, minWidth: 0 }}>
               {!clienteSel ? (
                 <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
@@ -5166,7 +5052,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
               )}
             </div>
           </div>
-
           {seleccion.size > 0 && (
             <div
               style={{
@@ -5216,7 +5101,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
           )}
         </div>
       )}
-
       {subTab === "pendientes" && (
         <div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 20 }}>
@@ -5239,7 +5123,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
               );
             })()}
           </div>
-
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
             <button
               onClick={() => setVista("semana")}
@@ -5277,13 +5160,11 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
               </button>
             </div>
           </div>
-
           {!pendientesConEstado.length && (
             <div style={{ padding: "10px 14px", background: C.canvas, borderRadius: 8, marginBottom: 14, fontSize: 12, color: C.slate }}>
               No hay referencias programadas pendientes todavía — el calendario está vacío.
             </div>
           )}
-
           <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 6, marginBottom: 6 }}>
             {["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"].map((d) => (
               <div key={d} style={{ fontSize: 10, fontWeight: 800, color: C.slate, textTransform: "uppercase", textAlign: "center" }}>
@@ -5291,7 +5172,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
               </div>
             ))}
           </div>
-
           {(vista === "mes" ? semanasMesCal : [diasSemanaCal]).map((semana, wi) => (
             <div key={wi} style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 6, marginBottom: 6 }}>
               {semana.map((date) => {
@@ -5412,7 +5292,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
               📚 HISTÓRICOS
             </div>
           </div>
-
           {produccionSubTab === "mesones" && (() => {
             const datosMesones = datosDelDia(mesonesFecha);
             const grupoSel = mesonesGrupoKey ? datosMesones.grupos.find((g) => g.key === mesonesGrupoKey) : null;
@@ -5429,13 +5308,11 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     Hoy
                   </Btn>
                 </div>
-
                 {!datosMesones.grupos.length && (
                   <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
                     No hay nada programado para el {fmtFechaISO(mesonesFecha)}.
                   </div>
                 )}
-
                 {!!datosMesones.grupos.length && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: grupoSel ? 24 : 0 }}>
                     {datosMesones.grupos.map((g) => {
@@ -5470,7 +5347,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     })}
                   </div>
                 )}
-
                 {grupoSel && (
                   <ProgramacionMesonPanel
                     grupo={grupoSel}
@@ -5495,7 +5371,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
               </div>
             );
           })()}
-
           {produccionSubTab === "corte_real" && (() => {
             const datosCorteReal = datosDelDia(corteRealFecha);
             // Solo las referencias que ya tienen Programación de Mesones
@@ -5518,13 +5393,11 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     Hoy
                   </Btn>
                 </div>
-
                 {!listos.length && (
                   <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
                     No hay referencias listas para Ingreso de Corte Real el {fmtFechaISO(corteRealFecha)}.
                   </div>
                 )}
-
                 {!!listos.length && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: corteRealSel ? 24 : 0 }}>
                     {listos.map((g) => {
@@ -5560,7 +5433,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     })}
                   </div>
                 )}
-
                 {corteRealSel && pedidoDelCorteReal && (
                   <ProgramarCorteModal
                     inline
@@ -5582,7 +5454,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
               </div>
             );
           })()}
-
           {produccionSubTab === "aprobados" && (() => {
             // Ahora "Cortes Aprobados" lista los cortes REALES (ya
             // registrados en Entrada de Corte) que todavía no tienen lote —
@@ -5806,7 +5677,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
               </div>
             );
           })()}
-
           {produccionSubTab === "historicos" && (() => {
             // Se arma directo de cortesRealizados de cada pedido, filtrando
             // solo los que YA tienen lote (los que todavía no, están en
@@ -5996,7 +5866,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
           </table>
         )
       )}
-
       {subTab === "vencidos" && (
         !vencidosProg.length ? (
           <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
@@ -6066,7 +5935,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     </div>
   );
 }
-
 // ─── CENTRO DE COSTO (por cortador) ────────────────────────────────────────────
 // Primer centro de costo del aplicativo: por cada persona que aparece
 // cortando este mes (campo "cortador" en los registros de Programar Corte),
@@ -6090,7 +5958,6 @@ function CentroCosto({ pedidos, trabajadores }) {
   const [mesSel, setMesSel] = useState(new Date().getMonth() + 1);
   const [anioSel, setAnioSel] = useState(new Date().getFullYear());
   const norm = (s) => String(s || "").trim().toUpperCase();
-
   function enPeriodo(fechaISO) {
     if (!fechaISO) return false;
     if (periodo === "dia") return fechaISO === fechaDia;
@@ -6098,7 +5965,6 @@ function CentroCosto({ pedidos, trabajadores }) {
     if (periodo === "anio") return fechaISO.slice(0, 4) === String(anioSel);
     return false;
   }
-
   // Costo de nómina para el periodo elegido, a partir del sueldo mensual
   // actual de cada trabajador (no hay histórico de nómina por mes guardado).
   function costoPeriodo(sueldoMensual) {
@@ -6109,11 +5975,9 @@ function CentroCosto({ pedidos, trabajadores }) {
     if (periodo === "anio") return sueldoMensual * 12;
     return sueldoMensual;
   }
-
   const cortesPeriodo = pedidos
     .flatMap((p) => p.cortesRealizados || [])
     .filter((c) => enPeriodo(c.fecha));
-
   const porCortador = new Map();
   cortesPeriodo.forEach((c) => {
     const nombre = (c.cortador || "").trim() || "(Sin cortador asignado)";
@@ -6123,7 +5987,6 @@ function CentroCosto({ pedidos, trabajadores }) {
     acc.unidades += c.totalUnidades || 0;
     acc.ingreso += c.ingresoCorte || 0;
   });
-
   const filas = [];
   const usados = new Set();
   (trabajadores || []).forEach((t) => {
@@ -6143,21 +6006,18 @@ function CentroCosto({ pedidos, trabajadores }) {
     filas.push({ nombre: datos.nombre, unidades: datos.unidades, ingreso: datos.ingreso, costo: 0, enNomina: false });
   });
   filas.sort((a, b) => b.ingreso - a.ingreso);
-
   const totalUnidades = filas.reduce((s, f) => s + f.unidades, 0);
   const totalIngreso = filas.reduce((s, f) => s + f.ingreso, 0);
   const totalCosto = filas.reduce((s, f) => s + f.costo, 0);
   const rentabilidad = totalIngreso - totalCosto;
   const pctCobertura = totalCosto > 0 ? (totalIngreso / totalCosto) * 100 : 0;
   const estado = totalCosto === 0 ? null : totalIngreso >= totalCosto ? "ok" : "bad";
-
   const etiquetaPeriodo =
     periodo === "dia"
       ? fmtFechaISO(fechaDia)
       : periodo === "mes"
       ? `${["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"][mesSel - 1]} ${anioSel}`
       : String(anioSel);
-
   const btnPeriodo = (id, label) => (
     <button
       onClick={() => setPeriodo(id)}
@@ -6175,7 +6035,6 @@ function CentroCosto({ pedidos, trabajadores }) {
       {label}
     </button>
   );
-
   return (
     <div>
       <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
@@ -6310,7 +6169,6 @@ function CentroCosto({ pedidos, trabajadores }) {
     </div>
   );
 }
-
 // ─── HISTÓRICO ────────────────────────────────────────────────────────────────
 // Ícono/color/etiqueta según motivoCierre (mismo criterio que motivoCierreInfo
 // en App.js) — un único estado de cierre ("cerrado"), con el motivo aparte.
@@ -6326,7 +6184,6 @@ function motivoCierreInfo(motivo) {
       return { icon: "✅", color: C.green, bg: C.greenBg, label: "Cumplido", desc: "Cumplido" };
   }
 }
-
 function Historico({ pedidos, onSelectPedido }) {
   // Un único estado de cierre ("cerrado"), con el motivo en motivoCierre —
   // lo pone "🧊 Congelar como base de Corte" (Vigentes por Cliente, módulo
@@ -6334,7 +6191,6 @@ function Historico({ pedidos, onSelectPedido }) {
   // Busint, o a mano desde el detalle del pedido en Pedidos.
   const cumplidos = pedidos.filter((p) => p.estado === "cerrado" || p.estado === "terminado");
   const [filtro, setFiltro] = useState("");
-
   const filtrados = filtro
     ? cumplidos.filter(
         (p) =>
@@ -6342,7 +6198,6 @@ function Historico({ pedidos, onSelectPedido }) {
           p.numero?.includes(filtro)
       )
     : cumplidos;
-
   return (
     <div>
       <div
@@ -6473,7 +6328,6 @@ function Historico({ pedidos, onSelectPedido }) {
     </div>
   );
 }
-
 // ─── ROOT MÓDULO CORTE ────────────────────────────────────────────────────────
 export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeAprobarCorte }) {
   const [view, setView] = useState("dashboard");
@@ -6535,7 +6389,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
   useEffect(() => {
     if (view === "programacion" && navProduccion) setNavProduccion(null);
   }, [view]);
-
   useEffect(() => {
     const unsubs = [];
     async function init() {
@@ -6579,7 +6432,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     init();
     return () => unsubs.forEach((fn) => fn());
   }, []);
-
   const ultimaCargaVP = ventasPerdidasCargas.reduce(
     (max, c) => (!max || (c.creadoTs || 0) > (max.creadoTs || 0) ? c : max),
     null
@@ -6612,18 +6464,15 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
       lotesCortadoMap.set(clave, (lotesCortadoMap.get(clave) || 0) + cantidad);
     });
   }
-
   const ultimaCargaPrecios = preciosCorteCargas.reduce(
     (max, c) => (!max || (c.creadoTs || 0) > (max.creadoTs || 0) ? c : max),
     null
   );
   const preciosMap = new Map((ultimaCargaPrecios?.precios || []).map((p) => [String(p.ref).trim(), p.precio]));
-
   // Números de lote ya usados (el id del doc en corte_lotes ES el número de
   // lote) — se usa para no dejar repetir un número de lote al registrar un
   // corte.
   const lotesExistentes = new Set(lotesCorte.map((l) => String(l.id).trim().toUpperCase()));
-
   // Une los nombres de "Cortadores" (lista histórica) con los de "Nómina"
   // (lo que se sube por archivo o se agrega a mano), sin duplicados, para
   // que el desplegable de "Cortador" en Programar Corte siempre incluya a
@@ -6635,7 +6484,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     (corteConfig.nomina?.trabajadores || []).forEach((t) => nombres.set(t.nombre.trim().toUpperCase(), t.nombre));
     return [...nombres.values()].sort().map((nombre) => ({ id: nombre, nombre }));
   })();
-
   // Largo de trazo ya comprometido en un mesón (o su grupo compartido) para
   // una fecha+planta puntual. La capacidad de un mesón (10m, 14m...) es el
   // LARGO de la mesa donde se tiende el trazo — NO los metros totales de
@@ -6668,7 +6516,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     });
     return total;
   }
-
   // Igual que metrosUsadosMeson pero devuelve los ítems (no solo la suma) —
   // se usa para dibujar el timeline visual del mesón: qué referencias ya
   // tienen horario estimado ese día en ese mesón, y en qué franja.
@@ -6698,7 +6545,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     });
     return items;
   }
-
   // Tiempo teórico por tipo de tela: promedio real (minutos ÷ metros
   // tendidos) de todos los cortes ya registrados con ese tipo de tela — se
   // va afinando solo a medida que se registran más cortes reales.
@@ -6719,7 +6565,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     });
     return out;
   })();
-
   async function savePedido(pedido) {
     setPedidos((ps) =>
       ps.some((p) => p.id === pedido.id)
@@ -6728,7 +6573,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     );
     await fsSave("pedidos_activos", pedido.id, pedido);
   }
-
   // Registra un corte real (Entrada de Corte) directamente desde "Ingreso de
   // Corte Real", SIN pasar por la pantalla completa del pedido — así el
   // cortador no pierde de vista dónde estaba. Misma lógica que
@@ -6749,7 +6593,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     }
     savePedido(updated);
   }
-
   // Programa en lote una o varias referencias puntuales (no el pedido
   // completo) para el mismo día — items viene de ProgramacionCorteView, ya
   // agrupado por pedido+referencia con el desglose de tallas/cantidades que
@@ -6951,15 +6794,12 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
       }
     });
   }, [pedidos, programacionCorte, ventasPerdidasCargas, planeacionCargas]);
-
   async function saveConfig(cfg) {
     setCorteConfig(cfg);
     await fsSave("corte_config", "main", cfg);
   }
-
   const selPedido = pedidos.find((p) => p.id === selPedidoId);
   const isAdmin = currentUser?.isAdmin;
-
   const NAV = [
     { id: "dashboard", icon: "◉", label: "Dashboard" },
     { id: "cola", icon: "📋", label: "Cola Sugerida" },
@@ -6969,7 +6809,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     { id: "costo", icon: "💰", label: "Centro de Costo" },
     ...(isAdmin ? [{ id: "admin", icon: "⚙", label: "Admin Corte" }] : []),
   ];
-
   if (loading)
     return (
       <div
@@ -6987,7 +6826,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
         </div>
       </div>
     );
-
   return (
     <div
       style={{
@@ -6998,7 +6836,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
       }}
     >
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
-
       {/* Sidebar */}
       <div
         style={{
@@ -7147,7 +6984,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
           )}
         </nav>
       </div>
-
       {/* Main */}
       <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
         <div style={{ maxWidth: 1100, margin: "0 auto" }}>
