@@ -4769,13 +4769,15 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
         >
           ⚠ CORTES VENCIDOS {vencidosCount > 0 && `(${vencidosCount})`}
         </div>
-        <div
-          onClick={() => setSubTab("manual")}
-          title="Cargar un corte que ya se hizo pero nunca se registró en ATLAS, aunque el pedido ya no aparezca en la cola normal"
-          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: subTab === "manual" ? C.amber : C.white, color: subTab === "manual" ? C.white : C.amber, border: `1px solid ${subTab === "manual" ? C.amber : C.amberBg}` }}
-        >
-          ✎ REGISTRAR MANUAL
-        </div>
+        {isAdmin && (
+          <div
+            onClick={() => setSubTab("manual")}
+            title="Cargar un corte que ya se hizo pero nunca se registró en ATLAS, aunque el pedido ya no aparezca en la cola normal — solo administrador"
+            style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: subTab === "manual" ? C.amber : C.white, color: subTab === "manual" ? C.white : C.amber, border: `1px solid ${subTab === "manual" ? C.amber : C.amberBg}` }}
+          >
+            ✎ REGISTRAR MANUAL
+          </div>
+        )}
       </div>
       {subTab === "programar" && (
         <div>
@@ -6023,7 +6025,12 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
           </table>
         )
       )}
-      {subTab === "manual" && (
+      {subTab === "manual" && !isAdmin && (
+        <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
+          🔒 Esta sección es solo para administradores.
+        </div>
+      )}
+      {subTab === "manual" && isAdmin && (
         <div>
           <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
             Busca un pedido por número o cliente — sin importar si ya está cerrado o terminado — para cargar un corte que sí se hizo pero nunca se registró en ATLAS a tiempo. Al guardar, queda en "Cortes Aprobados" para ponerle lote, igual que cualquier otro corte. Si al pedido le queda algo pendiente después de esto, vuelve solo a la cola normal.
