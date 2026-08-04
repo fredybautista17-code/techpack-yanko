@@ -4219,7 +4219,9 @@ function calcularCortadoPendiente(pedido, vpRefMap, lotesCortadoMap) {
     const totalRefCode = totalPorRefCode.get(r.ref) || 0;
     const extraRefCode = extraExternoPorRefCode.get(r.ref) || 0;
     const shareColor = totalRefCode > 0 ? total / totalRefCode : 0;
-    const cortado = Math.min(total, cortadoApp + extraRefCode * shareColor);
+    // Redondeado a unidades enteras — son prendas, no se puede cortar una
+    // fracción, y el reparto proporcional entre colores no da números exactos.
+    const cortado = Math.min(total, Math.round(cortadoApp + extraRefCode * shareColor));
     totalCortado += cortado;
     // Tallas que realmente faltan por cortar — el pedido original menos lo
     // ya registrado en cortesRealizados para esa talla puntual (no el total
