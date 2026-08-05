@@ -4,6 +4,7 @@ import ModuloContabilidad from "./modulo-contabilidad";
 import ModuloPlaneacion from "./modulo-planeacion";
 import ModuloPlanta from "./modulo-planta";
 import ModuloBodega from "./modulo-bodega";
+import ModuloNomina from "./modulo-nomina";
 import { initializeApp } from "firebase/app";
 import {
   getFirestore,
@@ -3957,7 +3958,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     </div>
   );
 }
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessDiseno, canAccessPedidosArea, canAccessKpis, onGoArea, protos, capsulas, pedidos }) {
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canAccessKpis, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
@@ -3997,6 +3998,11 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
       id: "bodega_area", icon: "📦", label: "Bodega", desc: "Despachos y abonos de Venezuela — montar, aprobar y llevar el saldo", color: T.violet, bg: T.violetBg,
       stats: [],
       permiso: canAccessBodega,
+    },
+    {
+      id: "nomina_area", icon: "👷", label: "Nómina", desc: "Producción por proceso, horas sueltas y resumen semanal de pago", color: T.amber, bg: T.amberBg,
+      stats: [],
+      permiso: canAccessNomina,
     },
     {
       id: "kpis_area", icon: "🎯", label: "KPIs", desc: "Indicadores por área y persona en toda la compañía — Diseño, Corte, Ventas, Contabilidad, Planeación...", color: T.coral, bg: T.coralBg,
@@ -5095,7 +5101,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // KPIs ahora es un módulo de compañía completo (no solo Diseño — cubre
   // Corte, Ventas, Contabilidad, Planeación, etc.), por eso su permiso vive
   // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
-  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["kpis", "🎯 KPIs"]];
+  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["kpis", "🎯 KPIs"]];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
   function ListEditor({ listKey, title }) {
     return (
@@ -6054,7 +6060,21 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos, currentUser }) {
         // interno — por eso, al marcar la talla de un color en Programar, se
         // marcaban también las tallas de los demás colores (comparten id).
         // La clave correcta es ref + descripción (el color).
-        const claveColor = (r) => `${r.ref}__${r.descripcion}`;
+        //
+        // OJO: la descripción llega como "PINTA · COLOR" (ej. "G · AZUL
+        // CLARO") — PINTA es el código corto y estable de Busint para ese
+        // color, COLOR es el nombre libre, que Busint a veces corrige o
+        // escribe distinto entre una sincronización y otra (ej. pasó de "G ·
+        // AZUL BEBE" a "G · AZUL CLARO", mismo color físico). Usar el texto
+        // completo como clave hacía que ese cambio de nombre generara una
+        // identidad nueva para el color — el corte real ya registrado
+        // (ligado al id viejo) quedaba huérfano y el color volvía a aparecer
+        // como pendiente aunque ya se hubiera cortado (bug real: pedido
+        // #1474, ref 82-511, color G). Por eso la clave usa solo la PINTA
+        // (la parte antes de " · "), que es la que de verdad identifica el
+        // color de forma estable — el nombre puede cambiar sin romper el
+        // enlace con lo ya cortado.
+        const claveColor = (r) => `${r.ref}__${(r.descripcion || "").split(" · ")[0].trim()}`;
         const precioPorRef = new Map((existente?.referencias || []).map((r) => [claveColor(r), r.precioCortePrenda || 0]));
         // El reporte de Busint nunca trae un id propio para cada referencia
         // (r.id siempre llega vacío), así que sin esto se generaba un uid()
@@ -7517,6 +7537,7 @@ function AppInner() {
   const canAccessPlaneacion = moduloVisible(userRoleData, "planeacion", currentUser?.isAdmin);
   const canAccessPlanta = moduloVisible(userRoleData, "planta", currentUser?.isAdmin);
   const canAccessBodega = moduloVisible(userRoleData, "bodega", currentUser?.isAdmin);
+  const canAccessNomina = moduloVisible(userRoleData, "nomina", currentUser?.isAdmin);
   // "admin_diseno" es un permiso aparte del admin general: da entrada al panel
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
@@ -7577,6 +7598,9 @@ function AppInner() {
     ...(canAccessBodega
       ? [{ id: "bodega_area", icon: "📦", label: "Bodega", items: [{ id: "bodega_area", icon: "📦", label: "Módulo Bodega" }] }]
       : []),
+    ...(canAccessNomina
+      ? [{ id: "nomina_area", icon: "👷", label: "Nómina", items: [{ id: "nomina_area", icon: "👷", label: "Módulo Nómina" }] }]
+      : []),
     // KPIs es su propia área de nivel superior (cubre toda la compañía).
     // A diferencia de Contabilidad/Planeación, no es un módulo externo aparte
     // (moduloActivo) — se renderiza dentro del layout normal usando el mismo
@@ -7599,6 +7623,7 @@ function AppInner() {
     if (itemId === "planeacion_area") return moduloActivo === "planeacion";
     if (itemId === "planta_area") return moduloActivo === "planta";
     if (itemId === "bodega_area") return moduloActivo === "bodega";
+    if (itemId === "nomina_area") return moduloActivo === "nomina";
     return view === itemId;
   }
   function navClick(itemId) {
@@ -7607,6 +7632,7 @@ function AppInner() {
     if (itemId === "planeacion_area") { setModuloActivo("planeacion"); return; }
     if (itemId === "planta_area") { setModuloActivo("planta"); return; }
     if (itemId === "bodega_area") { setModuloActivo("bodega"); return; }
+    if (itemId === "nomina_area") { setModuloActivo("nomina"); return; }
     setView(itemId);
   }
   // "Planeador puro": solo tiene Corte y NINGUNA otra sección de Diseño (ni
@@ -7636,6 +7662,9 @@ function AppInner() {
   }
   if (moduloActivo === "bodega") {
     return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+  }
+  if (moduloActivo === "nomina") {
+    return <ModuloNomina currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   return (
     <div style={{ minHeight: "100vh", background: T.canvas, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,sans-serif" }}>
@@ -7706,12 +7735,13 @@ function AppInner() {
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
             {view === "dashboard" && (
-              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis}
+              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
                   else if (id === "planeacion_area") { setModuloActivo("planeacion"); }
                   else if (id === "planta_area") { setModuloActivo("planta"); }
                   else if (id === "bodega_area") { setModuloActivo("bodega"); }
+                  else if (id === "nomina_area") { setModuloActivo("nomina"); }
                   else if (id === "kpis_area") { setAreaAbierta("kpis_area"); setView("kpis"); }
                   else if (id === "pedidos_area") {
                     setAreaAbierta("pedidos_area");
