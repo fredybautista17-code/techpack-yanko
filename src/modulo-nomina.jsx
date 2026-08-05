@@ -1,0 +1,771 @@
+import { useState, useEffect, useMemo } from "react";
+import { initializeApp, getApps } from "firebase/app";
+import {
+  getFirestore,
+  collection,
+  doc,
+  setDoc,
+  deleteDoc,
+  onSnapshot,
+} from "firebase/firestore";
+const firebaseConfig = {
+  apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
+  authDomain: "techpack-yanko-f37b8.firebaseapp.com",
+  projectId: "techpack-yanko-f37b8",
+  storageBucket: "techpack-yanko-f37b8.firebasestorage.app",
+  messagingSenderId: "700796768091",
+  appId: "1:700796768091:web:5ab0db90c17390e6e7547e",
+};
+const fbApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
+const db = getFirestore(fbApp);
+async function fsSave(col, id, data) {
+  await setDoc(doc(db, col, id), data, { merge: true });
+}
+async function fsDelete(col, id) {
+  await deleteDoc(doc(db, col, id));
+}
+// ─── TOKENS (mismos de los demás módulos, para mantener el mismo look) ────────
+const C = {
+  ink: "#1A1A2E",
+  slate: "#5A5A7A",
+  border: "#E8E2DB",
+  canvas: "#F7F4F0",
+  white: "#FFFFFF",
+  seam: "#C8B8A2",
+  green: "#2D9E6B",
+  greenBg: "#EBF7F2",
+  red: "#E85D4A",
+  redBg: "#FDF0EE",
+  blue: "#3D6B9E",
+  blueBg: "#EBF1F7",
+  amber: "#C47C1A",
+  amberBg: "#FDF5E6",
+  violet: "#7B5EA7",
+  violetBg: "#F3EEF9",
+};
+function uid() {
+  return Math.random().toString(36).slice(2, 9);
+}
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
+function fmtNum(n) {
+  return Number(n || 0).toLocaleString("es-CO");
+}
+function fmtMoney(n) {
+  return "$ " + Number(n || 0).toLocaleString("es-CO", { maximumFractionDigits: 0 });
+}
+function fmtFechaISO(iso) {
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+}
+function fmtFechaHora(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const fecha = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+  const hora = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return `${fecha} ${hora}`;
+}
+function mondayOf(d) {
+  const x = new Date(d);
+  const day = x.getDay();
+  x.setDate(x.getDate() + (day === 0 ? -6 : 1 - day));
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function addDays(d, n) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
+}
+function isoDate(d) {
+  return d.toISOString().slice(0, 10);
+}
+const MONTHS_SHORT = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+// ─── UI ATOMS (mismas de los demás módulos) ───────────────────────────────────
+function Btn({ children, onClick, variant = "primary", small, disabled }) {
+  const S = {
+    primary: { background: C.ink, color: C.white, border: "none" },
+    secondary: { background: C.canvas, color: C.ink, border: `1px solid ${C.border}` },
+    success: { background: C.green, color: C.white, border: "none" },
+    danger: { background: C.red, color: C.white, border: "none" },
+    ghost: { background: "transparent", color: C.blue, border: `1.5px solid ${C.blue}` },
+  };
+  const s = S[variant] || S.primary;
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        ...s,
+        borderRadius: 8,
+        padding: small ? "5px 10px" : "9px 18px",
+        fontWeight: 700,
+        fontSize: small ? 12 : 13,
+        cursor: disabled ? "not-allowed" : "pointer",
+        fontFamily: "inherit",
+        opacity: disabled ? 0.5 : 1,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+function Field({ label, children }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>
+        {label}
+      </label>
+      {children}
+    </div>
+  );
+}
+function FInput({ value, onChange, placeholder, type = "text" }) {
+  return (
+    <input
+      type={type}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
+    />
+  );
+}
+function FSel({ value, onChange, options, placeholder = "Seleccionar..." }) {
+  return (
+    <select
+      value={value || ""}
+      onChange={(e) => onChange(e.target.value)}
+      style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
+    >
+      <option value="">{placeholder}</option>
+      {(options || []).map((o) => (
+        <option key={o.value ?? o} value={o.value ?? o}>{o.label ?? o}</option>
+      ))}
+    </select>
+  );
+}
+function Modal({ title, onClose, children, width = 560 }) {
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+      onClick={onClose}
+    >
+      <div
+        style={{ background: C.white, borderRadius: 14, width: "100%", maxWidth: width, maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ padding: "18px 24px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+          <span style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>{title}</span>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: C.slate }}>×</button>
+        </div>
+        <div style={{ padding: 24, overflowY: "auto" }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+function KPI({ icon, label, value, color, bg, sub }) {
+  return (
+    <div style={{ background: bg || C.canvas, borderRadius: 12, padding: "16px 18px", border: `1px solid ${color}22` }}>
+      <div style={{ fontSize: 22, marginBottom: 4 }}>{icon}</div>
+      <div style={{ fontSize: 22, fontWeight: 900, color, lineHeight: 1 }}>{value}</div>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: 4, fontWeight: 600 }}>{label}</div>
+      {sub && <div style={{ fontSize: 11, color, fontWeight: 700, marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
+function Tabla({ columnas, filas, vacio, onRowClick }) {
+  if (!filas.length) {
+    return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>{vacio || "Sin datos."}</div>;
+  }
+  return (
+    <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+        <thead>
+          <tr style={{ background: C.ink, position: "sticky", top: 0 }}>
+            {columnas.map((c) => (
+              <th key={c.key} style={{ padding: "9px 12px", color: C.seam, textAlign: c.align || "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
+                {c.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {filas.map((f, i) => (
+            <tr
+              key={f.id ?? i}
+              onClick={onRowClick ? () => onRowClick(f) : undefined}
+              style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}`, cursor: onRowClick ? "pointer" : "default" }}
+            >
+              {columnas.map((c) => (
+                <td key={c.key} style={{ padding: "7px 12px", textAlign: c.align || "left", whiteSpace: "nowrap", color: c.color ? c.color(f) : C.ink }}>
+                  {c.render ? c.render(f) : f[c.key]}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+// ─── TRABAJADORES ───────────────────────────────────────────────────────────
+// Maestro simple: nombre + tarifa por hora (usada para calcular las "Horas
+// Sueltas") + activo/inactivo (un trabajador inactivo no aparece en los
+// selects de los formularios de registro, pero su historial queda intacto).
+function TrabajadorModal({ trabajador, onSave, onClose }) {
+  const [form, setForm] = useState({
+    nombre: trabajador?.nombre || "",
+    tarifaHora: trabajador?.tarifaHora ?? "",
+    activo: trabajador?.activo ?? true,
+  });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  function guardar() {
+    if (!form.nombre.trim()) return;
+    onSave({ nombre: form.nombre.trim(), tarifaHora: Number(form.tarifaHora) || 0, activo: !!form.activo });
+    onClose();
+  }
+  return (
+    <Modal title={trabajador ? "Editar Trabajador" : "Nuevo Trabajador"} onClose={onClose} width={440}>
+      <Field label="Nombre"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Carlos Javier González" /></Field>
+      <Field label="Tarifa por hora (para tareas sueltas)"><FInput type="number" value={form.tarifaHora} onChange={set("tarifaHora")} /></Field>
+      {trabajador && (
+        <Field label="Estado">
+          <div style={{ display: "flex", gap: 6 }}>
+            {[[true, "Activo"], [false, "Inactivo"]].map(([v, label]) => (
+              <button key={label} type="button" onClick={() => set("activo")(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${form.activo === v ? C.green : C.border}`, background: form.activo === v ? C.greenBg : C.white, color: form.activo === v ? C.green : C.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
+            ))}
+          </div>
+        </Field>
+      )}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar} disabled={!form.nombre.trim()}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete }) {
+  const [modal, setModal] = useState(null); // null | "nuevo" | trabajador
+  const [confirmDel, setConfirmDel] = useState(null);
+  const ordenados = [...trabajadores].sort((a, b) => a.nombre.localeCompare(b.nombre));
+  return (
+    <div>
+      {modal && (
+        <TrabajadorModal
+          trabajador={modal === "nuevo" ? null : modal}
+          onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {confirmDel && (
+        <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>¿Eliminar a <strong>{confirmDel.nombre}</strong>? Su historial de producción/horas ya registrado no se borra.</div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={() => { onDelete(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+          </div>
+        </Modal>
+      )}
+      {isAdmin && (
+        <div style={{ marginBottom: 16 }}>
+          <Btn onClick={() => setModal("nuevo")}>+ Nuevo Trabajador</Btn>
+        </div>
+      )}
+      <Tabla
+        vacio="Sin trabajadores registrados."
+        columnas={[
+          { key: "nombre", label: "Nombre" },
+          { key: "tarifaHora", label: "Tarifa/Hora", align: "right", render: (f) => fmtMoney(f.tarifaHora) },
+          { key: "activo", label: "Estado", render: (f) => (
+            <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: f.activo ? C.greenBg : C.redBg, color: f.activo ? C.green : C.red }}>
+              {f.activo ? "ACTIVO" : "INACTIVO"}
+            </span>
+          ) },
+          ...(isAdmin ? [{
+            key: "acciones", label: "", align: "right",
+            render: (f) => (
+              <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <span onClick={(e) => { e.stopPropagation(); setModal(f); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>Editar</span>
+                <span onClick={(e) => { e.stopPropagation(); setConfirmDel(f); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>
+              </span>
+            ),
+          }] : []),
+        ]}
+        filas={ordenados}
+      />
+    </div>
+  );
+}
+// ─── PRECIOS POR PROCESO ────────────────────────────────────────────────────
+// Lista abierta (no un catálogo fijo): los nombres de proceso (Terminación,
+// Bajada de Vinilo, etc.) son texto libre que viene del ERP en Planeación —
+// acá el admin va agregando cada uno con su precio por unidad a medida que
+// aparecen, en vez de un enum cerrado que se quede corto.
+function ProcesoModal({ proceso, onSave, onClose }) {
+  const [form, setForm] = useState({ proceso: proceso?.proceso || "", precioUnidad: proceso?.precioUnidad ?? "" });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  function guardar() {
+    if (!form.proceso.trim()) return;
+    onSave({ proceso: form.proceso.trim(), precioUnidad: Number(form.precioUnidad) || 0 });
+    onClose();
+  }
+  return (
+    <Modal title={proceso ? "Editar Proceso" : "Nuevo Proceso"} onClose={onClose} width={420}>
+      <Field label="Nombre del Proceso"><FInput value={form.proceso} onChange={set("proceso")} placeholder="Ej: TERMINACION, BAJADA DE VINILO" /></Field>
+      <Field label="Precio por Unidad"><FInput type="number" value={form.precioUnidad} onChange={set("precioUnidad")} /></Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar} disabled={!form.proceso.trim()}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+function PreciosProcesoView({ precios, isAdmin, onSave, onDelete }) {
+  const [modal, setModal] = useState(null);
+  const [confirmDel, setConfirmDel] = useState(null);
+  const ordenados = [...precios].sort((a, b) => a.proceso.localeCompare(b.proceso));
+  return (
+    <div>
+      {modal && (
+        <ProcesoModal
+          proceso={modal === "nuevo" ? null : modal}
+          onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {confirmDel && (
+        <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>¿Eliminar el proceso <strong>{confirmDel.proceso}</strong>? Los registros de producción ya guardados con este proceso no se borran.</div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={() => { onDelete(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+          </div>
+        </Modal>
+      )}
+      {isAdmin && (
+        <div style={{ marginBottom: 16 }}>
+          <Btn onClick={() => setModal("nuevo")}>+ Nuevo Proceso</Btn>
+        </div>
+      )}
+      <Tabla
+        vacio="Sin procesos con precio registrado."
+        columnas={[
+          { key: "proceso", label: "Proceso" },
+          { key: "precioUnidad", label: "Precio/Unidad", align: "right", render: (f) => fmtMoney(f.precioUnidad) },
+          ...(isAdmin ? [{
+            key: "acciones", label: "", align: "right",
+            render: (f) => (
+              <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <span onClick={(e) => { e.stopPropagation(); setModal(f); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>Editar</span>
+                <span onClick={(e) => { e.stopPropagation(); setConfirmDel(f); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>
+              </span>
+            ),
+          }] : []),
+        ]}
+        filas={ordenados}
+      />
+    </div>
+  );
+}
+// ─── REGISTRAR PRODUCCIÓN (pago por pieza / proceso) ───────────────────────
+function RegistrarProduccionView({ trabajadores, precios, produccion, currentUser, onGuardar, onBorrar, isAdmin }) {
+  const [trabajadorId, setTrabajadorId] = useState("");
+  const [fecha, setFecha] = useState(today());
+  const [proceso, setProceso] = useState("");
+  const [referencia, setReferencia] = useState("");
+  const [cantidad, setCantidad] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const trabajadoresActivos = trabajadores.filter((t) => t.activo);
+  const precioSel = precios.find((p) => p.proceso === proceso);
+  const total = (Number(cantidad) || 0) * (precioSel?.precioUnidad || 0);
+  const puedeGuardar = trabajadorId && proceso && Number(cantidad) > 0 && !guardando;
+  async function guardar() {
+    if (!puedeGuardar) return;
+    setGuardando(true);
+    try {
+      const trabajador = trabajadores.find((t) => t.id === trabajadorId);
+      await onGuardar({
+        id: uid(),
+        trabajadorId,
+        trabajadorNombre: trabajador?.nombre || "",
+        fecha,
+        proceso,
+        referencia: referencia.trim(),
+        cantidad: Number(cantidad) || 0,
+        precioUnidad: precioSel?.precioUnidad || 0,
+        total,
+        creadoPor: currentUser?.name || currentUser?.username || "",
+        creadoEn: new Date().toISOString(),
+      });
+      setReferencia("");
+      setCantidad("");
+    } finally {
+      setGuardando(false);
+    }
+  }
+  const recientes = [...produccion].sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || "")).slice(0, 15);
+  return (
+    <div>
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20, marginBottom: 24, maxWidth: 620 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Trabajador">
+            <FSel value={trabajadorId} onChange={setTrabajadorId} options={trabajadoresActivos.map((t) => ({ value: t.id, label: t.nombre }))} />
+          </Field>
+          <Field label="Fecha"><FInput type="date" value={fecha} onChange={setFecha} /></Field>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Proceso">
+            <FSel value={proceso} onChange={setProceso} options={precios.map((p) => ({ value: p.proceso, label: `${p.proceso} (${fmtMoney(p.precioUnidad)}/und)` }))} />
+          </Field>
+          <Field label="Referencia (opcional)"><FInput value={referencia} onChange={setReferencia} placeholder="Ej: CK3000" /></Field>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "end" }}>
+          <Field label="Cantidad"><FInput type="number" value={cantidad} onChange={setCantidad} /></Field>
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>Total</div>
+            <div style={{ padding: "9px 12px", background: C.canvas, borderRadius: 8, fontWeight: 800, color: C.ink, fontSize: 14 }}>{fmtMoney(total)}</div>
+          </div>
+        </div>
+        {!proceso && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>Selecciona un proceso con precio ya configurado en "Precios por Proceso".</div>}
+        <Btn onClick={guardar} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Registrar Producción"}</Btn>
+      </div>
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>ÚLTIMOS REGISTROS</div>
+      <Tabla
+        vacio="Sin registros de producción todavía."
+        columnas={[
+          { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+          { key: "trabajadorNombre", label: "Trabajador" },
+          { key: "proceso", label: "Proceso" },
+          { key: "referencia", label: "Referencia", render: (f) => f.referencia || "—" },
+          { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
+          { key: "precioUnidad", label: "Precio/Und", align: "right", render: (f) => fmtMoney(f.precioUnidad) },
+          { key: "total", label: "Total", align: "right", render: (f) => fmtMoney(f.total) },
+          ...(isAdmin ? [{ key: "acciones", label: "", align: "right", render: (f) => <span onClick={(e) => { e.stopPropagation(); onBorrar(f.id); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span> }] : []),
+        ]}
+        filas={recientes}
+      />
+    </div>
+  );
+}
+// ─── REGISTRAR HORAS SUELTAS (tareas no vinculadas a un producto) ──────────
+function RegistrarHorasView({ trabajadores, horas, currentUser, onGuardar, onBorrar, isAdmin }) {
+  const [trabajadorId, setTrabajadorId] = useState("");
+  const [fecha, setFecha] = useState(today());
+  const [concepto, setConcepto] = useState("");
+  const [horasCant, setHorasCant] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const trabajadoresActivos = trabajadores.filter((t) => t.activo);
+  const trabajadorSel = trabajadores.find((t) => t.id === trabajadorId);
+  const total = (Number(horasCant) || 0) * (trabajadorSel?.tarifaHora || 0);
+  const puedeGuardar = trabajadorId && concepto.trim() && Number(horasCant) > 0 && !guardando;
+  async function guardar() {
+    if (!puedeGuardar) return;
+    setGuardando(true);
+    try {
+      await onGuardar({
+        id: uid(),
+        trabajadorId,
+        trabajadorNombre: trabajadorSel?.nombre || "",
+        fecha,
+        concepto: concepto.trim(),
+        horas: Number(horasCant) || 0,
+        tarifaHora: trabajadorSel?.tarifaHora || 0,
+        total,
+        creadoPor: currentUser?.name || currentUser?.username || "",
+        creadoEn: new Date().toISOString(),
+      });
+      setConcepto("");
+      setHorasCant("");
+    } finally {
+      setGuardando(false);
+    }
+  }
+  const recientes = [...horas].sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || "")).slice(0, 15);
+  return (
+    <div>
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20, marginBottom: 24, maxWidth: 620 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Trabajador">
+            <FSel value={trabajadorId} onChange={setTrabajadorId} options={trabajadoresActivos.map((t) => ({ value: t.id, label: `${t.nombre} (${fmtMoney(t.tarifaHora)}/h)` }))} />
+          </Field>
+          <Field label="Fecha"><FInput type="date" value={fecha} onChange={setFecha} /></Field>
+        </div>
+        <Field label="Concepto / Tarea"><FInput value={concepto} onChange={setConcepto} placeholder="Ej: Aseo de planta, apoyo en bodega..." /></Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "end" }}>
+          <Field label="Horas"><FInput type="number" value={horasCant} onChange={setHorasCant} /></Field>
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>Total</div>
+            <div style={{ padding: "9px 12px", background: C.canvas, borderRadius: 8, fontWeight: 800, color: C.ink, fontSize: 14 }}>{fmtMoney(total)}</div>
+          </div>
+        </div>
+        {trabajadorSel && !trabajadorSel.tarifaHora && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>Este trabajador no tiene tarifa/hora configurada — el total va a salir en $0. Edítala en "Trabajadores".</div>}
+        <Btn onClick={guardar} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Registrar Horas"}</Btn>
+      </div>
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>ÚLTIMOS REGISTROS</div>
+      <Tabla
+        vacio="Sin horas sueltas registradas todavía."
+        columnas={[
+          { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+          { key: "trabajadorNombre", label: "Trabajador" },
+          { key: "concepto", label: "Concepto" },
+          { key: "horas", label: "Horas", align: "right", render: (f) => fmtNum(f.horas) },
+          { key: "tarifaHora", label: "Tarifa/Hora", align: "right", render: (f) => fmtMoney(f.tarifaHora) },
+          { key: "total", label: "Total", align: "right", render: (f) => fmtMoney(f.total) },
+          ...(isAdmin ? [{ key: "acciones", label: "", align: "right", render: (f) => <span onClick={(e) => { e.stopPropagation(); onBorrar(f.id); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span> }] : []),
+        ]}
+        filas={recientes}
+      />
+    </div>
+  );
+}
+// ─── RESUMEN SEMANAL (lunes a domingo) ──────────────────────────────────────
+// Junta Producción + Horas Sueltas de la semana activa, agrupado por
+// trabajador, para armar el pago — clic en un trabajador abre el desglose
+// línea por línea (qué procesos/tareas componen su total).
+function ResumenSemanalView({ trabajadores, produccion, horas }) {
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [trabajadorAbierto, setTrabajadorAbierto] = useState(null);
+  const monday = addDays(mondayOf(new Date()), weekOffset * 7);
+  const sunday = addDays(monday, 6);
+  const desde = isoDate(monday);
+  const hasta = isoDate(sunday);
+  const prodSemana = produccion.filter((p) => p.fecha >= desde && p.fecha <= hasta);
+  const horasSemana = horas.filter((h) => h.fecha >= desde && h.fecha <= hasta);
+  const porTrabajador = useMemo(() => {
+    const mapa = new Map();
+    trabajadores.forEach((t) => mapa.set(t.id, { trabajadorId: t.id, nombre: t.nombre, totalProduccion: 0, totalHoras: 0, unidades: 0, horasCant: 0 }));
+    prodSemana.forEach((p) => {
+      if (!mapa.has(p.trabajadorId)) mapa.set(p.trabajadorId, { trabajadorId: p.trabajadorId, nombre: p.trabajadorNombre, totalProduccion: 0, totalHoras: 0, unidades: 0, horasCant: 0 });
+      const g = mapa.get(p.trabajadorId);
+      g.totalProduccion += p.total || 0;
+      g.unidades += p.cantidad || 0;
+    });
+    horasSemana.forEach((h) => {
+      if (!mapa.has(h.trabajadorId)) mapa.set(h.trabajadorId, { trabajadorId: h.trabajadorId, nombre: h.trabajadorNombre, totalProduccion: 0, totalHoras: 0, unidades: 0, horasCant: 0 });
+      const g = mapa.get(h.trabajadorId);
+      g.totalHoras += h.total || 0;
+      g.horasCant += h.horas || 0;
+    });
+    return [...mapa.values()]
+      .map((g) => ({ ...g, totalGeneral: g.totalProduccion + g.totalHoras }))
+      .filter((g) => g.totalGeneral > 0 || g.unidades > 0 || g.horasCant > 0)
+      .sort((a, b) => b.totalGeneral - a.totalGeneral);
+  }, [trabajadores, prodSemana, horasSemana]);
+  const totalSemana = porTrabajador.reduce((s, g) => s + g.totalGeneral, 0);
+  const detalleAbierto = trabajadorAbierto
+    ? {
+        produccion: prodSemana.filter((p) => p.trabajadorId === trabajadorAbierto.trabajadorId),
+        horas: horasSemana.filter((h) => h.trabajadorId === trabajadorAbierto.trabajadorId),
+      }
+    : null;
+  async function exportarExcel() {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.utils.book_new();
+    const filas = [
+      ["RESUMEN NÓMINA — SEMANA", `${fmtFechaISO(desde)} — ${fmtFechaISO(hasta)}`],
+      [],
+      ["Trabajador", "Unidades", "Total Producción", "Horas", "Total Horas", "Total a Pagar"],
+      ...porTrabajador.map((g) => [g.nombre, g.unidades, g.totalProduccion, g.horasCant, g.totalHoras, g.totalGeneral]),
+      [],
+      ["TOTAL SEMANA", "", "", "", "", totalSemana],
+    ];
+    const ws = XLSX.utils.aoa_to_sheet(filas);
+    XLSX.utils.book_append_sheet(wb, ws, "Resumen Nómina");
+    XLSX.writeFile(wb, `Nomina_${desde}_a_${hasta}.xlsx`);
+  }
+  return (
+    <div>
+      {trabajadorAbierto && (
+        <Modal title={`Detalle de "${trabajadorAbierto.nombre}" — ${fmtFechaISO(desde)} al ${fmtFechaISO(hasta)}`} onClose={() => setTrabajadorAbierto(null)} width={720}>
+          <div style={{ fontWeight: 800, fontSize: 12, color: C.ink, marginBottom: 8 }}>PRODUCCIÓN</div>
+          <Tabla
+            vacio="Sin producción esta semana."
+            columnas={[
+              { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+              { key: "proceso", label: "Proceso" },
+              { key: "referencia", label: "Referencia", render: (f) => f.referencia || "—" },
+              { key: "cantidad", label: "Cant.", align: "right", render: (f) => fmtNum(f.cantidad) },
+              { key: "total", label: "Total", align: "right", render: (f) => fmtMoney(f.total) },
+            ]}
+            filas={detalleAbierto.produccion}
+          />
+          <div style={{ fontWeight: 800, fontSize: 12, color: C.ink, margin: "18px 0 8px" }}>HORAS SUELTAS</div>
+          <Tabla
+            vacio="Sin horas sueltas esta semana."
+            columnas={[
+              { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+              { key: "concepto", label: "Concepto" },
+              { key: "horas", label: "Horas", align: "right", render: (f) => fmtNum(f.horas) },
+              { key: "total", label: "Total", align: "right", render: (f) => fmtMoney(f.total) },
+            ]}
+            filas={detalleAbierto.horas}
+          />
+        </Modal>
+      )}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <button onClick={() => setWeekOffset((o) => o - 1)} style={{ padding: "6px 12px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: C.ink }}>← Anterior</button>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>
+          {monday.getDate()} {MONTHS_SHORT[monday.getMonth()]} — {sunday.getDate()} {MONTHS_SHORT[sunday.getMonth()]} {sunday.getFullYear()}
+        </div>
+        <button onClick={() => setWeekOffset((o) => o + 1)} style={{ padding: "6px 12px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: C.ink }}>Siguiente →</button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 20 }}>
+        <KPI icon="👷" label="Trabajadores con pago esta semana" value={fmtNum(porTrabajador.length)} color={C.ink} bg={C.canvas} />
+        <KPI icon="💰" label="Total a Pagar" value={fmtMoney(totalSemana)} color={C.green} bg={C.greenBg} />
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <Btn variant="secondary" small onClick={exportarExcel} disabled={!porTrabajador.length}>⬇ Exportar a Excel</Btn>
+      </div>
+      <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Clic en un trabajador para ver el desglose de su semana.</div>
+      <Tabla
+        vacio="Sin registros esta semana."
+        onRowClick={(f) => setTrabajadorAbierto(f)}
+        columnas={[
+          { key: "nombre", label: "Trabajador" },
+          { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
+          { key: "totalProduccion", label: "Total Producción", align: "right", render: (f) => fmtMoney(f.totalProduccion) },
+          { key: "horasCant", label: "Horas", align: "right", render: (f) => fmtNum(f.horasCant) },
+          { key: "totalHoras", label: "Total Horas", align: "right", render: (f) => fmtMoney(f.totalHoras) },
+          { key: "totalGeneral", label: "Total a Pagar", align: "right", render: (f) => <strong>{fmtMoney(f.totalGeneral)}</strong> },
+        ]}
+        filas={porTrabajador}
+      />
+    </div>
+  );
+}
+// ─── INICIO / DASHBOARD ─────────────────────────────────────────────────────
+function DashboardNominaView({ trabajadores, precios, produccion, horas }) {
+  const monday = mondayOf(new Date());
+  const sunday = addDays(monday, 6);
+  const desde = isoDate(monday);
+  const hasta = isoDate(sunday);
+  const prodSemana = produccion.filter((p) => p.fecha >= desde && p.fecha <= hasta);
+  const horasSemana = horas.filter((h) => h.fecha >= desde && h.fecha <= hasta);
+  const totalSemana = prodSemana.reduce((s, p) => s + (p.total || 0), 0) + horasSemana.reduce((s, h) => s + (h.total || 0), 0);
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 24 }}>
+        <KPI icon="👷" label="Trabajadores Activos" value={fmtNum(trabajadores.filter((t) => t.activo).length)} color={C.ink} bg={C.canvas} />
+        <KPI icon="⚙️" label="Procesos con Precio" value={fmtNum(precios.length)} color={C.blue} bg={C.blueBg} />
+        <KPI icon="🧵" label="Registros esta semana" value={fmtNum(prodSemana.length + horasSemana.length)} color={C.violet} bg={C.violetBg} />
+        <KPI icon="💰" label="Total a Pagar (semana actual)" value={fmtMoney(totalSemana)} color={C.green} bg={C.greenBg} />
+      </div>
+      <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.6 }}>
+        Registra la producción por proceso (pago por pieza) y las horas sueltas de cada trabajador, y arma el pago semanal desde "Resumen Semanal".
+      </div>
+    </div>
+  );
+}
+// ─── RAÍZ DEL MÓDULO ────────────────────────────────────────────────────────
+export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
+  const [subView, setSubView] = useState("dashboard");
+  const [trabajadores, setTrabajadores] = useState([]);
+  const [precios, setPrecios] = useState([]);
+  const [produccion, setProduccion] = useState([]);
+  const [horas, setHoras] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    const unsubs = [
+      onSnapshot(collection(db, "nomina_trabajadores"), (snap) => { setTrabajadores(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setLoading(false); }),
+      onSnapshot(collection(db, "nomina_precios_proceso"), (snap) => setPrecios(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_produccion"), (snap) => setProduccion(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_horas"), (snap) => setHoras(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+    ];
+    return () => unsubs.forEach((u) => u());
+  }, []);
+  const isAdmin = !!currentUser?.isAdmin;
+  const NAV = [
+    { id: "dashboard", icon: "◉", label: "Inicio" },
+    { id: "produccion", icon: "🧵", label: "Registrar Producción" },
+    { id: "horas", icon: "🕐", label: "Registrar Horas" },
+    { id: "resumen", icon: "💰", label: "Resumen Semanal" },
+    { id: "trabajadores", icon: "👷", label: "Trabajadores" },
+    { id: "precios", icon: "⚙️", label: "Precios por Proceso" },
+  ];
+  async function guardarTrabajador(t) { await fsSave("nomina_trabajadores", t.id, t); }
+  async function borrarTrabajador(id) { await fsDelete("nomina_trabajadores", id); }
+  async function guardarProceso(p) { await fsSave("nomina_precios_proceso", p.id, p); }
+  async function borrarProceso(id) { await fsDelete("nomina_precios_proceso", id); }
+  async function guardarProduccion(p) { await fsSave("nomina_produccion", p.id, p); }
+  async function borrarProduccion(id) { await fsDelete("nomina_produccion", id); }
+  async function guardarHoras(h) { await fsSave("nomina_horas", h.id, h); }
+  async function borrarHoras(id) { await fsDelete("nomina_horas", id); }
+  if (loading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.canvas }}>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>👷</div>
+          <div style={{ color: C.slate }}>Cargando Nómina...</div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif", display: "flex" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
+      <div style={{ width: 220, background: C.ink, padding: "24px 14px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 15, fontWeight: 900, color: C.white }}>👷 Nómina</div>
+          <div style={{ fontSize: 10, color: C.seam, marginTop: 2, letterSpacing: "0.1em", textTransform: "uppercase" }}>Semiterminados</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "#2A2A45", borderRadius: 10, marginBottom: 16 }}>
+          <div style={{ width: 32, height: 32, borderRadius: "50%", background: `linear-gradient(135deg,${C.seam},#9E8870)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, color: C.ink, flexShrink: 0 }}>
+            {(currentUser?.name || "U").split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.white, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{currentUser?.name}</div>
+            <div style={{ fontSize: 10, color: C.seam }}>{currentUser?.role}</div>
+          </div>
+        </div>
+        <nav style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+          {NAV.map((item) => {
+            const active = subView === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setSubView(item.id)}
+                style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: active ? "#C8B8A2" : "transparent", color: active ? C.ink : "#8888AA", fontWeight: active ? 800 : 500, fontSize: 13, textAlign: "left" }}
+              >
+                <span style={{ fontSize: 14 }}>{item.icon}</span>
+                <span style={{ flex: 1 }}>{item.label}</span>
+              </button>
+            );
+          })}
+          {onVolver && (
+            <button
+              onClick={onVolver}
+              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: "transparent", color: "rgba(200,184,162,0.5)", fontWeight: 500, fontSize: 12, textAlign: "left", marginTop: 8 }}
+            >
+              ← Volver al Inicio
+            </button>
+          )}
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: "transparent", color: "rgba(232,93,74,0.85)", fontWeight: 700, fontSize: 12, textAlign: "left", marginTop: onVolver ? 2 : 8 }}
+            >
+              ⏏ Cerrar sesión
+            </button>
+          )}
+        </nav>
+      </div>
+      <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
+        <div style={{ maxWidth: 1400, margin: "0 auto" }}>
+          <h1 style={{ margin: "0 0 20px", fontSize: 20, fontWeight: 900, color: C.ink }}>
+            {NAV.find((n) => n.id === subView)?.label || ""}
+          </h1>
+          {subView === "dashboard" && <DashboardNominaView trabajadores={trabajadores} precios={precios} produccion={produccion} horas={horas} />}
+          {subView === "produccion" && <RegistrarProduccionView trabajadores={trabajadores} precios={precios} produccion={produccion} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
+          {subView === "horas" && <RegistrarHorasView trabajadores={trabajadores} horas={horas} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
+          {subView === "resumen" && <ResumenSemanalView trabajadores={trabajadores} produccion={produccion} horas={horas} />}
+          {subView === "trabajadores" && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} />}
+          {subView === "precios" && <PreciosProcesoView precios={precios} isAdmin={isAdmin} onSave={guardarProceso} onDelete={borrarProceso} />}
+        </div>
+      </div>
+    </div>
+  );
+}
