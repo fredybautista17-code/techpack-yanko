@@ -557,6 +557,195 @@ function generarProgramacionYanko(lotes) {
   });
   return { filas, comparacion };
 }
+// ─── COMPARAR PERÍODOS ──────────────────────────────────────────────────────────
+// Los informes de arriba (En Planta, Por Cliente, BMP, etc.) solo muestran el
+// estado de la ÚLTIMA carga subida — una foto del momento, sin forma de ver
+// qué cambió desde ayer/la semana pasada/el mes pasado. Esto usa el
+// histórico completo de cargas (planeacion_cargas) para comparar dos fechas
+// cualquiera y mostrar la diferencia.
+function calcularKpisLotes(lotes) {
+  return {
+    total: lotes.length,
+    enPlanta: lotes.filter((l) => l.invPlanta > 0).length,
+    enBMP: lotes.filter((l) => l.invBMP > 0).length,
+    enSemiterminado: lotes.filter((l) => l.invSemiterminado > 0).length,
+    vencidos: lotes.filter((l) => l.fechaEntregaPedidoISO && diasEntre(l.fechaEntregaPedidoISO) < 0).length,
+  };
+}
+function restarDiasISO(fechaISO, dias) {
+  const [y, m, d] = fechaISO.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() - dias);
+  return dt.toISOString().slice(0, 10);
+}
+// Dada una fecha objetivo, busca dentro de las cargas ya subidas la más
+// cercana a esa fecha SIN pasarse (la más reciente que sea <= fechaISO) — si
+// no hay ninguna tan vieja, se queda con la más antigua que exista, para que
+// los atajos rápidos (Ayer, Semana pasada, etc.) siempre encuentren algo con
+// qué comparar aunque no haya carga exacta de ese día.
+function cargaMasCercanaA(cargasOrdenadas, fechaISO) {
+  const candidatas = cargasOrdenadas.filter((c) => (c.fecha || "") <= fechaISO);
+  if (candidatas.length) return candidatas[0];
+  return cargasOrdenadas[cargasOrdenadas.length - 1] || null;
+}
+// Junta dos "resumen" (los que devuelve generarAgrupadoPlanta: [{grupo,
+// lotes, unidades}]) en una sola lista con la diferencia por grupo —
+// incluyendo grupos que solo existen en uno de los dos períodos (ej. un
+// cliente nuevo, o uno que ya no tiene nada en planta).
+function compararResumenes(resumenA, resumenB) {
+  const nombres = [...new Set([...resumenA.map((r) => r.grupo), ...resumenB.map((r) => r.grupo)])].sort((a, b) => a.localeCompare(b));
+  return nombres
+    .map((nombre) => {
+      const a = resumenA.find((r) => r.grupo === nombre);
+      const b = resumenB.find((r) => r.grupo === nombre);
+      const unidadesA = a?.unidades || 0;
+      const unidadesB = b?.unidades || 0;
+      return { grupo: nombre, unidadesA, unidadesB, diferencia: unidadesB - unidadesA };
+    })
+    .sort((x, y) => Math.abs(y.diferencia) - Math.abs(x.diferencia));
+}
+function TablaComparacion({ filas, primeraColLabel }) {
+  if (!filas.length) {
+    return (
+      <div style={{ textAlign: "center", padding: 24, color: C.slate, fontSize: 13, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
+        Sin datos.
+      </div>
+    );
+  }
+  return (
+    <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+        <thead>
+          <tr style={{ background: C.ink }}>
+            {[primeraColLabel, "Período base", "Período actual", "Diferencia"].map((h, i) => (
+              <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: i === 0 ? "left" : "right", fontWeight: 700, fontSize: 10 }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {filas.map((f, i) => (
+            <tr key={f.grupo} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+              <td style={{ padding: "7px 12px" }}>{f.grupo}</td>
+              <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(f.unidadesA)}</td>
+              <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(f.unidadesB)}</td>
+              <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 700, color: f.diferencia > 0 ? C.green : f.diferencia < 0 ? C.red : C.slate }}>
+                {f.diferencia > 0 ? "▲ " : f.diferencia < 0 ? "▼ " : ""}{fmtNum(Math.abs(f.diferencia))}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+function KpiComparado({ icon, label, a, b, color, bg }) {
+  const diff = b - a;
+  return (
+    <div style={{ background: bg, borderRadius: 12, padding: 14 }}>
+      <div style={{ fontSize: 11, color, fontWeight: 700, marginBottom: 6 }}>{icon} {label}</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+        <div style={{ fontSize: 20, fontWeight: 900, color: C.ink }}>{fmtNum(b)}</div>
+        <div style={{ fontSize: 11, color: C.slate }}>antes: {fmtNum(a)}</div>
+      </div>
+      {diff !== 0 ? (
+        <div style={{ fontSize: 11, fontWeight: 700, color: diff > 0 ? C.green : C.red, marginTop: 2 }}>
+          {diff > 0 ? "▲" : "▼"} {fmtNum(Math.abs(diff))}
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>Sin cambio</div>
+      )}
+    </div>
+  );
+}
+function BloqueCompararPeriodos({ cargasOrdenadas, clienteAsociado }) {
+  const [cargaIdB, setCargaIdB] = useState(cargasOrdenadas[0]?.id || null); // período actual (más reciente por defecto)
+  const [cargaIdA, setCargaIdA] = useState(cargasOrdenadas[1]?.id || cargasOrdenadas[0]?.id || null); // período base
+  const cargaB = cargasOrdenadas.find((c) => c.id === cargaIdB) || cargasOrdenadas[0] || null;
+  const cargaA = cargasOrdenadas.find((c) => c.id === cargaIdA) || cargasOrdenadas[1] || cargasOrdenadas[0] || null;
+  function usarPreset(dias) {
+    if (!cargaB) return;
+    const cargaCercana = cargaMasCercanaA(cargasOrdenadas, restarDiasISO(cargaB.fecha, dias));
+    if (cargaCercana) setCargaIdA(cargaCercana.id);
+  }
+  const lotesA = useMemo(() => {
+    const todos = cargaA?.lotes || [];
+    return clienteAsociado ? todos.filter((l) => coincideCliente(l.nombreCliente, clienteAsociado)) : todos;
+  }, [cargaA, clienteAsociado]);
+  const lotesB = useMemo(() => {
+    const todos = cargaB?.lotes || [];
+    return clienteAsociado ? todos.filter((l) => coincideCliente(l.nombreCliente, clienteAsociado)) : todos;
+  }, [cargaB, clienteAsociado]);
+  const kpisA = useMemo(() => calcularKpisLotes(lotesA), [lotesA]);
+  const kpisB = useMemo(() => calcularKpisLotes(lotesB), [lotesB]);
+  const comparacionCliente = useMemo(
+    () => compararResumenes(generarAgrupadoPlanta(lotesA, "nombreCliente").resumen, generarAgrupadoPlanta(lotesB, "nombreCliente").resumen),
+    [lotesA, lotesB]
+  );
+  const comparacionPlanta = useMemo(
+    () => compararResumenes(generarAgrupadoPlanta(lotesA, "nombrePlanta").resumen, generarAgrupadoPlanta(lotesB, "nombrePlanta").resumen),
+    [lotesA, lotesB]
+  );
+  if (!cargasOrdenadas.length) {
+    return <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>Todavía no hay cargas para comparar.</div>;
+  }
+  return (
+    <div>
+      <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 700 }}>
+        Compara el estado de dos cargas distintas para ver qué cambió — usa los atajos rápidos (toman la carga más cercana a esa fecha) o elige las cargas a mano.
+      </p>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+        <Btn small variant="secondary" onClick={() => usarPreset(1)}>Ayer vs. Hoy</Btn>
+        <Btn small variant="secondary" onClick={() => usarPreset(7)}>Semana pasada vs. Esta semana</Btn>
+        <Btn small variant="secondary" onClick={() => usarPreset(15)}>Quincena pasada vs. Esta quincena</Btn>
+        <Btn small variant="secondary" onClick={() => usarPreset(30)}>Mes pasado vs. Este mes</Btn>
+      </div>
+      <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 20, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 10, color: C.slate, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Período base</div>
+          <select
+            value={cargaIdA || ""}
+            onChange={(e) => setCargaIdA(e.target.value)}
+            style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
+          >
+            {cargasOrdenadas.map((c) => (
+              <option key={c.id} value={c.id}>Carga {c.fecha}</option>
+            ))}
+          </select>
+        </div>
+        <div style={{ fontSize: 18, color: C.slate }}>→</div>
+        <div>
+          <div style={{ fontSize: 10, color: C.slate, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Período actual</div>
+          <select
+            value={cargaIdB || ""}
+            onChange={(e) => setCargaIdB(e.target.value)}
+            style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
+          >
+            {cargasOrdenadas.map((c) => (
+              <option key={c.id} value={c.id}>Carga {c.fecha}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+      {!cargaA || !cargaB ? (
+        <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>Elige las dos cargas a comparar.</div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 24 }}>
+            <KpiComparado icon="📦" label="Total lotes" a={kpisA.total} b={kpisB.total} color={C.ink} bg={C.canvas} />
+            <KpiComparado icon="🏭" label="En Planta" a={kpisA.enPlanta} b={kpisB.enPlanta} color={C.green} bg={C.greenBg} />
+            <KpiComparado icon="🧵" label="En BMP" a={kpisA.enBMP} b={kpisB.enBMP} color={C.amber} bg={C.amberBg} />
+            <KpiComparado icon="🧶" label="Semiterminado" a={kpisA.enSemiterminado} b={kpisB.enSemiterminado} color={C.violet} bg={C.violetBg} />
+            <KpiComparado icon="⚠" label="Vencidos" a={kpisA.vencidos} b={kpisB.vencidos} color={C.red} bg={C.redBg} />
+          </div>
+          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>POR CLIENTE (unidades en planta)</div>
+          <TablaComparacion filas={comparacionCliente} primeraColLabel="Cliente" />
+          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, margin: "24px 0 10px" }}>POR PLANTA (unidades en planta)</div>
+          <TablaComparacion filas={comparacionPlanta} primeraColLabel="Planta" />
+        </>
+      )}
+    </div>
+  );
+}
 // ─── SUBIR HOJA1 ────────────────────────────────────────────────────────────────
 function SubirHoja1Modal({ onConfirm, onClose }) {
   const [cargando, setCargando] = useState(false);
@@ -1198,6 +1387,7 @@ const REPORTES = [
   { id: "bmp", label: "BMP", icon: "🧵" },
   { id: "bpt", label: "BPT", icon: "🏬" },
   { id: "programacion_yanko", label: "Programación Yanko", icon: "🎯" },
+  { id: "comparar", label: "Comparar Períodos", icon: "📈" },
 ];
 function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser }) {
   const [showUpload, setShowUpload] = useState(false);
@@ -1573,6 +1763,7 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
               )}
             </div>
           )}
+          {tab === "comparar" && <BloqueCompararPeriodos cargasOrdenadas={cargasOrdenadas} clienteAsociado={clienteAsociado} />}
         </>
       )}
     </div>
