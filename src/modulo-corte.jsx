@@ -636,7 +636,7 @@ async function parseTelas(file) {
   if (!nombres.length) throw new Error("No se encontraron nombres de tela en este archivo.");
   return nombres;
 }
-function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, lotesExistentes, onGuardarLote, preseleccion, onSave, onClose, onGuardado, inline }) {
+function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, lotesExistentes, onGuardarLote, preseleccion, onSave, onClose, onGuardado, inline, itemsUsadosMeson, pedidosTodos }) {
   const mes = new Date().getMonth() + 1;
   const anio = new Date().getFullYear();
   // Si el ítem viene de "Programación Hecha" (preseleccion trae planta,
@@ -650,7 +650,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
   const [form, setForm] = useState({
     fecha: preselColor0?.fechaProgramada || today(),
     planta: preselColor0?.planta || "",
-    meson: preselColor0?.meson || "",
     cortador: preselColor0?.cortador || "",
     // Desde que se empieza a tender la tela hasta que queda lista para
     // cortar (no incluye el corte en sí) — antes solo se calculaba
@@ -690,15 +689,67 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
   function actualizarMaterial(idx, campo, valor) {
     setMateriales((ms) => ms.map((m, i) => (i === idx ? { ...m, [campo]: valor } : m)));
   }
-  function agregarMaterial() {
-    setMateriales((ms) => [...ms, { id: uid(), tipoTela: "", largoTrazo: "", capas: "", meson: "" }]);
-  }
   function quitarMaterial(idx) {
     setMateriales((ms) => (ms.length > 1 ? ms.filter((_, i) => i !== idx) : ms));
+  }
+  // Material 1 se llena directo en el formulario (siempre visible); los
+  // materiales adicionales ("+ Agregar material") se cargan en una ventana
+  // aparte para no ir alargando el formulario — quedan como una tarjeta
+  // resumen, con opción de editar (reabre la misma ventana) o quitar.
+  const [modalMaterial, setModalMaterial] = useState(null);
+  function abrirAgregarMaterial() {
+    setModalMaterial({ idx: null, tipoTela: "", meson: "", largoTrazo: "", capas: "" });
+  }
+  function abrirEditarMaterial(idx) {
+    const m = materiales[idx];
+    setModalMaterial({ idx, tipoTela: m.tipoTela, meson: m.meson, largoTrazo: m.largoTrazo, capas: m.capas });
+  }
+  function guardarModalMaterial() {
+    if (!modalMaterial) return;
+    const { idx, ...datos } = modalMaterial;
+    if (idx === null) {
+      setMateriales((ms) => [...ms, { id: uid(), ...datos }]);
+    } else {
+      setMateriales((ms) => ms.map((m, i) => (i === idx ? { ...m, ...datos } : m)));
+    }
+    setModalMaterial(null);
   }
   const plantaSel = plantas.find((pl) => pl.nombre === form.planta);
   const mesonesDisponibles = plantaSel?.mesones || [];
   const telasDatalistId = `telas-entrada-${pedido.id}`;
+  // Aviso (no bloqueante) de mesón ocupado — para la fecha+planta+mesón de
+  // UN material, junta lo que ya haya ahí de dos fuentes: lo planeado en
+  // Programación de Mesones (itemsUsadosMeson, prop compartida con esa
+  // vista) y lo ya cortado real ese mismo día en otros pedidos (o el mismo).
+  // No impide guardar, solo informa — igual que el aviso de lote repetido.
+  function ocupacionMeson(mesonId) {
+    if (!mesonId || !form.fecha || !form.planta) return [];
+    const items = [];
+    const grupoIdMeson = mesonesDisponibles.find((m) => m.id === mesonId)?.grupoId || null;
+    if (typeof itemsUsadosMeson === "function") {
+      (itemsUsadosMeson(form.fecha, form.planta, mesonId, grupoIdMeson, []) || []).forEach((it) => {
+        items.push({
+          tipo: "Programado",
+          texto: `${it.numero ? `Pedido ${it.numero}` : ""}${it.ref ? ` · ${it.ref}` : ""}${it.cliente ? ` (${it.cliente})` : ""}`.trim(),
+        });
+      });
+    }
+    const listaPedidos = pedidosTodos && pedidosTodos.length ? pedidosTodos : [pedido];
+    listaPedidos.forEach((p) => {
+      (p.cortesRealizados || []).forEach((c) => {
+        if (c.fecha !== form.fecha || c.planta !== form.planta) return;
+        const enMateriales = (c.materiales || []).some((m) => m.meson === mesonId);
+        const enLegacy = !(c.materiales && c.materiales.length) && c.meson === mesonId;
+        if (!enMateriales && !enLegacy) return;
+        const refsTxt = (c.refs || []).map((r) => r.ref).join(", ");
+        items.push({
+          tipo: "Cortado",
+          texto: `Pedido ${p.numero || ""}${refsTxt ? ` · ${refsTxt}` : ""}${p.cliente ? ` (${p.cliente})` : ""}`.trim(),
+        });
+      });
+    });
+    return items;
+  }
   // El precio por prenda se toma primero del archivo de precios de corte
   // (Admin Corte → Precios Corte, la fuente "oficial" por referencia); si esa
   // referencia no aparece ahí, se cae al precio que ya tuviera guardado el
@@ -832,7 +883,11 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       id: uid(),
       fecha: form.fecha,
       planta: form.planta,
-      meson: form.meson,
+      // Mesón legacy a nivel de corte (para vistas viejas que muestran un
+      // solo "Mesón" en el encabezado) = el del primer material — el
+      // detalle real por material (pueden ser mesones distintos) queda en
+      // `materiales[]`.
+      meson: materiales[0]?.meson || "",
       cortador: form.cortador,
       // Materiales reales de este corte — normalmente uno solo, pero una
       // prenda puede combinar varios (ej. cuerpo + puños), cada uno con su
@@ -879,9 +934,9 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     else onClose();
   }
   // Nombre del mesón programado en Mesones (preselColor0.meson guarda el id,
-  // no el nombre) — se busca en `plantas` directo, sin depender de
-  // `form.planta`/`form.meson` actuales, porque este panel muestra lo
-  // ORIGINAL que se programó, no lo que el cortador esté editando ahora.
+  // no el nombre) — se busca en `plantas` directo, sin depender de lo que
+  // el cortador esté editando ahora en cada material, porque este panel
+  // muestra lo ORIGINAL que se programó.
   const nombreMesonPresel = (() => {
     if (!preselColor0?.meson) return "";
     const pl = (plantas || []).find((p) => p.nombre === preselColor0.planta);
@@ -936,7 +991,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "1fr 1fr 1fr 1fr 1.1fr",
+          gridTemplateColumns: "1fr 1fr 1fr 1.1fr",
           gap: 12,
           marginBottom: 16,
         }}
@@ -951,15 +1006,8 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
         <Field label="Planta">
           <FSel
             value={form.planta}
-            onChange={(v) => setForm((f) => ({ ...f, planta: v, meson: "" }))}
+            onChange={(v) => setForm((f) => ({ ...f, planta: v }))}
             options={plantas.map((p) => ({ id: p.nombre, nombre: p.nombre }))}
-          />
-        </Field>
-        <Field label="Mesón">
-          <FSel
-            value={form.meson}
-            onChange={(v) => setForm((f) => ({ ...f, meson: v }))}
-            options={mesonesDisponibles.map((m) => ({ id: m.id, nombre: m.nombre }))}
           />
         </Field>
         <Field label="Cortador">
@@ -997,94 +1045,142 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           <option key={t} value={t} />
         ))}
       </datalist>
-      {materiales.map((mat, idx) => (
-        <div
-          key={mat.id}
-          style={{
-            border: `1px solid ${C.border}`,
-            borderRadius: 10,
-            padding: 12,
-            marginBottom: 10,
-            background: C.canvas,
-          }}
-        >
+      {materiales.map((mat, idx) => {
+        const ocupacion = ocupacionMeson(mat.meson);
+        if (idx === 0) {
+          return (
+            <div
+              key={mat.id}
+              style={{
+                border: `1px solid ${C.border}`,
+                borderRadius: 10,
+                padding: 12,
+                marginBottom: 10,
+                background: C.canvas,
+              }}
+            >
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1.3fr 1fr",
+                  gap: 12,
+                  marginBottom: 10,
+                  alignItems: "end",
+                }}
+              >
+                <Field label="Tipo de Tela">
+                  <FInput
+                    value={mat.tipoTela}
+                    onChange={(v) => actualizarMaterial(idx, "tipoTela", v)}
+                    placeholder="Ej: Diamante"
+                    list={telasDatalistId}
+                  />
+                </Field>
+                <Field label="Mesón">
+                  <FSel
+                    value={mat.meson}
+                    onChange={(v) => actualizarMaterial(idx, "meson", v)}
+                    options={mesonesDisponibles.map((m) => ({ id: m.id, nombre: m.nombre }))}
+                  />
+                </Field>
+              </div>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr 1fr",
+                  gap: 12,
+                }}
+              >
+                <Field label="Largo del Trazo (1 capa, m)">
+                  <FInput
+                    type="number"
+                    value={mat.largoTrazo}
+                    onChange={(v) => actualizarMaterial(idx, "largoTrazo", v)}
+                    placeholder="4.5"
+                  />
+                </Field>
+                <Field label="Capas">
+                  <FInput
+                    type="number"
+                    value={mat.capas}
+                    onChange={(v) => actualizarMaterial(idx, "capas", v)}
+                    placeholder="72"
+                  />
+                </Field>
+                <Field label="Metros">
+                  <div
+                    style={{
+                      padding: "9px 12px",
+                      borderRadius: 8,
+                      border: `1.5px solid ${C.border}`,
+                      background: C.white,
+                      fontWeight: 800,
+                      color: metrosMaterial(mat) > 0 ? C.violet : C.slate,
+                      fontSize: 13,
+                    }}
+                  >
+                    {metrosMaterial(mat) > 0 ? `${metrosMaterial(mat).toLocaleString("es-CO")} m` : "—"}
+                  </div>
+                </Field>
+              </div>
+              {ocupacion.length > 0 && (
+                <div style={{ fontSize: 11, color: C.amber, fontWeight: 700, marginTop: 8 }}>
+                  ⚠ Este mesón ya tiene actividad el {fmtFechaISO(form.fecha)}: {ocupacion.map((o) => `${o.tipo}: ${o.texto}`).join("  ·  ")}
+                </div>
+              )}
+            </div>
+          );
+        }
+        // Materiales adicionales (agregados por la ventana "+ Agregar
+        // material") se muestran como tarjeta resumen, no editable inline.
+        const nombreMesonMat = mesonesDisponibles.find((m) => m.id === mat.meson)?.nombre || "";
+        return (
           <div
+            key={mat.id}
             style={{
-              display: "grid",
-              gridTemplateColumns: materiales.length > 1 ? "1.3fr 1fr auto" : "1.3fr 1fr",
-              gap: 12,
+              border: `1px solid ${C.border}`,
+              borderRadius: 10,
+              padding: "10px 12px",
               marginBottom: 10,
-              alignItems: "end",
+              background: C.white,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: 8,
             }}
           >
-            <Field label={idx === 0 ? "Tipo de Tela" : `Material ${idx + 1}`}>
-              <FInput
-                value={mat.tipoTela}
-                onChange={(v) => actualizarMaterial(idx, "tipoTela", v)}
-                placeholder="Ej: Diamante"
-                list={telasDatalistId}
-              />
-            </Field>
-            <Field label="Mesón">
-              <FSel
-                value={mat.meson}
-                onChange={(v) => actualizarMaterial(idx, "meson", v)}
-                options={mesonesDisponibles.map((m) => ({ id: m.id, nombre: m.nombre }))}
-              />
-            </Field>
-            {materiales.length > 1 && (
+            <div style={{ fontSize: 13, color: C.ink }}>
+              <b>Material {idx + 1}:</b> {mat.tipoTela || "—"}
+              {nombreMesonMat ? ` · ${nombreMesonMat}` : ""}
+              {` · ${mat.largoTrazo || 0}m × ${mat.capas || 0} capas = ${metrosMaterial(mat) || 0}m`}
+              {ocupacion.length > 0 && (
+                <div style={{ fontSize: 11, color: C.amber, fontWeight: 700, marginTop: 4 }}>
+                  ⚠ Mesón ocupado el {fmtFechaISO(form.fecha)}: {ocupacion.map((o) => `${o.tipo}: ${o.texto}`).join("  ·  ")}
+                </div>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button
+                onClick={() => abrirEditarMaterial(idx)}
+                title="Editar este material"
+                style={{ background: C.violetBg, border: "none", borderRadius: 8, padding: "6px 10px", color: C.violet, fontWeight: 700, cursor: "pointer" }}
+              >
+                ✏️
+              </button>
               <button
                 onClick={() => quitarMaterial(idx)}
                 title="Quitar este material"
-                style={{ background: C.redBg, border: "none", borderRadius: 8, padding: "9px 10px", color: C.red, fontWeight: 700, cursor: "pointer", height: 38 }}
+                style={{ background: C.redBg, border: "none", borderRadius: 8, padding: "6px 10px", color: C.red, fontWeight: 700, cursor: "pointer" }}
               >
                 🗑
               </button>
-            )}
+            </div>
           </div>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr 1fr",
-              gap: 12,
-            }}
-          >
-            <Field label="Largo del Trazo (1 capa, m)">
-              <FInput
-                type="number"
-                value={mat.largoTrazo}
-                onChange={(v) => actualizarMaterial(idx, "largoTrazo", v)}
-                placeholder="4.5"
-              />
-            </Field>
-            <Field label="Capas">
-              <FInput
-                type="number"
-                value={mat.capas}
-                onChange={(v) => actualizarMaterial(idx, "capas", v)}
-                placeholder="72"
-              />
-            </Field>
-            <Field label="Metros">
-              <div
-                style={{
-                  padding: "9px 12px",
-                  borderRadius: 8,
-                  border: `1.5px solid ${C.border}`,
-                  background: C.white,
-                  fontWeight: 800,
-                  color: metrosMaterial(mat) > 0 ? C.violet : C.slate,
-                  fontSize: 13,
-                }}
-              >
-                {metrosMaterial(mat) > 0 ? `${metrosMaterial(mat).toLocaleString("es-CO")} m` : "—"}
-              </div>
-            </Field>
-          </div>
-        </div>
-      ))}
+        );
+      })}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <Btn small variant="secondary" onClick={agregarMaterial}>
+        <Btn small variant="secondary" onClick={abrirAgregarMaterial}>
           + Agregar material
         </Btn>
         {materiales.length > 1 && (
@@ -1093,6 +1189,56 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           </div>
         )}
       </div>
+      {modalMaterial && (
+        <Modal title={modalMaterial.idx === null ? "Agregar material" : `Editar material ${modalMaterial.idx + 1}`} onClose={() => setModalMaterial(null)} width={440}>
+          <Field label="Tipo de Tela">
+            <FInput
+              value={modalMaterial.tipoTela}
+              onChange={(v) => setModalMaterial((m) => ({ ...m, tipoTela: v }))}
+              placeholder="Ej: Diamante"
+              list={telasDatalistId}
+            />
+          </Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+            <Field label="Mesón">
+              <FSel
+                value={modalMaterial.meson}
+                onChange={(v) => setModalMaterial((m) => ({ ...m, meson: v }))}
+                options={mesonesDisponibles.map((m) => ({ id: m.id, nombre: m.nombre }))}
+              />
+            </Field>
+            <Field label="Largo del Trazo (1 capa, m)">
+              <FInput
+                type="number"
+                value={modalMaterial.largoTrazo}
+                onChange={(v) => setModalMaterial((m) => ({ ...m, largoTrazo: v }))}
+                placeholder="4.5"
+              />
+            </Field>
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <Field label="Capas">
+              <FInput
+                type="number"
+                value={modalMaterial.capas}
+                onChange={(v) => setModalMaterial((m) => ({ ...m, capas: v }))}
+                placeholder="72"
+              />
+            </Field>
+          </div>
+          {modalMaterial.meson && ocupacionMeson(modalMaterial.meson).length > 0 && (
+            <div style={{ fontSize: 11, color: C.amber, fontWeight: 700, marginTop: 10 }}>
+              ⚠ Este mesón ya tiene actividad el {fmtFechaISO(form.fecha)}: {ocupacionMeson(modalMaterial.meson).map((o) => `${o.tipo}: ${o.texto}`).join("  ·  ")}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 18 }}>
+            <Btn variant="secondary" onClick={() => setModalMaterial(null)}>Cancelar</Btn>
+            <Btn variant="success" onClick={guardarModalMaterial} disabled={!modalMaterial.tipoTela && !modalMaterial.largoTrazo}>
+              {modalMaterial.idx === null ? "Agregar" : "Guardar"}
+            </Btn>
+          </div>
+        </Modal>
+      )}
       {/* Horario real de tendido — desde que se empieza a tender la tela
           hasta que queda lista para cortar. Antes solo existía el estimado
           teórico (Programación de Mesones); esto es lo real. */}
@@ -5580,6 +5726,8 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     preciosMap={preciosMap}
                     lotesExistentes={lotesExistentes}
                     preseleccion={corteRealSel}
+                    itemsUsadosMeson={itemsUsadosMeson}
+                    pedidosTodos={pedidos}
                     onSave={(corte) => onRegistrarCorteReal(corteRealSel.pedidoId, corte)}
                     onClose={() => setCorteRealSelKey(null)}
                     onGuardado={() => {
@@ -6257,6 +6405,8 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                   telas={telas || []}
                   preciosMap={preciosMap}
                   lotesExistentes={lotesExistentes}
+                  itemsUsadosMeson={itemsUsadosMeson}
+                  pedidosTodos={pedidos}
                   onSave={(corte) => onRegistrarCorteManual(pedidoManualSel.id, corte)}
                   onClose={() => setPedidoManualSel(null)}
                   onGuardado={() => {
