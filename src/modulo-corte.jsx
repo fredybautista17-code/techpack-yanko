@@ -673,21 +673,25 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     lote: "",
   });
   // Etapa 1 — Tendido: la prenda puede combinar varios materiales (ej.
-  // cuerpo en una tela, puños en otra) — cada uno con su propio trazo (una
-  // sola capa); las capas ya se ponen por color más abajo y son las MISMAS
-  // para todos los materiales de un mismo corte (se tienden juntos, la
-  // cantidad de capas no cambia por material). Los metros de cada material
-  // se calculan solos (su trazo × capas totales) para que la estadística
-  // por tipo de tela sea consistente. Arranca con un material — lo normal —
-  // y se pueden agregar más.
+  // cuerpo en una tela, puños en otra) — cada uno es un tendido FÍSICO
+  // aparte, con su propia tela, trazo, número de capas y mesón (pueden
+  // tenderse en mesones distintos). Los metros de cada material se calculan
+  // solos (su propio trazo × sus propias capas). Arranca con un material —
+  // lo normal — y se pueden agregar más.
   const [materiales, setMateriales] = useState([
-    { id: uid(), tipoTela: preselColor0?.tipoTela || "", largoTrazo: preselColor0?.largoTrazo ? String(preselColor0.largoTrazo) : "" },
+    {
+      id: uid(),
+      tipoTela: preselColor0?.tipoTela || "",
+      largoTrazo: preselColor0?.largoTrazo ? String(preselColor0.largoTrazo) : "",
+      capas: preselColor0?.capas ? String(preselColor0.capas) : "",
+      meson: preselColor0?.meson || "",
+    },
   ]);
   function actualizarMaterial(idx, campo, valor) {
     setMateriales((ms) => ms.map((m, i) => (i === idx ? { ...m, [campo]: valor } : m)));
   }
   function agregarMaterial() {
-    setMateriales((ms) => [...ms, { id: uid(), tipoTela: "", largoTrazo: "" }]);
+    setMateriales((ms) => [...ms, { id: uid(), tipoTela: "", largoTrazo: "", capas: "", meson: "" }]);
   }
   function quitarMaterial(idx) {
     setMateriales((ms) => (ms.length > 1 ? ms.filter((_, i) => i !== idx) : ms));
@@ -727,19 +731,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           c[r.id].tallas[t] = cant;
         });
       }
-    });
-    return c;
-  });
-  // Capas reales por color — igual que en Programación de Mesones, cada
-  // color puede llevar una cantidad distinta de capas. Se precarga con la
-  // capas TEÓRICA que se propuso allá (colorPresel.capas) para que el
-  // cortador solo tenga que confirmar o ajustar, no escribir de cero.
-  const [capasPorRef, setCapasPorRef] = useState(() => {
-    const c = {};
-    const coloresPresel = preseleccion?.colores || (preseleccion ? [preseleccion] : []);
-    pedido.referencias.forEach((r) => {
-      const colorPresel = coloresPresel.find((pc) => (pc.refId ? pc.refId === r.id : pc.ref === r.ref));
-      c[r.id] = colorPresel?.capas ? String(colorPresel.capas) : "";
     });
     return c;
   });
@@ -793,23 +784,13 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     const [h2, m2] = form.horaFinTendido.split(":").map(Number);
     return h2 * 60 + m2 - (h1 * 60 + m1);
   }
-  // Marcadas de la curva propuesta en Mesones (suma de la curva) — se usa
-  // para comprobar, por color, si las capas reales que se están poniendo
-  // aquí dan la misma cantidad de prendas que se está escribiendo en la
-  // grilla de tallas de al lado.
-  const marcadas = preseleccion?.curva
-    ? Object.values(preseleccion.curva).reduce((s, v) => s + (parseInt(v) || 0), 0)
-    : 0;
-  function capasSumaTotal() {
-    return Object.values(capasPorRef).reduce((s, v) => s + (parseFloat(v) || 0), 0);
-  }
-  // Metros de UN material = su trazo (una sola capa) × la suma de capas de
-  // todos los colores que se están cortando (todos los materiales de un
-  // mismo corte se tienden con la misma cantidad de capas — lo que cambia
-  // entre materiales es el trazo, no las capas).
+  // Metros de UN material = su propio trazo (una sola capa) × sus propias
+  // capas — cada material es un tendido físico aparte, con su número de
+  // capas independiente (ej. cuerpo con 72 capas, puños con 36).
   function metrosMaterial(mat) {
     const trazo = parseFloat(mat.largoTrazo) || 0;
-    return trazo * capasSumaTotal();
+    const capas = parseFloat(mat.capas) || 0;
+    return trazo * capas;
   }
   // Metros totales de tela = suma de los metros de TODOS los materiales
   // (normalmente uno solo, pero una prenda puede combinar varios, ej.
@@ -817,6 +798,18 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
   function metrosTotales() {
     return materiales.reduce((s, mat) => s + metrosMaterial(mat), 0);
   }
+  // Capas totales (legacy, para vistas/estadísticas que muestran un solo
+  // número de "Capas" por corte) = suma de las capas de todos los
+  // materiales.
+  function capasSumaMateriales() {
+    return materiales.reduce((s, mat) => s + (parseFloat(mat.capas) || 0), 0);
+  }
+  // Cantidad de tallas marcadas en la curva propuesta en Mesones — solo
+  // para el panel informativo de arriba (lo que se programó), no se usa
+  // para validar nada acá; las capas reales ahora viven en cada material.
+  const marcadas = preseleccion?.curva
+    ? Object.values(preseleccion.curva).reduce((s, v) => s + (parseInt(v) || 0), 0)
+    : 0;
   async function save() {
     if (!form.planta || !form.cortador || !form.fecha) return;
     const loteTrim = (form.lote || "").trim();
@@ -832,10 +825,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           (a, b) => a + b,
           0
         ),
-        // Capas reales de este color — antes era un solo campo compartido
-        // para todo el corte, ahora es por color (igual que en
-        // Programación de Mesones).
-        capas: parseFloat(capasPorRef[r.id]) || 0,
       }))
       .filter((r) => r.total > 0);
     if (!refs.length) return;
@@ -850,7 +839,13 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       // propio trazo y metros.
       materiales: materiales
         .filter((m) => m.tipoTela || m.largoTrazo)
-        .map((m) => ({ tipoTela: m.tipoTela, largoTrazo: parseFloat(m.largoTrazo) || 0, metros: metrosMaterial(m) })),
+        .map((m) => ({
+          tipoTela: m.tipoTela,
+          largoTrazo: parseFloat(m.largoTrazo) || 0,
+          capas: parseFloat(m.capas) || 0,
+          meson: m.meson,
+          metros: metrosMaterial(m),
+        })),
       // Campos "legacy" (un solo tipoTela/largoTrazo) — se mantienen para
       // que las vistas y estadísticas viejas (Estadística de Tendido,
       // Centro de Costo) que todavía leen estos campos sueltos sigan
@@ -860,10 +855,9 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       // de todos los materiales.
       tipoTela: materiales.map((m) => m.tipoTela).filter(Boolean).join(" + "),
       largoTrazo: parseFloat(materiales[0]?.largoTrazo) || 0,
-      // Capas total = suma de las capas reales de todos los colores que se
-      // están registrando en este corte — el detalle por color queda en
-      // cada entrada de `refs`.
-      capas: capasSumaTotal(),
+      // Capas total (legacy) = suma de las capas de todos los materiales —
+      // el detalle real por material queda en `materiales[]`.
+      capas: capasSumaMateriales(),
       metrosTendido: metrosTotales(),
       horaInicioTendido: form.horaInicioTendido,
       horaFinTendido: form.horaFinTendido,
@@ -1007,53 +1001,86 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
         <div
           key={mat.id}
           style={{
-            display: "grid",
-            gridTemplateColumns: materiales.length > 1 ? "1.3fr 1fr 1fr auto" : "1.3fr 1fr 1fr",
-            gap: 12,
+            border: `1px solid ${C.border}`,
+            borderRadius: 10,
+            padding: 12,
             marginBottom: 10,
-            alignItems: "end",
+            background: C.canvas,
           }}
         >
-          <Field label={idx === 0 ? "Tipo de Tela" : `Material ${idx + 1}`}>
-            <FInput
-              value={mat.tipoTela}
-              onChange={(v) => actualizarMaterial(idx, "tipoTela", v)}
-              placeholder="Ej: Diamante"
-              list={telasDatalistId}
-            />
-          </Field>
-          <Field label="Largo del Trazo (1 capa, m)">
-            <FInput
-              type="number"
-              value={mat.largoTrazo}
-              onChange={(v) => actualizarMaterial(idx, "largoTrazo", v)}
-              placeholder="4.5"
-            />
-          </Field>
-          <Field label="Metros (todos los colores)">
-            <div
-              style={{
-                padding: "9px 12px",
-                borderRadius: 8,
-                border: `1.5px solid ${C.border}`,
-                background: C.canvas,
-                fontWeight: 800,
-                color: metrosMaterial(mat) > 0 ? C.violet : C.slate,
-                fontSize: 13,
-              }}
-            >
-              {metrosMaterial(mat) > 0 ? `${metrosMaterial(mat).toLocaleString("es-CO")} m` : "—"}
-            </div>
-          </Field>
-          {materiales.length > 1 && (
-            <button
-              onClick={() => quitarMaterial(idx)}
-              title="Quitar este material"
-              style={{ background: C.redBg, border: "none", borderRadius: 8, padding: "9px 10px", color: C.red, fontWeight: 700, cursor: "pointer", height: 38 }}
-            >
-              🗑
-            </button>
-          )}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: materiales.length > 1 ? "1.3fr 1fr auto" : "1.3fr 1fr",
+              gap: 12,
+              marginBottom: 10,
+              alignItems: "end",
+            }}
+          >
+            <Field label={idx === 0 ? "Tipo de Tela" : `Material ${idx + 1}`}>
+              <FInput
+                value={mat.tipoTela}
+                onChange={(v) => actualizarMaterial(idx, "tipoTela", v)}
+                placeholder="Ej: Diamante"
+                list={telasDatalistId}
+              />
+            </Field>
+            <Field label="Mesón">
+              <FSel
+                value={mat.meson}
+                onChange={(v) => actualizarMaterial(idx, "meson", v)}
+                options={mesonesDisponibles.map((m) => ({ id: m.id, nombre: m.nombre }))}
+              />
+            </Field>
+            {materiales.length > 1 && (
+              <button
+                onClick={() => quitarMaterial(idx)}
+                title="Quitar este material"
+                style={{ background: C.redBg, border: "none", borderRadius: 8, padding: "9px 10px", color: C.red, fontWeight: 700, cursor: "pointer", height: 38 }}
+              >
+                🗑
+              </button>
+            )}
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr 1fr",
+              gap: 12,
+            }}
+          >
+            <Field label="Largo del Trazo (1 capa, m)">
+              <FInput
+                type="number"
+                value={mat.largoTrazo}
+                onChange={(v) => actualizarMaterial(idx, "largoTrazo", v)}
+                placeholder="4.5"
+              />
+            </Field>
+            <Field label="Capas">
+              <FInput
+                type="number"
+                value={mat.capas}
+                onChange={(v) => actualizarMaterial(idx, "capas", v)}
+                placeholder="72"
+              />
+            </Field>
+            <Field label="Metros">
+              <div
+                style={{
+                  padding: "9px 12px",
+                  borderRadius: 8,
+                  border: `1.5px solid ${C.border}`,
+                  background: C.white,
+                  fontWeight: 800,
+                  color: metrosMaterial(mat) > 0 ? C.violet : C.slate,
+                  fontSize: 13,
+                }}
+              >
+                {metrosMaterial(mat) > 0 ? `${metrosMaterial(mat).toLocaleString("es-CO")} m` : "—"}
+              </div>
+            </Field>
+          </div>
         </div>
       ))}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -1065,9 +1092,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
             Total: {metrosTotales() > 0 ? `${metrosTotales().toLocaleString("es-CO")} m` : "—"}
           </div>
         )}
-      </div>
-      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, marginTop: -8 }}>
-        Las capas se ponen por color, en "Unidades a cortar" más abajo — cada color puede llevar una cantidad distinta, y son las mismas para todos los materiales de este corte.
       </div>
       {/* Horario real de tendido — desde que se empieza a tender la tela
           hasta que queda lista para cortar. Antes solo existía el estimado
@@ -1135,7 +1159,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           {minutosTotales() > 0 && metrosTotales() > 0 && (
             <div style={{ marginTop: minutosTendido() > 0 ? 4 : 0 }}>
               ✂ {minutosTotales()} min de corte · {(minutosTotales() / metrosTotales()).toFixed(1)} min/metro
-              {capasSumaTotal() > 0 && ` · ${(minutosTotales() / capasSumaTotal()).toFixed(1)} min/capa`}
+              {capasSumaMateriales() > 0 && ` · ${(minutosTotales() / capasSumaMateriales()).toFixed(1)} min/capa`}
             </div>
           )}
           {minutosTendido() > 0 && minutosTotales() > 0 && (
@@ -1164,16 +1188,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           const pend = pendiente(ref);
           const totalPend = Object.values(pend).reduce((a, b) => a + b, 0);
           if (totalPend === 0) return null;
-          // Capas reales de este color — comprobación: capas × marcadas
-          // (de la curva propuesta en Mesones) debería dar la misma
-          // cantidad que se está escribiendo en la grilla de tallas de al
-          // lado. Sin curva (ítem sin preselección) no hay con qué
-          // comparar, así que solo queda el input suelto.
-          const capasColorVal = parseFloat(capasPorRef[ref.id]) || 0;
-          const prendasCalc = capasColorVal * marcadas;
-          const cantidadIngresada = Object.values(cantidades[ref.id]?.tallas || {}).reduce((a, b) => a + b, 0);
-          const hayComprobacion = marcadas > 0 && capasColorVal > 0;
-          const coincideCapas = hayComprobacion && prendasCalc === cantidadIngresada;
           return (
             <div
               key={ref.id}
@@ -1238,15 +1252,14 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
                   </div>
                 </div>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 14, alignItems: "start" }}>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(5,1fr)",
-                    gap: 6,
-                  }}
-                >
-                  {ordenarTallas(Object.keys(pend)).map((t) =>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(5,1fr)",
+                  gap: 6,
+                }}
+              >
+                {ordenarTallas(Object.keys(pend)).map((t) =>
                     pend[t] > 0 ? (
                       <div key={t}>
                         <div
@@ -1311,45 +1324,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
                       </div>
                     ) : null
                   )}
-                </div>
-                {/* Capas reales de este color — al lado de la grilla de
-                    tallas de arriba, que no se toca. Precargada con la
-                    capas teórica de Mesones; se compara contra lo que se
-                    está escribiendo en la grilla (capas × marcadas). */}
-                <div style={{ minWidth: 140, borderLeft: `1px solid ${C.border}`, paddingLeft: 14 }}>
-                  <div style={{ fontSize: 9, color: C.slate, fontWeight: 700, marginBottom: 2 }}>
-                    CAPAS REALES
-                  </div>
-                  <input
-                    type="number"
-                    min={0}
-                    value={capasPorRef[ref.id] || ""}
-                    placeholder="0"
-                    onChange={(e) => setCapasPorRef((c) => ({ ...c, [ref.id]: e.target.value }))}
-                    style={{
-                      width: "100%",
-                      padding: "5px",
-                      border: `1px solid ${C.border}`,
-                      borderRadius: 6,
-                      fontSize: 12,
-                      textAlign: "center",
-                      background: capasColorVal > 0 ? C.blueBg : C.white,
-                      marginBottom: 6,
-                    }}
-                  />
-                  {hayComprobacion ? (
-                    <div style={{ fontSize: 10, color: C.slate }}>
-                      Calc: <b style={{ color: C.ink }}>{fmtNum(prendasCalc)}</b> / Real: <b style={{ color: C.ink }}>{fmtNum(cantidadIngresada)}</b>
-                      <div style={{ marginTop: 2, fontWeight: 800, color: coincideCapas ? C.green : C.amber }}>
-                        {coincideCapas ? "✓ Coincide" : `⚠ dif ${prendasCalc - cantidadIngresada > 0 ? "+" : ""}${prendasCalc - cantidadIngresada}`}
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: 10, color: C.slate }}>
-                      {marcadas > 0 ? "Falta poner capas" : "Sin curva para comprobar"}
-                    </div>
-                  )}
-                </div>
               </div>
             </div>
           );
@@ -5681,7 +5655,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                               {(c.materiales || []).length > 1 && (
                                 <div style={{ marginBottom: 12, padding: "8px 12px", background: C.violetBg, borderRadius: 8, fontSize: 12, color: C.ink }}>
                                   <b style={{ color: C.violet }}>Materiales:</b>{" "}
-                                  {c.materiales.map((m, i) => `${m.tipoTela || "—"} (${m.largoTrazo || 0}m × ${c.capas ?? 0} = ${m.metros || 0}m)`).join("  ·  ")}
+                                  {c.materiales.map((m, i) => `${m.tipoTela || "—"} (${m.largoTrazo || 0}m × ${m.capas ?? 0} capas${m.meson ? ` · ${nombreMeson(c.planta, m.meson)}` : ""} = ${m.metros || 0}m)`).join("  ·  ")}
                                 </div>
                               )}
                               {renderHorarioCorte(c)}
@@ -5918,7 +5892,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                               {(c.materiales || []).length > 1 && (
                                 <div style={{ marginBottom: 12, padding: "8px 12px", background: C.violetBg, borderRadius: 8, fontSize: 12, color: C.ink }}>
                                   <b style={{ color: C.violet }}>Materiales:</b>{" "}
-                                  {c.materiales.map((m, i) => `${m.tipoTela || "—"} (${m.largoTrazo || 0}m × ${c.capas ?? 0} = ${m.metros || 0}m)`).join("  ·  ")}
+                                  {c.materiales.map((m, i) => `${m.tipoTela || "—"} (${m.largoTrazo || 0}m × ${m.capas ?? 0} capas${m.meson ? ` · ${nombreMeson(c.planta, m.meson)}` : ""} = ${m.metros || 0}m)`).join("  ·  ")}
                                 </div>
                               )}
                               {renderHorarioCorte(c)}
