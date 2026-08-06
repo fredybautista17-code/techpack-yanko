@@ -4480,7 +4480,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, onRegistrarCorteManual, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onEditarCantidadesCorte, onActualizarHorarioCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, onRegistrarCorteManual, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onDevolverCorteReal, onEditarCantidadesCorte, onActualizarHorarioCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Selección por talla: Map key `${pedidoId}__${ref}__${talla}` -> { ...contexto, cantidad }
   // (cantidad es editable, por si no alcanza la tela para toda la talla).
@@ -4554,6 +4554,10 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // registrado (p.ej. cuando por error se mezclaron 2 referencias en un solo
   // registro) — key `${corteId}__${refCode}`, null si no hay ninguna abierta.
   const [confirmQuitarRef, setConfirmQuitarRef] = useState(null);
+  // Confirmación inline antes de devolver un corte completo (todas sus
+  // referencias) de "Cortes Aprobados" de vuelta a "Ingreso de Corte Real" —
+  // key = id del corte, null si no hay ninguna abierta.
+  const [confirmDevolverCorte, setConfirmDevolverCorte] = useState(null);
   // Edición de cantidades por talla en "Cortes Aprobados" (solo admin) — por
   // si el patronista se equivocó digitando al registrar el corte real. Se
   // guarda el id del corte en edición y una copia de trabajo de sus `refs`
@@ -5954,6 +5958,35 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                   </div>
                                 );
                               })()}
+                              {isAdmin && onDevolverCorteReal && (
+                                <div style={{ marginBottom: 14, padding: "10px 12px", background: C.redBg, borderRadius: 8 }}>
+                                  {confirmDevolverCorte === c.id ? (
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                      <span style={{ color: C.red, fontWeight: 700, fontSize: 12 }}>
+                                        ¿Devolver este corte completo a "Ingreso de Corte Real"? Se borra todo lo registrado acá (materiales, tallas) y la referencia vuelve a quedar pendiente por cortar.
+                                      </span>
+                                      <Btn
+                                        small
+                                        variant="danger"
+                                        onClick={async () => {
+                                          await onDevolverCorteReal(c.pedidoId, c.id);
+                                          setConfirmDevolverCorte(null);
+                                          setAprobadoAbierto(null);
+                                        }}
+                                      >
+                                        Confirmar
+                                      </Btn>
+                                      <Btn small variant="secondary" onClick={() => setConfirmDevolverCorte(null)}>
+                                        Cancelar
+                                      </Btn>
+                                    </div>
+                                  ) : (
+                                    <Btn small variant="secondary" onClick={() => setConfirmDevolverCorte(c.id)}>
+                                      ↩ Devolver a Ingreso de Corte Real
+                                    </Btn>
+                                  )}
+                                </div>
+                              )}
                               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                                 <input
                                   value={texto}
@@ -7264,6 +7297,34 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     }
     await fsSave("pedidos_activos", pedidoId, patch);
   }
+  // Devuelve un corte real completo (todas sus referencias/materiales) de
+  // "Cortes Aprobados" de vuelta a "Ingreso de Corte Real" — para cuando el
+  // registro está mal desde la base (planta/mesón/materiales equivocados,
+  // etc.) y es más fácil volver a hacerlo entero que ir corrigiendo campo
+  // por campo. A diferencia de `quitarRefDeCorteReal` (que solo saca UNA
+  // referencia), esto borra el corte completo sin importar cuántas
+  // referencias tenga — como "pendiente por cortar" se calcula restando
+  // cortesRealizados contra pedido.referencias, al borrarlo todo vuelve a
+  // quedar pendiente y disponible para registrarse de nuevo. Solo aplica a
+  // cortes SIN lote (Cortes Aprobados) — uno con lote ya asignado hay que
+  // manejarlo aparte porque el lote quedó registrado también en
+  // `corte_lotes`.
+  async function devolverCorteAIngreso(pedidoId, corteId) {
+    const pedido = pedidos.find((p) => p.id === pedidoId);
+    if (!pedido) return;
+    const corte = (pedido.cortesRealizados || []).find((c) => c.id === corteId);
+    if (!corte || corte.lote) return;
+    const cortesActualizados = pedido.cortesRealizados.filter((c) => c.id !== corteId);
+    const totalPedido = pedido.referencias.reduce((s, r) => s + r.total, 0);
+    const totalC = cortesActualizados.reduce((s, c) => s + (c.totalUnidades || 0), 0);
+    const patch = { cortesRealizados: cortesActualizados };
+    if ((pedido.estado === "terminado" || pedido.estado === "cerrado") && totalC < totalPedido) {
+      patch.estado = "activo";
+      patch.motivoCierre = null;
+      patch.fechaCumplido = null;
+    }
+    await fsSave("pedidos_activos", pedidoId, patch);
+  }
   // Corrige a mano las cantidades por talla de un corte real ya registrado en
   // "Cortes Aprobados" (todavía sin lote) — por si el patronista se equivocó
   // digitando al registrar el corte real en Entrada de Corte. Solo admin
@@ -7665,6 +7726,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               lotesExistentes={lotesExistentes}
               onAsignarLoteReal={confirmarLoteCorteReal}
               onQuitarRefDeCorte={quitarRefDeCorteReal}
+              onDevolverCorteReal={devolverCorteAIngreso}
               onEditarCantidadesCorte={editarCantidadesCorteReal}
               onActualizarHorarioCorte={actualizarHorarioCorte}
               subTabInicial={navProduccion?.subTab}
