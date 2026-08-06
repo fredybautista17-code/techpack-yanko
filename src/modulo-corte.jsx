@@ -664,10 +664,19 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     // acá, para que la estadística de tendido salga de datos reales.
     horaInicioTendido: preselColor0?.horaInicioEstimada || "",
     horaFinTendido: "",
-    // Etapa 2 — Corte: desde que el cortador empieza hasta que termina de
-    // cortar todas las capas del trazo (no incluye empaque ni entrega).
-    horaInicio: preselColor0?.horaInicioEstimada || "",
-    horaFin: preselColor0?.horaFinEstimada || "",
+    // Etapa 2 — Corte: ya NO se pide acá. Cuando se registra el corte real
+    // solo se sabe con certeza que ya terminó el tendido — el tiempo real
+    // de CORTE se sabe después (cuando el cortador de verdad termina) y se
+    // completa más adelante en "Cortes Aprobados"/"Históricos", junto con
+    // el lote. Quedan en el modelo de datos para que ese paso los pueda
+    // llenar, pero no se piden acá.
+    horaInicio: "",
+    horaFin: "",
+    // Número de lote — opcional acá. Si el patronista ya lo sabe al
+    // momento de registrar el corte real, lo puede poner de una vez; si no,
+    // lo deja en blanco y lo completa después en "Cortes Aprobados" (igual
+    // que antes de este cambio).
+    lote: "",
   });
   const plantaSel = plantas.find((pl) => pl.nombre === form.planta);
   const mesonesDisponibles = plantaSel?.mesones || [];
@@ -790,6 +799,8 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
   }
   async function save() {
     if (!form.planta || !form.cortador || !form.fecha) return;
+    const loteTrim = (form.lote || "").trim();
+    if (loteTrim && lotesExistentes?.has(loteTrim.toUpperCase())) return;
     const refs = pedido.referencias
       .map((r) => ({
         refId: r.id,
@@ -827,10 +838,10 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       horaInicio: form.horaInicio,
       horaFin: form.horaFin,
       minutos: minutosTotales(),
-      // El lote ya NO se pone acá — se corta primero, y el patronista lo
-      // asigna después en "Cortes Aprobados" (Producción Corte), ya viendo
-      // los datos reales de lo que se cortó.
-      lote: "",
+      // El lote es opcional acá — si el patronista ya lo sabe, lo puede
+      // poner de una vez; si no, se deja en blanco y se completa después en
+      // "Cortes Aprobados", ya viendo los datos reales de lo que se cortó.
+      lote: (form.lote || "").trim(),
       refs,
       ingresoCorte: ingresoTotal(),
       totalUnidades: totalCortando(),
@@ -898,7 +909,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "1fr 1fr 1fr 1fr",
+          gridTemplateColumns: "1fr 1fr 1fr 1fr 1.1fr",
           gap: 12,
           marginBottom: 16,
         }}
@@ -934,7 +945,19 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
             }))}
           />
         </Field>
+        <Field label="Lote (si ya lo sabes)">
+          <FInput
+            value={form.lote}
+            onChange={(v) => setForm((f) => ({ ...f, lote: v }))}
+            placeholder="Opcional"
+          />
+        </Field>
       </div>
+      {form.lote.trim() && lotesExistentes?.has(form.lote.trim().toUpperCase()) && (
+        <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginTop: -10, marginBottom: 14 }}>
+          ⚠ Ese número de lote ya está en uso — usa uno diferente o déjalo en blanco y complétalo después en "Cortes Aprobados".
+        </div>
+      )}
       {/* Etapa 1 — Tendido: tela, largo del trazo (una capa) y número de
           capas. Los metros totales de tela consumida se calculan solos. */}
       <div style={{ fontSize: 11, fontWeight: 800, color: C.violet, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
@@ -1010,13 +1033,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           <FInput
             type="time"
             value={form.horaFinTendido}
-            onChange={(v) => {
-              // Si la hora de inicio de corte todavía está vacía, se
-              // precarga con la misma — lo normal es que el corte arranque
-              // justo cuando termina el tendido, y queda editable por si no
-              // fue así.
-              setForm((f) => ({ ...f, horaFinTendido: v, horaInicio: f.horaInicio || v }));
-            }}
+            onChange={(v) => setForm((f) => ({ ...f, horaFinTendido: v }))}
           />
         </Field>
         <Field label="Duración Tendido">
@@ -1035,52 +1052,10 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           </div>
         </Field>
       </div>
-      {/* Etapa 2 — Corte: desde que empieza hasta que termina de cortar
-          todas las capas del trazo. */}
-      <div style={{ fontSize: 11, fontWeight: 800, color: C.blue, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
-        Etapa 2 · Corte
-      </div>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr 1fr",
-          gap: 12,
-          marginBottom: 16,
-        }}
-      >
-        <Field label="Hora Inicio">
-          <FInput
-            type="time"
-            value={form.horaInicio}
-            onChange={(v) => setForm((f) => ({ ...f, horaInicio: v }))}
-          />
-        </Field>
-        <Field label="Hora Fin (termina de cortar)">
-          <FInput
-            type="time"
-            value={form.horaFin}
-            onChange={(v) => setForm((f) => ({ ...f, horaFin: v }))}
-          />
-        </Field>
-        <Field label="Duración">
-          <div
-            style={{
-              padding: "9px 12px",
-              borderRadius: 8,
-              border: `1.5px solid ${C.border}`,
-              background: C.canvas,
-              fontWeight: 800,
-              color: minutosTotales() > 0 ? C.blue : C.slate,
-              fontSize: 13,
-            }}
-          >
-            {minutosTotales() > 0 ? `${minutosTotales()} min` : "—"}
-          </div>
-        </Field>
-      </div>
-      {/* El número de lote ya no se pide ni se muestra acá — se corta
-          primero, y el patronista lo asigna después en "Producción Corte" →
-          "Cortes Aprobados", ya con los datos reales de lo que se cortó. */}
+      {/* Etapa 2 — Corte: el horario real de corte ya NO se pide acá — se
+          completa después en "Cortes Aprobados"/"Históricos", cuando ya se
+          sabe de verdad cuánto tardó (ver nota en el estado inicial de
+          `form` más arriba). */}
       {(minutosTendido() > 0 || (minutosTotales() > 0 && metrosTotales() > 0)) && (
         <div
           style={{
@@ -1366,7 +1341,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
         <Btn
           variant="success"
           onClick={save}
-          disabled={totalCortando() === 0 || !form.planta || !form.cortador}
+          disabled={totalCortando() === 0 || !form.planta || !form.cortador || (form.lote.trim() && lotesExistentes?.has(form.lote.trim().toUpperCase()))}
         >
           ✓ Entrada de Corte
         </Btn>
@@ -4327,7 +4302,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, onRegistrarCorteManual, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onEditarCantidadesCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, onRegistrarCorteManual, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onEditarCantidadesCorte, onActualizarHorarioCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Selección por talla: Map key `${pedidoId}__${ref}__${talla}` -> { ...contexto, cantidad }
   // (cantidad es editable, por si no alcanza la tela para toda la talla).
@@ -4414,6 +4389,11 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // Color/referencia elegido en el desplegable "+ Agregar color faltante"
   // (dentro del mismo panel de edición) antes de meterlo a cantidadesEdit.
   const [colorAAgregar, setColorAAgregar] = useState("");
+  // Edición en línea del Horario de Corte (hora inicio/fin) — se completa
+  // después de Ingreso de Corte Real, en "Cortes Aprobados" o "Históricos"
+  // según en cuál de las dos haya quedado el corte. Clave por id de corte;
+  // { horaInicio, horaFin } mientras se está editando, se limpia al guardar.
+  const [horarioCorteEdit, setHorarioCorteEdit] = useState({});
   // "Registrar Manual" (nuevo subTab): búsqueda de un pedido por número o
   // cliente sin importar su estado (activo/terminado/cerrado) — para poder
   // cargar retroactivamente un corte que se hizo pero nunca se registró en
@@ -4487,6 +4467,50 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     const pl = (plantasConfig || []).find((p) => p.nombre === plantaNombre);
     const m = pl?.mesones?.find((mm) => mm.id === mesonId);
     return m?.nombre || mesonId;
+  }
+  // Panel para completar el Horario de Corte (hora inicio/fin) — reusado
+  // tanto en "Cortes Aprobados" como en "Históricos", ya que un corte puede
+  // quedar en cualquiera de las dos según si ya tiene lote o no. Se precarga
+  // con horaFinTendido como sugerencia de inicio (lo normal es que el corte
+  // arranque justo cuando termina el tendido), editable si no fue así.
+  // OJO: es una función normal que se LLAMA e inserta su JSX (no un
+  // componente `<...>` aparte) — así React no le da una identidad nueva en
+  // cada render y los inputs no pierden el foco mientras se escribe.
+  function renderHorarioCorte(c) {
+    const edit = horarioCorteEdit[c.id];
+    const hInicio = edit?.horaInicio ?? c.horaInicio ?? c.horaFinTendido ?? "";
+    const hFin = edit?.horaFin ?? c.horaFin ?? "";
+    const cambiado = !!edit;
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 14, padding: "10px 12px", background: C.blueBg, borderRadius: 8 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: C.blue }}>Horario Corte:</span>
+        <input
+          type="time"
+          value={hInicio}
+          onChange={(e) => setHorarioCorteEdit((s) => ({ ...s, [c.id]: { horaInicio: e.target.value, horaFin: hFin } }))}
+          style={{ padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, color: C.ink, outline: "none", fontFamily: "inherit" }}
+        />
+        <span style={{ fontSize: 11, color: C.slate }}>a</span>
+        <input
+          type="time"
+          value={hFin}
+          onChange={(e) => setHorarioCorteEdit((s) => ({ ...s, [c.id]: { horaInicio: hInicio, horaFin: e.target.value } }))}
+          style={{ padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, color: C.ink, outline: "none", fontFamily: "inherit" }}
+        />
+        {cambiado && (
+          <Btn
+            small
+            variant="success"
+            onClick={async () => {
+              await onActualizarHorarioCorte(c.pedidoId, c.id, hInicio, hFin);
+              setHorarioCorteEdit((s) => { const n = { ...s }; delete n[c.id]; return n; });
+            }}
+          >
+            Guardar horario
+          </Btn>
+        )}
+      </div>
+    );
   }
   // Click sobre un grupo (una referencia con todos sus colores) de
   // "Cronograma de Corte" o "Cortes Vencidos": si TODOS sus colores ya
@@ -5596,6 +5620,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                 <div><b>Horario Corte:</b> {c.horaInicio || "—"} a {c.horaFin || "—"} ({c.minutos ?? "—"} min)</div>
                                 <div><b>Ingreso corte:</b> {fmtCOP(c.ingresoCorte || 0)}</div>
                               </div>
+                              {renderHorarioCorte(c)}
                               {(() => {
                                 const enEdicion = editandoCantidades === c.id;
                                 return (
@@ -5628,13 +5653,13 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                           <td style={{ padding: "6px 8px", fontWeight: 700, verticalAlign: "top" }}>{r.ref}{r.descripcion ? ` — ${r.descripcion}` : ""}</td>
                                           <td style={{ padding: "6px 8px" }}>
                                             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                                              {Object.entries(r.tallas || {}).map(([t, cant]) => (
+                                              {ordenarTallas(Object.keys(r.tallas || {})).map((t) => (
                                                 <div key={t} style={{ display: "flex", alignItems: "center", gap: 4 }}>
                                                   <span style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>{t}</span>
                                                   <input
                                                     type="number"
                                                     min={0}
-                                                    value={cant}
+                                                    value={r.tallas[t]}
                                                     onChange={(e) => actualizarTallaEdit(refIdx, t, e.target.value)}
                                                     style={{ width: 56, padding: "3px 6px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, color: C.ink, outline: "none", fontFamily: "inherit" }}
                                                   />
@@ -5649,7 +5674,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                         <tr key={r.refId} style={{ borderBottom: `1px solid ${C.border}` }}>
                                           <td style={{ padding: "6px 8px", fontWeight: 700 }}>{r.ref}{r.descripcion ? ` — ${r.descripcion}` : ""}</td>
                                           <td style={{ padding: "6px 8px", color: C.slate }}>
-                                            {Object.entries(r.tallas || {}).filter(([, cant]) => cant > 0).map(([t, cant]) => `${t}:${cant}`).join(", ")}
+                                            {ordenarTallas(Object.keys(r.tallas || {})).filter((t) => r.tallas[t] > 0).map((t) => `${t}:${r.tallas[t]}`).join(", ")}
                                           </td>
                                           <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700 }}>{fmtNum(r.total)}</td>
                                         </tr>
@@ -5826,6 +5851,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                 <div><b>Horario Corte:</b> {c.horaInicio || "—"} a {c.horaFin || "—"} ({c.minutos ?? "—"} min)</div>
                                 <div><b>Ingreso corte:</b> {fmtCOP(c.ingresoCorte || 0)}</div>
                               </div>
+                              {renderHorarioCorte(c)}
                               {(() => {
                                 const enEdicion = editandoCantidades === c.id;
                                 return (
@@ -5858,13 +5884,13 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                           <td style={{ padding: "6px 8px", fontWeight: 700, verticalAlign: "top" }}>{r.ref}{r.descripcion ? ` — ${r.descripcion}` : ""}</td>
                                           <td style={{ padding: "6px 8px" }}>
                                             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                                              {Object.entries(r.tallas || {}).map(([t, cant]) => (
+                                              {ordenarTallas(Object.keys(r.tallas || {})).map((t) => (
                                                 <div key={t} style={{ display: "flex", alignItems: "center", gap: 4 }}>
                                                   <span style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>{t}</span>
                                                   <input
                                                     type="number"
                                                     min={0}
-                                                    value={cant}
+                                                    value={r.tallas[t]}
                                                     onChange={(e) => actualizarTallaEdit(refIdx, t, e.target.value)}
                                                     style={{ width: 56, padding: "3px 6px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, color: C.ink, outline: "none", fontFamily: "inherit" }}
                                                   />
@@ -5879,7 +5905,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                         <tr key={r.refId} style={{ borderBottom: `1px solid ${C.border}` }}>
                                           <td style={{ padding: "6px 8px", fontWeight: 700 }}>{r.ref}{r.descripcion ? ` — ${r.descripcion}` : ""}</td>
                                           <td style={{ padding: "6px 8px", color: C.slate }}>
-                                            {Object.entries(r.tallas || {}).filter(([, cant]) => cant > 0).map(([t, cant]) => `${t}:${cant}`).join(", ")}
+                                            {ordenarTallas(Object.keys(r.tallas || {})).filter((t) => r.tallas[t] > 0).map((t) => `${t}:${r.tallas[t]}`).join(", ")}
                                           </td>
                                           <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700 }}>{fmtNum(r.total)}</td>
                                         </tr>
@@ -6860,6 +6886,21 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
       updated.fechaCumplido = today();
     }
     savePedido(updated);
+    // El lote en Entrada de Corte es opcional — si el patronista ya lo puso
+    // ahí mismo (en vez de esperar a "Cortes Aprobados"), hay que registrarlo
+    // igual en corte_lotes para que cuente contra duplicados y estadísticas,
+    // igual que cuando se asigna después con confirmarLoteCorteReal.
+    if (corte.lote) {
+      guardarLoteCorte({
+        numero: corte.lote,
+        pedidoId,
+        numeroPedido: pedido.numero,
+        cliente: pedido.cliente,
+        cantidad: corte.totalUnidades || 0,
+        fecha: corte.fecha,
+        creadoEn: new Date().toISOString(),
+      });
+    }
   }
   // Registro MANUAL/retroactivo de un corte real que sí se hizo pero nunca
   // se cargó en ATLAS a tiempo — a diferencia de registrarCorteReal (que
@@ -6890,6 +6931,19 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
       patch.fechaCumplido = null;
     }
     await fsSave("pedidos_activos", pedidoId, patch);
+    // Mismo caso que en registrarCorteReal: si el lote se puso de una vez acá
+    // (opcional), se registra también en corte_lotes.
+    if (corte.lote) {
+      await guardarLoteCorte({
+        numero: corte.lote,
+        pedidoId,
+        numeroPedido: pedido.numero,
+        cliente: pedido.cliente,
+        cantidad: corte.totalUnidades || 0,
+        fecha: corte.fecha,
+        creadoEn: new Date().toISOString(),
+      });
+    }
   }
   // Programa en lote una o varias referencias puntuales (no el pedido
   // completo) para el mismo día — items viene de ProgramacionCorteView, ya
@@ -7051,6 +7105,29 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     }
     await fsSave("pedidos_activos", pedidoId, patch);
   }
+  // Completa el horario real de CORTE (hora inicio/fin) una vez ya se
+  // terminó de cortar — se separó a propósito del horario de Tendido: en
+  // "Ingreso de Corte Real" solo se sabe cuándo terminó el tendido, el
+  // tiempo real de corte se sabe después y se completa acá, junto con el
+  // lote (en "Cortes Aprobados" o, si el corte ya tiene lote, en
+  // "Históricos"). No requiere admin — es dato operativo normal, igual que
+  // el resto de lo que se llena en Ingreso de Corte Real.
+  async function actualizarHorarioCorte(pedidoId, corteId, horaInicio, horaFin) {
+    const pedido = pedidos.find((p) => p.id === pedidoId);
+    if (!pedido) return;
+    const corte = (pedido.cortesRealizados || []).find((c) => c.id === corteId);
+    if (!corte) return;
+    let minutos = 0;
+    if (horaInicio && horaFin) {
+      const [h1, m1] = horaInicio.split(":").map(Number);
+      const [h2, m2] = horaFin.split(":").map(Number);
+      minutos = h2 * 60 + m2 - (h1 * 60 + m1);
+    }
+    const cortesActualizados = pedido.cortesRealizados.map((c) =>
+      c.id === corteId ? { ...c, horaInicio, horaFin, minutos } : c
+    );
+    await fsSave("pedidos_activos", pedidoId, { cortesRealizados: cortesActualizados });
+  }
   // Reinicio completo de pruebas (temporal, solo admin) — borra TODA la
   // colección corte_lotes, TODA corte_programacion (Programación de
   // Mesones), y vacía cortesRealizados de cada pedido activo (revirtiendo a
@@ -7107,6 +7184,14 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
   }
   const selPedido = pedidos.find((p) => p.id === selPedidoId);
   const isAdmin = currentUser?.isAdmin;
+  // "Equipo Interno" puede hacer las mismas correcciones de corte que el
+  // administrador (Editar cantidades, Cortador, Agregar color faltante,
+  // Registrar Manual, editar/eliminar cumplidos) — pedido explícito del
+  // usuario. OJO: esto NO incluye "Admin Corte" (Reiniciar Cortes borra
+  // TODO el historial de forma irreversible) — esa sección se queda
+  // exclusiva del administrador real (isAdmin), ver más abajo donde se
+  // decide el NAV y el render de view==="admin".
+  const puedeEditarCorte = isAdmin || currentUser?.role === "Equipo Interno";
   const NAV = [
     { id: "dashboard", icon: "◉", label: "Dashboard" },
     { id: "cola", icon: "📋", label: "Cola Sugerida" },
@@ -7387,10 +7472,11 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               onAsignarLoteReal={confirmarLoteCorteReal}
               onQuitarRefDeCorte={quitarRefDeCorteReal}
               onEditarCantidadesCorte={editarCantidadesCorteReal}
+              onActualizarHorarioCorte={actualizarHorarioCorte}
               subTabInicial={navProduccion?.subTab}
               produccionSubTabInicial={navProduccion?.produccionSubTab}
               navProduccionTs={navProduccion?.ts}
-              isAdmin={isAdmin}
+              isAdmin={puedeEditarCorte}
             />
           )}
           {view === "costo" && (
