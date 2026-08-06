@@ -652,12 +652,6 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     planta: preselColor0?.planta || "",
     meson: preselColor0?.meson || "",
     cortador: preselColor0?.cortador || "",
-    // Etapa 1 — Tendido: qué tela se tiende, qué tan largo es el trazo (una
-    // sola capa) y cuántas capas se apilan. Los metros totales de tela
-    // consumida se calculan solos (largoTrazo × capas) en vez de escribirse
-    // a mano, para que la estadística por tipo de tela sea consistente.
-    tipoTela: preselColor0?.tipoTela || "",
-    largoTrazo: preselColor0?.largoTrazo ? String(preselColor0.largoTrazo) : "",
     // Desde que se empieza a tender la tela hasta que queda lista para
     // cortar (no incluye el corte en sí) — antes solo se calculaba
     // teórico en Programación de Mesones; ahora también se registra real
@@ -678,6 +672,26 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     // que antes de este cambio).
     lote: "",
   });
+  // Etapa 1 — Tendido: la prenda puede combinar varios materiales (ej.
+  // cuerpo en una tela, puños en otra) — cada uno con su propio trazo (una
+  // sola capa); las capas ya se ponen por color más abajo y son las MISMAS
+  // para todos los materiales de un mismo corte (se tienden juntos, la
+  // cantidad de capas no cambia por material). Los metros de cada material
+  // se calculan solos (su trazo × capas totales) para que la estadística
+  // por tipo de tela sea consistente. Arranca con un material — lo normal —
+  // y se pueden agregar más.
+  const [materiales, setMateriales] = useState([
+    { id: uid(), tipoTela: preselColor0?.tipoTela || "", largoTrazo: preselColor0?.largoTrazo ? String(preselColor0.largoTrazo) : "" },
+  ]);
+  function actualizarMaterial(idx, campo, valor) {
+    setMateriales((ms) => ms.map((m, i) => (i === idx ? { ...m, [campo]: valor } : m)));
+  }
+  function agregarMaterial() {
+    setMateriales((ms) => [...ms, { id: uid(), tipoTela: "", largoTrazo: "" }]);
+  }
+  function quitarMaterial(idx) {
+    setMateriales((ms) => (ms.length > 1 ? ms.filter((_, i) => i !== idx) : ms));
+  }
   const plantaSel = plantas.find((pl) => pl.nombre === form.planta);
   const mesonesDisponibles = plantaSel?.mesones || [];
   const telasDatalistId = `telas-entrada-${pedido.id}`;
@@ -789,13 +803,19 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
   function capasSumaTotal() {
     return Object.values(capasPorRef).reduce((s, v) => s + (parseFloat(v) || 0), 0);
   }
-  // Metros totales de tela = largo del trazo (una sola capa) × capas de
-  // cada color, sumado entre todos los colores que se están cortando — ya
-  // no es una sola capas compartida, cada color puede llevar distinta
-  // cantidad (igual que en Programación de Mesones).
+  // Metros de UN material = su trazo (una sola capa) × la suma de capas de
+  // todos los colores que se están cortando (todos los materiales de un
+  // mismo corte se tienden con la misma cantidad de capas — lo que cambia
+  // entre materiales es el trazo, no las capas).
+  function metrosMaterial(mat) {
+    const trazo = parseFloat(mat.largoTrazo) || 0;
+    return trazo * capasSumaTotal();
+  }
+  // Metros totales de tela = suma de los metros de TODOS los materiales
+  // (normalmente uno solo, pero una prenda puede combinar varios, ej.
+  // cuerpo + puños).
   function metrosTotales() {
-    const trazo = parseFloat(form.largoTrazo) || 0;
-    return pedido.referencias.reduce((s, r) => s + trazo * (parseFloat(capasPorRef[r.id]) || 0), 0);
+    return materiales.reduce((s, mat) => s + metrosMaterial(mat), 0);
   }
   async function save() {
     if (!form.planta || !form.cortador || !form.fecha) return;
@@ -825,8 +845,21 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       planta: form.planta,
       meson: form.meson,
       cortador: form.cortador,
-      tipoTela: form.tipoTela,
-      largoTrazo: parseFloat(form.largoTrazo) || 0,
+      // Materiales reales de este corte — normalmente uno solo, pero una
+      // prenda puede combinar varios (ej. cuerpo + puños), cada uno con su
+      // propio trazo y metros.
+      materiales: materiales
+        .filter((m) => m.tipoTela || m.largoTrazo)
+        .map((m) => ({ tipoTela: m.tipoTela, largoTrazo: parseFloat(m.largoTrazo) || 0, metros: metrosMaterial(m) })),
+      // Campos "legacy" (un solo tipoTela/largoTrazo) — se mantienen para
+      // que las vistas y estadísticas viejas (Estadística de Tendido,
+      // Centro de Costo) que todavía leen estos campos sueltos sigan
+      // funcionando: tipoTela junta los nombres de todos los materiales,
+      // largoTrazo queda con el del primero (no tiene un solo valor
+      // correcto con más de un material). metrosTendido SÍ es la suma real
+      // de todos los materiales.
+      tipoTela: materiales.map((m) => m.tipoTela).filter(Boolean).join(" + "),
+      largoTrazo: parseFloat(materiales[0]?.largoTrazo) || 0,
       // Capas total = suma de las capas reales de todos los colores que se
       // están registrando en este corte — el detalle por color queda en
       // cada entrada de `refs`.
@@ -958,58 +991,83 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           ⚠ Ese número de lote ya está en uso — usa uno diferente o déjalo en blanco y complétalo después en "Cortes Aprobados".
         </div>
       )}
-      {/* Etapa 1 — Tendido: tela, largo del trazo (una capa) y número de
-          capas. Los metros totales de tela consumida se calculan solos. */}
+      {/* Etapa 1 — Tendido: uno o más materiales (una prenda puede combinar
+          varias telas, ej. cuerpo + puños), cada uno con su propio trazo (una
+          capa). Los metros de cada material se calculan solos (trazo ×
+          capas totales). */}
       <div style={{ fontSize: 11, fontWeight: 800, color: C.violet, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
-        Etapa 1 · Tendido
+        Etapa 1 · Tendido — Materiales
       </div>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1.3fr 1fr 1fr",
-          gap: 12,
-          marginBottom: 16,
-        }}
-      >
-        <Field label="Tipo de Tela">
-          <FInput
-            value={form.tipoTela}
-            onChange={(v) => setForm((f) => ({ ...f, tipoTela: v }))}
-            placeholder="Ej: Diamante"
-            list={telasDatalistId}
-          />
-          <datalist id={telasDatalistId}>
-            {(telas || []).map((t) => (
-              <option key={t} value={t} />
-            ))}
-          </datalist>
-        </Field>
-        <Field label="Largo del Trazo (1 capa, m)">
-          <FInput
-            type="number"
-            value={form.largoTrazo}
-            onChange={(v) => setForm((f) => ({ ...f, largoTrazo: v }))}
-            placeholder="4.5"
-          />
-        </Field>
-        <Field label="Metros de Tela (total, todos los colores)">
-          <div
-            style={{
-              padding: "9px 12px",
-              borderRadius: 8,
-              border: `1.5px solid ${C.border}`,
-              background: C.canvas,
-              fontWeight: 800,
-              color: metrosTotales() > 0 ? C.violet : C.slate,
-              fontSize: 13,
-            }}
-          >
-            {metrosTotales() > 0 ? `${metrosTotales().toLocaleString("es-CO")} m` : "—"}
+      <datalist id={telasDatalistId}>
+        {(telas || []).map((t) => (
+          <option key={t} value={t} />
+        ))}
+      </datalist>
+      {materiales.map((mat, idx) => (
+        <div
+          key={mat.id}
+          style={{
+            display: "grid",
+            gridTemplateColumns: materiales.length > 1 ? "1.3fr 1fr 1fr auto" : "1.3fr 1fr 1fr",
+            gap: 12,
+            marginBottom: 10,
+            alignItems: "end",
+          }}
+        >
+          <Field label={idx === 0 ? "Tipo de Tela" : `Material ${idx + 1}`}>
+            <FInput
+              value={mat.tipoTela}
+              onChange={(v) => actualizarMaterial(idx, "tipoTela", v)}
+              placeholder="Ej: Diamante"
+              list={telasDatalistId}
+            />
+          </Field>
+          <Field label="Largo del Trazo (1 capa, m)">
+            <FInput
+              type="number"
+              value={mat.largoTrazo}
+              onChange={(v) => actualizarMaterial(idx, "largoTrazo", v)}
+              placeholder="4.5"
+            />
+          </Field>
+          <Field label="Metros (todos los colores)">
+            <div
+              style={{
+                padding: "9px 12px",
+                borderRadius: 8,
+                border: `1.5px solid ${C.border}`,
+                background: C.canvas,
+                fontWeight: 800,
+                color: metrosMaterial(mat) > 0 ? C.violet : C.slate,
+                fontSize: 13,
+              }}
+            >
+              {metrosMaterial(mat) > 0 ? `${metrosMaterial(mat).toLocaleString("es-CO")} m` : "—"}
+            </div>
+          </Field>
+          {materiales.length > 1 && (
+            <button
+              onClick={() => quitarMaterial(idx)}
+              title="Quitar este material"
+              style={{ background: C.redBg, border: "none", borderRadius: 8, padding: "9px 10px", color: C.red, fontWeight: 700, cursor: "pointer", height: 38 }}
+            >
+              🗑
+            </button>
+          )}
+        </div>
+      ))}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <Btn small variant="secondary" onClick={agregarMaterial}>
+          + Agregar material
+        </Btn>
+        {materiales.length > 1 && (
+          <div style={{ fontSize: 12, fontWeight: 800, color: C.violet }}>
+            Total: {metrosTotales() > 0 ? `${metrosTotales().toLocaleString("es-CO")} m` : "—"}
           </div>
-        </Field>
+        )}
       </div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, marginTop: -8 }}>
-        Las capas ahora se ponen por color, en "Unidades a cortar" más abajo — cada color puede llevar una cantidad distinta.
+        Las capas se ponen por color, en "Unidades a cortar" más abajo — cada color puede llevar una cantidad distinta, y son las mismas para todos los materiales de este corte.
       </div>
       {/* Horario real de tendido — desde que se empieza a tender la tela
           hasta que queda lista para cortar. Antes solo existía el estimado
@@ -5620,6 +5678,12 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                 <div><b>Horario Corte:</b> {c.horaInicio || "—"} a {c.horaFin || "—"} ({c.minutos ?? "—"} min)</div>
                                 <div><b>Ingreso corte:</b> {fmtCOP(c.ingresoCorte || 0)}</div>
                               </div>
+                              {(c.materiales || []).length > 1 && (
+                                <div style={{ marginBottom: 12, padding: "8px 12px", background: C.violetBg, borderRadius: 8, fontSize: 12, color: C.ink }}>
+                                  <b style={{ color: C.violet }}>Materiales:</b>{" "}
+                                  {c.materiales.map((m, i) => `${m.tipoTela || "—"} (${m.largoTrazo || 0}m × ${c.capas ?? 0} = ${m.metros || 0}m)`).join("  ·  ")}
+                                </div>
+                              )}
                               {renderHorarioCorte(c)}
                               {(() => {
                                 const enEdicion = editandoCantidades === c.id;
@@ -5851,6 +5915,12 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                 <div><b>Horario Corte:</b> {c.horaInicio || "—"} a {c.horaFin || "—"} ({c.minutos ?? "—"} min)</div>
                                 <div><b>Ingreso corte:</b> {fmtCOP(c.ingresoCorte || 0)}</div>
                               </div>
+                              {(c.materiales || []).length > 1 && (
+                                <div style={{ marginBottom: 12, padding: "8px 12px", background: C.violetBg, borderRadius: 8, fontSize: 12, color: C.ink }}>
+                                  <b style={{ color: C.violet }}>Materiales:</b>{" "}
+                                  {c.materiales.map((m, i) => `${m.tipoTela || "—"} (${m.largoTrazo || 0}m × ${c.capas ?? 0} = ${m.metros || 0}m)`).join("  ·  ")}
+                                </div>
+                              )}
                               {renderHorarioCorte(c)}
                               {(() => {
                                 const enEdicion = editandoCantidades === c.id;
