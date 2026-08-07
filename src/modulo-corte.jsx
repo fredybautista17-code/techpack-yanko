@@ -684,6 +684,12 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       largoTrazo: preselColor0?.largoTrazo ? String(preselColor0.largoTrazo) : "",
       capas: preselColor0?.capas ? String(preselColor0.capas) : "",
       meson: preselColor0?.meson || "",
+      // Horario de tendido de ESTE material — cada material puede tenderse
+      // en un momento distinto (ej. en mesones diferentes, uno después del
+      // otro) — sirve para saber si el mesón está libre a esa hora, no solo
+      // ese día.
+      horaInicio: preselColor0?.horaInicioEstimada || "",
+      horaFin: "",
     },
   ]);
   function actualizarMaterial(idx, campo, valor) {
@@ -697,12 +703,16 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
   // aparte para no ir alargando el formulario — quedan como una tarjeta
   // resumen, con opción de editar (reabre la misma ventana) o quitar.
   const [modalMaterial, setModalMaterial] = useState(null);
+  // Guarda qué timeline de disponibilidad está abierto ahora mismo: el id
+  // del material (tarjeta inline de Material 1) o "modal" (ventana Agregar/
+  // Editar material). null = ninguno abierto.
+  const [timelineAbierto, setTimelineAbierto] = useState(null);
   function abrirAgregarMaterial() {
-    setModalMaterial({ idx: null, tipoTela: "", meson: "", largoTrazo: "", capas: "" });
+    setModalMaterial({ idx: null, tipoTela: "", meson: "", largoTrazo: "", capas: "", horaInicio: "", horaFin: "" });
   }
   function abrirEditarMaterial(idx) {
     const m = materiales[idx];
-    setModalMaterial({ idx, tipoTela: m.tipoTela, meson: m.meson, largoTrazo: m.largoTrazo, capas: m.capas });
+    setModalMaterial({ idx, tipoTela: m.tipoTela, meson: m.meson, largoTrazo: m.largoTrazo, capas: m.capas, horaInicio: m.horaInicio || "", horaFin: m.horaFin || "" });
   }
   function guardarModalMaterial() {
     if (!modalMaterial) return;
@@ -717,38 +727,65 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
   const plantaSel = plantas.find((pl) => pl.nombre === form.planta);
   const mesonesDisponibles = plantaSel?.mesones || [];
   const telasDatalistId = `telas-entrada-${pedido.id}`;
-  // Aviso (no bloqueante) de mesón ocupado — para la fecha+planta+mesón de
-  // UN material, junta lo que ya haya ahí de dos fuentes: lo planeado en
+  // Disponibilidad (no bloqueante) de UN mesón, para la fecha+planta+horario
+  // de un material puntual — junta lo ocupado de dos fuentes: lo planeado en
   // Programación de Mesones (itemsUsadosMeson, prop compartida con esa
   // vista) y lo ya cortado real ese mismo día en otros pedidos (o el mismo).
-  // No impide guardar, solo informa — igual que el aviso de lote repetido.
-  function ocupacionMeson(mesonId) {
-    if (!mesonId || !form.fecha || !form.planta) return [];
-    const items = [];
-    const grupoIdMeson = mesonesDisponibles.find((m) => m.id === mesonId)?.grupoId || null;
+  // Solo cuenta lo que se CRUZA en horario (igual que en Programación de
+  // Mesones) — si el material o lo ya ocupado no tiene horario puesto
+  // todavía, se asume conservadoramente que se cruza, para no arriesgar un
+  // choque real. No impide guardar, solo informa.
+  function calcularDisponibilidadMaterial(mesonId, horaInicio, horaFin) {
+    if (!mesonId || !form.fecha || !form.planta) {
+      return { ocupados: [], usados: 0, disponible: null, capacidad: null, compartido: false, nombreGrupo: "" };
+    }
+    const mesonInfo = mesonesDisponibles.find((m) => m.id === mesonId);
+    const capacidadPropia = mesonInfo?.metros ?? null;
+    const grupoInfo = mesonInfo?.grupoId ? (plantaSel?.grupos || []).find((g) => g.id === mesonInfo.grupoId) : null;
+    const capacidadGrupo = grupoInfo?.metros ?? null;
+    function seCruza(hIni, hFin) {
+      if (!hIni || !hFin || !horaInicio || !horaFin) return true;
+      return horaInicio < hFin && hIni < horaFin;
+    }
+    const ocupados = [];
     if (typeof itemsUsadosMeson === "function") {
-      (itemsUsadosMeson(form.fecha, form.planta, mesonId, grupoIdMeson, []) || []).forEach((it) => {
-        items.push({
-          tipo: "Programado",
-          texto: `${it.numero ? `Pedido ${it.numero}` : ""}${it.ref ? ` · ${it.ref}` : ""}${it.cliente ? ` (${it.cliente})` : ""}`.trim(),
-        });
+      (itemsUsadosMeson(form.fecha, form.planta, mesonId, mesonInfo?.grupoId || null, []) || []).forEach((it) => {
+        if (seCruza(it.horaInicioEstimada, it.horaFinEstimada)) {
+          ocupados.push({ ...it, tipo: "Programado" });
+        }
       });
     }
     const listaPedidos = pedidosTodos && pedidosTodos.length ? pedidosTodos : [pedido];
     listaPedidos.forEach((p) => {
       (p.cortesRealizados || []).forEach((c) => {
         if (c.fecha !== form.fecha || c.planta !== form.planta) return;
-        const enMateriales = (c.materiales || []).some((m) => m.meson === mesonId);
-        const enLegacy = !(c.materiales && c.materiales.length) && c.meson === mesonId;
-        if (!enMateriales && !enLegacy) return;
         const refsTxt = (c.refs || []).map((r) => r.ref).join(", ");
-        items.push({
-          tipo: "Cortado",
-          texto: `Pedido ${p.numero || ""}${refsTxt ? ` · ${refsTxt}` : ""}${p.cliente ? ` (${p.cliente})` : ""}`.trim(),
-        });
+        if ((c.materiales || []).length) {
+          c.materiales.forEach((m, mIdx) => {
+            if (m.meson !== mesonId) return;
+            if (!seCruza(m.horaInicio, m.horaFin)) return;
+            ocupados.push({
+              id: `${c.id || c.fecha}-${mIdx}`,
+              ref: refsTxt, cliente: p.cliente, numero: p.numero,
+              horaInicioEstimada: m.horaInicio, horaFinEstimada: m.horaFin,
+              largoTrazo: m.largoTrazo || 0, tipo: "Cortado",
+            });
+          });
+        } else if (c.meson === mesonId && seCruza(c.horaInicioTendido, c.horaFinTendido)) {
+          ocupados.push({
+            id: c.id || `${c.fecha}-${mesonId}`,
+            ref: refsTxt, cliente: p.cliente, numero: p.numero,
+            horaInicioEstimada: c.horaInicioTendido, horaFinEstimada: c.horaFinTendido,
+            largoTrazo: c.largoTrazo || 0, tipo: "Cortado",
+          });
+        }
       });
     });
-    return items;
+    const usados = ocupados.reduce((s, it) => s + (it.largoTrazo || 0), 0);
+    const dPropio = capacidadPropia !== null ? capacidadPropia - usados : null;
+    const dGrupo = capacidadGrupo !== null ? capacidadGrupo - usados : null;
+    const disponible = dPropio !== null && dGrupo !== null ? Math.min(dPropio, dGrupo) : dPropio !== null ? dPropio : dGrupo;
+    return { ocupados, usados, disponible, capacidad: capacidadPropia, compartido: !!grupoInfo, nombreGrupo: grupoInfo?.nombre || "" };
   }
   // El precio por prenda se toma primero del archivo de precios de corte
   // (Admin Corte → Precios Corte, la fuente "oficial" por referencia); si esa
@@ -899,6 +936,8 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
           largoTrazo: parseFloat(m.largoTrazo) || 0,
           capas: parseFloat(m.capas) || 0,
           meson: m.meson,
+          horaInicio: m.horaInicio || "",
+          horaFin: m.horaFin || "",
           metros: metrosMaterial(m),
         })),
       // Campos "legacy" (un solo tipoTela/largoTrazo) — se mantienen para
@@ -1046,7 +1085,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
         ))}
       </datalist>
       {materiales.map((mat, idx) => {
-        const ocupacion = ocupacionMeson(mat.meson);
+        const disp = calcularDisponibilidadMaterial(mat.meson, mat.horaInicio, mat.horaFin);
         if (idx === 0) {
           return (
             <div
@@ -1123,9 +1162,52 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
                   </div>
                 </Field>
               </div>
-              {ocupacion.length > 0 && (
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr auto",
+                  gap: 12,
+                  alignItems: "end",
+                  marginTop: 10,
+                }}
+              >
+                <Field label="Hora Inicio">
+                  <FInput
+                    type="time"
+                    value={mat.horaInicio}
+                    onChange={(v) => actualizarMaterial(idx, "horaInicio", v)}
+                  />
+                </Field>
+                <Field label="Hora Fin">
+                  <FInput
+                    type="time"
+                    value={mat.horaFin}
+                    onChange={(v) => actualizarMaterial(idx, "horaFin", v)}
+                  />
+                </Field>
+                {mat.meson && (
+                  <Btn
+                    small
+                    variant="secondary"
+                    onClick={() => setTimelineAbierto((t) => (t === mat.id ? null : mat.id))}
+                  >
+                    {timelineAbierto === mat.id ? "Ocultar disponibilidad" : "📋 Ver disponibilidad"}
+                  </Btn>
+                )}
+              </div>
+              {mat.meson && timelineAbierto === mat.id && (
+                <MesonTimeline
+                  nombre={mesonesDisponibles.find((m) => m.id === mat.meson)?.nombre || ""}
+                  capacidad={disp.capacidad}
+                  compartido={disp.compartido}
+                  ocupados={disp.ocupados}
+                  inicioActual={mat.horaInicio}
+                  finActual={mat.horaFin}
+                />
+              )}
+              {disp.ocupados.length > 0 && (
                 <div style={{ fontSize: 11, color: C.amber, fontWeight: 700, marginTop: 8 }}>
-                  ⚠ Este mesón ya tiene actividad el {fmtFechaISO(form.fecha)}: {ocupacion.map((o) => `${o.tipo}: ${o.texto}`).join("  ·  ")}
+                  ⚠ Este mesón ya tiene actividad el {fmtFechaISO(form.fecha)} en ese horario: {disp.ocupados.map((o) => `${o.tipo} (${o.cliente} #${o.numero} ${o.ref}, ${o.horaInicioEstimada || "?"}-${o.horaFinEstimada || "?"})`).join("  ·  ")}
                 </div>
               )}
             </div>
@@ -1154,9 +1236,10 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
               <b>Material {idx + 1}:</b> {mat.tipoTela || "—"}
               {nombreMesonMat ? ` · ${nombreMesonMat}` : ""}
               {` · ${mat.largoTrazo || 0}m × ${mat.capas || 0} capas = ${metrosMaterial(mat) || 0}m`}
-              {ocupacion.length > 0 && (
+              {(mat.horaInicio || mat.horaFin) ? ` · ${mat.horaInicio || "?"}-${mat.horaFin || "?"}` : ""}
+              {disp.ocupados.length > 0 && (
                 <div style={{ fontSize: 11, color: C.amber, fontWeight: 700, marginTop: 4 }}>
-                  ⚠ Mesón ocupado el {fmtFechaISO(form.fecha)}: {ocupacion.map((o) => `${o.tipo}: ${o.texto}`).join("  ·  ")}
+                  ⚠ Mesón ocupado el {fmtFechaISO(form.fecha)} en ese horario: {disp.ocupados.map((o) => `${o.tipo} (${o.cliente} #${o.numero} ${o.ref}, ${o.horaInicioEstimada || "?"}-${o.horaFinEstimada || "?"})`).join("  ·  ")}
                 </div>
               )}
             </div>
@@ -1226,11 +1309,54 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
               />
             </Field>
           </div>
-          {modalMaterial.meson && ocupacionMeson(modalMaterial.meson).length > 0 && (
-            <div style={{ fontSize: 11, color: C.amber, fontWeight: 700, marginTop: 10 }}>
-              ⚠ Este mesón ya tiene actividad el {fmtFechaISO(form.fecha)}: {ocupacionMeson(modalMaterial.meson).map((o) => `${o.tipo}: ${o.texto}`).join("  ·  ")}
-            </div>
-          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 12, alignItems: "end", marginTop: 12 }}>
+            <Field label="Hora Inicio">
+              <FInput
+                type="time"
+                value={modalMaterial.horaInicio}
+                onChange={(v) => setModalMaterial((m) => ({ ...m, horaInicio: v }))}
+              />
+            </Field>
+            <Field label="Hora Fin">
+              <FInput
+                type="time"
+                value={modalMaterial.horaFin}
+                onChange={(v) => setModalMaterial((m) => ({ ...m, horaFin: v }))}
+              />
+            </Field>
+            {modalMaterial.meson && (
+              <Btn
+                small
+                variant="secondary"
+                onClick={() => setTimelineAbierto((t) => (t === "modal" ? null : "modal"))}
+              >
+                {timelineAbierto === "modal" ? "Ocultar disponibilidad" : "📋 Ver disponibilidad"}
+              </Btn>
+            )}
+          </div>
+          {(() => {
+            if (!modalMaterial.meson) return null;
+            const dispModal = calcularDisponibilidadMaterial(modalMaterial.meson, modalMaterial.horaInicio, modalMaterial.horaFin);
+            return (
+              <>
+                {timelineAbierto === "modal" && (
+                  <MesonTimeline
+                    nombre={mesonesDisponibles.find((m) => m.id === modalMaterial.meson)?.nombre || ""}
+                    capacidad={dispModal.capacidad}
+                    compartido={dispModal.compartido}
+                    ocupados={dispModal.ocupados}
+                    inicioActual={modalMaterial.horaInicio}
+                    finActual={modalMaterial.horaFin}
+                  />
+                )}
+                {dispModal.ocupados.length > 0 && (
+                  <div style={{ fontSize: 11, color: C.amber, fontWeight: 700, marginTop: 10 }}>
+                    ⚠ Este mesón ya tiene actividad el {fmtFechaISO(form.fecha)} en ese horario: {dispModal.ocupados.map((o) => `${o.tipo} (${o.cliente} #${o.numero} ${o.ref}, ${o.horaInicioEstimada || "?"}-${o.horaFinEstimada || "?"})`).join("  ·  ")}
+                  </div>
+                )}
+              </>
+            );
+          })()}
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 18 }}>
             <Btn variant="secondary" onClick={() => setModalMaterial(null)}>Cancelar</Btn>
             <Btn variant="success" onClick={guardarModalMaterial} disabled={!modalMaterial.tipoTela && !modalMaterial.largoTrazo}>
