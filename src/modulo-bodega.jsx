@@ -881,6 +881,13 @@ async function parseDespachosVenezuelaExcel(file) {
   const wb = XLSX.read(buffer, { type: "array", cellDates: true });
 
   const resumen = {};
+  // Fila "TOTALES" de esta misma hoja (columna ABONO junto a DESPACHADO) —
+  // es el total oficial de abonos que ya usa el negocio para su propio
+  // control. Esa plata es la MISMA que las 10 hojas sueltas de depósitos
+  // (confirmado con el usuario) — no se importa como abono aparte (se
+  // duplicaría), solo se guarda acá para comparar en pantalla contra lo que
+  // sí se logra importar de esas 10 hojas + lo de dentro de cada DESPACHO N.
+  let totalAbonoOficial = null;
   if (wb.SheetNames.includes("TOTAL DESPACHOS VENEZUELA")) {
     const rows = XLSX.utils.sheet_to_json(wb.Sheets["TOTAL DESPACHOS VENEZUELA"], { header: 1, raw: true, defval: null });
     rows.forEach((row) => {
@@ -889,6 +896,9 @@ async function parseDespachosVenezuelaExcel(file) {
         const num = Number(row[5]);
         const desp = row[7];
         if (!isNaN(num) && desp !== null && desp !== undefined) resumen[num] = Number(desp);
+      }
+      if (normCell(row[5]) === "TOTALES" && row[6] !== null && row[6] !== undefined) {
+        totalAbonoOficial = Number(row[6]);
       }
     });
   }
@@ -981,7 +991,7 @@ async function parseDespachosVenezuelaExcel(file) {
     });
   });
 
-  return { despachos, abonos, avisos };
+  return { despachos, abonos, avisos, totalAbonoOficial };
 }
 async function importarADespachosFirestore(despachos, abonos, currentUser) {
   const CHUNK = 400;
@@ -1052,6 +1062,32 @@ function ImportarHistoricoView({ currentUser, despachosExistentes }) {
             <KPI icon="💵" label="Abonos detectados" value={fmtNum(resultado.abonos.length)} color={C.green} bg={C.greenBg} />
             <KPI icon="⚠️" label="Para revisar a mano" value={fmtNum(resultado.avisos.length)} color={resultado.avisos.length ? C.red : C.green} bg={resultado.avisos.length ? C.redBg : C.greenBg} />
           </div>
+          {resultado.totalAbonoOficial !== null && (() => {
+            const totalImportado = resultado.abonos.reduce((s, a) => s + (Number(a.monto) || 0), 0);
+            const diferencia = resultado.totalAbonoOficial - totalImportado;
+            const pct = resultado.totalAbonoOficial ? (Math.abs(diferencia) / resultado.totalAbonoOficial) * 100 : 0;
+            const cuadra = Math.abs(diferencia) < Math.max(1000, resultado.totalAbonoOficial * 0.005);
+            return (
+              <div
+                style={{
+                  background: cuadra ? C.greenBg : C.amberBg,
+                  border: `1.5px solid ${(cuadra ? C.green : C.amber)}55`,
+                  borderRadius: 10,
+                  padding: "12px 16px",
+                  marginBottom: 16,
+                  fontSize: 12,
+                  color: C.ink,
+                }}
+              >
+                <div style={{ fontWeight: 800, color: cuadra ? C.green : C.amber, marginBottom: 6 }}>
+                  {cuadra ? "✓ Abonos cuadran contra la hoja TOTAL DESPACHOS VENEZUELA" : "⚠ Abonos no cuadran exacto contra la hoja TOTAL DESPACHOS VENEZUELA"}
+                </div>
+                <div>Importado (dentro de cada DESPACHO + 10 hojas sueltas): <strong>{fmtMoney(totalImportado)}</strong></div>
+                <div>Oficial (columna ABONO, fila TOTALES): <strong>{fmtMoney(resultado.totalAbonoOficial)}</strong></div>
+                <div>Diferencia: <strong style={{ color: cuadra ? C.green : C.amber }}>{fmtMoney(diferencia)} ({pct.toFixed(1)}%)</strong></div>
+              </div>
+            );
+          })()}
           {resultado.avisos.length > 0 && (
             <div style={{ background: C.redBg, borderRadius: 10, padding: 14, marginBottom: 16, maxHeight: 220, overflowY: "auto" }}>
               {resultado.avisos.map((a, i) => (
