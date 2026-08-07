@@ -107,6 +107,44 @@ function fmtNum(n) {
 function fmtCOP(n) {
   return `$${fmtNum(Math.round(n || 0))}`;
 }
+// Recuerda, en el navegador de quien esté usando el equipo (localStorage,
+// no queda en el pedido ni se sincroniza entre equipos), el último cortador
+// usado y el último mesón usado por planta — así al abrir un corte nuevo ya
+// vienen precargados y solo hay que cambiarlos si de verdad cambia. Falla
+// silencioso si localStorage no está disponible (ej. modo privado).
+const LS_ULTIMO_CORTADOR = "atlasCorte_ultimoCortador";
+const LS_ULTIMOS_MESONES = "atlasCorte_ultimosMesones"; // JSON: { [planta]: mesonId }
+function leerUltimoCortador() {
+  try {
+    return localStorage.getItem(LS_ULTIMO_CORTADOR) || "";
+  } catch {
+    return "";
+  }
+}
+function guardarUltimoCortador(nombre) {
+  try {
+    if (nombre) localStorage.setItem(LS_ULTIMO_CORTADOR, nombre);
+  } catch {}
+}
+function leerUltimoMeson(planta) {
+  try {
+    if (!planta) return "";
+    const raw = localStorage.getItem(LS_ULTIMOS_MESONES);
+    const map = raw ? JSON.parse(raw) : {};
+    return map[planta] || "";
+  } catch {
+    return "";
+  }
+}
+function guardarUltimoMeson(planta, mesonId) {
+  try {
+    if (!planta || !mesonId) return;
+    const raw = localStorage.getItem(LS_ULTIMOS_MESONES);
+    const map = raw ? JSON.parse(raw) : {};
+    map[planta] = mesonId;
+    localStorage.setItem(LS_ULTIMOS_MESONES, JSON.stringify(map));
+  } catch {}
+}
 function diasHabiles(mes, anio) {
   let count = 0;
   const d = new Date(anio, mes - 1, 1);
@@ -650,7 +688,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
   const [form, setForm] = useState({
     fecha: preselColor0?.fechaProgramada || today(),
     planta: preselColor0?.planta || "",
-    cortador: preselColor0?.cortador || "",
+    cortador: preselColor0?.cortador || leerUltimoCortador(),
     // Desde que se empieza a tender la tela hasta que queda lista para
     // cortar (no incluye el corte en sí) — antes solo se calculaba
     // teórico en Programación de Mesones; ahora también se registra real
@@ -683,7 +721,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       tipoTela: preselColor0?.tipoTela || "",
       largoTrazo: preselColor0?.largoTrazo ? String(preselColor0.largoTrazo) : "",
       capas: preselColor0?.capas ? String(preselColor0.capas) : "",
-      meson: preselColor0?.meson || "",
+      meson: preselColor0?.meson || leerUltimoMeson(form.planta),
       // Horario de tendido de ESTE material — cada material puede tenderse
       // en un momento distinto (ej. en mesones diferentes, uno después del
       // otro) — sirve para saber si el mesón está libre a esa hora, no solo
@@ -928,6 +966,10 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       }))
       .filter((r) => r.total > 0);
     if (!refs.length) return;
+    // Se recuerda para la próxima vez que se abra un corte (mismo
+    // navegador), así el cortador/mesón ya vienen precargados.
+    guardarUltimoCortador(form.cortador);
+    guardarUltimoMeson(form.planta, materiales[0]?.meson || "");
     const corte = {
       id: uid(),
       fecha: form.fecha,
