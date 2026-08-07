@@ -4949,6 +4949,10 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // referencias que ya tienen Programación de Mesones hecha y están listas
   // para cargar el corte real (unidades, lote).
   const [corteRealFecha, setCorteRealFecha] = useState(today());
+  // "Mi día" — resumen de un solo día (por defecto hoy): lo programado que
+  // falta cortar y lo que ya se cortó real, en una sola pantalla, sin tener
+  // que ir pestaña por pestaña ni buscar pedido por pedido.
+  const [miDiaFecha, setMiDiaFecha] = useState(today());
   // Ítem "Listo para cortar" que está abierto en Ingreso de Corte Real — se
   // despliega inline debajo de la lista (igual que Programación de
   // Mesones), en vez de abrir una ventana modal aparte.
@@ -5978,7 +5982,13 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
       )}
       {subTab === "produccion" && (
         <div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+            <div
+              onClick={() => setProduccionSubTab("mi_dia")}
+              style={{ cursor: "pointer", padding: "8px 14px", borderRadius: 8, fontWeight: 800, fontSize: 11, background: produccionSubTab === "mi_dia" ? C.amber : C.amberBg, color: produccionSubTab === "mi_dia" ? C.white : C.amber }}
+            >
+              📅 MI DÍA
+            </div>
             <div
               onClick={() => setProduccionSubTab("mesones")}
               style={{ cursor: "pointer", padding: "8px 14px", borderRadius: 8, fontWeight: 800, fontSize: 11, background: produccionSubTab === "mesones" ? C.violet : C.violetBg, color: produccionSubTab === "mesones" ? C.white : C.violet }}
@@ -6004,6 +6014,122 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
               📚 HISTÓRICOS
             </div>
           </div>
+          {produccionSubTab === "mi_dia" && (() => {
+            const datosMiDia = datosDelDia(miDiaFecha);
+            // Lo programado que aún no está aprobado por el analista, y lo
+            // que ya está listo para pasar a Ingreso de Corte Real — mismo
+            // criterio que las otras dos sub-pestañas, para que el estado
+            // que ves acá sea coherente con lo que verías entrando a cada
+            // una por separado.
+            const faltaAprobar = datosMiDia.grupos.filter((g) => g.etapa !== "programacion_hecha");
+            const listoParaCortar = datosMiDia.grupos.filter((g) => g.etapa === "programacion_hecha");
+            // Los cortes reales no guardan pedidoId propio (viven dentro de
+            // pedido.cortesRealizados) — se recorre por pedido para no
+            // perder esa referencia al mostrar cliente/número.
+            const cortadoHoy = pedidos.flatMap((p) =>
+              (p.cortesRealizados || [])
+                .filter((c) => c.fecha === miDiaFecha)
+                .map((c) => ({ ...c, _cliente: p.cliente, _numero: p.numero }))
+            );
+            const unidadesCortadasHoy = cortadoHoy.reduce((s, c) => s + (c.totalUnidades || 0), 0);
+            const ingresoCortadoHoy = cortadoHoy.reduce((s, c) => s + (c.ingresoCorte || 0), 0);
+            return (
+              <div>
+                <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
+                  Resumen de un solo día: lo que falta cortar (programado) y lo que ya se cortó de verdad, sin ir pestaña por pestaña.
+                </p>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+                  <Field label="Día">
+                    <FInput type="date" value={miDiaFecha} onChange={(v) => setMiDiaFecha(v)} />
+                  </Field>
+                  <Btn variant="secondary" onClick={() => setMiDiaFecha(today())}>
+                    Hoy
+                  </Btn>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginBottom: 24 }}>
+                  <KPICard icon="⏳" label="Falta aprobar" value={fmtNum(faltaAprobar.length)} color={C.amber} bg={C.amberBg} />
+                  <KPICard icon="✂" label="Listas para cortar" value={fmtNum(listoParaCortar.length)} color={C.cyan} bg={C.blueBg} />
+                  <KPICard icon="✅" label="Ya cortado hoy" value={`${fmtNum(unidadesCortadasHoy)} uds`} color={C.green} bg={C.greenBg} sub={ingresoCortadoHoy > 0 ? fmtCOP(ingresoCortadoHoy) : undefined} />
+                </div>
+                {!faltaAprobar.length && !listoParaCortar.length && !cortadoHoy.length && (
+                  <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
+                    Sin actividad programada ni cortada para el {fmtFechaISO(miDiaFecha)}.
+                  </div>
+                )}
+                {!!faltaAprobar.length && (
+                  <div style={{ marginBottom: 24 }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: C.amber, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+                      ⏳ Falta terminar/aprobar programación
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {faltaAprobar.map((g) => (
+                        <div
+                          key={g.key}
+                          onClick={() => { setProduccionSubTab("mesones"); setMesonesFecha(miDiaFecha); setMesonesGrupoKey(g.key); }}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderRadius: 10, cursor: "pointer", border: `1.5px solid ${C.border}`, background: C.white }}
+                        >
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{g.cliente} · #{g.numero} · {g.ref}</div>
+                            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>{g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid.</div>
+                          </div>
+                          <span style={{ fontSize: 10, fontWeight: 800, color: C.amber, background: C.amberBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
+                            Completar →
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {!!listoParaCortar.length && (
+                  <div style={{ marginBottom: 24 }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: C.cyan, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+                      ✂ Listas para Ingreso de Corte Real
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {listoParaCortar.map((g) => (
+                        <div
+                          key={g.key}
+                          onClick={() => { setProduccionSubTab("corte_real"); setCorteRealFecha(miDiaFecha); setCorteRealSelKey(g.key); }}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderRadius: 10, cursor: "pointer", border: `1.5px solid ${C.border}`, background: C.white }}
+                        >
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{g.cliente} · #{g.numero} · {g.ref}</div>
+                            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+                              {g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid. · {g.planta}{g.meson ? " · " + nombreMeson(g.planta, g.meson) : ""}
+                            </div>
+                          </div>
+                          <span style={{ fontSize: 10, fontWeight: 800, color: C.cyan, background: C.blueBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
+                            Registrar corte →
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {!!cortadoHoy.length && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: C.green, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+                      ✅ Ya cortado el {fmtFechaISO(miDiaFecha)}
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {cortadoHoy.map((c) => (
+                        <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderRadius: 10, border: `1.5px solid ${C.border}`, background: C.white }}>
+                          <div>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{c._cliente} · #{c._numero}</div>
+                            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+                              {(c.refs || []).map((r) => r.ref).join(", ")} · {fmtNum(c.totalUnidades || 0)} uds · {c.cortador || "—"}
+                              {c.lote ? ` · lote ${c.lote}` : " · sin lote aún"}
+                            </div>
+                          </div>
+                          <span style={{ fontSize: 12, fontWeight: 800, color: C.green }}>{fmtCOP(c.ingresoCorte || 0)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           {produccionSubTab === "mesones" && (() => {
             const datosMesones = datosDelDia(mesonesFecha);
             const grupoSel = mesonesGrupoKey ? datosMesones.grupos.find((g) => g.key === mesonesGrupoKey) : null;
