@@ -4460,6 +4460,19 @@ function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido,
   // flujo ya cruza contra Busint en vivo y contra el reporte de Ventas
   // Perdidas, así que aquí no hace falta repetirlo.
   const activos = pedidos.filter((p) => p.estado === "activo");
+  // Alerta: pedidos que llevan CERO unidades cortadas y ya tienen el
+  // despacho encima (15 días o menos, incluye los ya vencidos) — para que
+  // no se cuelen pedidos que nadie ha empezado a cortar mientras se acerca
+  // la fecha. No mira los que ya tienen algo de avance, aunque sea poco.
+  const sinCortarCercaDespacho = activos
+    .filter((p) => {
+      if (!p.fechaDespacho) return false;
+      const dias = Math.ceil((new Date(p.fechaDespacho) - new Date()) / 86400000);
+      if (dias > 15) return false;
+      const totalC = (p.cortesRealizados || []).reduce((s, c) => s + (c.totalUnidades || 0), 0);
+      return totalC === 0;
+    })
+    .sort((a, b) => (a.fechaDespacho || "").localeCompare(b.fechaDespacho || ""));
   const mes = new Date().getMonth() + 1;
   const anio = new Date().getFullYear();
   const nominaMensual = (nominaConfig?.trabajadores || []).reduce(
@@ -4520,6 +4533,44 @@ function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido,
           </p>
         </div>
       </div>
+      {!!sinCortarCercaDespacho.length && (
+        <div
+          style={{
+            background: C.redBg,
+            border: `1.5px solid ${C.red}55`,
+            borderRadius: 10,
+            padding: "12px 16px",
+            marginBottom: 20,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, fontSize: 12, fontWeight: 800, color: C.red }}>
+            ⚠ {sinCortarCercaDespacho.length} pedido{sinCortarCercaDespacho.length !== 1 ? "s" : ""} sin ninguna unidad cortada y con despacho a 15 días o menos
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {sinCortarCercaDespacho.map((p) => {
+              const sem = semaforo(p.fechaDespacho);
+              const totalP = p.referencias.reduce((s, r) => s + (r.total || 0), 0);
+              return (
+                <div
+                  key={p.id}
+                  onClick={() => onSelectPedido(p.id)}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+                    padding: "8px 12px", borderRadius: 8, cursor: "pointer", background: C.white,
+                  }}
+                >
+                  <div style={{ fontSize: 12, color: C.ink }}>
+                    <b>{p.cliente}</b> · #{p.numero} · {fmtNum(totalP)} prendas · Despacho: {p.fechaDespacho}
+                  </div>
+                  <span style={{ fontSize: 10, fontWeight: 800, color: sem.color, background: sem.bg, padding: "3px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
+                    📅 {sem.label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {/* KPI Mensual */}
       <div
         style={{
