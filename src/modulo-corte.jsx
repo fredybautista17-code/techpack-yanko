@@ -2727,6 +2727,8 @@ function DetallePedido({
   onBack,
   onSave,
   onCorteRegistrado,
+  vpRefMap,
+  lotesCortadoMap,
 }) {
   const [showCorte, setShowCorte] = useState(false);
   // Si venimos del botón "✂ Cortar" de un ítem ya programado, abrir el
@@ -2743,11 +2745,11 @@ function DetallePedido({
     0
   );
   const costoDia = nominaMensual / dh;
-  const totalPedido = pedido.referencias.reduce((s, r) => s + r.total, 0);
-  const totalCortado = (pedido.cortesRealizados || []).reduce(
-    (s, c) => s + (c.totalUnidades || 0),
-    0
-  );
+  // Cruza Planeación + Ventas Perdidas (Busint) + Corte propio — mismo
+  // criterio que usa la Cola Sugerida y Programación de Corte — para que
+  // "Total Cortado"/"Avance" no se queden en 0 solo porque nadie registró
+  // el corte a mano acá, si Busint ya reporta que se cortó de verdad.
+  const { totalPedido, totalCortado, porRef: porRefCortado } = calcularCortadoPendiente(pedido, vpRefMap, lotesCortadoMap);
   const pct =
     totalPedido > 0 ? Math.round((totalCortado / totalPedido) * 100) : 0;
   const sem = semaforo(pedido.fechaDespacho);
@@ -2758,21 +2760,13 @@ function DetallePedido({
   const tallasTabla = ordenarTallas([
     ...new Set(pedido.referencias.flatMap((r) => Object.keys(r.tallas || {}))),
   ]);
-  function excedente(ref) {
-    const cortado = (pedido.cortesRealizados || [])
-      .flatMap((c) => c.refs || [])
-      .filter((cr) => cr.refId === ref.id)
-      .reduce((acc, cr) => {
-        Object.keys(cr.tallas || {}).forEach((t) => {
-          acc[t] = (acc[t] || 0) + (cr.tallas[t] || 0);
-        });
-        return acc;
-      }, {});
-    const exc = {};
-    Object.keys(ref.tallas || {}).forEach((t) => {
-      exc[t] = (ref.tallas[t] || 0) - (cortado[t] || 0);
-    });
-    return exc;
+  // "Cortado"/"Excedente" de cada referencia (columnas de la tabla) salen
+  // del cruce completo — Planeación + Ventas Perdidas (Busint) + Corte
+  // propio — calculado arriba en porRefCortado con calcularCortadoPendiente
+  // (mismo criterio que usa la Cola Sugerida), no solo lo registrado a
+  // mano acá.
+  function cortadoPendienteRef(refId) {
+    return porRefCortado.find((r) => r.refId === refId) || null;
   }
   function registrarCorte(corte) {
     const updated = {
@@ -3050,9 +3044,9 @@ function DetallePedido({
             </thead>
             <tbody>
               {pedido.referencias.map((ref, i) => {
-                const exc = excedente(ref);
-                const totalExc = Object.values(exc).reduce((a, b) => a + b, 0);
-                const cortadoRef = ref.total - totalExc;
+                const cp = cortadoPendienteRef(ref.id);
+                const cortadoRef = cp ? cp.cortado : 0;
+                const totalExc = cp ? cp.pendiente : ref.total;
                 return (
                   <tr
                     key={ref.id}
@@ -4453,7 +4447,7 @@ function EstadisticasTela({ pedidos }) {
   );
 }
 // ─── DASHBOARD CORTE ──────────────────────────────────────────────────────────
-function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido, isAdmin }) {
+function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido, isAdmin, vpRefMap, lotesCortadoMap }) {
   // Los pedidos ya no se cargan ni se revisan aquí — vienen listos de
   // "pedidos_activos", alimentada por el botón "🧊 Congelar como base de
   // Corte" en Vigentes por Cliente (módulo Diseño → Pedidos). Ese mismo
@@ -4464,13 +4458,16 @@ function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido,
   // despacho encima (15 días o menos, incluye los ya vencidos) — para que
   // no se cuelen pedidos que nadie ha empezado a cortar mientras se acerca
   // la fecha. No mira los que ya tienen algo de avance, aunque sea poco.
+  // El "cortado" se cruza con Planeación/Ventas Perdidas (Busint) — no solo
+  // lo registrado a mano acá — para no marcar como "sin cortar" un pedido
+  // que Busint ya reporta con avance real.
   const sinCortarCercaDespacho = activos
     .filter((p) => {
       if (!p.fechaDespacho) return false;
       const dias = Math.ceil((new Date(p.fechaDespacho) - new Date()) / 86400000);
       if (dias > 15) return false;
-      const totalC = (p.cortesRealizados || []).reduce((s, c) => s + (c.totalUnidades || 0), 0);
-      return totalC === 0;
+      const { totalCortado } = calcularCortadoPendiente(p, vpRefMap, lotesCortadoMap);
+      return totalCortado === 0;
     })
     .sort((a, b) => (a.fechaDespacho || "").localeCompare(b.fechaDespacho || ""));
   const mes = new Date().getMonth() + 1;
@@ -4635,11 +4632,11 @@ function DashboardCorte({ pedidos, onSelectPedido, nominaConfig, onUpdatePedido,
               (a.fechaDespacho || "").localeCompare(b.fechaDespacho || "")
             )
             .map((p) => {
-              const totalP = p.referencias.reduce((s, r) => s + r.total, 0);
-              const totalC = (p.cortesRealizados || []).reduce(
-                (s, c) => s + (c.totalUnidades || 0),
-                0
-              );
+              // Cruza Planeación + Ventas Perdidas (Busint) + Corte propio —
+              // mismo criterio que la Cola Sugerida — para que el avance no
+              // se quede en 0% solo porque nadie registró el corte a mano
+              // acá, si Busint ya reporta que se cortó.
+              const { totalPedido: totalP, totalCortado: totalC } = calcularCortadoPendiente(p, vpRefMap, lotesCortadoMap);
               const pct = totalP > 0 ? Math.round((totalC / totalP) * 100) : 0;
               const sem = semaforo(p.fechaDespacho);
               return (
@@ -8347,6 +8344,8 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               nominaConfig={corteConfig.nomina}
               onUpdatePedido={savePedido}
               isAdmin={currentUser?.isAdmin}
+              vpRefMap={vpRefMap}
+              lotesCortadoMap={lotesCortadoMap}
             />
           )}
           {view === "detalle" && selPedido && (
@@ -8359,6 +8358,8 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               preciosMap={preciosMap}
               lotesExistentes={lotesExistentes}
               onGuardarLote={guardarLoteCorte}
+              vpRefMap={vpRefMap}
+              lotesCortadoMap={lotesCortadoMap}
               preseleccion={preseleccionCorte && preseleccionCorte.pedidoId === selPedido.id ? preseleccionCorte : null}
               onConsumirPreseleccion={() => setPreseleccionCorte(null)}
               onBack={() => {
