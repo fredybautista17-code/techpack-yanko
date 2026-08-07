@@ -792,6 +792,11 @@ function parseHojaDespacho(rows) {
   //     cantidad×precio la contaría como una línea de más e infla el total
   //     (visto en DESPACHO 25/26: fila suelta con cantidad total y el último
   //     precio de la tabla, sin referencia ni total).
+  // (c) filas de relleno con ceros que quedan debajo de la tabla real en las
+  //     hojas más nuevas (ej. DESPACHO 458, 505-542): sin referencia y con
+  //     cantidad/precio/total en 0 (no vacíos — por eso el chequeo de "tot
+  //     === null" de arriba no las agarra) — sobrantes de la plantilla de
+  //     Excel, no una línea real.
   const lineas = [];
   let running = 0;
   crudas.forEach((it) => {
@@ -799,6 +804,7 @@ function parseHojaDespacho(rows) {
     const tot = numCell(it.total);
     if (!ref && tot !== null && running > 0 && Math.abs(tot - running) < Math.max(1000, running * 0.01)) return;
     if (!ref && tot === null) return;
+    if (!ref && tot === 0) return;
     lineas.push(it);
     running += tot || 0;
   });
@@ -950,9 +956,31 @@ async function parseDespachosVenezuelaExcel(file) {
   });
 
   // Las 10 hojas de depósitos aparte (ABONO PANELES, DEPOSITOS JULIO, DUBO,
-  // etc.) quedan sin importar por ahora, a propósito — el usuario pidió
-  // dejarlas fuera mientras define cómo quiere incluirlas. La función
-  // parseAbonosGenerico queda lista para cuando se retome ese caso.
+  // etc.) — antes se dejaban sin importar, por eso el total de Abonos
+  // quedaba muy por debajo del total de Despachos. Se agregan acá con
+  // parseAbonosGenerico (fecha + primer monto no nulo después de cada
+  // fecha, dentro de la misma fila) — funciona igual en las hojas de solo
+  // FECHA/VALOR que en las de columnas ANTICIPO/ABONO/SALDO o con varios
+  // bloques de fecha lado a lado en la misma fila (nunca toma la columna de
+  // SALDO acumulado porque siempre se detiene en el primer monto).
+  const slug = (s) => String(s).trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+  HOJAS_ABONOS.forEach((name) => {
+    if (!wb.SheetNames.includes(name)) return;
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null });
+    parseAbonosGenerico(rows, name).forEach((a) => {
+      abonos.push({
+        id: `hist-abono-suelto-${slug(name)}-${a.fila}-${a.col}`,
+        fecha: a.fecha ? new Date(a.fecha).toISOString().slice(0, 10) : null,
+        monto: a.monto,
+        concepto: name,
+        origen: "importado",
+        fuenteHoja: name,
+        despachoRelacionado: null,
+        creadoEn: new Date().toISOString(),
+      });
+    });
+  });
+
   return { despachos, abonos, avisos };
 }
 async function importarADespachosFirestore(despachos, abonos, currentUser) {
@@ -1008,7 +1036,7 @@ function ImportarHistoricoView({ currentUser, despachosExistentes }) {
       <div style={{ fontSize: 13, color: C.slate, marginBottom: 16, lineHeight: 1.6 }}>
         Sube el archivo <strong>DESPACHOS KAMILA VENEZUELA.xlsx</strong>. Se analiza primero (sin guardar nada) para que revises el resultado antes de confirmar. Es seguro volver a correrlo — actualiza los mismos registros en vez de duplicarlos.
         <br />
-        Los abonos se toman <strong>solo de dentro de cada hoja DESPACHO 2 a 546</strong> (fecha, valor y concepto que ya venían escritos ahí). Las 10 hojas sueltas de depósitos (ABONO PANELES, DEPOSITOS JULIO, DUBO, etc.) todavía no se importan — quedan para cuando definas cómo incluirlas.
+        Los abonos se toman tanto de <strong>dentro de cada hoja DESPACHO 2 a 546</strong> como de las <strong>10 hojas sueltas de depósitos</strong> (ABONO PANELES, DEPOSITOS JULIO/AGOSTO/SEP/OCT/NOV, DUBO, DEPOSITOS CUENTA YULIANA M-J, DICIEMBRE, ENERO).
       </div>
       {yaImportado && (
         <div style={{ padding: "10px 14px", background: C.amberBg, color: C.amber, borderRadius: 8, fontSize: 12, fontWeight: 700, marginBottom: 16 }}>
