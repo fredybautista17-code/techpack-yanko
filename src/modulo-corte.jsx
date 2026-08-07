@@ -4737,6 +4737,14 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // despliega inline debajo de la lista (igual que Programación de
   // Mesones), en vez de abrir una ventana modal aparte.
   const [corteRealSelKey, setCorteRealSelKey] = useState(null);
+  // Referencia "pareja" (vinculada en Programación de Mesones al mismo
+  // trazo) que hay que abrir automáticamente apenas se guarde el corte real
+  // que se está registrando ahora — así el patronista las hace seguidas sin
+  // volver a buscar. Null si no hay ninguna en cola.
+  const [parejaPendiente, setParejaPendiente] = useState(null);
+  // Keys para las que el patronista ya dijo "No, solo esta" — no se les
+  // vuelve a mostrar el aviso de vínculo en esta sesión.
+  const [parejaDescartadaKeys, setParejaDescartadaKeys] = useState(() => new Set());
   // Texto que el patronista va escribiendo por fila en "Cortes Aprobados"
   // antes de guardar el número de lote — separado por key de grupo.
   const [loteInputs, setLoteInputs] = useState({});
@@ -5138,6 +5146,10 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
       // La curva de tallas (cuántas veces se marca cada talla en el trazo)
       // es compartida por todo el trazo, igual que planta/mesón/tela.
       curva: g.colores[0]?.curva || null,
+      // Si esta referencia se vinculó con otra en el mismo trazo (ver
+      // ProgramacionMesonPanel), todos sus colores comparten este id — sirve
+      // para encontrar la referencia "pareja" en Ingreso de Corte Real.
+      vinculoTrazoId: g.colores[0]?.vinculoTrazoId || null,
     }));
   }
   function datosDelDia(fechaISO) {
@@ -5865,6 +5877,13 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             const listos = datosCorteReal.grupos.filter((g) => g.etapa === "programacion_hecha");
             const corteRealSel = corteRealSelKey ? listos.find((g) => g.key === corteRealSelKey) : null;
             const pedidoDelCorteReal = corteRealSel ? pedidos.find((p) => p.id === corteRealSel.pedidoId) : null;
+            // Referencia "pareja" — se vinculó con esta en Programación de
+            // Mesones (mismo trazo) y todavía no se ha registrado su corte
+            // real. Se le ofrece al patronista registrarlas seguidas.
+            const parejaVinculada =
+              corteRealSel?.vinculoTrazoId && !parejaDescartadaKeys.has(corteRealSel.key)
+                ? listos.find((g) => g.vinculoTrazoId === corteRealSel.vinculoTrazoId && g.key !== corteRealSel.key)
+                : null;
             return (
               <div>
                 <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
@@ -5872,9 +5891,9 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                 </p>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
                   <Field label="Día">
-                    <FInput type="date" value={corteRealFecha} onChange={(v) => { setCorteRealFecha(v); setCorteRealSelKey(null); }} />
+                    <FInput type="date" value={corteRealFecha} onChange={(v) => { setCorteRealFecha(v); setCorteRealSelKey(null); setParejaPendiente(null); }} />
                   </Field>
-                  <Btn variant="secondary" onClick={() => { setCorteRealFecha(today()); setCorteRealSelKey(null); }}>
+                  <Btn variant="secondary" onClick={() => { setCorteRealFecha(today()); setCorteRealSelKey(null); setParejaPendiente(null); }}>
                     Hoy
                   </Btn>
                 </div>
@@ -5918,6 +5937,26 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     })}
                   </div>
                 )}
+                {corteRealSel && parejaVinculada && parejaPendiente !== parejaVinculada.key && (
+                  <div style={{ marginBottom: 16, padding: "12px 16px", borderRadius: 10, border: `1.5px solid ${C.violet}55`, background: C.violetBg, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 13, color: C.violet, fontWeight: 700 }}>
+                      🔗 Esta referencia comparte trazo con {parejaVinculada.cliente} · #{parejaVinculada.numero} · {parejaVinculada.ref} — ¿la registras junto con esta?
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <Btn small variant="success" onClick={() => setParejaPendiente(parejaVinculada.key)}>
+                        Sí, registrar las dos juntas
+                      </Btn>
+                      <Btn small variant="secondary" onClick={() => setParejaDescartadaKeys((s) => new Set([...s, corteRealSel.key, parejaVinculada.key]))}>
+                        No, solo esta
+                      </Btn>
+                    </div>
+                  </div>
+                )}
+                {corteRealSel && parejaPendiente === parejaVinculada?.key && (
+                  <div style={{ marginBottom: 16, padding: "10px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700, background: C.greenBg, color: C.green }}>
+                    ✓ Al guardar esta, se abre directo {parejaVinculada.cliente} · #{parejaVinculada.numero} · {parejaVinculada.ref} para registrarla también.
+                  </div>
+                )}
                 {corteRealSel && pedidoDelCorteReal && (
                   <ProgramarCorteModal
                     inline
@@ -5931,10 +5970,16 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     itemsUsadosMeson={itemsUsadosMeson}
                     pedidosTodos={pedidos}
                     onSave={(corte) => onRegistrarCorteReal(corteRealSel.pedidoId, corte)}
-                    onClose={() => setCorteRealSelKey(null)}
+                    onClose={() => { setCorteRealSelKey(null); setParejaPendiente(null); }}
                     onGuardado={() => {
-                      setCorteRealSelKey(null);
-                      setProduccionSubTab("aprobados");
+                      if (parejaPendiente) {
+                        const siguiente = parejaPendiente;
+                        setParejaPendiente(null);
+                        setCorteRealSelKey(siguiente);
+                      } else {
+                        setCorteRealSelKey(null);
+                        setProduccionSubTab("aprobados");
+                      }
                     }}
                   />
                 )}
