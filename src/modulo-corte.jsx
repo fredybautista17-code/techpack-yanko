@@ -856,6 +856,18 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       return sum + units * (r.precio || 0);
     }, 0);
   }
+  // Avance del pedido completo (no solo lo que se está por guardar acá) —
+  // para que el cortador vea de un vistazo cuánto lleva cortado el pedido
+  // en total antes de agregar este corte. Incluye lo ya cortado hasta ahora
+  // más lo que está a punto de registrar en este formulario.
+  function avancePedido() {
+    const totalPedido = (pedido.referencias || []).reduce((s, r) => s + (r.total || 0), 0);
+    const yaCortado = (pedido.cortesRealizados || []).reduce((s, c) => s + (c.totalUnidades || 0), 0);
+    const porGuardar = totalCortando();
+    const cortado = yaCortado + porGuardar;
+    const pct = totalPedido > 0 ? Math.min(100, (cortado / totalPedido) * 100) : 0;
+    return { totalPedido, yaCortado, porGuardar, cortado, pct };
+  }
   function minutosTotales() {
     if (!form.horaInicio || !form.horaFin) return 0;
     const [h1, m1] = form.horaInicio.split(":").map(Number);
@@ -989,6 +1001,42 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       width={760}
       inline={inline}
     >
+      {/* Avance del pedido — cuánto lleva cortado en total (incluye lo ya
+          registrado en cortes anteriores más lo que se está por guardar acá
+          mismo), para que el cortador no tenga que salir a revisar el
+          pedido aparte. */}
+      {(() => {
+        const av = avancePedido();
+        if (av.totalPedido <= 0) return null;
+        return (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+              <span style={{ fontSize: 11, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                Avance del pedido
+              </span>
+              <span style={{ fontSize: 12, fontWeight: 800, color: C.ink }}>
+                {fmtNum(av.cortado)} / {fmtNum(av.totalPedido)} uds ({av.pct.toFixed(0)}%)
+                {av.porGuardar > 0 && (
+                  <span style={{ color: C.violet, fontWeight: 700 }}> · +{fmtNum(av.porGuardar)} en este corte</span>
+                )}
+              </span>
+            </div>
+            <div style={{ height: 8, borderRadius: 6, background: C.canvas, border: `1px solid ${C.border}`, overflow: "hidden", position: "relative" }}>
+              <div style={{ position: "absolute", top: 0, left: 0, bottom: 0, width: `${av.totalPedido > 0 ? Math.min(100, (av.yaCortado / av.totalPedido) * 100) : 0}%`, background: C.slate }} />
+              <div
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  bottom: 0,
+                  left: `${av.totalPedido > 0 ? Math.min(100, (av.yaCortado / av.totalPedido) * 100) : 0}%`,
+                  width: `${av.totalPedido > 0 ? Math.max(0, Math.min(100 - (av.yaCortado / av.totalPedido) * 100, (av.porGuardar / av.totalPedido) * 100)) : 0}%`,
+                  background: C.violet,
+                }}
+              />
+            </div>
+          </div>
+        );
+      })()}
       {/* PASO 1: resumen de lo programado en Mesones — solo referencia, no
           se edita acá. Le muestra al cortador qué se planeó (planta, mesón,
           cortador, tela, trazo, curva de tallas) antes de registrar lo
