@@ -6848,6 +6848,30 @@ function CentroCosto({ pedidos, trabajadores }) {
   const [mesSel, setMesSel] = useState(new Date().getMonth() + 1);
   const [anioSel, setAnioSel] = useState(new Date().getFullYear());
   const norm = (s) => String(s || "").trim().toUpperCase();
+  // Franja de cumplimiento diario — de un vistazo, últimos 30 días: verde =
+  // el ingreso de corte cubrió la nómina estimada de ese día, rojo = no la
+  // cubrió, gris = sin cortes registrados ese día. Cada día se calcula
+  // independiente del periodo/fecha que esté elegido arriba (siempre mira
+  // exactamente ESE día), y al hacer clic salta la vista "Día" a esa fecha.
+  function estadoDia(fechaISO) {
+    const cortesDia = pedidos.flatMap((p) => p.cortesRealizados || []).filter((c) => c.fecha === fechaISO);
+    const ingreso = cortesDia.reduce((s, c) => s + (c.ingresoCorte || 0), 0);
+    const [y, m] = fechaISO.split("-").map(Number);
+    const dh = diasHabiles(m, y) || 1;
+    const costo = (trabajadores || []).reduce((s, t) => s + (t.sueldo || 0) / dh, 0);
+    return {
+      ingreso,
+      costo,
+      tieneCortes: cortesDia.length > 0,
+      ok: cortesDia.length > 0 && costo > 0 ? ingreso >= costo : null,
+    };
+  }
+  const diasStrip = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    diasStrip.push(d.toISOString().slice(0, 10));
+  }
   function enPeriodo(fechaISO) {
     if (!fechaISO) return false;
     if (periodo === "dia") return fechaISO === fechaDia;
@@ -6981,6 +7005,49 @@ function CentroCosto({ pedidos, trabajadores }) {
         )}
         <span style={{ fontSize: 12, color: C.slate, marginLeft: 4 }}>Mostrando: <strong style={{ color: C.ink }}>{etiquetaPeriodo}</strong></span>
       </div>
+      {periodo === "dia" && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+            Cumplimiento diario — últimos 30 días
+          </div>
+          <div style={{ display: "flex", gap: 4, overflowX: "auto", paddingBottom: 4 }}>
+            {diasStrip.map((iso) => {
+              const ed = estadoDia(iso);
+              const color = ed.ok === true ? C.green : ed.ok === false ? C.red : C.slate;
+              const bg = ed.ok === true ? C.greenBg : ed.ok === false ? C.redBg : C.canvas;
+              const activo = iso === fechaDia;
+              return (
+                <button
+                  key={iso}
+                  onClick={() => setFechaDia(iso)}
+                  title={`${fmtFechaISO(iso)} — ${ed.tieneCortes ? `${fmtCOP(ed.ingreso)} vs ${fmtCOP(ed.costo)} nómina` : "sin cortes"}`}
+                  style={{
+                    flex: "0 0 auto",
+                    width: 26,
+                    height: 34,
+                    borderRadius: 6,
+                    border: activo ? `2px solid ${C.ink}` : `1px solid ${C.border}`,
+                    background: bg,
+                    color,
+                    fontSize: 9,
+                    fontWeight: 800,
+                    cursor: "pointer",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    lineHeight: 1.1,
+                    padding: 0,
+                  }}
+                >
+                  <span>{iso.slice(8, 10)}</span>
+                  <span style={{ fontSize: 11 }}>{ed.ok === true ? "✓" : ed.ok === false ? "✗" : "·"}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 20 }}>
         <KPICard icon="✂" label={`Unidades ${periodo === "dia" ? "Día" : periodo === "anio" ? "Año" : "Mes"}`} value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
         <KPICard icon="💵" label="Ingreso Corte" value={fmtCOP(totalIngreso)} color={C.green} bg={C.greenBg} />
