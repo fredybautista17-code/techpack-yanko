@@ -1656,7 +1656,7 @@ function MesonTimeline({ nombre, capacidad, compartido, ocupados, inicioActual, 
 // analista con el permiso "aprobar_corte" revisa y aprueba antes de que
 // cuente como confirmado. `onClose` ahora es "volver a la lista" (deseleccionar),
 // no cerrar una ventana emergente.
-function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onSave, onClose, onGuardado, puedeAprobar, onAprobar, usuarioActual }) {
+function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onSave, onClose, onGuardado, puedeAprobar, onAprobar, usuarioActual, candidatosVinculo }) {
   const aprobado = grupo.colores.every((c) => c.etapa === "programacion_hecha" && c.aprobado === true);
   const pendienteAprobacion = grupo.colores.every((c) => c.etapa === "programacion_hecha") && !aprobado;
   const aprobadoPorTxt = grupo.colores.find((c) => c.aprobadoPor)?.aprobadoPor;
@@ -1702,6 +1702,44 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
   // color, comparado talla por talla contra lo real del pedido) — null si
   // ninguno. Solo un color abierto a la vez para no saturar la pantalla.
   const [colorAbierto, setColorAbierto] = useState(null);
+  // Referencia VINCULADA — otra referencia (de cualquier pedido/cliente)
+  // que se tiende/corta EN EL MISMO trazo físico que `grupo` (ej. dos
+  // referencias chiquitas que se acomodan juntas en un mesón para no
+  // desperdiciar tela). Cuando hay vínculo, planta/mesón/tela/trazo/
+  // horario/capas son UN SOLO valor compartido entre las dos referencias
+  // (es el mismo corte físico) — lo único que cambia por referencia es su
+  // propia curva de tallas (cuántas piezas de esa ref salen por capa). Sin
+  // vínculo, todo funciona exactamente igual que antes (capas por color,
+  // etc.) — esto es puramente aditivo.
+  const [refVinculada, setRefVinculada] = useState(null);
+  const [pickerVinculoAbierto, setPickerVinculoAbierto] = useState(false);
+  const [busquedaVinculo, setBusquedaVinculo] = useState("");
+  const tallasVinculada = refVinculada
+    ? ordenarTallas([...new Set(refVinculada.colores.flatMap((c) => Object.keys(c.tallas || {})))])
+    : [];
+  const [curvaVinculada, setCurvaVinculada] = useState({});
+  // Capas COMPARTIDAS — solo se usa cuando hay una referencia vinculada
+  // (reemplaza a `capasPorColor` para TODOS los colores de ambas
+  // referencias mientras dure el vínculo). Se precarga con lo que ya
+  // tuviera el primer color de `grupo`, si lo había.
+  const [capasCompartidas, setCapasCompartidas] = useState(() => {
+    const primero = grupo.colores[0];
+    return primero?.capas ? String(primero.capas) : "";
+  });
+  function elegirVinculo(g) {
+    setRefVinculada(g);
+    const tallasG = ordenarTallas([...new Set(g.colores.flatMap((c) => Object.keys(c.tallas || {})))]);
+    const cv = {};
+    tallasG.forEach((t) => { cv[t] = g.curva?.[t] ? String(g.curva[t]) : ""; });
+    setCurvaVinculada(cv);
+    setPickerVinculoAbierto(false);
+    setBusquedaVinculo("");
+  }
+  function quitarVinculo() {
+    setRefVinculada(null);
+    setCurvaVinculada({});
+  }
+  const marcadasVinculada = tallasVinculada.reduce((s, t) => s + (parseInt(curvaVinculada[t]) || 0), 0);
   const plantaSel = plantas.find((p) => p.nombre === form.planta);
   const mesones = plantaSel?.mesones || [];
   const mesonSel = mesones.find((m) => m.id === form.meson);
@@ -1713,17 +1751,37 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
   // cantidadProgramada), no al revés: el pedido manda, la curva es ayuda
   // para decidir cuántas capas tender.
   const marcadas = tallasGrupo.reduce((s, t) => s + (parseInt(curva[t]) || 0), 0);
+  // Capas de un color de `grupo`: normalmente por color (capasPorColor);
+  // cuando hay una referencia vinculada, las capas son UN SOLO valor
+  // compartido (capasCompartidas) para todos los colores de ambas
+  // referencias — ver nota en el estado de refVinculada.
+  function capasDeColor(color) {
+    return refVinculada ? parseFloat(capasCompartidas) || 0 : parseFloat(capasPorColor[color.id]) || 0;
+  }
   function calcColor(color) {
-    const capasColor = parseFloat(capasPorColor[color.id]) || 0;
+    const capasColor = capasDeColor(color);
     const prendasCalculadas = capasColor * marcadas;
     const metrosColor = (parseFloat(form.largoTrazo) || 0) * capasColor;
     const cantidadReal = color.cantidadProgramada ?? color.cantidadPendiente ?? 0;
     return { capasColor, prendasCalculadas, metrosColor, cantidadReal, diff: prendasCalculadas - cantidadReal };
   }
+  // Mismo cálculo que calcColor, pero para un color de la referencia
+  // VINCULADA — usa la curva propia de esa referencia (marcadasVinculada),
+  // no la de `grupo`, aunque las capas sí son las mismas (compartidas).
+  function calcColorVinculada(color) {
+    const capasColor = parseFloat(capasCompartidas) || 0;
+    const prendasCalculadas = capasColor * marcadasVinculada;
+    const metrosColor = (parseFloat(form.largoTrazo) || 0) * capasColor;
+    const cantidadReal = color.cantidadProgramada ?? color.cantidadPendiente ?? 0;
+    return { capasColor, prendasCalculadas, metrosColor, cantidadReal, diff: prendasCalculadas - cantidadReal };
+  }
   // Metros totales del trazo = suma de los metros de cada color (mismo largo
-  // de trazo, distinta cantidad de capas cada uno).
+  // de trazo, distinta cantidad de capas cada uno) — si hay referencia
+  // vinculada, suma también sus colores (mismo trazo físico para ambas).
   function metrosTotales() {
-    return grupo.colores.reduce((s, c) => s + calcColor(c).metrosColor, 0);
+    const propios = grupo.colores.reduce((s, c) => s + calcColor(c).metrosColor, 0);
+    const vinculados = refVinculada ? refVinculada.colores.reduce((s, c) => s + calcColorVinculada(c).metrosColor, 0) : 0;
+    return propios + vinculados;
   }
   // La capacidad del mesón (10m, 14m compartidos entre Mesón 2+3...) es el
   // LARGO de la mesa donde se tiende el trazo — no los metros totales de
@@ -1742,8 +1800,9 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
   const capacidadCompartida = grupoMeson ? grupoMeson.metros : null;
   // Todos los colores de esta referencia comparten un solo trazo físico, así
   // que se excluyen TODOS sus docs (no solo uno) al calcular lo ya reservado
-  // en el mesón — si no, el propio trazo se restaría de la capacidad.
-  const idsGrupo = grupo.colores.map((c) => c.id);
+  // en el mesón — si no, el propio trazo se restaría de la capacidad. Si hay
+  // referencia vinculada, sus colores también se excluyen (mismo trazo).
+  const idsGrupo = grupo.colores.map((c) => c.id).concat(refVinculada ? refVinculada.colores.map((c) => c.id) : []);
   // Horas estimadas — obligatorias para guardar. Además de bloquear el
   // guardado (ver horasFaltantes/horasInvalidas más abajo), son las que
   // definen qué otros cortes de ese mesón "compiten" por el mismo espacio.
@@ -1848,6 +1907,11 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
       const v = parseInt(curva[t]) || 0;
       if (v > 0) curvaLimpia[t] = v;
     });
+    // Si hay referencia vinculada, todos los docs de AMBAS referencias
+    // llevan el mismo `vinculoTrazoId` — así "Ingreso de Corte Real" y
+    // "Cortes Aprobados" pueden reconocer que comparten el mismo trazo
+    // físico, aunque sean de pedidos distintos.
+    const vinculoTrazoId = refVinculada ? uid() : null;
     const datosComunes = {
       fechaProgramada: form.fechaProgramada,
       planta: form.planta,
@@ -1864,6 +1928,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
       tiempoTeoricoMin: tiempoTeorico,
       tendidoEstimadoMin: tendidoEstimadoMin,
       tiempoTotalEstimadoMin: tiempoTotalEstimadoMin,
+      vinculoTrazoId,
       // Cada vez que se guarda (sea la primera vez o una edición posterior a
       // una aprobación), queda "pendiente de aprobación" de nuevo — si los
       // datos cambiaron, el analista tiene que revisarlos otra vez.
@@ -1874,11 +1939,33 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
       ingresadoFechaISO: new Date().toISOString(),
     };
     // Capas es por color: cada color guarda su propia cantidad de capas y
-    // sus propios metros calculados (mismo largo de trazo para todos).
+    // sus propios metros calculados (mismo largo de trazo para todos). Si
+    // hay referencia vinculada, capasDeColor devuelve la compartida para
+    // todos por igual.
     grupo.colores.forEach((c) => {
       const { capasColor, metrosColor } = calcColor(c);
       onSave(c.id, { ...datosComunes, capas: capasColor, metrosTendido: metrosColor });
     });
+    // Referencia vinculada: mismos datos comunes (planta/mesón/tela/trazo/
+    // capas/horario/vinculoTrazoId), pero con SU PROPIA curva de tallas —
+    // el pedido y la referencia quedan tal cual traía cada color.
+    if (refVinculada) {
+      const curvaVinculadaLimpia = {};
+      tallasVinculada.forEach((t) => {
+        const v = parseInt(curvaVinculada[t]) || 0;
+        if (v > 0) curvaVinculadaLimpia[t] = v;
+      });
+      refVinculada.colores.forEach((c) => {
+        const { capasColor, metrosColor } = calcColorVinculada(c);
+        onSave(c.id, {
+          ...datosComunes,
+          curva: curvaVinculadaLimpia,
+          marcadas: marcadasVinculada,
+          capas: capasColor,
+          metrosTendido: metrosColor,
+        });
+      });
+    }
     // Al guardar (a diferencia de "‹ Volver a la lista", que solo
     // deselecciona) se navega directo a "Ingreso de Corte Real" — ahí
     // queda visible en cola (todavía como "sin aprobar"/"falta lote" hasta
@@ -1892,9 +1979,15 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
         <div>
           <div style={{ fontSize: 16, fontWeight: 800, color: C.ink }}>
             🔧 {grupo.cliente} · #{grupo.numero} · {grupo.ref}
+            {refVinculada && (
+              <span style={{ color: C.violet }}> + {refVinculada.cliente} · #{refVinculada.numero} · {refVinculada.ref}</span>
+            )}
           </div>
           <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
             {grupo.colores.length} color{grupo.colores.length !== 1 ? "es" : ""} · Cantidad total {fmtNum(cantidadTotal)}
+            {refVinculada && (
+              <span style={{ color: C.violet, fontWeight: 700 }}> · vinculada con otra referencia en el mismo trazo</span>
+            )}
           </div>
         </div>
         <Btn variant="secondary" onClick={onClose}>
@@ -1954,6 +2047,91 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
               </div>
             </Field>
           </div>
+          {/* Referencia vinculada: otra referencia (de cualquier pedido) que
+              se tiende/corta en el MISMO trazo físico que esta — comparten
+              planta/mesón/tela/trazo/capas/horario, cada una con su propia
+              curva de tallas. Solo se pueden vincular referencias del mismo
+              día (mesonesFecha), porque comparten mesón y horario. */}
+          {!refVinculada ? (
+            <div style={{ marginBottom: 16 }}>
+              <Btn small variant="secondary" onClick={() => setPickerVinculoAbierto((v) => !v)}>
+                + Agregar otra referencia (mismo trazo)
+              </Btn>
+              {pickerVinculoAbierto && (
+                <div style={{ marginTop: 8, padding: 12, borderRadius: 10, border: `1.5px solid ${C.violet}55`, background: C.violetBg }}>
+                  <FInput
+                    value={busquedaVinculo}
+                    onChange={setBusquedaVinculo}
+                    placeholder="Buscar por cliente, pedido o referencia..."
+                  />
+                  <div style={{ maxHeight: 220, overflowY: "auto", marginTop: 8, display: "grid", gap: 6 }}>
+                    {(candidatosVinculo || [])
+                      .filter((g) => g.key !== grupo.key)
+                      .filter((g) => {
+                        const q = busquedaVinculo.trim().toLowerCase();
+                        if (!q) return true;
+                        return `${g.cliente} ${g.numero} ${g.ref}`.toLowerCase().includes(q);
+                      })
+                      .map((g) => (
+                        <div
+                          key={g.key}
+                          onClick={() => elegirVinculo(g)}
+                          style={{ padding: "8px 10px", borderRadius: 8, background: C.white, cursor: "pointer", fontSize: 12, border: `1px solid ${C.border}` }}
+                        >
+                          <b>{g.cliente}</b> · #{g.numero} · {g.ref} — {fmtNum(g.cantidadTotal)} unid.
+                        </div>
+                      ))}
+                    {!(candidatosVinculo || []).filter((g) => g.key !== grupo.key).length && (
+                      <div style={{ fontSize: 12, color: C.slate, padding: "8px 10px" }}>
+                        No hay otras referencias pendientes ese mismo día para vincular.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div style={{ marginBottom: 16, padding: 12, borderRadius: 10, border: `1.5px solid ${C.violet}55`, background: C.violetBg }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: C.violet }}>
+                  🔗 Vinculada: {refVinculada.cliente} · #{refVinculada.numero} · {refVinculada.ref}
+                </div>
+                <Btn small variant="secondary" onClick={quitarVinculo}>Quitar vínculo</Btn>
+              </div>
+              <div style={{ fontSize: 11, color: C.slate, marginBottom: 8 }}>
+                Comparte planta/mesón/tela/trazo/capas/horario con la referencia principal — solo la curva de tallas es propia de esta referencia.
+              </div>
+              <div style={{ fontSize: 11, fontWeight: 800, color: C.slate, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.3 }}>
+                Curva de Tallas de {refVinculada.ref}
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end" }}>
+                {tallasVinculada.map((t) => (
+                  <Field key={t} label={t}>
+                    <FInput
+                      type="number"
+                      value={curvaVinculada[t] || ""}
+                      onChange={(v) => setCurvaVinculada((c) => ({ ...c, [t]: v }))}
+                      placeholder="0"
+                    />
+                  </Field>
+                ))}
+                <div
+                  style={{
+                    padding: "9px 12px",
+                    borderRadius: 8,
+                    border: `1.5px solid ${C.border}`,
+                    background: C.white,
+                    fontWeight: 800,
+                    color: marcadasVinculada > 0 ? C.violet : C.slate,
+                    fontSize: 13,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Marcadas: {marcadasVinculada || "—"}
+                </div>
+              </div>
+            </div>
+          )}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
             <Field label="Planta">
               <FSel
@@ -2049,10 +2227,28 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
               </div>
             </div>
           </div>
+          {/* Capas compartidas: cuando hay referencia vinculada, capas deja
+              de ser por color y pasa a ser UN SOLO valor para todo el trazo
+              (ambas referencias, todos los colores) — reemplaza al bloque de
+              "Capas por Color" de abajo mientras dure el vínculo. */}
+          {refVinculada && (
+            <div style={{ marginBottom: 16 }}>
+              <Field label="Capas (compartidas entre las 2 referencias)">
+                <FInput
+                  type="number"
+                  value={capasCompartidas}
+                  onChange={setCapasCompartidas}
+                  placeholder="Ej: 40"
+                />
+              </Field>
+            </div>
+          )}
           {/* Capas por color: cada color puede tender una cantidad distinta
               de capas. Con capas × marcadas se calcula cuánto sale
               cortado, como comprobación contra la cantidad real del pedido
-              (no la reemplaza). */}
+              (no la reemplaza). Solo aplica sin referencia vinculada — con
+              vínculo, capas es un solo valor compartido (ver arriba). */}
+          {!refVinculada && (
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontSize: 12, fontWeight: 800, color: C.slate, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.3 }}>
               Capas por Color
@@ -2150,6 +2346,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
               })}
             </div>
           </div>
+          )}
           {tiempoTotalEstimadoMin !== null && (
             <div style={{ padding: "10px 16px", background: C.violetBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: C.violet, fontWeight: 700 }}>
               ⏱ Tiempo estimado total: ~{tiempoTotalEstimadoMin} min — tendido ~{tendidoEstimadoMin} min
@@ -5653,6 +5850,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     puedeAprobar={puedeAprobarCorte}
                     onAprobar={() => onAprobarProgramacionHecha(grupoSel.colores.map((c) => c.id), usuarioActual)}
                     usuarioActual={usuarioActual}
+                    candidatosVinculo={datosMesones.grupos.filter((g) => g.etapa !== "programacion_hecha")}
                   />
                 )}
               </div>
