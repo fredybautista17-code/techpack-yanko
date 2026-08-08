@@ -458,14 +458,14 @@ const ESTILO_DATO = { fill: { fgColor: { rgb: "D9E6F5" } }, border: TODOS_LOS_BO
 const ESTILO_TOTAL = { font: { bold: true }, border: TODOS_LOS_BORDES, alignment: { horizontal: "center" } };
 const ESTILO_TOTAL_VACIA = { border: TODOS_LOS_BORDES };
 const FORMATO_MONEDA = '"$" #,##0';
-// Molde fijo del Excel original de Busint: 31 filas x 19 columnas siempre,
-// aunque el despacho tenga menos líneas o menos tallas (se rellena con
-// celdas vacías pero con el mismo color/borde). Si un despacho llegara a
-// tener MÁS de 25 líneas o MÁS de 6 tallas, la hoja crece más allá de
-// 31x19 automáticamente (para no perder datos), pero en el caso normal
-// siempre sale exactamente 31x19.
+// Molde fijo del Excel original de Busint: siempre 31 filas (se rellena
+// con celdas vacías del mismo color/borde aunque el despacho tenga menos
+// líneas). Si un despacho llegara a tener MÁS de 25 líneas, la hoja crece
+// más allá de 31 filas automáticamente (para no perder datos), pero en el
+// caso normal siempre sale exactamente 31 filas. Las columnas de talla NO
+// se rellenan de más: solo se muestran las tallas reales que tenga el
+// despacho (ni una columna vacía extra).
 const CAPACIDAD_LINEAS = 25;
-const CUPOS_TALLA = 6;
 const COLS_BASE = 13; // columna espaciadora + 12 campos (REF..TOTAL)
 const COL_HEADERS_BASE = ["REF", "CANTIDAD", "N° TRASLADO", "N° DE CORTE", "N° DE BULTO COMO VIENE MARCADOS", "DESCRIPCION", "MARCA", "SEGMENTO", "PRECIO", "DCTO", "TOTAL DCTTO", "TOTAL"];
 const COLS_MONEDA = new Set([9, 10, 11, 12]);
@@ -487,12 +487,33 @@ function celda(v, style, numFmt) {
   return c;
 }
 
+// Curva estándar de tallas que siempre debe aparecer en la exportación
+// (en este orden), aunque el despacho no tenga código de barra para
+// alguna de ellas — la columna sale igual, solo que vacía. Si una línea
+// trae una talla que NO está en esta lista, se agrega como columna extra
+// al final (para no perder datos).
+const CURVA_TALLAS_ESTANDAR = [
+  "S - 4 - U - S/M",
+  "M - 6 - M/L - L/XL",
+  "L - 8",
+  "XL/10",
+  "1XL - 12",
+  "2XL - 14",
+  "3XL - 16",
+];
+function normTalla(s) {
+  return String(s || "").replace(/\s+/g, " ").trim().toUpperCase();
+}
 async function exportarDespachoExcel(despacho) {
   const XLSX = await import("xlsx-js-style");
   const lineas = despacho.lineas || [];
-  const tallas = [];
-  lineas.forEach((l) => (l.barras || []).forEach((b) => { if (b.talla && !tallas.includes(b.talla)) tallas.push(b.talla); }));
-  const nColsTallas = Math.max(CUPOS_TALLA, tallas.length);
+  const tallas = [...CURVA_TALLAS_ESTANDAR];
+  lineas.forEach((l) => (l.barras || []).forEach((b) => {
+    if (!b.talla) return;
+    const yaExiste = tallas.some((t) => normTalla(t) === normTalla(b.talla));
+    if (!yaExiste) tallas.push(b.talla);
+  }));
+  const nColsTallas = tallas.length;
   const nColsTotal = COLS_BASE + nColsTallas;
   const nFilasDatos = Math.max(CAPACIDAD_LINEAS, lineas.length);
 
@@ -537,7 +558,7 @@ async function exportarDespachoExcel(despacho) {
       fila[12] = celda(Number(l.total) || 0, ESTILO_DATO, FORMATO_MONEDA);
       for (let t = 0; t < nColsTallas; t++) {
         const nombreTalla = tallas[t];
-        const b = nombreTalla ? (l.barras || []).find((x) => x.talla === nombreTalla) : null;
+        const b = nombreTalla ? (l.barras || []).find((x) => normTalla(x.talla) === normTalla(nombreTalla)) : null;
         fila[COLS_BASE + t] = celda(b ? (b.cbarraI || b.cbarraE || b.cbarraM || "") : "", ESTILO_DATO);
       }
     } else {
