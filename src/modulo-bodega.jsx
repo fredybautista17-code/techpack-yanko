@@ -110,12 +110,26 @@ function Field({ label, children }) {
     </div>
   );
 }
-function FInput({ value, onChange, placeholder, type = "text" }) {
+function FInput({ value, onChange, placeholder, type = "text", onEnter }) {
   return (
     <input
       type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
+      onKeyDown={
+        onEnter
+          ? (e) => {
+              // Una pistola lectora de código de barras escribe los dígitos
+              // como si fuera un teclado y termina mandando "Enter" — con
+              // esto ese Enter agrega el código de una, sin tener que hacer
+              // clic en "+ Agregar" cada vez.
+              if (e.key === "Enter") {
+                e.preventDefault();
+                onEnter();
+              }
+            }
+          : undefined
+      }
       placeholder={placeholder}
       style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
     />
@@ -143,6 +157,25 @@ function FSel({ value, onChange, options, placeholder = "Seleccionar..." }) {
 const MARCAS_BODEGA = ["KML", "KAMILA", "MISSOFI"];
 const SEGMENTOS_BODEGA = ["DAMA", "CAB", "NIÑA", "NIÑO"];
 const TALLAS_BODEGA = ["S", "M", "L", "XL", "1XL", "2XL", "3XL", "UNICA", "4", "6", "8", "10", "12", "14", "16"];
+// Curva estándar de GRUPOS de talla que siempre debe aparecer en la
+// exportación (en este orden) — cada grupo junta varias tallas sueltas que
+// en la práctica son la misma medida (ej. "S", "4", "UNICA" y "S/M" son la
+// misma talla con distintos nombres). Al agregar un código de barra a mano
+// en Montar Despacho, se elige uno de estos 7 grupos (no una talla suelta),
+// para que el código caiga siempre en la columna/celda correcta al
+// exportar a Excel.
+const CURVA_TALLAS_ESTANDAR = [
+  "S - 4 - U - S/M",
+  "M - 6 - M/L - L/XL",
+  "L - 8",
+  "XL/10",
+  "1XL - 12",
+  "2XL - 14",
+  "3XL - 16",
+];
+function normTalla(s) {
+  return String(s || "").replace(/\s+/g, " ").trim().toUpperCase();
+}
 function Modal({ title, onClose, children, width = 560 }) {
   return (
     <div
@@ -246,6 +279,22 @@ function lineaVacia() {
 // demás — SIN precio ni descuento. Esos dos campos los define Contabilidad
 // en la etapa de revisión ("Por Aprobar"), no bodega.
 function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint }) {
+  const [grupoNuevo, setGrupoNuevo] = useState("");
+  const [codigoNuevo, setCodigoNuevo] = useState("");
+  // Agrega (o reemplaza si ya existía) el código de barra de un grupo de
+  // talla a mano. Se guarda con la MISMA forma que trae Busint (cbarraI),
+  // para que la exportación a Excel lo encuentre igual sin importar si
+  // llegó automático o lo escribiste tú.
+  function agregarCodigo() {
+    if (!grupoNuevo || !codigoNuevo.trim()) return;
+    const barras = (linea.barras || []).filter((b) => normTalla(b.talla) !== normTalla(grupoNuevo));
+    onChange({ ...linea, barras: [...barras, { talla: grupoNuevo, cbarraI: codigoNuevo.trim(), cbarraE: "", cbarraM: "" }] });
+    setGrupoNuevo("");
+    setCodigoNuevo("");
+  }
+  function quitarCodigo(talla) {
+    onChange({ ...linea, barras: (linea.barras || []).filter((b) => b.talla !== talla) });
+  }
   return (
     <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: 16, marginBottom: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -293,18 +342,24 @@ function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint })
           <FInput value={linea.numBulto} onChange={(v) => onChange({ ...linea, numBulto: v })} placeholder="1/3" />
         </Field>
       </div>
-      {linea.barras && linea.barras.length > 0 && (
-        <div style={{ marginTop: 4 }}>
-          <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Códigos de barra por talla (Busint)</div>
+      <div style={{ marginTop: 10 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Códigos de barra por grupo de talla</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr auto", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <FSel value={grupoNuevo} onChange={setGrupoNuevo} options={CURVA_TALLAS_ESTANDAR} />
+          <FInput value={codigoNuevo} onChange={setCodigoNuevo} placeholder="Código de barra (o escanea con la pistola)" onEnter={agregarCodigo} />
+          <Btn small variant="secondary" onClick={agregarCodigo} disabled={!grupoNuevo || !codigoNuevo.trim()}>+ Agregar</Btn>
+        </div>
+        {linea.barras && linea.barras.length > 0 && (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {linea.barras.map((b, i) => (
-              <div key={i} style={{ padding: "4px 10px", background: C.blueBg, borderRadius: 6, fontSize: 11, color: C.blue }}>
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", background: C.blueBg, borderRadius: 6, fontSize: 11, color: C.blue }}>
                 <strong>{b.talla || "—"}</strong> {b.cbarraI || b.cbarraE || b.cbarraM || "sin código"}
+                <span onClick={() => quitarCodigo(b.talla)} style={{ cursor: "pointer", color: C.red, fontWeight: 800 }}>✕</span>
               </div>
             ))}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -479,23 +534,8 @@ function celda(v, style, numFmt) {
   return c;
 }
 
-// Curva estándar de tallas que siempre debe aparecer en la exportación
-// (en este orden), aunque el despacho no tenga código de barra para
-// alguna de ellas — la columna sale igual, solo que vacía. Si una línea
-// trae una talla que NO está en esta lista, se agrega como columna extra
-// al final (para no perder datos).
-const CURVA_TALLAS_ESTANDAR = [
-  "S - 4 - U - S/M",
-  "M - 6 - M/L - L/XL",
-  "L - 8",
-  "XL/10",
-  "1XL - 12",
-  "2XL - 14",
-  "3XL - 16",
-];
-function normTalla(s) {
-  return String(s || "").replace(/\s+/g, " ").trim().toUpperCase();
-}
+// (CURVA_TALLAS_ESTANDAR y normTalla ahora están definidos arriba, junto a
+// TALLAS_BODEGA, para poder usarlos también en Montar Despacho.)
 async function exportarDespachoExcel(despacho) {
   const XLSX = await import("xlsx-js-style");
   const lineas = despacho.lineas || [];
