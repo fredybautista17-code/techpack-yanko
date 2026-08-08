@@ -242,8 +242,10 @@ function lineaVacia() {
   };
 }
 // ─── MONTAR DESPACHO (bodega) ──────────────────────────────────────────────
+// Etapa 1 (Bodega): referencia, códigos de barra, cantidades y todo lo
+// demás — SIN precio ni descuento. Esos dos campos los define Contabilidad
+// en la etapa de revisión ("Por Aprobar"), no bodega.
 function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint }) {
-  const total = calcularTotalLinea(linea);
   return (
     <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: 16, marginBottom: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -274,7 +276,7 @@ function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint })
           No se encontró esa referencia en Busint — completa los datos a mano.
         </div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr", gap: 10 }}>
         <Field label="Descripción">
           <FInput value={linea.descripcion} onChange={(v) => onChange({ ...linea, descripcion: v })} />
         </Field>
@@ -287,19 +289,8 @@ function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint })
         <Field label="Talla">
           <FSel value={linea.talla} onChange={(v) => onChange({ ...linea, talla: v })} options={TALLAS_BODEGA} />
         </Field>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
         <Field label="N° Bulto">
           <FInput value={linea.numBulto} onChange={(v) => onChange({ ...linea, numBulto: v })} placeholder="1/3" />
-        </Field>
-        <Field label="Precio">
-          <FInput type="number" value={linea.precio} onChange={(v) => onChange({ ...linea, precio: v })} />
-        </Field>
-        <Field label="Dcto (por unidad)">
-          <FInput type="number" value={linea.dcto} onChange={(v) => onChange({ ...linea, dcto: v })} />
-        </Field>
-        <Field label="Total">
-          <div style={{ padding: "9px 12px", background: C.canvas, borderRadius: 8, fontWeight: 800, color: C.ink, fontSize: 14 }}>{fmtMoney(total)}</div>
         </Field>
       </div>
       {linea.barras && linea.barras.length > 0 && (
@@ -323,7 +314,7 @@ function MontarDespachoView({ despachos, currentUser, onGuardado }) {
   const [lineas, setLineas] = useState([lineaVacia()]);
   const [guardando, setGuardando] = useState(false);
   const numeroSiguiente = useMemo(() => siguienteNumeroDespacho(despachos), [despachos]);
-  const totalDespacho = lineas.reduce((s, l) => s + calcularTotalLinea(l), 0);
+  const totalUnidades = lineas.reduce((s, l) => s + (Number(l.cantidad) || 0), 0);
 
   function actualizarLinea(idx, nueva) {
     setLineas((ls) => ls.map((l, i) => (i === idx ? nueva : l)));
@@ -433,8 +424,9 @@ function MontarDespachoView({ despachos, currentUser, onGuardado }) {
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: C.canvas, borderRadius: 12, padding: "16px 20px" }}>
         <div>
-          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase" }}>Total del despacho</div>
-          <div style={{ fontSize: 22, fontWeight: 900, color: C.ink }}>{fmtMoney(totalDespacho)}</div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase" }}>Total de unidades</div>
+          <div style={{ fontSize: 22, fontWeight: 900, color: C.ink }}>{fmtNum(totalUnidades)}</div>
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>El precio y el descuento los define Contabilidad al revisar el despacho.</div>
         </div>
         <Btn onClick={guardarDespacho} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Montar Despacho"}</Btn>
       </div>
@@ -589,8 +581,8 @@ async function exportarDespachoExcel(despacho) {
   XLSX.utils.book_append_sheet(wb, ws, `DESPACHO ${despacho.numero}`.slice(0, 31));
   XLSX.writeFile(wb, `DESPACHO ${despacho.numero}.xlsx`);
 }
-// ─── DETALLE DE UN DESPACHO (compartido: Por Aprobar / Historial) ──────────
-function DetalleDespachoModal({ despacho, onClose, onAprobar, puedeAprobar }) {
+// ─── DETALLE DE UN DESPACHO (solo lectura: Historial) ──────────────────────
+function DetalleDespachoModal({ despacho, onClose }) {
   return (
     <Modal title={`Despacho #${despacho.numero}`} onClose={onClose} width={860}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 18, fontSize: 12 }}>
@@ -623,30 +615,127 @@ function DetalleDespachoModal({ despacho, onClose, onAprobar, puedeAprobar }) {
       />
       <div style={{ fontSize: 11, color: C.slate, marginTop: 14 }}>
         Montado por {despacho.creadoPor || "—"} · {fmtFechaHora(despacho.creadoEn)}
-        {despacho.estado === "aprobado" && <> · Aprobado por {despacho.aprobadoPor || "—"} · {fmtFechaHora(despacho.aprobadoEn)}</>}
+        {despacho.estado === "aprobado" && <> · Revisado y aprobado por {despacho.aprobadoPor || "—"} · {fmtFechaHora(despacho.aprobadoEn)}</>}
       </div>
-      {puedeAprobar && despacho.estado === "montado" && (
-        <div style={{ marginTop: 18, display: "flex", justifyContent: "flex-end" }}>
-          <Btn variant="success" onClick={() => onAprobar(despacho)}>✓ Aprobar Despacho</Btn>
-        </div>
-      )}
     </Modal>
   );
 }
-// ─── POR APROBAR (admin / permiso aprobar_despacho) ────────────────────────
+// ─── REVISAR Y APROBAR (Contabilidad) ──────────────────────────────────────
+// Bodega monta el despacho con referencia, cantidades, tallas y códigos de
+// barra pero sin precio ni descuento. Acá Contabilidad revisa (y puede
+// corregir) las cantidades, pone el precio y aplica el descuento de cada
+// línea, y desde aquí mismo aprueba el despacho.
+function LineaRevisionRow({ linea, onChange }) {
+  const total = calcularTotalLinea(linea);
+  return (
+    <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+      <td style={{ padding: "8px 6px", fontSize: 12, fontWeight: 700 }}>{linea.referencia}</td>
+      <td style={{ padding: "8px 6px", fontSize: 12 }}>{linea.descripcion}</td>
+      <td style={{ padding: "8px 6px", fontSize: 12, color: C.slate }}>{linea.marca}{linea.marca && linea.segmento ? " · " : ""}{linea.segmento}</td>
+      <td style={{ padding: "8px 6px", width: 90 }}>
+        <FInput type="number" value={linea.cantidad} onChange={(v) => onChange({ ...linea, cantidad: v })} />
+      </td>
+      <td style={{ padding: "8px 6px", width: 100 }}>
+        <FInput type="number" value={linea.precio} onChange={(v) => onChange({ ...linea, precio: v })} />
+      </td>
+      <td style={{ padding: "8px 6px", width: 110 }}>
+        <FInput type="number" value={linea.dcto} onChange={(v) => onChange({ ...linea, dcto: v })} />
+      </td>
+      <td style={{ padding: "8px 6px", fontSize: 12, fontWeight: 800, textAlign: "right" }}>{fmtMoney(total)}</td>
+    </tr>
+  );
+}
+function RevisarYAprobarModal({ despacho, currentUser, onClose, onGuardado }) {
+  const [lineas, setLineas] = useState(() =>
+    (despacho.lineas || []).map((l) => ({ ...l, cantidad: String(l.cantidad ?? ""), precio: String(l.precio ?? ""), dcto: String(l.dcto ?? "0") }))
+  );
+  const [guardando, setGuardando] = useState(false);
+  const totalDespacho = lineas.reduce((s, l) => s + calcularTotalLinea(l), 0);
+
+  function actualizarLinea(idx, nueva) {
+    setLineas((ls) => ls.map((l, i) => (i === idx ? nueva : l)));
+  }
+  function lineasParaGuardar() {
+    return lineas.map((l) => {
+      const total = calcularTotalLinea(l);
+      return { ...l, cantidad: Number(l.cantidad) || 0, precio: Number(l.precio) || 0, dcto: Number(l.dcto) || 0, total };
+    });
+  }
+  async function guardarCambios() {
+    setGuardando(true);
+    try {
+      const lineasGuardar = lineasParaGuardar();
+      await fsSave("despachosVenezuela", despacho.id, {
+        lineas: lineasGuardar,
+        totalDespacho: lineasGuardar.reduce((s, l) => s + l.total, 0),
+        revisadoPor: currentUser?.name || currentUser?.username || "",
+        revisadoEn: new Date().toISOString(),
+      });
+      onGuardado && onGuardado();
+    } finally {
+      setGuardando(false);
+    }
+  }
+  async function aprobar() {
+    setGuardando(true);
+    try {
+      const lineasGuardar = lineasParaGuardar();
+      await fsSave("despachosVenezuela", despacho.id, {
+        lineas: lineasGuardar,
+        totalDespacho: lineasGuardar.reduce((s, l) => s + l.total, 0),
+        estado: "aprobado",
+        aprobadoPor: currentUser?.name || currentUser?.username || "",
+        aprobadoEn: new Date().toISOString(),
+      });
+      onGuardado && onGuardado();
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  return (
+    <Modal title={`Revisar Despacho #${despacho.numero}`} onClose={onClose} width={980}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 16, fontSize: 12 }}>
+        <div><div style={{ color: C.slate, fontWeight: 700 }}>N Control</div><div>{despacho.numControl || "—"}</div></div>
+        <div><div style={{ color: C.slate, fontWeight: 700 }}>Fecha</div><div>{fmtFechaISO(despacho.fecha)}</div></div>
+        <div><div style={{ color: C.slate, fontWeight: 700 }}>Montado por</div><div>{despacho.creadoPor || "—"}</div></div>
+        <div><div style={{ color: C.slate, fontWeight: 700 }}>Total (con tus cambios)</div><div style={{ fontWeight: 800 }}>{fmtMoney(totalDespacho)}</div></div>
+      </div>
+      <div style={{ fontSize: 11, color: C.slate, marginBottom: 12 }}>
+        Bodega montó la referencia, cantidades, tallas y códigos de barra. Revisa las cantidades (corrígelas si hace falta) y pon el precio y el descuento por unidad de cada línea.
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ borderBottom: `2px solid ${C.border}` }}>
+              {["Ref", "Descripción", "Marca / Segmento", "Cantidad", "Precio", "Dcto (por unidad)", "Total"].map((h) => (
+                <th key={h} style={{ padding: "8px 6px", fontSize: 10, fontWeight: 800, color: C.slate, textTransform: "uppercase", textAlign: h === "Total" ? "right" : "left" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {lineas.map((l, i) => (
+              <LineaRevisionRow key={l.id || i} linea={l} onChange={(nueva) => actualizarLinea(i, nueva)} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ marginTop: 20, display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <Btn variant="secondary" onClick={guardarCambios} disabled={guardando}>{guardando ? "Guardando..." : "💾 Guardar cambios"}</Btn>
+        <Btn variant="success" onClick={aprobar} disabled={guardando}>{guardando ? "Guardando..." : "✓ Aprobar Despacho"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+// ─── POR APROBAR (Contabilidad revisa cantidades, pone precio/dcto y aprueba) ─
 function PorAprobarView({ despachos, currentUser, puedeAprobar }) {
   const [abierto, setAbierto] = useState(null);
   const pendientes = despachos.filter((d) => d.estado === "montado").sort((a, b) => parseFloat(a.numero) - parseFloat(b.numero));
-  async function aprobar(d) {
-    await fsSave("despachosVenezuela", d.id, {
-      estado: "aprobado",
-      aprobadoPor: currentUser?.name || currentUser?.username || "",
-      aprobadoEn: new Date().toISOString(),
-    });
-    setAbierto(null);
-  }
   return (
     <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 14 }}>
+        Estos despachos ya fueron montados por Bodega (referencia, cantidades, tallas y códigos de barra). Ábrelos para revisar cantidades, poner precio y descuento, y aprobar.
+      </div>
       <Tabla
         vacio="No hay despachos pendientes por aprobar."
         onRowClick={(f) => setAbierto(f)}
@@ -660,8 +749,8 @@ function PorAprobarView({ despachos, currentUser, puedeAprobar }) {
         ]}
         filas={pendientes}
       />
-      {abierto && (
-        <DetalleDespachoModal despacho={abierto} onClose={() => setAbierto(null)} onAprobar={aprobar} puedeAprobar={puedeAprobar} />
+      {abierto && puedeAprobar && (
+        <RevisarYAprobarModal despacho={abierto} currentUser={currentUser} onClose={() => setAbierto(null)} onGuardado={() => setAbierto(null)} />
       )}
     </div>
   );
@@ -695,7 +784,7 @@ function HistorialView({ despachos }) {
         ]}
         filas={visibles}
       />
-      {abierto && <DetalleDespachoModal despacho={abierto} onClose={() => setAbierto(null)} puedeAprobar={false} />}
+      {abierto && <DetalleDespachoModal despacho={abierto} onClose={() => setAbierto(null)} />}
     </div>
   );
 }
@@ -1385,7 +1474,10 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
     };
   }, []);
   const isAdmin = !!currentUser?.isAdmin;
-  const puedeAprobar = isAdmin || !!puedeAprobarDespacho;
+  // Etapa 2 del despacho (revisar cantidades, poner precio/dcto y aprobar)
+  // la hace Contabilidad. Se deja también el permiso "aprobarDespacho" por
+  // compatibilidad, para no quitarle acceso a nadie que ya lo tuviera.
+  const puedeAprobar = isAdmin || !!canAccessContabilidad || !!puedeAprobarDespacho;
   // Agregar/borrar abonos queda reservado a Administración o a quien tenga
   // acceso al módulo Contabilidad — el resto de usuarios de Bodega solo ve
   // el registro y el total, no puede editarlo.
