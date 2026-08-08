@@ -442,40 +442,129 @@ function MontarDespachoView({ despachos, currentUser, onGuardado }) {
   );
 }
 // Exporta UN despacho a Excel con el mismo formato visual de las hojas
-// "DESPACHO N" del archivo original: bloque N CONTROL/FECHA/DESPACHO arriba,
+// "DESPACHO N" del archivo original: bloque N CONTROL/FECHA/DESPACHO arriba
+// (azul con texto blanco para las etiquetas, verde claro para los valores),
 // tabla REF/CANTIDAD/N TRASLADO/N CORTE/N BULTO/DESCRIPCION/MARCA/SEGMENTO/
-// PRECIO/DCTO/TOTAL DCTTO/TOTAL, con una columna de código de barra por cada
-// talla que tenga la referencia (unión de tallas de todas las líneas), y la
-// fila de totales al final — igual a como venía en el Excel de Busint.
+// PRECIO/DCTO/TOTAL DCTTO/TOTAL con encabezado azul, filas de datos en azul
+// claro con bordes y formato de moneda, una columna de código de barra por
+// cada talla, y la fila de totales al final. Usa "xlsx-js-style" (ya estaba
+// en package.json) en vez de "xlsx" porque xlsx (SheetJS) gratis no soporta
+// colores/rellenos de celda - xlsx-js-style es la misma API con estilos.
+const BORDE_FINO = { style: "thin", color: { rgb: "B7B7B7" } };
+const TODOS_LOS_BORDES = { top: BORDE_FINO, bottom: BORDE_FINO, left: BORDE_FINO, right: BORDE_FINO };
+const ESTILO_HEADER = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "1F4E78" } }, alignment: { horizontal: "center", vertical: "center", wrapText: true }, border: TODOS_LOS_BORDES };
+const ESTILO_VALOR = { font: { bold: true }, fill: { fgColor: { rgb: "E2EFDA" } }, alignment: { horizontal: "center", vertical: "center" }, border: TODOS_LOS_BORDES };
+const ESTILO_DATO = { fill: { fgColor: { rgb: "D9E6F5" } }, border: TODOS_LOS_BORDES, alignment: { vertical: "center" } };
+const ESTILO_TOTAL = { font: { bold: true }, border: TODOS_LOS_BORDES, alignment: { horizontal: "center" } };
+const ESTILO_TOTAL_VACIA = { border: TODOS_LOS_BORDES };
+const FORMATO_MONEDA = '"$" #,##0';
+// Molde fijo del Excel original de Busint: 31 filas x 19 columnas siempre,
+// aunque el despacho tenga menos líneas o menos tallas (se rellena con
+// celdas vacías pero con el mismo color/borde). Si un despacho llegara a
+// tener MÁS de 25 líneas o MÁS de 6 tallas, la hoja crece más allá de
+// 31x19 automáticamente (para no perder datos), pero en el caso normal
+// siempre sale exactamente 31x19.
+const CAPACIDAD_LINEAS = 25;
+const CUPOS_TALLA = 6;
+const COLS_BASE = 13; // columna espaciadora + 12 campos (REF..TOTAL)
+const COL_HEADERS_BASE = ["REF", "CANTIDAD", "N° TRASLADO", "N° DE CORTE", "N° DE BULTO COMO VIENE MARCADOS", "DESCRIPCION", "MARCA", "SEGMENTO", "PRECIO", "DCTO", "TOTAL DCTTO", "TOTAL"];
+const COLS_MONEDA = new Set([9, 10, 11, 12]);
+
+function celda(v, style, numFmt) {
+  if (v === null || v === undefined || v === "") {
+    const c = { t: "s", v: "" };
+    if (style) c.s = style;
+    return c;
+  }
+  if (typeof v === "number" && !Number.isNaN(v)) {
+    const c = { t: "n", v };
+    if (style) c.s = style;
+    if (numFmt) c.z = numFmt;
+    return c;
+  }
+  const c = { t: "s", v: String(v) };
+  if (style) c.s = style;
+  return c;
+}
+
 async function exportarDespachoExcel(despacho) {
-  const XLSX = await import("xlsx");
+  const XLSX = await import("xlsx-js-style");
   const lineas = despacho.lineas || [];
   const tallas = [];
   lineas.forEach((l) => (l.barras || []).forEach((b) => { if (b.talla && !tallas.includes(b.talla)) tallas.push(b.talla); }));
+  const nColsTallas = Math.max(CUPOS_TALLA, tallas.length);
+  const nColsTotal = COLS_BASE + nColsTallas;
+  const nFilasDatos = Math.max(CAPACIDAD_LINEAS, lineas.length);
 
-  const encabezado = [
-    ["   ", null, null, null, null, null, null, null, null, null, null, null, ...tallas.map(() => null)],
-    [null, "N CONTROL", despacho.numControl || "", "FECHA", despacho.fecha ? fmtFechaISO(despacho.fecha) : "", null, "DESPACHO", despacho.numero],
-    [null, "REF", "CANTIDAD", "N° TRASLADO", "N° DE CORTE", "N° DE BULTO COMO VIENE MARCADOS", "DESCRIPCION", "MARCA", "SEGMENTO", "PRECIO", "DCTO", "TOTAL DCTTO", "TOTAL", ...tallas],
-  ];
-  const filas = lineas.map((l) => {
-    const totalDcto = (Number(l.precio) || 0) - (Number(l.dcto) || 0);
-    const barrasPorTalla = tallas.map((t) => {
-      const b = (l.barras || []).find((x) => x.talla === t);
-      return b ? b.cbarraI || b.cbarraE || b.cbarraM || "" : "";
-    });
-    return [
-      null, l.referencia || "", l.cantidad || 0, l.numTraslado || "", l.numCorte || "", l.numBulto || "",
-      l.descripcion || "", l.marca || "", l.segmento || "", l.precio || 0, l.dcto || 0, totalDcto, l.total || 0,
-      ...barrasPorTalla,
-    ];
-  });
+  const grid = [];
+  // fila 0: espaciadora
+  grid.push([]);
+  // fila 1: bloque N CONTROL / FECHA / DESPACHO
+  const filaBloque = [];
+  filaBloque[1] = celda("N CONTROL", ESTILO_HEADER);
+  filaBloque[2] = celda(despacho.numControl || "", ESTILO_VALOR);
+  filaBloque[3] = celda("FECHA", ESTILO_HEADER);
+  filaBloque[4] = celda(despacho.fecha ? fmtFechaISO(despacho.fecha) : "", ESTILO_VALOR);
+  filaBloque[6] = celda("DESPACHO", ESTILO_HEADER);
+  filaBloque[7] = celda(despacho.numero, ESTILO_VALOR);
+  grid.push(filaBloque);
+  // fila 2: espaciadora
+  grid.push([]);
+  // fila 3: encabezado de tabla (banda azul completa, incluye cupos de talla vacíos)
+  const filaHeader = [];
+  for (let c = 1; c <= nColsTotal - 1; c++) {
+    const label = c <= 12 ? COL_HEADERS_BASE[c - 1] : (tallas[c - COLS_BASE] || "");
+    filaHeader[c] = celda(label, ESTILO_HEADER);
+  }
+  grid.push(filaHeader);
+  // filas de datos: siempre CAPACIDAD_LINEAS filas (o más si el despacho tiene más líneas)
+  for (let idx = 0; idx < nFilasDatos; idx++) {
+    const l = lineas[idx];
+    const fila = [];
+    if (l) {
+      const totalDcto = (Number(l.precio) || 0) - (Number(l.dcto) || 0);
+      fila[1] = celda(l.referencia || "", ESTILO_DATO);
+      fila[2] = celda(Number(l.cantidad) || 0, ESTILO_DATO);
+      fila[3] = celda(l.numTraslado || "", ESTILO_DATO);
+      fila[4] = celda(l.numCorte || "", ESTILO_DATO);
+      fila[5] = celda(l.numBulto || "", ESTILO_DATO);
+      fila[6] = celda(l.descripcion || "", ESTILO_DATO);
+      fila[7] = celda(l.marca || "", ESTILO_DATO);
+      fila[8] = celda(l.segmento || "", ESTILO_DATO);
+      fila[9] = celda(Number(l.precio) || 0, ESTILO_DATO, FORMATO_MONEDA);
+      fila[10] = celda(Number(l.dcto) || 0, ESTILO_DATO, FORMATO_MONEDA);
+      fila[11] = celda(totalDcto, ESTILO_DATO, FORMATO_MONEDA);
+      fila[12] = celda(Number(l.total) || 0, ESTILO_DATO, FORMATO_MONEDA);
+      for (let t = 0; t < nColsTallas; t++) {
+        const nombreTalla = tallas[t];
+        const b = nombreTalla ? (l.barras || []).find((x) => x.talla === nombreTalla) : null;
+        fila[COLS_BASE + t] = celda(b ? (b.cbarraI || b.cbarraE || b.cbarraM || "") : "", ESTILO_DATO);
+      }
+    } else {
+      for (let c = 1; c <= nColsTotal - 1; c++) fila[c] = celda("", ESTILO_DATO);
+    }
+    grid.push(fila);
+  }
+  // fila espaciadora antes de totales
+  grid.push([]);
+  // fila de totales
   const totalUnd = lineas.reduce((s, l) => s + (Number(l.cantidad) || 0), 0);
   const totalGeneral = lineas.reduce((s, l) => s + (Number(l.total) || 0), 0);
-  const filaTotales = [null, "TOTAL UND", totalUnd, null, "TOTAL BTS", new Set(lineas.map((l) => l.numBulto)).size, null, null, null, null, null, "TOTAL", totalGeneral];
+  const nBultos = new Set(lineas.map((l) => l.numBulto)).size;
+  const filaTotales = [];
+  for (let c = 1; c <= nColsTotal - 1; c++) filaTotales[c] = celda("", ESTILO_TOTAL_VACIA);
+  filaTotales[1] = celda("TOTAL UND", ESTILO_TOTAL);
+  filaTotales[2] = celda(totalUnd, ESTILO_TOTAL);
+  filaTotales[4] = celda("TOTAL BTS", ESTILO_TOTAL);
+  filaTotales[5] = celda(nBultos, ESTILO_TOTAL);
+  filaTotales[11] = celda("TOTAL", ESTILO_TOTAL);
+  filaTotales[12] = celda(totalGeneral, ESTILO_TOTAL, FORMATO_MONEDA);
+  grid.push(filaTotales);
+
+  const ws = XLSX.utils.aoa_to_sheet(grid);
+  ws["!cols"] = [{ wch: 3 }, { wch: 10 }, { wch: 9 }, { wch: 12 }, { wch: 11 }, { wch: 20 }, { wch: 28 }, { wch: 10 }, { wch: 10 }, { wch: 11 }, { wch: 9 }, { wch: 13 }, { wch: 13 }, ...Array.from({ length: nColsTallas }, () => ({ wch: 16 }))];
 
   const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet([...encabezado, ...filas, [], filaTotales]);
   XLSX.utils.book_append_sheet(wb, ws, `DESPACHO ${despacho.numero}`.slice(0, 31));
   XLSX.writeFile(wb, `DESPACHO ${despacho.numero}.xlsx`);
 }
