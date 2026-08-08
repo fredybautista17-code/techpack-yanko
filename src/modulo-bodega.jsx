@@ -848,13 +848,6 @@ function pareceFechaTexto(v) {
   const s = v.trim();
   return RE_FECHA_TEXTO.test(s) || RE_FECHA_TEXTO_ROTA.test(s);
 }
-// Convierte un texto tipo fecha (normal o roto, ver pareceFechaTexto) a un
-// objeto Date real. IMPORTANTE: el resto del importador siempre espera un
-// Date de verdad (hace `new Date(fecha).toISOString()` mas abajo) - dejar la
-// fecha como texto plano hacia que esa conversion lanzara "Invalid time
-// value" sin capturar en ningun lado, cortando el analisis completo en
-// silencio (sin mostrar error ni resultado). Por eso se parsea aqui mismo,
-// nunca se deja un string suelto en el campo fecha.
 // Completa un año escrito corto/truncado a 4 digitos. 2 digitos (ej. "23")
 // asume 2000+; 3 digitos (ej. "025", visto en Despacho 452 "21/07/025", le
 // falto el "2" de adelante) asume 2000+ tambien, no 1900+ como haria el
@@ -865,6 +858,13 @@ function completarAnio(yRaw) {
   if (yRaw.length === 2) return "20" + yRaw;
   return yRaw;
 }
+// Convierte un texto tipo fecha (normal o roto, ver pareceFechaTexto) a un
+// objeto Date real. IMPORTANTE: el resto del importador siempre espera un
+// Date de verdad (hace `new Date(fecha).toISOString()` mas abajo) - dejar la
+// fecha como texto plano hacia que esa conversion lanzara "Invalid time
+// value" sin capturar en ningun lado, cortando el analisis completo en
+// silencio (sin mostrar error ni resultado). Por eso se parsea aqui mismo,
+// nunca se deja un string suelto en el campo fecha.
 function parsearFechaTexto(v) {
   const s = String(v).trim();
   let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
@@ -1079,12 +1079,36 @@ async function importarADespachosFirestore(despachos, abonos, currentUser) {
     await batch.commit();
   }
 }
-function ImportarHistoricoView({ currentUser, despachosExistentes }) {
+// Borra TODOS los despachos con estado "historico" y todos los abonos con
+// origen "importado" - se agrego porque el importador solo actualiza un
+// registro si vuelve a generar exactamente el mismo ID (numero de despacho +
+// fila + columna), asi que un bug ya corregido puede dejar registros viejos
+// con datos incorrectos (ej. un monto de DESPACHO 2 mal etiquetado como
+// DESPACHO 3) que nunca se sobrescriben solos con una nueva importacion.
+async function borrarHistoricoImportado(despachosExistentes, abonosExistentes) {
+  const CHUNK = 400;
+  const idsDespachos = despachosExistentes.filter((d) => d.estado === "historico").map((d) => d.id);
+  const idsAbonos = abonosExistentes.filter((a) => a.origen === "importado").map((a) => a.id);
+  for (let i = 0; i < idsDespachos.length; i += CHUNK) {
+    const batch = writeBatch(db);
+    idsDespachos.slice(i, i + CHUNK).forEach((id) => batch.delete(doc(db, "despachosVenezuela", id)));
+    await batch.commit();
+  }
+  for (let i = 0; i < idsAbonos.length; i += CHUNK) {
+    const batch = writeBatch(db);
+    idsAbonos.slice(i, i + CHUNK).forEach((id) => batch.delete(doc(db, "abonosVenezuela", id)));
+    await batch.commit();
+  }
+  return { despachosBorrados: idsDespachos.length, abonosBorrados: idsAbonos.length };
+}
+function ImportarHistoricoView({ currentUser, despachosExistentes, abonosExistentes }) {
   const [analizando, setAnalizando] = useState(false);
   const [resultado, setResultado] = useState(null);
   const [importando, setImportando] = useState(false);
   const [importado, setImportado] = useState(false);
   const [error, setError] = useState(null);
+  const [borrando, setBorrando] = useState(false);
+  const [borrado, setBorrado] = useState(null);
   const yaImportado = despachosExistentes.some((d) => d.estado === "historico");
 
   async function onFile(e) {
@@ -1116,6 +1140,22 @@ function ImportarHistoricoView({ currentUser, despachosExistentes }) {
       setImportando(false);
     }
   }
+  async function borrarTodo() {
+    const nDesp = despachosExistentes.filter((d) => d.estado === "historico").length;
+    const nAb = abonosExistentes.filter((a) => a.origen === "importado").length;
+    if (!window.confirm(`¿Borrar los ${nDesp} despachos y ${nAb} abonos históricos importados? Esto no se puede deshacer. Después puedes volver a subir el Excel para importarlos de nuevo.`)) return;
+    setBorrando(true);
+    setError(null);
+    setBorrado(null);
+    try {
+      const r = await borrarHistoricoImportado(despachosExistentes, abonosExistentes);
+      setBorrado(r);
+    } catch (err) {
+      setError(err?.message || String(err));
+    } finally {
+      setBorrando(false);
+    }
+  }
 
   return (
     <div>
@@ -1125,15 +1165,21 @@ function ImportarHistoricoView({ currentUser, despachosExistentes }) {
         Los abonos se toman tanto de <strong>dentro de cada hoja DESPACHO 2 a 546</strong> como de las <strong>10 hojas sueltas de depósitos</strong> (ABONO PANELES, DEPOSITOS JULIO/AGOSTO/SEP/OCT/NOV, DUBO, DEPOSITOS CUENTA YULIANA M-J, DICIEMBRE, ENERO).
       </div>
       {yaImportado && (
-        <div style={{ padding: "10px 14px", background: C.amberBg, color: C.amber, borderRadius: 8, fontSize: 12, fontWeight: 700, marginBottom: 16 }}>
-          Ya hay despachos históricos importados. Volver a subir el archivo actualiza esos mismos registros.
+        <div style={{ padding: "10px 14px", background: C.amberBg, color: C.amber, borderRadius: 8, fontSize: 12, fontWeight: 700, marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+          <span>Ya hay despachos históricos importados. Volver a subir el archivo actualiza esos mismos registros — si algún registro viejo quedó con datos incorrectos de una importación anterior, bórralos primero.</span>
+          <Btn small variant="danger" onClick={borrarTodo} disabled={borrando}>{borrando ? "Borrando..." : "🗑 Borrar histórico importado"}</Btn>
+        </div>
+      )}
+      {borrado && (
+        <div style={{ padding: "10px 14px", background: C.greenBg, color: C.green, borderRadius: 8, fontSize: 12, fontWeight: 700, marginBottom: 16 }}>
+          ✓ Se borraron {borrado.despachosBorrados} despachos y {borrado.abonosBorrados} abonos históricos. Ya puedes subir el archivo de nuevo.
         </div>
       )}
       <input type="file" accept=".xlsx,.xls" onChange={onFile} disabled={analizando} style={{ marginBottom: 16 }} />
       {analizando && <div style={{ color: C.slate, fontSize: 13 }}>Analizando archivo (546 hojas)... puede tardar un momento.</div>}
       {error && (
         <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 12, fontWeight: 700, marginBottom: 16 }}>
-          Error al procesar el archivo: {error}
+          Error al procesar: {error}
         </div>
       )}
       {resultado && (
@@ -1316,7 +1362,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
           {subView === "aprobar" && puedeAprobar && <PorAprobarView despachos={despachos} currentUser={currentUser} puedeAprobar={puedeAprobar} />}
           {subView === "historial" && <HistorialView despachos={despachos} />}
           {subView === "abonos" && <AbonosView abonos={abonos} currentUser={currentUser} puedeEditar={puedeEditarAbonos} />}
-          {subView === "importar" && isAdmin && <ImportarHistoricoView currentUser={currentUser} despachosExistentes={despachos} />}
+          {subView === "importar" && isAdmin && <ImportarHistoricoView currentUser={currentUser} despachosExistentes={despachos} abonosExistentes={abonos} />}
         </div>
       </div>
     </div>
