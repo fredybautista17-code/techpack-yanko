@@ -848,17 +848,55 @@ function pareceFechaTexto(v) {
   const s = v.trim();
   return RE_FECHA_TEXTO.test(s) || RE_FECHA_TEXTO_ROTA.test(s);
 }
+// Convierte un texto tipo fecha (normal o roto, ver pareceFechaTexto) a un
+// objeto Date real. IMPORTANTE: el resto del importador siempre espera un
+// Date de verdad (hace `new Date(fecha).toISOString()` mas abajo) - dejar la
+// fecha como texto plano hacia que esa conversion lanzara "Invalid time
+// value" sin capturar en ningun lado, cortando el analisis completo en
+// silencio (sin mostrar error ni resultado). Por eso se parsea aqui mismo,
+// nunca se deja un string suelto en el campo fecha.
+// Completa un año escrito corto/truncado a 4 digitos. 2 digitos (ej. "23")
+// asume 2000+; 3 digitos (ej. "025", visto en Despacho 452 "21/07/025", le
+// falto el "2" de adelante) asume 2000+ tambien, no 1900+ como haria el
+// constructor Date con un numero de 2 digitos.
+function completarAnio(yRaw) {
+  if (yRaw.length === 4) return yRaw;
+  if (yRaw.length === 3) return "2" + yRaw;
+  if (yRaw.length === 2) return "20" + yRaw;
+  return yRaw;
+}
+function parsearFechaTexto(v) {
+  const s = String(v).trim();
+  let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (m) {
+    const [, d, mo, yRaw] = m;
+    const y = completarAnio(yRaw);
+    const date = new Date(Number(y), Number(mo) - 1, Number(d));
+    return isNaN(date.getTime()) ? null : date;
+  }
+  m = s.match(/^(\d{1,2})\/(\d{5,6})$/);
+  if (m) {
+    const [, d, resto] = m;
+    const mo = resto.slice(0, 2);
+    const yRaw = resto.slice(2);
+    const y = completarAnio(yRaw);
+    const date = new Date(Number(y), Number(mo) - 1, Number(d));
+    return isNaN(date.getTime()) ? null : date;
+  }
+  return null;
+}
 function parseAbonosDentroDeDespacho(rows, desdeFila) {
   const abonos = [];
   for (let r = desdeFila; r < rows.length; r++) {
     const row = rows[r] || [];
     for (let c = 0; c < row.length; c++) {
       const v = row[c];
-      if (v instanceof Date || pareceFechaTexto(v)) {
+      const fechaDate = v instanceof Date ? v : (pareceFechaTexto(v) ? parsearFechaTexto(v) : null);
+      if (fechaDate) {
         const valor = numCell(row[c + 1]);
         if (valor !== null && valor !== 0) {
           const concepto = row[c + 2] != null && row[c + 2] !== "" ? String(row[c + 2]).trim() : "";
-          abonos.push({ fecha: v instanceof Date ? v : String(v).trim(), monto: valor, concepto, fila: r, col: c });
+          abonos.push({ fecha: fechaDate, monto: valor, concepto, fila: r, col: c });
         }
       } else if (normCell(v) === "ABONO") {
         const valor = numCell(row[c + 1]);
@@ -1046,6 +1084,7 @@ function ImportarHistoricoView({ currentUser, despachosExistentes }) {
   const [resultado, setResultado] = useState(null);
   const [importando, setImportando] = useState(false);
   const [importado, setImportado] = useState(false);
+  const [error, setError] = useState(null);
   const yaImportado = despachosExistentes.some((d) => d.estado === "historico");
 
   async function onFile(e) {
@@ -1054,9 +1093,12 @@ function ImportarHistoricoView({ currentUser, despachosExistentes }) {
     setAnalizando(true);
     setResultado(null);
     setImportado(false);
+    setError(null);
     try {
       const r = await parseDespachosVenezuelaExcel(file);
       setResultado(r);
+    } catch (err) {
+      setError(err?.message || String(err));
     } finally {
       setAnalizando(false);
     }
@@ -1064,9 +1106,12 @@ function ImportarHistoricoView({ currentUser, despachosExistentes }) {
   async function confirmar() {
     if (!resultado) return;
     setImportando(true);
+    setError(null);
     try {
       await importarADespachosFirestore(resultado.despachos, resultado.abonos, currentUser);
       setImportado(true);
+    } catch (err) {
+      setError(err?.message || String(err));
     } finally {
       setImportando(false);
     }
@@ -1086,6 +1131,11 @@ function ImportarHistoricoView({ currentUser, despachosExistentes }) {
       )}
       <input type="file" accept=".xlsx,.xls" onChange={onFile} disabled={analizando} style={{ marginBottom: 16 }} />
       {analizando && <div style={{ color: C.slate, fontSize: 13 }}>Analizando archivo (546 hojas)... puede tardar un momento.</div>}
+      {error && (
+        <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 12, fontWeight: 700, marginBottom: 16 }}>
+          Error al procesar el archivo: {error}
+        </div>
+      )}
       {resultado && (
         <div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, margin: "16px 0" }}>
