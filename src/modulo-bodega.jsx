@@ -526,7 +526,7 @@ function DetalleDespachoModal({ despacho, onClose, onAprobar, puedeAprobar }) {
 // ─── POR APROBAR (admin / permiso aprobar_despacho) ────────────────────────
 function PorAprobarView({ despachos, currentUser, puedeAprobar }) {
   const [abierto, setAbierto] = useState(null);
-  const pendientes = despachos.filter((d) => d.estado === "montado").sort((a, b) => a.numero - b.numero);
+  const pendientes = despachos.filter((d) => d.estado === "montado").sort((a, b) => parseFloat(a.numero) - parseFloat(b.numero));
   async function aprobar(d) {
     await fsSave("despachosVenezuela", d.id, {
       estado: "aprobado",
@@ -563,7 +563,7 @@ function HistorialView({ despachos }) {
   const visibles = despachos
     .filter((d) => d.estado === "aprobado" || d.estado === "historico")
     .filter((d) => !filtro.trim() || String(d.numero).includes(filtro.trim()) || (d.lineas || []).some((l) => (l.referencia || "").toUpperCase().includes(filtro.trim().toUpperCase())))
-    .sort((a, b) => b.numero - a.numero);
+    .sort((a, b) => parseFloat(b.numero) - parseFloat(a.numero));
   const totalGeneral = visibles.reduce((s, d) => s + (d.totalDespacho || 0), 0);
   return (
     <div>
@@ -848,10 +848,6 @@ function pareceFechaTexto(v) {
   const s = v.trim();
   return RE_FECHA_TEXTO.test(s) || RE_FECHA_TEXTO_ROTA.test(s);
 }
-// Completa un año escrito corto/truncado a 4 digitos. 2 digitos (ej. "23")
-// asume 2000+; 3 digitos (ej. "025", visto en Despacho 452 "21/07/025", le
-// falto el "2" de adelante) asume 2000+ tambien, no 1900+ como haria el
-// constructor Date con un numero de 2 digitos.
 function completarAnio(yRaw) {
   if (yRaw.length === 4) return yRaw;
   if (yRaw.length === 3) return "2" + yRaw;
@@ -962,9 +958,13 @@ async function parseDespachosVenezuelaExcel(file) {
     rows.forEach((row) => {
       if (!row) return;
       if (normCell(row[4]).includes("DESPACHO") && row[5] !== null && row[5] !== undefined) {
-        const num = Number(row[5]);
+        // Se guarda como texto (no Number) porque algunos despachos tienen
+        // identificador compuesto tipo "256-1" (una hoja aparte, distinta de
+        // "DESPACHO 256", con su propia fila REVISADO en esta hoja maestra) -
+        // Number("256-1") da NaN y esa fila se perdia entera.
+        const numKey = String(row[5]).trim();
         const desp = row[7];
-        if (!isNaN(num) && desp !== null && desp !== undefined) resumen[num] = Number(desp);
+        if (numKey && desp !== null && desp !== undefined) resumen[numKey] = Number(desp);
       }
       if (normCell(row[5]) === "TOTALES" && row[6] !== null && row[6] !== undefined) {
         totalAbonoOficial = Number(row[6]);
@@ -977,9 +977,14 @@ async function parseDespachosVenezuelaExcel(file) {
   const avisos = [];
   wb.SheetNames.forEach((name) => {
     if (HOJAS_NO_DESPACHO.has(name)) return;
-    const m = name.match(/(\d+)/);
+    // Captura tambien un sufijo tipo "-1" (ej. "DESPACHO 256-1"): antes solo
+    // se tomaba el primer numero ("256"), asi que esa hoja pisaba a
+    // "DESPACHO 256" en la base de datos (mismo id "hist-256") y se perdia un
+    // despacho completo con su plata. numero queda como texto ("256" o
+    // "256-1"), no como entero.
+    const m = name.match(/(\d+(?:-\d+)?)/);
     if (!m) return;
-    const numero = parseInt(m[1], 10);
+    const numero = m[1];
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null });
     const { fecha, numControlHeader, lineas, finTabla } = parseHojaDespacho(rows);
     parseAbonosDentroDeDespacho(rows, finTabla).forEach((a) => {
@@ -1079,12 +1084,6 @@ async function importarADespachosFirestore(despachos, abonos, currentUser) {
     await batch.commit();
   }
 }
-// Borra TODOS los despachos con estado "historico" y todos los abonos con
-// origen "importado" - se agrego porque el importador solo actualiza un
-// registro si vuelve a generar exactamente el mismo ID (numero de despacho +
-// fila + columna), asi que un bug ya corregido puede dejar registros viejos
-// con datos incorrectos (ej. un monto de DESPACHO 2 mal etiquetado como
-// DESPACHO 3) que nunca se sobrescriben solos con una nueva importacion.
 async function borrarHistoricoImportado(despachosExistentes, abonosExistentes) {
   const CHUNK = 400;
   const idsDespachos = despachosExistentes.filter((d) => d.estado === "historico").map((d) => d.id);
