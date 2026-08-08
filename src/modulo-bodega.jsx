@@ -766,11 +766,29 @@ function parseHojaDespacho(rows) {
     }
     let blanks = 0;
     let r = hr + 1;
+    // finTabla marca desde dónde parseAbonosDentroDeDespacho empieza a buscar
+    // abonos. Antes se usaba la posición final de este while (r), pero esa
+    // posición incluye hasta 2 filas "no válidas" que el while consume antes
+    // de parar — y si la primera fila de abonos quedaba pegada justo ahí
+    // (sin 2 filas en blanco de por medio, ej. DESPACHO 12/130), se perdía
+    // por completo. Ahora se rastrea la última fila que de verdad tiene
+    // referencia (ultimaValidaEstricta) y finTabla arranca justo después de
+    // esa, así los abonos pegados quedan dentro del rango de búsqueda.
+    let ultimaValidaEstricta = hr;
     while (r < rows.length && blanks < 2) {
       const row = rows[r] || [];
       if (row.some((v) => STOP_KEYWORDS_DESPACHO.has(normCell(v)))) break;
       if (!filaEsLineaValida(row, colIdxs, colmap)) { blanks++; r++; continue; }
       blanks = 0;
+      // Una línea de producto real siempre trae algo en la columna REF. Los
+      // bloques de abonos pegados justo debajo de la tabla (ej. DESPACHO
+      // 22/86/100) a veces "pasan" el chequeo numérico de arriba porque su
+      // monto cae en la misma columna que CANTIDAD/PRECIO/TOTAL, pero nunca
+      // traen referencia — por eso no cuentan para ultimaValidaEstricta.
+      const refFila = row[hc];
+      if (refFila !== null && refFila !== undefined && String(refFila).trim() !== "") {
+        ultimaValidaEstricta = r;
+      }
       const item = {};
       colIdxs.forEach((c) => { item[colmap[c]] = row[c] ?? null; });
       if (colBarras.length) {
@@ -781,7 +799,7 @@ function parseHojaDespacho(rows) {
       crudas.push(item);
       r++;
     }
-    finTabla = Math.max(finTabla, r);
+    finTabla = Math.max(finTabla, ultimaValidaEstricta + 1);
   });
   // Descarta dos tipos de fila que NO son una línea real:
   // (a) el subtotal/footer de la tabla — sin referencia, con un total que
@@ -817,17 +835,30 @@ function parseHojaDespacho(rows) {
 // concepto (formato "FECHA | VALOR | CONCEPTO", visto en varias hojas); o
 // (b) la etiqueta "ABONO" seguida de un valor, sin fecha (formato de las
 // hojas más antiguas).
+// Detecta fechas que quedaron guardadas como TEXTO en vez de fecha real de
+// Excel — normalmente por un typo al digitar (ej. "18/062021" en vez de
+// "18/06/2021", visto en DESPACHO 22, fila con $30.000.000 que antes se
+// perdia por completo porque `v instanceof Date` daba falso). Cubre el
+// formato normal DD/MM/AAAA guardado como texto (por si se repite en otra
+// hoja) y el formato roto DD/MESAAAA sin la segunda barra.
+const RE_FECHA_TEXTO = /^\d{1,2}\/\d{1,2}\/\d{2,4}$/;
+const RE_FECHA_TEXTO_ROTA = /^\d{1,2}\/\d{5,6}$/;
+function pareceFechaTexto(v) {
+  if (typeof v !== "string") return false;
+  const s = v.trim();
+  return RE_FECHA_TEXTO.test(s) || RE_FECHA_TEXTO_ROTA.test(s);
+}
 function parseAbonosDentroDeDespacho(rows, desdeFila) {
   const abonos = [];
   for (let r = desdeFila; r < rows.length; r++) {
     const row = rows[r] || [];
     for (let c = 0; c < row.length; c++) {
       const v = row[c];
-      if (v instanceof Date) {
+      if (v instanceof Date || pareceFechaTexto(v)) {
         const valor = numCell(row[c + 1]);
         if (valor !== null && valor !== 0) {
           const concepto = row[c + 2] != null && row[c + 2] !== "" ? String(row[c + 2]).trim() : "";
-          abonos.push({ fecha: v, monto: valor, concepto, fila: r, col: c });
+          abonos.push({ fecha: v instanceof Date ? v : String(v).trim(), monto: valor, concepto, fila: r, col: c });
         }
       } else if (normCell(v) === "ABONO") {
         const valor = numCell(row[c + 1]);
