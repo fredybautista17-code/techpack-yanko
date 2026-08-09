@@ -972,7 +972,16 @@ function parseHojaDespacho(rows) {
   headerStarts.forEach(([hr, hc]) => {
     const headerRow = rows[hr] || [];
     const nextSameRow = headerStarts.filter(([r, c]) => r === hr && c > hc).map(([, c]) => c);
-    const windowEnd = nextSameRow.length ? Math.min(...nextSameRow) : Math.min(hc + 14, headerRow.length);
+    // OJO: antes este límite era "hc + 14", que alcanza para las 12
+    // columnas fijas (REF..TOTAL) pero se queda corto en cuanto una
+    // referencia tiene la curva completa de tallas (S-4-U-S/M, M-6-M/L-L/XL,
+    // L-8, XL/10, 1XL-12, 2XL-14, 3XL-16 = 7 columnas más) — con 14 el corte
+    // caía justo después de las primeras 2 columnas de talla, y las columnas
+    // de la derecha (L-8 en adelante) se perdían en el importador aunque SÍ
+    // tuvieran código de barra en el Excel original. Con 40 alcanza de sobra
+    // para cualquier curva realista, sin afectar el corte real que sigue
+    // dando "headerRow.length" o el próximo bloque REF en la misma fila.
+    const windowEnd = nextSameRow.length ? Math.min(...nextSameRow) : Math.min(hc + 40, headerRow.length);
     const colmap = {};
     for (let c = hc; c < windowEnd; c++) {
       const nv = normCell(headerRow[c]);
