@@ -4570,7 +4570,7 @@ function EditNombreModal({ item, tipo, config, onSave, onClose }) {
 function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState(null);
-  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "" });
+  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "" });
   const [changePwdId, setChangePwdId] = useState(null);
   const [newPwd, setNewPwd] = useState("");
   const [showPwd, setShowPwd] = useState(false);
@@ -4605,8 +4605,8 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
     }
     setMigrando(false);
   }
-  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "" }); setEditUser(null); setShowForm(true); setError(""); }
-  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "" }); setEditUser(u); setShowForm(true); setError(""); }
+  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "" }); setEditUser(null); setShowForm(true); setError(""); }
+  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", email: u.email || "" }); setEditUser(u); setShowForm(true); setError(""); }
   // Crear usuario nuevo pasa por la Cloud Function `adminCrearUsuario` (Fase
   // B): a diferencia de editar, crear SÍ necesita generar una cuenta real de
   // Firebase Auth para que esa persona pueda entrar — eso no lo puede hacer
@@ -4621,19 +4621,21 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
     setError("");
     if (editUser) {
       if (!form.name) { setError("El nombre es obligatorio."); return; }
+      if (form.email && form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) { setError("El correo no parece válido."); return; }
       const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", avatar } : u)));
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", email: form.email ? form.email.trim() : "", avatar } : u)));
       setShowForm(false);
       return;
     }
     if (!form.name || !form.username || !form.password) { setError("Todos los campos son obligatorios."); return; }
     if (form.password.length < 6) { setError("La contraseña debe tener al menos 6 caracteres."); return; }
+    if (form.email && form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) { setError("El correo no parece válido."); return; }
     const dup = users.find((u) => u.username === form.username.toLowerCase());
     if (dup) { setError("Ese usuario ya existe."); return; }
     setCreando(true);
     try {
       const llamar = httpsCallable(functionsClient, "adminCrearUsuario");
-      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado });
+      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado, email: form.email ? form.email.trim() : "" });
       setShowForm(false);
     } catch (err) {
       setError(err?.message || "No se pudo crear el usuario.");
@@ -4734,6 +4736,11 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
               </select>
             </div>
             <div>
+              <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Correo (opcional)</label>
+              <input type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} placeholder="nombre@empresa.com" style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+              <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Para poder mandarle avisos por correo (ej. prototipos/cápsulas vencidos).</div>
+            </div>
+            <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Cliente asociado (opcional)</label>
               <select value={form.clienteAsociado} onChange={(e) => setForm((f) => ({ ...f, clienteAsociado: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
                 <option value="">— Ninguno (ve todos los clientes) —</option>
@@ -4778,7 +4785,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
                 {u.isAdmin && <span style={{ padding: "2px 8px", borderRadius: 4, background: T.ink, color: T.seam, fontSize: 10, fontWeight: 800 }}>ADMIN</span>}
                 <span style={{ padding: "2px 8px", borderRadius: 4, background: u.role === "Cliente" ? T.violetBg : T.denimBg, color: u.role === "Cliente" ? T.violet : T.denim, fontSize: 10, fontWeight: 700 }}>{u.role}</span>
               </div>
-              <div style={{ fontSize: 12, color: T.slate, marginTop: 3 }}>@{u.username}</div>
+              <div style={{ fontSize: 12, color: T.slate, marginTop: 3 }}>@{u.username}{u.email ? ` · ${u.email}` : ""}</div>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <button onClick={() => setChangePwdId(u.id)} style={{ padding: "6px 12px", background: T.amberBg, border: `1px solid ${T.amber}44`, borderRadius: 8, color: T.amber, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>🔑 Clave</button>
