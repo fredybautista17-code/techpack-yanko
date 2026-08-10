@@ -3,6 +3,9 @@ import ModuloCorte from "./modulo-corte";
 import ModuloContabilidad from "./modulo-contabilidad";
 import ModuloPlaneacion from "./modulo-planeacion";
 import ModuloPlanta from "./modulo-planta";
+import ModuloBodega from "./modulo-bodega";
+import ModuloNomina from "./modulo-nomina";
+import ModuloInformes from "./modulo-informes";
 import { initializeApp } from "firebase/app";
 import {
   getFirestore,
@@ -61,8 +64,13 @@ async function fsDelete(col, id) {
   await deleteDoc(doc(db, col, id));
 }
 async function fsBatch(col, items) {
+  // merge: true — así, si un documento tiene campos que la app no maneja
+  // (p.ej. "authUid", que solo se agrega desde Firebase Console o Cloud
+  // Functions), una reescritura masiva de items (como al editar CUALQUIER
+  // usuario en la pestaña Usuarios, que reescribe TODOS los usuarios) no
+  // borra esos campos aunque la copia local en memoria no los tenga.
   const batch = writeBatch(db);
-  items.forEach((item) => batch.set(doc(db, col, item.id), item));
+  items.forEach((item) => batch.set(doc(db, col, item.id), item, { merge: true }));
   await batch.commit();
 }
 
@@ -90,7 +98,7 @@ async function exportHojaDeVidaXLSX(item, kind, capsulaName) {
     (o) => o.type !== "update" && o.user !== "Sistema"
   );
   const wsData = [
-    ["HOJA DE VIDA — TECHPACK YANKO", "", "", "", "", ""],
+    ["HOJA DE VIDA — ATLAS YANKO", "", "", "", "", ""],
     [
       `${kind === "proto" ? "Prototipo" : "Referencia"} · ${item.reference}`,
       "",
@@ -383,7 +391,7 @@ function exportHojaDeVidaHTML(item, kind, capsulaName) {
     }
   </div>
   <div class="footer">
-    <span>TechPack · Industrias Yanko</span>
+    <span>ATLAS · Industrias Yanko</span>
     <span>Generado el ${new Date().toLocaleDateString("es-CO", { dateStyle: "long" })}</span>
     <button onclick="window.print()" style="background:#1A1A2E;color:#C8B8A2;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:700">🖨 Imprimir / PDF</button>
   </div>
@@ -653,7 +661,7 @@ function LoadingScreen({ message }) {
   return (
     <div style={{ minHeight: "100vh", background: `linear-gradient(135deg,${T.ink} 0%,#2D1B69 50%,#1A2E4A 100%)`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: "'Inter',-apple-system,sans-serif" }}>
       <div style={{ width: 64, height: 64, borderRadius: 16, background: `linear-gradient(135deg,${T.seam},${T.seamDark})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, marginBottom: 24 }}>🧵</div>
-      <div style={{ fontSize: 18, fontWeight: 800, color: T.white, marginBottom: 8 }}>TechPack</div>
+      <div style={{ fontSize: 18, fontWeight: 800, color: T.white, marginBottom: 8 }}>ATLAS</div>
       <div style={{ fontSize: 13, color: "rgba(200,184,162,0.6)", marginBottom: 32 }}>{message || "Cargando..."}</div>
       <div style={{ display: "flex", gap: 6 }}>
         {[0, 1, 2].map((i) => (
@@ -704,7 +712,7 @@ function LoginScreen({ externalError }) {
       <div style={{ width: "100%", maxWidth: 420, position: "relative" }}>
         <div style={{ textAlign: "center", marginBottom: 40 }}>
           <div style={{ width: 64, height: 64, borderRadius: 16, background: `linear-gradient(135deg,${T.seam},${T.seamDark})`, margin: "0 auto 16px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, boxShadow: "0 8px 32px rgba(200,184,162,0.3)" }}>🧵</div>
-          <div style={{ fontSize: 28, fontWeight: 900, color: T.white, letterSpacing: "-0.5px" }}>TechPack</div>
+          <div style={{ fontSize: 28, fontWeight: 900, color: T.white, letterSpacing: "-0.5px" }}>ATLAS</div>
           <div style={{ fontSize: 13, color: "rgba(200,184,162,0.7)", marginTop: 4, letterSpacing: "0.1em", textTransform: "uppercase" }}>Sistema de Gestión</div>
         </div>
         <div style={{ background: "rgba(255,255,255,0.05)", backdropFilter: "blur(20px)", borderRadius: 20, padding: 36, border: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 24px 80px rgba(0,0,0,0.3)" }}>
@@ -733,7 +741,7 @@ function LoginScreen({ externalError }) {
           <button onClick={handleLogin} disabled={loading}
             style={{ width: "100%", padding: "13px", background: loading ? "rgba(200,184,162,0.3)" : `linear-gradient(135deg,${T.seam},${T.seamDark})`, border: "none", borderRadius: 10, color: T.ink, fontWeight: 800, fontSize: 15, cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit" }}
           >{loading ? "Verificando..." : "Ingresar →"}</button>
-          <div style={{ marginTop: 20, textAlign: "center" }}><span style={{ fontSize: 12, color: "rgba(200,184,162,0.4)" }}>TechPack © 2025</span></div>
+          <div style={{ marginTop: 20, textAlign: "center" }}><span style={{ fontSize: 12, color: "rgba(200,184,162,0.4)" }}>ATLAS © 2025</span></div>
         </div>
       </div>
     </div>
@@ -1747,6 +1755,9 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
               { label: "Etapa", value: stages.find((s) => s.id === item.currentStage)?.label },
               { label: "Días en etapa", value: `${daysAgo(item.stageStartedAt)}d` },
               { label: "Materiales BOM", value: item.bom.length },
+              ...(kind === "ref" && item.pedidoVinculado
+                ? [{ label: "Pedido Vinculado", value: `#${item.pedidoVinculado.numero}${item.pedidoVinculado.cliente ? ` — ${item.pedidoVinculado.cliente}` : ""}` }]
+                : []),
             ].map((it) => (
               <div key={it.label} style={{ padding: "12px 14px", background: T.canvas, borderRadius: 8 }}>
                 <div style={{ fontSize: 11, color: T.slate, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>{it.label}</div>
@@ -1861,7 +1872,7 @@ function Card({ item, kind, onClick, onPromote, role, perms, stages }) {
             {pending > 0 && <span style={{ fontSize: 10, background: T.amberBg, color: T.amber, padding: "1px 6px", borderRadius: 10, fontWeight: 700 }}>💬 {pending}</span>}
           </div>
           <div style={{ fontSize: 15, fontWeight: 800, color: T.ink }}>{item.name}</div>
-          {item.silueta && <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{item.silueta}{item.rango ? ` · ${item.rango}` : ""}</div>}
+          {(item.silueta || item.mes) && <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{item.silueta}{item.rango ? ` · ${item.rango}` : ""}{item.mes ? ` · ${item.mes}` : ""}</div>}
         </div>
         {overdue && <span style={{ color: T.coral, fontSize: 18 }}>⚑</span>}
       </div>
@@ -1888,6 +1899,7 @@ function Card({ item, kind, onClick, onPromote, role, perms, stages }) {
 function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas, stages, isAdmin, onDeleteProto, config, onCrearEnvio }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
+  const [mesFiltro, setMesFiltro] = useState("todos");
   const [confirmDel, setConfirmDel] = useState(null);
   // Selección múltiple para armar un envío/bitácora agrupado — solo tiene
   // sentido en la pestaña "Enviar al Cliente". Se limpia al cambiar de
@@ -1912,11 +1924,21 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
   // de Clientes de Administrador General, aunque el cliente no tuviera nada
   // pendiente, lo que hacía el desplegable innecesariamente largo.
   const clientesDisponibles = Object.keys(conteoPorCliente).sort((a, b) => a.localeCompare(b));
+  // Mismo criterio que clientesDisponibles pero por mes — solo meses con al
+  // menos un prototipo activo, ordenados por el orden calendario (MONTHS_ES)
+  // y no alfabético.
+  const conteoPorMes = {};
+  protosActivos.forEach((p) => {
+    if (!p.mes) return;
+    conteoPorMes[p.mes] = (conteoPorMes[p.mes] || 0) + 1;
+  });
+  const mesesDisponibles = MONTHS_ES.filter((m) => conteoPorMes[m] > 0);
   // "Todos" oculta Aprobados/Promovidos/Declinados para no saturar el tablero
   // (un prototipo promovido sigue con status "aprobado", así que basta con
   // excluir aprobado/declinado). Siguen disponibles en sus propias pestañas.
   const porEstado = filter === "todos" ? protos.filter((p) => !["aprobado", "declinado"].includes(p.status)) : protos.filter((p) => p.status === filter);
-  const filtered = clienteFiltro === "todos" ? porEstado : porEstado.filter((p) => (p.cliente || p.colores?.[0]) === clienteFiltro);
+  const porCliente = clienteFiltro === "todos" ? porEstado : porEstado.filter((p) => (p.cliente || p.colores?.[0]) === clienteFiltro);
+  const filtered = mesFiltro === "todos" ? porCliente : porCliente.filter((p) => p.mes === mesFiltro);
   return (
     <div>
       {confirmDel && (
@@ -1954,6 +1976,11 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
         <select value={clienteFiltro} onChange={(e) => setClienteFiltro(e.target.value)} style={{ padding: "7px 12px", border: `1.5px solid ${clienteFiltro !== "todos" ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: clienteFiltro !== "todos" ? T.denim : T.ink, background: clienteFiltro !== "todos" ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer" }}>
           <option value="todos">Todos ({protosActivos.length})</option>
           {clientesDisponibles.map((c) => <option key={c} value={c}>{c} ({conteoPorCliente[c] || 0})</option>)}
+        </select>
+        <span style={{ fontSize: 12, fontWeight: 700, color: T.slate, marginLeft: 8 }}>📅 Mes</span>
+        <select value={mesFiltro} onChange={(e) => setMesFiltro(e.target.value)} style={{ padding: "7px 12px", border: `1.5px solid ${mesFiltro !== "todos" ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: mesFiltro !== "todos" ? T.denim : T.ink, background: mesFiltro !== "todos" ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer" }}>
+          <option value="todos">Todos</option>
+          {mesesDisponibles.map((m) => <option key={m} value={m}>{m} ({conteoPorMes[m] || 0})</option>)}
         </select>
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
@@ -1995,6 +2022,7 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
 function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
+  const [mesFiltro, setMesFiltro] = useState("todos");
   const [editCap, setEditCap] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
   const [revisionCap, setRevisionCap] = useState(null);
@@ -2006,6 +2034,11 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
   // el modal).
   const [seleccionados, setSeleccionados] = useState({});
   const [envioCapsula, setEnvioCapsula] = useState(null);
+  // Cada cápsula arranca colapsada (solo se ve su nombre/encabezado) — clic
+  // en el encabezado despliega la grilla de referencias. `expandidas` guarda
+  // qué cápsulas están abiertas, por id.
+  const [expandidas, setExpandidas] = useState({});
+  function toggleExpandCapsula(capId) { setExpandidas((e) => ({ ...e, [capId]: !e[capId] })); }
   function cambiarFiltro(v) { setFilter(v); setSeleccionados({}); }
   function toggleSel(capId, refId) {
     setSeleccionados((s) => {
@@ -2070,13 +2103,22 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
   // de Clientes de Administrador General, aunque el cliente no tuviera nada
   // pendiente, lo que hacía el desplegable innecesariamente largo.
   const clientesDisponibles = Object.keys(conteoPorCliente).sort((a, b) => a.localeCompare(b));
+  // Mismo criterio que conteoPorCliente pero por mes — el mes vive a nivel de
+  // cápsula (no por referencia), así que se cuenta directo sobre cap.mes.
+  const conteoPorMes = {};
+  capsulasActivas.forEach((cap) => {
+    if (!cap.mes) return;
+    conteoPorMes[cap.mes] = (conteoPorMes[cap.mes] || 0) + 1;
+  });
+  const mesesDisponibles = MONTHS_ES.filter((m) => conteoPorMes[m] > 0);
   // "Todos" oculta referencias Aprobadas/Declinadas (y cápsulas que solo
   // tengan referencias en esos estados) para no saturar el tablero. Siguen
   // disponibles en las pestañas "Aprobadas"/"Declinadas". El filtro de
-  // cliente se combina (AND) con el de estado.
+  // cliente y el de mes se combinan (AND) con el de estado.
   function filteredRefs(cap) {
     let refs = filter === "todos" ? cap.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status)) : cap.referencias.filter((r) => r.status === filter);
     if (clienteFiltro !== "todos") refs = refs.filter((r) => refCliente(cap, r) === clienteFiltro);
+    if (mesFiltro !== "todos") refs = mesFiltro === cap.mes ? refs : [];
     return refs;
   }
   // Una cápsula recién creada empieza con referencias: [] — sin este OR
@@ -2115,6 +2157,11 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
           <option value="todos">Todos ({capsulasActivas.length})</option>
           {clientesDisponibles.map((c) => <option key={c} value={c}>{c} ({conteoPorCliente[c] || 0})</option>)}
         </select>
+        <span style={{ fontSize: 12, fontWeight: 700, color: T.slate, marginLeft: 8 }}>📅 Mes</span>
+        <select value={mesFiltro} onChange={(e) => setMesFiltro(e.target.value)} style={{ padding: "7px 12px", border: `1.5px solid ${mesFiltro !== "todos" ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: mesFiltro !== "todos" ? T.denim : T.ink, background: mesFiltro !== "todos" ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer" }}>
+          <option value="todos">Todos</option>
+          {mesesDisponibles.map((m) => <option key={m} value={m}>{m} ({conteoPorMes[m] || 0})</option>)}
+        </select>
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
         {FILTERS.map(([v, label]) => (
@@ -2141,9 +2188,10 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
         return (
           <div key={cap.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 20, overflow: "hidden" }}>
             <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, flexWrap: "wrap", gap: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div onClick={() => toggleExpandCapsula(cap.id)} title={expandidas[cap.id] ? "Clic para colapsar" : "Clic para ver las referencias"} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+                <span style={{ fontSize: 12, color: T.slate, width: 14, display: "inline-block" }}>{expandidas[cap.id] ? "▾" : "▸"}</span>
                 <span style={{ fontSize: 20 }}>🗂</span>
-                <div><div style={{ fontWeight: 800, fontSize: 16, color: T.ink }}>{cap.name}</div><div style={{ fontSize: 12, color: T.slate }}>{cap.cliente ? `${cap.cliente} · ` : ""}{cap.season} · {cap.referencias.length} ref · {cap.createdAt}{cap.assignedTo ? ` · 👤 ${cap.assignedTo}` : ""}</div></div>
+                <div><div style={{ fontWeight: 800, fontSize: 16, color: T.ink }}>{cap.name}</div><div style={{ fontSize: 12, color: T.slate }}>{cap.cliente ? `${cap.cliente} · ` : ""}{cap.mes ? `${cap.mes} · ` : ""}{cap.season} · {cap.referencias.length} ref · {cap.createdAt}{cap.assignedTo ? ` · 👤 ${cap.assignedTo}` : ""}</div></div>
               </div>
               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                 {od > 0 && <span style={{ padding: "3px 10px", background: T.coralBg, color: T.coral, borderRadius: 6, fontSize: 12, fontWeight: 700 }}>⚑ {od}</span>}
@@ -2181,7 +2229,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
                 {isAdmin && <Btn small variant="danger" onClick={() => setConfirmDel(cap)}>🗑 Borrar</Btn>}
               </div>
             </div>
-            {!refs.length ? (
+            {expandidas[cap.id] && (!refs.length ? (
               <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>Sin referencias con este filtro.</div>
             ) : (
               <div style={{ padding: 16, display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 12 }}>
@@ -2201,7 +2249,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
                   </div>
                 ))}
               </div>
-            )}
+            ))}
           </div>
         );
       })}
@@ -2410,6 +2458,32 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
       </div>
     );
   }
+  // Tablero Kanban: alternativa al calendario — una columna por estado
+  // (Sin asignar/Asignado/Modificar/Aprobado/Enviado) con TODAS las muestras
+  // de esa columna, sin importar fecha ni la pestaña Activas/Aprobadas
+  // (por eso esa pestaña se oculta mientras esta vista está activa).
+  function renderTablero() {
+    const cols = Object.entries(ESTADO_MUESTRA);
+    return (
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols.length},1fr)`, gap: 12, alignItems: "start" }}>
+        {cols.map(([estKey, def]) => {
+          const items = cronogramaMuestras
+            .filter((c) => (c.estado || "pendiente") === estKey)
+            .sort((a, b) => (a.fechaEntrega || "9999").localeCompare(b.fechaEntrega || "9999"));
+          return (
+            <div key={estKey} style={{ background: T.canvas, borderRadius: 10, padding: 10, minHeight: 120, border: `1px solid ${T.border}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <span style={{ fontSize: 11, fontWeight: 800, color: def.color, textTransform: "uppercase", letterSpacing: "0.04em" }}>{def.label}</span>
+                <span style={{ fontSize: 11, fontWeight: 800, color: def.color, background: def.bg, borderRadius: 10, padding: "1px 7px" }}>{items.length}</span>
+              </div>
+              {items.map(renderCard)}
+              {!items.length && <div style={{ fontSize: 10, color: T.border }}>—</div>}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
   const semanaMonday = addDays(mondayOf(hoy), weekOffset * 7);
   const mesBase = new Date(hoy.getFullYear(), hoy.getMonth() + monthOffset, 1);
   const mesInicioLunes = mondayOf(mesBase);
@@ -2443,24 +2517,28 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
         </div>
       )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        {vista !== "tablero" ? (
+          <div style={{ display: "flex", gap: 6 }}>
+            {[["activas", "Activas"], ["aprobadas", "✓ Aprobadas (Historial)"]].map(([v, label]) => (
+              <button key={v} onClick={() => setTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${tab === v ? T.denim : T.border}`, background: tab === v ? T.denimBg : T.white, color: tab === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
+            ))}
+          </div>
+        ) : <div />}
         <div style={{ display: "flex", gap: 6 }}>
-          {[["activas", "Activas"], ["aprobadas", "✓ Aprobadas (Historial)"]].map(([v, label]) => (
-            <button key={v} onClick={() => setTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${tab === v ? T.denim : T.border}`, background: tab === v ? T.denimBg : T.white, color: tab === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
-          ))}
-        </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          {[["semana", "Semana"], ["mes", "Mes"]].map(([v, label]) => (
+          {[["semana", "Semana"], ["mes", "Mes"], ["tablero", "🗂 Tablero"]].map(([v, label]) => (
             <button key={v} onClick={() => setVista(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${vista === v ? T.ink : T.border}`, background: vista === v ? T.ink : T.white, color: vista === v ? T.white : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
           ))}
         </div>
       </div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-        <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o - 1) : setMonthOffset((o) => o - 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>← Anterior</button>
-        <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, textTransform: "capitalize" }}>{rangoLabel}</div>
-        <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o + 1) : setMonthOffset((o) => o + 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>Siguiente →</button>
-      </div>
-      {vista === "semana" ? renderWeekRow(semanaMonday, "w") : semanasDelMes.map((m, i) => renderWeekRow(m, i))}
-      {sinFecha.length > 0 && (
+      {vista !== "tablero" && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o - 1) : setMonthOffset((o) => o - 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>← Anterior</button>
+          <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, textTransform: "capitalize" }}>{rangoLabel}</div>
+          <button onClick={() => (vista === "semana" ? setWeekOffset((o) => o + 1) : setMonthOffset((o) => o + 1))} style={{ padding: "6px 12px", background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: T.ink }}>Siguiente →</button>
+        </div>
+      )}
+      {vista === "tablero" ? renderTablero() : vista === "semana" ? renderWeekRow(semanaMonday, "w") : semanasDelMes.map((m, i) => renderWeekRow(m, i))}
+      {vista !== "tablero" && sinFecha.length > 0 && (
         <div style={{ marginTop: 20 }}>
           <div style={{ fontWeight: 800, fontSize: 13, color: T.slate, marginBottom: 10 }}>🗓 Sin fecha de entrega asignada ({sinFecha.length})</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 10 }}>
@@ -2468,7 +2546,8 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
           </div>
         </div>
       )}
-      {!visibles.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>{tab === "activas" ? "No hay muestras activas." : "Todavía no hay muestras aprobadas."}</div>}
+      {vista !== "tablero" && !visibles.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>{tab === "activas" ? "No hay muestras activas." : "Todavía no hay muestras aprobadas."}</div>}
+      {vista === "tablero" && !cronogramaMuestras.length && <div style={{ textAlign: "center", padding: 40, color: T.slate, fontSize: 14 }}>No hay muestras en el cronograma.</div>}
     </div>
   );
 }
@@ -2572,7 +2651,7 @@ async function exportBitacoraEnvioToExcel(envio) {
     { wch: 10 }, { wch: 10 }, { wch: 11 }, { wch: 10 }, { wch: 11 }, { wch: 10 }, { wch: 24 }, { wch: 4 }, { wch: 14 },
   ];
   ws["!rows"] = [{ hpt: 24 }, { hpt: 20 }, { hpt: 24 }, { hpt: 20 }, ...envio.items.map(() => ({ hpt: 36 }))];
-  // Colores de marca de TechPack (mismos tokens T.* que usa el resto de la
+  // Colores de marca de ATLAS (mismos tokens T.* que usa el resto de la
   // app): fondo oscuro + texto beige en los encabezados, filas de datos
   // alternadas para que sea más fácil seguir cada referencia, y un borde
   // fino en toda la tabla — igual a como se ve el "Informe de Seguimiento" y
@@ -2644,6 +2723,12 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
   const [busqueda, setBusqueda] = useState("");
   const [mesFiltro, setMesFiltro] = useState("");
   const [expandido, setExpandido] = useState(null);
+  // Envío puntual abierto en ventana de detalle (dentro del listado "Envíos
+  // incluidos en este grupo") — al agrupar por cápsula, esa lista muestra
+  // varios envíos idénticos a simple vista (misma fecha/transporte, cada uno
+  // de una sola referencia); con esto se ve la referencia en la fila y se
+  // puede abrir el detalle completo de ESE envío puntual con un clic.
+  const [envioDetalle, setEnvioDetalle] = useState(null);
   const hoy = new Date();
   const hoyIso = hoy.toISOString().slice(0, 10);
   function diasDesde(fechaISO) {
@@ -2682,15 +2767,58 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
       (!q || (e.coleccion || "").toLowerCase().includes(q) || (e.cliente || "").toLowerCase().includes(q) || (e.numPedido || "").toLowerCase?.().includes(q)) &&
       (!mesFiltro || mesDe(e) === mesFiltro)
   );
-  const porTab = subTab === "pendientes" ? base.filter((e) => e._pendientes > 0) : base;
-  const countProto = porTab.filter((e) => e._kind === "proto").length;
-  const countCapsula = porTab.filter((e) => e._kind === "ref").length;
+  // Agrupa por cápsula (mismo capsulaId) los envíos que se mandaron por
+  // separado — antes cada clic en "Enviado" de UNA sola referencia (desde su
+  // Detalle, en vez de usar "Enviar cápsula completa") creaba su propio
+  // registro en la Bitácora, y una misma cápsula terminaba repetida muchas
+  // veces si se fueron mandando las referencias en días distintos. Ahora se
+  // juntan todas bajo un solo folder por cápsula, sin importar cuándo se
+  // mandó cada una — al abrirlo se ve el detalle de cada envío incluido y
+  // todas las referencias juntas. Los prototipos NO se agrupan (cada envío
+  // de prototipo sigue siendo su propia fila, como antes).
+  const gruposMap = new Map();
+  base.forEach((e) => {
+    const capId = e._kind === "ref" ? e.items[0]?.capsulaId : null;
+    const key = capId ? `cap:${capId}` : e._kind === "ref" ? `col:${(e.coleccion || "").toLowerCase()}|${(e.cliente || "").toLowerCase()}` : `envio:${e.id}`;
+    if (!gruposMap.has(key)) gruposMap.set(key, []);
+    gruposMap.get(key).push(e);
+  });
+  const grupos = [...gruposMap.entries()].map(([key, enviosGrupo]) => {
+    const items = enviosGrupo.flatMap((e) => e.items.map((it) => ({ ...it, _envioId: e.id, _fechaEnviado: e.fechaEnviado, _empresaTransporte: e.empresaTransporte, _guia: e.guia })));
+    const totalUnidades = items.reduce((s, it) => s + (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0), 0);
+    const pendientesTotal = enviosGrupo.reduce((s, e) => s + e._pendientes, 0);
+    const diasVals = enviosGrupo.map((e) => e._dias).filter((d) => d !== null);
+    const diasMax = diasVals.length ? Math.max(...diasVals) : null;
+    const fechas = enviosGrupo.map((e) => e.fechaEnviado).filter(Boolean).sort();
+    const recibidos = enviosGrupo.filter((e) => e.fechaRecibidoCliente);
+    const cartaColores = enviosGrupo.find((e) => e.cartaColores)?.cartaColores || null;
+    return {
+      key,
+      coleccion: enviosGrupo[0].coleccion,
+      cliente: enviosGrupo[0].cliente,
+      numPedido: enviosGrupo[0].numPedido,
+      kind: enviosGrupo[0]._kind,
+      envios: enviosGrupo,
+      items,
+      totalUnidades,
+      pendientesTotal,
+      diasMax,
+      fechaMin: fechas[0],
+      fechaMax: fechas[fechas.length - 1],
+      recibidosCount: recibidos.length,
+      totalEnvios: enviosGrupo.length,
+      cartaColores,
+    };
+  });
+  const porTab = subTab === "pendientes" ? grupos.filter((g) => g.pendientesTotal > 0) : grupos;
+  const countProto = porTab.filter((g) => g.kind === "proto").length;
+  const countCapsula = porTab.filter((g) => g.kind === "ref").length;
   const filtrados = porTab
-    .filter((e) => kindFiltro === "todos" || e._kind === kindFiltro)
+    .filter((g) => kindFiltro === "todos" || g.kind === kindFiltro)
     .sort((a, b) =>
       subTab === "pendientes"
-        ? (b._dias ?? 0) - (a._dias ?? 0)
-        : (b.fechaEnviado || "").localeCompare(a.fechaEnviado || "") || (b.createdAt || "").localeCompare(a.createdAt || "")
+        ? (b.diasMax ?? 0) - (a.diasMax ?? 0)
+        : (b.fechaMax || "").localeCompare(a.fechaMax || "")
     );
   const mesActual = hoyIso.slice(0, 7);
   const declinadasEsteMes = (historial || []).filter((h) => h.resultado === "declinado" && h.mes === mesActual).length;
@@ -2698,6 +2826,64 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
   function labelMes(m) { return new Date(m + "-02").toLocaleDateString("es-CO", { month: "long", year: "numeric" }); }
   return (
     <div>
+      {envioDetalle && (
+        <Modal title={`Detalle del envío — ${envioDetalle.items.map((it) => it.referencia).filter(Boolean).join(", ") || "(sin referencia)"}`} onClose={() => setEnvioDetalle(null)} width={640}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12, marginBottom: 20 }}>
+            <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Fecha Enviado</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{envioDetalle.fechaEnviado || "—"}</div></div>
+            <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Empresa Transporte</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{envioDetalle.empresaTransporte || "—"}</div></div>
+            <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>N° Guía</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{envioDetalle.guia || "—"}</div></div>
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Fecha Recibido Cliente</div>
+              <input
+                type="date"
+                value={envioDetalle.fechaRecibidoCliente || ""}
+                onChange={(e) => { onUpdateEnvio(envioDetalle.id, { fechaRecibidoCliente: e.target.value }); setEnvioDetalle((d) => (d ? { ...d, fechaRecibidoCliente: e.target.value } : d)); }}
+                style={{ padding: "6px 10px", border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit" }}
+              />
+            </div>
+            {envioDetalle.cartaColores && (
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Carta de Colores</div>
+                <img src={envioDetalle.cartaColores} alt="Carta de colores" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, border: `1px solid ${T.border}` }} />
+              </div>
+            )}
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: T.ink }}>
+                  {["Foto", "Ref", "Nombre", "Estado Actual", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Obs. Cliente"].map((h) => (
+                    <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {envioDetalle.items.map((it, i) => {
+                  const live = liveItemFor(it);
+                  return (
+                    <tr key={it.itemId} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
+                      <td style={{ padding: "6px 10px" }}>{it.foto ? <img src={it.foto} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
+                      <td style={{ padding: "6px 10px", fontWeight: 700 }}>{it.referencia}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.nombre}</td>
+                      <td style={{ padding: "6px 10px" }}>{live ? <Badge status={live.status} /> : <span style={{ color: T.slate, fontStyle: "italic" }}>—</span>}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.categoria || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.silueta || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.rango || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.tela || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.colombiaCurva || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.colombiaCantidad || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.venezuelaCurva || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.venezuelaCantidad || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.precio || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{it.observacionesCliente || "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Modal>
+      )}
       {declinadasEsteMes > 0 && onGoHistorial && (
         <div
           onClick={onGoHistorial}
@@ -2745,76 +2931,98 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
             : "Ningún envío coincide con la búsqueda."}
         </div>
       )}
-      {filtrados.map((envio) => {
-        const abierto = expandido === envio.id;
-        const totalUnidades = envio.items.reduce((s, it) => s + (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0), 0);
+      {filtrados.map((g) => {
+        const abierto = expandido === g.key;
         return (
-          <div key={envio.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
+          <div key={g.key} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
             <div
-              onClick={() => setExpandido(abierto ? null : envio.id)}
+              onClick={() => setExpandido(abierto ? null : g.key)}
               style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, cursor: "pointer", flexWrap: "wrap", gap: 10 }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: 20 }}>{abierto ? "📂" : "📁"}</span>
                 <div>
                   <div style={{ fontWeight: 800, fontSize: 15, color: T.ink, display: "flex", alignItems: "center", gap: 8 }}>
-                    {envio.coleccion || "(Sin nombre de colección)"}
-                    <span style={{ fontSize: 10, fontWeight: 700, color: envio._kind === "proto" ? T.violet : T.denim, background: envio._kind === "proto" ? T.violetBg : T.denimBg, padding: "1px 8px", borderRadius: 10 }}>
-                      {envio._kind === "proto" ? "Prototipo" : "Cápsula"}
+                    {g.coleccion || "(Sin nombre de colección)"}
+                    <span style={{ fontSize: 10, fontWeight: 700, color: g.kind === "proto" ? T.violet : T.denim, background: g.kind === "proto" ? T.violetBg : T.denimBg, padding: "1px 8px", borderRadius: 10 }}>
+                      {g.kind === "proto" ? "Prototipo" : "Cápsula"}
                     </span>
                   </div>
-                  <div style={{ fontSize: 12, color: T.slate }}>{envio.cliente || "Sin cliente"} · {envio.items.length} ref · {fmtNum(totalUnidades)} unid. · Enviado {envio.fechaEnviado}{envio.numPedido ? ` · Pedido ${envio.numPedido}` : ""}</div>
+                  <div style={{ fontSize: 12, color: T.slate }}>
+                    {g.cliente || "Sin cliente"} · {g.items.length} ref · {fmtNum(g.totalUnidades)} unid. · Enviado {g.fechaMin === g.fechaMax ? g.fechaMin : `${g.fechaMin} – ${g.fechaMax}`}
+                    {g.totalEnvios > 1 ? ` · ${g.totalEnvios} envíos` : ""}
+                    {g.numPedido ? ` · Pedido ${g.numPedido}` : ""}
+                  </div>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                {envio._pendientes > 0 ? (
-                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: envio._dias >= 15 ? T.coralBg : T.amberBg, color: envio._dias >= 15 ? T.coral : T.amber }}>
-                    ⏳ {envio._pendientes} sin resolver · {envio._dias}d esperando
+                {g.pendientesTotal > 0 ? (
+                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: g.diasMax >= 15 ? T.coralBg : T.amberBg, color: g.diasMax >= 15 ? T.coral : T.amber }}>
+                    ⏳ {g.pendientesTotal} sin resolver{g.diasMax != null ? ` · ${g.diasMax}d esperando` : ""}
                   </span>
                 ) : (
                   <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✓ Todo resuelto</span>
                 )}
-                <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: envio.fechaRecibidoCliente ? T.jadeBg : T.amberBg, color: envio.fechaRecibidoCliente ? T.jade : T.amber }}>
-                  {envio.fechaRecibidoCliente ? `✓ Recibido ${envio.fechaRecibidoCliente}` : "⏳ Sin confirmar recibido"}
+                <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: g.recibidosCount === g.totalEnvios ? T.jadeBg : T.amberBg, color: g.recibidosCount === g.totalEnvios ? T.jade : T.amber }}>
+                  {g.recibidosCount === g.totalEnvios ? "✓ Recibido" : g.recibidosCount > 0 ? `⏳ ${g.recibidosCount}/${g.totalEnvios} recibidos` : "⏳ Sin confirmar recibido"}
                 </span>
-                <button onClick={(e) => { e.stopPropagation(); exportBitacoraEnvioToExcel(envio); }} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", background: "#217346", color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>📊 Exportar</button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    exportBitacoraEnvioToExcel({
+                      coleccion: g.coleccion, cliente: g.cliente, numPedido: g.numPedido,
+                      fechaEnviado: g.fechaMin === g.fechaMax ? g.fechaMin : `${g.fechaMin} – ${g.fechaMax}`,
+                      fechaRecibidoCliente: g.recibidosCount === g.totalEnvios ? (g.envios[0].fechaRecibidoCliente || "") : "",
+                      cartaColores: g.cartaColores, items: g.items,
+                    });
+                  }}
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px", background: "#217346", color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+                >📊 Exportar</button>
               </div>
             </div>
             {abierto && (
               <div style={{ padding: 20 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12, marginBottom: 20 }}>
-                  <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Empresa Transporte</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{envio.empresaTransporte || "—"}</div></div>
-                  <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>N° Guía</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{envio.guia || "—"}</div></div>
-                  <div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Fecha Recibido Cliente</div>
-                    <input
-                      type="date"
-                      value={envio.fechaRecibidoCliente || ""}
-                      onChange={(e) => onUpdateEnvio(envio.id, { fechaRecibidoCliente: e.target.value })}
-                      style={{ padding: "6px 10px", border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit" }}
-                    />
-                  </div>
-                  {envio.cartaColores && (
+                {g.totalEnvios > 1 ? null : (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 12, marginBottom: 20 }}>
+                    <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Empresa Transporte</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{g.envios[0].empresaTransporte || "—"}</div></div>
+                    <div><div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>N° Guía</div><div style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{g.envios[0].guia || "—"}</div></div>
                     <div>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Carta de Colores</div>
-                      <img src={envio.cartaColores} alt="Carta de colores" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, border: `1px solid ${T.border}` }} />
+                      <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Fecha Recibido Cliente</div>
+                      <input
+                        type="date"
+                        value={g.envios[0].fechaRecibidoCliente || ""}
+                        onChange={(e) => onUpdateEnvio(g.envios[0].id, { fechaRecibidoCliente: e.target.value })}
+                        style={{ padding: "6px 10px", border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit" }}
+                      />
                     </div>
-                  )}
-                </div>
+                    {g.cartaColores && (
+                      <div>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Carta de Colores</div>
+                        <img src={g.cartaColores} alt="Carta de colores" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, border: `1px solid ${T.border}` }} />
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                     <thead>
                       <tr style={{ background: T.ink }}>
-                        {["Foto", "Ref", "Nombre", "Estado Actual", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Obs. Cliente"].map((h) => (
+                        {[...(g.totalEnvios > 1 ? ["Enviado"] : []), "Foto", "Ref", "Nombre", "Estado Actual", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Obs. Cliente"].map((h) => (
                           <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {envio.items.map((it, i) => {
+                      {g.items.map((it, i) => {
                         const live = liveItemFor(it);
                         return (
-                          <tr key={it.itemId} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
+                          <tr
+                            key={`${it._envioId}__${it.itemId}`}
+                            onClick={() => setEnvioDetalle(g.envios.find((e) => e.id === it._envioId))}
+                            title="Ver detalle de este envío"
+                            style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}`, cursor: "pointer" }}
+                          >
+                            {g.totalEnvios > 1 && <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>{it._fechaEnviado || "—"}</td>}
                             <td style={{ padding: "6px 10px" }}>{it.foto ? <img src={it.foto} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
                             <td style={{ padding: "6px 10px", fontWeight: 700 }}>{it.referencia}</td>
                             <td style={{ padding: "6px 10px" }}>{it.nombre}</td>
@@ -2850,8 +3058,17 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
 // misma señal que ya usa Historial con el badge "🚫 Sin pedido", pero acá
 // presentada con el mismo formato de tabla (foto/ref/nombre/categoría/...)
 // que usa la Bitácora de Envíos, agrupada por cápsula.
-function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef }) {
+function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVincularPedido, currentUser }) {
   const [busqueda, setBusqueda] = useState("");
+  // Vincular a pedido a mano: cuando el cruce automático (por código exacto
+  // de referencia) no encuentra el pedido — por formato distinto del código,
+  // o porque el pedido quedó registrado bajo otro número tras reprogramarse
+  // en Congelado — se puede buscar el pedido real (mismos `pedidos` que usa
+  // Corte al Congelar, es la misma colección) y marcar la referencia como
+  // vinculada, sin tocar el pedido en sí. `vinculando` guarda {capId, refId}
+  // de la fila que está abierta para vincular; null si ninguna.
+  const [vinculando, setVinculando] = useState(null);
+  const [buscaPedido, setBuscaPedido] = useState("");
   function usedInPedido(refCode) {
     if (!refCode) return false;
     const target = String(refCode).trim().toLowerCase();
@@ -2861,13 +3078,61 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef }) {
   const capsulasConSinPedido = (capsulas || [])
     .map((cap) => ({
       cap,
-      refs: (cap.referencias || []).filter((r) => r.status === "aprobado" && !usedInPedido(r.reference)),
+      refs: (cap.referencias || []).filter((r) => r.status === "aprobado" && !usedInPedido(r.reference) && !r.pedidoVinculado),
     }))
     .filter(({ cap, refs }) => refs.length > 0 && (!q || (cap.name || "").toLowerCase().includes(q) || (cap.cliente || "").toLowerCase().includes(q)))
     .sort((a, b) => (a.cap.name || "").localeCompare(b.cap.name || ""));
   const totalRefs = capsulasConSinPedido.reduce((s, c) => s + c.refs.length, 0);
+  const bq = buscaPedido.trim().toLowerCase();
+  const pedidosEncontrados = bq
+    ? (pedidos || [])
+        .filter((p) => String(p.numero || "").toLowerCase().includes(bq) || (p.cliente || "").toLowerCase().includes(bq))
+        .slice(0, 30)
+    : [];
+  function confirmarVinculo(pedido) {
+    if (!vinculando) return;
+    onVincularPedido(vinculando.capId, vinculando.refId, {
+      pedidoVinculado: {
+        numero: pedido.numero,
+        cliente: pedido.cliente || "",
+        vinculadoPor: currentUser?.name || "",
+        vinculadoEn: nowISO(),
+      },
+    });
+    setVinculando(null);
+    setBuscaPedido("");
+  }
   return (
     <div>
+      {vinculando && (
+        <Modal title="Vincular a pedido" onClose={() => { setVinculando(null); setBuscaPedido(""); }} width={480}>
+          <p style={{ margin: "0 0 12px", fontSize: 13, color: T.slate }}>
+            Busca el pedido al que pertenece esta referencia. No se modifica el pedido — solo se marca la referencia como vinculada y deja de salir en esta Bitácora.
+          </p>
+          <input
+            autoFocus
+            value={buscaPedido}
+            onChange={(e) => setBuscaPedido(e.target.value)}
+            placeholder="Buscar por número de pedido o cliente..."
+            style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, outline: "none", fontFamily: "inherit", marginBottom: 12, boxSizing: "border-box" }}
+          />
+          <div style={{ maxHeight: 320, overflowY: "auto" }}>
+            {bq && !pedidosEncontrados.length && (
+              <div style={{ textAlign: "center", padding: 20, color: T.slate, fontSize: 13 }}>No se encontró ningún pedido con eso.</div>
+            )}
+            {pedidosEncontrados.map((p) => (
+              <div
+                key={p.id}
+                onClick={() => confirmarVinculo(p)}
+                style={{ padding: "10px 12px", borderRadius: 8, border: `1px solid ${T.border}`, marginBottom: 6, cursor: "pointer", background: T.canvas }}
+              >
+                <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>Pedido #{p.numero}</div>
+                <div style={{ fontSize: 12, color: T.slate }}>{p.cliente || "Sin cliente"}{p.fechaPedido ? ` · ${p.fechaPedido}` : ""}{p.estado === "cerrado" ? " · Cerrado" : ""}</div>
+              </div>
+            ))}
+          </div>
+        </Modal>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Bitácora de Aprobados sin Pedido</h2>
@@ -2895,7 +3160,7 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
                 <tr style={{ background: T.ink }}>
-                  {["Foto", "Ref", "Nombre", "Categoría", "Silueta", "Rango", "Tela"].map((h) => (
+                  {["Foto", "Ref", "Nombre", "Categoría", "Silueta", "Rango", "Tela", ""].map((h) => (
                     <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
@@ -2904,16 +3169,23 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef }) {
                 {refs.map((r, i) => (
                   <tr
                     key={r.id}
-                    onClick={() => onSelectRef && onSelectRef(cap.id, r.id)}
-                    style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}`, cursor: onSelectRef ? "pointer" : "default" }}
+                    style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}
                   >
-                    <td style={{ padding: "6px 10px" }}>{r.image ? <img src={r.image} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
-                    <td style={{ padding: "6px 10px", fontWeight: 700 }}>{r.reference || "—"}</td>
-                    <td style={{ padding: "6px 10px" }}>{r.name || "—"}</td>
-                    <td style={{ padding: "6px 10px" }}>{r.categoria || "—"}</td>
-                    <td style={{ padding: "6px 10px" }}>{r.silueta || "—"}</td>
-                    <td style={{ padding: "6px 10px" }}>{r.rango || r.tallas?.[0] || "—"}</td>
-                    <td style={{ padding: "6px 10px" }}>{r.tipoTela || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.image ? <img src={r.image} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", fontWeight: 700, cursor: onSelectRef ? "pointer" : "default" }}>{r.reference || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.name || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.categoria || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.silueta || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.rango || r.tallas?.[0] || "—"}</td>
+                    <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.tipoTela || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>
+                      <button
+                        onClick={() => setVinculando({ capId: cap.id, refId: r.id })}
+                        style={{ background: T.denimBg, border: "none", borderRadius: 6, padding: "4px 8px", color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}
+                      >
+                        🔗 Vincular a pedido
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -3414,7 +3686,7 @@ function KPIsView({ areas, puestos, personas, catalogo, registros, isAdmin, onAd
     </div>
   );
 }
-function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms, stages, isAdmin, onBackfill, onSelectProto, onSelectRef, onPromote, initialResultado, initialTipoFiltro }) {
+function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms, stages, isAdmin, onBackfill, onSelectProto, onSelectRef, onPromote, initialResultado, initialTipoFiltro, onVincularPedido, currentUser }) {
   const [modo, setModo] = useState("todos");
   const [clienteSel, setClienteSel] = useState("");
   const [resultado, setResultado] = useState(initialResultado || "todos");
@@ -3422,6 +3694,23 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
   const [mesFiltro, setMesFiltro] = useState("");
   const [soloSinPedido, setSoloSinPedido] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
+  // Vincular a pedido a mano, igual que en la Bitácora de Aprobados sin
+  // Pedido — `vinculando` guarda {capId, refId} de la fila abierta (solo
+  // aplica a referencias de cápsula, los prototipos no tienen este flujo).
+  const [vinculando, setVinculando] = useState(null);
+  const [buscaPedido, setBuscaPedido] = useState("");
+  const bqHist = buscaPedido.trim().toLowerCase();
+  const pedidosEncontradosHist = bqHist
+    ? (pedidos || []).filter((p) => String(p.numero || "").toLowerCase().includes(bqHist) || (p.cliente || "").toLowerCase().includes(bqHist)).slice(0, 30)
+    : [];
+  function confirmarVinculoHist(pedido) {
+    if (!vinculando) return;
+    onVincularPedido(vinculando.capId, vinculando.refId, {
+      pedidoVinculado: { numero: pedido.numero, cliente: pedido.cliente || "", vinculadoPor: currentUser?.name || "", vinculadoEn: nowISO() },
+    });
+    setVinculando(null);
+    setBuscaPedido("");
+  }
   // Cápsulas expandidas en la vista de lista (solo aplica cuando el filtro
   // de tipo es "capsula_ref"): en vez de listar cada referencia suelta, se
   // agrupan por cápsula y solo se despliegan las referencias de la cápsula
@@ -3452,6 +3741,14 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     const target = String(refCode).trim().toLowerCase();
     return (pedidos || []).some((p) => (p.referencias || []).some((r) => String(r.ref || "").trim().toLowerCase() === target));
   }
+  // Igual que usedInPedido, pero también cuenta como "con pedido" una
+  // referencia vinculada a mano (item.pedidoVinculado) desde la Bitácora de
+  // Aprobados sin Pedido o desde aquí mismo — el cruce automático por código
+  // exacto no siempre encuentra el pedido (formato distinto, o reprogramado
+  // bajo otro número en Congelado).
+  function tienePedido(item) {
+    return usedInPedido(item.reference) || !!item.pedidoVinculado;
+  }
   // Une cada entrada de historial con su ítem vivo (omite las que ya no
   // tienen ítem, p.ej. si se eliminó), dedupe por itemId quedándose con la
   // entrada más reciente, filtra "sin pedido" si el toggle está activo, y
@@ -3465,7 +3762,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
       if (!prev || h.fecha > prev.h.fecha) porItem.set(h.itemId, { h, item });
     });
     let arr = [...porItem.values()];
-    if (soloSinPedido) arr = arr.filter(({ h, item }) => h.resultado === "aprobado" && !usedInPedido(item.reference));
+    if (soloSinPedido) arr = arr.filter(({ h, item }) => h.resultado === "aprobado" && !tienePedido(item));
     return arr.sort((a, b) => b.h.fecha.localeCompare(a.h.fecha));
   }
   // Fila compacta de un ítem (sin imagen): nombre, referencia, cliente/fecha
@@ -3473,7 +3770,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
   // imagen). Se reutiliza tanto en la lista plana como dentro de cada
   // cápsula desplegada.
   function renderRow(h, item) {
-    const sinPedido = h.resultado === "aprobado" && !usedInPedido(item.reference);
+    const sinPedido = h.resultado === "aprobado" && !tienePedido(item);
     return (
       <div key={h.id} onClick={() => (h.tipo === "proto" ? onSelectProto(item.id) : onSelectRef(h.capsulaId, item.id))}
         style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: T.white, cursor: "pointer" }}
@@ -3489,6 +3786,14 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
           </div>
           <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{h.cliente}{h.fecha ? ` · ${h.fecha}` : ""}</div>
         </div>
+        {sinPedido && h.tipo !== "proto" && (
+          <button
+            onClick={(e) => { e.stopPropagation(); setVinculando({ capId: h.capsulaId, refId: item.id }); }}
+            style={{ background: T.denimBg, border: "none", borderRadius: 6, padding: "4px 8px", color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}
+          >
+            🔗 Vincular
+          </button>
+        )}
         <Badge status={item.status} />
         <span style={{ color: T.slate, fontSize: 14, flexShrink: 0 }}>›</span>
       </div>
@@ -3518,7 +3823,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
             const cap = capsulas.find((c) => c.id === capId);
             const refs = porCap.get(capId);
             const expanded = expandedCaps.has(capId);
-            const sinPedidoCount = refs.filter(({ h, item }) => h.resultado === "aprobado" && !usedInPedido(item.reference)).length;
+            const sinPedidoCount = refs.filter(({ h, item }) => h.resultado === "aprobado" && !tienePedido(item)).length;
             return (
               <div key={capId} style={{ background: T.white, borderRadius: 10, border: `1px solid ${T.border}`, overflow: "hidden" }}>
                 <div onClick={() => toggleCap(capId)}
@@ -3569,6 +3874,35 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
   const clientesOrdenadosTodos = Object.keys(porClienteTodos).sort((a, b) => a.localeCompare(b));
   return (
     <div>
+      {vinculando && (
+        <Modal title="Vincular a pedido" onClose={() => { setVinculando(null); setBuscaPedido(""); }} width={480}>
+          <p style={{ margin: "0 0 12px", fontSize: 13, color: T.slate }}>
+            Busca el pedido al que pertenece esta referencia. No se modifica el pedido — solo se marca la referencia como vinculada y deja de mostrar "Sin pedido".
+          </p>
+          <input
+            autoFocus
+            value={buscaPedido}
+            onChange={(e) => setBuscaPedido(e.target.value)}
+            placeholder="Buscar por número de pedido o cliente..."
+            style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, outline: "none", fontFamily: "inherit", marginBottom: 12, boxSizing: "border-box" }}
+          />
+          <div style={{ maxHeight: 320, overflowY: "auto" }}>
+            {bqHist && !pedidosEncontradosHist.length && (
+              <div style={{ textAlign: "center", padding: 20, color: T.slate, fontSize: 13 }}>No se encontró ningún pedido con eso.</div>
+            )}
+            {pedidosEncontradosHist.map((p) => (
+              <div
+                key={p.id}
+                onClick={() => confirmarVinculoHist(p)}
+                style={{ padding: "10px 12px", borderRadius: 8, border: `1px solid ${T.border}`, marginBottom: 6, cursor: "pointer", background: T.canvas }}
+              >
+                <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>Pedido #{p.numero}</div>
+                <div style={{ fontSize: 12, color: T.slate }}>{p.cliente || "Sin cliente"}{p.fechaPedido ? ` · ${p.fechaPedido}` : ""}{p.estado === "cerrado" ? " · Cerrado" : ""}</div>
+              </div>
+            ))}
+          </div>
+        </Modal>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Historial</h2>
@@ -3625,19 +3959,24 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     </div>
   );
 }
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessDiseno, canAccessKpis, onGoArea, protos, capsulas, pedidos }) {
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canAccessKpis, canAccessInformes, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
   const pedidosVencidos = pedidos.filter((p) => p.fechaDespacho && new Date(p.fechaDespacho) < hoy && p.estado !== "cerrado").length;
   const AREAS_CARDS = [
     {
-      id: "diseno", icon: "🎨", label: "Diseño", desc: "Prototipos, Cápsulas, Pedidos, Corte y seguimiento de producción", color: T.denim, bg: T.denimBg,
-      stats: [{ label: "Prototipos activos", value: protosEnProceso }, { label: "Pedidos activos", value: pedidosActivos, alert: pedidosVencidos > 0 }],
+      id: "diseno", icon: "🎨", label: "Diseño", desc: "Prototipos, Cápsulas y seguimiento del proceso de diseño", color: T.denim, bg: T.denimBg,
+      stats: [{ label: "Prototipos activos", value: protosEnProceso }],
       // Antes: perms.editar || perms.aprobar || perms.declinar — mezclaba permisos de
       // flujo de trabajo con visibilidad de módulo. Ahora usa el acceso granular real
       // (si al menos una sección de Diseño está habilitada para el rol).
       permiso: canAccessDiseno,
+    },
+    {
+      id: "pedidos_area", icon: "🧾", label: "Pedidos", desc: "Pedidos cargados de Busint, por cliente, administración y Corte", color: T.denim, bg: T.denimBg,
+      stats: [{ label: "Pedidos activos", value: pedidosActivos, alert: pedidosVencidos > 0 }],
+      permiso: canAccessPedidosArea,
     },
     {
       id: "contabilidad_area", icon: "💰", label: "Contabilidad", desc: "Flujo de caja, informes financieros y control contable", color: T.jade, bg: T.jadeBg,
@@ -3657,9 +3996,24 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
       permiso: canAccessPlanta,
     },
     {
+      id: "bodega_area", icon: "📦", label: "Bodega", desc: "Despachos y abonos de Venezuela — montar, aprobar y llevar el saldo", color: T.violet, bg: T.violetBg,
+      stats: [],
+      permiso: canAccessBodega,
+    },
+    {
+      id: "nomina_area", icon: "👷", label: "Nómina", desc: "Producción por proceso, horas sueltas y resumen semanal de pago", color: T.amber, bg: T.amberBg,
+      stats: [],
+      permiso: canAccessNomina,
+    },
+    {
       id: "kpis_area", icon: "🎯", label: "KPIs", desc: "Indicadores por área y persona en toda la compañía — Diseño, Corte, Ventas, Contabilidad, Planeación...", color: T.coral, bg: T.coralBg,
       stats: [],
       permiso: canAccessKpis,
+    },
+    {
+      id: "informes_area", icon: "📋", label: "Informes", desc: "Lo que está vencido en cada área, en vivo — la misma info que manda el aviso automático por correo", color: T.coral, bg: T.coralBg,
+      stats: [],
+      permiso: canAccessInformes,
     },
   ].filter((a) => a.permiso);
   return (
@@ -4222,7 +4576,7 @@ function EditNombreModal({ item, tipo, config, onSave, onClose }) {
 function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState(null);
-  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false });
+  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "" });
   const [changePwdId, setChangePwdId] = useState(null);
   const [newPwd, setNewPwd] = useState("");
   const [showPwd, setShowPwd] = useState(false);
@@ -4257,8 +4611,8 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
     }
     setMigrando(false);
   }
-  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false }); setEditUser(null); setShowForm(true); setError(""); }
-  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin }); setEditUser(u); setShowForm(true); setError(""); }
+  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "" }); setEditUser(null); setShowForm(true); setError(""); }
+  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", email: u.email || "" }); setEditUser(u); setShowForm(true); setError(""); }
   // Crear usuario nuevo pasa por la Cloud Function `adminCrearUsuario` (Fase
   // B): a diferencia de editar, crear SÍ necesita generar una cuenta real de
   // Firebase Auth para que esa persona pueda entrar — eso no lo puede hacer
@@ -4273,19 +4627,21 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
     setError("");
     if (editUser) {
       if (!form.name) { setError("El nombre es obligatorio."); return; }
+      if (form.email && form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) { setError("El correo no parece válido."); return; }
       const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, avatar } : u)));
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", email: form.email ? form.email.trim() : "", avatar } : u)));
       setShowForm(false);
       return;
     }
     if (!form.name || !form.username || !form.password) { setError("Todos los campos son obligatorios."); return; }
     if (form.password.length < 6) { setError("La contraseña debe tener al menos 6 caracteres."); return; }
+    if (form.email && form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) { setError("El correo no parece válido."); return; }
     const dup = users.find((u) => u.username === form.username.toLowerCase());
     if (dup) { setError("Ese usuario ya existe."); return; }
     setCreando(true);
     try {
       const llamar = httpsCallable(functionsClient, "adminCrearUsuario");
-      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin });
+      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado, email: form.email ? form.email.trim() : "" });
       setShowForm(false);
     } catch (err) {
       setError(err?.message || "No se pudo crear el usuario.");
@@ -4385,6 +4741,19 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
                 {roleOptions.map((r) => <option key={r} value={r}>{r}</option>)}
               </select>
             </div>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Correo (opcional)</label>
+              <input type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} placeholder="nombre@empresa.com" style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+              <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Para poder mandarle avisos por correo (ej. prototipos/cápsulas vencidos).</div>
+            </div>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Cliente asociado (opcional)</label>
+              <select value={form.clienteAsociado} onChange={(e) => setForm((f) => ({ ...f, clienteAsociado: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
+                <option value="">— Ninguno (ve todos los clientes) —</option>
+                {(config.clientes || []).map((c) => <option key={c.nombre} value={c.nombre}>{c.nombre}</option>)}
+              </select>
+              <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Si eliges un cliente, este usuario solo verá prototipos, cápsulas, pedidos y estadísticas de ese cliente.</div>
+            </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
             <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: T.ink, fontWeight: 600 }}>
@@ -4422,7 +4791,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
                 {u.isAdmin && <span style={{ padding: "2px 8px", borderRadius: 4, background: T.ink, color: T.seam, fontSize: 10, fontWeight: 800 }}>ADMIN</span>}
                 <span style={{ padding: "2px 8px", borderRadius: 4, background: u.role === "Cliente" ? T.violetBg : T.denimBg, color: u.role === "Cliente" ? T.violet : T.denim, fontSize: 10, fontWeight: 700 }}>{u.role}</span>
               </div>
-              <div style={{ fontSize: 12, color: T.slate, marginTop: 3 }}>@{u.username}</div>
+              <div style={{ fontSize: 12, color: T.slate, marginTop: 3 }}>@{u.username}{u.email ? ` · ${u.email}` : ""}</div>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <button onClick={() => setChangePwdId(u.id)} style={{ padding: "6px 12px", background: T.amberBg, border: `1px solid ${T.amber}44`, borderRadius: 8, color: T.amber, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>🔑 Clave</button>
@@ -4745,7 +5114,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // KPIs ahora es un módulo de compañía completo (no solo Diseño — cubre
   // Corte, Ventas, Contabilidad, Planeación, etc.), por eso su permiso vive
   // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
-  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["kpis", "🎯 KPIs"]];
+  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["kpis", "🎯 KPIs"], ["informes", "📋 Informes"]];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
   function ListEditor({ listKey, title }) {
     return (
@@ -4846,7 +5215,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                       <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{r.name}</div>
                       <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10, marginBottom: 4 }}>Permisos de flujo de trabajo</div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte"].map((perm) => (
+                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte", "aprobar_despacho"].map((perm) => (
                           <span key={perm} onClick={() => onUpdateConfig({ roles: config.roles.map((x) => (x.id !== r.id ? x : { ...x, perms: x.perms.includes(perm) ? x.perms.filter((p) => p !== perm) : [...x.perms, perm] })) })}
                             style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: r.perms.includes(perm) ? T.jadeBg : "#EDEDF2", color: r.perms.includes(perm) ? T.jade : T.slate, border: `1px solid ${r.perms.includes(perm) ? T.jade : T.border}` }}
                           >{perm}</span>
@@ -5536,7 +5905,7 @@ function AdminPedidosView({ pedidoConfig, onSave, config, onSaveConfig }) {
 // `getPedidosVigentesBusint` esté desplegada y los secrets BUSINT_TOKEN /
 // BUSINT_BASE_URL ya configurados (los mismos que usa la sincronización
 // automática cada 6 horas) — ver README_BUSINT_SYNC.md.
-function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
+function InformeVigentesBusintView({ isAdmin, pedidosActivos, currentUser }) {
   const [fechaInicio, setFechaInicio] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
@@ -5665,7 +6034,7 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
     setSubiendoVP(true);
     try {
       const { porPedido, porReferencia } = await parseVentasPerdidasBusint(file);
-      await fsSave("ventas_perdidas_cargas", uid(), { creadoEn: today(), creadoTs: Date.now(), filas: porPedido, filasPorRef: porReferencia });
+      await fsSave("ventas_perdidas_cargas", uid(), { creadoEn: today(), creadoTs: Date.now(), subidoPor: currentUser?.name || "—", filas: porPedido, filasPorRef: porReferencia });
     } catch (err) {
       setError(err?.message || "No se pudo leer el archivo. Verifica que sea el reporte de Ventas Perdidas de Busint (.xlsx).");
     }
@@ -5695,14 +6064,64 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
       for (const p of vigentesFiltrados) {
         const numero = String(p.numero).trim();
         const existente = existentesPorNumero.get(numero);
-        const precioPorRef = new Map((existente?.referencias || []).map((r) => [r.ref, r.precioCortePrenda || 0]));
+        // Una misma referencia (código `ref`) puede traer VARIOS colores —
+        // lo que distingue a cada color es la descripción, no el ref. Usar
+        // solo `r.ref` como clave (como se hacía antes) colapsaba todos los
+        // colores de una misma referencia sobre el mismo precio/id: el
+        // último color procesado pisaba a los demás, y tras "Congelar" todos
+        // los colores de esa referencia terminaban compartiendo el MISMO id
+        // interno — por eso, al marcar la talla de un color en Programar, se
+        // marcaban también las tallas de los demás colores (comparten id).
+        // La clave correcta es ref + descripción (el color).
+        //
+        // OJO: la descripción llega como "PINTA · COLOR" (ej. "G · AZUL
+        // CLARO") — PINTA es el código corto y estable de Busint para ese
+        // color, COLOR es el nombre libre, que Busint a veces corrige o
+        // escribe distinto entre una sincronización y otra (ej. pasó de "G ·
+        // AZUL BEBE" a "G · AZUL CLARO", mismo color físico). Usar el texto
+        // completo como clave hacía que ese cambio de nombre generara una
+        // identidad nueva para el color — el corte real ya registrado
+        // (ligado al id viejo) quedaba huérfano y el color volvía a aparecer
+        // como pendiente aunque ya se hubiera cortado (bug real: pedido
+        // #1474, ref 82-511, color G). Por eso la clave usa solo la PINTA
+        // (la parte antes de " · "), que es la que de verdad identifica el
+        // color de forma estable — el nombre puede cambiar sin romper el
+        // enlace con lo ya cortado.
+        const claveColor = (r) => `${r.ref}__${(r.descripcion || "").split(" · ")[0].trim()}`;
+        const precioPorRef = new Map((existente?.referencias || []).map((r) => [claveColor(r), r.precioCortePrenda || 0]));
+        // El reporte de Busint nunca trae un id propio para cada referencia
+        // (r.id siempre llega vacío), así que sin esto se generaba un uid()
+        // NUEVO en cada recarga — incluso para referencias que ya existían.
+        // Programación de Mesones y los cortes ya registrados guardan el id
+        // de la referencia (refId), así que al cambiar ese id en cada
+        // "Congelar" perdían con qué referencia coincidir y desaparecían de
+        // la pantalla. Reutilizamos el id ya guardado (buscado por ref+color,
+        // igual que ya se hace con el precio) y solo generamos uno nuevo si
+        // la referencia es realmente nueva.
+        // Saneamiento: si el bug anterior ya dejó dos colores compartiendo
+        // el mismo id (ej. 7 colores de una referencia con el mismo id
+        // interno), aquí solo el PRIMERO que aparece se queda con ese id —
+        // a los demás, aunque tengan un id guardado, no se les reutiliza (se
+        // les genera uno nuevo abajo) para separarlos de una vez. Esto puede
+        // hacer que la Programación de Mesones ya guardada para esos colores
+        // "extra" quede huérfana, igual que la vez pasada — es el costo de
+        // reparar la colisión.
+        const idsYaUsados = new Set();
+        const idPorRef = new Map();
+        (existente?.referencias || []).forEach((r) => {
+          const clave = claveColor(r);
+          if (r.id && !idsYaUsados.has(r.id)) {
+            idPorRef.set(clave, r.id);
+            idsYaUsados.add(r.id);
+          }
+        });
         const referencias = (p.referencias || []).map((r) => ({
-          id: r.id || uid(),
+          id: idPorRef.get(claveColor(r)) || r.id || uid(),
           ref: r.ref,
           descripcion: r.descripcion,
           tallas: { ...r.tallas },
           total: r.total,
-          precioCortePrenda: precioPorRef.get(r.ref) || 0,
+          precioCortePrenda: precioPorRef.get(claveColor(r)) || 0,
         }));
         const doc = {
           id: numero,
@@ -5913,7 +6332,7 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos }) {
       </div>
       {ultimaCargaVP && (
         <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>
-          Último reporte de Ventas Perdidas subido: {ultimaCargaVP.creadoEn} — se usa automáticamente para ocultar de esta lista los pedidos que Busint ya marca "Cumplido" ahí.
+          Último reporte de Ventas Perdidas subido: {ultimaCargaVP.creadoEn}{ultimaCargaVP.subidoPor ? ` · Subido por ${ultimaCargaVP.subidoPor}` : ""} — se usa automáticamente para ocultar de esta lista los pedidos que Busint ya marca "Cumplido" ahí.
         </div>
       )}
       {ultimaCargaPlaneacion && (
@@ -6364,7 +6783,7 @@ function motivoCierreInfo(motivo) {
   }
 }
 
-function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, pedidoConfig, onSavePedidoConfig, isAdmin }) {
+function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, pedidoConfig, onSavePedidoConfig, isAdmin, currentUser }) {
   const [filtro, setFiltro] = useState("activos");
   const [editPedido, setEditPedido] = useState(null);
   const activos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado");
@@ -6435,7 +6854,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           <button key={v} onClick={() => setFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filtro === v ? T.ink : T.border}`, background: filtro === v ? T.ink : T.white, color: filtro === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
-      {filtro === "vigentes_busint" && <InformeVigentesBusintView isAdmin={isAdmin} pedidosActivos={pedidos} />}
+      {filtro === "vigentes_busint" && <InformeVigentesBusintView isAdmin={isAdmin} pedidosActivos={pedidos} currentUser={currentUser} />}
       {filtro === "activos" && lista.length > 0 && (
         <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, overflow: "hidden", marginBottom: 16 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -6531,6 +6950,25 @@ function AppInner() {
   const [historial, setHistorial] = useState([]);
   const [cronogramaMuestras, setCronogramaMuestras] = useState([]);
   const [pedidos, setPedidos] = useState([]);
+  // Cliente asociado (opcional) del usuario logueado — cuentas de acceso
+  // restringido a UN cliente puntual, para que ese cliente no vea el
+  // trabajo que se hace para otros. Se filtran acá, una sola vez, las
+  // mismas listas base que alimentan todo el módulo de Diseño (Prototipos,
+  // Cápsulas, Pedidos, Pedidos por Cliente, Estadísticas, Historial,
+  // Bitácora y Cronograma de Muestras), así que basta con usar las
+  // versiones "Visibles" en cada pantalla para que la restricción aplique
+  // en todas a la vez. Si el usuario no tiene cliente asociado, ve todo
+  // igual que hoy.
+  const clienteAsociado = currentUser?.clienteAsociado || "";
+  function capsulaCliente(cap) {
+    if (cap.cliente) return cap.cliente;
+    const conRef = (cap.referencias || []).find((r) => r.cliente || r.colores?.[0]);
+    return conRef ? (conRef.cliente || conRef.colores?.[0]) : null;
+  }
+  const protosVisibles = clienteAsociado ? protos.filter((p) => (p.cliente || p.colores?.[0]) === clienteAsociado) : protos;
+  const capsulasVisibles = clienteAsociado ? capsulas.filter((cap) => capsulaCliente(cap) === clienteAsociado) : capsulas;
+  const pedidosVisibles = clienteAsociado ? pedidos.filter((p) => p.cliente === clienteAsociado) : pedidos;
+  const cronogramaMuestrasVisibles = clienteAsociado ? cronogramaMuestras.filter((c) => c.cliente === clienteAsociado) : cronogramaMuestras;
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
   const [bitacoraEnvios, setBitacoraEnvios] = useState([]);
   // Al entrar a Historial desde el enlace "❌ N declinadas" de Bitácora, se
@@ -7088,6 +7526,10 @@ function AppInner() {
     // antes de que cuente como confirmado) — separado de "aprobar" genérico
     // para no mezclarlo con la aprobación de Pedidos/Prototipos.
     aprobarCorte: userRoleData?.perms?.includes("aprobar_corte") ?? false,
+    // Permiso dedicado para aprobar despachos en módulo Bodega (revisa lo que
+    // la persona de bodega montó) — separado de "admin" para poder asignarlo
+    // a alguien puntual sin darle el resto de permisos de administrador.
+    aprobarDespacho: userRoleData?.perms?.includes("aprobar_despacho") ?? false,
   };
   // Visibilidad de módulos, decidida sección por sección con moduloVisible en
   // vez de reutilizar directamente perms.corte / perms.admin — así cada
@@ -7107,6 +7549,12 @@ function AppInner() {
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
   const canAccessPlaneacion = moduloVisible(userRoleData, "planeacion", currentUser?.isAdmin);
   const canAccessPlanta = moduloVisible(userRoleData, "planta", currentUser?.isAdmin);
+  const canAccessBodega = moduloVisible(userRoleData, "bodega", currentUser?.isAdmin);
+  const canAccessNomina = moduloVisible(userRoleData, "nomina", currentUser?.isAdmin);
+  // Informes: vista consolidada de "lo que está vencido" en toda la
+  // compañía (hoy solo Diseño, se va ampliando a Bodega/Corte/Contabilidad).
+  // Es la contraparte en pantalla del aviso automático por correo.
+  const canAccessInformes = moduloVisible(userRoleData, "informes", currentUser?.isAdmin);
   // "admin_diseno" es un permiso aparte del admin general: da entrada al panel
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
@@ -7114,7 +7562,18 @@ function AppInner() {
   // KPIs ya NO cuenta para canAccessDiseno — es su propia área de nivel
   // superior en el menú (ver AREAS abajo), porque cubre toda la compañía
   // (Corte, Ventas, Contabilidad, Planeación...), no solo Diseño.
-  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessPedidos || canAccessPedidosClientes || canAccessStats || canAccessHistorial || canAccessCronograma || canAccessBitacora || canAccessCorte || canAccessAdminDiseno || !!currentUser?.isAdmin;
+  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessStats || canAccessHistorial || canAccessCronograma || canAccessBitacora || canAccessAdminDiseno || !!currentUser?.isAdmin;
+  // Pedidos (Pedidos, Clientes, Admin Pedidos) tenía sus 3 secciones
+  // dispersas dentro del menú de Diseño, mezcladas con Prototipos/Historial/
+  // Bitácoras/Corte — quedaba desordenado. Ahora es su propia área de nivel
+  // superior, igual que Contabilidad/Planeación/Planta/Bodega, con las 3
+  // secciones juntas ahí dentro. A diferencia de esas otras áreas (que son
+  // módulos externos con su propio moduloActivo), Pedidos sigue usando el
+  // mecanismo normal de "view" — igual que KPIs. Corte también se movió para
+  // acá: trabaja directo sobre los mismos pedidos (pedidos_activos es la
+  // misma colección que usa "Pedidos"), tiene más que ver con esto que con
+  // el flujo de diseño/aprobación.
+  const canAccessPedidosArea = canAccessPedidos || canAccessPedidosClientes || canAccessCorte || !!currentUser?.isAdmin;
   const [moduloActivo, setModuloActivo] = useState("diseno");
   const AREAS = [
     ...(canAccessDiseno
@@ -7124,16 +7583,23 @@ function AppInner() {
             ...(canAccessProtos ? [{ id: "protos", icon: "⬡", label: "Prototipos" }] : []),
             ...(canAccessCapsulas ? [{ id: "capsulas", icon: "⬢", label: "Cápsulas" }] : []),
             ...(canAccessStats ? [{ id: "stats", icon: "📊", label: "Estadísticas Diseño" }] : []),
-            ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
-            ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
             ...(canAccessHistorial ? [{ id: "historial", icon: "🕘", label: "Historial" }] : []),
             ...(canAccessBitacora ? [{ id: "bitacora", icon: "📜", label: "Bitácoras" }] : []),
             ...(canAccessCronograma ? [{ id: "cronograma_muestras", icon: "🧵", label: "Cronograma de Muestras" }] : []),
-            ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
-            ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
             // "Administrador General" siempre queda al final de la lista, sin
             // importar qué otras secciones estén visibles para el rol.
             ...(canAccessAdminDiseno ? [{ id: "admin", icon: "⚙", label: "Administrador General" }] : []),
+          ],
+        }]
+      : []),
+    ...(canAccessPedidosArea
+      ? [{
+          id: "pedidos_area", icon: "🧾", label: "Pedidos",
+          items: [
+            ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
+            ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
+            ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
+            ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
           ],
         }]
       : []),
@@ -7146,6 +7612,12 @@ function AppInner() {
     ...(canAccessPlanta
       ? [{ id: "planta_area", icon: "🏭", label: "Planta", items: [{ id: "planta_area", icon: "🏭", label: "Módulo Planta" }] }]
       : []),
+    ...(canAccessBodega
+      ? [{ id: "bodega_area", icon: "📦", label: "Bodega", items: [{ id: "bodega_area", icon: "📦", label: "Módulo Bodega" }] }]
+      : []),
+    ...(canAccessNomina
+      ? [{ id: "nomina_area", icon: "👷", label: "Nómina", items: [{ id: "nomina_area", icon: "👷", label: "Módulo Nómina" }] }]
+      : []),
     // KPIs es su propia área de nivel superior (cubre toda la compañía).
     // A diferencia de Contabilidad/Planeación, no es un módulo externo aparte
     // (moduloActivo) — se renderiza dentro del layout normal usando el mismo
@@ -7154,6 +7626,9 @@ function AppInner() {
     // isViewActive/navClick).
     ...(canAccessKpis
       ? [{ id: "kpis_area", icon: "🎯", label: "KPIs", items: [{ id: "kpis", icon: "🎯", label: "Módulo KPIs" }] }]
+      : []),
+    ...(canAccessInformes
+      ? [{ id: "informes_area", icon: "📋", label: "Informes", items: [{ id: "informes_area", icon: "📋", label: "Módulo Informes" }] }]
       : []),
   ];
   const [areaAbierta, setAreaAbierta] = useState("diseno");
@@ -7167,6 +7642,9 @@ function AppInner() {
     if (itemId === "contabilidad_area") return moduloActivo === "contabilidad";
     if (itemId === "planeacion_area") return moduloActivo === "planeacion";
     if (itemId === "planta_area") return moduloActivo === "planta";
+    if (itemId === "bodega_area") return moduloActivo === "bodega";
+    if (itemId === "nomina_area") return moduloActivo === "nomina";
+    if (itemId === "informes_area") return moduloActivo === "informes";
     return view === itemId;
   }
   function navClick(itemId) {
@@ -7174,6 +7652,9 @@ function AppInner() {
     if (itemId === "contabilidad_area") { setModuloActivo("contabilidad"); return; }
     if (itemId === "planeacion_area") { setModuloActivo("planeacion"); return; }
     if (itemId === "planta_area") { setModuloActivo("planta"); return; }
+    if (itemId === "bodega_area") { setModuloActivo("bodega"); return; }
+    if (itemId === "nomina_area") { setModuloActivo("nomina"); return; }
+    if (itemId === "informes_area") { setModuloActivo("informes"); return; }
     setView(itemId);
   }
   // "Planeador puro": solo tiene Corte y NINGUNA otra sección de Diseño (ni
@@ -7201,6 +7682,15 @@ function AppInner() {
   if (moduloActivo === "planta") {
     return <ModuloPlanta currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
+  if (moduloActivo === "bodega") {
+    return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+  }
+  if (moduloActivo === "nomina") {
+    return <ModuloNomina currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+  }
+  if (moduloActivo === "informes") {
+    return <ModuloInformes currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+  }
   return (
     <div style={{ minHeight: "100vh", background: T.canvas, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,sans-serif" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}::-webkit-scrollbar{width:5px;}::-webkit-scrollbar-thumb{background:${T.seam};border-radius:3px;}`}</style>
@@ -7221,7 +7711,7 @@ function AppInner() {
       <div style={{ display: "flex", minHeight: "100vh" }}>
         <div style={{ width: 230, background: T.ink, color: T.white, padding: "20px 12px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
           <div style={{ marginBottom: 16, padding: "0 4px" }}>
-            <div style={{ fontSize: 16, fontWeight: 900, color: T.white }}>TechPack</div>
+            <div style={{ fontSize: 16, fontWeight: 900, color: T.white }}>ATLAS</div>
             <div style={{ fontSize: 10, color: T.seam, marginTop: 1, letterSpacing: "0.1em", textTransform: "uppercase" }}>Industrias Yanko</div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "#2A2A45", borderRadius: 10, marginBottom: 8 }}>
@@ -7270,21 +7760,28 @@ function AppInner() {
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
             {view === "dashboard" && (
-              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessDiseno={canAccessDiseno} canAccessKpis={canAccessKpis}
+              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
                   else if (id === "planeacion_area") { setModuloActivo("planeacion"); }
                   else if (id === "planta_area") { setModuloActivo("planta"); }
+                  else if (id === "bodega_area") { setModuloActivo("bodega"); }
+                  else if (id === "nomina_area") { setModuloActivo("nomina"); }
+                  else if (id === "informes_area") { setModuloActivo("informes"); }
                   else if (id === "kpis_area") { setAreaAbierta("kpis_area"); setView("kpis"); }
+                  else if (id === "pedidos_area") {
+                    setAreaAbierta("pedidos_area");
+                    if (canAccessPedidos) setView("pedidos");
+                    else if (canAccessPedidosClientes) setView("pedidos_clientes");
+                    else if (currentUser?.isAdmin) setView("pedidos_admin");
+                    else if (canAccessCorte) setModuloActivo("corte");
+                  }
                   else if (id === "diseno") {
                     setAreaAbierta("diseno");
                     // Entra a la primera sección de Diseño realmente habilitada
-                    // para el rol (un Planeador sin Prototipos/Cápsulas debe
-                    // caer en Pedidos, no en una vista sin permiso).
+                    // para el rol.
                     if (canAccessProtos) setView("protos");
                     else if (canAccessCapsulas) setView("capsulas");
-                    else if (canAccessPedidos) setView("pedidos");
-                    else if (canAccessPedidosClientes) setView("pedidos_clientes");
                     else if (canAccessStats) setView("stats");
                     else if (canAccessHistorial) setView("historial");
                     else if (canAccessBitacora) setView("bitacora");
@@ -7293,11 +7790,11 @@ function AppInner() {
                   }
                   else { setView(id); }
                 }}
-                protos={protos} capsulas={capsulas} pedidos={pedidos}
+                protos={protosVisibles} capsulas={capsulasVisibles} pedidos={pedidosVisibles}
               />
             )}
             {view === "protos" && (
-              <ProtosView protos={protos} role={role} perms={perms} capsulas={capsulas}
+              <ProtosView protos={protosVisibles} role={role} perms={perms} capsulas={capsulasVisibles}
                 onSelect={(id) => { setSelProtoId(id); setView("proto-detail"); }}
                 onNew={() => setModal("new-proto")}
                 onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
@@ -7307,7 +7804,7 @@ function AppInner() {
               />
             )}
             {view === "capsulas" && (
-              <CapsulasView capsulas={capsulas} role={role} perms={perms} currentUser={currentUser?.name}
+              <CapsulasView capsulas={capsulasVisibles} role={role} perms={perms} currentUser={currentUser?.name}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
                 onNewCapsula={() => setModal("new-capsula")}
                 onNewRef={(cap) => { setNewRefCap(cap); setModal("new-ref"); }}
@@ -7324,12 +7821,14 @@ function AppInner() {
               <BitacorasView
                 envios={bitacoraEnvios}
                 onUpdateEnvio={updateBitacoraEnvio}
-                protos={protos}
-                capsulas={capsulas}
-                pedidos={pedidos}
+                protos={protosVisibles}
+                capsulas={capsulasVisibles}
+                pedidos={pedidosVisibles}
                 historial={historial}
                 onGoHistorial={() => { setHistorialFiltroInicial({ resultado: "declinado", tipo: "todos" }); setView("historial"); }}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
+                onVincularPedido={(capId, refId, patch) => updateRef(capId, refId, patch)}
+                currentUser={currentUser}
               />
             )}
             {view === "kpis" && (
@@ -7374,31 +7873,34 @@ function AppInner() {
               />
             )}
             {view === "pedidos" && (
-              <PedidosView pedidos={pedidos}
+              <PedidosView pedidos={pedidosVisibles}
                 onSelectPedido={(id) => { setSelPedidoId(id); setView("pedido-detail"); }}
                 onNewPedido={() => setModal("new-pedido")}
                 onUpdatePedido={updatePedido}
                 pedidoConfig={pedidoConfig}
                 onSavePedidoConfig={savePedidoConfig}
                 isAdmin={currentUser?.isAdmin}
+                currentUser={currentUser}
               />
             )}
             {view === "pedido-detail" && selPedido && <PedidoDetailView pedido={selPedido} onBack={() => setView("pedidos")} onUpdatePedido={updatePedido} />}
             {view === "pedidos_admin" && currentUser?.isAdmin && <AdminPedidosView pedidoConfig={pedidoConfig} onSave={savePedidoConfig} config={config} onSaveConfig={saveConfig} />}
-            {view === "pedidos_clientes" && <ClientesPedidosView clientes={config.clientes} pedidos={pedidos} protos={protos} capsulas={capsulas} />}
-            {view === "stats" && <EstadisticasView protos={protos} capsulas={capsulas} stages={config.stages} config={config} />}
+            {view === "pedidos_clientes" && <ClientesPedidosView clientes={config.clientes} pedidos={pedidosVisibles} protos={protosVisibles} capsulas={capsulasVisibles} />}
+            {view === "stats" && <EstadisticasView protos={protosVisibles} capsulas={capsulasVisibles} stages={config.stages} config={config} />}
             {view === "historial" && (
-              <HistorialDisenoView historial={historial} protos={protos} capsulas={capsulas} pedidos={pedidos} role={role} perms={perms} stages={config.stages}
+              <HistorialDisenoView historial={historial} protos={protosVisibles} capsulas={capsulasVisibles} pedidos={pedidosVisibles} role={role} perms={perms} stages={config.stages}
                 isAdmin={currentUser?.isAdmin} onBackfill={backfillHistorial}
                 onSelectProto={(id) => { setSelProtoId(id); setView("proto-detail"); }}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
                 onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
                 initialResultado={historialFiltroInicial?.resultado}
                 initialTipoFiltro={historialFiltroInicial?.tipo}
+                onVincularPedido={(capId, refId, patch) => updateRef(capId, refId, patch)}
+                currentUser={currentUser}
               />
             )}
             {view === "cronograma_muestras" && (
-              <CronogramaMuestrasView cronogramaMuestras={cronogramaMuestras} config={config} isAdmin={currentUser?.isAdmin}
+              <CronogramaMuestrasView cronogramaMuestras={cronogramaMuestrasVisibles} config={config} isAdmin={currentUser?.isAdmin}
                 onAdd={addCronogramaMuestra} onUpdate={updateCronogramaMuestra} onDelete={deleteCronogramaMuestra}
                 onModificarNota={addObservacionCronograma}
                 onGoToItem={(entry) => {
@@ -7441,7 +7943,7 @@ class ErrorBoundary extends React.Component {
     return { hasError: true };
   }
   componentDidCatch(error, info) {
-    console.error("TechPack — error capturado por ErrorBoundary:", error, info);
+    console.error("ATLAS — error capturado por ErrorBoundary:", error, info);
   }
   render() {
     if (this.state.hasError) {
