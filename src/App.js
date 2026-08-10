@@ -5,6 +5,7 @@ import ModuloPlaneacion from "./modulo-planeacion";
 import ModuloPlanta from "./modulo-planta";
 import ModuloBodega from "./modulo-bodega";
 import ModuloNomina from "./modulo-nomina";
+import ModuloInformes from "./modulo-informes";
 import { initializeApp } from "firebase/app";
 import {
   getFirestore,
@@ -3958,7 +3959,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     </div>
   );
 }
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canAccessKpis, onGoArea, protos, capsulas, pedidos }) {
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canAccessKpis, canAccessInformes, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
@@ -4008,6 +4009,11 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
       id: "kpis_area", icon: "🎯", label: "KPIs", desc: "Indicadores por área y persona en toda la compañía — Diseño, Corte, Ventas, Contabilidad, Planeación...", color: T.coral, bg: T.coralBg,
       stats: [],
       permiso: canAccessKpis,
+    },
+    {
+      id: "informes_area", icon: "📋", label: "Informes", desc: "Lo que está vencido en cada área, en vivo — la misma info que manda el aviso automático por correo", color: T.coral, bg: T.coralBg,
+      stats: [],
+      permiso: canAccessInformes,
     },
   ].filter((a) => a.permiso);
   return (
@@ -5108,7 +5114,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // KPIs ahora es un módulo de compañía completo (no solo Diseño — cubre
   // Corte, Ventas, Contabilidad, Planeación, etc.), por eso su permiso vive
   // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
-  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["kpis", "🎯 KPIs"]];
+  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["kpis", "🎯 KPIs"], ["informes", "📋 Informes"]];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
   function ListEditor({ listKey, title }) {
     return (
@@ -7545,6 +7551,10 @@ function AppInner() {
   const canAccessPlanta = moduloVisible(userRoleData, "planta", currentUser?.isAdmin);
   const canAccessBodega = moduloVisible(userRoleData, "bodega", currentUser?.isAdmin);
   const canAccessNomina = moduloVisible(userRoleData, "nomina", currentUser?.isAdmin);
+  // Informes: vista consolidada de "lo que está vencido" en toda la
+  // compañía (hoy solo Diseño, se va ampliando a Bodega/Corte/Contabilidad).
+  // Es la contraparte en pantalla del aviso automático por correo.
+  const canAccessInformes = moduloVisible(userRoleData, "informes", currentUser?.isAdmin);
   // "admin_diseno" es un permiso aparte del admin general: da entrada al panel
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
@@ -7617,6 +7627,9 @@ function AppInner() {
     ...(canAccessKpis
       ? [{ id: "kpis_area", icon: "🎯", label: "KPIs", items: [{ id: "kpis", icon: "🎯", label: "Módulo KPIs" }] }]
       : []),
+    ...(canAccessInformes
+      ? [{ id: "informes_area", icon: "📋", label: "Informes", items: [{ id: "informes_area", icon: "📋", label: "Módulo Informes" }] }]
+      : []),
   ];
   const [areaAbierta, setAreaAbierta] = useState("diseno");
   function isViewActive(itemId) {
@@ -7631,6 +7644,7 @@ function AppInner() {
     if (itemId === "planta_area") return moduloActivo === "planta";
     if (itemId === "bodega_area") return moduloActivo === "bodega";
     if (itemId === "nomina_area") return moduloActivo === "nomina";
+    if (itemId === "informes_area") return moduloActivo === "informes";
     return view === itemId;
   }
   function navClick(itemId) {
@@ -7640,6 +7654,7 @@ function AppInner() {
     if (itemId === "planta_area") { setModuloActivo("planta"); return; }
     if (itemId === "bodega_area") { setModuloActivo("bodega"); return; }
     if (itemId === "nomina_area") { setModuloActivo("nomina"); return; }
+    if (itemId === "informes_area") { setModuloActivo("informes"); return; }
     setView(itemId);
   }
   // "Planeador puro": solo tiene Corte y NINGUNA otra sección de Diseño (ni
@@ -7672,6 +7687,9 @@ function AppInner() {
   }
   if (moduloActivo === "nomina") {
     return <ModuloNomina currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+  }
+  if (moduloActivo === "informes") {
+    return <ModuloInformes currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   return (
     <div style={{ minHeight: "100vh", background: T.canvas, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,sans-serif" }}>
@@ -7742,13 +7760,14 @@ function AppInner() {
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
             {view === "dashboard" && (
-              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis}
+              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
                   else if (id === "planeacion_area") { setModuloActivo("planeacion"); }
                   else if (id === "planta_area") { setModuloActivo("planta"); }
                   else if (id === "bodega_area") { setModuloActivo("bodega"); }
                   else if (id === "nomina_area") { setModuloActivo("nomina"); }
+                  else if (id === "informes_area") { setModuloActivo("informes"); }
                   else if (id === "kpis_area") { setAreaAbierta("kpis_area"); setView("kpis"); }
                   else if (id === "pedidos_area") {
                     setAreaAbierta("pedidos_area");
