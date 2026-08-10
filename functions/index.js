@@ -1,57 +1,19 @@
 /**
  * Integración con la API de Busint (Órdenes de Pedidos).
  *
- * 1. `getPedidosVigentesBusint` (bajo demanda, "callable" desde la app): se
+ * Dos funciones distintas comparten las mismas credenciales y el mismo
+ * endpoint de Busint:
+ *
+ * 1. `syncPedidosBusint` (programada, corre sola cada 6 horas): reemplaza el
+ *    flujo manual de "descargar Excel de Busint → subirlo al aplicativo".
+ *    Consulta los últimos 14 días y guarda en Firestore los pedidos que aún
+ *    no existan.
+ *
+ * 2. `getPedidosVigentesBusint` (bajo demanda, "callable" desde la app): se
  *    usa para el Informe de Pedidos Vigentes por Cliente — consulta Busint
  *    EN VIVO para el rango de fechas que el usuario escoja en pantalla (no
- *    depende de lo que ya esté guardado en Firestore), agrupados por cliente
- *    (Busint siempre trae una fechaDespacho poblada — es la fecha PROGRAMADA
- *    de entrega, no una marca de "ya se entregó"). "Vigente" ya NO depende
- *    del módulo Corte (esa colección, `corte_pedidos`, nunca se llegó a usar
- *    en la práctica — nadie subió nada ahí, así que todo salía siempre como
- *    pendiente). En vez de eso:
- *      a) Se consulta también `ApiGen_FacturadoBusint` (mismo rango de
- *         fechas, hasta hoy). Busint factura por REFERENCIA, no por pedido
- *         completo, así que se suman las unidades facturadas (`cant`) de
- *         todas las filas de cada pedido y se comparan contra el total
- *         pedido — solo se excluye del informe si ya quedó 100% facturado
- *         (factura normal, traslado externo, traslado en consignación,
- *         etc., sin distinguir tipo). Un pedido con solo una referencia
- *         facturada de varias sigue apareciendo como vigente.
- *      b) Para los que no están facturados, se cruza contra la carga más
- *         reciente de Planeación (`planeacion_cargas`, la misma que usa el
- *         módulo Planta) por número de pedido: si ya tiene un lote ahí, se
- *         muestra en qué etapa va (Corte, BMP, Planta, Semiterminado, BPT —
- *         campo `ubicacionActual` del lote); si NO tiene ningún lote, se
- *         marca "sin cortar" — es el caso más urgente, porque significa que
- *         el pedido ni siquiera ha iniciado producción.
- *    También marca `vencido` cuando la fechaDespacho ya pasó y el pedido
- *    sigue sin facturar — esos aparecen primero, para priorizar atención. Si
- *    la consulta a `ApiGen_FacturadoBusint` falla, no se cae el informe
- *    completo: se muestra igual (sin excluir nada por facturación) y se
- *    avisa con `avisoFacturacion` en la respuesta.
- *
- * 2. `getPedidosExistentesBusint`: usado por "Revisar contra Busint" (Pedidos
- *    y módulo Corte) — devuelve la lista de números de pedido que Busint
- *    todavía tiene hoy en un rango de fechas.
- *
- * 3. `getOrdenBusintPorNumero`: diagnóstico — trae las filas crudas que
- *    Busint devuelve para un número de pedido puntual.
- *
- * 4. `getClientesBusint`: usado por Administrador General → Clientes →
- *    "Importar de Busint" — trae el maestro completo de clientes.
- *
- * 5. `migrarUsuariosAFirebaseAuth`: migración (Fase A) del login antiguo
- *    (comparación de clave en texto plano contra la colección `users`) hacia
- *    Firebase Authentication real.
- *
- * 6. `adminCrearUsuario` / `adminCambiarClaveUsuario`: Fase B de esa misma
- *    migración — ahora que el login real ya usa Firebase Auth, Admin →
- *    Usuarios necesita crear cuentas reales al dar de alta un usuario nuevo,
- *    y resetear la clave de OTRO usuario ya no lo puede hacer el navegador
- *    directamente (solo el propio). Ambas verifican que quien llama esté
- *    autenticado Y sea administrador antes de hacer nada — ver
- *    `verificarLlamadorEsAdmin` más abajo.
+ *    depende de lo que ya esté guardado en Firestore) y devuelve solo los
+ *    pedidos que todavía no tienen fecha de despacho, agrupados por cliente.
  *
  * CREDENCIALES: el token y la URL base de Busint NUNCA se escriben en este
  * archivo (que queda en un repositorio público) — se leen como "secrets" de
@@ -59,29 +21,16 @@
  *
  *   firebase functions:secrets:set BUSINT_TOKEN
  *   firebase functions:secrets:set BUSINT_BASE_URL
- *   firebase functions:secrets:set BUSINT_PROXY_SECRET
- *   firebase functions:secrets:set MIGRACION_CLAVE
  *
- * IMPORTANTE — Busint Cloud exige conectarse por VPN (WireGuard) para poder
- * usar la API; una Cloud Function no puede mantener una VPN abierta por sí
- * sola. Por eso estas funciones NO le hablan directo a Busint: le hablan a
- * una VM-puente (una máquina virtual siempre conectada a la VPN de Busint,
- * que reenvía la petición) — ver vm-busint-relay-startup.sh. En este caso:
- *   - BUSINT_BASE_URL = la dirección de esa VM-puente, ej: http://IP:8080
- *     (SIN "/" al final)
- *   - BUSINT_PROXY_SECRET = el mismo secreto configurado en la VM, para que
- *     solo esta función pueda usar el puente (nadie más que sepa la IP).
+ * (BUSINT_BASE_URL es la URL base del instructivo, ej:
+ *  http://tudominio:9095 — SIN "/" al final).
  *
- * NOTA: este archivo tenía antes una función programada (`syncPedidosBusint`,
- * corría sola cada 6 horas) que copiaba pedidos de Busint a la colección
- * "pedidos". Se retiró — ese auto-sync generaba una base separada y
- * desincronizada de la que realmente importa (la que corta el módulo Corte),
- * y nunca reflejaba con certeza qué seguía vigente. El flujo actual es:
- * getPedidosVigentesBusint (consulta en vivo, siempre fresca) + el botón
- * "Congelar como base de Corte" en la pantalla de Vigentes, que escribe
- * directo a la colección "pedidos_activos" — una sola fuente de verdad que
- * tanto Pedidos como Corte leen.
+ * Ver README_BUSINT_SYNC.md para la guía completa de despliegue. Si ya
+ * desplegaste `syncPedidosBusint` antes, estos secrets ya están configurados
+ * y `getPedidosVigentesBusint` los reutiliza tal cual — no hace falta
+ * volver a pegarlos en ningún lado.
  */
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
@@ -92,7 +41,13 @@ const db = admin.firestore();
 
 const BUSINT_TOKEN = defineSecret("BUSINT_TOKEN");
 const BUSINT_BASE_URL = defineSecret("BUSINT_BASE_URL");
-const BUSINT_PROXY_SECRET = defineSecret("BUSINT_PROXY_SECRET");
+
+// Cuántos días hacia atrás se consultan en cada corrida programada. Generoso
+// a propósito: si la función falla una vez o Busint no responde, la
+// siguiente corrida igual alcanza a traer los pedidos que se quedaron
+// pendientes, porque el chequeo de duplicados por N° de Pedido evita que se
+// carguen dos veces.
+const DIAS_HACIA_ATRAS = 14;
 
 function fmtFecha(d) {
   return d.toISOString().slice(0, 10);
@@ -105,25 +60,14 @@ function soloFecha(iso) {
   return String(iso).slice(0, 10);
 }
 
-// El endpoint real (confirmado contra el swagger.json de esta instancia de
-// Busint Cloud) es "ApiGen_OrdenesDePedidoBusint" (Pedido en singular) y
-// espera el cuerpo como multipart/form-data con los campos Token,
-// FechaInicio y FechaFin — NO como JSON con el token en un header, que era
-// el formato asumido originalmente (y que Busint respondía con 404).
 async function consultarOrdenesBusint(fechaInicio, fechaFin) {
   const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
   const token = BUSINT_TOKEN.value();
-  const proxySecret = BUSINT_PROXY_SECRET.value();
 
-  const form = new FormData();
-  form.append("Token", token);
-  form.append("FechaInicio", fechaInicio);
-  form.append("FechaFin", fechaFin);
-
-  const resp = await fetch(`${baseUrl}/consultas/ApiGen_OrdenesDePedidoBusint`, {
+  const resp = await fetch(`${baseUrl}/consultas/ApiGen_OrdenesDePedidosBusint`, {
     method: "POST",
-    headers: { "X-Proxy-Secret": proxySecret },
-    body: form,
+    headers: { "Content-Type": "application/json", token },
+    body: JSON.stringify({ FechaInicio: fechaInicio, FechaFin: fechaFin }),
   });
 
   if (!resp.ok) {
@@ -182,52 +126,130 @@ function agruparFilasBusintPorPedido(filas) {
   return porPedido;
 }
 
-// Consulta "ApiGen_FacturadoBusint" — trae, para un rango de fechas, TODO lo
-// que ya se facturó o se sacó de la fábrica: facturas normales, traslados
-// externos, traslados en consignación y sus devoluciones (así lo describe la
-// documentación de Busint). Se usa el mismo formato de solicitud confirmado
-// para "ApiGen_OrdenesDePedidoBusint" (form-data con Token/FechaInicio/
-// FechaFin, no JSON), porque es la misma familia de API — si Busint responde
-// distinto para este endpoint en particular, revisar los logs de
-// getPedidosVigentesBusint.
-async function consultarFacturadoBusint(fechaInicio, fechaFin) {
-  const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
-  const token = BUSINT_TOKEN.value();
-  const proxySecret = BUSINT_PROXY_SECRET.value();
+async function syncPedidosDesdeBusint() {
+  const hoy = new Date();
+  const inicio = new Date(hoy);
+  inicio.setDate(inicio.getDate() - DIAS_HACIA_ATRAS);
 
-  const form = new FormData();
-  form.append("Token", token);
-  form.append("FechaInicio", fechaInicio);
-  form.append("FechaFin", fechaFin);
-
-  const resp = await fetch(`${baseUrl}/consultas/ApiGen_FacturadoBusint`, {
-    method: "POST",
-    headers: { "X-Proxy-Secret": proxySecret },
-    body: form,
-  });
-
-  if (!resp.ok) {
-    const texto = await resp.text().catch(() => "");
-    logger.error("Busint respondió con error (ApiGen_FacturadoBusint)", { status: resp.status, texto });
-    throw new Error(`Busint respondió ${resp.status}`);
+  const filas = await consultarOrdenesBusint(fmtFecha(inicio), fmtFecha(hoy));
+  if (!filas.length) {
+    logger.info("Sin filas nuevas de Busint en el rango consultado.");
+    return { pedidosCreados: 0, clientesCreados: 0 };
   }
 
-  const filas = await resp.json();
-  return Array.isArray(filas) ? filas : [];
+  const porPedido = agruparFilasBusintPorPedido(filas);
+
+  // Chequeo de duplicados: nunca se crea un pedido cuyo número ya existe en
+  // Firestore, sin importar en qué estado esté (igual que el chequeo del
+  // formulario manual "Cargar Pedido Busint" dentro del aplicativo).
+  const existentesSnap = await db.collection("pedidos").get();
+  const numerosExistentes = new Set(
+    existentesSnap.docs.map((d) => String(d.data().numero || "").trim().toLowerCase())
+  );
+
+  const configSnap = await db.collection("config").doc("main").get();
+  const clientesActuales = configSnap.exists ? configSnap.data().clientes || [] : [];
+  const nombresClientesExistentes = new Set(clientesActuales.map((c) => (c.nombre || "").toLowerCase()));
+  const clientesNuevos = [];
+
+  const PEDIDO_STAGES = [
+    "Hoja de Vida", "Verificación de Colorido", "Carta de Combinaciones, Textiles e Insumos",
+    "Verificación de Ilustración", "Muestra", "Revisión de Insumos", "Cotización", "Ficha Técnica",
+    "Pedido en Busint", "Explosión de Materiales", "Corte", "Control de Muestra de Corte",
+    "Bodega de Materia Prima", "Confección", "Inventario de Procesos", "Semiterminado", "Despacho",
+  ];
+
+  let batch = db.batch();
+  let opsEnBatch = 0;
+  let pedidosCreados = 0;
+
+  async function commitBatchSiHaceFalta() {
+    if (opsEnBatch >= 400) {
+      await batch.commit();
+      batch = db.batch();
+      opsEnBatch = 0;
+    }
+  }
+
+  for (const [numero, pedido] of porPedido) {
+    if (numerosExistentes.has(numero.toLowerCase())) continue;
+
+    const referencias = [...pedido.refsPorClave.values()];
+    if (!referencias.length) continue;
+
+    const seguimiento = {};
+    PEDIDO_STAGES.forEach((s) => { seguimiento[s] = false; });
+
+    const id = db.collection("pedidos").doc().id;
+    batch.set(db.collection("pedidos").doc(id), {
+      id,
+      numero: pedido.numero,
+      cliente: pedido.cliente,
+      fechaPedido: pedido.fechaPedido,
+      fechaDespacho: pedido.fechaDespacho,
+      vendedor: "",
+      ciudad: "",
+      referencias,
+      estado: "activo",
+      seguimiento,
+      cortesRealizados: [],
+      creadoEn: fmtFecha(hoy),
+      origenBusintAuto: true,
+    });
+    opsEnBatch++;
+    pedidosCreados++;
+    await commitBatchSiHaceFalta();
+
+    if (pedido.cliente && !nombresClientesExistentes.has(pedido.cliente.toLowerCase())) {
+      nombresClientesExistentes.add(pedido.cliente.toLowerCase());
+      clientesNuevos.push({ id: cryptoRandomId(), nombre: pedido.cliente, contacto: "", email: "", telefono: "" });
+    }
+  }
+
+  if (opsEnBatch > 0) await batch.commit();
+
+  // Escritura granular: solo se toca el campo "clientes" (con arrayUnion),
+  // nunca se reescribe el documento config/main completo — así esta
+  // sincronización nunca puede pisar roles/etapas/categorías ni ningún otro
+  // campo, sin importar qué tan vieja esté la copia leída arriba.
+  if (clientesNuevos.length) {
+    await db.collection("config").doc("main").update({
+      clientes: admin.firestore.FieldValue.arrayUnion(...clientesNuevos),
+    });
+  }
+
+  logger.info(`Sync Busint: ${pedidosCreados} pedido(s) nuevo(s), ${clientesNuevos.length} cliente(s) nuevo(s).`);
+  return { pedidosCreados, clientesCreados: clientesNuevos.length };
 }
 
 function cryptoRandomId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
+// Corre sola cada 6 horas. Para cambiar la frecuencia, edita el string de
+// abajo (sintaxis tipo cron: https://firebase.google.com/docs/functions/schedule-functions)
+// y vuelve a desplegar con `firebase deploy --only functions`.
+exports.syncPedidosBusint = onSchedule(
+  {
+    schedule: "every 6 hours",
+    timeZone: "America/Bogota",
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 300,
+    memory: "256MiB",
+  },
+  async () => {
+    await syncPedidosDesdeBusint();
+  }
+);
+
 // Informe de Pedidos Vigentes por Cliente — consulta Busint EN VIVO (no lee
 // Firestore) para el rango { fechaInicio, fechaFin } que envía la pantalla,
-// y devuelve solo los pedidos cuya fecha de despacho es hoy o está en el
-// futuro, agrupados por cliente. Se llama desde el navegador con
+// y devuelve solo los pedidos que Busint todavía no marca con fecha de
+// despacho, agrupados por cliente. Se llama desde el navegador con
 // `httpsCallable(functions, "getPedidosVigentesBusint")({ fechaInicio, fechaFin })`.
 exports.getPedidosVigentesBusint = onCall(
   {
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_PROXY_SECRET],
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 60,
     memory: "256MiB",
   },
@@ -247,50 +269,14 @@ exports.getPedidosVigentesBusint = onCall(
     }
 
     const porPedido = agruparFilasBusintPorPedido(filas);
-    const hoyISO = new Date().toISOString().slice(0, 10);
 
-    let facturadoPorPedido = new Map();
-    let avisoFacturacion = null;
-    try {
-      const filasFacturado = await consultarFacturadoBusint(fechaInicio, hoyISO);
-      filasFacturado.forEach((f) => {
-        const numero = String(f.numped ?? "").trim();
-        if (!numero) return;
-        const cant = Number(f.cant) || 0;
-        facturadoPorPedido.set(numero, (facturadoPorPedido.get(numero) || 0) + cant);
-      });
-    } catch (err) {
-      logger.error("Error consultando ApiGen_FacturadoBusint (getPedidosVigentesBusint)", { error: String(err) });
-      avisoFacturacion = "No se pudo consultar la facturación de Busint — este informe puede estar mostrando pedidos que ya se facturaron.";
-    }
-
-    const cargasPlaneacionSnap = await db.collection("planeacion_cargas").get();
-    const cargasPlaneacion = cargasPlaneacionSnap.docs.map((d) => d.data());
-    cargasPlaneacion.sort((a, b) => String(b.creadoEn || b.fecha || "").localeCompare(String(a.creadoEn || a.fecha || "")));
-    const cargaPlaneacionActiva = cargasPlaneacion[0] || null;
-    const lotesPorPedido = new Map();
-    (cargaPlaneacionActiva?.lotes || []).forEach((l) => {
-      const numPedido = String(l.numPedido ?? "").trim();
-      if (!numPedido) return;
-      if (!lotesPorPedido.has(numPedido)) lotesPorPedido.set(numPedido, []);
-      lotesPorPedido.get(numPedido).push({ numLote: l.numLote, ubicacionActual: l.ubicacionActual || "En proceso" });
-    });
-
-    const ocultosSnap = await db.collection("pedidos_ocultos_busint").get();
-    const ocultosSet = new Set(ocultosSnap.docs.map((d) => String(d.data().numero || d.id).trim()));
-
+    // "Vigente" = Busint todavía no le registra fecha de despacho, es decir,
+    // el pedido sigue pendiente de entrega.
     const porClienteMap = new Map();
     for (const [, pedido] of porPedido) {
-      if (ocultosSet.has(pedido.numero)) continue;
+      if (pedido.fechaDespacho) continue;
       const referencias = [...pedido.refsPorClave.values()];
       const totalUnidades = referencias.reduce((s, r) => s + r.total, 0);
-      const totalFacturado = facturadoPorPedido.get(pedido.numero) || 0;
-      const completo = totalUnidades > 0 && totalFacturado >= totalUnidades;
-      if (completo) continue;
-      const lotesDelPedido = lotesPorPedido.get(pedido.numero) || [];
-      const tieneLote = lotesDelPedido.length > 0;
-      const etapas = tieneLote ? [...new Set(lotesDelPedido.map((l) => l.ubicacionActual))] : [];
-      const vencido = !!pedido.fechaDespacho && pedido.fechaDespacho < hoyISO;
       const clienteKey = pedido.cliente || "Sin cliente";
       if (!porClienteMap.has(clienteKey)) {
         porClienteMap.set(clienteKey, { cliente: clienteKey, pedidos: [], totalPedidos: 0, totalUnidades: 0 });
@@ -300,25 +286,15 @@ exports.getPedidosVigentesBusint = onCall(
         numero: pedido.numero,
         fechaPedido: pedido.fechaPedido,
         fechaDespacho: pedido.fechaDespacho,
-        vencido,
         referencias,
         totalUnidades,
-        totalFacturado,
-        pctFacturado: totalUnidades > 0 ? Math.round((totalFacturado / totalUnidades) * 100) : 0,
-        tieneLote,
-        etapas,
       });
       grupo.totalPedidos += 1;
       grupo.totalUnidades += totalUnidades;
     }
 
     const porCliente = [...porClienteMap.values()].sort((a, b) => a.cliente.localeCompare(b.cliente));
-    porCliente.forEach((g) =>
-      g.pedidos.sort((a, b) => {
-        if (a.vencido !== b.vencido) return a.vencido ? -1 : 1;
-        return (a.fechaDespacho || "").localeCompare(b.fechaDespacho || "");
-      })
-    );
+    porCliente.forEach((g) => g.pedidos.sort((a, b) => (a.fechaPedido || "").localeCompare(b.fechaPedido || "")));
 
     return {
       fechaInicio,
@@ -327,332 +303,203 @@ exports.getPedidosVigentesBusint = onCall(
       totalClientes: porCliente.length,
       totalPedidos: porCliente.reduce((s, g) => s + g.totalPedidos, 0),
       porCliente,
-      avisoFacturacion,
     };
   }
 );
 
-// Callable usado por "Revisar contra Busint" tanto en Pedidos (pestaña
-// Activos) como en el módulo Corte: dado un rango de fechas, devuelve
-// simplemente la LISTA de números de pedido que Busint todavía tiene hoy en
-// ese rango (agrupando igual que consultarOrdenesBusint). Si un pedido que
-// el aplicativo tiene como "activo" ya NO aparece en esta lista, quiere
-// decir que en Busint se canceló, se cerró o se dio por cumplido — el
-// aplicativo lo usa para marcarlo automáticamente en vez de quedarse
-// pegado como activo para siempre.
-exports.getPedidosExistentesBusint = onCall(
-  {
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_PROXY_SECRET],
-    timeoutSeconds: 60,
-    memory: "256MiB",
-  },
-  async (request) => {
-    const { fechaInicio, fechaFin } = request.data || {};
-    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
-    if (!fechaValida(fechaInicio) || !fechaValida(fechaFin)) {
-      throw new HttpsError("invalid-argument", "fechaInicio y fechaFin son obligatorias, en formato AAAA-MM-DD.");
-    }
-    let filas;
-    try {
-      filas = await consultarOrdenesBusint(fechaInicio, fechaFin);
-    } catch (err) {
-      logger.error("Error consultando Busint (getPedidosExistentesBusint)", { error: String(err) });
-      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
-    }
-    const porPedido = agruparFilasBusintPorPedido(filas);
-    return { fechaInicio, fechaFin, numeros: [...porPedido.keys()] };
-  }
-);
 
-// Diagnóstico: trae las filas CRUDAS (sin agrupar, sin filtrar campos) que
-// ApiGen_OrdenesDePedidoBusint devuelve para un número de pedido puntual, en
-// el rango de fechas dado. Se usa desde la pantalla de Pedidos para
-// responder la pregunta "¿este pedido todavía existe en Busint, y con qué
-// datos exactos?" sin adivinar — muestra tal cual lo que Busint responde.
-exports.getOrdenBusintPorNumero = onCall(
-  {
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_PROXY_SECRET],
-    timeoutSeconds: 60,
-    memory: "256MiB",
-  },
-  async (request) => {
-    const { fechaInicio, fechaFin, numeroPedido } = request.data || {};
-    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
-    if (!fechaValida(fechaInicio) || !fechaValida(fechaFin)) {
-      throw new HttpsError("invalid-argument", "fechaInicio y fechaFin son obligatorias, en formato AAAA-MM-DD.");
-    }
-    const numeroBuscado = String(numeroPedido ?? "").trim();
-    if (!numeroBuscado) {
-      throw new HttpsError("invalid-argument", "numeroPedido es obligatorio.");
-    }
-    let filas;
-    try {
-      filas = await consultarOrdenesBusint(fechaInicio, fechaFin);
-    } catch (err) {
-      logger.error("Error consultando Busint (getOrdenBusintPorNumero)", { error: String(err) });
-      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
-    }
-    const filasCoincidentes = filas.filter((f) => String(f.numPed ?? "").trim() === numeroBuscado);
-    return {
-      fechaInicio,
-      fechaFin,
-      numeroPedido: numeroBuscado,
-      totalFilasEnRango: filas.length,
-      filasCoincidentes,
-    };
-  }
-);
+// ─────────────────────────────────────────────────────────────────────────
+// Avisos de prototipos/cápsulas vencidos (por correo).
+//
+// Corre una vez al día. Revisa TODOS los prototipos y las referencias
+// dentro de cada cápsula, calcula si están "vencidos" (llevan más días en
+// su etapa actual de los que esa etapa tiene configurados en
+// config/main.stages) usando la MISMA regla que ya usa la app en pantalla
+// (ver `isOverdue` en src/App.js), y manda un correo:
+//
+//   - A la diseñadora asignada a ese prototipo/referencia: un aviso
+//     motivador para que lo destrabe.
+//   - A Dayana, Karen y Yuliana (encargada de colecciones, aux. de
+//     colecciones y directora creativa): un aviso pidiendo apoyo para esa
+//     diseñadora.
+//
+// Se manda UNA sola vez por cada vez que un ítem cae en "vencido" — no se
+// repite todos los días mientras siga vencido. Para lograrlo, cada ítem
+// guarda en qué etapa ya se avisó (`vencidoAvisadoEtapa`); si sigue vencido
+// en la MISMA etapa, no se vuelve a avisar; si avanza de etapa y luego se
+// vuelve a vencer en una etapa distinta, sí se avisa de nuevo.
+//
+// CONFIGURACIÓN (una sola vez, desde tu terminal):
+//   1. Dentro de la carpeta functions/: npm install nodemailer
+//   2. Genera una "contraseña de aplicación" de Gmail para la cuenta que
+//      mande los avisos (ej. notificaciones.atlas@gmail.com) — necesita
+//      verificación en 2 pasos activada en esa cuenta de Google.
+//   3. firebase functions:secrets:set EMAIL_USER
+//      (pega el correo, ej. notificaciones.atlas@gmail.com)
+//   4. firebase functions:secrets:set EMAIL_APP_PASSWORD
+//      (pega la contraseña de aplicación, NO tu contraseña normal de Gmail)
+//   5. firebase deploy --only functions
+//
+// Los destinatarios fijos (Dayana/Karen/Yuliana) y cada diseñadora se
+// buscan por NOMBRE dentro de la colección `users` (campo `email`, el que
+// se agrega desde Administración → Usuarios en la app) — si cambian de
+// correo, se actualiza ahí, sin tocar este archivo ni volver a desplegar.
+// ─────────────────────────────────────────────────────────────────────────
+const EMAIL_USER = defineSecret("EMAIL_USER");
+const EMAIL_APP_PASSWORD = defineSecret("EMAIL_APP_PASSWORD");
+const nodemailer = require("nodemailer");
 
-// Consulta el maestro de clientes de Busint ("ApiGen_Clientes") — a
-// diferencia de las órdenes de pedido, este endpoint no recibe rango de
-// fechas: siempre trae el listado completo tal como está hoy en Busint.
-async function consultarClientesBusint() {
-  const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
-  const token = BUSINT_TOKEN.value();
-  const proxySecret = BUSINT_PROXY_SECRET.value();
+const RECIPIENTES_APOYO = ["Dayana", "Karen", "Yuliana"];
+const STAGES_TERMINALES = new Set(["enviado_cotizacion", "enviar_cliente", "enviado", "recibido_cliente", "aprobado", "declinado"]);
 
-  const form = new FormData();
-  form.append("Token", token);
-
-  const resp = await fetch(`${baseUrl}/consultas/ApiGen_Clientes`, {
-    method: "POST",
-    headers: { "X-Proxy-Secret": proxySecret },
-    body: form,
-  });
-
-  if (!resp.ok) {
-    const texto = await resp.text().catch(() => "");
-    logger.error("Busint respondió con error (ApiGen_Clientes)", { status: resp.status, texto });
-    throw new Error(`Busint respondió ${resp.status}`);
-  }
-
-  const filas = await resp.json();
-  return Array.isArray(filas) ? filas : [];
+function diasDesde(iso) {
+  if (!iso) return 0;
+  return Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
 }
 
-// Callable usado por Administrador General → Clientes → "Importar de
-// Busint". Trae el maestro completo y lo reduce a los campos que el
-// aplicativo realmente guarda por cliente (nombre, contacto, email,
-// teléfono) — la decisión de qué hacer con cada uno (agregar, reemplazar
-// nombre existente, u omitir) la toma el usuario en pantalla, esta función
-// solo entrega los datos crudos de Busint.
-exports.getClientesBusint = onCall(
+function estaVencido(item, stagesMap) {
+  if (!item.currentStage || STAGES_TERMINALES.has(item.status)) return false;
+  const limite = stagesMap.get(item.currentStage);
+  if (limite == null || !item.stageStartedAt) return false;
+  return diasDesde(item.stageStartedAt) > limite;
+}
+
+// Busca el correo de un usuario por nombre (comparación floja: minúsculas,
+// sin espacios de más, y por coincidencia parcial en ambos sentidos) —
+// porque el nombre guardado en "Responsable"/config.disenadores puede no
+// ser palabra por palabra idéntico al nombre completo del usuario.
+function buscarCorreoPorNombre(nombreBuscado, usuarios) {
+  if (!nombreBuscado) return null;
+  const buscado = String(nombreBuscado).trim().toLowerCase();
+  if (!buscado) return null;
+  const match = usuarios.find((u) => {
+    const nombreUsuario = String(u.name || "").trim().toLowerCase();
+    if (!nombreUsuario || !u.email) return false;
+    return nombreUsuario === buscado || nombreUsuario.includes(buscado) || buscado.includes(nombreUsuario);
+  });
+  return match ? match.email : null;
+}
+
+function crearTransporte() {
+  return nodemailer.createTransport({
+    service: "gmail",
+    auth: { user: EMAIL_USER.value(), pass: EMAIL_APP_PASSWORD.value() },
+  });
+}
+
+async function mandarCorreo(transporte, destinatarios, asunto, textoHtml) {
+  const destinos = destinatarios.filter(Boolean);
+  if (!destinos.length) return;
+  await transporte.sendMail({
+    from: `ATLAS <${EMAIL_USER.value()}>`,
+    to: destinos.join(","),
+    subject: asunto,
+    html: textoHtml,
+  });
+}
+
+async function revisarYAvisarVencidos() {
+  const [configSnap, usersSnap, protosSnap, capsulasSnap] = await Promise.all([
+    db.collection("config").doc("main").get(),
+    db.collection("users").get(),
+    db.collection("prototipos").get(),
+    db.collection("capsulas").get(),
+  ]);
+
+  const stages = configSnap.exists ? (configSnap.data().stages || []) : [];
+  const stagesMap = new Map(stages.map((s) => [s.id, s.days]));
+  const usuarios = usersSnap.docs.map((d) => d.data());
+
+  const correosApoyo = RECIPIENTES_APOYO.map((n) => buscarCorreoPorNombre(n, usuarios)).filter(Boolean);
+  if (correosApoyo.length < RECIPIENTES_APOYO.length) {
+    logger.warn("No se encontró correo para todos los destinatarios de apoyo (Dayana/Karen/Yuliana) — revisa que tengan correo cargado en Administración → Usuarios.");
+  }
+
+  const transporte = crearTransporte();
+  let avisosEnviados = 0;
+
+  // ── Prototipos ──
+  for (const doc of protosSnap.docs) {
+    const item = doc.data();
+    if (!estaVencido(item, stagesMap)) continue;
+    if (item.vencidoAvisadoEtapa === item.currentStage) continue; // ya se avisó en esta etapa
+
+    const correoDisenadora = buscarCorreoPorNombre(item.assignedTo, usuarios);
+    const nombreItem = `${item.name || "Prototipo"}${item.reference ? ` (${item.reference})` : ""}`;
+    const etapaLabel = stages.find((s) => s.id === item.currentStage)?.label || item.currentStage;
+
+    await mandarCorreo(
+      transporte,
+      [correoDisenadora],
+      `⏰ ${nombreItem} va atrasado en ${etapaLabel}`,
+      `<p>Hola ${item.assignedTo || ""},</p><p>El prototipo <strong>${nombreItem}</strong> lleva más días de los previstos en la etapa de <strong>${etapaLabel}</strong>.</p><p>¡Vamos, tú puedes avanzarlo! 💪</p>`
+    );
+    await mandarCorreo(
+      transporte,
+      correosApoyo,
+      `⏰ ${nombreItem} necesita una mano — atrasado en ${etapaLabel}`,
+      `<p>Hola,</p><p>Ayudemos a <strong>${item.assignedTo || "la diseñadora"}</strong> — el prototipo <strong>${nombreItem}</strong> está retrasado en la etapa de <strong>${etapaLabel}</strong>.</p><p>¿Vemos entre todas cómo destrabarlo?</p>`
+    );
+
+    await doc.ref.update({ vencidoAvisadoEtapa: item.currentStage });
+    avisosEnviados++;
+  }
+
+  // ── Referencias dentro de cápsulas ──
+  for (const doc of capsulasSnap.docs) {
+    const cap = doc.data();
+    const referencias = cap.referencias || [];
+    let huboCambios = false;
+
+    for (const refItem of referencias) {
+      if (!estaVencido(refItem, stagesMap)) continue;
+      if (refItem.vencidoAvisadoEtapa === refItem.currentStage) continue;
+
+      const asignado = refItem.assignedTo || cap.assignedTo;
+      const correoDisenadora = buscarCorreoPorNombre(asignado, usuarios);
+      const nombreItem = `${refItem.name || "Referencia"}${refItem.reference ? ` (${refItem.reference})` : ""} — Cápsula ${cap.name || ""}`;
+      const etapaLabel = stages.find((s) => s.id === refItem.currentStage)?.label || refItem.currentStage;
+
+      await mandarCorreo(
+        transporte,
+        [correoDisenadora],
+        `⏰ ${nombreItem} va atrasada en ${etapaLabel}`,
+        `<p>Hola ${asignado || ""},</p><p>La referencia <strong>${nombreItem}</strong> lleva más días de los previstos en la etapa de <strong>${etapaLabel}</strong>.</p><p>¡Vamos, tú puedes avanzarla! 💪</p>`
+      );
+      await mandarCorreo(
+        transporte,
+        correosApoyo,
+        `⏰ ${nombreItem} necesita una mano — atrasada en ${etapaLabel}`,
+        `<p>Hola,</p><p>Ayudemos a <strong>${asignado || "la diseñadora"}</strong> — la referencia <strong>${nombreItem}</strong> está retrasada en la etapa de <strong>${etapaLabel}</strong>.</p><p>¿Vemos entre todas cómo destrabarlo?</p>`
+      );
+
+      refItem.vencidoAvisadoEtapa = refItem.currentStage;
+      huboCambios = true;
+      avisosEnviados++;
+    }
+
+    if (huboCambios) {
+      await doc.ref.update({ referencias });
+    }
+  }
+
+  logger.info(`Avisos de vencidos: ${avisosEnviados} aviso(s) enviado(s).`);
+  return { avisosEnviados };
+}
+
+// Corre una vez al día a las 8am (hora Bogotá). Para probar más seguido
+// mientras confirmas que funciona, cambia el schedule temporalmente (ej.
+// "every 10 minutes") y vuelve a desplegar — después vuelve a dejarlo en
+// "every day 08:00" y despliega de nuevo.
+exports.avisarVencidos = onSchedule(
   {
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_PROXY_SECRET],
-    timeoutSeconds: 60,
+    schedule: "every day 08:00",
+    timeZone: "America/Bogota",
+    secrets: [EMAIL_USER, EMAIL_APP_PASSWORD],
+    timeoutSeconds: 300,
     memory: "256MiB",
   },
   async () => {
-    let filas;
-    try {
-      filas = await consultarClientesBusint();
-    } catch (err) {
-      logger.error("Error consultando Busint (getClientesBusint)", { error: String(err) });
-      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
-    }
-
-    const clientes = filas
-      .map((f) => ({
-        nombre: (f.nombreORazonSocial || "").trim(),
-        nombreCorto: (f.nombreCorto || "").trim(),
-        contacto: (f.contacto || "").trim(),
-        email: (f.email || "").trim(),
-        telefono: (f.telefono || f.celular || "").trim(),
-        ciudad: (f.ciudad || "").trim(),
-        activo: f.clienteActivo !== false,
-      }))
-      .filter((c) => c.nombre);
-
-    clientes.sort((a, b) => a.nombre.localeCompare(b.nombre));
-
-    return { generadoEn: new Date().toISOString(), total: clientes.length, clientes };
-  }
-);
-
-// ─── MIGRACIÓN A FIREBASE AUTHENTICATION (Fase A) ─────────────────────────
-//
-// Hoy el login del aplicativo compara la clave escrita a mano contra la
-// colección `users` de Firestore, que guarda las contraseñas en texto
-// plano y se lee completa ANTES de que la persona inicie sesión — por eso
-// las reglas de seguridad de Firestore no pueden exigir sesión iniciada sin
-// romper el login. Este es el primer paso para arreglarlo de raíz: crear,
-// por detrás y sin tocar el login actual, una cuenta REAL de Firebase
-// Authentication para cada usuario que ya existe.
-//
-// Firebase Auth pide un "correo" para el login por clave — como acá se
-// entra con nombre de usuario (no correo), se arma uno falso con el mismo
-// username: usuario@techpack-yanko.local. Nadie necesita memorizar nada
-// nuevo. La clave que ya tiene cada persona se reutiliza tal cual.
-//
-// Es segura de correr varias veces: si un usuario ya tiene el campo
-// `authUid` guardado (ya fue migrado), se salta. No borra ni modifica la
-// colección `users` existente — solo le agrega `authUid` a cada documento,
-// para poder ligarlo más adelante (Fase B) a la cuenta real.
-//
-// Protegida con una clave secreta propia (no con sesión iniciada, porque en
-// este punto nadie puede iniciar sesión todavía con Firebase Auth).
-const MIGRACION_CLAVE = defineSecret("MIGRACION_CLAVE");
-
-exports.migrarUsuariosAFirebaseAuth = onCall(
-  {
-    secrets: [MIGRACION_CLAVE],
-    timeoutSeconds: 120,
-    memory: "256MiB",
-  },
-  async (request) => {
-    const clave = request.data?.clave;
-    if (!clave || clave !== MIGRACION_CLAVE.value()) {
-      throw new HttpsError("permission-denied", "Clave de migración incorrecta.");
-    }
-
-    const usersSnap = await db.collection("users").get();
-    const migrados = [];
-    const yaExistian = [];
-    const errores = [];
-
-    for (const doc of usersSnap.docs) {
-      const data = doc.data();
-      if (data.authUid) {
-        yaExistian.push(data.username);
-        continue;
-      }
-      const username = String(data.username || "").trim().toLowerCase();
-      if (!username) {
-        errores.push({ id: doc.id, motivo: "Documento sin username." });
-        continue;
-      }
-      const email = `${username}@techpack-yanko.local`;
-      const password = data.password;
-      if (!password || String(password).length < 6) {
-        errores.push({
-          id: doc.id,
-          username,
-          motivo: "Clave ausente o muy corta (Firebase exige mínimo 6 caracteres) — cámbiala primero desde Admin → Usuarios y vuelve a correr la migración.",
-        });
-        continue;
-      }
-      try {
-        let userRecord;
-        try {
-          userRecord = await admin.auth().createUser({
-            email,
-            password: String(password),
-            displayName: data.name || username,
-          });
-        } catch (err) {
-          if (err.code === "auth/email-already-exists") {
-            userRecord = await admin.auth().getUserByEmail(email);
-          } else {
-            throw err;
-          }
-        }
-        await doc.ref.update({ authUid: userRecord.uid });
-        migrados.push(username);
-      } catch (err) {
-        errores.push({ id: doc.id, username, motivo: String(err.message || err) });
-      }
-    }
-
-    logger.info(
-      `Migración a Firebase Auth: ${migrados.length} migrado(s), ${yaExistian.length} ya exist(ía/ían), ${errores.length} con error.`
-    );
-    return { migrados, yaExistian, errores };
-  }
-);
-
-// ─── FASE B: ADMINISTRACIÓN DE USUARIOS SOBRE FIREBASE AUTH REAL ──────────
-//
-// Ahora que el login real usa Firebase Authentication (ya no compara clave
-// en texto plano), dos acciones de Admin → Usuarios necesitan pasar por una
-// Cloud Function con permisos de administrador, porque el navegador de
-// quien administra NO tiene permiso para tocar la cuenta de Firebase Auth de
-// OTRA persona (solo la propia):
-//   - Crear un usuario nuevo: hay que crear su cuenta real de Firebase Auth
-//     además de su documento en Firestore, si no, no podría iniciar sesión.
-//   - Resetear la clave de otro usuario: cambiar la clave de una cuenta de
-//     Firebase Auth que no es la tuya requiere el SDK de administrador
-//     (`admin.auth().updateUser`), el cliente no puede hacerlo directo.
-// Ambas funciones exigen sesión iniciada (`request.auth`) Y que quien llama
-// tenga `isAdmin: true` en su propio documento de `users` — se verifica
-// buscando ese documento por `authUid == request.auth.uid`.
-async function verificarLlamadorEsAdmin(request) {
-  if (!request.auth) {
-    throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
-  }
-  const snap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
-  if (snap.empty || !snap.docs[0].data().isAdmin) {
-    throw new HttpsError("permission-denied", "Solo un administrador puede hacer esto.");
-  }
-  return snap.docs[0];
-}
-
-exports.adminCrearUsuario = onCall(
-  { timeoutSeconds: 60, memory: "256MiB" },
-  async (request) => {
-    await verificarLlamadorEsAdmin(request);
-    const { name, username, password, role, isAdmin } = request.data || {};
-    const nombreLimpio = String(name || "").trim();
-    const usernameNorm = String(username || "").trim().toLowerCase();
-    if (!nombreLimpio || !usernameNorm || !password) {
-      throw new HttpsError("invalid-argument", "Nombre, usuario y contraseña son obligatorios.");
-    }
-    if (String(password).length < 6) {
-      throw new HttpsError("invalid-argument", "La contraseña debe tener al menos 6 caracteres.");
-    }
-    const dupSnap = await db.collection("users").where("username", "==", usernameNorm).limit(1).get();
-    if (!dupSnap.empty) {
-      throw new HttpsError("already-exists", "Ese usuario ya existe.");
-    }
-    const email = `${usernameNorm}@techpack-yanko.local`;
-    let userRecord;
-    try {
-      userRecord = await admin.auth().createUser({ email, password: String(password), displayName: nombreLimpio });
-    } catch (err) {
-      if (err.code === "auth/email-already-exists") {
-        throw new HttpsError("already-exists", "Ya existe una cuenta de acceso con ese nombre de usuario.");
-      }
-      throw new HttpsError("internal", String(err.message || err));
-    }
-    const avatar = nombreLimpio.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-    const docRef = db.collection("users").doc();
-    await docRef.set({
-      id: docRef.id,
-      name: nombreLimpio,
-      username: usernameNorm,
-      role: role || "Equipo Interno",
-      isAdmin: !!isAdmin,
-      avatar,
-      authUid: userRecord.uid,
-    });
-    return { id: docRef.id };
-  }
-);
-
-exports.adminCambiarClaveUsuario = onCall(
-  { timeoutSeconds: 60, memory: "256MiB" },
-  async (request) => {
-    await verificarLlamadorEsAdmin(request);
-    const { userId, nuevaClave } = request.data || {};
-    if (!userId || !nuevaClave || String(nuevaClave).length < 6) {
-      throw new HttpsError("invalid-argument", "Selecciona un usuario y una contraseña de al menos 6 caracteres.");
-    }
-    const targetDoc = await db.collection("users").doc(userId).get();
-    if (!targetDoc.exists) {
-      throw new HttpsError("not-found", "Usuario no encontrado.");
-    }
-    const targetData = targetDoc.data();
-    let authUid = targetData.authUid;
-    if (!authUid) {
-      // Usuario nunca migrado a Firebase Auth (caso raro post Fase A) — se
-      // crea la cuenta ahora mismo en vez de fallar.
-      const usernameNorm = String(targetData.username || "").trim().toLowerCase();
-      const email = `${usernameNorm}@techpack-yanko.local`;
-      const userRecord = await admin.auth().createUser({ email, password: String(nuevaClave), displayName: targetData.name || usernameNorm });
-      authUid = userRecord.uid;
-      await targetDoc.ref.update({ authUid });
-    } else {
-      await admin.auth().updateUser(authUid, { password: String(nuevaClave) });
-    }
-    return { ok: true };
+    await revisarYAvisarVencidos();
   }
 );
