@@ -2221,59 +2221,32 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
 function slugCliente(c) {
   return String(c || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").slice(0, 60) || "SIN_CLIENTE";
 }
-// Semanas que quedan del mes seleccionado, desde HOY (o desde el día 1 si
-// se está mirando un mes que no es el actual) hasta el último día del mes,
-// en bloques de 7 días. La última semana se recorta al día final del mes.
-function semanasRestantesDelMes(mesSel) {
-  const [y, m] = mesSel.split("-").map(Number);
-  const finMes = new Date(y, m, 0);
-  finMes.setHours(0, 0, 0, 0);
+// Días de cumplimiento del pedido: positivo = días que faltan para la fecha
+// de entrega al cliente (fechaEntregaPedidoISO); negativo = días que YA
+// lleva vencido. Es la urgencia real para decidir qué lotes escoger primero
+// al armar la meta del mes — un lote sin fecha de pedido (ej. inventario sin
+// pedido asociado todavía) devuelve null y se ordena al final.
+function diasCumplimiento(lote) {
+  if (!lote.fechaEntregaPedidoISO) return null;
   const hoy = new Date();
   hoy.setHours(0, 0, 0, 0);
-  const esMesActual = mesSel === today().slice(0, 7);
-  const inicio = esMesActual ? hoy : new Date(y, m - 1, 1);
-  if (inicio > finMes) return [];
-  const semanas = [];
-  let cursor = new Date(inicio);
-  while (cursor <= finMes) {
-    const fin = new Date(cursor);
-    fin.setDate(fin.getDate() + 6);
-    if (fin > finMes) fin.setTime(finMes.getTime());
-    semanas.push({ desde: new Date(cursor), hasta: new Date(fin) });
-    cursor = new Date(fin);
-    cursor.setDate(cursor.getDate() + 1);
-  }
-  return semanas;
+  const fecha = new Date(lote.fechaEntregaPedidoISO);
+  fecha.setHours(0, 0, 0, 0);
+  return Math.round((fecha - hoy) / 86400000);
 }
-function fmtFechaCorta(d) {
-  return d.toLocaleDateString("es-CO", { day: "2-digit", month: "short" });
+function textoCumplimiento(dias) {
+  if (dias === null) return { texto: "Sin fecha de pedido", color: C.slate };
+  if (dias < 0) return { texto: `Vencido hace ${Math.abs(dias)}d`, color: C.red };
+  if (dias === 0) return { texto: "Vence hoy", color: C.red };
+  if (dias <= 3) return { texto: `Faltan ${dias}d`, color: C.amber };
+  return { texto: `Faltan ${dias}d`, color: C.green };
 }
-// Reparte una lista de "cubetas" (de la más lista para despachar a la menos
-// lista) entre las semanas restantes del mes: la más lista (BPT) se carga
-// hacia la primera semana, la menos lista (lo que falta por producir) hacia
-// la última — con las intermedias (Semiterminado, BMP, Planta) repartidas
-// proporcionalmente entre esos dos extremos. No es una promesa exacta de
-// fecha de despacho, es una guía de ritmo para no dejar todo para la última
-// semana.
-// lotesCliente (opcional): si se pasa, además de los totales por semana
-// devuelve QUÉ lotes concretos caen en cada semana — un lote cae en la
-// semana de su etapa actual (b.etapa, ej. "BPT") si esa etapa es una de las
-// cubetas repartidas. Las cubetas sin etapa (ej. "Por producir", que todavía
-// no tiene lote de verdad) no aportan lotes, solo el número.
-function repartirPorSemanas(buckets, numSemanas, lotesCliente) {
-  const totales = Array(numSemanas).fill(0);
-  const detalle = Array.from({ length: numSemanas }, () => []);
-  const lotesPorSemana = Array.from({ length: numSemanas }, () => []);
-  buckets.forEach((b, i) => {
-    if (!b.qty) return;
-    const idx = numSemanas <= 1 ? 0 : Math.min(numSemanas - 1, Math.round((i * (numSemanas - 1)) / (buckets.length - 1)));
-    totales[idx] += b.qty;
-    detalle[idx].push(b);
-    if (b.etapa && lotesCliente) {
-      lotesPorSemana[idx].push(...lotesCliente.filter((l) => l.ubicacionActual === b.etapa));
-    }
-  });
-  return { totales, detalle, lotesPorSemana };
+// Cantidad total de un lote (sumando lo que tenga en cualquiera de las 4
+// etapas) — mismo criterio que usa porCliente/categorias para sumar el
+// total disponible, así "seleccionado" se compara en las mismas unidades
+// que la meta.
+function cantidadLote(l) {
+  return (l.invPlanta || 0) + (l.invBMP || 0) + (l.invSemiterminado || 0) + (l.invBPT || 0);
 }
 function MedidorEntregasView({ lotes }) {
   const [metas, setMetas] = useState({});
@@ -2288,10 +2261,12 @@ function MedidorEntregasView({ lotes }) {
   // (solo uno abierto a la vez, para no saturar la pantalla con 10+
   // clientes expandidos).
   const [clienteAbierto, setClienteAbierto] = useState(null);
-  // Qué semana, dentro del cliente abierto, tiene su lista de lotes
-  // desplegada — igual que categoriaAbierta, guardada como "cliente__sem0".
-  const [semanaAbierta, setSemanaAbierta] = useState(null);
-  const semanas = useMemo(() => semanasRestantesDelMes(mesSel), [mesSel]);
+  // Selección manual de lotes para cumplir la meta del mes, por cliente —
+  // una planta puede tener trabajo represado de varias categorías para
+  // varias semanas o meses, así que en vez de repartir automático por
+  // etapa, aquí decides tú, categoría por categoría, mirando qué tan
+  // vencido/próximo está cada pedido, cuáles lotes cuentan para ESTE mes.
+  const [seleccion, setSeleccion] = useState({});
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "planeacion_metas_entrega"), (snap) => {
@@ -2301,6 +2276,23 @@ function MedidorEntregasView({ lotes }) {
     });
     return () => unsub();
   }, []);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_seleccion_meta"), (snap) => {
+      const s = {};
+      snap.docs.forEach((d) => { s[d.id] = d.data(); });
+      setSeleccion(s);
+    });
+    return () => unsub();
+  }, []);
+  function idSeleccion(cliente) { return `${mesSel}__${slugCliente(cliente)}`; }
+  function lotesSeleccionados(cliente) { return seleccion[idSeleccion(cliente)]?.lotes || []; }
+  async function toggleLoteSeleccionado(cliente, numLote) {
+    const id = idSeleccion(cliente);
+    const actuales = seleccion[id]?.lotes || [];
+    const nuevos = actuales.includes(numLote) ? actuales.filter((n) => n !== numLote) : [...actuales, numLote];
+    await fsSave("planeacion_seleccion_meta", id, { cliente, mes: mesSel, lotes: nuevos });
+  }
 
   const porCliente = useMemo(() => {
     const map = new Map();
@@ -2420,10 +2412,26 @@ function MedidorEntregasView({ lotes }) {
                 {meta > 0 && (
                   <div style={{ marginBottom: 12 }}>
                     <div style={{ fontSize: 11, color: C.slate }}>
-                      {fmtNum(g.total)} / {fmtNum(meta)} unidades ({pct}%){falta > 0 ? ` · faltan ${fmtNum(falta)}` : " · meta cubierta 🎉"}
+                      Disponible: {fmtNum(g.total)} / {fmtNum(meta)} unidades ({pct}%){falta > 0 ? ` · faltan ${fmtNum(falta)}` : " · meta cubierta 🎉"}
                     </div>
                   </div>
                 )}
+                {(() => {
+                  const numsSel = lotesSeleccionados(g.cliente);
+                  const totalSel = lotesCliente.filter((l) => numsSel.includes(l.numLote)).reduce((s, l) => s + cantidadLote(l), 0);
+                  const pctSel = meta > 0 ? Math.min(100, Math.round((totalSel / meta) * 100)) : null;
+                  if (!numsSel.length && !meta) return null;
+                  return (
+                    <div style={{ marginBottom: 14, padding: "10px 14px", background: C.blueBg, borderRadius: 10, border: `1.5px solid ${C.blue}` }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: C.blue, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 4 }}>
+                        ✅ Seleccionado para cumplir la meta
+                      </div>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: C.ink }}>
+                        {fmtNum(totalSel)}{meta > 0 ? ` / ${fmtNum(meta)} (${pctSel}%)` : ""} <span style={{ fontSize: 11, fontWeight: 600, color: C.slate }}>· {numsSel.length} lote{numsSel.length !== 1 ? "s" : ""}</span>
+                      </div>
+                    </div>
+                  );
+                })()}
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: g.categorias.length ? 14 : 0 }}>
                   <MiniStatEntrega label="Planta" value={g.planta} color={C.green} bg={C.greenBg} />
                   <MiniStatEntrega label="BMP" value={g.bmp} color={C.amber} bg={C.amberBg} />
@@ -2447,12 +2455,25 @@ function MedidorEntregasView({ lotes }) {
                           // Los lotes reales detrás de este número — mismo
                           // cliente + categoría, y con algo de inventario en
                           // alguna de las 4 etapas (si no, no aporta al total).
-                          const lotesCategoria = lotes.filter(
-                            (l) =>
-                              (l.clienteAgrupado || l.nombreCliente || "(Sin cliente)") === g.cliente &&
-                              (l.categoria || "(Sin categoría)") === c.categoria &&
-                              (l.invPlanta > 0 || l.invBMP > 0 || l.invSemiterminado > 0 || l.invBPT > 0)
-                          );
+                          const lotesCategoria = lotes
+                            .filter(
+                              (l) =>
+                                (l.clienteAgrupado || l.nombreCliente || "(Sin cliente)") === g.cliente &&
+                                (l.categoria || "(Sin categoría)") === c.categoria &&
+                                (l.invPlanta > 0 || l.invBMP > 0 || l.invSemiterminado > 0 || l.invBPT > 0)
+                            )
+                            // Más urgente primero: pedido más vencido / más
+                            // próximo a vencer arriba, sin fecha al final —
+                            // así se selecciona de arriba hacia abajo.
+                            .sort((a, b) => {
+                              const da = diasCumplimiento(a);
+                              const db_ = diasCumplimiento(b);
+                              if (da === null && db_ === null) return 0;
+                              if (da === null) return 1;
+                              if (db_ === null) return -1;
+                              return da - db_;
+                            });
+                          const numsSel = lotesSeleccionados(g.cliente);
                           return (
                             <Fragment key={c.categoria}>
                               <tr
@@ -2476,23 +2497,35 @@ function MedidorEntregasView({ lotes }) {
                                         <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
                                           <thead>
                                             <tr>
-                                              {["Lote", "Referencia", "Planta", "BMP", "Semiterminado", "BPT", "Etapa actual"].map((h) => (
-                                                <th key={h} style={{ textAlign: ["Planta", "BMP", "Semiterminado", "BPT"].includes(h) ? "right" : "left", padding: "4px 8px", color: C.slate, fontWeight: 700 }}>{h}</th>
+                                              {["", "Lote", "Referencia", "Cantidad", "Etapa actual", "Cumplimiento pedido"].map((h) => (
+                                                <th key={h} style={{ textAlign: h === "Cantidad" ? "right" : "left", padding: "4px 8px", color: C.slate, fontWeight: 700 }}>{h}</th>
                                               ))}
                                             </tr>
                                           </thead>
                                           <tbody>
-                                            {lotesCategoria.map((l) => (
-                                              <tr key={l.numLote} style={{ borderTop: `1px solid ${C.border}` }}>
-                                                <td style={{ padding: "4px 8px" }}>{l.numLote}</td>
-                                                <td style={{ padding: "4px 8px" }}>{l.referencia}</td>
-                                                <td style={{ padding: "4px 8px", textAlign: "right" }}>{l.invPlanta ? fmtNum(l.invPlanta) : "—"}</td>
-                                                <td style={{ padding: "4px 8px", textAlign: "right" }}>{l.invBMP ? fmtNum(l.invBMP) : "—"}</td>
-                                                <td style={{ padding: "4px 8px", textAlign: "right" }}>{l.invSemiterminado ? fmtNum(l.invSemiterminado) : "—"}</td>
-                                                <td style={{ padding: "4px 8px", textAlign: "right" }}>{l.invBPT ? fmtNum(l.invBPT) : "—"}</td>
-                                                <td style={{ padding: "4px 8px" }}>{l.ubicacionActual}</td>
-                                              </tr>
-                                            ))}
+                                            {lotesCategoria.map((l) => {
+                                              const marcado = numsSel.includes(l.numLote);
+                                              const dias = diasCumplimiento(l);
+                                              const { texto, color } = textoCumplimiento(dias);
+                                              return (
+                                                <tr key={l.numLote} style={{ borderTop: `1px solid ${C.border}`, background: marcado ? C.blueBg : "transparent" }}>
+                                                  <td style={{ padding: "4px 8px" }}>
+                                                    <input
+                                                      type="checkbox"
+                                                      checked={marcado}
+                                                      onChange={(e) => { e.stopPropagation(); toggleLoteSeleccionado(g.cliente, l.numLote); }}
+                                                      onClick={(e) => e.stopPropagation()}
+                                                      style={{ cursor: "pointer" }}
+                                                    />
+                                                  </td>
+                                                  <td style={{ padding: "4px 8px" }}>{l.numLote}</td>
+                                                  <td style={{ padding: "4px 8px" }}>{l.referencia}</td>
+                                                  <td style={{ padding: "4px 8px", textAlign: "right", fontWeight: 700 }}>{fmtNum(cantidadLote(l))}</td>
+                                                  <td style={{ padding: "4px 8px" }}>{l.ubicacionActual}</td>
+                                                  <td style={{ padding: "4px 8px", color, fontWeight: 700 }}>{texto}</td>
+                                                </tr>
+                                              );
+                                            })}
                                           </tbody>
                                         </table>
                                       )}
@@ -2507,85 +2540,6 @@ function MedidorEntregasView({ lotes }) {
                     </table>
                   </div>
                 )}
-                {semanas.length > 0 && g.total > 0 && (() => {
-                  const buckets = [
-                    { qty: g.bpt, label: "BPT (listo para despacho)", color: C.blue, etapa: "BPT" },
-                    { qty: g.semiterminado, label: "Semiterminado", color: C.violet, etapa: "Semiterminado" },
-                    { qty: g.bmp, label: "BMP", color: C.amber, etapa: "BMP" },
-                    { qty: g.planta, label: "Planta", color: C.green, etapa: "Planta" },
-                    ...(meta > 0 && falta > 0 ? [{ qty: falta, label: "Por producir (aún sin cortar)", color: C.red, etapa: null }] : []),
-                  ];
-                  const { totales, detalle, lotesPorSemana } = repartirPorSemanas(buckets, semanas.length, lotesCliente);
-                  return (
-                    <div>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>
-                        📅 Programación de despacho — semanas restantes de {mesSel}
-                      </div>
-                      <div style={{ fontSize: 10.5, color: C.slate, marginBottom: 10 }}>
-                        Reparte lo disponible priorizando lo más listo (BPT primero) hacia las semanas más cercanas — no es una fecha prometida, es una guía de ritmo. Clic en una semana para ver los lotes.
-                      </div>
-                      <div style={{ display: "grid", gridTemplateColumns: `repeat(${semanas.length},1fr)`, gap: 8 }}>
-                        {semanas.map((s, i) => {
-                          const claveSem = `${g.cliente}__sem${i}`;
-                          const semAbierta = semanaAbierta === claveSem;
-                          const lotesSemana = lotesPorSemana[i] || [];
-                          return (
-                            <div
-                              key={i}
-                              onClick={() => lotesSemana.length && setSemanaAbierta(semAbierta ? null : claveSem)}
-                              style={{ background: C.canvas, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.border}`, cursor: lotesSemana.length ? "pointer" : "default" }}
-                            >
-                              <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, marginBottom: 4 }}>
-                                Semana {i + 1} · {fmtFechaCorta(s.desde)}–{fmtFechaCorta(s.hasta)}
-                              </div>
-                              <div style={{ fontSize: 16, fontWeight: 800, color: C.ink, marginBottom: 6 }}>{fmtNum(totales[i])}</div>
-                              {detalle[i].map((b, j) => (
-                                <div key={j} style={{ fontSize: 9.5, color: b.color, fontWeight: 600 }}>{b.label}: {fmtNum(b.qty)}</div>
-                              ))}
-                              {!detalle[i].length && <div style={{ fontSize: 9.5, color: C.slate }}>—</div>}
-                              {lotesSemana.length > 0 && (
-                                <div style={{ fontSize: 9, color: C.blue, fontWeight: 700, marginTop: 6 }}>{semAbierta ? "▾" : "▸"} {lotesSemana.length} lote{lotesSemana.length !== 1 ? "s" : ""}</div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                      {semanas.map((s, i) => {
-                        const claveSem = `${g.cliente}__sem${i}`;
-                        const semAbierta = semanaAbierta === claveSem;
-                        const lotesSemana = lotesPorSemana[i] || [];
-                        if (!semAbierta || !lotesSemana.length) return null;
-                        return (
-                          <div key={`detalle-${i}`} style={{ marginTop: 8, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
-                            <div style={{ padding: "6px 12px", background: C.ink, color: C.seam, fontSize: 10, fontWeight: 700 }}>
-                              Lotes en Semana {i + 1} ({fmtFechaCorta(s.desde)}–{fmtFechaCorta(s.hasta)})
-                            </div>
-                            <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
-                              <thead>
-                                <tr>
-                                  {["Lote", "Referencia", "Categoría", "Cantidad", "Etapa"].map((h) => (
-                                    <th key={h} style={{ textAlign: h === "Cantidad" ? "right" : "left", padding: "4px 12px", color: C.slate, fontWeight: 700, background: C.canvas }}>{h}</th>
-                                  ))}
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {lotesSemana.map((l) => (
-                                  <tr key={l.numLote} style={{ borderTop: `1px solid ${C.border}` }}>
-                                    <td style={{ padding: "4px 12px" }}>{l.numLote}</td>
-                                    <td style={{ padding: "4px 12px" }}>{l.referencia}</td>
-                                    <td style={{ padding: "4px 12px" }}>{l.categoria}</td>
-                                    <td style={{ padding: "4px 12px", textAlign: "right" }}>{fmtNum(l.unidadesUbicacion)}</td>
-                                    <td style={{ padding: "4px 12px" }}>{l.ubicacionActual}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })()}
                 </div>
                 )}
               </div>
