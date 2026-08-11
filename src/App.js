@@ -1026,10 +1026,74 @@ function PomTable({ pom, tallas }) {
   );
 }
 
+// Trae en vivo el maestro de referencias de Busint (getReferenciasBusint) y
+// lo deja como un Set normalizado (mayúsculas, sin espacios) para poder
+// verificar al instante, mientras el usuario escribe o usa la sugerencia,
+// si un código ya existe allá. Se consulta una sola vez por apertura del
+// modal — no en cada tecla — para no golpear la API de Busint de más.
+function useMaestroReferenciasBusint() {
+  const [estado, setEstado] = useState({ cargando: true, error: "", set: null });
+  useEffect(() => {
+    let cancelado = false;
+    (async () => {
+      try {
+        const llamar = httpsCallable(functionsClient, "getReferenciasBusint");
+        const resp = await llamar({});
+        if (cancelado) return;
+        const refs = (resp.data?.referencias || []).map((r) => String(r.ref || "").trim().toUpperCase()).filter(Boolean);
+        setEstado({ cargando: false, error: "", set: new Set(refs) });
+      } catch (err) {
+        if (!cancelado) {
+          setEstado({
+            cargando: false,
+            error: err?.message || "Verifica que la función getReferenciasBusint esté desplegada.",
+            set: null,
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, []);
+  return estado;
+}
+// Caja compartida por "Nuevo Prototipo" y "Nueva Referencia": arriba la
+// sugerencia de consecutivo (si aún no hay Ref escrita), abajo el resultado
+// de verificarla en vivo contra Busint — lo que sea que esté hoy en el
+// campo Ref, venga de la sugerencia o escrita a mano.
+function SugerenciaYVerificacionRef({ sugerencia, referencia, onUsar, busint }) {
+  const refNorm = String(referencia || "").trim().toUpperCase();
+  if (!sugerencia && !refNorm) return null;
+  return (
+    <div style={{ padding: "10px 12px", background: T.canvas, borderRadius: 8, marginBottom: 12, border: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 6 }}>
+      {sugerencia && !refNorm && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 12.5, color: T.jade, fontWeight: 700 }}>
+          <span>🔢 Sugerencia de referencia: <strong>{sugerencia}</strong></span>
+          <button onClick={onUsar} style={{ background: T.jade, color: T.white, border: "none", borderRadius: 6, padding: "4px 10px", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Usar</button>
+        </div>
+      )}
+      {refNorm && busint.cargando && (
+        <div style={{ fontSize: 12, color: T.slate, fontWeight: 600 }}>🔎 Verificando "{referencia}" contra el maestro de Busint...</div>
+      )}
+      {refNorm && !busint.cargando && busint.error && (
+        <div style={{ fontSize: 12, color: T.amber, fontWeight: 600 }}>⚠ No se pudo verificar contra Busint — {busint.error}</div>
+      )}
+      {refNorm && !busint.cargando && !busint.error && (
+        busint.set.has(refNorm) ? (
+          <div style={{ fontSize: 12, color: T.coral, fontWeight: 700 }}>⚠ "{referencia}" YA EXISTE en Busint — elige otro consecutivo</div>
+        ) : (
+          <div style={{ fontSize: 12, color: T.jade, fontWeight: 700 }}>✅ "{referencia}" verificada — no existe en Busint, libre para usar</div>
+        )
+      )}
+    </div>
+  );
+}
 function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
   const [form, setForm] = useState({ name: "", categoria: "", silueta: "", rango: "", reference: "", assignedTo: "", cliente: "", mes: "", tipoTela: "", baseMolderia: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const sugerencia = sugerirReferencia(form.categoria, form.silueta, config, protos || [], capsulas || []);
+  const busint = useMaestroReferenciasBusint();
   function save() {
     if (!form.name || !form.reference) return;
     onSave({ id: uid(), ...form, status: "borrador", currentStage: "ilustracion", stageStartedAt: today(), createdAt: today(), promotedTo: null, image: null, bom: [], pom: [], observations: [] });
@@ -1047,12 +1111,7 @@ function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
         <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
         <Field label="Mes"><FSel value={form.mes} onChange={set("mes")} options={MONTHS_ES} /></Field>
       </div>
-      {sugerencia && !form.reference && (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 12px", background: T.jadeBg, borderRadius: 8, marginBottom: 12, fontSize: 12.5, color: T.jade, fontWeight: 600 }}>
-          <span>🔢 Sugerencia de referencia: <strong>{sugerencia}</strong></span>
-          <button onClick={() => set("reference")(sugerencia)} style={{ background: T.jade, color: T.white, border: "none", borderRadius: 6, padding: "4px 10px", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Usar</button>
-        </div>
-      )}
+      <SugerenciaYVerificacionRef sugerencia={sugerencia} referencia={form.reference} onUsar={() => set("reference")(sugerencia)} busint={busint} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: C-003" /></Field>
         <Field label="Responsable"><FSel value={form.assignedTo} onChange={set("assignedTo")} options={config.disenadores} /></Field>
@@ -1160,6 +1219,7 @@ function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
   const [form, setForm] = useState({ name: "", reference: "", assignedTo: "", categoria: "", silueta: "", rango: "", colores: "", tallas: "", tipoTela: "", baseMolderia: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const sugerencia = sugerirReferencia(form.categoria, form.silueta, config, protos || [], capsulas || []);
+  const busint = useMaestroReferenciasBusint();
   function save() {
     if (!form.name || !form.reference) return;
     onSave(capsula.id, {
@@ -1175,12 +1235,7 @@ function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
         <Field label="Categoría"><FSel value={form.categoria} onChange={set("categoria")} options={config.categorias} /></Field>
         <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config.siluetas} /></Field>
       </div>
-      {sugerencia && !form.reference && (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 12px", background: T.jadeBg, borderRadius: 8, marginBottom: 12, fontSize: 12.5, color: T.jade, fontWeight: 600 }}>
-          <span>🔢 Sugerencia de referencia: <strong>{sugerencia}</strong></span>
-          <button onClick={() => set("reference")(sugerencia)} style={{ background: T.jade, color: T.white, border: "none", borderRadius: 6, padding: "4px 10px", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Usar</button>
-        </div>
-      )}
+      <SugerenciaYVerificacionRef sugerencia={sugerencia} referencia={form.reference} onUsar={() => set("reference")(sugerencia)} busint={busint} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: CM-001" /></Field>
         <Field label="Cliente"><FSel value={form.colores} onChange={set("colores")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
