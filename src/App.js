@@ -529,6 +529,12 @@ const INIT_CONFIG = {
   siluetas: ["Slimfit","Regularfit","Silueta Amplia","Oversize","Super Oversize","Estándar"],
   rangos: ["Normal (S,M,L,XL)","Doble Talla (S/M - M/L)","Talla U","Plus","Plus (1XL-2XL-3XL)"],
   disenadores: [],
+  // Catálogo de codificación de referencias: cada entrada amarra una
+  // Categoría (y opcionalmente una Silueta puntual) a un prefijo de 2
+  // dígitos y un segmento (0-10). Con esto, sugerirReferencia() calcula el
+  // consecutivo automático al crear un Prototipo o una Referencia de
+  // Cápsula. Si silueta queda vacío, la entrada aplica a toda la categoría.
+  codigosReferencia: [],
   // Áreas de la compañía usadas en el módulo de KPIs (ver KPIsView), que
   // cubre TODA la empresa, no solo Diseño. Cada Puesto (colección
   // `kpi_puestos`) pertenece a UNA de estas áreas; cada persona y cada KPI
@@ -631,6 +637,42 @@ function isOverdue(item, stages) {
 }
 function today() { return new Date().toISOString().slice(0, 10); }
 function nowISO() { return new Date().toISOString(); }
+// Calcula el próximo consecutivo de referencia (Ej: "76-403") a partir del
+// catálogo config.codigosReferencia. Busca primero una entrada que amarre
+// exactamente categoria+silueta; si no hay, cae a una entrada de esa
+// categoría sin silueta puntual (aplica a toda la categoría). El corrido
+// (número dentro del segmento, del 01 al 99) nunca se reinicia: escanea
+// TODAS las referencias ya usadas (prototipos + referencias de cápsulas,
+// vivas o históricas) con ese mismo prefijo-segmento y sigue desde la más
+// alta encontrada, no desde las que existen hoy en pantalla.
+function sugerirReferencia(categoria, silueta, config, protos, capsulas) {
+  const catalogo = config?.codigosReferencia || [];
+  if (!categoria || catalogo.length === 0) return null;
+  const entrada =
+    catalogo.find((c) => c.categoria === categoria && c.silueta && c.silueta === silueta) ||
+    catalogo.find((c) => c.categoria === categoria && !c.silueta);
+  if (!entrada || !entrada.prefijo) return null;
+  const prefijo = String(entrada.prefijo).trim();
+  const segmento = Number(entrada.segmento) || 0;
+  const base = segmento * 100;
+  const regex = new RegExp(`^${prefijo}-(\\d+)$`);
+  const todasLasRefs = [
+    ...protos.map((p) => p.reference),
+    ...capsulas.flatMap((c) => (c.referencias || []).map((r) => r.reference)),
+  ];
+  let maxCorrido = 0;
+  todasLasRefs.forEach((ref) => {
+    const m = regex.exec(String(ref || "").trim());
+    if (!m) return;
+    const num = parseInt(m[1], 10);
+    if (num >= base && num < base + 100) {
+      const corrido = num - base;
+      if (corrido > maxCorrido) maxCorrido = corrido;
+    }
+  });
+  const siguiente = base + maxCorrido + 1;
+  return `${prefijo}-${String(siguiente).padStart(3, "0")}`;
+}
 // Permisos de módulo (visibilidad por sección: Prototipos, Cápsulas, Pedidos,
 // Clientes, Corte, Estadísticas, Contabilidad), separados de los permisos de
 // flujo de trabajo (editar/aprobar/declinar/admin). Cada sección se autoriza
@@ -984,9 +1026,10 @@ function PomTable({ pom, tallas }) {
   );
 }
 
-function NewProtoModal({ onSave, onClose, config }) {
+function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
   const [form, setForm] = useState({ name: "", categoria: "", silueta: "", rango: "", reference: "", assignedTo: "", cliente: "", mes: "", tipoTela: "", baseMolderia: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  const sugerencia = sugerirReferencia(form.categoria, form.silueta, config, protos || [], capsulas || []);
   function save() {
     if (!form.name || !form.reference) return;
     onSave({ id: uid(), ...form, status: "borrador", currentStage: "ilustracion", stageStartedAt: today(), createdAt: today(), promotedTo: null, image: null, bom: [], pom: [], observations: [] });
@@ -1004,6 +1047,12 @@ function NewProtoModal({ onSave, onClose, config }) {
         <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
         <Field label="Mes"><FSel value={form.mes} onChange={set("mes")} options={MONTHS_ES} /></Field>
       </div>
+      {sugerencia && !form.reference && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 12px", background: T.jadeBg, borderRadius: 8, marginBottom: 12, fontSize: 12.5, color: T.jade, fontWeight: 600 }}>
+          <span>🔢 Sugerencia de referencia: <strong>{sugerencia}</strong></span>
+          <button onClick={() => set("reference")(sugerencia)} style={{ background: T.jade, color: T.white, border: "none", borderRadius: 6, padding: "4px 10px", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Usar</button>
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: C-003" /></Field>
         <Field label="Responsable"><FSel value={form.assignedTo} onChange={set("assignedTo")} options={config.disenadores} /></Field>
@@ -1107,9 +1156,10 @@ function NewCapsulaModal({ onSave, onClose, config }) {
   );
 }
 
-function NewRefModal({ capsula, onSave, onClose, config }) {
+function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
   const [form, setForm] = useState({ name: "", reference: "", assignedTo: "", categoria: "", silueta: "", rango: "", colores: "", tallas: "", tipoTela: "", baseMolderia: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  const sugerencia = sugerirReferencia(form.categoria, form.silueta, config, protos || [], capsulas || []);
   function save() {
     if (!form.name || !form.reference) return;
     onSave(capsula.id, {
@@ -1125,6 +1175,12 @@ function NewRefModal({ capsula, onSave, onClose, config }) {
         <Field label="Categoría"><FSel value={form.categoria} onChange={set("categoria")} options={config.categorias} /></Field>
         <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config.siluetas} /></Field>
       </div>
+      {sugerencia && !form.reference && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 12px", background: T.jadeBg, borderRadius: 8, marginBottom: 12, fontSize: 12.5, color: T.jade, fontWeight: 600 }}>
+          <span>🔢 Sugerencia de referencia: <strong>{sugerencia}</strong></span>
+          <button onClick={() => set("reference")(sugerencia)} style={{ background: T.jade, color: T.white, border: "none", borderRadius: 6, padding: "4px 10px", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Usar</button>
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: CM-001" /></Field>
         <Field label="Cliente"><FSel value={form.colores} onChange={set("colores")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
@@ -5115,7 +5171,22 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // Corte, Ventas, Contabilidad, Planeación, etc.), por eso su permiso vive
   // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
   const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["kpis", "🎯 KPIs"], ["informes", "📋 Informes"]];
-  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
+  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
+  const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", silueta: "", prefijo: "", segmento: "0" });
+  function addCodigoReferencia() {
+    const prefijo = nuevoCodigo.prefijo.trim();
+    if (!nuevoCodigo.categoria || !prefijo) return;
+    onUpdateConfig({
+      codigosReferencia: [
+        ...(config.codigosReferencia || []),
+        { id: uid(), categoria: nuevoCodigo.categoria, silueta: nuevoCodigo.silueta, prefijo, segmento: Math.max(0, Math.min(10, Number(nuevoCodigo.segmento) || 0)) },
+      ],
+    });
+    setNuevoCodigo({ categoria: "", silueta: "", prefijo: "", segmento: "0" });
+  }
+  function removeCodigoReferencia(id) {
+    onUpdateConfig({ codigosReferencia: (config.codigosReferencia || []).filter((c) => c.id !== id) });
+  }
   function ListEditor({ listKey, title }) {
     return (
       <div>
@@ -5187,6 +5258,52 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
         {tab === "categorias" && <ListEditor listKey="categorias" title="Categorías" />}
         {tab === "siluetas" && <ListEditor listKey="siluetas" title="Siluetas" />}
         {tab === "rangos" && <ListEditor listKey="rangos" title="Rangos" />}
+        {tab === "codigos_referencia" && (
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Códigos de Referencia</div>
+            <div style={{ fontSize: 12.5, color: T.slate, marginBottom: 16 }}>
+              Cada fila amarra una Categoría (y opcionalmente una Silueta puntual) a un prefijo de 2 dígitos y un segmento (0 al 10). Con esto, ATLAS sugiere solo el consecutivo — nunca se reinicia y nunca se repite.
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1.3fr 0.8fr 0.7fr auto", gap: 8, marginBottom: 20, alignItems: "end" }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Categoría</div>
+                <FSel value={nuevoCodigo.categoria} onChange={(v) => setNuevoCodigo((f) => ({ ...f, categoria: v }))} options={config.categorias} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Silueta (opcional)</div>
+                <FSel value={nuevoCodigo.silueta} onChange={(v) => setNuevoCodigo((f) => ({ ...f, silueta: v }))} options={config.siluetas} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Prefijo</div>
+                <input value={nuevoCodigo.prefijo} onChange={(e) => setNuevoCodigo((f) => ({ ...f, prefijo: e.target.value }))} placeholder="Ej: 98" maxLength={4} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Segmento (0-10)</div>
+                <input type="number" min={0} max={10} value={nuevoCodigo.segmento} onChange={(e) => setNuevoCodigo((f) => ({ ...f, segmento: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+              </div>
+              <Btn onClick={addCodigoReferencia}>+ Agregar</Btn>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {(config.codigosReferencia || []).length === 0 && (
+                <div style={{ fontSize: 13, color: T.slate, fontStyle: "italic" }}>Aún no hay códigos registrados.</div>
+              )}
+              {(config.codigosReferencia || []).map((c) => {
+                const base = (Number(c.segmento) || 0) * 100;
+                const rango = `${c.prefijo}-${String(base + 1).padStart(3, "0")} a ${c.prefijo}-${String(base + 99).padStart(3, "0")}`;
+                return (
+                  <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: T.canvas, borderRadius: 8, border: `1px solid ${T.border}` }}>
+                    <div>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: T.ink }}>{c.categoria}</span>
+                      {c.silueta && <span style={{ fontSize: 12, color: T.slate, marginLeft: 8 }}>· {c.silueta}</span>}
+                      <span style={{ fontSize: 12, color: T.denim, marginLeft: 10, fontWeight: 600 }}>{rango}</span>
+                    </div>
+                    <button onClick={() => removeCodigoReferencia(c.id)} style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "4px 10px", color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Eliminar</button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
         {tab === "disenadores" && <ListEditor listKey="disenadores" title="Diseñadores" />}
         {tab === "kpi_areas" && (
           <div>
@@ -7703,9 +7820,9 @@ function AppInner() {
           onClose={() => setShowCambiarClave(false)}
         />
       )}
-      {modal === "new-proto" && <NewProtoModal onSave={addProto} onClose={() => setModal(null)} config={config} />}
+      {modal === "new-proto" && <NewProtoModal onSave={addProto} onClose={() => setModal(null)} config={config} protos={protos} capsulas={capsulas} />}
       {modal === "new-capsula" && <NewCapsulaModal onSave={addCapsula} onClose={() => setModal(null)} config={config} />}
-      {modal === "new-ref" && newRefCap && <NewRefModal capsula={newRefCap} onSave={addRef} onClose={() => { setModal(null); setNewRefCap(null); }} config={config} />}
+      {modal === "new-ref" && newRefCap && <NewRefModal capsula={newRefCap} onSave={addRef} onClose={() => { setModal(null); setNewRefCap(null); }} config={config} protos={protos} capsulas={capsulas} />}
       {modal === "promote" && promoteProto && <PromoteModal proto={promoteProto} capsulas={capsulas} onSave={promoteToCapsula} onClose={() => { setModal(null); setPromoteProto(null); }} config={config} />}
       {modal === "new-pedido" && <SubirPedidoModal2 onSave={addPedido} onClose={() => setModal(null)} pedidoConfig={pedidoConfig} pedidos={pedidos} clientes={config.clientes} />}
       <div style={{ display: "flex", minHeight: "100vh" }}>
