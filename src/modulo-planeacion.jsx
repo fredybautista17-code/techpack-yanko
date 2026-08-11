@@ -1509,6 +1509,19 @@ function ProgramarBMPModal({ fila, capacidades, asignaciones, onConfirm, onClose
   }, [asignaciones, fila.referencia]);
   const [nombrePlanta, setNombrePlanta] = useState(ultimaParaRef?.nombrePlanta || "");
   const [precioConfeccion, setPrecioConfeccion] = useState(ultimaParaRef?.precioConfeccion || "");
+  // Verificador de precio (mismo que la pestaña "Verificador de Precio" de
+  // BMP y que el módulo Planta) pero ya filtrado por la referencia de este
+  // lote — para saber qué precio pactado/real trae esa referencia sin tener
+  // que salir del modal a buscarlo a mano.
+  const entradasPlanta = useEntradasPlantaActivas();
+  const historialPrecio = useMemo(() => {
+    const ref = (fila.referencia || "").toLowerCase();
+    if (!ref) return [];
+    return entradasPlanta
+      .filter((e) => (e.refExt || "").toLowerCase() === ref || String(e.refN || "").toLowerCase() === ref)
+      .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
+      .slice(0, 3);
+  }, [entradasPlanta, fila.referencia]);
   const usadoDia = asignaciones.filter((a) => a.fecha === fecha).reduce((s, a) => s + (a.cantidad || 0), 0);
   const capacidad = capacidades[fecha] ?? DEFAULT_CAPACIDAD_DIA;
   const disponible = capacidad - usadoDia;
@@ -1555,6 +1568,39 @@ function ProgramarBMPModal({ fila, capacidades, asignaciones, onConfirm, onClose
           {plantasUsadas.map((p) => <option key={p} value={p} />)}
         </datalist>
       </div>
+      {historialPrecio.length > 0 && (
+        <div style={{ marginBottom: 14, padding: "10px 12px", background: C.canvas, borderRadius: 8, border: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 10, fontWeight: 800, color: C.ink, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+            🔎 Historial de precio · {fila.referencia}
+          </div>
+          {historialPrecio.map((h, i) => (
+            <div
+              key={i}
+              style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, padding: "5px 0", borderTop: i > 0 ? `1px solid ${C.border}` : "none" }}
+            >
+              <span style={{ color: C.slate }}>{fmtFechaISO(h.fecha)} · {h.nombrePlanta}</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ color: C.slate }}>Teórico ${fmtNum(h.precioTeorico)}</span>
+                <span style={{ fontWeight: 800, color: h.precioEntrada !== h.precioTeorico ? C.red : C.green }}>
+                  Entrada ${fmtNum(h.precioEntrada)}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setPrecioConfeccion(h.precioEntrada)}
+                  style={{ fontSize: 11, color: C.blue, background: "none", border: "none", cursor: "pointer", textDecoration: "underline", padding: 0 }}
+                >
+                  usar
+                </button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {!historialPrecio.length && entradasPlanta.length > 0 && (
+        <div style={{ fontSize: 11, color: C.slate, marginBottom: 14 }}>
+          Sin historial de precio de entrada para {fila.referencia} todavía.
+        </div>
+      )}
       <div style={{ marginBottom: 18 }}>
         <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>Precio de Confección (por unidad)</label>
         <input
@@ -1588,10 +1634,13 @@ function ProgramarBMPModal({ fila, capacidades, asignaciones, onConfirm, onClose
 // Se suscribe directo a `planta_entradas_cargas` (la misma colección que llena
 // el módulo Planta al subir "ENTRADAS DE PLANTA.xlsx") para poder buscar por
 // referencia acá mismo, sin tener que salir a otro módulo — busca las últimas
-// 5 entradas y compara precio teórico (ValPlanta, fijo por referencia en la
+// entradas y compara precio teórico (ValPlanta, fijo por referencia en la
 // ficha técnica) vs. precio de entrada real (VaEnt, puede variar entrada a
 // entrada) para detectar cuándo una planta cobró distinto a lo pactado.
-function VerificadorPrecioBMPView() {
+// Hook compartido — lo usan tanto el Verificador (pestaña propia, con
+// búsqueda libre) como el modal de Programar Lote (búsqueda automática por
+// la referencia del lote, para sugerir qué precio de confección poner).
+function useEntradasPlantaActivas() {
   const [cargasEntradas, setCargasEntradas] = useState([]);
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "planta_entradas_cargas"), (snap) => {
@@ -1599,11 +1648,13 @@ function VerificadorPrecioBMPView() {
     });
     return () => unsub();
   }, []);
-  const cargaEntradasActiva = useMemo(() => {
+  return useMemo(() => {
     const ordenadas = [...cargasEntradas].sort((a, b) => (b.creadoEn || b.fecha || "").localeCompare(a.creadoEn || a.fecha || ""));
-    return ordenadas[0] || null;
+    return ordenadas[0]?.entradas || [];
   }, [cargasEntradas]);
-  const entradas = cargaEntradasActiva?.entradas || [];
+}
+function VerificadorPrecioBMPView() {
+  const entradas = useEntradasPlantaActivas();
   const [busqueda, setBusqueda] = useState("");
   const resultado = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
@@ -1614,7 +1665,7 @@ function VerificadorPrecioBMPView() {
       .slice(0, 5);
   }, [entradas, busqueda]);
   const planta = resultado[0]?.nombrePlanta || null;
-  if (!cargaEntradasActiva) {
+  if (!entradas.length) {
     return (
       <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13, background: C.canvas, borderRadius: 12, border: `1px dashed ${C.border}` }}>
         Aún no hay ninguna carga de "Entradas de Planta" subida (se sube desde el módulo Planta) — en cuanto haya una, se puede buscar por referencia acá mismo.
@@ -1765,7 +1816,6 @@ const REPORTES = [
   { id: "bmp", label: "BMP", icon: "🧵" },
   { id: "bpt", label: "BPT", icon: "🏬" },
   { id: "programacion_yanko", label: "Programación Yanko", icon: "🎯" },
-  { id: "comparar", label: "Comparar Períodos", icon: "📈" },
   { id: "medidor_entregas", label: "Medidor de Entregas", icon: "🚚" },
 ];
 function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser }) {
@@ -2142,7 +2192,6 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
               )}
             </div>
           )}
-          {tab === "comparar" && <BloqueCompararPeriodos cargasOrdenadas={cargasOrdenadas} clienteAsociado={clienteAsociado} />}
           {tab === "medidor_entregas" && <MedidorEntregasView lotes={lotes} />}
         </>
       )}
@@ -2178,15 +2227,32 @@ function MedidorEntregasView({ lotes }) {
     const map = new Map();
     lotes.forEach((l) => {
       const cli = l.clienteAgrupado || l.nombreCliente || "(Sin cliente)";
-      if (!map.has(cli)) map.set(cli, { cliente: cli, planta: 0, bmp: 0, semiterminado: 0, bpt: 0 });
+      if (!map.has(cli)) map.set(cli, { cliente: cli, planta: 0, bmp: 0, semiterminado: 0, bpt: 0, categorias: new Map() });
       const g = map.get(cli);
       g.planta += l.invPlanta || 0;
       g.bmp += l.invBMP || 0;
       g.semiterminado += l.invSemiterminado || 0;
       g.bpt += l.invBPT || 0;
+      // Desglose por categoría dentro de cada cliente — mismas 4 etapas, para
+      // ver de qué categorías es el inventario disponible (ej. cuánto de los
+      // 30 mil de Kamila son Shorts vs. Camisetas).
+      const cat = l.categoria || "(Sin categoría)";
+      if (!g.categorias.has(cat)) g.categorias.set(cat, { categoria: cat, planta: 0, bmp: 0, semiterminado: 0, bpt: 0 });
+      const c = g.categorias.get(cat);
+      c.planta += l.invPlanta || 0;
+      c.bmp += l.invBMP || 0;
+      c.semiterminado += l.invSemiterminado || 0;
+      c.bpt += l.invBPT || 0;
     });
     return [...map.values()]
-      .map((g) => ({ ...g, total: g.planta + g.bmp + g.semiterminado + g.bpt }))
+      .map((g) => ({
+        ...g,
+        total: g.planta + g.bmp + g.semiterminado + g.bpt,
+        categorias: [...g.categorias.values()]
+          .map((c) => ({ ...c, total: c.planta + c.bmp + c.semiterminado + c.bpt }))
+          .filter((c) => c.total > 0)
+          .sort((a, b) => b.total - a.total),
+      }))
       .filter((g) => g.total > 0)
       .sort((a, b) => b.total - a.total);
   }, [lotes]);
@@ -2253,12 +2319,26 @@ function MedidorEntregasView({ lotes }) {
                     </div>
                   </div>
                 )}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: g.categorias.length ? 14 : 0 }}>
                   <MiniStatEntrega label="Planta" value={g.planta} color={C.green} bg={C.greenBg} />
                   <MiniStatEntrega label="BMP" value={g.bmp} color={C.amber} bg={C.amberBg} />
                   <MiniStatEntrega label="Semiterminado" value={g.semiterminado} color={C.violet} bg={C.violetBg} />
                   <MiniStatEntrega label="BPT" value={g.bpt} color={C.blue} bg={C.blueBg} />
                 </div>
+                {g.categorias.length > 0 && (
+                  <Tabla
+                    vacio="Sin categorías."
+                    columnas={[
+                      { key: "categoria", label: "Categoría" },
+                      { key: "planta", label: "Planta", align: "right", render: (f) => fmtNum(f.planta) },
+                      { key: "bmp", label: "BMP", align: "right", render: (f) => fmtNum(f.bmp) },
+                      { key: "semiterminado", label: "Semiterminado", align: "right", render: (f) => fmtNum(f.semiterminado) },
+                      { key: "bpt", label: "BPT", align: "right", render: (f) => fmtNum(f.bpt) },
+                      { key: "total", label: "Total", align: "right", render: (f) => <strong style={{ color: C.ink }}>{fmtNum(f.total)}</strong> },
+                    ]}
+                    filas={g.categorias}
+                  />
+                )}
               </div>
             );
           })}
