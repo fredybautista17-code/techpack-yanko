@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, Fragment } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import {
   getFirestore,
@@ -2221,11 +2221,61 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
 function slugCliente(c) {
   return String(c || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").slice(0, 60) || "SIN_CLIENTE";
 }
+// Semanas que quedan del mes seleccionado, desde HOY (o desde el día 1 si
+// se está mirando un mes que no es el actual) hasta el último día del mes,
+// en bloques de 7 días. La última semana se recorta al día final del mes.
+function semanasRestantesDelMes(mesSel) {
+  const [y, m] = mesSel.split("-").map(Number);
+  const finMes = new Date(y, m, 0);
+  finMes.setHours(0, 0, 0, 0);
+  const hoy = new Date();
+  hoy.setHours(0, 0, 0, 0);
+  const esMesActual = mesSel === today().slice(0, 7);
+  const inicio = esMesActual ? hoy : new Date(y, m - 1, 1);
+  if (inicio > finMes) return [];
+  const semanas = [];
+  let cursor = new Date(inicio);
+  while (cursor <= finMes) {
+    const fin = new Date(cursor);
+    fin.setDate(fin.getDate() + 6);
+    if (fin > finMes) fin.setTime(finMes.getTime());
+    semanas.push({ desde: new Date(cursor), hasta: new Date(fin) });
+    cursor = new Date(fin);
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return semanas;
+}
+function fmtFechaCorta(d) {
+  return d.toLocaleDateString("es-CO", { day: "2-digit", month: "short" });
+}
+// Reparte una lista de "cubetas" (de la más lista para despachar a la menos
+// lista) entre las semanas restantes del mes: la más lista (BPT) se carga
+// hacia la primera semana, la menos lista (lo que falta por producir) hacia
+// la última — con las intermedias (Semiterminado, BMP, Planta) repartidas
+// proporcionalmente entre esos dos extremos. No es una promesa exacta de
+// fecha de despacho, es una guía de ritmo para no dejar todo para la última
+// semana.
+function repartirPorSemanas(buckets, numSemanas) {
+  const totales = Array(numSemanas).fill(0);
+  const detalle = Array.from({ length: numSemanas }, () => []);
+  buckets.forEach((b, i) => {
+    if (!b.qty) return;
+    const idx = numSemanas <= 1 ? 0 : Math.min(numSemanas - 1, Math.round((i * (numSemanas - 1)) / (buckets.length - 1)));
+    totales[idx] += b.qty;
+    detalle[idx].push(b);
+  });
+  return { totales, detalle };
+}
 function MedidorEntregasView({ lotes }) {
   const [metas, setMetas] = useState({});
   const [editandoMeta, setEditandoMeta] = useState(null);
   const mesActual = new Date().toISOString().slice(0, 7);
   const [mesSel, setMesSel] = useState(mesActual);
+  // Qué fila de categoría está desplegada mostrando sus lotes — solo una a
+  // la vez, guardada como "cliente__categoria" para no chocar entre tarjetas
+  // de clientes distintos.
+  const [categoriaAbierta, setCategoriaAbierta] = useState(null);
+  const semanas = useMemo(() => semanasRestantesDelMes(mesSel), [mesSel]);
 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "planeacion_metas_entrega"), (snap) => {
@@ -2339,19 +2389,116 @@ function MedidorEntregasView({ lotes }) {
                   <MiniStatEntrega label="BPT" value={g.bpt} color={C.blue} bg={C.blueBg} />
                 </div>
                 {g.categorias.length > 0 && (
-                  <Tabla
-                    vacio="Sin categorías."
-                    columnas={[
-                      { key: "categoria", label: "Categoría" },
-                      { key: "planta", label: "Planta", align: "right", render: (f) => fmtNum(f.planta) },
-                      { key: "bmp", label: "BMP", align: "right", render: (f) => fmtNum(f.bmp) },
-                      { key: "semiterminado", label: "Semiterminado", align: "right", render: (f) => fmtNum(f.semiterminado) },
-                      { key: "bpt", label: "BPT", align: "right", render: (f) => fmtNum(f.bpt) },
-                      { key: "total", label: "Total", align: "right", render: (f) => <strong style={{ color: C.ink }}>{fmtNum(f.total)}</strong> },
-                    ]}
-                    filas={g.categorias}
-                  />
+                  <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 16 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ background: C.ink }}>
+                          {["Categoría", "Planta", "BMP", "Semiterminado", "BPT", "Total"].map((h, i) => (
+                            <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: i === 0 ? "left" : "right", fontWeight: 700, fontSize: 10 }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {g.categorias.map((c, i) => {
+                          const claveCat = `${g.cliente}__${c.categoria}`;
+                          const abierta = categoriaAbierta === claveCat;
+                          // Los lotes reales detrás de este número — mismo
+                          // cliente + categoría, y con algo de inventario en
+                          // alguna de las 4 etapas (si no, no aporta al total).
+                          const lotesCategoria = lotes.filter(
+                            (l) =>
+                              (l.clienteAgrupado || l.nombreCliente || "(Sin cliente)") === g.cliente &&
+                              (l.categoria || "(Sin categoría)") === c.categoria &&
+                              (l.invPlanta > 0 || l.invBMP > 0 || l.invSemiterminado > 0 || l.invBPT > 0)
+                          );
+                          return (
+                            <Fragment key={c.categoria}>
+                              <tr
+                                onClick={() => setCategoriaAbierta(abierta ? null : claveCat)}
+                                style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}`, cursor: "pointer" }}
+                              >
+                                <td style={{ padding: "7px 12px" }}>{abierta ? "▾" : "▸"} {c.categoria}</td>
+                                <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(c.planta)}</td>
+                                <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(c.bmp)}</td>
+                                <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(c.semiterminado)}</td>
+                                <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(c.bpt)}</td>
+                                <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 700, color: C.ink }}>{fmtNum(c.total)}</td>
+                              </tr>
+                              {abierta && (
+                                <tr>
+                                  <td colSpan={6} style={{ padding: 0, background: C.canvas, borderBottom: `1px solid ${C.border}` }}>
+                                    <div style={{ padding: "10px 16px" }}>
+                                      {!lotesCategoria.length ? (
+                                        <div style={{ fontSize: 11, color: C.slate }}>Sin lotes.</div>
+                                      ) : (
+                                        <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+                                          <thead>
+                                            <tr>
+                                              {["Lote", "Referencia", "Planta", "BMP", "Semiterminado", "BPT", "Etapa actual"].map((h) => (
+                                                <th key={h} style={{ textAlign: ["Planta", "BMP", "Semiterminado", "BPT"].includes(h) ? "right" : "left", padding: "4px 8px", color: C.slate, fontWeight: 700 }}>{h}</th>
+                                              ))}
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {lotesCategoria.map((l) => (
+                                              <tr key={l.numLote} style={{ borderTop: `1px solid ${C.border}` }}>
+                                                <td style={{ padding: "4px 8px" }}>{l.numLote}</td>
+                                                <td style={{ padding: "4px 8px" }}>{l.referencia}</td>
+                                                <td style={{ padding: "4px 8px", textAlign: "right" }}>{l.invPlanta ? fmtNum(l.invPlanta) : "—"}</td>
+                                                <td style={{ padding: "4px 8px", textAlign: "right" }}>{l.invBMP ? fmtNum(l.invBMP) : "—"}</td>
+                                                <td style={{ padding: "4px 8px", textAlign: "right" }}>{l.invSemiterminado ? fmtNum(l.invSemiterminado) : "—"}</td>
+                                                <td style={{ padding: "4px 8px", textAlign: "right" }}>{l.invBPT ? fmtNum(l.invBPT) : "—"}</td>
+                                                <td style={{ padding: "4px 8px" }}>{l.ubicacionActual}</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      )}
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
+                {semanas.length > 0 && g.total > 0 && (() => {
+                  const buckets = [
+                    { qty: g.bpt, label: "BPT (listo para despacho)", color: C.blue },
+                    { qty: g.semiterminado, label: "Semiterminado", color: C.violet },
+                    { qty: g.bmp, label: "BMP", color: C.amber },
+                    { qty: g.planta, label: "Planta", color: C.green },
+                    ...(meta > 0 && falta > 0 ? [{ qty: falta, label: "Por producir (aún sin cortar)", color: C.red }] : []),
+                  ];
+                  const { totales, detalle } = repartirPorSemanas(buckets, semanas.length);
+                  return (
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>
+                        📅 Programación de despacho — semanas restantes de {mesSel}
+                      </div>
+                      <div style={{ fontSize: 10.5, color: C.slate, marginBottom: 10 }}>
+                        Reparte lo disponible priorizando lo más listo (BPT primero) hacia las semanas más cercanas — no es una fecha prometida, es una guía de ritmo.
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: `repeat(${semanas.length},1fr)`, gap: 8 }}>
+                        {semanas.map((s, i) => (
+                          <div key={i} style={{ background: C.canvas, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.border}` }}>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, marginBottom: 4 }}>
+                              Semana {i + 1} · {fmtFechaCorta(s.desde)}–{fmtFechaCorta(s.hasta)}
+                            </div>
+                            <div style={{ fontSize: 16, fontWeight: 800, color: C.ink, marginBottom: 6 }}>{fmtNum(totales[i])}</div>
+                            {detalle[i].map((b, j) => (
+                              <div key={j} style={{ fontSize: 9.5, color: b.color, fontWeight: 600 }}>{b.label}: {fmtNum(b.qty)}</div>
+                            ))}
+                            {!detalle[i].length && <div style={{ fontSize: 9.5, color: C.slate }}>—</div>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             );
           })}

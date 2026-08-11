@@ -2140,7 +2140,7 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
         <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
-            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar el prototipo <strong>"{confirmDel.name}"</strong>? Esta acción no se puede deshacer.</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar el prototipo <strong>"{confirmDel.name}"</strong>? Queda en la Papelera (Administración) por si hay que restaurarlo.</div>
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
               <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
               <Btn variant="danger" onClick={() => { onDeleteProto(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
@@ -2337,7 +2337,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
         <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
-            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar la cápsula <strong>"{confirmDel.name}"</strong>, sus {confirmDel.referencias?.length || 0} referencia{confirmDel.referencias?.length !== 1 ? "s" : ""} y los envíos de Bitácora registrados para esta cápsula? Esta acción no se puede deshacer.</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar la cápsula <strong>"{confirmDel.name}"</strong> y sus {confirmDel.referencias?.length || 0} referencia{confirmDel.referencias?.length !== 1 ? "s" : ""}? Queda en la Papelera (Administración) por si hay que restaurarla.</div>
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
               <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
               <Btn variant="danger" onClick={() => { onDeleteCapsula(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
@@ -2349,7 +2349,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
         <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
-            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar la referencia <strong>"{confirmDelRef.ref.reference}"</strong> ({confirmDelRef.ref.name})? Solo se borra esta referencia — el resto de la cápsula sigue intacta. Esta acción no se puede deshacer.</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar la referencia <strong>"{confirmDelRef.ref.reference}"</strong> ({confirmDelRef.ref.name})? Solo se borra esta referencia — el resto de la cápsula sigue intacta, y queda en la Papelera (Administración) por si hay que restaurarla.</div>
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
               <Btn variant="secondary" onClick={() => setConfirmDelRef(null)}>Cancelar</Btn>
               <Btn variant="danger" onClick={() => { onDeleteRef(confirmDelRef.capId, confirmDelRef.ref.id); setConfirmDelRef(null); }}>Sí, eliminar</Btn>
@@ -5331,7 +5331,94 @@ function BusintSyncPanel() {
     </div>
   );
 }
-function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula, isAdmin }) {
+// Prototipos, cápsulas y referencias-de-cápsula con eliminado:true — nunca
+// se borran de Firestore al eliminarlos desde Prototipos/Cápsulas (ver
+// deleteProto/deleteCapsula/deleteRefFromCapsula), solo se marcan y se
+// esconden de protosVisibles/capsulasVisibles. Acá se pueden restaurar, o sí
+// borrar para siempre (purgar*, irreversible).
+function PapeleraView({ protos, capsulas, onRestaurarProto, onRestaurarCapsula, onRestaurarRef, onPurgarProto, onPurgarCapsula, onPurgarRef }) {
+  const [confirmPurga, setConfirmPurga] = useState(null);
+  const protosEliminados = protos.filter((p) => p.eliminado).sort((a, b) => (b.eliminadoEn || "").localeCompare(a.eliminadoEn || ""));
+  const capsulasEliminadas = capsulas.filter((c) => c.eliminado).sort((a, b) => (b.eliminadoEn || "").localeCompare(a.eliminadoEn || ""));
+  // Solo referencias eliminadas de cápsulas que SIGUEN vivas — si la cápsula
+  // entera está eliminada, sus referencias ya aparecen bajo "Cápsulas" y no
+  // hace falta listarlas dos veces.
+  const refsEliminadas = capsulas
+    .filter((c) => !c.eliminado)
+    .flatMap((c) => (c.referencias || []).filter((r) => r.eliminado).map((r) => ({ ...r, capsulaId: c.id, capsulaName: c.name })))
+    .sort((a, b) => (b.eliminadoEn || "").localeCompare(a.eliminadoEn || ""));
+  const total = protosEliminados.length + capsulasEliminadas.length + refsEliminadas.length;
+  function ejecutarPurga() {
+    if (!confirmPurga) return;
+    if (confirmPurga.tipo === "proto") onPurgarProto(confirmPurga.id);
+    if (confirmPurga.tipo === "capsula") onPurgarCapsula(confirmPurga.id);
+    if (confirmPurga.tipo === "ref") onPurgarRef(confirmPurga.capId, confirmPurga.id);
+    setConfirmPurga(null);
+  }
+  function Fila({ icono, titulo, subtitulo, eliminadoEn, eliminadoPor, onRestaurar, onPurgar }) {
+    return (
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: T.canvas, borderRadius: 8, border: `1px solid ${T.border}`, marginBottom: 8, gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{icono} {titulo}</div>
+          <div style={{ fontSize: 11.5, color: T.slate, marginTop: 2 }}>
+            {subtitulo ? `${subtitulo} · ` : ""}Eliminado {eliminadoEn ? new Date(eliminadoEn).toLocaleString("es-CO") : "—"}{eliminadoPor ? ` por ${eliminadoPor}` : ""}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn small variant="success" onClick={onRestaurar}>↩ Restaurar</Btn>
+          <Btn small variant="danger" onClick={onPurgar}>🗑 Eliminar definitivamente</Btn>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div>
+      {confirmPurga && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Eliminar definitivamente</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar <strong>"{confirmPurga.nombre}"</strong> para siempre? Esta vez sí es irreversible — ya no queda en la Papelera.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmPurga(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={ejecutarPurga}>Sí, eliminar para siempre</Btn>
+            </div>
+          </div>
+        </div>
+      )}
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Papelera</div>
+      <div style={{ fontSize: 12.5, color: T.slate, marginBottom: 16 }}>Prototipos, cápsulas y referencias eliminados quedan aquí — restáuralos o bórralos para siempre.</div>
+      {total === 0 && <div style={{ textAlign: "center", padding: 32, color: T.slate, fontSize: 13 }}>La papelera está vacía.</div>}
+      {protosEliminados.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 8 }}>Prototipos ({protosEliminados.length})</div>
+          {protosEliminados.map((p) => (
+            <Fila key={p.id} icono="⬡" titulo={`${p.name} — ${p.reference}`} subtitulo={p.cliente || ""} eliminadoEn={p.eliminadoEn} eliminadoPor={p.eliminadoPor}
+              onRestaurar={() => onRestaurarProto(p.id)} onPurgar={() => setConfirmPurga({ tipo: "proto", id: p.id, nombre: p.name })} />
+          ))}
+        </div>
+      )}
+      {capsulasEliminadas.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 8 }}>Cápsulas ({capsulasEliminadas.length})</div>
+          {capsulasEliminadas.map((c) => (
+            <Fila key={c.id} icono="🗂" titulo={c.name} subtitulo={`${c.referencias?.length || 0} referencia${c.referencias?.length !== 1 ? "s" : ""}`} eliminadoEn={c.eliminadoEn} eliminadoPor={c.eliminadoPor}
+              onRestaurar={() => onRestaurarCapsula(c.id)} onPurgar={() => setConfirmPurga({ tipo: "capsula", id: c.id, nombre: c.name })} />
+          ))}
+        </div>
+      )}
+      {refsEliminadas.length > 0 && (
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 8 }}>Referencias de cápsula ({refsEliminadas.length})</div>
+          {refsEliminadas.map((r) => (
+            <Fila key={r.id} icono="⬢" titulo={`${r.name} — ${r.reference}`} subtitulo={r.capsulaName} eliminadoEn={r.eliminadoEn} eliminadoPor={r.eliminadoPor}
+              onRestaurar={() => onRestaurarRef(r.capsulaId, r.id)} onPurgar={() => setConfirmPurga({ tipo: "ref", id: r.id, capId: r.capsulaId, nombre: r.name })} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula, onRestaurarProto, onRestaurarCapsula, onRestaurarRef, onPurgarProto, onPurgarCapsula, onPurgarRef, isAdmin }) {
   const [tab, setTab] = useState("etapas");
   const [newItem, setNewItem] = useState("");
   const [editItem, setEditItem] = useState(null);
@@ -5403,7 +5490,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // Corte, Ventas, Contabilidad, Planeación, etc.), por eso su permiso vive
   // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
   const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["kpis", "🎯 KPIs"], ["informes", "📋 Informes"]];
-  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
+  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["papelera", "🗑 Papelera"]];
   const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", silueta: "", prefijo: "", segmento: "0" });
   function addCodigoReferencia() {
     const prefijo = nuevoCodigo.prefijo.trim();
@@ -5450,7 +5537,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
         <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
-            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar <strong>"{confirmDel.name}"</strong>? Esta acción no se puede deshacer.</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar <strong>"{confirmDel.name}"</strong>? Queda en la Papelera por si hay que restaurarlo.</div>
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
               <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
               <Btn variant="danger" onClick={() => { if (confirmDel.tipo === "proto") onDeleteProto(confirmDel.id); else onDeleteCapsula(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
@@ -5633,9 +5720,12 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
           <div>
             <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 20 }}>Gestión de Contenido</div>
             <div style={{ marginBottom: 24 }}>
-              <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>⬡ Prototipos <span style={{ fontSize: 12, color: T.slate, fontWeight: 400 }}>({protos.length} total)</span></div>
+              {/* Los eliminados (Papelera) no aparecen aquí — "Borrar" desde
+                  esta pantalla también es un borrado suave (ver deleteProto),
+                  así que quedan recuperables en Administración → Papelera. */}
+              <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>⬡ Prototipos <span style={{ fontSize: 12, color: T.slate, fontWeight: 400 }}>({protos.filter((p) => !p.eliminado).length} total)</span></div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {protos.map((p) => (
+                {protos.filter((p) => !p.eliminado).map((p) => (
                   <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
                     <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{p.name}</div>
@@ -5645,13 +5735,13 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                     {isAdmin && <button onClick={() => setConfirmDel({ id: p.id, tipo: "proto", name: p.name })} style={{ padding: "5px 10px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 6, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>🗑 Borrar</button>}
                   </div>
                 ))}
-                {!protos.length && <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin prototipos.</div>}
+                {!protos.filter((p) => !p.eliminado).length && <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin prototipos.</div>}
               </div>
             </div>
             <div>
-              <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>⬢ Cápsulas <span style={{ fontSize: 12, color: T.slate, fontWeight: 400 }}>({capsulas.length} total)</span></div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>⬢ Cápsulas <span style={{ fontSize: 12, color: T.slate, fontWeight: 400 }}>({capsulas.filter((c) => !c.eliminado).length} total)</span></div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {capsulas.map((c) => (
+                {capsulas.filter((c) => !c.eliminado).map((c) => (
                   <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
                     <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{c.name}</div>
@@ -5661,10 +5751,16 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                     {isAdmin && <button onClick={() => setConfirmDel({ id: c.id, tipo: "capsula", name: c.name })} style={{ padding: "5px 10px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 6, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>🗑 Borrar</button>}
                   </div>
                 ))}
-                {!capsulas.length && <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin cápsulas.</div>}
+                {!capsulas.filter((c) => !c.eliminado).length && <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin cápsulas.</div>}
               </div>
             </div>
           </div>
+        )}
+        {tab === "papelera" && (
+          <PapeleraView protos={protos} capsulas={capsulas}
+            onRestaurarProto={onRestaurarProto} onRestaurarCapsula={onRestaurarCapsula} onRestaurarRef={onRestaurarRef}
+            onPurgarProto={onPurgarProto} onPurgarCapsula={onPurgarCapsula} onPurgarRef={onPurgarRef}
+          />
         )}
       </div>
     </div>
@@ -7315,8 +7411,14 @@ function AppInner() {
     const conRef = (cap.referencias || []).find((r) => r.cliente || r.colores?.[0]);
     return conRef ? (conRef.cliente || conRef.colores?.[0]) : null;
   }
-  const protosVisibles = clienteAsociado ? protos.filter((p) => (p.cliente || p.colores?.[0]) === clienteAsociado) : protos;
-  const capsulasVisibles = clienteAsociado ? capsulas.filter((cap) => capsulaCliente(cap) === clienteAsociado) : capsulas;
+  // .eliminado: true son ítems en la Papelera (ver Administración → Papelera)
+  // — se esconden de toda la navegación normal aquí mismo, en un solo lugar,
+  // sin tocar protos/capsulas (los arrays "crudos" siguen completos porque
+  // varias funciones de escritura los usan como base para no perder datos).
+  const protosVisibles = (clienteAsociado ? protos.filter((p) => (p.cliente || p.colores?.[0]) === clienteAsociado) : protos).filter((p) => !p.eliminado);
+  const capsulasVisibles = (clienteAsociado ? capsulas.filter((cap) => capsulaCliente(cap) === clienteAsociado) : capsulas)
+    .filter((cap) => !cap.eliminado)
+    .map((cap) => ({ ...cap, referencias: (cap.referencias || []).filter((r) => !r.eliminado) }));
   const pedidosVisibles = clienteAsociado ? pedidos.filter((p) => p.cliente === clienteAsociado) : pedidos;
   const cronogramaMuestrasVisibles = clienteAsociado ? cronogramaMuestras.filter((c) => c.cliente === clienteAsociado) : cronogramaMuestras;
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
@@ -7816,13 +7918,44 @@ function AppInner() {
     await updateProto(protoId, { promotedTo: capId });
     notify({ id: uid(), icon: "⬆", title: "Promovido", msg: `${ref.name} añadida.` });
   }
-  async function deleteProto(id) { setProtos((ps) => ps.filter((p) => p.id !== id)); await fsDelete("prototipos", id); }
+  // BORRADO SUAVE (Papelera): "eliminar" desde Prototipos/Cápsulas nunca
+  // borra el documento de Firestore — solo lo marca con eliminado:true y lo
+  // esconde de protosVisibles/capsulasVisibles (ver más abajo). Así, un clic
+  // de más siempre se puede deshacer desde Administración → Papelera. El
+  // borrado DE VERDAD (fsDelete, irreversible) solo pasa en las funciones
+  // purgar*Definitivo, que solo vive dentro de la Papelera.
+  async function deleteProto(id) {
+    const updated = protos.map((p) => (p.id === id ? { ...p, eliminado: true, eliminadoEn: nowISO(), eliminadoPor: currentUser?.name || "" } : p));
+    setProtos(updated);
+    await fsSave("prototipos", id, updated.find((p) => p.id === id));
+  }
+  async function restaurarProto(id) {
+    const updated = protos.map((p) => (p.id === id ? { ...p, eliminado: false } : p));
+    setProtos(updated);
+    await fsSave("prototipos", id, updated.find((p) => p.id === id));
+  }
+  async function purgarProtoDefinitivo(id) {
+    setProtos((ps) => ps.filter((p) => p.id !== id));
+    await fsDelete("prototipos", id);
+  }
   // Borrar cápsula es una acción solo de Administrador (ver botón "🗑 Borrar"
-  // en CapsulasView, gateado por isAdmin). Al borrarla, también se borran los
-  // envíos de Bitácora que tengan referencias de ESA cápsula — si no,
-  // quedaban registros huérfanos apuntando a una cápsula que ya no existe.
+  // en CapsulasView, gateado por isAdmin) — ahora es borrado suave, ver nota
+  // arriba. Los envíos de Bitácora ya no se tocan aquí: si la cápsula se
+  // restaura desde la Papelera, sus envíos siguen intactos tal como estaban.
   async function deleteCapsula(id) {
-    setCapsulas((cs) => cs.filter((c) => c.id !== id));
+    const updated = capsulas.map((c) => (c.id === id ? { ...c, eliminado: true, eliminadoEn: nowISO(), eliminadoPor: currentUser?.name || "" } : c));
+    await updateCapsulasAndSave(updated);
+  }
+  async function restaurarCapsula(id) {
+    const updated = capsulas.map((c) => (c.id === id ? { ...c, eliminado: false } : c));
+    await updateCapsulasAndSave(updated);
+  }
+  // Purgar SÍ borra la cápsula de verdad — y solo en este caso (irreversible)
+  // se limpian también los envíos de Bitácora que le pertenecían, igual que
+  // hacía el borrado directo de antes.
+  async function purgarCapsulaDefinitivo(id) {
+    const updated = capsulas.filter((c) => c.id !== id);
+    setCapsulas(updated);
     await fsDelete("capsulas", id);
     const enviosDeEstaCapsula = bitacoraEnvios.filter((e) => (e.items || []).some((it) => it.capsulaId === id));
     if (enviosDeEstaCapsula.length) {
@@ -7830,11 +7963,19 @@ function AppInner() {
       await Promise.all(enviosDeEstaCapsula.map((e) => fsDelete("bitacora_envios", e.id)));
     }
   }
-  // Borra UNA referencia dentro de una cápsula sin tocar la cápsula misma ni
-  // sus demás referencias — a diferencia de deleteCapsula (que borra todo el
-  // paquete), esto es para el caso de "esta referencia se creó por error,
-  // pero el resto de la cápsula sigue viva".
+  // Borra (suave) UNA referencia dentro de una cápsula sin tocar la cápsula
+  // misma ni sus demás referencias — a diferencia de deleteCapsula (que
+  // afecta todo el paquete), esto es para "esta referencia se creó por
+  // error, pero el resto de la cápsula sigue viva".
   async function deleteRefFromCapsula(capId, refId) {
+    const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, referencias: c.referencias.map((r) => (r.id !== refId ? r : { ...r, eliminado: true, eliminadoEn: nowISO(), eliminadoPor: currentUser?.name || "" })) }));
+    await updateCapsulasAndSave(updated);
+  }
+  async function restaurarRefDeCapsula(capId, refId) {
+    const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, referencias: c.referencias.map((r) => (r.id !== refId ? r : { ...r, eliminado: false })) }));
+    await updateCapsulasAndSave(updated);
+  }
+  async function purgarRefDefinitivo(capId, refId) {
     const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, referencias: c.referencias.filter((r) => r.id !== refId) }));
     await updateCapsulasAndSave(updated);
   }
@@ -8270,6 +8411,8 @@ function AppInner() {
             {view === "admin" && (currentUser?.isAdmin || canAccessAdminDiseno) && (
               <AdminView config={config} onUpdateConfig={saveConfig} users={users} onUpdateUsers={saveUsers} protos={protos} capsulas={capsulas}
                 onUpdateProto={updateProtoName} onUpdateCapsula={updateCapsulaName} onDeleteProto={deleteProto} onDeleteCapsula={deleteCapsula}
+                onRestaurarProto={restaurarProto} onRestaurarCapsula={restaurarCapsula} onRestaurarRef={restaurarRefDeCapsula}
+                onPurgarProto={purgarProtoDefinitivo} onPurgarCapsula={purgarCapsulaDefinitivo} onPurgarRef={purgarRefDefinitivo}
                 isAdmin={currentUser?.isAdmin}
               />
             )}
