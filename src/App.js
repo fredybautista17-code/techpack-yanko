@@ -1693,6 +1693,16 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
     changeStatus("en_revision", {}, [obsNota]);
     setTab("chat");
   }
+  // Deshace un Aprobado/Declinado hecho por error (ej. la Directora Creativa
+  // le dio "Aprobar" a una ilustración que en realidad todavía no estaba
+  // lista) — vuelve a "En proceso" para que el flujo normal (Aprobar/
+  // Declinar/En revisión) quede disponible de nuevo. Antes, una vez el
+  // estado llegaba a "aprobado"/"declinado" no había NINGÚN botón para
+  // corregirlo — quedaba trabado ahí para siempre.
+  function deshacerAprobacion() {
+    const obs = { id: uid(), user: currentUser, role, text: `Se deshizo el estado "${STATUS[st]?.label}" — vuelve a "En proceso".`, date: nowISO(), type: "update", done: false };
+    patch({ status: "en_proceso", observations: [...item.observations, obs] });
+  }
   // Enviar UNA sola referencia desde el Detalle pasa por el MISMO mecanismo
   // que el envío por casillas (crearEnvioBitacora) — así cualquier envío,
   // individual o agrupado, siempre queda registrado en la Bitácora, sin dos
@@ -1831,6 +1841,12 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {noFinalState && canAprobar && <Btn variant="success" onClick={() => changeStatus("aprobado")}>✓ Aprobar</Btn>}
             {noFinalState && canDeclinar && <Btn variant="danger" onClick={() => changeStatus("declinado")}>✕ Declinar</Btn>}
+            {/* Escape hatch para un Aprobar/Declinar hecho por error: mismo
+                permiso que revisa Ilustración (Directora Creativa) o admin
+                general, no cualquiera con permiso de aprobar/declinar. */}
+            {!noFinalState && (canAdmin || canRevisarIlustracion) && (
+              <Btn variant="secondary" onClick={deshacerAprobacion}>↩ Deshacer {st === "aprobado" ? "aprobación" : "declinación"}</Btn>
+            )}
             {canAdmin && (
               <>
                 {noFinalState && !["enviado_cotizacion", "enviar_cliente", "preparada_para_enviar", "enviado"].includes(st) && (
@@ -2198,12 +2214,15 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
     </div>
   );
 }
-function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio }) {
+function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, onDeleteRef, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [mesFiltro, setMesFiltro] = useState("todos");
   const [editCap, setEditCap] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
+  // Confirmación para borrar UNA referencia dentro de una cápsula (no la
+  // cápsula completa) — guarda { capId, ref } del renglón que se va a borrar.
+  const [confirmDelRef, setConfirmDelRef] = useState(null);
   const [revisionCap, setRevisionCap] = useState(null);
   const [obsCapsula, setObsCapsula] = useState(null);
   // Selección múltiple para armar un envío/bitácora agrupado — una selección
@@ -2326,6 +2345,18 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
           </div>
         </div>
       )}
+      {confirmDelRef && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar la referencia <strong>"{confirmDelRef.ref.reference}"</strong> ({confirmDelRef.ref.name})? Solo se borra esta referencia — el resto de la cápsula sigue intacta. Esta acción no se puede deshacer.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmDelRef(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={() => { onDeleteRef(confirmDelRef.capId, confirmDelRef.ref.id); setConfirmDelRef(null); }}>Sí, eliminar</Btn>
+            </div>
+          </div>
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Cápsulas</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Colecciones con múltiples referencias</p></div>
         {perms.editar && <Btn onClick={onNewCapsula}>+ Nueva Cápsula</Btn>}
@@ -2423,6 +2454,15 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
                         title="Seleccionar para envío"
                         style={{ position: "absolute", top: 8, left: 8, zIndex: 2, width: 20, height: 20, cursor: "pointer" }}
                       />
+                    )}
+                    {isAdmin && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setConfirmDelRef({ capId: cap.id, ref: r }); }}
+                        title="Eliminar esta referencia"
+                        style={{ position: "absolute", top: 8, right: 8, zIndex: 2, width: 24, height: 24, borderRadius: 6, border: "none", background: T.coralBg, color: T.coral, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                      >
+                        🗑
+                      </button>
                     )}
                     <Card item={r} kind="ref" onClick={() => onSelectRef(cap.id, r.id)} role={role} perms={perms} stages={stages} />
                   </div>
@@ -7790,6 +7830,14 @@ function AppInner() {
       await Promise.all(enviosDeEstaCapsula.map((e) => fsDelete("bitacora_envios", e.id)));
     }
   }
+  // Borra UNA referencia dentro de una cápsula sin tocar la cápsula misma ni
+  // sus demás referencias — a diferencia de deleteCapsula (que borra todo el
+  // paquete), esto es para el caso de "esta referencia se creó por error,
+  // pero el resto de la cápsula sigue viva".
+  async function deleteRefFromCapsula(capId, refId) {
+    const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, referencias: c.referencias.filter((r) => r.id !== refId) }));
+    await updateCapsulasAndSave(updated);
+  }
   async function updateProtoName(id, patch) { await updateProto(id, patch); }
   async function updateCapsulaName(id, patch) { const updated = capsulas.map((c) => (c.id !== id ? c : { ...c, ...patch })); setCapsulas(updated); const cap = updated.find((c) => c.id === id); await fsSave("capsulas", id, cap); }
   async function addPedido(p) {
@@ -8120,7 +8168,7 @@ function AppInner() {
                 onNewRef={(cap) => { setNewRefCap(cap); setModal("new-ref"); }}
                 onEditCapsula={updateCapsulaName}
                 stages={config.stages}
-                isAdmin={currentUser?.isAdmin} onDeleteCapsula={deleteCapsula} config={config}
+                isAdmin={currentUser?.isAdmin} onDeleteCapsula={deleteCapsula} onDeleteRef={deleteRefFromCapsula} config={config}
                 onSetIlustracion={setIlustracionCapsula}
                 onSendObsCapsula={sendObservacionCapsula}
                 onMarkDoneObsCapsula={markDoneObservacionCapsula}
