@@ -1311,7 +1311,7 @@ function BloqueBMP({ data, currentUser }) {
 // por mesón/grupo. Un lote se puede repartir en varios días (se programa por
 // cantidad, no todo-o-nada) — lo pendiente de cada lote es su cantidadBMP
 // menos lo ya asignado en `planta_bmp_programacion`.
-const DEFAULT_CAPACIDAD_DIA = 500; // unidades/día por defecto — editable por día desde la vista
+const DEFAULT_CAPACIDAD_DIA = null; // sin límite por defecto — se puede fijar una capacidad puntual por día haciendo clic en "Sin límite" desde la vista
 function ProgramadorPlantaView({ filas, currentUser }) {
   const [asignaciones, setAsignaciones] = useState([]);
   const [capacidades, setCapacidades] = useState({});
@@ -1364,7 +1364,13 @@ function ProgramadorPlantaView({ filas, currentUser }) {
     await fsDelete("planta_bmp_programacion", id);
   }
   async function guardarCapacidad(fecha, valor) {
-    await fsSave("planta_bmp_capacidad", fecha, { capacidad: Number(valor) || 0 });
+    // Dejar el campo vacío vuelve el día a "sin límite" (se borra el registro
+    // de capacidad de ese día en vez de guardar un 0, que sí bloquearía todo).
+    if (String(valor).trim() === "") {
+      await fsDelete("planta_bmp_capacidad", fecha);
+    } else {
+      await fsSave("planta_bmp_capacidad", fecha, { capacidad: Number(valor) || 0 });
+    }
     setEditandoCap(null);
   }
   const totalPendiente = lotesConPendiente.reduce((s, f) => s + f.pendiente, 0);
@@ -1417,35 +1423,39 @@ function ProgramadorPlantaView({ filas, currentUser }) {
                 const asigDia = asignaciones.filter((a) => a.fecha === fecha);
                 const usado = asigDia.reduce((s, a) => s + (a.cantidad || 0), 0);
                 const capacidad = capacidades[fecha] ?? DEFAULT_CAPACIDAD_DIA;
-                const disponible = capacidad - usado;
+                const disponible = capacidad != null ? capacidad - usado : null;
+                const sobreCapacidad = disponible !== null && disponible < 0;
                 const costoDia = asigDia.reduce((s, a) => s + (a.cantidad || 0) * (a.precioConfeccion || 0), 0);
                 return (
-                  <div key={fecha} style={{ border: `1px solid ${disponible < 0 ? C.red : C.border}`, borderRadius: 10, overflow: "hidden" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: disponible < 0 ? C.redBg : C.canvas }}>
+                  <div key={fecha} style={{ border: `1px solid ${sobreCapacidad ? C.red : C.border}`, borderRadius: 10, overflow: "hidden" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: sobreCapacidad ? C.redBg : C.canvas }}>
                       <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>{fmtFechaISO(fecha)}</div>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
-                        <span style={{ color: C.slate }}>{fmtNum(usado)} /</span>
+                        <span style={{ color: C.slate }}>{fmtNum(usado)} programadas /</span>
                         {editandoCap === fecha ? (
                           <input
                             type="number"
                             autoFocus
-                            defaultValue={capacidad}
+                            defaultValue={capacidad ?? ""}
+                            placeholder="Sin límite"
                             onBlur={(e) => guardarCapacidad(fecha, e.target.value)}
                             onKeyDown={(e) => e.key === "Enter" && guardarCapacidad(fecha, e.target.value)}
-                            style={{ width: 70, padding: "3px 6px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }}
+                            style={{ width: 80, padding: "3px 6px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }}
                           />
                         ) : (
                           <span
                             onClick={() => setEditandoCap(fecha)}
-                            style={{ cursor: "pointer", fontWeight: 700, color: C.ink, textDecoration: "underline dotted" }}
-                            title="Click para editar capacidad del día"
+                            style={{ cursor: "pointer", fontWeight: 700, color: capacidad == null ? C.slate : C.ink, textDecoration: "underline dotted" }}
+                            title="Click para fijar un límite de capacidad para este día (opcional)"
                           >
-                            {fmtNum(capacidad)}
+                            {capacidad == null ? "sin límite" : fmtNum(capacidad)}
                           </span>
                         )}
-                        <span style={{ fontWeight: 800, color: disponible < 0 ? C.red : C.green }}>
-                          {disponible < 0 ? `${fmtNum(Math.abs(disponible))} sobre` : `${fmtNum(disponible)} disp.`}
-                        </span>
+                        {capacidad != null && (
+                          <span style={{ fontWeight: 800, color: sobreCapacidad ? C.red : C.green }}>
+                            {sobreCapacidad ? `${fmtNum(Math.abs(disponible))} sobre` : `${fmtNum(disponible)} disp.`}
+                          </span>
+                        )}
                       </div>
                     </div>
                     {costoDia > 0 && (
@@ -1524,7 +1534,8 @@ function ProgramarBMPModal({ fila, capacidades, asignaciones, onConfirm, onClose
   }, [entradasPlanta, fila.referencia]);
   const usadoDia = asignaciones.filter((a) => a.fecha === fecha).reduce((s, a) => s + (a.cantidad || 0), 0);
   const capacidad = capacidades[fecha] ?? DEFAULT_CAPACIDAD_DIA;
-  const disponible = capacidad - usadoDia;
+  const disponible = capacidad != null ? capacidad - usadoDia : null;
+  const superaCapacidad = disponible !== null && disponible < cantidad;
   return (
     <Modal title={`Programar Lote ${fila.numLote}`} onClose={onClose} width={420}>
       <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>
@@ -1540,8 +1551,10 @@ function ProgramarBMPModal({ fila, capacidades, asignaciones, onConfirm, onClose
           onChange={(e) => setFecha(e.target.value)}
           style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
         />
-        <div style={{ fontSize: 11, marginTop: 6, color: disponible < cantidad ? C.red : C.slate }}>
-          Capacidad del día: {fmtNum(usadoDia)} / {fmtNum(capacidad)} usadas · {fmtNum(disponible)} disponibles
+        <div style={{ fontSize: 11, marginTop: 6, color: superaCapacidad ? C.red : C.slate }}>
+          {capacidad == null
+            ? `${fmtNum(usadoDia)} unidades ya programadas para ese día · sin límite de capacidad`
+            : `Capacidad del día: ${fmtNum(usadoDia)} / ${fmtNum(capacidad)} usadas · ${fmtNum(disponible)} disponibles`}
         </div>
       </div>
       <div style={{ marginBottom: 18 }}>
@@ -1618,7 +1631,7 @@ function ProgramarBMPModal({ fila, capacidades, asignaciones, onConfirm, onClose
           </div>
         )}
       </div>
-      {disponible < cantidad && (
+      {superaCapacidad && (
         <div style={{ fontSize: 12, color: C.red, marginBottom: 12, fontWeight: 700 }}>
           ⚠ Esta cantidad supera la capacidad disponible de ese día.
         </div>
