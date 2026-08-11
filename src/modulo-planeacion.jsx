@@ -2255,16 +2255,25 @@ function fmtFechaCorta(d) {
 // proporcionalmente entre esos dos extremos. No es una promesa exacta de
 // fecha de despacho, es una guía de ritmo para no dejar todo para la última
 // semana.
-function repartirPorSemanas(buckets, numSemanas) {
+// lotesCliente (opcional): si se pasa, además de los totales por semana
+// devuelve QUÉ lotes concretos caen en cada semana — un lote cae en la
+// semana de su etapa actual (b.etapa, ej. "BPT") si esa etapa es una de las
+// cubetas repartidas. Las cubetas sin etapa (ej. "Por producir", que todavía
+// no tiene lote de verdad) no aportan lotes, solo el número.
+function repartirPorSemanas(buckets, numSemanas, lotesCliente) {
   const totales = Array(numSemanas).fill(0);
   const detalle = Array.from({ length: numSemanas }, () => []);
+  const lotesPorSemana = Array.from({ length: numSemanas }, () => []);
   buckets.forEach((b, i) => {
     if (!b.qty) return;
     const idx = numSemanas <= 1 ? 0 : Math.min(numSemanas - 1, Math.round((i * (numSemanas - 1)) / (buckets.length - 1)));
     totales[idx] += b.qty;
     detalle[idx].push(b);
+    if (b.etapa && lotesCliente) {
+      lotesPorSemana[idx].push(...lotesCliente.filter((l) => l.ubicacionActual === b.etapa));
+    }
   });
-  return { totales, detalle };
+  return { totales, detalle, lotesPorSemana };
 }
 function MedidorEntregasView({ lotes }) {
   const [metas, setMetas] = useState({});
@@ -2275,6 +2284,13 @@ function MedidorEntregasView({ lotes }) {
   // la vez, guardada como "cliente__categoria" para no chocar entre tarjetas
   // de clientes distintos.
   const [categoriaAbierta, setCategoriaAbierta] = useState(null);
+  // Lista de clientes colapsada por defecto — clic en uno lo despliega
+  // (solo uno abierto a la vez, para no saturar la pantalla con 10+
+  // clientes expandidos).
+  const [clienteAbierto, setClienteAbierto] = useState(null);
+  // Qué semana, dentro del cliente abierto, tiene su lista de lotes
+  // desplegada — igual que categoriaAbierta, guardada como "cliente__sem0".
+  const [semanaAbierta, setSemanaAbierta] = useState(null);
   const semanas = useMemo(() => semanasRestantesDelMes(mesSel), [mesSel]);
 
   useEffect(() => {
@@ -2349,22 +2365,51 @@ function MedidorEntregasView({ lotes }) {
             const meta = metas[id]?.meta || 0;
             const pct = meta > 0 ? Math.min(100, Math.round((g.total / meta) * 100)) : null;
             const falta = meta > 0 ? Math.max(0, meta - g.total) : null;
+            const abierto = clienteAbierto === g.cliente;
+            // Todos los lotes de este cliente (todas las categorías) — se
+            // usan para armar la lista de lotes por semana en la
+            // programación de despacho, más abajo.
+            const lotesCliente = lotes.filter((l) => (l.clienteAgrupado || l.nombreCliente || "(Sin cliente)") === g.cliente);
             return (
-              <div key={g.cliente} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px", background: C.white }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
-                  <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{g.cliente}</div>
+              <div key={g.cliente} style={{ border: `1px solid ${C.border}`, borderRadius: 12, background: C.white, overflow: "hidden" }}>
+                {/* Fila colapsada: nombre del cliente + una barra de avance
+                    compacta (si tiene meta) o el total (si no) — clic la
+                    despliega. Nada más se ve hasta que se abre. */}
+                <div
+                  onClick={() => setClienteAbierto(abierto ? null : g.cliente)}
+                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14, padding: "14px 16px", cursor: "pointer", flexWrap: "wrap" }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 11, color: C.slate }}>{abierto ? "▾" : "▸"}</span>
+                    <span style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{g.cliente}</span>
+                  </div>
+                  {meta > 0 ? (
+                    <div style={{ minWidth: 160 }}>
+                      <div style={{ height: 8, borderRadius: 5, background: C.canvas, overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: `${pct}%`, background: pct >= 100 ? C.green : C.amber, borderRadius: 5 }} />
+                      </div>
+                      <div style={{ fontSize: 10, color: C.slate, marginTop: 3 }}>{fmtNum(g.total)} / {fmtNum(meta)} ({pct}%)</div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: C.slate }}>Total: <strong style={{ color: C.ink }}>{fmtNum(g.total)}</strong></div>
+                  )}
+                </div>
+                {abierto && (
+                <div style={{ padding: "0 16px 16px" }}>
+                <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
                   {editandoMeta === g.cliente ? (
                     <input
                       type="number"
                       autoFocus
                       defaultValue={meta}
+                      onClick={(e) => e.stopPropagation()}
                       onBlur={(e) => guardarMeta(g.cliente, e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && guardarMeta(g.cliente, e.target.value)}
                       style={{ width: 110, padding: "5px 10px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }}
                     />
                   ) : (
                     <span
-                      onClick={() => setEditandoMeta(g.cliente)}
+                      onClick={(e) => { e.stopPropagation(); setEditandoMeta(g.cliente); }}
                       style={{ cursor: "pointer", fontSize: 12, color: C.slate }}
                       title="Clic para poner/editar la meta del mes"
                     >
@@ -2374,10 +2419,7 @@ function MedidorEntregasView({ lotes }) {
                 </div>
                 {meta > 0 && (
                   <div style={{ marginBottom: 12 }}>
-                    <div style={{ height: 10, borderRadius: 6, background: C.canvas, overflow: "hidden" }}>
-                      <div style={{ height: "100%", width: `${pct}%`, background: pct >= 100 ? C.green : C.amber, borderRadius: 6, transition: "width 0.2s" }} />
-                    </div>
-                    <div style={{ fontSize: 11, color: C.slate, marginTop: 5 }}>
+                    <div style={{ fontSize: 11, color: C.slate }}>
                       {fmtNum(g.total)} / {fmtNum(meta)} unidades ({pct}%){falta > 0 ? ` · faltan ${fmtNum(falta)}` : " · meta cubierta 🎉"}
                     </div>
                   </div>
@@ -2467,38 +2509,85 @@ function MedidorEntregasView({ lotes }) {
                 )}
                 {semanas.length > 0 && g.total > 0 && (() => {
                   const buckets = [
-                    { qty: g.bpt, label: "BPT (listo para despacho)", color: C.blue },
-                    { qty: g.semiterminado, label: "Semiterminado", color: C.violet },
-                    { qty: g.bmp, label: "BMP", color: C.amber },
-                    { qty: g.planta, label: "Planta", color: C.green },
-                    ...(meta > 0 && falta > 0 ? [{ qty: falta, label: "Por producir (aún sin cortar)", color: C.red }] : []),
+                    { qty: g.bpt, label: "BPT (listo para despacho)", color: C.blue, etapa: "BPT" },
+                    { qty: g.semiterminado, label: "Semiterminado", color: C.violet, etapa: "Semiterminado" },
+                    { qty: g.bmp, label: "BMP", color: C.amber, etapa: "BMP" },
+                    { qty: g.planta, label: "Planta", color: C.green, etapa: "Planta" },
+                    ...(meta > 0 && falta > 0 ? [{ qty: falta, label: "Por producir (aún sin cortar)", color: C.red, etapa: null }] : []),
                   ];
-                  const { totales, detalle } = repartirPorSemanas(buckets, semanas.length);
+                  const { totales, detalle, lotesPorSemana } = repartirPorSemanas(buckets, semanas.length, lotesCliente);
                   return (
                     <div>
                       <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 8 }}>
                         📅 Programación de despacho — semanas restantes de {mesSel}
                       </div>
                       <div style={{ fontSize: 10.5, color: C.slate, marginBottom: 10 }}>
-                        Reparte lo disponible priorizando lo más listo (BPT primero) hacia las semanas más cercanas — no es una fecha prometida, es una guía de ritmo.
+                        Reparte lo disponible priorizando lo más listo (BPT primero) hacia las semanas más cercanas — no es una fecha prometida, es una guía de ritmo. Clic en una semana para ver los lotes.
                       </div>
                       <div style={{ display: "grid", gridTemplateColumns: `repeat(${semanas.length},1fr)`, gap: 8 }}>
-                        {semanas.map((s, i) => (
-                          <div key={i} style={{ background: C.canvas, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.border}` }}>
-                            <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, marginBottom: 4 }}>
-                              Semana {i + 1} · {fmtFechaCorta(s.desde)}–{fmtFechaCorta(s.hasta)}
+                        {semanas.map((s, i) => {
+                          const claveSem = `${g.cliente}__sem${i}`;
+                          const semAbierta = semanaAbierta === claveSem;
+                          const lotesSemana = lotesPorSemana[i] || [];
+                          return (
+                            <div
+                              key={i}
+                              onClick={() => lotesSemana.length && setSemanaAbierta(semAbierta ? null : claveSem)}
+                              style={{ background: C.canvas, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.border}`, cursor: lotesSemana.length ? "pointer" : "default" }}
+                            >
+                              <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, marginBottom: 4 }}>
+                                Semana {i + 1} · {fmtFechaCorta(s.desde)}–{fmtFechaCorta(s.hasta)}
+                              </div>
+                              <div style={{ fontSize: 16, fontWeight: 800, color: C.ink, marginBottom: 6 }}>{fmtNum(totales[i])}</div>
+                              {detalle[i].map((b, j) => (
+                                <div key={j} style={{ fontSize: 9.5, color: b.color, fontWeight: 600 }}>{b.label}: {fmtNum(b.qty)}</div>
+                              ))}
+                              {!detalle[i].length && <div style={{ fontSize: 9.5, color: C.slate }}>—</div>}
+                              {lotesSemana.length > 0 && (
+                                <div style={{ fontSize: 9, color: C.blue, fontWeight: 700, marginTop: 6 }}>{semAbierta ? "▾" : "▸"} {lotesSemana.length} lote{lotesSemana.length !== 1 ? "s" : ""}</div>
+                              )}
                             </div>
-                            <div style={{ fontSize: 16, fontWeight: 800, color: C.ink, marginBottom: 6 }}>{fmtNum(totales[i])}</div>
-                            {detalle[i].map((b, j) => (
-                              <div key={j} style={{ fontSize: 9.5, color: b.color, fontWeight: 600 }}>{b.label}: {fmtNum(b.qty)}</div>
-                            ))}
-                            {!detalle[i].length && <div style={{ fontSize: 9.5, color: C.slate }}>—</div>}
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
+                      {semanas.map((s, i) => {
+                        const claveSem = `${g.cliente}__sem${i}`;
+                        const semAbierta = semanaAbierta === claveSem;
+                        const lotesSemana = lotesPorSemana[i] || [];
+                        if (!semAbierta || !lotesSemana.length) return null;
+                        return (
+                          <div key={`detalle-${i}`} style={{ marginTop: 8, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+                            <div style={{ padding: "6px 12px", background: C.ink, color: C.seam, fontSize: 10, fontWeight: 700 }}>
+                              Lotes en Semana {i + 1} ({fmtFechaCorta(s.desde)}–{fmtFechaCorta(s.hasta)})
+                            </div>
+                            <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+                              <thead>
+                                <tr>
+                                  {["Lote", "Referencia", "Categoría", "Cantidad", "Etapa"].map((h) => (
+                                    <th key={h} style={{ textAlign: h === "Cantidad" ? "right" : "left", padding: "4px 12px", color: C.slate, fontWeight: 700, background: C.canvas }}>{h}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {lotesSemana.map((l) => (
+                                  <tr key={l.numLote} style={{ borderTop: `1px solid ${C.border}` }}>
+                                    <td style={{ padding: "4px 12px" }}>{l.numLote}</td>
+                                    <td style={{ padding: "4px 12px" }}>{l.referencia}</td>
+                                    <td style={{ padding: "4px 12px" }}>{l.categoria}</td>
+                                    <td style={{ padding: "4px 12px", textAlign: "right" }}>{fmtNum(l.unidadesUbicacion)}</td>
+                                    <td style={{ padding: "4px 12px" }}>{l.ubicacionActual}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        );
+                      })}
                     </div>
                   );
                 })()}
+                </div>
+                )}
               </div>
             );
           })}
