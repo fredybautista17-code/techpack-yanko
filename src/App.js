@@ -5236,6 +5236,7 @@ function BusintSyncPanel() {
     });
     return () => unsub();
   }, []);
+  const [exportando, setExportando] = useState(false);
   async function sincronizar() {
     setSincronizando(true);
     setResultado("");
@@ -5248,6 +5249,30 @@ function BusintSyncPanel() {
     }
     setSincronizando(false);
   }
+  // Descarga toda la bitácora guardada en Firestore (busint_referencias) a
+  // un .xlsx, igual en espíritu al archivo de referencias que ya manejan
+  // por fuera (ej. "KAMILA REFERENCIAS_PIJAMAS.xlsx") — así queda algo para
+  // abrir y revisar sin tener que entrar a Firebase.
+  async function exportarBitacoraExcel() {
+    setExportando(true);
+    try {
+      const snap = await getDocs(collection(db, "busint_referencias"));
+      const filas = snap.docs
+        .map((d) => d.data())
+        .sort((a, b) => String(a.ref || "").localeCompare(String(b.ref || ""), "es", { numeric: true }));
+      const XLSX = await import("xlsx");
+      const wb = XLSX.utils.book_new();
+      const aoa = [
+        ["REF", "CATEGORÍA", "REFERENCIA EXTERNA", "ACTUALIZADO"],
+        ...filas.map((f) => [f.ref || "", f.categoria || "", f.referenciaExterna || "", f.actualizadoEn || ""]),
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "Bitácora Busint");
+      XLSX.writeFile(wb, `Bitacora_Referencias_Busint_${today()}.xlsx`);
+    } catch (err) {
+      setResultado(`⚠ No se pudo exportar — ${err?.message || err}`);
+    }
+    setExportando(false);
+  }
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 14px", background: T.denimBg, borderRadius: 8, marginBottom: 20 }}>
       <div style={{ fontSize: 12.5, color: T.denim, fontWeight: 600 }}>
@@ -5256,7 +5281,10 @@ function BusintSyncPanel() {
         {!meta && <div style={{ marginTop: 2 }}>Aún no se ha sincronizado ninguna vez.</div>}
         {resultado && <div style={{ marginTop: 4 }}>{resultado}</div>}
       </div>
-      <Btn onClick={sincronizar} disabled={sincronizando}>{sincronizando ? "Sincronizando..." : "Sincronizar ahora"}</Btn>
+      <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+        <Btn variant="secondary" onClick={exportarBitacoraExcel} disabled={exportando || !meta}>{exportando ? "Generando..." : "📥 Descargar Excel"}</Btn>
+        <Btn onClick={sincronizar} disabled={sincronizando}>{sincronizando ? "Sincronizando..." : "Sincronizar ahora"}</Btn>
+      </div>
     </div>
   );
 }
