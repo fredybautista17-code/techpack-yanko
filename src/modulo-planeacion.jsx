@@ -1214,8 +1214,15 @@ function BloqueBMP({ data, currentUser }) {
         >
           📅 PROGRAMADOR DE PLANTA
         </div>
+        <div
+          onClick={() => setVista("verificador_precio")}
+          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: vista === "verificador_precio" ? C.ink : C.white, color: vista === "verificador_precio" ? C.seam : C.ink, border: `1px solid ${vista === "verificador_precio" ? C.ink : C.border}` }}
+        >
+          🔎 VERIFICADOR DE PRECIO
+        </div>
       </div>
       {vista === "programador" && <ProgramadorPlantaView filas={filas} currentUser={currentUser} />}
+      {vista === "verificador_precio" && <VerificadorPrecioBMPView />}
       {vista === "detalle" && (
         <Tabla
           vacio="Sin lotes en BMP."
@@ -1577,6 +1584,86 @@ function ProgramarBMPModal({ fila, capacidades, asignaciones, onConfirm, onClose
     </Modal>
   );
 }
+// ─── VERIFICADOR DE PRECIO DE CONFECCIÓN (mismo que en Módulo Planta) ──────────
+// Se suscribe directo a `planta_entradas_cargas` (la misma colección que llena
+// el módulo Planta al subir "ENTRADAS DE PLANTA.xlsx") para poder buscar por
+// referencia acá mismo, sin tener que salir a otro módulo — busca las últimas
+// 5 entradas y compara precio teórico (ValPlanta, fijo por referencia en la
+// ficha técnica) vs. precio de entrada real (VaEnt, puede variar entrada a
+// entrada) para detectar cuándo una planta cobró distinto a lo pactado.
+function VerificadorPrecioBMPView() {
+  const [cargasEntradas, setCargasEntradas] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planta_entradas_cargas"), (snap) => {
+      setCargasEntradas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  const cargaEntradasActiva = useMemo(() => {
+    const ordenadas = [...cargasEntradas].sort((a, b) => (b.creadoEn || b.fecha || "").localeCompare(a.creadoEn || a.fecha || ""));
+    return ordenadas[0] || null;
+  }, [cargasEntradas]);
+  const entradas = cargaEntradasActiva?.entradas || [];
+  const [busqueda, setBusqueda] = useState("");
+  const resultado = useMemo(() => {
+    const q = busqueda.trim().toLowerCase();
+    if (!q) return [];
+    return entradas
+      .filter((e) => (e.refExt || "").toLowerCase() === q || String(e.refN || "").toLowerCase() === q)
+      .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
+      .slice(0, 5);
+  }, [entradas, busqueda]);
+  const planta = resultado[0]?.nombrePlanta || null;
+  if (!cargaEntradasActiva) {
+    return (
+      <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13, background: C.canvas, borderRadius: 12, border: `1px dashed ${C.border}` }}>
+        Aún no hay ninguna carga de "Entradas de Planta" subida (se sube desde el módulo Planta) — en cuanto haya una, se puede buscar por referencia acá mismo.
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div style={{ marginBottom: 18, maxWidth: 360 }}>
+        <input
+          type="text"
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="Escribe la referencia (ej. GM1002)"
+          style={{ width: "100%", padding: "10px 14px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit", boxSizing: "border-box" }}
+        />
+      </div>
+      {!busqueda.trim() ? (
+        <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Escribe una referencia para ver sus últimas entradas.</div>
+      ) : !resultado.length ? (
+        <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>No se encontraron entradas con esa referencia.</div>
+      ) : (
+        <>
+          {planta && (
+            <div style={{ marginBottom: 14, fontSize: 13, color: C.slate }}>
+              Planta: <span style={{ fontWeight: 800, color: C.ink }}>{planta}</span>
+            </div>
+          )}
+          <Tabla
+            vacio="Sin entradas para esa referencia."
+            columnas={[
+              { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+              { key: "nombrePlanta", label: "Planta" },
+              { key: "precioTeorico", label: "Precio teórico", align: "right", render: (f) => `$${fmtNum(f.precioTeorico)}` },
+              {
+                key: "precioEntrada",
+                label: "Precio de entrada",
+                align: "right",
+                render: (f) => `$${fmtNum(f.precioEntrada)}`,
+                color: (f) => (f.precioEntrada !== f.precioTeorico ? C.red : C.green),
+              },
+            ]}
+            filas={resultado}
+          />
+        </>
+      )}
+    </div>
+  );
+}
 function BloqueCronograma({ data }) {
   const { filas, semanas, sinSemana } = data;
   const [semanaSel, setSemanaSel] = useState(null);
@@ -1679,6 +1766,7 @@ const REPORTES = [
   { id: "bpt", label: "BPT", icon: "🏬" },
   { id: "programacion_yanko", label: "Programación Yanko", icon: "🎯" },
   { id: "comparar", label: "Comparar Períodos", icon: "📈" },
+  { id: "medidor_entregas", label: "Medidor de Entregas", icon: "🚚" },
 ];
 function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser }) {
   const [showUpload, setShowUpload] = useState(false);
@@ -2055,8 +2143,135 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
             </div>
           )}
           {tab === "comparar" && <BloqueCompararPeriodos cargasOrdenadas={cargasOrdenadas} clienteAsociado={clienteAsociado} />}
+          {tab === "medidor_entregas" && <MedidorEntregasView lotes={lotes} />}
         </>
       )}
+    </div>
+  );
+}
+// ─── MEDIDOR DE ENTREGAS ────────────────────────────────────────────────────
+// Por cliente: suma lo que hay disponible en las 4 etapas del pipeline
+// (Planta, BMP, Semiterminado, BPT) de la carga activa y lo compara contra
+// una meta de unidades que se pone a mano por cliente/mes — pensado para
+// responder "¿qué me falta despachar/entregar para cerrar el mes con este
+// cliente?". La meta se guarda por mes (`planeacion_metas_entrega`, id
+// determinístico `MES__CLIENTE`) para poder volver a ver meses anteriores.
+function slugCliente(c) {
+  return String(c || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").slice(0, 60) || "SIN_CLIENTE";
+}
+function MedidorEntregasView({ lotes }) {
+  const [metas, setMetas] = useState({});
+  const [editandoMeta, setEditandoMeta] = useState(null);
+  const mesActual = new Date().toISOString().slice(0, 7);
+  const [mesSel, setMesSel] = useState(mesActual);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_metas_entrega"), (snap) => {
+      const m = {};
+      snap.docs.forEach((d) => { m[d.id] = d.data(); });
+      setMetas(m);
+    });
+    return () => unsub();
+  }, []);
+
+  const porCliente = useMemo(() => {
+    const map = new Map();
+    lotes.forEach((l) => {
+      const cli = l.clienteAgrupado || l.nombreCliente || "(Sin cliente)";
+      if (!map.has(cli)) map.set(cli, { cliente: cli, planta: 0, bmp: 0, semiterminado: 0, bpt: 0 });
+      const g = map.get(cli);
+      g.planta += l.invPlanta || 0;
+      g.bmp += l.invBMP || 0;
+      g.semiterminado += l.invSemiterminado || 0;
+      g.bpt += l.invBPT || 0;
+    });
+    return [...map.values()]
+      .map((g) => ({ ...g, total: g.planta + g.bmp + g.semiterminado + g.bpt }))
+      .filter((g) => g.total > 0)
+      .sort((a, b) => b.total - a.total);
+  }, [lotes]);
+
+  async function guardarMeta(cliente, valor) {
+    const id = `${mesSel}__${slugCliente(cliente)}`;
+    await fsSave("planeacion_metas_entrega", id, { cliente, mes: mesSel, meta: Number(valor) || 0 });
+    setEditandoMeta(null);
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+        <label style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>Mes a cerrar:</label>
+        <input
+          type="month"
+          value={mesSel}
+          onChange={(e) => setMesSel(e.target.value)}
+          style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, fontFamily: "inherit" }}
+        />
+      </div>
+      <div style={{ fontSize: 11, color: C.slate, marginBottom: 18 }}>
+        Suma lo que cada cliente tiene disponible ahora mismo en Planta + BMP + Semiterminado + BPT (de la carga activa) y lo compara con la meta de unidades que le pongas para el mes. Clic en la meta para editarla.
+      </div>
+      {!porCliente.length ? (
+        <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Sin inventario disponible en esta carga.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {porCliente.map((g) => {
+            const id = `${mesSel}__${slugCliente(g.cliente)}`;
+            const meta = metas[id]?.meta || 0;
+            const pct = meta > 0 ? Math.min(100, Math.round((g.total / meta) * 100)) : null;
+            const falta = meta > 0 ? Math.max(0, meta - g.total) : null;
+            return (
+              <div key={g.cliente} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: "14px 16px", background: C.white }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
+                  <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{g.cliente}</div>
+                  {editandoMeta === g.cliente ? (
+                    <input
+                      type="number"
+                      autoFocus
+                      defaultValue={meta}
+                      onBlur={(e) => guardarMeta(g.cliente, e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && guardarMeta(g.cliente, e.target.value)}
+                      style={{ width: 110, padding: "5px 10px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }}
+                    />
+                  ) : (
+                    <span
+                      onClick={() => setEditandoMeta(g.cliente)}
+                      style={{ cursor: "pointer", fontSize: 12, color: C.slate }}
+                      title="Clic para poner/editar la meta del mes"
+                    >
+                      Meta: <strong style={{ color: C.ink, textDecoration: "underline dotted" }}>{meta ? fmtNum(meta) : "poner meta"}</strong>
+                    </span>
+                  )}
+                </div>
+                {meta > 0 && (
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ height: 10, borderRadius: 6, background: C.canvas, overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${pct}%`, background: pct >= 100 ? C.green : C.amber, borderRadius: 6, transition: "width 0.2s" }} />
+                    </div>
+                    <div style={{ fontSize: 11, color: C.slate, marginTop: 5 }}>
+                      {fmtNum(g.total)} / {fmtNum(meta)} unidades ({pct}%){falta > 0 ? ` · faltan ${fmtNum(falta)}` : " · meta cubierta 🎉"}
+                    </div>
+                  </div>
+                )}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+                  <MiniStatEntrega label="Planta" value={g.planta} color={C.green} bg={C.greenBg} />
+                  <MiniStatEntrega label="BMP" value={g.bmp} color={C.amber} bg={C.amberBg} />
+                  <MiniStatEntrega label="Semiterminado" value={g.semiterminado} color={C.violet} bg={C.violetBg} />
+                  <MiniStatEntrega label="BPT" value={g.bpt} color={C.blue} bg={C.blueBg} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+function MiniStatEntrega({ label, value, color, bg }) {
+  return (
+    <div style={{ background: bg, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+      <div style={{ fontSize: 14, fontWeight: 800, color }}>{fmtNum(value)}</div>
+      <div style={{ fontSize: 10, color: C.slate, fontWeight: 600 }}>{label}</div>
     </div>
   );
 }
