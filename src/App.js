@@ -645,33 +645,89 @@ function nowISO() { return new Date().toISOString(); }
 // TODAS las referencias ya usadas (prototipos + referencias de cápsulas,
 // vivas o históricas) con ese mismo prefijo-segmento y sigue desde la más
 // alta encontrada, no desde las que existen hoy en pantalla.
-function sugerirReferencia(categoria, silueta, config, protos, capsulas) {
+// Encuentra en config.codigosReferencia la entrada que amarra esta
+// categoria(+silueta) a un prefijo/segmento — exacta primero, luego la que
+// aplica a toda la categoría (silueta vacía).
+function buscarEntradaCodigoReferencia(categoria, silueta, config) {
   const catalogo = config?.codigosReferencia || [];
   if (!categoria || catalogo.length === 0) return null;
-  const entrada =
+  return (
     catalogo.find((c) => c.categoria === categoria && c.silueta && c.silueta === silueta) ||
-    catalogo.find((c) => c.categoria === categoria && !c.silueta);
+    catalogo.find((c) => c.categoria === categoria && !c.silueta) ||
+    null
+  );
+}
+// Extrae, de una o varias listas de códigos de referencia, los números
+// (corridos absolutos, ej. 401) que caen dentro del segmento de un
+// prefijo dado (ej. prefijo "76" segmento 4 → rango 401-499).
+function numerosEnSegmento(prefijo, segmento, ...listasDeRefs) {
+  const base = (Number(segmento) || 0) * 100;
+  const regex = new RegExp(`^${prefijo}-(\\d+)$`);
+  const nums = [];
+  [].concat(...listasDeRefs).forEach((ref) => {
+    const m = regex.exec(String(ref || "").trim());
+    if (!m) return;
+    const num = parseInt(m[1], 10);
+    if (num >= base && num < base + 100) nums.push(num);
+  });
+  return nums;
+}
+// Calcula el próximo consecutivo de referencia (Ej: "76-403") a partir del
+// catálogo config.codigosReferencia. El corrido (número dentro del
+// segmento, del 01 al 99) nunca se reinicia: escanea TODAS las referencias
+// ya usadas — tanto en ATLAS (prototipos + referencias de cápsulas) como en
+// la bitácora local de Busint (busintLista, ver useMaestroReferenciasBusint)
+// — y sigue desde la más alta encontrada entre las dos fuentes, para no
+// chocar con una referencia que se haya creado directo en Busint sin pasar
+// por ATLAS.
+function sugerirReferencia(categoria, silueta, config, protos, capsulas, busintLista) {
+  const entrada = buscarEntradaCodigoReferencia(categoria, silueta, config);
   if (!entrada || !entrada.prefijo) return null;
   const prefijo = String(entrada.prefijo).trim();
   const segmento = Number(entrada.segmento) || 0;
   const base = segmento * 100;
-  const regex = new RegExp(`^${prefijo}-(\\d+)$`);
-  const todasLasRefs = [
+  const refsLocales = [
     ...protos.map((p) => p.reference),
     ...capsulas.flatMap((c) => (c.referencias || []).map((r) => r.reference)),
   ];
-  let maxCorrido = 0;
-  todasLasRefs.forEach((ref) => {
-    const m = regex.exec(String(ref || "").trim());
-    if (!m) return;
-    const num = parseInt(m[1], 10);
-    if (num >= base && num < base + 100) {
-      const corrido = num - base;
-      if (corrido > maxCorrido) maxCorrido = corrido;
-    }
-  });
+  const refsBusint = (busintLista || []).map((r) => r.ref);
+  const nums = numerosEnSegmento(prefijo, segmento, refsLocales, refsBusint);
+  const maxCorrido = nums.length ? Math.max(...nums) - base : 0;
   const siguiente = base + maxCorrido + 1;
-  return `${prefijo}-${String(siguiente).padStart(3, "0")}`;
+  return { codigo: `${prefijo}-${String(siguiente).padStart(3, "0")}`, prefijo, segmento };
+}
+// Busca si un código de referencia ya está en uso DENTRO de ATLAS mismo
+// (prototipos o referencias de cápsula) — a diferencia de la bitácora de
+// Busint (que puede tener hasta un día de rezago), esto siempre está al
+// segundo: protos/capsulas se leen en vivo de Firestore, así que un
+// duplicado creado hace 5 minutos ya se detecta aquí sin esperar ningún
+// sync.
+function buscarRefEnAtlas(refNorm, protos, capsulas) {
+  if (!refNorm) return null;
+  const proto = (protos || []).find((p) => String(p.reference || "").trim().toUpperCase() === refNorm);
+  if (proto) return { tipo: "Prototipo", nombre: proto.name };
+  for (const cap of capsulas || []) {
+    const ref = (cap.referencias || []).find((r) => String(r.reference || "").trim().toUpperCase() === refNorm);
+    if (ref) return { tipo: "Referencia de cápsula", nombre: `${ref.name} — ${cap.name}` };
+  }
+  return null;
+}
+// Las últimas N referencias (más altas) que YA existen en Busint dentro de
+// este mismo prefijo-segmento — se muestran junto a la sugerencia para que
+// el usuario vea el patrón real en vez de confiar a ciegas en un solo
+// número calculado.
+function ultimasReferenciasBusint(prefijo, segmento, busintLista, n = 3) {
+  if (!prefijo || !busintLista) return [];
+  const base = (Number(segmento) || 0) * 100;
+  const regex = new RegExp(`^${prefijo}-(\\d+)$`);
+  return busintLista
+    .map((r) => ({ ref: String(r.ref || "").trim(), m: regex.exec(String(r.ref || "").trim()) }))
+    .filter((x) => x.m)
+    .map((x) => ({ ref: x.ref, num: parseInt(x.m[1], 10) }))
+    .filter((x) => x.num >= base && x.num < base + 100)
+    .sort((a, b) => b.num - a.num)
+    .slice(0, n)
+    .map((x) => x.ref);
 }
 // Permisos de módulo (visibilidad por sección: Prototipos, Cápsulas, Pedidos,
 // Clientes, Corte, Estadísticas, Contabilidad), separados de los permisos de
@@ -1026,60 +1082,72 @@ function PomTable({ pom, tallas }) {
   );
 }
 
-// Trae en vivo el maestro de referencias de Busint (getReferenciasBusint) y
-// lo deja como un Set normalizado (mayúsculas, sin espacios) para poder
-// verificar al instante, mientras el usuario escribe o usa la sugerencia,
-// si un código ya existe allá. Se consulta una sola vez por apertura del
-// modal — no en cada tecla — para no golpear la API de Busint de más.
+// Lee la bitácora local de referencias de Busint (colección Firestore
+// "busint_referencias", que se llena sola cada madrugada vía la función
+// programada syncReferenciasBusint, o al toque con el botón "Sincronizar
+// ahora" en Administración → Códigos de Referencia). Se prefirió leer de
+// Firestore en vez de llamar a Busint en vivo cada vez que alguien abre el
+// modal: es instantáneo, y sigue funcionando aunque el puente a Busint esté
+// caído en ese momento — el precio es que los datos pueden tener hasta un
+// día de rezago, aceptable para un catálogo que casi no cambia.
 function useMaestroReferenciasBusint() {
-  const [estado, setEstado] = useState({ cargando: true, error: "", set: null });
+  const [estado, setEstado] = useState({ cargando: true, error: "", lista: [], set: null });
   useEffect(() => {
-    let cancelado = false;
-    (async () => {
-      try {
-        const llamar = httpsCallable(functionsClient, "getReferenciasBusint");
-        const resp = await llamar({});
-        if (cancelado) return;
-        const refs = (resp.data?.referencias || []).map((r) => String(r.ref || "").trim().toUpperCase()).filter(Boolean);
-        setEstado({ cargando: false, error: "", set: new Set(refs) });
-      } catch (err) {
-        if (!cancelado) {
-          setEstado({
-            cargando: false,
-            error: err?.message || "Verifica que la función getReferenciasBusint esté desplegada.",
-            set: null,
-          });
-        }
+    const unsub = onSnapshot(
+      collection(db, "busint_referencias"),
+      (snap) => {
+        const lista = snap.docs.map((d) => d.data());
+        const set = new Set(lista.map((r) => String(r.ref || "").trim().toUpperCase()));
+        setEstado({ cargando: false, error: "", lista, set });
+      },
+      (err) => {
+        setEstado({ cargando: false, error: err?.message || "No se pudo leer la bitácora de Busint.", lista: [], set: null });
       }
-    })();
-    return () => {
-      cancelado = true;
-    };
+    );
+    return () => unsub();
   }, []);
   return estado;
 }
 // Caja compartida por "Nuevo Prototipo" y "Nueva Referencia": arriba la
-// sugerencia de consecutivo (si aún no hay Ref escrita), abajo el resultado
-// de verificarla en vivo contra Busint — lo que sea que esté hoy en el
+// sugerencia de consecutivo (con las últimas usadas en ese mismo
+// prefijo-segmento, para no tener que adivinar) y abajo el resultado de
+// verificar contra la bitácora de Busint lo que sea que esté hoy en el
 // campo Ref, venga de la sugerencia o escrita a mano.
-function SugerenciaYVerificacionRef({ sugerencia, referencia, onUsar, busint }) {
+function SugerenciaYVerificacionRef({ sug, referencia, onUsar, busint, protos, capsulas }) {
   const refNorm = String(referencia || "").trim().toUpperCase();
+  const sugerencia = sug?.codigo || null;
   if (!sugerencia && !refNorm) return null;
+  const ultimas = sug ? ultimasReferenciasBusint(sug.prefijo, sug.segmento, busint.lista) : [];
+  const enAtlas = refNorm ? buscarRefEnAtlas(refNorm, protos, capsulas) : null;
   return (
     <div style={{ padding: "10px 12px", background: T.canvas, borderRadius: 8, marginBottom: 12, border: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 6 }}>
-      {sugerencia && !refNorm && (
+      {sugerencia && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 12.5, color: T.jade, fontWeight: 700 }}>
-          <span>🔢 Sugerencia de referencia: <strong>{sugerencia}</strong></span>
-          <button onClick={onUsar} style={{ background: T.jade, color: T.white, border: "none", borderRadius: 6, padding: "4px 10px", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Usar</button>
+          <span>
+            🔢 Sugerencia: <strong>{sugerencia}</strong>
+            {ultimas.length > 0 && <span style={{ color: T.slate, fontWeight: 600 }}> · últimas en Busint: {ultimas.join(", ")}</span>}
+          </span>
+          {!refNorm && <button onClick={onUsar} style={{ background: T.jade, color: T.white, border: "none", borderRadius: 6, padding: "4px 10px", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Usar</button>}
         </div>
       )}
+      {/* Chequeo contra ATLAS: siempre en vivo, sin ningún rezago — se detecta
+          al instante aunque el duplicado se haya creado hace 2 minutos. */}
+      {refNorm && enAtlas && (
+        <div style={{ fontSize: 12, color: T.coral, fontWeight: 700 }}>⚠ "{referencia}" YA EXISTE en ATLAS — {enAtlas.tipo}: {enAtlas.nombre}</div>
+      )}
+      {/* Chequeo contra Busint: viene de la bitácora local, puede tener hasta
+          un día de rezago (o lo que haya pasado desde el último "Sincronizar
+          ahora"). */}
       {refNorm && busint.cargando && (
-        <div style={{ fontSize: 12, color: T.slate, fontWeight: 600 }}>🔎 Verificando "{referencia}" contra el maestro de Busint...</div>
+        <div style={{ fontSize: 12, color: T.slate, fontWeight: 600 }}>🔎 Verificando "{referencia}" contra la bitácora de Busint...</div>
       )}
       {refNorm && !busint.cargando && busint.error && (
         <div style={{ fontSize: 12, color: T.amber, fontWeight: 600 }}>⚠ No se pudo verificar contra Busint — {busint.error}</div>
       )}
-      {refNorm && !busint.cargando && !busint.error && (
+      {refNorm && !busint.cargando && !busint.error && busint.lista.length === 0 && (
+        <div style={{ fontSize: 12, color: T.amber, fontWeight: 600 }}>ℹ Aún no hay bitácora de Busint sincronizada — hazlo desde Administración → Códigos de Referencia.</div>
+      )}
+      {refNorm && !busint.cargando && !busint.error && busint.lista.length > 0 && !enAtlas && (
         busint.set.has(refNorm) ? (
           <div style={{ fontSize: 12, color: T.coral, fontWeight: 700 }}>⚠ "{referencia}" YA EXISTE en Busint — elige otro consecutivo</div>
         ) : (
@@ -1092,8 +1160,8 @@ function SugerenciaYVerificacionRef({ sugerencia, referencia, onUsar, busint }) 
 function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
   const [form, setForm] = useState({ name: "", categoria: "", silueta: "", rango: "", reference: "", assignedTo: "", cliente: "", mes: "", tipoTela: "", baseMolderia: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
-  const sugerencia = sugerirReferencia(form.categoria, form.silueta, config, protos || [], capsulas || []);
   const busint = useMaestroReferenciasBusint();
+  const sug = sugerirReferencia(form.categoria, form.silueta, config, protos || [], capsulas || [], busint.lista);
   function save() {
     if (!form.name || !form.reference) return;
     onSave({ id: uid(), ...form, status: "borrador", currentStage: "ilustracion", stageStartedAt: today(), createdAt: today(), promotedTo: null, image: null, bom: [], pom: [], observations: [] });
@@ -1111,7 +1179,7 @@ function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
         <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
         <Field label="Mes"><FSel value={form.mes} onChange={set("mes")} options={MONTHS_ES} /></Field>
       </div>
-      <SugerenciaYVerificacionRef sugerencia={sugerencia} referencia={form.reference} onUsar={() => set("reference")(sugerencia)} busint={busint} />
+      <SugerenciaYVerificacionRef sug={sug} referencia={form.reference} onUsar={() => set("reference")(sug.codigo)} busint={busint} protos={protos} capsulas={capsulas} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: C-003" /></Field>
         <Field label="Responsable"><FSel value={form.assignedTo} onChange={set("assignedTo")} options={config.disenadores} /></Field>
@@ -1218,8 +1286,8 @@ function NewCapsulaModal({ onSave, onClose, config }) {
 function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
   const [form, setForm] = useState({ name: "", reference: "", assignedTo: "", categoria: "", silueta: "", rango: "", colores: "", tallas: "", tipoTela: "", baseMolderia: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
-  const sugerencia = sugerirReferencia(form.categoria, form.silueta, config, protos || [], capsulas || []);
   const busint = useMaestroReferenciasBusint();
+  const sug = sugerirReferencia(form.categoria, form.silueta, config, protos || [], capsulas || [], busint.lista);
   function save() {
     if (!form.name || !form.reference) return;
     onSave(capsula.id, {
@@ -1235,7 +1303,7 @@ function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
         <Field label="Categoría"><FSel value={form.categoria} onChange={set("categoria")} options={config.categorias} /></Field>
         <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config.siluetas} /></Field>
       </div>
-      <SugerenciaYVerificacionRef sugerencia={sugerencia} referencia={form.reference} onUsar={() => set("reference")(sugerencia)} busint={busint} />
+      <SugerenciaYVerificacionRef sug={sug} referencia={form.reference} onUsar={() => set("reference")(sug.codigo)} busint={busint} protos={protos} capsulas={capsulas} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: CM-001" /></Field>
         <Field label="Cliente"><FSel value={form.colores} onChange={set("colores")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
@@ -5154,6 +5222,44 @@ function ClientesTab({ config, onUpdateConfig }) {
   );
 }
 
+// Muestra cuándo se sincronizó por última vez la bitácora local de Busint
+// (busint_referencias_meta/main, escrito tanto por la función programada
+// syncReferenciasBusint como por getReferenciasBusint) y deja forzar un
+// refresh inmediato sin tener que esperar a la pasada de las 5:00 a.m.
+function BusintSyncPanel() {
+  const [meta, setMeta] = useState(null);
+  const [sincronizando, setSincronizando] = useState(false);
+  const [resultado, setResultado] = useState("");
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "busint_referencias_meta", "main"), (snap) => {
+      setMeta(snap.exists() ? snap.data() : null);
+    });
+    return () => unsub();
+  }, []);
+  async function sincronizar() {
+    setSincronizando(true);
+    setResultado("");
+    try {
+      const llamar = httpsCallable(functionsClient, "getReferenciasBusint");
+      const resp = await llamar({});
+      setResultado(`✅ ${resp.data?.total ?? 0} referencias sincronizadas.`);
+    } catch (err) {
+      setResultado(`⚠ ${err?.message || "No se pudo sincronizar. Verifica que getReferenciasBusint esté desplegada."}`);
+    }
+    setSincronizando(false);
+  }
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 14px", background: T.denimBg, borderRadius: 8, marginBottom: 20 }}>
+      <div style={{ fontSize: 12.5, color: T.denim, fontWeight: 600 }}>
+        🔄 Bitácora de referencias Busint — se actualiza sola todos los días a las 5:00 a.m.
+        {meta?.ultimaSync && <div style={{ marginTop: 2 }}>Última sincronización: {new Date(meta.ultimaSync).toLocaleString("es-CO")} · {meta.total} referencias</div>}
+        {!meta && <div style={{ marginTop: 2 }}>Aún no se ha sincronizado ninguna vez.</div>}
+        {resultado && <div style={{ marginTop: 4 }}>{resultado}</div>}
+      </div>
+      <Btn onClick={sincronizar} disabled={sincronizando}>{sincronizando ? "Sincronizando..." : "Sincronizar ahora"}</Btn>
+    </div>
+  );
+}
 function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula, isAdmin }) {
   const [tab, setTab] = useState("etapas");
   const [newItem, setNewItem] = useState("");
@@ -5319,6 +5425,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
             <div style={{ fontSize: 12.5, color: T.slate, marginBottom: 16 }}>
               Cada fila amarra una Categoría (y opcionalmente una Silueta puntual) a un prefijo de 2 dígitos y un segmento (0 al 10). Con esto, ATLAS sugiere solo el consecutivo — nunca se reinicia y nunca se repite.
             </div>
+            <BusintSyncPanel />
             <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1.3fr 0.8fr 0.7fr auto", gap: 8, marginBottom: 20, alignItems: "end" }}>
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Categoría</div>
