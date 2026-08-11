@@ -52,6 +52,9 @@ function today() {
 function fmtNum(n) {
   return Number(n || 0).toLocaleString("es-CO");
 }
+function fmtMoney(n) {
+  return Number(n || 0).toLocaleString("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 });
+}
 // ─── UI ATOMS ─────────────────────────────────────────────────────────────────
 function Btn({ children, onClick, variant = "primary", small, disabled }) {
   const S = {
@@ -1335,7 +1338,7 @@ function ProgramadorPlantaView({ filas, currentUser }) {
     [filas, pendientePorLote]
   );
   const dias = useMemo(() => [...new Set(asignaciones.map((a) => a.fecha))].sort(), [asignaciones]);
-  async function programar(fila, fecha, cantidad) {
+  async function programar(fila, fecha, cantidad, nombrePlanta, precioConfeccion) {
     await fsSave("planta_bmp_programacion", uid(), {
       numLote: fila.numLote,
       referencia: fila.referencia,
@@ -1343,6 +1346,8 @@ function ProgramadorPlantaView({ filas, currentUser }) {
       cliente: fila.cliente,
       cantidad,
       fecha,
+      nombrePlanta: nombrePlanta || "",
+      precioConfeccion: Number(precioConfeccion) || 0,
       creadoEn: new Date().toISOString(),
       creadoPor: currentUser?.name || "—",
     });
@@ -1406,6 +1411,7 @@ function ProgramadorPlantaView({ filas, currentUser }) {
                 const usado = asigDia.reduce((s, a) => s + (a.cantidad || 0), 0);
                 const capacidad = capacidades[fecha] ?? DEFAULT_CAPACIDAD_DIA;
                 const disponible = capacidad - usado;
+                const costoDia = asigDia.reduce((s, a) => s + (a.cantidad || 0) * (a.precioConfeccion || 0), 0);
                 return (
                   <div key={fecha} style={{ border: `1px solid ${disponible < 0 ? C.red : C.border}`, borderRadius: 10, overflow: "hidden" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: disponible < 0 ? C.redBg : C.canvas }}>
@@ -1435,14 +1441,23 @@ function ProgramadorPlantaView({ filas, currentUser }) {
                         </span>
                       </div>
                     </div>
+                    {costoDia > 0 && (
+                      <div style={{ padding: "6px 12px", fontSize: 11, color: C.slate, borderTop: `1px solid ${C.border}`, background: "#FAFAF7" }}>
+                        💲 Costo confección del día: <strong style={{ color: C.ink }}>{fmtMoney(costoDia)}</strong>
+                      </div>
+                    )}
                     <div>
                       {asigDia.map((a) => (
-                        <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", borderTop: `1px solid ${C.border}`, fontSize: 12 }}>
+                        <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "8px 12px", borderTop: `1px solid ${C.border}`, fontSize: 12 }}>
                           <div>
                             <span style={{ fontWeight: 700, color: C.ink }}>{a.referencia}</span>
                             <span style={{ color: C.slate }}> · Lote {a.numLote} · {a.cliente}</span>
+                            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+                              {a.nombrePlanta ? `🏭 ${a.nombrePlanta}` : "🏭 Sin planta asignada"}
+                              {a.precioConfeccion > 0 ? ` · ${fmtMoney(a.precioConfeccion)}/und` : ""}
+                            </div>
                           </div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
                             <span style={{ fontWeight: 700, color: C.ink }}>{fmtNum(a.cantidad)}</span>
                             <button
                               onClick={() => quitarAsignacion(a.id)}
@@ -1467,7 +1482,7 @@ function ProgramadorPlantaView({ filas, currentUser }) {
           fila={modalLote}
           capacidades={capacidades}
           asignaciones={asignaciones}
-          onConfirm={(fecha, cantidad) => programar(modalLote, fecha, cantidad)}
+          onConfirm={(fecha, cantidad, nombrePlanta, precioConfeccion) => programar(modalLote, fecha, cantidad, nombrePlanta, precioConfeccion)}
           onClose={() => setModalLote(null)}
         />
       )}
@@ -1477,6 +1492,16 @@ function ProgramadorPlantaView({ filas, currentUser }) {
 function ProgramarBMPModal({ fila, capacidades, asignaciones, onConfirm, onClose }) {
   const [fecha, setFecha] = useState(today());
   const [cantidad, setCantidad] = useState(fila.pendiente);
+  // Plantas ya usadas antes (para el datalist de sugerencias) y último precio
+  // de confección registrado para esta misma referencia — así no hay que
+  // volver a escribirlo cada vez que se repite una referencia ya conocida.
+  const plantasUsadas = useMemo(() => [...new Set(asignaciones.map((a) => a.nombrePlanta).filter(Boolean))].sort(), [asignaciones]);
+  const ultimaParaRef = useMemo(() => {
+    const deEstaRef = asignaciones.filter((a) => a.referencia === fila.referencia && (a.nombrePlanta || a.precioConfeccion));
+    return deEstaRef.sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || ""))[0] || null;
+  }, [asignaciones, fila.referencia]);
+  const [nombrePlanta, setNombrePlanta] = useState(ultimaParaRef?.nombrePlanta || "");
+  const [precioConfeccion, setPrecioConfeccion] = useState(ultimaParaRef?.precioConfeccion || "");
   const usadoDia = asignaciones.filter((a) => a.fecha === fecha).reduce((s, a) => s + (a.cantidad || 0), 0);
   const capacidad = capacidades[fecha] ?? DEFAULT_CAPACIDAD_DIA;
   const disponible = capacidad - usadoDia;
@@ -1510,6 +1535,36 @@ function ProgramarBMPModal({ fila, capacidades, asignaciones, onConfirm, onClose
           style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
         />
       </div>
+      <div style={{ marginBottom: 14 }}>
+        <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>Nombre de la Planta</label>
+        <input
+          list="plantas-bmp-sugeridas"
+          value={nombrePlanta}
+          onChange={(e) => setNombrePlanta(e.target.value)}
+          placeholder="Ej: Industrias Yanko Módulo Centro"
+          style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
+        />
+        <datalist id="plantas-bmp-sugeridas">
+          {plantasUsadas.map((p) => <option key={p} value={p} />)}
+        </datalist>
+      </div>
+      <div style={{ marginBottom: 18 }}>
+        <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>Precio de Confección (por unidad)</label>
+        <input
+          type="number"
+          value={precioConfeccion}
+          min={0}
+          step="0.01"
+          onChange={(e) => setPrecioConfeccion(e.target.value)}
+          placeholder="0"
+          style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
+        />
+        {Number(precioConfeccion) > 0 && cantidad > 0 && (
+          <div style={{ fontSize: 11, marginTop: 6, color: C.slate }}>
+            Costo total de este lote: <strong style={{ color: C.ink }}>{fmtMoney(Number(precioConfeccion) * cantidad)}</strong>
+          </div>
+        )}
+      </div>
       {disponible < cantidad && (
         <div style={{ fontSize: 12, color: C.red, marginBottom: 12, fontWeight: 700 }}>
           ⚠ Esta cantidad supera la capacidad disponible de ese día.
@@ -1517,7 +1572,7 @@ function ProgramarBMPModal({ fila, capacidades, asignaciones, onConfirm, onClose
       )}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn variant="primary" onClick={() => cantidad > 0 && onConfirm(fecha, Math.min(cantidad, fila.pendiente))}>Confirmar</Btn>
+        <Btn variant="primary" onClick={() => cantidad > 0 && onConfirm(fecha, Math.min(cantidad, fila.pendiente), nombrePlanta.trim(), precioConfeccion)}>Confirmar</Btn>
       </div>
     </Modal>
   );
