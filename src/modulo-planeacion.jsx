@@ -1178,7 +1178,7 @@ function BloqueSeguimientoSemiterminado({ data }) {
 }
 // Mismo patrón de BloqueSeguimientoSemiterminado (KPI de total + pestaña Por
 // Cliente + clic abre ventana con el detalle de ese cliente), aplicado a BMP.
-function BloqueBMP({ data }) {
+function BloqueBMP({ data, currentUser }) {
   const { filas, resumenClientes, totalLotes, totalUnidades } = data;
   const [vista, setVista] = useState("detalle");
   const [clienteAbierto, setClienteAbierto] = useState(null);
@@ -1205,7 +1205,14 @@ function BloqueBMP({ data }) {
         >
           POR CLIENTE
         </div>
+        <div
+          onClick={() => setVista("programador")}
+          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: vista === "programador" ? C.ink : C.white, color: vista === "programador" ? C.seam : C.ink, border: `1px solid ${vista === "programador" ? C.ink : C.border}` }}
+        >
+          📅 PROGRAMADOR DE PLANTA
+        </div>
       </div>
+      {vista === "programador" && <ProgramadorPlantaView filas={filas} currentUser={currentUser} />}
       {vista === "detalle" && (
         <Tabla
           vacio="Sin lotes en BMP."
@@ -1284,6 +1291,235 @@ function BloqueBMP({ data }) {
         </Modal>
       )}
     </div>
+  );
+}
+// ─── PROGRAMADOR DE PLANTA (BMP → días con capacidad) ──────────────────────────
+// Asigna lotes que están en BMP a días específicos de Planta, respetando una
+// capacidad diaria (en unidades) editable por día — mismo espíritu que la
+// "Programación de Mesones" de Corte, pero con un solo recurso (Planta no
+// tiene mesones), así que la capacidad es un único número por día en vez de
+// por mesón/grupo. Un lote se puede repartir en varios días (se programa por
+// cantidad, no todo-o-nada) — lo pendiente de cada lote es su cantidadBMP
+// menos lo ya asignado en `planta_bmp_programacion`.
+const DEFAULT_CAPACIDAD_DIA = 500; // unidades/día por defecto — editable por día desde la vista
+function ProgramadorPlantaView({ filas, currentUser }) {
+  const [asignaciones, setAsignaciones] = useState([]);
+  const [capacidades, setCapacidades] = useState({});
+  const [modalLote, setModalLote] = useState(null);
+  const [editandoCap, setEditandoCap] = useState(null);
+  useEffect(() => {
+    const unsub1 = onSnapshot(collection(db, "planta_bmp_programacion"), (snap) => {
+      setAsignaciones(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    const unsub2 = onSnapshot(collection(db, "planta_bmp_capacidad"), (snap) => {
+      const m = {};
+      snap.docs.forEach((d) => { m[d.id] = d.data().capacidad; });
+      setCapacidades(m);
+    });
+    return () => { unsub1(); unsub2(); };
+  }, []);
+  const pendientePorLote = useMemo(() => {
+    const m = new Map();
+    filas.forEach((f) => m.set(f.numLote, f.cantidadBMP));
+    asignaciones.forEach((a) => {
+      if (m.has(a.numLote)) m.set(a.numLote, m.get(a.numLote) - (a.cantidad || 0));
+    });
+    return m;
+  }, [filas, asignaciones]);
+  const lotesConPendiente = useMemo(
+    () =>
+      filas
+        .map((f) => ({ ...f, pendiente: Math.max(0, Math.round(pendientePorLote.get(f.numLote) ?? f.cantidadBMP)) }))
+        .filter((f) => f.pendiente > 0)
+        .sort((a, b) => (a.diasParaCorte ?? 999) - (b.diasParaCorte ?? 999)),
+    [filas, pendientePorLote]
+  );
+  const dias = useMemo(() => [...new Set(asignaciones.map((a) => a.fecha))].sort(), [asignaciones]);
+  async function programar(fila, fecha, cantidad) {
+    await fsSave("planta_bmp_programacion", uid(), {
+      numLote: fila.numLote,
+      referencia: fila.referencia,
+      categoria: fila.categoria,
+      cliente: fila.cliente,
+      cantidad,
+      fecha,
+      creadoEn: new Date().toISOString(),
+      creadoPor: currentUser?.name || "—",
+    });
+    setModalLote(null);
+  }
+  async function quitarAsignacion(id) {
+    await fsDelete("planta_bmp_programacion", id);
+  }
+  async function guardarCapacidad(fecha, valor) {
+    await fsSave("planta_bmp_capacidad", fecha, { capacidad: Number(valor) || 0 });
+    setEditandoCap(null);
+  }
+  const totalPendiente = lotesConPendiente.reduce((s, f) => s + f.pendiente, 0);
+  const totalProgramado = asignaciones.reduce((s, a) => s + (a.cantidad || 0), 0);
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 20 }}>
+        <KPI icon="🗓" label="Unidades por Programar" value={fmtNum(totalPendiente)} color={C.amber} bg={C.amberBg} />
+        <KPI icon="✅" label="Unidades Ya Programadas" value={fmtNum(totalProgramado)} color={C.green} bg={C.greenBg} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: 20, alignItems: "start" }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>LOTES POR PROGRAMAR</div>
+          {!lotesConPendiente.length ? (
+            <div style={{ textAlign: "center", padding: 30, color: C.slate, fontSize: 13, background: C.canvas, borderRadius: 10 }}>
+              Todos los lotes de BMP ya están programados.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {lotesConPendiente.map((f) => (
+                <div key={f.numLote} style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px", background: C.white }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{f.referencia} · Lote {f.numLote}</div>
+                      <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>{f.cliente} · {f.categoria}</div>
+                      <div style={{ fontSize: 11, color: f.diasParaCorte < 0 ? C.red : C.slate, marginTop: 4 }}>
+                        Corte: {fmtFechaISO(f.fechaCorte) || "—"}{f.diasParaCorte != null ? ` (${f.diasParaCorte}d)` : ""}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{fmtNum(f.pendiente)}</div>
+                      <div style={{ fontSize: 10, color: C.slate }}>pendiente</div>
+                    </div>
+                  </div>
+                  <Btn small variant="primary" onClick={() => setModalLote(f)}>📅 Programar</Btn>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>PROGRAMACIÓN POR DÍA</div>
+          {!dias.length ? (
+            <div style={{ textAlign: "center", padding: 30, color: C.slate, fontSize: 13, background: C.canvas, borderRadius: 10 }}>
+              Aún no hay lotes programados a ningún día.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {dias.map((fecha) => {
+                const asigDia = asignaciones.filter((a) => a.fecha === fecha);
+                const usado = asigDia.reduce((s, a) => s + (a.cantidad || 0), 0);
+                const capacidad = capacidades[fecha] ?? DEFAULT_CAPACIDAD_DIA;
+                const disponible = capacidad - usado;
+                return (
+                  <div key={fecha} style={{ border: `1px solid ${disponible < 0 ? C.red : C.border}`, borderRadius: 10, overflow: "hidden" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: disponible < 0 ? C.redBg : C.canvas }}>
+                      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>{fmtFechaISO(fecha)}</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                        <span style={{ color: C.slate }}>{fmtNum(usado)} /</span>
+                        {editandoCap === fecha ? (
+                          <input
+                            type="number"
+                            autoFocus
+                            defaultValue={capacidad}
+                            onBlur={(e) => guardarCapacidad(fecha, e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && guardarCapacidad(fecha, e.target.value)}
+                            style={{ width: 70, padding: "3px 6px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }}
+                          />
+                        ) : (
+                          <span
+                            onClick={() => setEditandoCap(fecha)}
+                            style={{ cursor: "pointer", fontWeight: 700, color: C.ink, textDecoration: "underline dotted" }}
+                            title="Click para editar capacidad del día"
+                          >
+                            {fmtNum(capacidad)}
+                          </span>
+                        )}
+                        <span style={{ fontWeight: 800, color: disponible < 0 ? C.red : C.green }}>
+                          {disponible < 0 ? `${fmtNum(Math.abs(disponible))} sobre` : `${fmtNum(disponible)} disp.`}
+                        </span>
+                      </div>
+                    </div>
+                    <div>
+                      {asigDia.map((a) => (
+                        <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", borderTop: `1px solid ${C.border}`, fontSize: 12 }}>
+                          <div>
+                            <span style={{ fontWeight: 700, color: C.ink }}>{a.referencia}</span>
+                            <span style={{ color: C.slate }}> · Lote {a.numLote} · {a.cliente}</span>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <span style={{ fontWeight: 700, color: C.ink }}>{fmtNum(a.cantidad)}</span>
+                            <button
+                              onClick={() => quitarAsignacion(a.id)}
+                              title="Quitar del día"
+                              style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 13 }}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+      {modalLote && (
+        <ProgramarBMPModal
+          fila={modalLote}
+          capacidades={capacidades}
+          asignaciones={asignaciones}
+          onConfirm={(fecha, cantidad) => programar(modalLote, fecha, cantidad)}
+          onClose={() => setModalLote(null)}
+        />
+      )}
+    </div>
+  );
+}
+function ProgramarBMPModal({ fila, capacidades, asignaciones, onConfirm, onClose }) {
+  const [fecha, setFecha] = useState(today());
+  const [cantidad, setCantidad] = useState(fila.pendiente);
+  const usadoDia = asignaciones.filter((a) => a.fecha === fecha).reduce((s, a) => s + (a.cantidad || 0), 0);
+  const capacidad = capacidades[fecha] ?? DEFAULT_CAPACIDAD_DIA;
+  const disponible = capacidad - usadoDia;
+  return (
+    <Modal title={`Programar Lote ${fila.numLote}`} onClose={onClose} width={420}>
+      <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>
+        {fila.referencia} · {fila.cliente} · {fila.categoria}
+        <br />
+        Pendiente por programar: <strong style={{ color: C.ink }}>{fmtNum(fila.pendiente)}</strong> unidades
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>Día de Planta</label>
+        <input
+          type="date"
+          value={fecha}
+          onChange={(e) => setFecha(e.target.value)}
+          style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
+        />
+        <div style={{ fontSize: 11, marginTop: 6, color: disponible < cantidad ? C.red : C.slate }}>
+          Capacidad del día: {fmtNum(usadoDia)} / {fmtNum(capacidad)} usadas · {fmtNum(disponible)} disponibles
+        </div>
+      </div>
+      <div style={{ marginBottom: 18 }}>
+        <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>Cantidad a Programar</label>
+        <input
+          type="number"
+          value={cantidad}
+          max={fila.pendiente}
+          min={1}
+          onChange={(e) => setCantidad(Number(e.target.value))}
+          style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
+        />
+      </div>
+      {disponible < cantidad && (
+        <div style={{ fontSize: 12, color: C.red, marginBottom: 12, fontWeight: 700 }}>
+          ⚠ Esta cantidad supera la capacidad disponible de ese día.
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn variant="primary" onClick={() => cantidad > 0 && onConfirm(fecha, Math.min(cantidad, fila.pendiente))}>Confirmar</Btn>
+      </div>
+    </Modal>
   );
 }
 function BloqueCronograma({ data }) {
@@ -1681,7 +1917,7 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
               filas={reportePorPedido}
             />
           )}
-          {tab === "bmp" && <BloqueBMP data={reporteBMP} />}
+          {tab === "bmp" && <BloqueBMP data={reporteBMP} currentUser={currentUser} />}
           {tab === "bpt" && (
             <Tabla
               vacio="Sin lotes en BPT."
