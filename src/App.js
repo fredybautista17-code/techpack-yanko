@@ -5262,9 +5262,12 @@ function BusintSyncPanel() {
         .sort((a, b) => String(a.ref || "").localeCompare(String(b.ref || ""), "es", { numeric: true }));
       const XLSX = await import("xlsx");
       const wb = XLSX.utils.book_new();
+      // "BASE" y "TELA" quedan vacías a propósito: Busint no las expone en
+      // ApiGen_Referencias (no existen esos campos en su maestro), así que
+      // se llenan a mano en el Excel, igual que en el archivo de Kamila.
       const aoa = [
-        ["REF", "CATEGORÍA", "REFERENCIA EXTERNA", "ACTUALIZADO"],
-        ...filas.map((f) => [f.ref || "", f.categoria || "", f.referenciaExterna || "", f.actualizadoEn || ""]),
+        ["REF", "BASE", "CATEGORIA", "DESCRIPCIÓN", "TELA", "SILUETA (TIPO DE CONFECCIÓN)", "LINEA (BASICO/PREMIUM)", "SUBCATEGORÍA (RANGO/EXTENSIÓN)"],
+        ...filas.map((f) => [f.ref || "", "", f.categoria || "", f.descripcion || "", "", f.tipoConfeccion || "", f.linea || "", f.subcategoria || ""]),
       ];
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "Bitácora Busint");
       XLSX.writeFile(wb, `Bitacora_Referencias_Busint_${today()}.xlsx`);
