@@ -816,7 +816,7 @@ function CodigoEdicionView({ pinActual, onGuardar }) {
     </div>
   );
 }
-function DetalleDespachoModal({ despacho, onClose, onGuardado, currentUser, isAdmin, esContabilidad, esBodegaSolo, pinEdicion }) {
+function DetalleDespachoModal({ despacho, onClose, onGuardado, currentUser, isAdmin, esContabilidad, esBodegaSolo, pinEdicion, onEliminar }) {
   const [editando, setEditando] = useState(false);
   const [pidiendoPin, setPidiendoPin] = useState(false);
   const esPropio = !!despacho.creadoPor && despacho.creadoPor === (currentUser?.name || currentUser?.username);
@@ -830,6 +830,13 @@ function DetalleDespachoModal({ despacho, onClose, onGuardado, currentUser, isAd
     }
     if (puedeEditarConPin) setPidiendoPin(true);
   }
+  // Borrar el despacho por completo — solo Administración. Es irreversible
+  // (a diferencia de editar), así que pide confirmación explícita.
+  function onClickEliminar() {
+    if (!window.confirm(`¿Borrar por completo el Despacho #${despacho.numero}? Esto no se puede deshacer.`)) return;
+    onEliminar && onEliminar(despacho.id);
+    onClose();
+  }
   return (
     <Modal title={`Despacho #${despacho.numero}`} onClose={onClose} width={860}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 18, fontSize: 12 }}>
@@ -842,6 +849,9 @@ function DetalleDespachoModal({ despacho, onClose, onGuardado, currentUser, isAd
         <Btn variant="secondary" small onClick={() => exportarDespachoExcel(despacho)}>⬇ Exportar a Excel</Btn>
         {(puedeEditarDirecto || puedeEditarConPin) && (
           <Btn variant="secondary" small onClick={onClickEditar}>{puedeEditarConPin ? "🔒 Editar (código)" : "✎ Editar"}</Btn>
+        )}
+        {isAdmin && (
+          <Btn variant="danger" small onClick={onClickEliminar}>🗑 Eliminar despacho</Btn>
         )}
       </div>
       <Tabla
@@ -1038,7 +1048,7 @@ function PorAprobarView({ despachos, currentUser, puedeAprobar }) {
 // usuario de Bodega sin esos dos permisos, se le muestran TODOS sus propios
 // despachos sin importar el estado — antes no tenían dónde verlos ni
 // corregirlos mientras seguían pendientes de aprobación.
-function HistorialView({ despachos, currentUser, isAdmin, esContabilidad, esBodegaSolo, pinEdicion }) {
+function HistorialView({ despachos, currentUser, isAdmin, esContabilidad, esBodegaSolo, pinEdicion, onEliminar }) {
   const [abierto, setAbierto] = useState(null);
   const [filtro, setFiltro] = useState("");
   const base = esBodegaSolo
@@ -1078,6 +1088,7 @@ function HistorialView({ despachos, currentUser, isAdmin, esContabilidad, esBode
           esContabilidad={esContabilidad}
           esBodegaSolo={esBodegaSolo}
           pinEdicion={pinEdicion}
+          onEliminar={onEliminar}
         />
       )}
     </div>
@@ -1786,6 +1797,13 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
     setPinEdicion(pin);
     await fsSave("bodega_config", "main", { pinEdicion: pin });
   }
+  // Borrar un despacho por completo (histórico o aprobado) — solo
+  // Administración puede hacerlo, se valida además al mostrar el botón en
+  // DetalleDespachoModal.
+  async function eliminarDespacho(id) {
+    setDespachos((ds) => ds.filter((d) => d.id !== id));
+    await fsDelete("despachosVenezuela", id);
+  }
   const isAdmin = !!currentUser?.isAdmin;
   // Etapa 2 del despacho (revisar cantidades, poner precio/dcto y aprobar)
   // la hace Contabilidad. Se deja también el permiso "aprobarDespacho" por
@@ -1888,6 +1906,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
               esContabilidad={esContabilidad}
               esBodegaSolo={esBodegaSolo}
               pinEdicion={pinEdicion}
+              onEliminar={eliminarDespacho}
             />
           )}
           {subView === "abonos" && <AbonosView abonos={abonos} currentUser={currentUser} puedeEditar={puedeEditarAbonos} />}
