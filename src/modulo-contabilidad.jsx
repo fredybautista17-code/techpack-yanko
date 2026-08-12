@@ -324,7 +324,7 @@ const CATS_EGRESO = [
   "Otros egresos",
 ];
 // ─── NUEVO MOVIMIENTO MODAL ───────────────────────────────────────────────────
-function NuevoMovimientoModal({ tipo, onSave, onClose, clientesDiseno, rubros, calendarioCxp }) {
+function NuevoMovimientoModal({ tipo, onSave, onClose, clientesDiseno, rubros, calendarioCxp, categoriasIngreso, categoriasEgreso }) {
   const [form, setForm] = useState({
     fecha: today(),
     categoria: "",
@@ -335,7 +335,11 @@ function NuevoMovimientoModal({ tipo, onSave, onClose, clientesDiseno, rubros, c
   });
   const [distribucion, setDistribucion] = useState([]);
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
-  const cats = tipo === "ingreso" ? CATS_INGRESO : CATS_EGRESO;
+  // Categorías administradas por el usuario en Administración → Rubros (antes
+  // eran las listas fijas CATS_INGRESO/CATS_EGRESO); si por algún motivo el
+  // catálogo aún no cargó, se cae de vuelta a esas listas para no dejar el
+  // desplegable vacío.
+  const cats = tipo === "ingreso" ? (categoriasIngreso?.length ? categoriasIngreso : CATS_INGRESO) : (categoriasEgreso?.length ? categoriasEgreso : CATS_EGRESO);
   const esIngreso = tipo === "ingreso";
   const valorNum = parseFloat(form.valor) || 0;
   const distribuido = distribucion.reduce((s, d) => s + (parseFloat(d.monto) || 0), 0);
@@ -1768,7 +1772,7 @@ function ProgramarPagoModal({ proveedor, totalAdeudado, entradasExistentes, disp
   );
 }
 // ─── FLUJO DE CAJA VIEW ───────────────────────────────────────────────────────
-function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, clientesDiseno, rubros, calendarioCxp, onUpdateDistribucion }) {
+function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, clientesDiseno, rubros, calendarioCxp, onUpdateDistribucion, categoriasIngreso, categoriasEgreso }) {
   const [showModal, setShowModal] = useState(null); // "ingreso" | "egreso" | "importar"
   const [fechaABorrar, setFechaABorrar] = useState("");
   const [asignandoId, setAsignandoId] = useState(null);
@@ -1806,6 +1810,8 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
           clientesDiseno={clientesDiseno}
           rubros={rubros}
           calendarioCxp={calendarioCxp}
+          categoriasIngreso={categoriasIngreso}
+          categoriasEgreso={categoriasEgreso}
         />
       )}
       {showModal === "importar" && (
@@ -1991,7 +1997,7 @@ function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, c
           }}
         >
           <option value="">Todas las categorías</option>
-          {[...CATS_INGRESO, ...CATS_EGRESO].map((c) => (
+          {[...(categoriasIngreso?.length ? categoriasIngreso : CATS_INGRESO), ...(categoriasEgreso?.length ? categoriasEgreso : CATS_EGRESO)].map((c) => (
             <option key={c} value={c}>
               {c}
             </option>
@@ -3293,7 +3299,8 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, abo
   );
 }
 // ─── PRESUPUESTO POR CLIENTE ───────────────────────────────────────────────────
-function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDiseno, onGuardar, onDelete, isAdmin }) {
+function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDiseno, onGuardar, onDelete, isAdmin, categoriasIngreso }) {
+  const catsIngresoLista = categoriasIngreso?.length ? categoriasIngreso : CATS_INGRESO;
   const [mes, setMes] = useState(() => today().slice(0, 7));
   const [showAdd, setShowAdd] = useState(false);
   const [clienteNuevo, setClienteNuevo] = useState("");
@@ -3336,7 +3343,7 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
   const totalAbonado = presupuestosMes
     .filter((p) => p.categoria !== CATEGORIA_NO_CUENTA)
     .reduce((s, p) => s + abonadoDe(p.cliente, p.categoria), 0);
-  const resumenCategorias = CATS_INGRESO.map((cat) => {
+  const resumenCategorias = catsIngresoLista.map((cat) => {
     const presupuestado = presupuestosMes.filter((p) => p.categoria === cat).reduce((s, p) => s + p.monto, 0);
     const abonado = movimientos
       .filter((m) => m.tipo === "ingreso" && m.fecha?.slice(0, 7) === mes && m.categoria === cat)
@@ -3378,7 +3385,7 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
             <FSel value={clienteNuevo} onChange={setClienteNuevo} options={(clientesDiseno || []).map((c) => c.nombre)} />
           </Field>
           <Field label="Categoría">
-            <FSel value={categoriaNueva} onChange={setCategoriaNueva} options={CATS_INGRESO} />
+            <FSel value={categoriaNueva} onChange={setCategoriaNueva} options={catsIngresoLista} />
           </Field>
           <Field label="Monto esperado este mes">
             <FInput type="number" value={montoNuevo} onChange={setMontoNuevo} placeholder="Ej: 20000000" />
@@ -3456,7 +3463,7 @@ function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDis
           )}
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             {clientesConPresupuesto.map((cliente) => {
-              const ramas = CATS_INGRESO.map((cat) => {
+              const ramas = catsIngresoLista.map((cat) => {
                 const p = presupuestosMes.find((x) => x.cliente === cliente && x.categoria === cat);
                 const monto = p ? p.monto : 0;
                 const abonado = abonadoDe(cliente, cat);
@@ -4321,6 +4328,328 @@ function HomeContabilidad({ onGoModulo }) {
   );
 }
 // ─── ROOT MÓDULO CONTABILIDAD ─────────────────────────────────────────────────
+// ─── RUBROS (CATEGORÍAS) — ADMINISTRACIÓN ─────────────────────────────────
+// Catálogo de categorías de Ingreso/Egreso que el administrador mantiene él
+// mismo desde esta pantalla, en vez de tenerlas fijas en el código (antes
+// CATS_INGRESO/CATS_EGRESO, que ahora solo sirven de semilla inicial). El
+// Flujo de Caja y Presupuesto Clientes leen de aquí para armar sus listas.
+function RubrosAdminView({ categoriasIngresoObjs, categoriasEgresoObjs, onAdd, onDelete, isAdmin }) {
+  const [nombre, setNombre] = useState("");
+  const [tipo, setTipo] = useState("egreso");
+  function agregar() {
+    if (!nombre.trim()) return;
+    onAdd(nombre.trim(), tipo);
+    setNombre("");
+  }
+  return (
+    <div>
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Rubros (Categorías)</h2>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
+          Categorías disponibles al registrar un ingreso o egreso en Flujo de Caja
+        </p>
+      </div>
+      {isAdmin && (
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 24, padding: 16, background: C.white, border: `1px solid ${C.border}`, borderRadius: 12 }}>
+          <Field label="Nombre del rubro">
+            <FInput value={nombre} onChange={setNombre} placeholder="Ej: Mantenimiento maquinaria" />
+          </Field>
+          <Field label="Tipo">
+            <FSel value={tipo} onChange={setTipo} options={["ingreso", "egreso"]} />
+          </Field>
+          <Btn variant="danger" onClick={agregar} disabled={!nombre.trim()}>
+            + Agregar
+          </Btn>
+        </div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 800, color: C.green, marginBottom: 8, textTransform: "uppercase" }}>
+            Ingresos
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {categoriasIngresoObjs.map((c) => (
+              <div
+                key={c.id}
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }}
+              >
+                <span>{c.nombre}</span>
+                {isAdmin && (
+                  <button onClick={() => onDelete(c.id)} style={{ background: "transparent", border: "none", color: C.red, cursor: "pointer", fontWeight: 700 }}>
+                    ✕
+                  </button>
+                )}
+              </div>
+            ))}
+            {!categoriasIngresoObjs.length && <div style={{ fontSize: 12, color: C.slate }}>Sin categorías de ingreso.</div>}
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 800, color: C.red, marginBottom: 8, textTransform: "uppercase" }}>
+            Egresos
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {categoriasEgresoObjs.map((c) => (
+              <div
+                key={c.id}
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }}
+              >
+                <span>{c.nombre}</span>
+                {isAdmin && (
+                  <button onClick={() => onDelete(c.id)} style={{ background: "transparent", border: "none", color: C.red, cursor: "pointer", fontWeight: 700 }}>
+                    ✕
+                  </button>
+                )}
+              </div>
+            ))}
+            {!categoriasEgresoObjs.length && <div style={{ fontSize: 12, color: C.slate }}>Sin categorías de egreso.</div>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+// ─── DEUDAS ─────────────────────────────────────────────────────────────
+// Deudas propias del negocio (préstamos, tarjetas, etc.) — a propósito
+// separadas de Cuentas por Pagar, que es plata que se le debe a proveedores
+// por corte/producción. Cada deuda tiene un saldo pendiente que baja con los
+// abonos que se le registren, y opcionalmente una tasa de interés y fecha
+// límite para marcarla como vencida.
+function NuevaDeudaModal({ onSave, onClose }) {
+  const [form, setForm] = useState({ acreedor: "", montoOriginal: "", tasaInteres: "", fechaLimite: "", notas: "" });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  const valido = form.acreedor.trim() && parseFloat(form.montoOriginal) > 0;
+  function save() {
+    if (!valido) return;
+    onSave({
+      id: uid(),
+      acreedor: form.acreedor.trim(),
+      montoOriginal: parseFloat(form.montoOriginal) || 0,
+      tasaInteres: parseFloat(form.tasaInteres) || 0,
+      fechaLimite: form.fechaLimite || "",
+      notas: form.notas || "",
+      estado: "activa",
+      creadoEn: new Date().toISOString(),
+    });
+    onClose();
+  }
+  return (
+    <Modal title="Nueva deuda" onClose={onClose} width={460}>
+      <Field label="Acreedor (a quién le debes)">
+        <FInput value={form.acreedor} onChange={set("acreedor")} placeholder="Ej: Banco X, Persona Y..." />
+      </Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Monto original $">
+          <FInput type="number" value={form.montoOriginal} onChange={set("montoOriginal")} placeholder="Ej: 5000000" />
+        </Field>
+        <Field label="Tasa de interés % (opcional)">
+          <FInput type="number" value={form.tasaInteres} onChange={set("tasaInteres")} placeholder="Ej: 1.5" />
+        </Field>
+      </div>
+      <Field label="Fecha límite (opcional)">
+        <FInput type="date" value={form.fechaLimite} onChange={set("fechaLimite")} />
+      </Field>
+      <Field label="Notas (opcional)">
+        <FInput value={form.notas} onChange={set("notas")} placeholder="Ej: cuota mensual, número de crédito..." />
+      </Field>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
+        <Btn variant="secondary" onClick={onClose}>
+          Cancelar
+        </Btn>
+        <Btn variant="danger" onClick={save} disabled={!valido}>
+          Guardar
+        </Btn>
+      </div>
+    </Modal>
+  );
+}
+function AbonarDeudaModal({ deuda, saldoPendiente, onGuardar, onClose }) {
+  const [form, setForm] = useState({ monto: "", fecha: today(), notas: "" });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  const valido = parseFloat(form.monto) > 0;
+  function save() {
+    if (!valido) return;
+    onGuardar({
+      id: uid(),
+      deudaId: deuda.id,
+      monto: parseFloat(form.monto) || 0,
+      fecha: form.fecha,
+      notas: form.notas || "",
+      creadoEn: new Date().toISOString(),
+    });
+    onClose();
+  }
+  return (
+    <Modal title={`Abonar a ${deuda.acreedor}`} onClose={onClose} width={420}>
+      <div style={{ padding: "8px 12px", background: C.blueBg, borderRadius: 8, fontSize: 12, color: C.blue, fontWeight: 700, marginBottom: 16 }}>
+        Saldo pendiente actual: {fmtCOP(saldoPendiente)}
+      </div>
+      <Field label="Fecha">
+        <FInput type="date" value={form.fecha} onChange={set("fecha")} />
+      </Field>
+      <Field label="Monto del abono $">
+        <FInput type="number" value={form.monto} onChange={set("monto")} placeholder="Ej: 500000" />
+      </Field>
+      <Field label="Notas (opcional)">
+        <FInput value={form.notas} onChange={set("notas")} />
+      </Field>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 6 }}>
+        <Btn variant="secondary" onClick={onClose}>
+          Cancelar
+        </Btn>
+        <Btn variant="danger" onClick={save} disabled={!valido}>
+          Guardar abono
+        </Btn>
+      </div>
+    </Modal>
+  );
+}
+function DeudasView({ deudas, abonos, onAdd, onDelete, onAbonar, onEliminarAbono, isAdmin }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [abonandoId, setAbonandoId] = useState(null);
+  const [abiertaId, setAbiertaId] = useState(null);
+  const hoy = today();
+  function saldoDe(deudaId, montoOriginal) {
+    const abonado = abonos.filter((a) => a.deudaId === deudaId).reduce((s, a) => s + a.monto, 0);
+    return Math.max(0, montoOriginal - abonado);
+  }
+  const deudasConSaldo = deudas.map((d) => {
+    const saldoPendiente = saldoDe(d.id, d.montoOriginal);
+    return { ...d, saldoPendiente, vencida: !!(d.fechaLimite && d.fechaLimite < hoy && saldoPendiente > 0) };
+  });
+  const totalOriginal = deudasConSaldo.reduce((s, d) => s + d.montoOriginal, 0);
+  const totalPendiente = deudasConSaldo.reduce((s, d) => s + d.saldoPendiente, 0);
+  const totalAbonado = totalOriginal - totalPendiente;
+  return (
+    <div>
+      {showAdd && <NuevaDeudaModal onSave={onAdd} onClose={() => setShowAdd(false)} />}
+      {abonandoId &&
+        (() => {
+          const d = deudasConSaldo.find((x) => x.id === abonandoId);
+          if (!d) return null;
+          return (
+            <AbonarDeudaModal deuda={d} saldoPendiente={d.saldoPendiente} onGuardar={onAbonar} onClose={() => setAbonandoId(null)} />
+          );
+        })()}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Deudas</h2>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
+            Lo que debes tú — separado del Flujo de Caja y de Cuentas por Pagar a proveedores
+          </p>
+        </div>
+        {isAdmin && (
+          <Btn variant="danger" onClick={() => setShowAdd(true)}>
+            + Nueva deuda
+          </Btn>
+        )}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginBottom: 24 }}>
+        <KPI icon="📌" label="Deuda total original" value={fmtCOP(totalOriginal)} color={C.ink} bg={C.canvas} />
+        <KPI icon="💵" label="Ya abonado" value={fmtCOP(totalAbonado)} color={C.green} bg={C.greenBg} />
+        <KPI
+          icon="⚠"
+          label="Saldo pendiente"
+          value={fmtCOP(totalPendiente)}
+          color={totalPendiente > 0 ? C.red : C.green}
+          bg={totalPendiente > 0 ? C.redBg : C.greenBg}
+        />
+      </div>
+      {!deudasConSaldo.length ? (
+        <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
+          Aún no has registrado ninguna deuda.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {deudasConSaldo.map((d) => {
+            const abierta = abiertaId === d.id;
+            const abonosDeuda = abonos.filter((a) => a.deudaId === d.id).sort((a, b) => b.fecha.localeCompare(a.fecha));
+            return (
+              <div key={d.id} style={{ background: C.white, border: `1px solid ${d.vencida ? C.red : C.border}`, borderRadius: 12, padding: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }} onClick={() => setAbiertaId(abierta ? null : d.id)}>
+                  <span style={{ color: C.slate, fontWeight: 900 }}>{abierta ? "▾" : "▸"}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>
+                      {d.acreedor}
+                      {d.vencida && (
+                        <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 800, color: C.red, background: C.redBg, padding: "2px 8px", borderRadius: 10 }}>
+                          VENCIDA
+                        </span>
+                      )}
+                      {d.saldoPendiente <= 0 && (
+                        <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 800, color: C.green, background: C.greenBg, padding: "2px 8px", borderRadius: 10 }}>
+                          PAGADA
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11, color: C.slate }}>
+                      {fmtCOP(d.montoOriginal)} original
+                      {d.tasaInteres > 0 && ` · ${d.tasaInteres}% interés`}
+                      {d.fechaLimite && ` · vence ${fmtFechaCorta(d.fechaLimite)}`}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: d.saldoPendiente > 0 ? C.red : C.green }}>
+                      {fmtCOP(d.saldoPendiente)}
+                    </div>
+                    <div style={{ fontSize: 10, color: C.slate }}>saldo pendiente</div>
+                  </div>
+                  {isAdmin && (
+                    <div style={{ display: "flex", gap: 8 }} onClick={(e) => e.stopPropagation()}>
+                      {d.saldoPendiente > 0 && (
+                        <Btn variant="success" onClick={() => setAbonandoId(d.id)}>
+                          + Abonar
+                        </Btn>
+                      )}
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`¿Eliminar la deuda con ${d.acreedor}? Esto también borra sus abonos.`)) onDelete(d.id);
+                        }}
+                        style={{ background: "transparent", border: "none", color: C.red, cursor: "pointer", fontWeight: 700, fontSize: 16 }}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {abierta && (
+                  <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+                    {d.notas && <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>📝 {d.notas}</div>}
+                    {!abonosDeuda.length ? (
+                      <div style={{ fontSize: 12, color: C.slate }}>Sin abonos registrados todavía.</div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {abonosDeuda.map((a) => (
+                          <div
+                            key={a.id}
+                            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, padding: "6px 10px", background: C.canvas, borderRadius: 6 }}
+                          >
+                            <span>
+                              {fmtFechaCorta(a.fecha)}
+                              {a.notas ? ` · ${a.notas}` : ""}
+                            </span>
+                            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <b style={{ color: C.green }}>{fmtCOP(a.monto)}</b>
+                              {isAdmin && (
+                                <button onClick={() => onEliminarAbono(a.id)} style={{ background: "transparent", border: "none", color: C.red, cursor: "pointer", fontWeight: 700 }}>
+                                  ✕
+                                </button>
+                              )}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) {
   const [subView, setSubView] = useState("home");
   const [movimientos, setMovimientos] = useState([]);
@@ -4337,6 +4666,14 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
   // en que se pagó (por su campo `fecha`).
   const [abonosCxp, setAbonosCxp] = useState([]);
   const [clientesDiseno, setClientesDiseno] = useState([]);
+  // Catálogo de rubros (categorías) editable por el admin — reemplaza a las
+  // listas fijas CATS_INGRESO/CATS_EGRESO, que ahora solo se usan como
+  // semilla inicial (ver efecto de "seed" más abajo).
+  const [categorias, setCategorias] = useState([]);
+  const [categoriasLoaded, setCategoriasLoaded] = useState(false);
+  // Deudas propias del negocio (separadas de Cuentas por Pagar).
+  const [deudas, setDeudas] = useState([]);
+  const [abonosDeuda, setAbonosDeuda] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     const unsub = onSnapshot(
@@ -4391,6 +4728,25 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     const unsubClientes = onSnapshot(doc(db, "config", "main"), (snap) => {
       setClientesDiseno(snap.exists() ? snap.data()?.clientes || [] : []);
     });
+    const unsubCategorias = onSnapshot(
+      collection(db, "contabilidad_categorias"),
+      (snap) => {
+        setCategorias(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+        setCategoriasLoaded(true);
+      }
+    );
+    const unsubDeudas = onSnapshot(
+      collection(db, "contabilidad_deudas"),
+      (snap) => {
+        setDeudas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      }
+    );
+    const unsubAbonosDeuda = onSnapshot(
+      collection(db, "contabilidad_deudas_abonos"),
+      (snap) => {
+        setAbonosDeuda(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      }
+    );
     return () => {
       unsub();
       unsubCompras();
@@ -4401,8 +4757,25 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
       unsubCalendarioCxp();
       unsubAbonosCxp();
       unsubClientes();
+      unsubCategorias();
+      unsubDeudas();
+      unsubAbonosDeuda();
     };
   }, []);
+  // Semilla única del catálogo de rubros: si nunca se ha creado ningún
+  // documento en contabilidad_categorias, se llena una sola vez con las
+  // categorías que antes venían fijas en el código (CATS_INGRESO/
+  // CATS_EGRESO), para que el admin parta de esa base y de ahí en adelante
+  // las edite él mismo desde Administración → Rubros sin perder ninguna
+  // categoría que ya estuviera en uso en movimientos existentes.
+  useEffect(() => {
+    if (!categoriasLoaded || categorias.length > 0) return;
+    const seed = [
+      ...CATS_INGRESO.map((nombre) => ({ id: uid(), nombre, tipo: "ingreso", creadoEn: new Date().toISOString() })),
+      ...CATS_EGRESO.map((nombre) => ({ id: uid(), nombre, tipo: "egreso", creadoEn: new Date().toISOString() })),
+    ];
+    seed.forEach((c) => fsSave("contabilidad_categorias", c.id, c));
+  }, [categoriasLoaded, categorias.length]);
   async function addMovimiento(m) {
     setMovimientos((ms) => [...ms, m]);
     await fsSave("contabilidad_movimientos", m.id, m);
@@ -4526,6 +4899,34 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     setAbonosCxp((as) => as.filter((a) => a.id !== id));
     await fsDelete("contabilidad_cxp_abonos", id);
   }
+  async function addCategoria(nombre, tipo) {
+    const c = { id: uid(), nombre: nombre.trim(), tipo, creadoEn: new Date().toISOString() };
+    setCategorias((cs) => [...cs, c]);
+    await fsSave("contabilidad_categorias", c.id, c);
+  }
+  async function deleteCategoria(id) {
+    setCategorias((cs) => cs.filter((c) => c.id !== id));
+    await fsDelete("contabilidad_categorias", id);
+  }
+  async function addDeuda(d) {
+    setDeudas((ds) => [...ds, d]);
+    await fsSave("contabilidad_deudas", d.id, d);
+  }
+  async function deleteDeuda(id) {
+    const aBorrarAbonos = abonosDeuda.filter((a) => a.deudaId === id).map((a) => a.id);
+    setDeudas((ds) => ds.filter((d) => d.id !== id));
+    setAbonosDeuda((as) => as.filter((a) => a.deudaId !== id));
+    await fsDelete("contabilidad_deudas", id);
+    await Promise.all(aBorrarAbonos.map((aid) => fsDelete("contabilidad_deudas_abonos", aid)));
+  }
+  async function abonarDeuda(abono) {
+    setAbonosDeuda((as) => [...as, abono]);
+    await fsSave("contabilidad_deudas_abonos", abono.id, abono);
+  }
+  async function eliminarAbonoDeuda(id) {
+    setAbonosDeuda((as) => as.filter((a) => a.id !== id));
+    await fsDelete("contabilidad_deudas_abonos", id);
+  }
   const rubros = (() => {
     const map = {};
     compras.forEach((c) => {
@@ -4535,9 +4936,18 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     return Object.values(map).sort((a, b) => a.concepto.localeCompare(b.concepto));
   })();
   const isAdmin = currentUser?.isAdmin;
+  // Categorías del catálogo administrable (contabilidad_categorias),
+  // separadas por tipo — se le pasan a Flujo de Caja, Presupuesto Clientes y
+  // a la pantalla de administración de Rubros.
+  const categoriasIngresoObjs = categorias.filter((c) => c.tipo === "ingreso").sort((a, b) => a.nombre.localeCompare(b.nombre));
+  const categoriasEgresoObjs = categorias.filter((c) => c.tipo === "egreso").sort((a, b) => a.nombre.localeCompare(b.nombre));
+  const categoriasIngreso = categoriasIngresoObjs.map((c) => c.nombre);
+  const categoriasEgreso = categoriasEgresoObjs.map((c) => c.nombre);
   const NAV = [
     { id: "home", icon: "◉", label: "Inicio" },
     { id: "flujo_caja", icon: "💰", label: "Flujo de Caja" },
+    { id: "rubros", icon: "🏷", label: "Rubros" },
+    { id: "deudas", icon: "💳", label: "Deudas" },
     { id: "comparativo", icon: "📊", label: "Comparativo por Concepto" },
     { id: "proyeccion", icon: "🎯", label: "Proyección" },
     { id: "clientes", icon: "🤝", label: "Presupuesto Clientes" },
@@ -4742,6 +5152,28 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               rubros={rubros}
               calendarioCxp={calendarioCxp}
               onUpdateDistribucion={updateDistribucion}
+              categoriasIngreso={categoriasIngreso}
+              categoriasEgreso={categoriasEgreso}
+            />
+          )}
+          {subView === "rubros" && (
+            <RubrosAdminView
+              categoriasIngresoObjs={categoriasIngresoObjs}
+              categoriasEgresoObjs={categoriasEgresoObjs}
+              onAdd={addCategoria}
+              onDelete={deleteCategoria}
+              isAdmin={isAdmin}
+            />
+          )}
+          {subView === "deudas" && (
+            <DeudasView
+              deudas={deudas}
+              abonos={abonosDeuda}
+              onAdd={addDeuda}
+              onDelete={deleteDeuda}
+              onAbonar={abonarDeuda}
+              onEliminarAbono={eliminarAbonoDeuda}
+              isAdmin={isAdmin}
             />
           )}
           {subView === "comparativo" && (
@@ -4775,6 +5207,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               onGuardar={addPresupuestoCliente}
               onDelete={deletePresupuestoCliente}
               isAdmin={isAdmin}
+              categoriasIngreso={categoriasIngreso}
             />
           )}
           {subView === "cxp" && (
