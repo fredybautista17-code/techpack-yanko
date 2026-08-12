@@ -1871,7 +1871,7 @@ function MesonTimeline({ nombre, capacidad, compartido, ocupados, inicioActual, 
 // Programación de Mesones). La hora real de corte todavía no existe en este
 // punto del flujo (se registra después, en Entrada de Corte) — por eso queda
 // en blanco, para que el cortador la anote a mano cuando arranque y termine.
-function ImprimirTrabajoCortadoresModal({ fecha, grupos, nombreMeson, onClose }) {
+function ImprimirTrabajoCortadoresModal({ fecha, grupos, nombreMeson, capasTotalesGrupo, onClose }) {
   const porCortador = new Map();
   grupos
     .filter((g) => g.etapa === "programacion_hecha" && g.cortador)
@@ -1894,8 +1894,8 @@ function ImprimirTrabajoCortadoresModal({ fecha, grupos, nombreMeson, onClose })
           <div id="area-imprimir">
             {cortadores.map((cortador) => {
               const items = porCortador.get(cortador);
-              const metrosTotal = items.reduce((s, g) => s + (g.largoTrazo || 0) * (g.capas || 0), 0);
-              const capasTotal = items.reduce((s, g) => s + (g.capas || 0), 0);
+              const metrosTotal = items.reduce((s, g) => s + (g.largoTrazo || 0) * capasTotalesGrupo(g), 0);
+              const capasTotal = items.reduce((s, g) => s + capasTotalesGrupo(g), 0);
               return (
                 <div key={cortador} className="hoja-cortador" style={{ padding: "20px 4px", borderBottom: `2px solid ${C.border}`, marginBottom: 20 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
@@ -1922,7 +1922,7 @@ function ImprimirTrabajoCortadoresModal({ fecha, grupos, nombreMeson, onClose })
                           <td style={{ padding: "6px 8px", fontWeight: 700 }}>{g.ref}</td>
                           <td style={{ padding: "6px 8px" }}>{nombreMeson(g.planta, g.meson)}</td>
                           <td style={{ padding: "6px 8px" }}>{g.tipoTela || "—"}</td>
-                          <td style={{ padding: "6px 8px" }}>{g.largoTrazo || 0}m × {g.capas || 0}</td>
+                          <td style={{ padding: "6px 8px" }}>{g.largoTrazo || 0}m × {capasTotalesGrupo(g)}</td>
                           <td style={{ padding: "6px 8px" }}>{g.horaInicioEstimada || "—"} a {g.horaFinEstimada || "—"}</td>
                           <td style={{ padding: "6px 8px", borderBottom: `1px solid ${C.slate}`, width: 70 }}></td>
                           <td style={{ padding: "6px 8px", borderBottom: `1px solid ${C.slate}`, width: 70 }}></td>
@@ -5242,6 +5242,33 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     const m = pl?.mesones?.find((mm) => mm.id === mesonId);
     return m?.nombre || mesonId;
   }
+  // Capas totales de un grupo (una referencia, uno o varios colores) —
+  // OJO: a diferencia de largoTrazo (un solo trazo físico compartido entre
+  // colores), las capas SÍ son por color — cada color apila su propia
+  // cantidad encima del mismo trazo (ver "Capas por color" en Programación
+  // de Mesones). Por eso el total real es la SUMA de las capas de todos los
+  // colores del grupo, no un solo valor (g.capas, que solo trae la del
+  // primer color, quedaba corto).
+  function capasTotalesGrupo(g) {
+    return (g.colores || []).reduce((s, c) => s + (c.capas || 0), 0);
+  }
+  // Capas teóricas realmente comprometidas en un mesón (o su grupo
+  // compartido) para una fecha+planta puntual — igual que arriba, se suman
+  // color por color directo sobre `programacion` (un doc por color), sin
+  // deduplicar por referencia (a diferencia de metrosUsadosMeson/
+  // itemsUsadosMeson, que sí deduplican porque el trazo es uno solo).
+  function capasUsadasMeson(fecha, plantaNombre, mesonId, grupoId) {
+    let total = 0;
+    (programacion || []).forEach((pr) => {
+      if (pr.fechaProgramada !== fecha || pr.planta !== plantaNombre) return;
+      if (!(pr.etapa === "programacion_hecha" || pr.estado === "cumplido")) return;
+      const mismoMeson = pr.meson === mesonId;
+      const mismoGrupo = grupoId && pr.mesonGrupo === grupoId;
+      if (!(mismoMeson || mismoGrupo)) return;
+      total += pr.capas || 0;
+    });
+    return total;
+  }
   // Panel para completar el Horario de Corte (hora inicio/fin) — reusado
   // tanto en "Cortes Aprobados" como en "Históricos", ya que un corte puede
   // quedar en cualquiera de las dos según si ya tiene lote o no. Se precarga
@@ -6398,6 +6425,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     fecha={mesonesFecha}
                     grupos={datosMesones.grupos}
                     nombreMeson={nombreMeson}
+                    capasTotalesGrupo={capasTotalesGrupo}
                     onClose={() => setImprimiendoCortadores(false)}
                   />
                 )}
@@ -6470,15 +6498,20 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             const plantaActual = plantasLista.find((p) => p.nombre === dispPlanta) || plantasLista[0] || null;
             const nombrePlantaActual = plantaActual?.nombre || "";
             const mesonesDePlanta = plantaActual?.mesones || [];
-            // Total de capas teóricas del día en esta planta — se calcula
-            // sobre datosDelDia (deduplicado por referencia), NO sumando lo
-            // que devuelve cada mesón por separado, porque un mesón
-            // compartido (ej. Mesón 2+3) repetiría el mismo ítem en ambos y
-            // lo contaría doble.
+            // Grupos del día en esta planta (deduplicados por referencia) —
+            // solo para contar CUÁNTAS referencias hay programadas.
             const gruposDelDiaPlanta = datosDelDia(dispFecha).grupos.filter(
               (g) => g.planta === nombrePlantaActual && g.etapa === "programacion_hecha"
             );
-            const capasTeoricasTotalPlanta = gruposDelDiaPlanta.reduce((s, g) => s + (g.capas || 0), 0);
+            // Total de capas teóricas del día en esta planta — se suma
+            // directo color por color sobre `programacion` (un doc por
+            // color), SIN deduplicar por referencia (las capas sí se suman
+            // entre colores, a diferencia del trazo que es un solo tendido
+            // físico compartido) y sin importar el mesón, así que no hay
+            // riesgo de contar doble por mesones compartidos.
+            const capasTeoricasTotalPlanta = (programacion || [])
+              .filter((pr) => pr.fechaProgramada === dispFecha && pr.planta === nombrePlantaActual && pr.etapa === "programacion_hecha")
+              .reduce((s, pr) => s + (pr.capas || 0), 0);
             return (
               <div>
                 <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
@@ -6523,7 +6556,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                   const ocupados = itemsUsadosMeson(dispFecha, nombrePlantaActual, m.id, m.grupoId || null, []);
                   const usados = metrosUsadosMeson(dispFecha, nombrePlantaActual, m.id, m.grupoId || null, []);
                   const libre = capacidad !== null && capacidad !== undefined ? Math.max(0, capacidad - usados) : null;
-                  const capasMeson = ocupados.reduce((s, it) => s + (it.capas || 0), 0);
+                  const capasMeson = capasUsadasMeson(dispFecha, nombrePlantaActual, m.id, m.grupoId || null);
                   return (
                     <div key={m.id} style={{ marginBottom: 4 }}>
                       <MesonTimeline
