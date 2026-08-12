@@ -1895,6 +1895,7 @@ function ImprimirTrabajoCortadoresModal({ fecha, grupos, nombreMeson, onClose })
             {cortadores.map((cortador) => {
               const items = porCortador.get(cortador);
               const metrosTotal = items.reduce((s, g) => s + (g.largoTrazo || 0) * (g.capas || 0), 0);
+              const capasTotal = items.reduce((s, g) => s + (g.capas || 0), 0);
               return (
                 <div key={cortador} className="hoja-cortador" style={{ padding: "20px 4px", borderBottom: `2px solid ${C.border}`, marginBottom: 20 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
@@ -1902,7 +1903,7 @@ function ImprimirTrabajoCortadoresModal({ fecha, grupos, nombreMeson, onClose })
                     <div style={{ fontSize: 13, color: C.slate }}>{fmtFechaISO(fecha)}</div>
                   </div>
                   <div style={{ fontSize: 11, color: C.slate, marginBottom: 14 }}>
-                    {items.length} corte{items.length !== 1 ? "s" : ""} programado{items.length !== 1 ? "s" : ""} · {fmtNum(metrosTotal)}m de tela a tender en total
+                    {items.length} corte{items.length !== 1 ? "s" : ""} programado{items.length !== 1 ? "s" : ""} · {fmtNum(capasTotal)} capas en total · {fmtNum(metrosTotal)}m de tela a tender en total
                   </div>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                     <thead>
@@ -6382,6 +6383,15 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                       🖨 Imprimir trabajo de cortadores
                     </Btn>
                   )}
+                  <Btn
+                    variant="secondary"
+                    onClick={() => {
+                      setDispFecha(mesonesFecha);
+                      setProduccionSubTab("disponibilidad");
+                    }}
+                  >
+                    🪑 Disponibilidad de Mesones
+                  </Btn>
                 </div>
                 {imprimiendoCortadores && (
                   <ImprimirTrabajoCortadoresModal
@@ -6460,6 +6470,15 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             const plantaActual = plantasLista.find((p) => p.nombre === dispPlanta) || plantasLista[0] || null;
             const nombrePlantaActual = plantaActual?.nombre || "";
             const mesonesDePlanta = plantaActual?.mesones || [];
+            // Total de capas teóricas del día en esta planta — se calcula
+            // sobre datosDelDia (deduplicado por referencia), NO sumando lo
+            // que devuelve cada mesón por separado, porque un mesón
+            // compartido (ej. Mesón 2+3) repetiría el mismo ítem en ambos y
+            // lo contaría doble.
+            const gruposDelDiaPlanta = datosDelDia(dispFecha).grupos.filter(
+              (g) => g.planta === nombrePlantaActual && g.etapa === "programacion_hecha"
+            );
+            const capasTeoricasTotalPlanta = gruposDelDiaPlanta.reduce((s, g) => s + (g.capas || 0), 0);
             return (
               <div>
                 <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
@@ -6476,6 +6495,18 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     Hoy
                   </Btn>
                 </div>
+                {!!mesonesDePlanta.length && (
+                  <div style={{ marginBottom: 20 }}>
+                    <KPICard
+                      icon="📚"
+                      label={`Capas teóricas del día en ${nombrePlantaActual || "esta planta"}`}
+                      value={fmtNum(capasTeoricasTotalPlanta)}
+                      color={C.blue}
+                      bg={C.blueBg}
+                      sub={`${gruposDelDiaPlanta.length} corte${gruposDelDiaPlanta.length !== 1 ? "s" : ""} programado${gruposDelDiaPlanta.length !== 1 ? "s" : ""}`}
+                    />
+                  </div>
+                )}
                 {!plantasLista.length && (
                   <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
                     No hay plantas configuradas todavía.
@@ -6492,6 +6523,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                   const ocupados = itemsUsadosMeson(dispFecha, nombrePlantaActual, m.id, m.grupoId || null, []);
                   const usados = metrosUsadosMeson(dispFecha, nombrePlantaActual, m.id, m.grupoId || null, []);
                   const libre = capacidad !== null && capacidad !== undefined ? Math.max(0, capacidad - usados) : null;
+                  const capasMeson = ocupados.reduce((s, it) => s + (it.capas || 0), 0);
                   return (
                     <div key={m.id} style={{ marginBottom: 4 }}>
                       <MesonTimeline
@@ -6504,7 +6536,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                       />
                       {capacidad !== null && capacidad !== undefined && (
                         <div style={{ fontSize: 11, color: C.slate, marginTop: -10, marginBottom: 16 }}>
-                          Usado hoy: {usados}m · Libre: <b style={{ color: libre > 0 ? C.green : C.red }}>{libre}m</b>
+                          Usado hoy: {usados}m · Libre: <b style={{ color: libre > 0 ? C.green : C.red }}>{libre}m</b> · Capas teóricas: <b>{fmtNum(capasMeson)}</b>
                         </div>
                       )}
                     </div>
@@ -8017,6 +8049,10 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
         horaInicioEstimada: pr.horaInicioEstimada || "",
         horaFinEstimada: pr.horaFinEstimada || "",
         largoTrazo: pr.largoTrazo || 0,
+        // Capas teóricas (Programación de Mesones) — se suman en la vista de
+        // Disponibilidad de Mesones para saber cuántas capas hay comprometidas
+        // ese día en ese mesón, no solo cuántos metros de trazo.
+        capas: pr.capas || 0,
       });
     });
     return items;
