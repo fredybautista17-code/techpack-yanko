@@ -4943,6 +4943,34 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // fecha real en que se cortó, comparada contra la fecha programada.
 function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, onRegistrarCorteManual, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onDevolverCorteReal, onEditarCantidadesCorte, onActualizarHorarioCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
+  // Cuántos cortes (tandas físicas) separados se van a programar de una vez
+  // con la selección actual — por defecto 1 (comportamiento de siempre). Si
+  // el usuario pone más de 1 (ej. 3), la cantidad de cada referencia
+  // seleccionada se reparte en partes iguales entre esa cantidad de cortes,
+  // cada uno con su propia fecha (para que después cada uno se pueda asignar
+  // a su propia planta/mesón/día en Programación de Mesones sin tener que
+  // partir manualmente un solo ítem programado).
+  const [numCortes, setNumCortesRaw] = useState(1);
+  const [fechasCortes, setFechasCortes] = useState([today()]);
+  function actualizarNumCortes(n) {
+    const val = Math.max(1, Math.min(20, n || 1));
+    setNumCortesRaw(val);
+    setFechasCortes((prev) => {
+      const next = prev.slice(0, val);
+      while (next.length < val) {
+        const ultima = next[next.length - 1] || fechaSel;
+        next.push(sumarDiasISO(ultima, 1));
+      }
+      return next;
+    });
+  }
+  // Reparte una cantidad entre N cortes en partes lo más iguales posible —
+  // el residuo (si no divide exacto) se lo llevan los primeros cortes.
+  function repartirEntreCortes(cantidad, n) {
+    const base = Math.floor(cantidad / n);
+    const resto = cantidad % n;
+    return Array.from({ length: n }, (_, i) => base + (i < resto ? 1 : 0));
+  }
   // Selección por talla: Map key `${pedidoId}__${ref}__${talla}` -> { ...contexto, cantidad }
   // (cantidad es editable, por si no alcanza la tela para toda la talla).
   const [seleccion, setSeleccion] = useState(new Map());
@@ -5339,9 +5367,36 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
       g.tallas[it.talla] = (g.tallas[it.talla] || 0) + it.cantidad;
       g.cantidadProgramada += it.cantidad;
     });
-    const items = [...grupos.values()];
-    if (!items.length) return;
-    onProgramar(items, fechaSel);
+    const gruposArr = [...grupos.values()];
+    if (!gruposArr.length) return;
+    if (numCortes <= 1) {
+      // Comportamiento de siempre: un solo corte, una sola fecha.
+      onProgramar(gruposArr, fechaSel);
+    } else {
+      // Varios cortes: cada referencia seleccionada se reparte en partes
+      // iguales (talla por talla) entre los N cortes, y cada corte se manda
+      // por separado con su propia fecha — quedan como programaciones
+      // independientes, cada una programable a su propia planta/mesón/día
+      // en Programación de Mesones.
+      for (let i = 0; i < numCortes; i++) {
+        const itemsCorte = gruposArr
+          .map((g) => {
+            const tallas = {};
+            let cantidadProgramada = 0;
+            Object.entries(g.tallas).forEach(([t, cant]) => {
+              const partes = repartirEntreCortes(cant, numCortes);
+              if (partes[i] > 0) {
+                tallas[t] = partes[i];
+                cantidadProgramada += partes[i];
+              }
+            });
+            if (cantidadProgramada <= 0) return null;
+            return { ...g, tallas, cantidadProgramada };
+          })
+          .filter(Boolean);
+        if (itemsCorte.length) onProgramar(itemsCorte, fechasCortes[i] || fechaSel);
+      }
+    }
     setSeleccion(new Map());
   }
   const hoy = today();
@@ -5537,6 +5592,35 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
               Mañana
             </button>
             <span style={{ marginLeft: "auto", fontSize: 12, color: C.seam }}>{fmtFechaISO(fechaSel)}</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 20, padding: "10px 18px", background: C.canvas, borderRadius: 12, border: `1px solid ${C.border}`, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>✂ Número de cortes a programar:</span>
+            <input
+              type="number"
+              min={1}
+              max={20}
+              value={numCortes}
+              onChange={(e) => actualizarNumCortes(parseInt(e.target.value) || 1)}
+              style={{ width: 56, padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontWeight: 700, textAlign: "center" }}
+            />
+            {numCortes > 1 && (
+              <>
+                <span style={{ fontSize: 11, color: C.slate }}>
+                  La cantidad seleccionada se reparte en partes iguales entre los {numCortes} cortes — cada uno con su propia fecha:
+                </span>
+                {fechasCortes.map((f, i) => (
+                  <span key={i} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: C.slate }}>Corte {i + 1}:</span>
+                    <input
+                      type="date"
+                      value={f}
+                      onChange={(e) => setFechasCortes((prev) => prev.map((d, idx) => (idx === i ? e.target.value : d)))}
+                      style={{ padding: "5px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }}
+                    />
+                  </span>
+                ))}
+              </>
+            )}
           </div>
           <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>
             DISPONIBLE PARA PROGRAMAR ({totalDisponibles})
@@ -5834,12 +5918,16 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                 <span style={{ color: C.white, fontWeight: 700, fontSize: 13 }}>
                   {seleccion.size} talla{seleccion.size === 1 ? "" : "s"} seleccionada{seleccion.size === 1 ? "" : "s"}
                 </span>
-                <span style={{ color: C.seam, fontSize: 12 }}>para el {fmtFechaISO(fechaSel)}</span>
+                <span style={{ color: C.seam, fontSize: 12 }}>
+                  {numCortes > 1 ? `repartido en ${numCortes} cortes` : `para el ${fmtFechaISO(fechaSel)}`}
+                </span>
                 <div style={{ marginLeft: "auto", display: "flex", gap: 10 }}>
                   <button onClick={() => setSeleccion(new Map())} style={{ background: "transparent", border: `1px solid rgba(255,255,255,0.3)`, color: C.white, borderRadius: 8, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
                     Limpiar
                   </button>
-                  <Btn variant="success" onClick={confirmarProgramacion}>📅 Programar corte</Btn>
+                  <Btn variant="success" onClick={confirmarProgramacion}>
+                    📅 Programar {numCortes > 1 ? `${numCortes} cortes` : "corte"}
+                  </Btn>
                 </div>
               </div>
               <div
