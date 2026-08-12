@@ -620,7 +620,216 @@ async function exportarDespachoExcel(despacho) {
   XLSX.writeFile(wb, `DESPACHO ${despacho.numero}.xlsx`);
 }
 // ─── DETALLE DE UN DESPACHO (solo lectura: Historial) ──────────────────────
-function DetalleDespachoModal({ despacho, onClose }) {
+// ─── CÓDIGO DE EDICIÓN (PIN) ────────────────────────────────────────────────
+// Un solo código, configurado por Administración, que Contabilidad debe
+// escribir para poder editar un despacho ya montado o aprobado. Bodega no lo
+// necesita (solo puede editar lo suyo) y Administración tampoco (siempre
+// puede editar). Es una fricción a propósito, no una seguridad fuerte — el
+// código vive en Firestore igual que el resto de la configuración del
+// módulo.
+function PinModal({ pinReal, onCorrecto, onClose }) {
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState(false);
+  function verificar() {
+    if (pin.trim() && pin.trim() === (pinReal || "")) {
+      onCorrecto();
+    } else {
+      setError(true);
+    }
+  }
+  return (
+    <Modal title="Código de edición" onClose={onClose} width={360}>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 14 }}>
+        Este despacho ya fue montado o aprobado. Escribe el código de edición para poder modificarlo.
+      </div>
+      <Field label="Código">
+        <FInput
+          type="password"
+          value={pin}
+          onChange={(v) => {
+            setPin(v);
+            setError(false);
+          }}
+          onEnter={verificar}
+          placeholder="••••"
+        />
+      </Field>
+      {error && <div style={{ fontSize: 12, color: C.red, fontWeight: 700, marginBottom: 10 }}>Código incorrecto.</div>}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={verificar} disabled={!pin.trim()}>Desbloquear</Btn>
+      </div>
+    </Modal>
+  );
+}
+// ─── EDITAR DESPACHO (corregir uno que ya existe) ──────────────────────────
+// A diferencia de Montar Despacho (crea uno nuevo) y de Revisar y Aprobar
+// (el paso normal de Contabilidad antes de la primera aprobación), este
+// modal reabre y corrige un despacho que ya existe, sin importar su estado.
+// Reutiliza LineaDespachoCard para los campos de Bodega (referencia,
+// cantidad, traslado, corte, bulto, descripción, marca, segmento, códigos de
+// barra); si quien edita también puede ver precio/descuento (Contabilidad o
+// Administración), se le agrega esa fila debajo de cada línea.
+function EditarDespachoModal({ despacho, currentUser, puedeEditarPrecio, onClose, onGuardado }) {
+  const [numControl, setNumControl] = useState(despacho.numControl || "");
+  const [fecha, setFecha] = useState(despacho.fecha || today());
+  const [lineas, setLineas] = useState(() =>
+    (despacho.lineas || []).map((l) => ({
+      ...l,
+      id: l.id || uid(),
+      cantidad: String(l.cantidad ?? ""),
+      precio: String(l.precio ?? ""),
+      dcto: String(l.dcto ?? "0"),
+      buscando: false,
+      busintEncontrada: null,
+    }))
+  );
+  const [guardando, setGuardando] = useState(false);
+
+  function actualizarLinea(idx, nueva) {
+    setLineas((ls) => ls.map((l, i) => (i === idx ? nueva : l)));
+  }
+  async function buscarEnBusint(idx) {
+    const ref = lineas[idx].referencia.trim();
+    if (!ref) return;
+    actualizarLinea(idx, { ...lineas[idx], buscando: true });
+    try {
+      const llamar = httpsCallable(functionsClient, "buscarReferenciaBusint");
+      const resp = await llamar({ ref });
+      const d = resp.data;
+      setLineas((ls) =>
+        ls.map((l, i) => {
+          if (i !== idx) return l;
+          if (!d.encontrada) return { ...l, buscando: false, busintEncontrada: false };
+          return { ...l, buscando: false, busintEncontrada: true, descripcion: d.descripcion || l.descripcion, barras: d.barras || l.barras };
+        })
+      );
+    } catch (err) {
+      setLineas((ls) => ls.map((l, i) => (i === idx ? { ...l, buscando: false, busintEncontrada: false } : l)));
+    }
+  }
+  function agregarLinea() {
+    setLineas((ls) => [...ls, lineaVacia()]);
+  }
+  function quitarLinea(idx) {
+    setLineas((ls) => (ls.length > 1 ? ls.filter((_, i) => i !== idx) : ls));
+  }
+  const lineasValidas = lineas.filter((l) => l.referencia.trim() && Number(l.cantidad) > 0);
+  const puedeGuardar = lineasValidas.length > 0 && !guardando;
+
+  async function guardarCambios() {
+    if (!puedeGuardar) return;
+    setGuardando(true);
+    try {
+      const lineasGuardar = lineasValidas.map((l) => ({
+        referencia: l.referencia.trim(),
+        cantidad: Number(l.cantidad) || 0,
+        numTraslado: (l.numTraslado || "").trim(),
+        numCorte: (l.numCorte || "").trim(),
+        numBulto: (l.numBulto || "").trim(),
+        descripcion: (l.descripcion || "").trim(),
+        marca: (l.marca || "").trim(),
+        segmento: (l.segmento || "").trim(),
+        precio: Number(l.precio) || 0,
+        dcto: Number(l.dcto) || 0,
+        total: calcularTotalLinea(l),
+        barras: l.barras || [],
+      }));
+      await fsSave("despachosVenezuela", despacho.id, {
+        numControl: numControl.trim(),
+        fecha,
+        lineas: lineasGuardar,
+        totalDespacho: lineasGuardar.reduce((s, l) => s + l.total, 0),
+        editadoPor: currentUser?.name || currentUser?.username || "",
+        editadoEn: new Date().toISOString(),
+      });
+      onGuardado && onGuardado();
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  return (
+    <Modal title={`Editar Despacho #${despacho.numero}`} onClose={onClose} width={980}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <Field label="N Control">
+          <FInput value={numControl} onChange={setNumControl} />
+        </Field>
+        <Field label="Fecha">
+          <FInput type="date" value={fecha} onChange={setFecha} />
+        </Field>
+      </div>
+      {lineas.map((l, i) => (
+        <div key={l.id}>
+          <LineaDespachoCard linea={l} index={i} onChange={(nueva) => actualizarLinea(i, nueva)} onRemove={() => quitarLinea(i)} onBuscarBusint={() => buscarEnBusint(i)} />
+          {puedeEditarPrecio && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, background: C.canvas, borderRadius: 10, padding: "10px 14px", marginTop: -6, marginBottom: 12 }}>
+              <Field label="Precio">
+                <FInput type="number" value={l.precio} onChange={(v) => actualizarLinea(i, { ...l, precio: v })} />
+              </Field>
+              <Field label="Dcto (por unidad)">
+                <FInput type="number" value={l.dcto} onChange={(v) => actualizarLinea(i, { ...l, dcto: v })} />
+              </Field>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>Total línea</div>
+                <div style={{ fontSize: 15, fontWeight: 800, color: C.ink }}>{fmtMoney(calcularTotalLinea(l))}</div>
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+      <div style={{ marginBottom: 20 }}>
+        <Btn variant="secondary" onClick={agregarLinea}>+ Agregar línea</Btn>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardarCambios} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "💾 Guardar cambios"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+// ─── CONFIGURACIÓN: CÓDIGO DE EDICIÓN (Administración) ─────────────────────
+function CodigoEdicionView({ pinActual, onGuardar }) {
+  const [pin, setPin] = useState(pinActual || "");
+  const [guardado, setGuardado] = useState(false);
+  useEffect(() => {
+    setPin(pinActual || "");
+  }, [pinActual]);
+  async function guardar() {
+    await onGuardar(pin.trim());
+    setGuardado(true);
+    setTimeout(() => setGuardado(false), 2000);
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 520 }}>
+        Este código lo debe escribir Contabilidad para poder editar un despacho ya montado o aprobado. Bodega solo puede
+        editar los despachos que ella misma montó, y Administración siempre puede editar sin código.
+      </div>
+      <div style={{ maxWidth: 320 }}>
+        <Field label="Código de edición">
+          <FInput value={pin} onChange={setPin} placeholder="Ej. 4821" />
+        </Field>
+      </div>
+      <Btn onClick={guardar} disabled={!pin.trim()}>💾 Guardar código</Btn>
+      {guardado && <div style={{ fontSize: 12, color: C.green, fontWeight: 700, marginTop: 10 }}>Código guardado.</div>}
+    </div>
+  );
+}
+function DetalleDespachoModal({ despacho, onClose, onGuardado, currentUser, isAdmin, esContabilidad, esBodegaSolo, pinEdicion }) {
+  const [editando, setEditando] = useState(false);
+  const [pidiendoPin, setPidiendoPin] = useState(false);
+  const esPropio = !!despacho.creadoPor && despacho.creadoPor === (currentUser?.name || currentUser?.username);
+  const puedeEditarDirecto = isAdmin || (esBodegaSolo && esPropio);
+  const puedeEditarConPin = esContabilidad && !isAdmin;
+  const puedeEditarPrecio = isAdmin || esContabilidad;
+  function onClickEditar() {
+    if (puedeEditarDirecto) {
+      setEditando(true);
+      return;
+    }
+    if (puedeEditarConPin) setPidiendoPin(true);
+  }
   return (
     <Modal title={`Despacho #${despacho.numero}`} onClose={onClose} width={860}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 18, fontSize: 12 }}>
@@ -629,8 +838,11 @@ function DetalleDespachoModal({ despacho, onClose }) {
         <div><div style={{ color: C.slate, fontWeight: 700 }}>Estado</div><EstadoBadge estado={despacho.estado} /></div>
         <div><div style={{ color: C.slate, fontWeight: 700 }}>Total</div><div style={{ fontWeight: 800 }}>{fmtMoney(despacho.totalDespacho)}</div></div>
       </div>
-      <div style={{ marginBottom: 14 }}>
+      <div style={{ marginBottom: 14, display: "flex", gap: 10 }}>
         <Btn variant="secondary" small onClick={() => exportarDespachoExcel(despacho)}>⬇ Exportar a Excel</Btn>
+        {(puedeEditarDirecto || puedeEditarConPin) && (
+          <Btn variant="secondary" small onClick={onClickEditar}>{puedeEditarConPin ? "🔒 Editar (código)" : "✎ Editar"}</Btn>
+        )}
       </div>
       <Tabla
         vacio="Sin líneas."
@@ -654,12 +866,36 @@ function DetalleDespachoModal({ despacho, onClose }) {
       <div style={{ fontSize: 11, color: C.slate, marginTop: 14 }}>
         Montado por {despacho.creadoPor || "—"} · {fmtFechaHora(despacho.creadoEn)}
         {despacho.estado === "aprobado" && <> · Revisado y aprobado por {despacho.aprobadoPor || "—"} · {fmtFechaHora(despacho.aprobadoEn)}</>}
+        {despacho.editadoPor && <> · Última edición: {despacho.editadoPor} · {fmtFechaHora(despacho.editadoEn)}</>}
       </div>
+      {pidiendoPin && (
+        <PinModal
+          pinReal={pinEdicion}
+          onClose={() => setPidiendoPin(false)}
+          onCorrecto={() => {
+            setPidiendoPin(false);
+            setEditando(true);
+          }}
+        />
+      )}
+      {editando && (
+        <EditarDespachoModal
+          despacho={despacho}
+          currentUser={currentUser}
+          puedeEditarPrecio={puedeEditarPrecio}
+          onClose={() => setEditando(false)}
+          onGuardado={() => {
+            setEditando(false);
+            onGuardado && onGuardado();
+            onClose();
+          }}
+        />
+      )}
     </Modal>
   );
 }
 // ─── REVISAR Y APROBAR (Contabilidad) ──────────────────────────────────────
-// Bodega monta el despacho con referencia, cantidades, tallas y códigos de
+// Bodega monta el despacho con referencia, cantidades y códigos de
 // barra pero sin precio ni descuento. Acá Contabilidad revisa (y puede
 // corregir) las cantidades, pone el precio y aplica el descuento de cada
 // línea, y desde aquí mismo aprueba el despacho.
@@ -797,11 +1033,18 @@ function PorAprobarView({ despachos, currentUser, puedeAprobar }) {
   );
 }
 // ─── HISTORIAL (aprobados + importados) ────────────────────────────────────
-function HistorialView({ despachos }) {
+// Para Administración y Contabilidad sigue mostrando solo lo aprobado/
+// histórico (lo "montado" y aún sin aprobar vive en Por Aprobar). Para un
+// usuario de Bodega sin esos dos permisos, se le muestran TODOS sus propios
+// despachos sin importar el estado — antes no tenían dónde verlos ni
+// corregirlos mientras seguían pendientes de aprobación.
+function HistorialView({ despachos, currentUser, isAdmin, esContabilidad, esBodegaSolo, pinEdicion }) {
   const [abierto, setAbierto] = useState(null);
   const [filtro, setFiltro] = useState("");
-  const visibles = despachos
-    .filter((d) => d.estado === "aprobado" || d.estado === "historico")
+  const base = esBodegaSolo
+    ? despachos.filter((d) => d.creadoPor === (currentUser?.name || currentUser?.username))
+    : despachos.filter((d) => d.estado === "aprobado" || d.estado === "historico");
+  const visibles = base
     .filter((d) => !filtro.trim() || String(d.numero).includes(filtro.trim()) || (d.lineas || []).some((l) => (l.referencia || "").toUpperCase().includes(filtro.trim().toUpperCase())))
     .sort((a, b) => parseFloat(b.numero) - parseFloat(a.numero));
   const totalGeneral = visibles.reduce((s, d) => s + (d.totalDespacho || 0), 0);
@@ -814,7 +1057,7 @@ function HistorialView({ despachos }) {
         <div style={{ fontSize: 12, color: C.slate }}>{visibles.length} despachos · {fmtMoney(totalGeneral)}</div>
       </div>
       <Tabla
-        vacio="Sin despachos en el historial."
+        vacio={esBodegaSolo ? "Aún no has montado ningún despacho." : "Sin despachos en el historial."}
         onRowClick={(f) => setAbierto(f)}
         columnas={[
           { key: "numero", label: "N° Despacho", align: "right" },
@@ -825,7 +1068,18 @@ function HistorialView({ despachos }) {
         ]}
         filas={visibles}
       />
-      {abierto && <DetalleDespachoModal despacho={abierto} onClose={() => setAbierto(null)} />}
+      {abierto && (
+        <DetalleDespachoModal
+          despacho={abierto}
+          onClose={() => setAbierto(null)}
+          onGuardado={() => setAbierto(null)}
+          currentUser={currentUser}
+          isAdmin={isAdmin}
+          esContabilidad={esContabilidad}
+          esBodegaSolo={esBodegaSolo}
+          pinEdicion={pinEdicion}
+        />
+      )}
     </div>
   );
 }
@@ -1509,6 +1763,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
   const [subView, setSubView] = useState("dashboard");
   const [despachos, setDespachos] = useState([]);
   const [abonos, setAbonos] = useState([]);
+  const [pinEdicion, setPinEdicion] = useState("");
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     const unsubDespachos = onSnapshot(collection(db, "despachosVenezuela"), (snap) => {
@@ -1518,11 +1773,19 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
     const unsubAbonos = onSnapshot(collection(db, "abonosVenezuela"), (snap) => {
       setAbonos(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
     });
+    const unsubConfig = onSnapshot(doc(db, "bodega_config", "main"), (snap) => {
+      setPinEdicion(snap.exists() ? snap.data()?.pinEdicion || "" : "");
+    });
     return () => {
       unsubDespachos();
       unsubAbonos();
+      unsubConfig();
     };
   }, []);
+  async function guardarPinEdicion(pin) {
+    setPinEdicion(pin);
+    await fsSave("bodega_config", "main", { pinEdicion: pin });
+  }
   const isAdmin = !!currentUser?.isAdmin;
   // Etapa 2 del despacho (revisar cantidades, poner precio/dcto y aprobar)
   // la hace Contabilidad. Se deja también el permiso "aprobarDespacho" por
@@ -1532,6 +1795,11 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
   // acceso al módulo Contabilidad — el resto de usuarios de Bodega solo ve
   // el registro y el total, no puede editarlo.
   const puedeEditarAbonos = isAdmin || !!canAccessContabilidad;
+  // Quién puede editar un despacho que ya existe: Administración siempre;
+  // Bodega solo lo suyo (se valida por creadoPor en cada despacho); el resto
+  // (Contabilidad) puede pedir el código de edición.
+  const esContabilidad = !isAdmin && puedeAprobar;
+  const esBodegaSolo = !isAdmin && !esContabilidad;
   const pendientesCount = despachos.filter((d) => d.estado === "montado").length;
   const NAV = [
     { id: "dashboard", icon: "◉", label: "Inicio" },
@@ -1540,6 +1808,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
     { id: "historial", icon: "🕘", label: "Historial" },
     { id: "abonos", icon: "💵", label: "Abonos" },
     ...(isAdmin ? [{ id: "importar", icon: "⬆️", label: "Importar Histórico" }] : []),
+    ...(isAdmin ? [{ id: "codigo", icon: "🔐", label: "Código Edición" }] : []),
   ];
   if (loading) {
     return (
@@ -1611,9 +1880,19 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
           {subView === "dashboard" && <DashboardBodegaView despachos={despachos} abonos={abonos} />}
           {subView === "montar" && <MontarDespachoView despachos={despachos} currentUser={currentUser} onGuardado={() => setSubView("dashboard")} />}
           {subView === "aprobar" && puedeAprobar && <PorAprobarView despachos={despachos} currentUser={currentUser} puedeAprobar={puedeAprobar} />}
-          {subView === "historial" && <HistorialView despachos={despachos} />}
+          {subView === "historial" && (
+            <HistorialView
+              despachos={despachos}
+              currentUser={currentUser}
+              isAdmin={isAdmin}
+              esContabilidad={esContabilidad}
+              esBodegaSolo={esBodegaSolo}
+              pinEdicion={pinEdicion}
+            />
+          )}
           {subView === "abonos" && <AbonosView abonos={abonos} currentUser={currentUser} puedeEditar={puedeEditarAbonos} />}
           {subView === "importar" && isAdmin && <ImportarHistoricoView currentUser={currentUser} despachosExistentes={despachos} abonosExistentes={abonos} />}
+          {subView === "codigo" && isAdmin && <CodigoEdicionView pinActual={pinEdicion} onGuardar={guardarPinEdicion} />}
         </div>
       </div>
     </div>
