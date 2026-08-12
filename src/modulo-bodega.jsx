@@ -270,7 +270,7 @@ function calcularTotalLinea(l) {
 function lineaVacia() {
   return {
     id: uid(), referencia: "", cantidad: "", numTraslado: "", numCorte: "", numBulto: "",
-    descripcion: "", marca: "", segmento: "", talla: "", precio: "", dcto: "0", barras: [],
+    descripcion: "", marca: "", segmento: "", precio: "", dcto: "0", barras: [],
     buscando: false, busintEncontrada: null,
   };
 }
@@ -301,9 +301,14 @@ function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint })
         <div style={{ fontWeight: 800, fontSize: 12, color: C.slate }}>LÍNEA {index + 1}</div>
         <span onClick={onRemove} style={{ cursor: "pointer", fontSize: 12, color: C.red, fontWeight: 700 }}>Quitar ✕</span>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "2fr auto 1fr 1fr 1fr", gap: 10, alignItems: "end" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "2fr auto 1fr 1fr", gap: 10, alignItems: "end" }}>
         <Field label="Referencia">
-          <FInput value={linea.referencia} onChange={(v) => onChange({ ...linea, referencia: v, busintEncontrada: null })} placeholder="Ej. 98-872" />
+          <FInput
+            value={linea.referencia}
+            onChange={(v) => onChange({ ...linea, referencia: v, busintEncontrada: null })}
+            placeholder="Ej. 98-872"
+            onEnter={onBuscarBusint}
+          />
         </Field>
         <div style={{ marginBottom: 14 }}>
           <Btn small variant="ghost" onClick={onBuscarBusint} disabled={!linea.referencia.trim() || linea.buscando}>
@@ -312,9 +317,6 @@ function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint })
         </div>
         <Field label="Cantidad">
           <FInput type="number" value={linea.cantidad} onChange={(v) => onChange({ ...linea, cantidad: v })} />
-        </Field>
-        <Field label="N° Traslado">
-          <FInput value={linea.numTraslado} onChange={(v) => onChange({ ...linea, numTraslado: v })} />
         </Field>
         <Field label="N° Corte">
           <FInput value={linea.numCorte} onChange={(v) => onChange({ ...linea, numCorte: v })} />
@@ -325,7 +327,7 @@ function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint })
           No se encontró esa referencia en Busint — completa los datos a mano.
         </div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr", gap: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 10 }}>
         <Field label="Descripción">
           <FInput value={linea.descripcion} onChange={(v) => onChange({ ...linea, descripcion: v })} />
         </Field>
@@ -334,9 +336,6 @@ function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint })
         </Field>
         <Field label="Segmento">
           <FSel value={linea.segmento} onChange={(v) => onChange({ ...linea, segmento: v })} options={SEGMENTOS_BODEGA} />
-        </Field>
-        <Field label="Talla">
-          <FSel value={linea.talla} onChange={(v) => onChange({ ...linea, talla: v })} options={TALLAS_BODEGA} />
         </Field>
         <Field label="N° Bulto">
           <FInput value={linea.numBulto} onChange={(v) => onChange({ ...linea, numBulto: v })} placeholder="1/3" />
@@ -423,7 +422,6 @@ function MontarDespachoView({ despachos, currentUser, onGuardado }) {
         descripcion: l.descripcion.trim(),
         marca: l.marca.trim(),
         segmento: l.segmento.trim(),
-        talla: (l.talla || "").trim(),
         precio: Number(l.precio) || 0,
         dcto: Number(l.dcto) || 0,
         total: calcularTotalLinea(l),
@@ -676,6 +674,9 @@ function LineaRevisionRow({ linea, onChange }) {
         <FInput type="number" value={linea.cantidad} onChange={(v) => onChange({ ...linea, cantidad: v })} />
       </td>
       <td style={{ padding: "8px 6px", width: 100 }}>
+        <FInput value={linea.numTraslado} onChange={(v) => onChange({ ...linea, numTraslado: v })} />
+      </td>
+      <td style={{ padding: "8px 6px", width: 100 }}>
         <FInput type="number" value={linea.precio} onChange={(v) => onChange({ ...linea, precio: v })} />
       </td>
       <td style={{ padding: "8px 6px", width: 110 }}>
@@ -742,13 +743,13 @@ function RevisarYAprobarModal({ despacho, currentUser, onClose, onGuardado }) {
         <div><div style={{ color: C.slate, fontWeight: 700 }}>Total (con tus cambios)</div><div style={{ fontWeight: 800 }}>{fmtMoney(totalDespacho)}</div></div>
       </div>
       <div style={{ fontSize: 11, color: C.slate, marginBottom: 12 }}>
-        Bodega montó la referencia, cantidades, tallas y códigos de barra. Revisa las cantidades (corrígelas si hace falta) y pon el precio y el descuento por unidad de cada línea.
+        Bodega montó la referencia, cantidades y códigos de barra. Revisa las cantidades (corrígelas si hace falta), pon el N° de Traslado, el precio y el descuento por unidad de cada línea.
       </div>
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ borderBottom: `2px solid ${C.border}` }}>
-              {["Ref", "Descripción", "Marca / Segmento", "Cantidad", "Precio", "Dcto (por unidad)", "Total"].map((h) => (
+              {["Ref", "Descripción", "Marca / Segmento", "Cantidad", "N° Traslado", "Precio", "Dcto (por unidad)", "Total"].map((h) => (
                 <th key={h} style={{ padding: "8px 6px", fontSize: 10, fontWeight: 800, color: C.slate, textTransform: "uppercase", textAlign: h === "Total" ? "right" : "left" }}>{h}</th>
               ))}
             </tr>
@@ -774,7 +775,7 @@ function PorAprobarView({ despachos, currentUser, puedeAprobar }) {
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 14 }}>
-        Estos despachos ya fueron montados por Bodega (referencia, cantidades, tallas y códigos de barra). Ábrelos para revisar cantidades, poner precio y descuento, y aprobar.
+        Estos despachos ya fueron montados por Bodega (referencia, cantidades y códigos de barra). Ábrelos para revisar cantidades, poner N° de Traslado, precio y descuento, y aprobar.
       </div>
       <Tabla
         vacio="No hay despachos pendientes por aprobar."
