@@ -1865,6 +1865,88 @@ function MesonTimeline({ nombre, capacidad, compartido, ocupados, inicioActual, 
     </div>
   );
 }
+// ─── IMPRIMIR TRABAJO DE CORTADORES ────────────────────────────────────────
+// Una hoja por cortador con lo que tiene programado ese día: mesón, tela,
+// trazo×capas y la hora ESTIMADA de tendido (la que ya se puso en
+// Programación de Mesones). La hora real de corte todavía no existe en este
+// punto del flujo (se registra después, en Entrada de Corte) — por eso queda
+// en blanco, para que el cortador la anote a mano cuando arranque y termine.
+function ImprimirTrabajoCortadoresModal({ fecha, grupos, nombreMeson, onClose }) {
+  const porCortador = new Map();
+  grupos
+    .filter((g) => g.etapa === "programacion_hecha" && g.cortador)
+    .forEach((g) => {
+      if (!porCortador.has(g.cortador)) porCortador.set(g.cortador, []);
+      porCortador.get(g.cortador).push(g);
+    });
+  const cortadores = [...porCortador.keys()].sort((a, b) => a.localeCompare(b));
+  return (
+    <Modal title={`Trabajo del día — ${fmtFechaISO(fecha)}`} onClose={onClose} width={900}>
+      {!cortadores.length ? (
+        <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 14 }}>
+          Ningún corte tiene cortador asignado todavía para el {fmtFechaISO(fecha)} — asígnalo en Programación de Mesones antes de imprimir.
+        </div>
+      ) : (
+        <>
+          <div className="no-print" style={{ marginBottom: 16, display: "flex", justifyContent: "flex-end" }}>
+            <Btn onClick={() => window.print()}>🖨 Imprimir</Btn>
+          </div>
+          <div id="area-imprimir">
+            {cortadores.map((cortador) => {
+              const items = porCortador.get(cortador);
+              const metrosTotal = items.reduce((s, g) => s + (g.largoTrazo || 0) * (g.capas || 0), 0);
+              return (
+                <div key={cortador} className="hoja-cortador" style={{ padding: "20px 4px", borderBottom: `2px solid ${C.border}`, marginBottom: 20 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+                    <div style={{ fontSize: 18, fontWeight: 900, color: C.ink }}>✂ {cortador}</div>
+                    <div style={{ fontSize: 13, color: C.slate }}>{fmtFechaISO(fecha)}</div>
+                  </div>
+                  <div style={{ fontSize: 11, color: C.slate, marginBottom: 14 }}>
+                    {items.length} corte{items.length !== 1 ? "s" : ""} programado{items.length !== 1 ? "s" : ""} · {fmtNum(metrosTotal)}m de tela a tender en total
+                  </div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                    <thead>
+                      <tr style={{ borderBottom: `2px solid ${C.ink}` }}>
+                        {["Cliente / Pedido", "Ref", "Mesón", "Tela", "Trazo × Capas", "Tendido (est.)", "Corte inicio", "Corte fin"].map((h) => (
+                          <th key={h} style={{ padding: "6px 8px", textAlign: "left", fontSize: 9, textTransform: "uppercase", color: C.slate }}>
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {items.map((g) => (
+                        <tr key={g.key} style={{ borderBottom: `1px solid ${C.border}` }}>
+                          <td style={{ padding: "6px 8px" }}>{g.cliente} · #{g.numero}</td>
+                          <td style={{ padding: "6px 8px", fontWeight: 700 }}>{g.ref}</td>
+                          <td style={{ padding: "6px 8px" }}>{nombreMeson(g.planta, g.meson)}</td>
+                          <td style={{ padding: "6px 8px" }}>{g.tipoTela || "—"}</td>
+                          <td style={{ padding: "6px 8px" }}>{g.largoTrazo || 0}m × {g.capas || 0}</td>
+                          <td style={{ padding: "6px 8px" }}>{g.horaInicioEstimada || "—"} a {g.horaFinEstimada || "—"}</td>
+                          <td style={{ padding: "6px 8px", borderBottom: `1px solid ${C.slate}`, width: 70 }}></td>
+                          <td style={{ padding: "6px 8px", borderBottom: `1px solid ${C.slate}`, width: 70 }}></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })}
+          </div>
+          <style>{`
+            @media print {
+              body * { visibility: hidden; }
+              #area-imprimir, #area-imprimir * { visibility: visible; }
+              #area-imprimir { position: absolute; left: 0; top: 0; width: 100%; }
+              .hoja-cortador { page-break-after: always; }
+              .no-print { display: none !important; }
+            }
+          `}</style>
+        </>
+      )}
+    </Modal>
+  );
+}
 // Antes era un modal que se abría encima de "Programados Pendientes". Ahora
 // es el panel de la pestaña "Programación de Mesones": el cortador entra acá
 // (mirando hacia el futuro, cualquier día que tenga algo programado) a
@@ -5021,6 +5103,14 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // modal encima de "Programados Pendientes").
   const [mesonesFecha, setMesonesFecha] = useState(today());
   const [mesonesGrupoKey, setMesonesGrupoKey] = useState(null);
+  // "Disponibilidad de Mesones": planta + día elegidos para ver el timeline
+  // de TODOS los mesones de esa planta a la vez (mismo timeline que ya se
+  // usa al programar un corte puntual, pero para verlos todos juntos).
+  const [dispPlanta, setDispPlanta] = useState("");
+  const [dispFecha, setDispFecha] = useState(today());
+  // Modal de impresión del trabajo del día por cortador — se abre desde
+  // Programación de Mesones, para la fecha que se esté viendo ahí.
+  const [imprimiendoCortadores, setImprimiendoCortadores] = useState(false);
   // Fecha elegida en "Ingreso de Corte Real" — lista, por día, las
   // referencias que ya tienen Programación de Mesones hecha y están listas
   // para cargar el corte real (unidades, lote).
@@ -6132,6 +6222,12 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
               🔧 PROGRAMACIÓN DE MESONES
             </div>
             <div
+              onClick={() => setProduccionSubTab("disponibilidad")}
+              style={{ cursor: "pointer", padding: "8px 14px", borderRadius: 8, fontWeight: 800, fontSize: 11, background: produccionSubTab === "disponibilidad" ? C.blue : C.blueBg, color: produccionSubTab === "disponibilidad" ? C.white : C.blue }}
+            >
+              🪑 DISPONIBILIDAD MESONES
+            </div>
+            <div
               onClick={() => setProduccionSubTab("aprobados")}
               style={{ cursor: "pointer", padding: "8px 14px", borderRadius: 8, fontWeight: 800, fontSize: 11, background: produccionSubTab === "aprobados" ? C.green : C.greenBg, color: produccionSubTab === "aprobados" ? C.white : C.green }}
             >
@@ -6281,7 +6377,20 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                   <Btn variant="secondary" onClick={() => { setMesonesFecha(today()); setMesonesGrupoKey(null); }}>
                     Hoy
                   </Btn>
+                  {!!datosMesones.grupos.length && (
+                    <Btn variant="secondary" onClick={() => setImprimiendoCortadores(true)}>
+                      🖨 Imprimir trabajo de cortadores
+                    </Btn>
+                  )}
                 </div>
+                {imprimiendoCortadores && (
+                  <ImprimirTrabajoCortadoresModal
+                    fecha={mesonesFecha}
+                    grupos={datosMesones.grupos}
+                    nombreMeson={nombreMeson}
+                    onClose={() => setImprimiendoCortadores(false)}
+                  />
+                )}
                 {!datosMesones.grupos.length && (
                   <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
                     No hay nada programado para el {fmtFechaISO(mesonesFecha)}.
@@ -6343,6 +6452,64 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     candidatosVinculo={datosMesones.grupos.filter((g) => g.etapa !== "programacion_hecha")}
                   />
                 )}
+              </div>
+            );
+          })()}
+          {produccionSubTab === "disponibilidad" && (() => {
+            const plantasLista = plantasConfig || [];
+            const plantaActual = plantasLista.find((p) => p.nombre === dispPlanta) || plantasLista[0] || null;
+            const nombrePlantaActual = plantaActual?.nombre || "";
+            const mesonesDePlanta = plantaActual?.mesones || [];
+            return (
+              <div>
+                <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
+                  Elige planta y día para ver cómo están distribuidos los cortes entre TODOS los mesones de esa planta a la vez — el mismo timeline que ya se usa al programar un corte puntual, pero para verlos todos juntos y encontrar huecos libres.
+                </p>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+                  <Field label="Planta">
+                    <FSel value={nombrePlantaActual} onChange={setDispPlanta} options={plantasLista.map((p) => p.nombre)} />
+                  </Field>
+                  <Field label="Día">
+                    <FInput type="date" value={dispFecha} onChange={setDispFecha} />
+                  </Field>
+                  <Btn variant="secondary" onClick={() => setDispFecha(today())}>
+                    Hoy
+                  </Btn>
+                </div>
+                {!plantasLista.length && (
+                  <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
+                    No hay plantas configuradas todavía.
+                  </div>
+                )}
+                {!!plantasLista.length && !mesonesDePlanta.length && (
+                  <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
+                    {nombrePlantaActual || "Esta planta"} no tiene mesones configurados.
+                  </div>
+                )}
+                {mesonesDePlanta.map((m) => {
+                  const grupoInfo = m.grupoId ? (plantaActual?.grupos || []).find((g) => g.id === m.grupoId) : null;
+                  const capacidad = grupoInfo ? grupoInfo.metros : m.metros;
+                  const ocupados = itemsUsadosMeson(dispFecha, nombrePlantaActual, m.id, m.grupoId || null, []);
+                  const usados = metrosUsadosMeson(dispFecha, nombrePlantaActual, m.id, m.grupoId || null, []);
+                  const libre = capacidad !== null && capacidad !== undefined ? Math.max(0, capacidad - usados) : null;
+                  return (
+                    <div key={m.id} style={{ marginBottom: 4 }}>
+                      <MesonTimeline
+                        nombre={m.nombre}
+                        capacidad={capacidad}
+                        compartido={!!m.grupoId}
+                        ocupados={ocupados}
+                        inicioActual={null}
+                        finActual={null}
+                      />
+                      {capacidad !== null && capacidad !== undefined && (
+                        <div style={{ fontSize: 11, color: C.slate, marginTop: -10, marginBottom: 16 }}>
+                          Usado hoy: {usados}m · Libre: <b style={{ color: libre > 0 ? C.green : C.red }}>{libre}m</b>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             );
           })()}
