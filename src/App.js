@@ -647,6 +647,14 @@ function isOverdue(item, stages) {
   // "Vencido" en la etapa aunque ya estuviera Enviado, porque el status y la
   // etapa (currentStage) se actualizan por separado.
   if (["enviado_cotizacion", "enviar_cliente", "enviado", "recibido_cliente", "aprobado", "declinado"].includes(item.status)) return false;
+  // A pedido de Dayana (13/08/2026): la etapa "Por Enviar" (justo antes de
+  // que el prototipo/referencia salga como Enviado) ya NO se marca como
+  // vencida — sentía alarmante recibir avisos de "vencido" en un ítem que
+  // ya está prácticamente listo, a un paso de despacharse. El corte real
+  // sigue siendo "antes de Enviar": Ilustración, PDS, Corte, Confección y
+  // Cotización sí pueden marcarse vencidas; Por Enviar y todo lo posterior,
+  // no.
+  if (item.currentStage === "por_enviar") return false;
   const s = stages.find((x) => x.id === item.currentStage);
   return s ? daysAgo(item.stageStartedAt) > s.days : false;
 }
