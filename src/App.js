@@ -528,13 +528,12 @@ const INIT_CONFIG = {
   categorias: ["Cachetero","Byker","Capry","Leggins","Camiseta","Sisa","Top","Buso","Short","Enterizo","Body","Conjunto","Vestido","Blusa","Pantaloneta","Jogger","Traje de Baño","Bóxer","Pantys"],
   siluetas: ["Slimfit","Regularfit","Silueta Amplia","Oversize","Super Oversize","Estándar"],
   rangos: ["Normal (S,M,L,XL)","Doble Talla (S/M - M/L)","Talla U","Plus","Plus (1XL-2XL-3XL)"],
-  // Línea del producto (ej. Básica/Premium) — distinta de Silueta (que es el
-  // corte: Slimfit, Oversize, etc.) y distinta también de "línea" tal como
-  // la usa Busint (ahí significa Hombre/Dama). Se usa como el criterio
-  // opcional para amarrar una Categoría a un prefijo/rango distinto en
-  // Códigos de Referencia — ej. la misma categoría puede tener un bloque de
-  // números para Básica y otro para Premium.
-  lineas: ["Básica", "Premium"],
+  // Línea del producto (Dama/Caballero) — mismo criterio que usa Busint,
+  // distinta de Silueta (que es el corte: Slimfit, Oversize, etc.). Se usa
+  // como el criterio opcional para amarrar una Categoría a un prefijo/rango
+  // distinto en Códigos de Referencia — ej. la misma categoría podría tener
+  // un bloque de números para Dama y otro para Caballero.
+  lineas: ["Dama", "Caballero"],
   disenadores: [],
   // Catálogo de codificación de referencias: cada entrada amarra una
   // Categoría (y opcionalmente una Silueta puntual) a un prefijo y un rango
@@ -659,10 +658,10 @@ function nowISO() { return new Date().toISOString(); }
 // alta encontrada, no desde las que existen hoy en pantalla.
 // Encuentra en config.codigosReferencia la entrada que amarra esta
 // categoria(+línea) a un prefijo/rango — exacta primero, luego la que
-// aplica a toda la categoría (línea vacía). "Línea" acá es Básica/Premium
-// (config.lineas), no Silueta (Slimfit/Oversize/etc., que sigue siendo un
-// atributo aparte del prototipo/referencia) ni la "línea" de Busint
-// (Hombre/Dama).
+// aplica a toda la categoría (línea vacía). "Línea" acá es Dama/Caballero
+// (config.lineas), el mismo criterio que usa Busint — distinta de Silueta
+// (Slimfit/Oversize/etc., que sigue siendo un atributo aparte del
+// prototipo/referencia).
 function buscarEntradaCodigoReferencia(categoria, linea, config) {
   const catalogo = config?.codigosReferencia || [];
   if (!categoria || catalogo.length === 0) return null;
@@ -6228,7 +6227,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
           <div>
             <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Códigos de Referencia</div>
             <div style={{ fontSize: 12.5, color: T.slate, marginBottom: 16 }}>
-              Cada fila amarra una Categoría (y opcionalmente una Línea puntual, ej. Básica/Premium) a un prefijo y un rango de números (ej. 201 a 299). El "Desborde" es opcional: si el rango principal se llena, ATLAS sigue ahí solo, sin invadir el rango de la categoría vecina. Con esto, ATLAS sugiere el consecutivo — nunca se reinicia y nunca se repite.
+              Cada fila amarra una Categoría (y opcionalmente una Línea puntual, Dama o Caballero) a un prefijo y un rango de números (ej. 201 a 299). El "Desborde" es opcional: si el rango principal se llena, ATLAS sigue ahí solo, sin invadir el rango de la categoría vecina. Con esto, ATLAS sugiere el consecutivo — nunca se reinicia y nunca se repite.
             </div>
             <BusintSyncPanel />
             <ReferenciasNoEnBusintView protos={protos} capsulas={capsulas} />
