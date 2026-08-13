@@ -723,15 +723,6 @@ function numerosEnRango(prefijo, inicio, fin, ...listasDeRefs) {
 // como "segunda vuelta" de Faldas una vez se agota 98-201 a 98-299), la
 // sugerencia salta automáticamente a ese rango de desborde en vez de
 // invadir el bloque de la categoría vecina.
-// Lista, para un Cliente dado, todas las filas de config.codigosReferencia
-// que le aplicarían (las suyas puntuales + las genéricas sin cliente fijo)
-// — se usa para mostrar de una vez, apenas se elige Cliente en "Nueva
-// Referencia"/"Nuevo Prototipo", qué prefijos quedan matriculados para él,
-// antes incluso de escoger la Categoría.
-function prefijosParaCliente(cliente, config) {
-  if (!cliente) return [];
-  return (config?.codigosReferencia || []).filter((c) => !c.cliente || c.cliente === cliente);
-}
 function sugerirReferencia(categoria, linea, cliente, config, protos, capsulas, busintLista) {
   const entrada = buscarEntradaCodigoReferencia(categoria, linea, cliente, config);
   if (!entrada || !entrada.prefijo) return null;
@@ -1180,34 +1171,6 @@ function useMaestroReferenciasBusint() {
   }, []);
   return estado;
 }
-// Se muestra apenas se elige Cliente (antes incluso de escoger Categoría)
-// en "Nuevo Prototipo"/"Nueva Referencia" — un vistazo rápido de qué
-// prefijos/rangos ya están matriculados para ese cliente en Códigos de
-// Referencia, para que la persona sepa qué esperar antes de seguir
-// llenando el formulario.
-function PrefijosClienteInfo({ cliente, config }) {
-  if (!cliente) return null;
-  const filas = prefijosParaCliente(cliente, config);
-  if (filas.length === 0) {
-    return (
-      <div style={{ padding: "8px 12px", background: T.amberBg, borderRadius: 8, marginBottom: 12, fontSize: 12, color: T.amber, fontWeight: 600 }}>
-        ⚠ "{cliente}" todavía no tiene ningún prefijo matriculado en Códigos de Referencia — configúralo en Administración antes de crear la referencia, o el consecutivo no se va a poder sugerir.
-      </div>
-    );
-  }
-  return (
-    <div style={{ padding: "8px 12px", background: T.canvas, borderRadius: 8, marginBottom: 12, border: `1px solid ${T.border}` }}>
-      <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Prefijos matriculados para "{cliente}"</div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-        {filas.map((c) => (
-          <span key={c.id} style={{ fontSize: 11, fontWeight: 600, color: T.denim, background: T.denimBg, padding: "3px 8px", borderRadius: 4 }}>
-            {c.categoria}{c.linea ? ` · ${c.linea}` : ""}: {c.prefijo}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
 // Caja compartida por "Nuevo Prototipo" y "Nueva Referencia": arriba la
 // sugerencia de consecutivo (con las últimas usadas en ese mismo
 // prefijo-segmento, para no tener que adivinar) y abajo el resultado de
@@ -1271,7 +1234,6 @@ function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
     <Modal title="Nuevo Prototipo" onClose={onClose} width={540}>
       <Field label="Nombre"><FInput value={form.name} onChange={set("name")} placeholder="Ej: Prueba camiseta básica" /></Field>
       <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
-      <PrefijosClienteInfo cliente={form.cliente} config={config} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Categoría"><FSel value={form.categoria} onChange={set("categoria")} options={config.categorias} /></Field>
         <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config.siluetas} /></Field>
@@ -1405,7 +1367,6 @@ function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
     <Modal title={`Nueva Referencia — ${capsula.name}`} onClose={onClose} width={560}>
       <Field label="Nombre"><FInput value={form.name} onChange={set("name")} placeholder="Ej: Camiseta Oversize Negra" /></Field>
       <Field label="Cliente"><FSel value={form.colores} onChange={set("colores")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
-      <PrefijosClienteInfo cliente={form.colores} config={config} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Categoría"><FSel value={form.categoria} onChange={set("categoria")} options={config.categorias} /></Field>
         <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config.siluetas} /></Field>
