@@ -6022,25 +6022,30 @@ function PapeleraView({ protos, capsulas, onRestaurarProto, onRestaurarCapsula, 
 // Plantilla sugerida de Códigos de Referencia, a partir del cuadro real que
 // maneja Industrias Yanko (prefijo 98 = su fábrica / línea dama, incluye
 // Camisa y Siza Caballero porque se producen ahí mismo; 96 = Enterizos-
-// Vestidos "Reform"). Los bloques de 100 (Short Cachetero, Bicicletero,
-// Faldas, Capri, Leggins, Blusa Mangas, Siza, Top, Buso, Short) traen su
-// rango de desborde confirmado (+2000, ej. Faldas 201-299 pasa a 2200-2299
-// cuando se llena). Conjuntos/Enterizos-Vestidos (1000-1999) fue confirmado
-// tal cual. Camisa Caballero, Siza Caballero y Enterizos-Vestidos (Reform)
-// son un punto de partida razonable — no vinieron 100% confirmados, así que
-// quedan editables en esta misma pantalla (Eliminar + volver a Agregar con
-// el rango correcto) sin tocar nada de código.
+// Vestidos "Reform"). Cada categoría del grupo de bloques de 100 (Short
+// Cachetero, Bicicletero, Faldas, Capri, Leggins, Blusa Mangas, Siza, Top,
+// Buso, Short) desborda a su PROPIO bloque de 1000 dentro del rango 2000-
+// 9999 cuando se llena — confirmado solo para Faldas (2000-2999) por ahora.
+// Las otras 9 quedan SIN desborde a propósito (en vez de adivinar un bloque
+// que podría chocar con Faldas o con Camisa/Siza Caballero, que ya usan
+// 5001-6999) — agrégaselo tú mismo en la tabla de abajo cuando definas cuál
+// bloque de 1000 le toca a cada una. Conjuntos/Enterizos-Vestidos (1000-
+// 1999) fue confirmado tal cual. Camisa Caballero, Siza Caballero y
+// Enterizos-Vestidos (Reform) son un punto de partida razonable — no
+// vinieron 100% confirmados, así que quedan editables en esta misma
+// pantalla (Eliminar + volver a Agregar con el rango correcto) sin tocar
+// nada de código.
 const PLANTILLA_CODIGOS_REFERENCIA = [
-  { categoria: "Short Cachetero", prefijo: "98", rangoInicio: 1, rangoFin: 99, desbordeInicio: 2000, desbordeFin: 2099 },
-  { categoria: "Bicicletero", prefijo: "98", rangoInicio: 101, rangoFin: 199, desbordeInicio: 2100, desbordeFin: 2199 },
-  { categoria: "Faldas", prefijo: "98", rangoInicio: 201, rangoFin: 299, desbordeInicio: 2200, desbordeFin: 2299 },
-  { categoria: "Capri", prefijo: "98", rangoInicio: 301, rangoFin: 399, desbordeInicio: 2300, desbordeFin: 2399 },
-  { categoria: "Leggins", prefijo: "98", rangoInicio: 401, rangoFin: 499, desbordeInicio: 2400, desbordeFin: 2499 },
-  { categoria: "Blusa Mangas", prefijo: "98", rangoInicio: 501, rangoFin: 599, desbordeInicio: 2500, desbordeFin: 2599 },
-  { categoria: "Siza", prefijo: "98", rangoInicio: 601, rangoFin: 699, desbordeInicio: 2600, desbordeFin: 2699 },
-  { categoria: "Top", prefijo: "98", rangoInicio: 701, rangoFin: 799, desbordeInicio: 2700, desbordeFin: 2799 },
-  { categoria: "Buso", prefijo: "98", rangoInicio: 801, rangoFin: 899, desbordeInicio: 2800, desbordeFin: 2899 },
-  { categoria: "Short", prefijo: "98", rangoInicio: 901, rangoFin: 999, desbordeInicio: 2900, desbordeFin: 2999 },
+  { categoria: "Short Cachetero", prefijo: "98", rangoInicio: 1, rangoFin: 99, desbordeInicio: "", desbordeFin: "" },
+  { categoria: "Bicicletero", prefijo: "98", rangoInicio: 101, rangoFin: 199, desbordeInicio: "", desbordeFin: "" },
+  { categoria: "Faldas", prefijo: "98", rangoInicio: 201, rangoFin: 299, desbordeInicio: 2000, desbordeFin: 2999 },
+  { categoria: "Capri", prefijo: "98", rangoInicio: 301, rangoFin: 399, desbordeInicio: "", desbordeFin: "" },
+  { categoria: "Leggins", prefijo: "98", rangoInicio: 401, rangoFin: 499, desbordeInicio: "", desbordeFin: "" },
+  { categoria: "Blusa Mangas", prefijo: "98", rangoInicio: 501, rangoFin: 599, desbordeInicio: "", desbordeFin: "" },
+  { categoria: "Siza", prefijo: "98", rangoInicio: 601, rangoFin: 699, desbordeInicio: "", desbordeFin: "" },
+  { categoria: "Top", prefijo: "98", rangoInicio: 701, rangoFin: 799, desbordeInicio: "", desbordeFin: "" },
+  { categoria: "Buso", prefijo: "98", rangoInicio: 801, rangoFin: 899, desbordeInicio: "", desbordeFin: "" },
+  { categoria: "Short", prefijo: "98", rangoInicio: 901, rangoFin: 999, desbordeInicio: "", desbordeFin: "" },
   { categoria: "Conjuntos / Enterizos - Vestidos", prefijo: "98", rangoInicio: 1000, rangoFin: 1999, desbordeInicio: "", desbordeFin: "" },
   { categoria: "Camisa Caballero", prefijo: "98", rangoInicio: 5001, rangoFin: 5999, desbordeInicio: "", desbordeFin: "" },
   { categoria: "Siza Caballero", prefijo: "98", rangoInicio: 6001, rangoFin: 6999, desbordeInicio: "", desbordeFin: "" },
