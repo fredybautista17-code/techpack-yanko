@@ -2182,6 +2182,7 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [mesFiltro, setMesFiltro] = useState("todos");
+  const [busqueda, setBusqueda] = useState("");
   const [confirmDel, setConfirmDel] = useState(null);
   // Selección múltiple para armar un envío/bitácora agrupado — solo tiene
   // sentido en la pestaña "Enviar al Cliente". Se limpia al cambiar de
@@ -2220,7 +2221,14 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
   // excluir aprobado/declinado). Siguen disponibles en sus propias pestañas.
   const porEstado = filter === "todos" ? protos.filter((p) => !["aprobado", "declinado"].includes(p.status)) : protos.filter((p) => p.status === filter);
   const porCliente = clienteFiltro === "todos" ? porEstado : porEstado.filter((p) => (p.cliente || p.colores?.[0]) === clienteFiltro);
-  const filtered = mesFiltro === "todos" ? porCliente : porCliente.filter((p) => p.mes === mesFiltro);
+  const porMes = mesFiltro === "todos" ? porCliente : porCliente.filter((p) => p.mes === mesFiltro);
+  const busquedaNorm = busqueda.trim().toLowerCase();
+  const filtered = !busquedaNorm ? porMes : porMes.filter((p) =>
+    (p.name || "").toLowerCase().includes(busquedaNorm) ||
+    (p.reference || "").toLowerCase().includes(busquedaNorm) ||
+    (p.cliente || "").toLowerCase().includes(busquedaNorm) ||
+    (p.colores || []).some((c) => (c || "").toLowerCase().includes(busquedaNorm))
+  );
   return (
     <div>
       {confirmDel && (
@@ -2264,6 +2272,12 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
           <option value="todos">Todos</option>
           {mesesDisponibles.map((m) => <option key={m} value={m}>{m} ({conteoPorMes[m] || 0})</option>)}
         </select>
+        <input
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="🔍 Buscar por nombre, referencia o cliente..."
+          style={{ padding: "7px 12px", border: `1.5px solid ${busqueda ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 240, outline: "none", fontFamily: "inherit" }}
+        />
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
         {[["todos", "Todos"], ["aprobado", "Aprobados"], ["declinado", "Declinados"], ["en_proceso", "En proceso"], ["en_revision", "En revisión"], ["enviado_cotizacion", "En cotización"], ["enviar_cliente", "Enviar al Cliente"], ["enviado", "Enviado"]].map(([v, label]) => (
@@ -2305,6 +2319,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [mesFiltro, setMesFiltro] = useState("todos");
+  const [busqueda, setBusqueda] = useState("");
   const [editCap, setEditCap] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
   // Confirmación para borrar UNA referencia dentro de una cápsula (no la
@@ -2400,10 +2415,24 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
   // tengan referencias en esos estados) para no saturar el tablero. Siguen
   // disponibles en las pestañas "Aprobadas"/"Declinadas". El filtro de
   // cliente y el de mes se combinan (AND) con el de estado.
+  const busquedaNorm = busqueda.trim().toLowerCase();
   function filteredRefs(cap) {
     let refs = filter === "todos" ? cap.referencias.filter((r) => !["aprobado", "declinado"].includes(r.status)) : cap.referencias.filter((r) => r.status === filter);
     if (clienteFiltro !== "todos") refs = refs.filter((r) => refCliente(cap, r) === clienteFiltro);
     if (mesFiltro !== "todos") refs = mesFiltro === cap.mes ? refs : [];
+    if (busquedaNorm) {
+      // Si el nombre/cliente de la cápsula ya calza con la búsqueda, se
+      // muestran todas sus referencias (ya filtradas arriba); si no, se
+      // filtra referencia por referencia (nombre, código o cliente propio).
+      const capCalza = (cap.name || "").toLowerCase().includes(busquedaNorm) || (capCliente(cap) || "").toLowerCase().includes(busquedaNorm);
+      if (!capCalza) {
+        refs = refs.filter((r) =>
+          (r.name || "").toLowerCase().includes(busquedaNorm) ||
+          (r.reference || "").toLowerCase().includes(busquedaNorm) ||
+          (refCliente(cap, r) || "").toLowerCase().includes(busquedaNorm)
+        );
+      }
+    }
     return refs;
   }
   // Una cápsula recién creada empieza con referencias: [] — sin este OR
@@ -2459,6 +2488,12 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
           <option value="todos">Todos</option>
           {mesesDisponibles.map((m) => <option key={m} value={m}>{m} ({conteoPorMes[m] || 0})</option>)}
         </select>
+        <input
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="🔍 Buscar por cápsula, referencia o cliente..."
+          style={{ padding: "7px 12px", border: `1.5px solid ${busqueda ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 240, outline: "none", fontFamily: "inherit" }}
+        />
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
         {FILTERS.map(([v, label]) => (
@@ -3998,6 +4033,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
   const [resultado, setResultado] = useState(initialResultado || "todos");
   const [tipoFiltro, setTipoFiltro] = useState(initialTipoFiltro || "todos");
   const [mesFiltro, setMesFiltro] = useState("");
+  const [busqueda, setBusqueda] = useState("");
   const [soloSinPedido, setSoloSinPedido] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
   // Vincular a pedido a mano, igual que en la Bitácora de Aprobados sin
@@ -4162,10 +4198,19 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
       </div>
     );
   }
+  const busquedaNorm = busqueda.trim().toLowerCase();
   const filtradoResultado = historial.filter((h) => {
     if (resultado !== "todos" && h.resultado !== resultado) return false;
     if (tipoFiltro !== "todos" && h.tipo !== tipoFiltro) return false;
     if (mesFiltro && h.mes !== mesFiltro) return false;
+    if (busquedaNorm) {
+      const calza =
+        (h.nombre || "").toLowerCase().includes(busquedaNorm) ||
+        (h.referencia || "").toLowerCase().includes(busquedaNorm) ||
+        (h.cliente || "").toLowerCase().includes(busquedaNorm) ||
+        (h.capsulaName || "").toLowerCase().includes(busquedaNorm);
+      if (!calza) return false;
+    }
     return true;
   });
   const clientesDisponibles = [...new Set(historial.map((h) => h.cliente))].sort((a, b) => a.localeCompare(b));
@@ -4247,6 +4292,12 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
           </select>
         )}
         <button onClick={() => setSoloSinPedido((v) => !v)} title="Aprobados cuyo código de referencia nunca apareció en un Pedido cargado" style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${soloSinPedido ? T.coral : T.border}`, background: soloSinPedido ? T.coralBg : T.white, color: soloSinPedido ? T.coral : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>🚫 Sin usar en pedido</button>
+        <input
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="🔍 Buscar por nombre, referencia o cliente..."
+          style={{ padding: "7px 12px", border: `1.5px solid ${busqueda ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 240, outline: "none", fontFamily: "inherit" }}
+        />
       </div>
       {modo === "clientes" ? (
         !clienteSel ? (
@@ -8032,6 +8083,7 @@ function motivoCierreInfo(motivo) {
 function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, pedidoConfig, onSavePedidoConfig, isAdmin, currentUser }) {
   const [filtro, setFiltro] = useState("activos");
   const [editPedido, setEditPedido] = useState(null);
+  const [busqueda, setBusqueda] = useState("");
   const activos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado");
   // Un único estado de cierre ("cerrado"), con el motivo en motivoCierre — ya
   // no hay "cumplido"/"cancelado_busint"/"venta_perdida_busint" por separado.
@@ -8039,7 +8091,13 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
   // Vigentes por Cliente) cuando un pedido activo deja de aparecer en la
   // consulta en vivo de Busint, o a mano desde el detalle del pedido.
   const historico = pedidos.filter((p) => p.estado === "cerrado");
-  const lista = filtro === "activos" ? activos : historico;
+  const busquedaNorm = busqueda.trim().toLowerCase();
+  const listaBase = filtro === "activos" ? activos : historico;
+  const lista = !busquedaNorm ? listaBase : listaBase.filter((p) =>
+    String(p.numero || "").toLowerCase().includes(busquedaNorm) ||
+    (p.cliente || "").toLowerCase().includes(busquedaNorm) ||
+    (p.vendedor || "").toLowerCase().includes(busquedaNorm)
+  );
   const hoy = new Date();
   const vencidos = activos.filter((p) => p.fechaDespacho && new Date(p.fechaDespacho) < hoy);
   const proximos = activos.filter((p) => { if (!p.fechaDespacho) return false; const d = Math.ceil((new Date(p.fechaDespacho) - hoy) / 86400000); return d >= 0 && d <= 7; });
@@ -8095,10 +8153,18 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
           )}
         </div>
       )}
-      <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
         {[["activos", `Activos (${activos.length})`], ["historico", `Histórico (${historico.length})`], ["vigentes_busint", "📡 Vigentes por Cliente (Busint)"]].map(([v, label]) => (
           <button key={v} onClick={() => setFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${filtro === v ? T.ink : T.border}`, background: filtro === v ? T.ink : T.white, color: filtro === v ? T.white : T.ink, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
+        {filtro !== "vigentes_busint" && (
+          <input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="🔍 Buscar por N° pedido, cliente o vendedor..."
+            style={{ padding: "7px 12px", border: `1.5px solid ${busqueda ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 260, outline: "none", fontFamily: "inherit", marginLeft: 8 }}
+          />
+        )}
       </div>
       {filtro === "vigentes_busint" && <InformeVigentesBusintView isAdmin={isAdmin} pedidosActivos={pedidos} currentUser={currentUser} />}
       {filtro === "activos" && lista.length > 0 && (
@@ -8982,7 +9048,7 @@ function AppInner() {
     return <ModuloPlanta currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "bodega") {
-    return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} soloLecturaBodega={currentUser?.role === "Cliente"} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "nomina") {
     return <ModuloNomina currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
