@@ -619,6 +619,43 @@ async function exportarDespachoExcel(despacho) {
   XLSX.utils.book_append_sheet(wb, ws, `DESPACHO ${despacho.numero}`.slice(0, 31));
   XLSX.writeFile(wb, `DESPACHO ${despacho.numero}.xlsx`);
 }
+
+// Exporta la lista completa (o filtrada) del Historial a un solo Excel
+// resumen, una fila por despacho. Pensado para Contabilidad y para el
+// usuario de solo lectura (rol Cliente) que necesita bajar el historial
+// para revisarlo fuera de ATLAS. Reusa los mismos estilos que el export
+// individual para que se vea consistente.
+async function exportarHistorialExcel(lista) {
+  const XLSX = await import("xlsx-js-style");
+  const headers = ["N° DESPACHO", "ESTADO", "FECHA", "LÍNEAS", "TOTAL", "MONTADO POR"];
+  const grid = [];
+  grid.push(headers.map((h) => celda(h, ESTILO_HEADER)));
+  let totalGeneral = 0;
+  lista.forEach((d) => {
+    const total = d.totalDespacho || 0;
+    totalGeneral += total;
+    grid.push([
+      celda(d.numero, ESTILO_DATO),
+      celda(String(d.estado || "").toUpperCase(), ESTILO_DATO),
+      celda(fmtFechaISO(d.fecha), ESTILO_DATO),
+      celda((d.lineas || []).length, ESTILO_DATO),
+      celda(total, ESTILO_DATO, FORMATO_MONEDA),
+      celda(d.creadoPor || "", ESTILO_DATO),
+    ]);
+  });
+  const filaTotal = new Array(headers.length).fill(null).map(() => celda("", ESTILO_TOTAL_VACIA));
+  filaTotal[3] = celda("TOTAL", ESTILO_TOTAL);
+  filaTotal[4] = celda(totalGeneral, ESTILO_TOTAL, FORMATO_MONEDA);
+  grid.push(filaTotal);
+
+  const ws = XLSX.utils.aoa_to_sheet(grid);
+  ws["!cols"] = [{ wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 9 }, { wch: 14 }, { wch: 22 }];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Historial Despachos");
+  const hoy = today();
+  XLSX.writeFile(wb, `Historial Despachos ${hoy}.xlsx`);
+}
 // ─── DETALLE DE UN DESPACHO (solo lectura: Historial) ──────────────────────
 // ─── CÓDIGO DE EDICIÓN (PIN) ────────────────────────────────────────────────
 // Un solo código, configurado por Administración, que Contabilidad debe
@@ -1085,6 +1122,7 @@ function HistorialView({ despachos, currentUser, isAdmin, esContabilidad, esBode
           <FInput value={filtro} onChange={setFiltro} placeholder="Buscar por N° despacho o referencia..." />
         </div>
         <div style={{ fontSize: 12, color: C.slate }}>{visibles.length} despachos · {fmtMoney(totalGeneral)}</div>
+        <Btn variant="secondary" onClick={() => exportarHistorialExcel(visibles)}>⬇ Exportar a Excel</Btn>
       </div>
       {refBuscada && (
         ultimoUsoRef ? (
@@ -1801,7 +1839,7 @@ function DashboardBodegaView({ despachos, abonos }) {
   );
 }
 // ─── RAÍZ DEL MÓDULO ────────────────────────────────────────────────────────
-export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAccessContabilidad, onVolver, onLogout }) {
+export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAccessContabilidad, soloLecturaBodega, onVolver, onLogout }) {
   const [subView, setSubView] = useState("dashboard");
   const [despachos, setDespachos] = useState([]);
   const [abonos, setAbonos] = useState([]);
@@ -1836,6 +1874,12 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
     await fsDelete("despachosVenezuela", id);
   }
   const isAdmin = !!currentUser?.isAdmin;
+  // Usuario de "solo lectura" (típicamente rol Cliente): ve todo el
+  // historial completo igual que Contabilidad — no solo lo que él mismo
+  // montó — pero no puede aprobar, editar, montar despachos nuevos ni tocar
+  // abonos. Se activa pasando soloLecturaBodega desde src/App.js (hoy: rol
+  // exactamente "Cliente").
+  const soloLectura = !!soloLecturaBodega && !isAdmin;
   // Etapa 2 del despacho (revisar cantidades, poner precio/dcto y aprobar)
   // la hace Contabilidad. Se deja también el permiso "aprobarDespacho" por
   // compatibilidad, para no quitarle acceso a nadie que ya lo tuviera.
@@ -1846,13 +1890,17 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
   const puedeEditarAbonos = isAdmin || !!canAccessContabilidad;
   // Quién puede editar un despacho que ya existe: Administración siempre;
   // Bodega solo lo suyo (se valida por creadoPor en cada despacho); el resto
-  // (Contabilidad) puede pedir el código de edición.
+  // (Contabilidad) puede pedir el código de edición. Un usuario de solo
+  // lectura NUNCA cae en "esBodegaSolo" (que filtra el historial a "solo lo
+  // mío") — ve todo, como Contabilidad, pero sin ninguno de sus permisos de
+  // edición (esContabilidad sigue en false para él).
   const esContabilidad = !isAdmin && puedeAprobar;
-  const esBodegaSolo = !isAdmin && !esContabilidad;
+  const esBodegaSolo = !isAdmin && !esContabilidad && !soloLectura;
   const pendientesCount = despachos.filter((d) => d.estado === "montado").length;
   const NAV = [
     { id: "dashboard", icon: "◉", label: "Inicio" },
-    { id: "montar", icon: "📝", label: "Montar Despacho" },
+    // Montar Despacho no aplica para un usuario de solo lectura.
+    ...(soloLectura ? [] : [{ id: "montar", icon: "📝", label: "Montar Despacho" }]),
     ...(puedeAprobar ? [{ id: "aprobar", icon: "✅", label: "Por Aprobar", badge: pendientesCount }] : []),
     { id: "historial", icon: "🕘", label: "Historial" },
     { id: "abonos", icon: "💵", label: "Abonos" },
