@@ -12,8 +12,11 @@
     "formdata-polyfill": "4.0.10",
     "@babel/plugin-bugfix-firefox-class-in-computed-class-key": "8.0.1",
     "xlsx": "0.18.5",
-    "xlsx-js-style": "1.2.0"
+    "xlsx-js-style": "1.2.0",
+    "jszip": "^3.10.1"
   },
+  
+
   "devDependencies": {
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
