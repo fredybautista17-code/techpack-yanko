@@ -5225,6 +5225,22 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     });
     setColorAAgregar("");
   }
+  // Corrige la referencia de una fila YA existente en el corte (por ejemplo,
+  // se registró la referencia equivocada por error) — cambia a cuál
+  // referencia/color del mismo pedido queda atribuida esa fila, sin tocar
+  // las tallas/cantidades ya contadas (esas siguen siendo correctas, solo
+  // estaban mal etiquetadas). No permite dejar dos filas con la misma
+  // referencia.
+  function cambiarReferenciaEdit(refIdx, nuevoRefId, pedidoDelCorte) {
+    if (!nuevoRefId || !pedidoDelCorte) return;
+    const refPedido = (pedidoDelCorte.referencias || []).find((r) => r.id === nuevoRefId);
+    if (!refPedido) return;
+    setCantidadesEdit((refs) => {
+      const copia = [...refs];
+      copia[refIdx] = { ...copia[refIdx], refId: refPedido.id, ref: refPedido.ref, descripcion: refPedido.descripcion };
+      return copia;
+    });
+  }
   async function guardarCantidadesEdit(pedidoId, corteId) {
     await onEditarCantidadesCorte(pedidoId, corteId, cantidadesEdit, cortadorEdit);
     setEditandoCantidades(null);
@@ -6791,9 +6807,30 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                 </thead>
                                 <tbody>
                                   {editandoCantidades === c.id
-                                    ? (cantidadesEdit || []).map((r, refIdx) => (
+                                    ? (() => {
+                                        const pedidoDelCorteFila = pedidos.find((p) => p.id === c.pedidoId);
+                                        return (cantidadesEdit || []).map((r, refIdx) => {
+                                          const opcionesRef = (pedidoDelCorteFila?.referencias || []).filter(
+                                            (rp) => rp.id === r.refId || !(cantidadesEdit || []).some((ce) => ce.refId === rp.id)
+                                          );
+                                          return (
                                         <tr key={r.refId} style={{ borderBottom: `1px solid ${C.border}` }}>
-                                          <td style={{ padding: "6px 8px", fontWeight: 700, verticalAlign: "top" }}>{r.ref}{r.descripcion ? ` — ${r.descripcion}` : ""}</td>
+                                          <td style={{ padding: "6px 8px", fontWeight: 700, verticalAlign: "top" }}>
+                                            {opcionesRef.length > 0 ? (
+                                              <select
+                                                value={r.refId}
+                                                onChange={(e) => cambiarReferenciaEdit(refIdx, e.target.value, pedidoDelCorteFila)}
+                                                title="Corregir a cuál referencia del pedido pertenece esta fila"
+                                                style={{ padding: "4px 6px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, color: C.ink, outline: "none", fontFamily: "inherit", maxWidth: 220 }}
+                                              >
+                                                {opcionesRef.map((rp) => (
+                                                  <option key={rp.id} value={rp.id}>{rp.ref}{rp.descripcion ? ` — ${rp.descripcion}` : ""}</option>
+                                                ))}
+                                              </select>
+                                            ) : (
+                                              <>{r.ref}{r.descripcion ? ` — ${r.descripcion}` : ""}</>
+                                            )}
+                                          </td>
                                           <td style={{ padding: "6px 8px" }}>
                                             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                                               {ordenarTallas(Object.keys(r.tallas || {})).map((t) => (
@@ -6812,7 +6849,9 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                           </td>
                                           <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, verticalAlign: "top" }}>{fmtNum(r.total)}</td>
                                         </tr>
-                                      ))
+                                          );
+                                        });
+                                      })()
                                     : (c.refs || []).map((r) => (
                                         <tr key={r.refId} style={{ borderBottom: `1px solid ${C.border}` }}>
                                           <td style={{ padding: "6px 8px", fontWeight: 700 }}>{r.ref}{r.descripcion ? ` — ${r.descripcion}` : ""}</td>
@@ -7057,9 +7096,30 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                 </thead>
                                 <tbody>
                                   {editandoCantidades === c.id
-                                    ? (cantidadesEdit || []).map((r, refIdx) => (
+                                    ? (() => {
+                                        const pedidoDelCorteFila = pedidos.find((p) => p.id === c.pedidoId);
+                                        return (cantidadesEdit || []).map((r, refIdx) => {
+                                          const opcionesRef = (pedidoDelCorteFila?.referencias || []).filter(
+                                            (rp) => rp.id === r.refId || !(cantidadesEdit || []).some((ce) => ce.refId === rp.id)
+                                          );
+                                          return (
                                         <tr key={r.refId} style={{ borderBottom: `1px solid ${C.border}` }}>
-                                          <td style={{ padding: "6px 8px", fontWeight: 700, verticalAlign: "top" }}>{r.ref}{r.descripcion ? ` — ${r.descripcion}` : ""}</td>
+                                          <td style={{ padding: "6px 8px", fontWeight: 700, verticalAlign: "top" }}>
+                                            {opcionesRef.length > 0 ? (
+                                              <select
+                                                value={r.refId}
+                                                onChange={(e) => cambiarReferenciaEdit(refIdx, e.target.value, pedidoDelCorteFila)}
+                                                title="Corregir a cuál referencia del pedido pertenece esta fila"
+                                                style={{ padding: "4px 6px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, color: C.ink, outline: "none", fontFamily: "inherit", maxWidth: 220 }}
+                                              >
+                                                {opcionesRef.map((rp) => (
+                                                  <option key={rp.id} value={rp.id}>{rp.ref}{rp.descripcion ? ` — ${rp.descripcion}` : ""}</option>
+                                                ))}
+                                              </select>
+                                            ) : (
+                                              <>{r.ref}{r.descripcion ? ` — ${r.descripcion}` : ""}</>
+                                            )}
+                                          </td>
                                           <td style={{ padding: "6px 8px" }}>
                                             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                                               {ordenarTallas(Object.keys(r.tallas || {})).map((t) => (
@@ -7078,7 +7138,9 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                           </td>
                                           <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, verticalAlign: "top" }}>{fmtNum(r.total)}</td>
                                         </tr>
-                                      ))
+                                          );
+                                        });
+                                      })()
                                     : (c.refs || []).map((r) => (
                                         <tr key={r.refId} style={{ borderBottom: `1px solid ${C.border}` }}>
                                           <td style={{ padding: "6px 8px", fontWeight: 700 }}>{r.ref}{r.descripcion ? ` — ${r.descripcion}` : ""}</td>
