@@ -723,6 +723,15 @@ function numerosEnRango(prefijo, inicio, fin, ...listasDeRefs) {
 // como "segunda vuelta" de Faldas una vez se agota 98-201 a 98-299), la
 // sugerencia salta automáticamente a ese rango de desborde en vez de
 // invadir el bloque de la categoría vecina.
+// Lista, para un Cliente dado, todas las filas de config.codigosReferencia
+// que le aplicarían (las suyas puntuales + las genéricas sin cliente fijo)
+// — se usa para mostrar de una vez, apenas se elige Cliente en "Nueva
+// Referencia"/"Nuevo Prototipo", qué prefijos quedan matriculados para él,
+// antes incluso de escoger la Categoría.
+function prefijosParaCliente(cliente, config) {
+  if (!cliente) return [];
+  return (config?.codigosReferencia || []).filter((c) => !c.cliente || c.cliente === cliente);
+}
 function sugerirReferencia(categoria, linea, cliente, config, protos, capsulas, busintLista) {
   const entrada = buscarEntradaCodigoReferencia(categoria, linea, cliente, config);
   if (!entrada || !entrada.prefijo) return null;
@@ -1171,6 +1180,34 @@ function useMaestroReferenciasBusint() {
   }, []);
   return estado;
 }
+// Se muestra apenas se elige Cliente (antes incluso de escoger Categoría)
+// en "Nuevo Prototipo"/"Nueva Referencia" — un vistazo rápido de qué
+// prefijos/rangos ya están matriculados para ese cliente en Códigos de
+// Referencia, para que la persona sepa qué esperar antes de seguir
+// llenando el formulario.
+function PrefijosClienteInfo({ cliente, config }) {
+  if (!cliente) return null;
+  const filas = prefijosParaCliente(cliente, config);
+  if (filas.length === 0) {
+    return (
+      <div style={{ padding: "8px 12px", background: T.amberBg, borderRadius: 8, marginBottom: 12, fontSize: 12, color: T.amber, fontWeight: 600 }}>
+        ⚠ "{cliente}" todavía no tiene ningún prefijo matriculado en Códigos de Referencia — configúralo en Administración antes de crear la referencia, o el consecutivo no se va a poder sugerir.
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: "8px 12px", background: T.canvas, borderRadius: 8, marginBottom: 12, border: `1px solid ${T.border}` }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Prefijos matriculados para "{cliente}"</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {filas.map((c) => (
+          <span key={c.id} style={{ fontSize: 11, fontWeight: 600, color: T.denim, background: T.denimBg, padding: "3px 8px", borderRadius: 4 }}>
+            {c.categoria}{c.linea ? ` · ${c.linea}` : ""}: {c.prefijo}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
 // Caja compartida por "Nuevo Prototipo" y "Nueva Referencia": arriba la
 // sugerencia de consecutivo (con las últimas usadas en ese mismo
 // prefijo-segmento, para no tener que adivinar) y abajo el resultado de
@@ -1233,6 +1270,8 @@ function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
   return (
     <Modal title="Nuevo Prototipo" onClose={onClose} width={540}>
       <Field label="Nombre"><FInput value={form.name} onChange={set("name")} placeholder="Ej: Prueba camiseta básica" /></Field>
+      <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
+      <PrefijosClienteInfo cliente={form.cliente} config={config} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Categoría"><FSel value={form.categoria} onChange={set("categoria")} options={config.categorias} /></Field>
         <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config.siluetas} /></Field>
@@ -1240,9 +1279,6 @@ function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
         <Field label="Línea"><FSel value={form.linea} onChange={set("linea")} options={config.lineas} /></Field>
         <Field label="Rango"><FSel value={form.rango} onChange={set("rango")} options={config.rangos} /></Field>
-        <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Mes"><FSel value={form.mes} onChange={set("mes")} options={MONTHS_ES} /></Field>
       </div>
       <SugerenciaYVerificacionRef sug={sug} referencia={form.reference} onUsar={() => set("reference")(sug.codigo)} busint={busint} protos={protos} capsulas={capsulas} />
@@ -1368,16 +1404,15 @@ function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
   return (
     <Modal title={`Nueva Referencia — ${capsula.name}`} onClose={onClose} width={560}>
       <Field label="Nombre"><FInput value={form.name} onChange={set("name")} placeholder="Ej: Camiseta Oversize Negra" /></Field>
+      <Field label="Cliente"><FSel value={form.colores} onChange={set("colores")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
+      <PrefijosClienteInfo cliente={form.colores} config={config} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Categoría"><FSel value={form.categoria} onChange={set("categoria")} options={config.categorias} /></Field>
         <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config.siluetas} /></Field>
       </div>
       <Field label="Línea"><FSel value={form.linea} onChange={set("linea")} options={config.lineas} /></Field>
       <SugerenciaYVerificacionRef sug={sug} referencia={form.reference} onUsar={() => set("reference")(sug.codigo)} busint={busint} protos={protos} capsulas={capsulas} />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: CM-001" /></Field>
-        <Field label="Cliente"><FSel value={form.colores} onChange={set("colores")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
-      </div>
+      <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: CM-001" /></Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Responsable"><FSel value={form.assignedTo} onChange={set("assignedTo")} options={config.disenadores} /></Field>
         <Field label="Rango de Tallas"><FSel value={form.tallas} onChange={set("tallas")} options={config.rangos} /></Field>
@@ -6160,6 +6195,18 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["kpis", "🎯 KPIs"], ["informes", "📋 Informes"]];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["papelera", "🗑 Papelera"]];
   const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
+  // Categorías con el acordeón de Códigos de Referencia desplegado — solo
+  // guarda los nombres abiertos, para no perder el estado al agregar o
+  // eliminar filas.
+  const [categoriasCodigoAbiertas, setCategoriasCodigoAbiertas] = useState(new Set());
+  function toggleCategoriaCodigo(categoria) {
+    setCategoriasCodigoAbiertas((prev) => {
+      const next = new Set(prev);
+      if (next.has(categoria)) next.delete(categoria);
+      else next.add(categoria);
+      return next;
+    });
+  }
   function addCodigoReferencia() {
     const prefijo = nuevoCodigo.prefijo.trim();
     const rangoInicio = Number(nuevoCodigo.rangoInicio);
@@ -6332,29 +6379,59 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
               {(config.codigosReferencia || []).length === 0 && (
                 <div style={{ fontSize: 13, color: T.slate, fontStyle: "italic" }}>Aún no hay códigos registrados.</div>
               )}
-              {(config.codigosReferencia || []).map((c) => {
-                // Compatibilidad con filas viejas (solo "segmento") — ver
-                // sugerirReferencia() para la misma regla de respaldo.
-                const tieneRango = c.rangoInicio != null && c.rangoInicio !== "";
-                const baseVieja = (Number(c.segmento) || 0) * 100;
-                const rIni = tieneRango ? c.rangoInicio : baseVieja + 1;
-                const rFin = tieneRango ? c.rangoFin : baseVieja + 99;
-                const rango = `${c.prefijo}-${String(rIni).padStart(3, "0")} a ${c.prefijo}-${String(rFin).padStart(3, "0")}`;
-                const tieneDesborde = c.desbordeInicio !== "" && c.desbordeInicio != null && c.desbordeFin !== "" && c.desbordeFin != null;
-                const rangoDesborde = tieneDesborde ? `${c.prefijo}-${String(c.desbordeInicio).padStart(3, "0")} a ${c.prefijo}-${String(c.desbordeFin).padStart(3, "0")}` : null;
-                return (
-                  <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: T.canvas, borderRadius: 8, border: `1px solid ${T.border}` }}>
-                    <div>
-                      <span style={{ fontSize: 14, fontWeight: 700, color: T.ink }}>{c.categoria}</span>
-                      {c.linea && <span style={{ fontSize: 12, color: T.slate, marginLeft: 8 }}>· {c.linea}</span>}
-                      {c.cliente && <span style={{ fontSize: 12, color: T.violet, marginLeft: 8, fontWeight: 600 }}>· {c.cliente}</span>}
-                      <span style={{ fontSize: 12, color: T.denim, marginLeft: 10, fontWeight: 600 }}>{rango}</span>
-                      {tieneDesborde && <span style={{ fontSize: 12, color: T.amber, marginLeft: 10, fontWeight: 600 }}>· si se llena, sigue en {rangoDesborde}</span>}
-                    </div>
-                    <button onClick={() => removeCodigoReferencia(c.id)} style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "4px 10px", color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Eliminar</button>
-                  </div>
-                );
-              })}
+              {(() => {
+                // Agrupa todas las filas por Categoría — cada categoría es un
+                // acordeón: clic en el encabezado despliega/oculta sus filas
+                // (que pueden variar por Línea y/o Cliente), en vez de una
+                // lista plana larga y repetitiva.
+                const grupos = new Map();
+                (config.codigosReferencia || []).forEach((c) => {
+                  if (!grupos.has(c.categoria)) grupos.set(c.categoria, []);
+                  grupos.get(c.categoria).push(c);
+                });
+                return [...grupos.entries()]
+                  .sort((a, b) => a[0].localeCompare(b[0]))
+                  .map(([categoria, filas]) => {
+                    const abierta = categoriasCodigoAbiertas.has(categoria);
+                    return (
+                      <div key={categoria} style={{ border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden" }}>
+                        <button onClick={() => toggleCategoriaCodigo(categoria)} style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: T.canvas, border: "none", cursor: "pointer", textAlign: "left" }}>
+                          <span style={{ fontSize: 14, fontWeight: 700, color: T.ink }}>{categoria}</span>
+                          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: T.slate, background: T.white, border: `1px solid ${T.border}`, borderRadius: 20, padding: "2px 8px" }}>{filas.length}</span>
+                            <span style={{ fontSize: 12, color: T.slate }}>{abierta ? "▾" : "▸"}</span>
+                          </span>
+                        </button>
+                        {abierta && (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "8px 14px 12px" }}>
+                            {filas.map((c) => {
+                              // Compatibilidad con filas viejas (solo "segmento") — ver
+                              // sugerirReferencia() para la misma regla de respaldo.
+                              const tieneRango = c.rangoInicio != null && c.rangoInicio !== "";
+                              const baseVieja = (Number(c.segmento) || 0) * 100;
+                              const rIni = tieneRango ? c.rangoInicio : baseVieja + 1;
+                              const rFin = tieneRango ? c.rangoFin : baseVieja + 99;
+                              const rango = `${c.prefijo}-${String(rIni).padStart(3, "0")} a ${c.prefijo}-${String(rFin).padStart(3, "0")}`;
+                              const tieneDesborde = c.desbordeInicio !== "" && c.desbordeInicio != null && c.desbordeFin !== "" && c.desbordeFin != null;
+                              const rangoDesborde = tieneDesborde ? `${c.prefijo}-${String(c.desbordeInicio).padStart(3, "0")} a ${c.prefijo}-${String(c.desbordeFin).padStart(3, "0")}` : null;
+                              return (
+                                <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: T.white, borderRadius: 8, border: `1px solid ${T.border}` }}>
+                                  <div>
+                                    {c.linea && <span style={{ fontSize: 12, color: T.slate, marginRight: 8 }}>· {c.linea}</span>}
+                                    {c.cliente && <span style={{ fontSize: 12, color: T.violet, marginRight: 8, fontWeight: 600 }}>· {c.cliente}</span>}
+                                    <span style={{ fontSize: 12, color: T.denim, fontWeight: 600 }}>{rango}</span>
+                                    {tieneDesborde && <span style={{ fontSize: 12, color: T.amber, marginLeft: 10, fontWeight: 600 }}>· si se llena, sigue en {rangoDesborde}</span>}
+                                  </div>
+                                  <button onClick={() => removeCodigoReferencia(c.id)} style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "4px 10px", color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Eliminar</button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  });
+              })()}
             </div>
           </div>
         )}
