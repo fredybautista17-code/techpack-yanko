@@ -528,12 +528,24 @@ const INIT_CONFIG = {
   categorias: ["Cachetero","Byker","Capry","Leggins","Camiseta","Sisa","Top","Buso","Short","Enterizo","Body","Conjunto","Vestido","Blusa","Pantaloneta","Jogger","Traje de Baño","Bóxer","Pantys"],
   siluetas: ["Slimfit","Regularfit","Silueta Amplia","Oversize","Super Oversize","Estándar"],
   rangos: ["Normal (S,M,L,XL)","Doble Talla (S/M - M/L)","Talla U","Plus","Plus (1XL-2XL-3XL)"],
+  // Línea del producto (ej. Básica/Premium) — distinta de Silueta (que es el
+  // corte: Slimfit, Oversize, etc.) y distinta también de "línea" tal como
+  // la usa Busint (ahí significa Hombre/Dama). Se usa como el criterio
+  // opcional para amarrar una Categoría a un prefijo/rango distinto en
+  // Códigos de Referencia — ej. la misma categoría puede tener un bloque de
+  // números para Básica y otro para Premium.
+  lineas: ["Básica", "Premium"],
   disenadores: [],
   // Catálogo de codificación de referencias: cada entrada amarra una
-  // Categoría (y opcionalmente una Silueta puntual) a un prefijo de 2
-  // dígitos y un segmento (0-10). Con esto, sugerirReferencia() calcula el
-  // consecutivo automático al crear un Prototipo o una Referencia de
-  // Cápsula. Si silueta queda vacío, la entrada aplica a toda la categoría.
+  // Categoría (y opcionalmente una Silueta puntual) a un prefijo y un rango
+  // de números (rangoInicio-rangoFin, ej. 201-299), más opcionalmente un
+  // rango de desborde (desbordeInicio-desbordeFin) al que saltar
+  // automáticamente cuando el rango principal se llene. Con esto,
+  // sugerirReferencia() calcula el consecutivo automático al crear un
+  // Prototipo o una Referencia de Cápsula. Si silueta queda vacío, la
+  // entrada aplica a toda la categoría. Editable en Administración →
+  // Códigos de Referencia (incluye un botón para cargar la plantilla
+  // sugerida a partir del cuadro real que maneja Industrias Yanko).
   codigosReferencia: [],
   // Áreas de la compañía usadas en el módulo de KPIs (ver KPIsView), que
   // cubre TODA la empresa, no solo Diseño. Cada Puesto (colección
@@ -646,55 +658,102 @@ function nowISO() { return new Date().toISOString(); }
 // vivas o históricas) con ese mismo prefijo-segmento y sigue desde la más
 // alta encontrada, no desde las que existen hoy en pantalla.
 // Encuentra en config.codigosReferencia la entrada que amarra esta
-// categoria(+silueta) a un prefijo/segmento — exacta primero, luego la que
-// aplica a toda la categoría (silueta vacía).
-function buscarEntradaCodigoReferencia(categoria, silueta, config) {
+// categoria(+línea) a un prefijo/rango — exacta primero, luego la que
+// aplica a toda la categoría (línea vacía). "Línea" acá es Básica/Premium
+// (config.lineas), no Silueta (Slimfit/Oversize/etc., que sigue siendo un
+// atributo aparte del prototipo/referencia) ni la "línea" de Busint
+// (Hombre/Dama).
+function buscarEntradaCodigoReferencia(categoria, linea, config) {
   const catalogo = config?.codigosReferencia || [];
   if (!categoria || catalogo.length === 0) return null;
   return (
-    catalogo.find((c) => c.categoria === categoria && c.silueta && c.silueta === silueta) ||
-    catalogo.find((c) => c.categoria === categoria && !c.silueta) ||
+    catalogo.find((c) => c.categoria === categoria && c.linea && c.linea === linea) ||
+    catalogo.find((c) => c.categoria === categoria && !c.linea) ||
     null
   );
 }
+// Compara/busca referencias IGNORANDO el guion — Busint a veces guarda o
+// devuelve el mismo código SIN guion (ej. "985609" en vez de "98-5609"),
+// mientras que ATLAS siempre arma sus propias referencias CON guion
+// ("98-5609"). Sin esta normalización, el sistema no reconoce que son el
+// mismo código: no lo cuenta al calcular el siguiente consecutivo, y no lo
+// detecta como duplicado. Se usa en TODA comparación/búsqueda de una
+// referencia contra otra, tanto acá como en la Cloud Function
+// probarReferenciaBusint.
+function normalizarRefComparacion(v) {
+  return String(v || "").trim().toUpperCase().replace(/-/g, "");
+}
 // Extrae, de una o varias listas de códigos de referencia, los números
-// (corridos absolutos, ej. 401) que caen dentro del segmento de un
-// prefijo dado (ej. prefijo "76" segmento 4 → rango 401-499).
-function numerosEnSegmento(prefijo, segmento, ...listasDeRefs) {
-  const base = (Number(segmento) || 0) * 100;
-  const regex = new RegExp(`^${prefijo}-(\\d+)$`);
+// (corridos absolutos, ej. 401) que caen DENTRO de un rango [inicio, fin]
+// para un prefijo dado (ej. prefijo "76", rango 401-499). Reemplaza al
+// viejo esquema de "segmento" de ancho fijo (siempre bloques de 100) —
+// las categorías reales del cliente no tienen todas el mismo ancho (ej.
+// Conjuntos/Vestidos usa un bloque de 1000, Short Cachetero uno de 99), así
+// que cada entrada de config.codigosReferencia guarda su propio
+// rangoInicio/rangoFin. El guion es opcional al comparar (ver
+// normalizarRefComparacion) — si no se consideraran también las
+// referencias de Busint sin guion, el consecutivo sugerido podría chocar
+// con una que ATLAS nunca "vio".
+function numerosEnRango(prefijo, inicio, fin, ...listasDeRefs) {
+  const regex = new RegExp(`^${prefijo}(\\d+)$`);
   const nums = [];
   [].concat(...listasDeRefs).forEach((ref) => {
-    const m = regex.exec(String(ref || "").trim());
+    const m = regex.exec(normalizarRefComparacion(ref));
     if (!m) return;
     const num = parseInt(m[1], 10);
-    if (num >= base && num < base + 100) nums.push(num);
+    if (num >= inicio && num <= fin) nums.push(num);
   });
   return nums;
 }
-// Calcula el próximo consecutivo de referencia (Ej: "76-403") a partir del
-// catálogo config.codigosReferencia. El corrido (número dentro del
-// segmento, del 01 al 99) nunca se reinicia: escanea TODAS las referencias
-// ya usadas — tanto en ATLAS (prototipos + referencias de cápsulas) como en
-// la bitácora local de Busint (busintLista, ver useMaestroReferenciasBusint)
-// — y sigue desde la más alta encontrada entre las dos fuentes, para no
-// chocar con una referencia que se haya creado directo en Busint sin pasar
-// por ATLAS.
-function sugerirReferencia(categoria, silueta, config, protos, capsulas, busintLista) {
-  const entrada = buscarEntradaCodigoReferencia(categoria, silueta, config);
+// Calcula el próximo consecutivo de referencia (Ej: "98-403") a partir del
+// catálogo config.codigosReferencia. El corrido nunca se reinicia: escanea
+// TODAS las referencias ya usadas — tanto en ATLAS (prototipos + referencias
+// de cápsulas) como en la bitácora local de Busint (busintLista, ver
+// useMaestroReferenciasBusint) — y sigue desde la más alta encontrada entre
+// las dos fuentes, para no chocar con una referencia que se haya creado
+// directo en Busint sin pasar por ATLAS.
+// Si el rango principal de la categoría ya se llenó (el siguiente número se
+// saldría de rangoFin) y la entrada tiene un rango de desborde configurado
+// (desbordeInicio/desbordeFin — ej. el cliente reserva 98-2200 a 98-2299
+// como "segunda vuelta" de Faldas una vez se agota 98-201 a 98-299), la
+// sugerencia salta automáticamente a ese rango de desborde en vez de
+// invadir el bloque de la categoría vecina.
+function sugerirReferencia(categoria, linea, config, protos, capsulas, busintLista) {
+  const entrada = buscarEntradaCodigoReferencia(categoria, linea, config);
   if (!entrada || !entrada.prefijo) return null;
   const prefijo = String(entrada.prefijo).trim();
-  const segmento = Number(entrada.segmento) || 0;
-  const base = segmento * 100;
+  // Compatibilidad con filas creadas ANTES de este cambio (solo tenían
+  // "segmento", bloques fijos de 100, del 0 al 10) — si la fila no trae
+  // rangoInicio/rangoFin explícitos, se calculan igual que antes a partir
+  // de segmento, para no romper códigos que ya se hayan registrado a mano.
+  let inicio, fin;
+  if (entrada.rangoInicio != null && entrada.rangoInicio !== "") {
+    inicio = Number(entrada.rangoInicio) || 1;
+    fin = Number(entrada.rangoFin) || inicio + 98;
+  } else {
+    const base = (Number(entrada.segmento) || 0) * 100;
+    inicio = base + 1;
+    fin = base + 99;
+  }
   const refsLocales = [
     ...protos.map((p) => p.reference),
     ...capsulas.flatMap((c) => (c.referencias || []).map((r) => r.reference)),
   ];
   const refsBusint = (busintLista || []).map((r) => r.ref);
-  const nums = numerosEnSegmento(prefijo, segmento, refsLocales, refsBusint);
-  const maxCorrido = nums.length ? Math.max(...nums) - base : 0;
-  const siguiente = base + maxCorrido + 1;
-  return { codigo: `${prefijo}-${String(siguiente).padStart(3, "0")}`, prefijo, segmento };
+  const nums = numerosEnRango(prefijo, inicio, fin, refsLocales, refsBusint);
+  let rangoInicio = inicio;
+  let rangoFin = fin;
+  let siguiente = nums.length ? Math.max(...nums) + 1 : inicio;
+  const tieneDesborde = entrada.desbordeInicio != null && entrada.desbordeInicio !== "" && entrada.desbordeFin != null && entrada.desbordeFin !== "";
+  if (siguiente > fin && tieneDesborde) {
+    const inicioD = Number(entrada.desbordeInicio);
+    const finD = Number(entrada.desbordeFin);
+    const numsD = numerosEnRango(prefijo, inicioD, finD, refsLocales, refsBusint);
+    siguiente = numsD.length ? Math.max(...numsD) + 1 : inicioD;
+    rangoInicio = inicioD;
+    rangoFin = finD;
+  }
+  return { codigo: `${prefijo}-${String(siguiente).padStart(3, "0")}`, prefijo, rangoInicio, rangoFin };
 }
 // Busca si un código de referencia ya está en uso DENTRO de ATLAS mismo
 // (prototipos o referencias de cápsula) — a diferencia de la bitácora de
@@ -704,10 +763,10 @@ function sugerirReferencia(categoria, silueta, config, protos, capsulas, busintL
 // sync.
 function buscarRefEnAtlas(refNorm, protos, capsulas) {
   if (!refNorm) return null;
-  const proto = (protos || []).find((p) => String(p.reference || "").trim().toUpperCase() === refNorm);
+  const proto = (protos || []).find((p) => normalizarRefComparacion(p.reference) === refNorm);
   if (proto) return { tipo: "Prototipo", nombre: proto.name };
   for (const cap of capsulas || []) {
-    const ref = (cap.referencias || []).find((r) => String(r.reference || "").trim().toUpperCase() === refNorm);
+    const ref = (cap.referencias || []).find((r) => normalizarRefComparacion(r.reference) === refNorm);
     if (ref) return { tipo: "Referencia de cápsula", nombre: `${ref.name} — ${cap.name}` };
   }
   return null;
@@ -716,15 +775,14 @@ function buscarRefEnAtlas(refNorm, protos, capsulas) {
 // este mismo prefijo-segmento — se muestran junto a la sugerencia para que
 // el usuario vea el patrón real en vez de confiar a ciegas en un solo
 // número calculado.
-function ultimasReferenciasBusint(prefijo, segmento, busintLista, n = 3) {
+function ultimasReferenciasBusint(prefijo, inicio, fin, busintLista, n = 3) {
   if (!prefijo || !busintLista) return [];
-  const base = (Number(segmento) || 0) * 100;
-  const regex = new RegExp(`^${prefijo}-(\\d+)$`);
+  const regex = new RegExp(`^${prefijo}(\\d+)$`);
   return busintLista
-    .map((r) => ({ ref: String(r.ref || "").trim(), m: regex.exec(String(r.ref || "").trim()) }))
+    .map((r) => ({ ref: String(r.ref || "").trim(), m: regex.exec(normalizarRefComparacion(r.ref)) }))
     .filter((x) => x.m)
     .map((x) => ({ ref: x.ref, num: parseInt(x.m[1], 10) }))
-    .filter((x) => x.num >= base && x.num < base + 100)
+    .filter((x) => x.num >= inicio && x.num <= fin)
     .sort((a, b) => b.num - a.num)
     .slice(0, n)
     .map((x) => x.ref);
@@ -1097,7 +1155,7 @@ function useMaestroReferenciasBusint() {
       collection(db, "busint_referencias"),
       (snap) => {
         const lista = snap.docs.map((d) => d.data());
-        const set = new Set(lista.map((r) => String(r.ref || "").trim().toUpperCase()));
+        const set = new Set(lista.map((r) => normalizarRefComparacion(r.ref)));
         setEstado({ cargando: false, error: "", lista, set });
       },
       (err) => {
@@ -1114,10 +1172,10 @@ function useMaestroReferenciasBusint() {
 // verificar contra la bitácora de Busint lo que sea que esté hoy en el
 // campo Ref, venga de la sugerencia o escrita a mano.
 function SugerenciaYVerificacionRef({ sug, referencia, onUsar, busint, protos, capsulas }) {
-  const refNorm = String(referencia || "").trim().toUpperCase();
+  const refNorm = normalizarRefComparacion(referencia);
   const sugerencia = sug?.codigo || null;
   if (!sugerencia && !refNorm) return null;
-  const ultimas = sug ? ultimasReferenciasBusint(sug.prefijo, sug.segmento, busint.lista) : [];
+  const ultimas = sug ? ultimasReferenciasBusint(sug.prefijo, sug.rangoInicio, sug.rangoFin, busint.lista) : [];
   const enAtlas = refNorm ? buscarRefEnAtlas(refNorm, protos, capsulas) : null;
   return (
     <div style={{ padding: "10px 12px", background: T.canvas, borderRadius: 8, marginBottom: 12, border: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 6 }}>
@@ -1158,10 +1216,10 @@ function SugerenciaYVerificacionRef({ sug, referencia, onUsar, busint, protos, c
   );
 }
 function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
-  const [form, setForm] = useState({ name: "", categoria: "", silueta: "", rango: "", reference: "", assignedTo: "", cliente: "", mes: "", tipoTela: "", baseMolderia: "" });
+  const [form, setForm] = useState({ name: "", categoria: "", silueta: "", linea: "", rango: "", reference: "", assignedTo: "", cliente: "", mes: "", tipoTela: "", baseMolderia: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const busint = useMaestroReferenciasBusint();
-  const sug = sugerirReferencia(form.categoria, form.silueta, config, protos || [], capsulas || [], busint.lista);
+  const sug = sugerirReferencia(form.categoria, form.linea, config, protos || [], capsulas || [], busint.lista);
   function save() {
     if (!form.name || !form.reference) return;
     onSave({ id: uid(), ...form, status: "borrador", currentStage: "ilustracion", stageStartedAt: today(), createdAt: today(), promotedTo: null, image: null, bom: [], pom: [], observations: [] });
@@ -1175,8 +1233,11 @@ function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
         <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config.siluetas} /></Field>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        <Field label="Línea"><FSel value={form.linea} onChange={set("linea")} options={config.lineas} /></Field>
         <Field label="Rango"><FSel value={form.rango} onChange={set("rango")} options={config.rangos} /></Field>
         <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Mes"><FSel value={form.mes} onChange={set("mes")} options={MONTHS_ES} /></Field>
       </div>
       <SugerenciaYVerificacionRef sug={sug} referencia={form.reference} onUsar={() => set("reference")(sug.codigo)} busint={busint} protos={protos} capsulas={capsulas} />
@@ -1284,14 +1345,14 @@ function NewCapsulaModal({ onSave, onClose, config }) {
 }
 
 function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
-  const [form, setForm] = useState({ name: "", reference: "", assignedTo: "", categoria: "", silueta: "", rango: "", colores: "", tallas: "", tipoTela: "", baseMolderia: "" });
+  const [form, setForm] = useState({ name: "", reference: "", assignedTo: "", categoria: "", silueta: "", linea: "", rango: "", colores: "", tallas: "", tipoTela: "", baseMolderia: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const busint = useMaestroReferenciasBusint();
-  const sug = sugerirReferencia(form.categoria, form.silueta, config, protos || [], capsulas || [], busint.lista);
+  const sug = sugerirReferencia(form.categoria, form.linea, config, protos || [], capsulas || [], busint.lista);
   function save() {
     if (!form.name || !form.reference) return;
     onSave(capsula.id, {
-      id: uid(), name: form.name, reference: form.reference, categoria: form.categoria, silueta: form.silueta, rango: form.rango, fromProtoId: null, status: "borrador", currentStage: "ilustracion", stageStartedAt: today(), assignedTo: form.assignedTo, createdAt: today(), image: null, colores: form.colores ? [form.colores] : [], tallas: form.tallas ? [form.tallas] : [], tipoTela: form.tipoTela, baseMolderia: form.baseMolderia, bom: [], pom: [], approvals: [],
+      id: uid(), name: form.name, reference: form.reference, categoria: form.categoria, silueta: form.silueta, linea: form.linea, rango: form.rango, fromProtoId: null, status: "borrador", currentStage: "ilustracion", stageStartedAt: today(), assignedTo: form.assignedTo, createdAt: today(), image: null, colores: form.colores ? [form.colores] : [], tallas: form.tallas ? [form.tallas] : [], tipoTela: form.tipoTela, baseMolderia: form.baseMolderia, bom: [], pom: [], approvals: [],
       observations: [{ id: uid(), user: "Sistema", role: "Sistema", text: "Referencia creada.", date: nowISO(), type: "info", done: true }],
     });
     onClose();
@@ -1303,6 +1364,7 @@ function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
         <Field label="Categoría"><FSel value={form.categoria} onChange={set("categoria")} options={config.categorias} /></Field>
         <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config.siluetas} /></Field>
       </div>
+      <Field label="Línea"><FSel value={form.linea} onChange={set("linea")} options={config.lineas} /></Field>
       <SugerenciaYVerificacionRef sug={sug} referencia={form.reference} onUsar={() => set("reference")(sug.codigo)} busint={busint} protos={protos} capsulas={capsulas} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: CM-001" /></Field>
@@ -5414,8 +5476,15 @@ function ReferenciasNoEnBusintView({ protos, capsulas }) {
     let activo = true;
     getDocs(collection(db, "busint_referencias")).then((snap) => {
       if (!activo) return;
+      // Indexado SIN guion (ver normalizarRefComparacion) — así una ref de
+      // ATLAS con guion ("98-5609") sí reconoce que Busint ya la tiene
+      // aunque esté guardada sin guion ("985609").
       const mapa = {};
-      snap.docs.forEach((d) => { mapa[d.id] = d.data(); });
+      snap.docs.forEach((d) => {
+        const data = d.data();
+        const norm = normalizarRefComparacion(data.ref || d.id);
+        if (norm) mapa[norm] = data;
+      });
       setBusint(mapa);
     });
     return () => { activo = false; };
@@ -5429,8 +5498,7 @@ function ReferenciasNoEnBusintView({ protos, capsulas }) {
   function anotar(ref, createdAt, origen) {
     const codigo = String(ref || "").trim();
     if (!codigo) return;
-    const id = codigo.replace(/\//g, "_");
-    if (busint[id]?.actualizadoEn) return; // ya confirmada en Busint
+    if (busint[normalizarRefComparacion(codigo)]?.actualizadoEn) return; // ya confirmada en Busint
     items.push({ ref: codigo, createdAt: createdAt || "", origen });
   }
   (protos || []).forEach((p) => { if (!p.eliminado) anotar(p.reference, p.createdAt, "Prototipo"); });
@@ -5553,7 +5621,18 @@ function BusintSyncPanel() {
       const parser = new DOMParser();
       const existentes = await getDocs(collection(db, "busint_referencias"));
       const yaExisten = {};
-      existentes.docs.forEach((d) => { yaExisten[d.id] = d.data(); });
+      // Mapa adicional SIN guion — Busint a veces guarda el mismo código sin
+      // guion (ver normalizarRefComparacion). Sin esto, una fila del Excel
+      // con guion ("98-5609") no reconocería que ese REF ya existe en
+      // Firestore como "985609", y terminaría creando un documento
+      // duplicado en vez de completar el que ya había.
+      const yaExistenPorNormal = {};
+      existentes.docs.forEach((d) => {
+        const data = d.data();
+        yaExisten[d.id] = data;
+        const norm = normalizarRefComparacion(data.ref || d.id);
+        if (norm) yaExistenPorNormal[norm] = { id: d.id, data };
+      });
       // Acumulador combinado de TODOS los archivos subidos en esta pasada,
       // indexado por id (ref saneado) — si el mismo REF aparece en más de
       // un archivo, el último gana el texto pero no se pierde ninguna foto
@@ -5639,8 +5718,13 @@ function BusintSyncPanel() {
       // solo lo pone la sincronización real con Busint (Cloud Function), así
       // que sirve para saber con certeza si un REF YA está en Busint.
       const items = filas.map((f) => {
-        const id = f.ref.replace(/\//g, "_");
-        const previo = yaExisten[id] || {};
+        // Si ya existe un doc con este REF salvo el guion (p.ej. Busint lo
+        // tiene como "985609" y el Excel trae "98-5609"), se reutiliza ESE
+        // mismo id — así se completa el doc real en vez de crear uno nuevo
+        // y duplicado.
+        const coincidencia = yaExistenPorNormal[normalizarRefComparacion(f.ref)];
+        const id = coincidencia ? coincidencia.id : f.ref.replace(/\//g, "_");
+        const previo = coincidencia ? coincidencia.data : (yaExisten[id] || {});
         const item = { id, ref: previo.ref || f.ref };
         if (f.categoria && !previo.categoria) item.categoria = f.categoria;
         if (f.descripcion && !previo.descripcion) item.descripcion = f.descripcion;
@@ -5664,8 +5748,7 @@ function BusintSyncPanel() {
       // --- Comparación de 3 colores contra Busint (Busint = mando) ---
       const verde = [], amarillo = [], naranja = [];
       filas.forEach((f) => {
-        const id = f.ref.replace(/\//g, "_");
-        const previo = yaExisten[id];
+        const previo = yaExistenPorNormal[normalizarRefComparacion(f.ref)]?.data;
         const existeEnBusint = !!previo?.actualizadoEn;
         if (!existeEnBusint) {
           amarillo.push({ ref: f.ref, categoria: f.categoria, descripcion: f.descripcion, archivoOrigen: f.archivoOrigen });
@@ -5928,6 +6011,33 @@ function PapeleraView({ protos, capsulas, onRestaurarProto, onRestaurarCapsula, 
     </div>
   );
 }
+// Plantilla sugerida de Códigos de Referencia, a partir del cuadro real que
+// maneja Industrias Yanko (prefijo 98 = su fábrica / línea dama, incluye
+// Camisa y Siza Caballero porque se producen ahí mismo; 96 = Enterizos-
+// Vestidos "Reform"). Los bloques de 100 (Short Cachetero, Bicicletero,
+// Faldas, Capri, Leggins, Blusa Mangas, Siza, Top, Buso, Short) traen su
+// rango de desborde confirmado (+2000, ej. Faldas 201-299 pasa a 2200-2299
+// cuando se llena). Conjuntos/Enterizos-Vestidos (1000-1999) fue confirmado
+// tal cual. Camisa Caballero, Siza Caballero y Enterizos-Vestidos (Reform)
+// son un punto de partida razonable — no vinieron 100% confirmados, así que
+// quedan editables en esta misma pantalla (Eliminar + volver a Agregar con
+// el rango correcto) sin tocar nada de código.
+const PLANTILLA_CODIGOS_REFERENCIA = [
+  { categoria: "Short Cachetero", prefijo: "98", rangoInicio: 1, rangoFin: 99, desbordeInicio: 2000, desbordeFin: 2099 },
+  { categoria: "Bicicletero", prefijo: "98", rangoInicio: 101, rangoFin: 199, desbordeInicio: 2100, desbordeFin: 2199 },
+  { categoria: "Faldas", prefijo: "98", rangoInicio: 201, rangoFin: 299, desbordeInicio: 2200, desbordeFin: 2299 },
+  { categoria: "Capri", prefijo: "98", rangoInicio: 301, rangoFin: 399, desbordeInicio: 2300, desbordeFin: 2399 },
+  { categoria: "Leggins", prefijo: "98", rangoInicio: 401, rangoFin: 499, desbordeInicio: 2400, desbordeFin: 2499 },
+  { categoria: "Blusa Mangas", prefijo: "98", rangoInicio: 501, rangoFin: 599, desbordeInicio: 2500, desbordeFin: 2599 },
+  { categoria: "Siza", prefijo: "98", rangoInicio: 601, rangoFin: 699, desbordeInicio: 2600, desbordeFin: 2699 },
+  { categoria: "Top", prefijo: "98", rangoInicio: 701, rangoFin: 799, desbordeInicio: 2700, desbordeFin: 2799 },
+  { categoria: "Buso", prefijo: "98", rangoInicio: 801, rangoFin: 899, desbordeInicio: 2800, desbordeFin: 2899 },
+  { categoria: "Short", prefijo: "98", rangoInicio: 901, rangoFin: 999, desbordeInicio: 2900, desbordeFin: 2999 },
+  { categoria: "Conjuntos / Enterizos - Vestidos", prefijo: "98", rangoInicio: 1000, rangoFin: 1999, desbordeInicio: "", desbordeFin: "" },
+  { categoria: "Camisa Caballero", prefijo: "98", rangoInicio: 5001, rangoFin: 5999, desbordeInicio: "", desbordeFin: "" },
+  { categoria: "Siza Caballero", prefijo: "98", rangoInicio: 6001, rangoFin: 6999, desbordeInicio: "", desbordeFin: "" },
+  { categoria: "Enterizos - Vestidos (Reform)", prefijo: "96", rangoInicio: 1001, rangoFin: 1999, desbordeInicio: "", desbordeFin: "" },
+];
 function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula, onRestaurarProto, onRestaurarCapsula, onRestaurarRef, onPurgarProto, onPurgarCapsula, onPurgarRef, isAdmin }) {
   const [tab, setTab] = useState("etapas");
   const [newItem, setNewItem] = useState("");
@@ -6000,21 +6110,47 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // Corte, Ventas, Contabilidad, Planeación, etc.), por eso su permiso vive
   // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
   const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["kpis", "🎯 KPIs"], ["informes", "📋 Informes"]];
-  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["papelera", "🗑 Papelera"]];
-  const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", silueta: "", prefijo: "", segmento: "0" });
+  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["papelera", "🗑 Papelera"]];
+  const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
   function addCodigoReferencia() {
     const prefijo = nuevoCodigo.prefijo.trim();
-    if (!nuevoCodigo.categoria || !prefijo) return;
+    const rangoInicio = Number(nuevoCodigo.rangoInicio);
+    const rangoFin = Number(nuevoCodigo.rangoFin);
+    if (!nuevoCodigo.categoria || !prefijo || !rangoInicio || !rangoFin || rangoFin < rangoInicio) return;
     onUpdateConfig({
       codigosReferencia: [
         ...(config.codigosReferencia || []),
-        { id: uid(), categoria: nuevoCodigo.categoria, silueta: nuevoCodigo.silueta, prefijo, segmento: Math.max(0, Math.min(10, Number(nuevoCodigo.segmento) || 0)) },
+        {
+          id: uid(),
+          categoria: nuevoCodigo.categoria,
+          linea: nuevoCodigo.linea,
+          prefijo,
+          rangoInicio,
+          rangoFin,
+          desbordeInicio: nuevoCodigo.desbordeInicio === "" ? "" : Number(nuevoCodigo.desbordeInicio),
+          desbordeFin: nuevoCodigo.desbordeFin === "" ? "" : Number(nuevoCodigo.desbordeFin),
+        },
       ],
     });
-    setNuevoCodigo({ categoria: "", silueta: "", prefijo: "", segmento: "0" });
+    setNuevoCodigo({ categoria: "", linea: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
   }
   function removeCodigoReferencia(id) {
     onUpdateConfig({ codigosReferencia: (config.codigosReferencia || []).filter((c) => c.id !== id) });
+  }
+  // Carga de un solo clic la plantilla sugerida (ver PLANTILLA_CODIGOS_REFERENCIA)
+  // — agrega también a config.categorias cualquier nombre de categoría que
+  // todavía no exista, para que el selector de "Nueva Referencia"/"Nuevo
+  // Prototipo" (que solo ofrece nombres de config.categorias) pueda
+  // encontrarlas. No duplica filas si ya existe una entrada con la misma
+  // categoría (y sin línea) — para reemplazar una, elimínala primero.
+  function cargarPlantillaCodigos() {
+    const existentes = new Set((config.codigosReferencia || []).filter((c) => !c.linea).map((c) => c.categoria));
+    const nuevasFilas = PLANTILLA_CODIGOS_REFERENCIA.filter((p) => !existentes.has(p.categoria)).map((p) => ({ id: uid(), linea: "", ...p }));
+    const categoriasFaltantes = PLANTILLA_CODIGOS_REFERENCIA.map((p) => p.categoria).filter((c) => !(config.categorias || []).includes(c));
+    onUpdateConfig({
+      categorias: [...(config.categorias || []), ...categoriasFaltantes],
+      codigosReferencia: [...(config.codigosReferencia || []), ...nuevasFilas],
+    });
   }
   function ListEditor({ listKey, title }) {
     return (
@@ -6086,47 +6222,70 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
         )}
         {tab === "categorias" && <ListEditor listKey="categorias" title="Categorías" />}
         {tab === "siluetas" && <ListEditor listKey="siluetas" title="Siluetas" />}
+        {tab === "lineas" && <ListEditor listKey="lineas" title="Línea" />}
         {tab === "rangos" && <ListEditor listKey="rangos" title="Rangos" />}
         {tab === "codigos_referencia" && (
           <div>
             <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Códigos de Referencia</div>
             <div style={{ fontSize: 12.5, color: T.slate, marginBottom: 16 }}>
-              Cada fila amarra una Categoría (y opcionalmente una Silueta puntual) a un prefijo de 2 dígitos y un segmento (0 al 10). Con esto, ATLAS sugiere solo el consecutivo — nunca se reinicia y nunca se repite.
+              Cada fila amarra una Categoría (y opcionalmente una Línea puntual, ej. Básica/Premium) a un prefijo y un rango de números (ej. 201 a 299). El "Desborde" es opcional: si el rango principal se llena, ATLAS sigue ahí solo, sin invadir el rango de la categoría vecina. Con esto, ATLAS sugiere el consecutivo — nunca se reinicia y nunca se repite.
             </div>
             <BusintSyncPanel />
             <ReferenciasNoEnBusintView protos={protos} capsulas={capsulas} />
-            <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1.3fr 0.8fr 0.7fr auto", gap: 8, marginBottom: 20, alignItems: "end" }}>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+              <Btn variant="secondary" onClick={cargarPlantillaCodigos}>📋 Cargar plantilla sugerida (98 dama/fábrica + 96 Reform)</Btn>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr 0.6fr 0.8fr 0.9fr auto", gap: 8, marginBottom: 8, alignItems: "end" }}>
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Categoría</div>
                 <FSel value={nuevoCodigo.categoria} onChange={(v) => setNuevoCodigo((f) => ({ ...f, categoria: v }))} options={config.categorias} />
               </div>
               <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Silueta (opcional)</div>
-                <FSel value={nuevoCodigo.silueta} onChange={(v) => setNuevoCodigo((f) => ({ ...f, silueta: v }))} options={config.siluetas} />
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Línea (opcional)</div>
+                <FSel value={nuevoCodigo.linea} onChange={(v) => setNuevoCodigo((f) => ({ ...f, linea: v }))} options={config.lineas} />
               </div>
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Prefijo</div>
                 <input value={nuevoCodigo.prefijo} onChange={(e) => setNuevoCodigo((f) => ({ ...f, prefijo: e.target.value }))} placeholder="Ej: 98" maxLength={4} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
               </div>
               <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Segmento (0-10)</div>
-                <input type="number" min={0} max={10} value={nuevoCodigo.segmento} onChange={(e) => setNuevoCodigo((f) => ({ ...f, segmento: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Rango (inicio - fin)</div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <input type="number" min={0} placeholder="201" value={nuevoCodigo.rangoInicio} onChange={(e) => setNuevoCodigo((f) => ({ ...f, rangoInicio: e.target.value }))} style={{ width: "100%", padding: "9px 8px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+                  <input type="number" min={0} placeholder="299" value={nuevoCodigo.rangoFin} onChange={(e) => setNuevoCodigo((f) => ({ ...f, rangoFin: e.target.value }))} style={{ width: "100%", padding: "9px 8px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Desborde (opcional)</div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <input type="number" min={0} placeholder="2200" value={nuevoCodigo.desbordeInicio} onChange={(e) => setNuevoCodigo((f) => ({ ...f, desbordeInicio: e.target.value }))} style={{ width: "100%", padding: "9px 8px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+                  <input type="number" min={0} placeholder="2299" value={nuevoCodigo.desbordeFin} onChange={(e) => setNuevoCodigo((f) => ({ ...f, desbordeFin: e.target.value }))} style={{ width: "100%", padding: "9px 8px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+                </div>
               </div>
               <Btn onClick={addCodigoReferencia}>+ Agregar</Btn>
             </div>
+            <div style={{ fontSize: 11, color: T.slate, marginBottom: 16, fontStyle: "italic" }}>El Desborde es opcional — déjalo vacío si esa categoría no necesita una "segunda vuelta" cuando se llene su rango principal.</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {(config.codigosReferencia || []).length === 0 && (
                 <div style={{ fontSize: 13, color: T.slate, fontStyle: "italic" }}>Aún no hay códigos registrados.</div>
               )}
               {(config.codigosReferencia || []).map((c) => {
-                const base = (Number(c.segmento) || 0) * 100;
-                const rango = `${c.prefijo}-${String(base + 1).padStart(3, "0")} a ${c.prefijo}-${String(base + 99).padStart(3, "0")}`;
+                // Compatibilidad con filas viejas (solo "segmento") — ver
+                // sugerirReferencia() para la misma regla de respaldo.
+                const tieneRango = c.rangoInicio != null && c.rangoInicio !== "";
+                const baseVieja = (Number(c.segmento) || 0) * 100;
+                const rIni = tieneRango ? c.rangoInicio : baseVieja + 1;
+                const rFin = tieneRango ? c.rangoFin : baseVieja + 99;
+                const rango = `${c.prefijo}-${String(rIni).padStart(3, "0")} a ${c.prefijo}-${String(rFin).padStart(3, "0")}`;
+                const tieneDesborde = c.desbordeInicio !== "" && c.desbordeInicio != null && c.desbordeFin !== "" && c.desbordeFin != null;
+                const rangoDesborde = tieneDesborde ? `${c.prefijo}-${String(c.desbordeInicio).padStart(3, "0")} a ${c.prefijo}-${String(c.desbordeFin).padStart(3, "0")}` : null;
                 return (
                   <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: T.canvas, borderRadius: 8, border: `1px solid ${T.border}` }}>
                     <div>
                       <span style={{ fontSize: 14, fontWeight: 700, color: T.ink }}>{c.categoria}</span>
-                      {c.silueta && <span style={{ fontSize: 12, color: T.slate, marginLeft: 8 }}>· {c.silueta}</span>}
+                      {c.linea && <span style={{ fontSize: 12, color: T.slate, marginLeft: 8 }}>· {c.linea}</span>}
                       <span style={{ fontSize: 12, color: T.denim, marginLeft: 10, fontWeight: 600 }}>{rango}</span>
+                      {tieneDesborde && <span style={{ fontSize: 12, color: T.amber, marginLeft: 10, fontWeight: 600 }}>· si se llena, sigue en {rangoDesborde}</span>}
                     </div>
                     <button onClick={() => removeCodigoReferencia(c.id)} style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "4px 10px", color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Eliminar</button>
                   </div>
