@@ -661,19 +661,21 @@ function nowISO() { return new Date().toISOString(); }
 // vivas o históricas) con ese mismo prefijo-segmento y sigue desde la más
 // alta encontrada, no desde las que existen hoy en pantalla.
 // Encuentra en config.codigosReferencia la entrada que amarra esta
-// categoria(+línea) a un prefijo/rango — exacta primero, luego la que
-// aplica a toda la categoría (línea vacía). "Línea" acá es Dama/Caballero
-// (config.lineas), el mismo criterio que usa Busint — distinta de Silueta
-// (Slimfit/Oversize/etc., que sigue siendo un atributo aparte del
-// prototipo/referencia).
-function buscarEntradaCodigoReferencia(categoria, linea, config) {
-  const catalogo = config?.codigosReferencia || [];
+// categoria(+línea)(+cliente) a un prefijo/rango. El prefijo puede depender
+// del cliente (cada cliente puede tener su propio rango de números), así
+// que primero se descartan las filas que tengan Línea o Cliente puntuales
+// que NO coincidan con lo buscado (esas son de otra línea/otro cliente), y
+// entre las que quedan gana la más específica: Cliente+Línea > Cliente >
+// Línea > genérica (sin línea ni cliente, aplica a toda la categoría).
+function buscarEntradaCodigoReferencia(categoria, linea, cliente, config) {
+  const catalogo = (config?.codigosReferencia || []).filter((c) => c.categoria === categoria);
   if (!categoria || catalogo.length === 0) return null;
-  return (
-    catalogo.find((c) => c.categoria === categoria && c.linea && c.linea === linea) ||
-    catalogo.find((c) => c.categoria === categoria && !c.linea) ||
-    null
+  const candidatas = catalogo.filter(
+    (c) => (!c.cliente || c.cliente === cliente) && (!c.linea || c.linea === linea)
   );
+  if (candidatas.length === 0) return null;
+  const especificidad = (c) => (c.cliente ? 2 : 0) + (c.linea ? 1 : 0);
+  return candidatas.reduce((mejor, c) => (especificidad(c) > especificidad(mejor) ? c : mejor), candidatas[0]);
 }
 // Compara/busca referencias IGNORANDO el guion — Busint a veces guarda o
 // devuelve el mismo código SIN guion (ej. "985609" en vez de "98-5609"),
@@ -721,8 +723,8 @@ function numerosEnRango(prefijo, inicio, fin, ...listasDeRefs) {
 // como "segunda vuelta" de Faldas una vez se agota 98-201 a 98-299), la
 // sugerencia salta automáticamente a ese rango de desborde en vez de
 // invadir el bloque de la categoría vecina.
-function sugerirReferencia(categoria, linea, config, protos, capsulas, busintLista) {
-  const entrada = buscarEntradaCodigoReferencia(categoria, linea, config);
+function sugerirReferencia(categoria, linea, cliente, config, protos, capsulas, busintLista) {
+  const entrada = buscarEntradaCodigoReferencia(categoria, linea, cliente, config);
   if (!entrada || !entrada.prefijo) return null;
   const prefijo = String(entrada.prefijo).trim();
   // Compatibilidad con filas creadas ANTES de este cambio (solo tenían
@@ -1222,7 +1224,7 @@ function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
   const [form, setForm] = useState({ name: "", categoria: "", silueta: "", linea: "", rango: "", reference: "", assignedTo: "", cliente: "", mes: "", tipoTela: "", baseMolderia: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const busint = useMaestroReferenciasBusint();
-  const sug = sugerirReferencia(form.categoria, form.linea, config, protos || [], capsulas || [], busint.lista);
+  const sug = sugerirReferencia(form.categoria, form.linea, form.cliente, config, protos || [], capsulas || [], busint.lista);
   function save() {
     if (!form.name || !form.reference) return;
     onSave({ id: uid(), ...form, status: "borrador", currentStage: "ilustracion", stageStartedAt: today(), createdAt: today(), promotedTo: null, image: null, bom: [], pom: [], observations: [] });
@@ -1351,7 +1353,10 @@ function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
   const [form, setForm] = useState({ name: "", reference: "", assignedTo: "", categoria: "", silueta: "", linea: "", rango: "", colores: "", tallas: "", tipoTela: "", baseMolderia: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const busint = useMaestroReferenciasBusint();
-  const sug = sugerirReferencia(form.categoria, form.linea, config, protos || [], capsulas || [], busint.lista);
+  // OJO: en este formulario el campo "Cliente" en pantalla se guarda bajo
+  // form.colores (así venía de antes) — se usa igual acá para que el
+  // consecutivo sugerido también tenga en cuenta el cliente.
+  const sug = sugerirReferencia(form.categoria, form.linea, form.colores, config, protos || [], capsulas || [], busint.lista);
   function save() {
     if (!form.name || !form.reference) return;
     onSave(capsula.id, {
@@ -6149,7 +6154,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
   const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["kpis", "🎯 KPIs"], ["informes", "📋 Informes"]];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["papelera", "🗑 Papelera"]];
-  const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
+  const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
   function addCodigoReferencia() {
     const prefijo = nuevoCodigo.prefijo.trim();
     const rangoInicio = Number(nuevoCodigo.rangoInicio);
@@ -6162,6 +6167,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
           id: uid(),
           categoria: nuevoCodigo.categoria,
           linea: nuevoCodigo.linea,
+          cliente: nuevoCodigo.cliente,
           prefijo,
           rangoInicio,
           rangoFin,
@@ -6170,7 +6176,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
         },
       ],
     });
-    setNuevoCodigo({ categoria: "", linea: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
+    setNuevoCodigo({ categoria: "", linea: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
   }
   function removeCodigoReferencia(id) {
     onUpdateConfig({ codigosReferencia: (config.codigosReferencia || []).filter((c) => c.id !== id) });
@@ -6180,10 +6186,12 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // todavía no exista, para que el selector de "Nueva Referencia"/"Nuevo
   // Prototipo" (que solo ofrece nombres de config.categorias) pueda
   // encontrarlas. No duplica filas si ya existe una entrada con la misma
-  // categoría (y sin línea) — para reemplazar una, elimínala primero.
+  // categoría (sin línea ni cliente) — para reemplazar una, elimínala primero.
+  // La plantilla no trae Cliente asignado (aplica a cualquiera por defecto)
+  // — si un cliente puntual necesita su propio rango, agrégalo aparte acá.
   function cargarPlantillaCodigos() {
-    const existentes = new Set((config.codigosReferencia || []).filter((c) => !c.linea).map((c) => c.categoria));
-    const nuevasFilas = PLANTILLA_CODIGOS_REFERENCIA.filter((p) => !existentes.has(p.categoria)).map((p) => ({ id: uid(), linea: "", ...p }));
+    const existentes = new Set((config.codigosReferencia || []).filter((c) => !c.linea && !c.cliente).map((c) => c.categoria));
+    const nuevasFilas = PLANTILLA_CODIGOS_REFERENCIA.filter((p) => !existentes.has(p.categoria)).map((p) => ({ id: uid(), linea: "", cliente: "", ...p }));
     const categoriasFaltantes = PLANTILLA_CODIGOS_REFERENCIA.map((p) => p.categoria).filter((c) => !(config.categorias || []).includes(c));
     onUpdateConfig({
       categorias: [...(config.categorias || []), ...categoriasFaltantes],
@@ -6271,7 +6279,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
           <div>
             <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Códigos de Referencia</div>
             <div style={{ fontSize: 12.5, color: T.slate, marginBottom: 16 }}>
-              Cada fila amarra una Categoría (y opcionalmente una Línea puntual, Dama o Caballero) a un prefijo y un rango de números (ej. 201 a 299). El "Desborde" es opcional: si el rango principal se llena, ATLAS sigue ahí solo, sin invadir el rango de la categoría vecina. Con esto, ATLAS sugiere el consecutivo — nunca se reinicia y nunca se repite.
+              Cada fila amarra una Categoría (y opcionalmente una Línea puntual y/o un Cliente puntual, si ese cliente tiene su propio rango) a un prefijo y un rango de números (ej. 201 a 299). El "Desborde" es opcional: si el rango principal se llena, ATLAS sigue ahí solo, sin invadir el rango de la categoría vecina. Con esto, ATLAS sugiere el consecutivo — nunca se reinicia y nunca se repite.
             </div>
             <BusintSyncPanel />
             <ReferenciasNoEnBusintView protos={protos} capsulas={capsulas} />
@@ -6279,7 +6287,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
               <SincronizarLineasBusintBtn config={config} onUpdateConfig={onUpdateConfig} />
               <Btn variant="secondary" onClick={cargarPlantillaCodigos}>📋 Cargar plantilla sugerida (98 dama/fábrica + 96 Reform)</Btn>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr 0.6fr 0.8fr 0.9fr auto", gap: 8, marginBottom: 8, alignItems: "end" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Categoría</div>
                 <FSel value={nuevoCodigo.categoria} onChange={(v) => setNuevoCodigo((f) => ({ ...f, categoria: v }))} options={config.categorias} />
@@ -6288,6 +6296,12 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                 <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Línea (opcional)</div>
                 <FSel value={nuevoCodigo.linea} onChange={(v) => setNuevoCodigo((f) => ({ ...f, linea: v }))} options={config.lineas} />
               </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Cliente (opcional)</div>
+                <FSel value={nuevoCodigo.cliente} onChange={(v) => setNuevoCodigo((f) => ({ ...f, cliente: v }))} options={(config.clientes || []).map((c) => c.nombre)} />
+              </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "0.6fr 0.9fr 0.9fr auto", gap: 8, marginBottom: 8, alignItems: "end" }}>
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Prefijo</div>
                 <input value={nuevoCodigo.prefijo} onChange={(e) => setNuevoCodigo((f) => ({ ...f, prefijo: e.target.value }))} placeholder="Ej: 98" maxLength={4} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
@@ -6308,7 +6322,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
               </div>
               <Btn onClick={addCodigoReferencia}>+ Agregar</Btn>
             </div>
-            <div style={{ fontSize: 11, color: T.slate, marginBottom: 16, fontStyle: "italic" }}>El Desborde es opcional — déjalo vacío si esa categoría no necesita una "segunda vuelta" cuando se llene su rango principal.</div>
+            <div style={{ fontSize: 11, color: T.slate, marginBottom: 16, fontStyle: "italic" }}>Línea, Cliente y Desborde son opcionales — déjalos vacíos si esa categoría aplica a cualquier línea/cliente, o no necesita una "segunda vuelta" cuando se llene su rango principal.</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {(config.codigosReferencia || []).length === 0 && (
                 <div style={{ fontSize: 13, color: T.slate, fontStyle: "italic" }}>Aún no hay códigos registrados.</div>
@@ -6328,6 +6342,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                     <div>
                       <span style={{ fontSize: 14, fontWeight: 700, color: T.ink }}>{c.categoria}</span>
                       {c.linea && <span style={{ fontSize: 12, color: T.slate, marginLeft: 8 }}>· {c.linea}</span>}
+                      {c.cliente && <span style={{ fontSize: 12, color: T.violet, marginLeft: 8, fontWeight: 600 }}>· {c.cliente}</span>}
                       <span style={{ fontSize: 12, color: T.denim, marginLeft: 10, fontWeight: 600 }}>{rango}</span>
                       {tieneDesborde && <span style={{ fontSize: 12, color: T.amber, marginLeft: 10, fontWeight: 600 }}>· si se llena, sigue en {rangoDesborde}</span>}
                     </div>
