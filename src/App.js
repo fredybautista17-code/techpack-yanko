@@ -5399,6 +5399,94 @@ async function extraerImagenesDeHoja(zip, sheetPath, parser) {
   }
   return mapa;
 }
+// Lista de referencias creadas dentro de ATLAS (prototipos + referencias de
+// cápsulas) que TODAVÍA no están confirmadas en Busint — para que el equipo
+// sepa cuáles hay que dar de alta allá antes de que alguien, trabajando
+// directo en Busint (sin pasar por ATLAS), reutilice por accidente ese
+// mismo número de consecutivo. "Confirmada en Busint" = el doc en
+// busint_referencias tiene el campo `actualizadoEn`, que SOLO lo pone una
+// sincronización real con Busint (ver guardarReferenciasBusintEnFirestore
+// en functions/index.js) — si el doc no existe, o existe solo por un
+// import manual de Excel (sin actualizadoEn), se cuenta como pendiente.
+function ReferenciasNoEnBusintView({ protos, capsulas }) {
+  const [busint, setBusint] = useState(null); // null = todavía cargando
+  useEffect(() => {
+    let activo = true;
+    getDocs(collection(db, "busint_referencias")).then((snap) => {
+      if (!activo) return;
+      const mapa = {};
+      snap.docs.forEach((d) => { mapa[d.id] = d.data(); });
+      setBusint(mapa);
+    });
+    return () => { activo = false; };
+  }, []);
+
+  if (busint === null) {
+    return <div style={{ fontSize: 12.5, color: T.slate, padding: "10px 14px" }}>Revisando bitácora de Busint...</div>;
+  }
+
+  const items = [];
+  function anotar(ref, createdAt, origen) {
+    const codigo = String(ref || "").trim();
+    if (!codigo) return;
+    const id = codigo.replace(/\//g, "_");
+    if (busint[id]?.actualizadoEn) return; // ya confirmada en Busint
+    items.push({ ref: codigo, createdAt: createdAt || "", origen });
+  }
+  (protos || []).forEach((p) => { if (!p.eliminado) anotar(p.reference, p.createdAt, "Prototipo"); });
+  (capsulas || []).forEach((c) => {
+    if (c.eliminado) return;
+    (c.referencias || []).forEach((r) => { if (!r.eliminado) anotar(r.reference, r.createdAt, `Cápsula: ${c.name || ""}`); });
+  });
+  // Si la misma ref aparece en más de un lugar, se queda solo la más
+  // antigua (la que más urge revisar).
+  const porRef = new Map();
+  items.forEach((it) => {
+    const previo = porRef.get(it.ref);
+    if (!previo || (it.createdAt && it.createdAt < previo.createdAt)) porRef.set(it.ref, it);
+  });
+  const pendientes = [...porRef.values()].sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+
+  function diasDesde(fechaISO) {
+    if (!fechaISO) return null;
+    const dias = Math.floor((Date.now() - new Date(fechaISO).getTime()) / 86400000);
+    return Number.isFinite(dias) ? dias : null;
+  }
+
+  return (
+    <div style={{ padding: "10px 14px", background: pendientes.length ? T.amberBg : T.jadeBg, border: `1px solid ${T.border}`, borderRadius: 8, marginBottom: 20 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: pendientes.length ? T.amber : T.jade, marginBottom: pendientes.length ? 8 : 0 }}>
+        {pendientes.length ? `⚠ ${pendientes.length} referencia(s) creadas en ATLAS que aún no están confirmadas en Busint` : "✓ Todas las referencias de ATLAS ya están confirmadas en Busint"}
+      </div>
+      {pendientes.length > 0 && (
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr style={{ textAlign: "left", borderBottom: `1px solid ${T.border}` }}>
+              <th style={{ padding: "4px 8px" }}>Ref</th>
+              <th style={{ padding: "4px 8px" }}>Origen</th>
+              <th style={{ padding: "4px 8px" }}>Creada</th>
+              <th style={{ padding: "4px 8px" }}>Días</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pendientes.map((p) => {
+              const dias = diasDesde(p.createdAt);
+              const urgente = dias != null && dias >= 3;
+              return (
+                <tr key={p.ref} style={{ borderBottom: `1px solid ${T.border}` }}>
+                  <td style={{ padding: "4px 8px", fontWeight: 700, color: T.ink }}>{p.ref}</td>
+                  <td style={{ padding: "4px 8px", color: T.slate }}>{p.origen}</td>
+                  <td style={{ padding: "4px 8px", color: T.slate }}>{p.createdAt || "—"}</td>
+                  <td style={{ padding: "4px 8px", color: urgente ? T.coral : T.slate, fontWeight: urgente ? 700 : 400 }}>{dias != null ? dias : "—"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
 function BusintSyncPanel() {
   const [meta, setMeta] = useState(null);
   const [sincronizando, setSincronizando] = useState(false);
@@ -5484,21 +5572,40 @@ function BusintSyncPanel() {
           // Busca la fila de encabezados (la que trae una celda "REF") —
           // ignora la fila de título de arriba (p.ej. "PIJAMAS DAMA - KAMILA").
           let idxEncabezado = -1;
-          let colIdx = {};
+          let normalizadaEncabezado = [];
           for (let i = 0; i < aoa.length; i++) {
             const normalizada = (aoa[i] || []).map(normalizarEncabezado);
             if (normalizada.indexOf("REF") !== -1) {
               idxEncabezado = i;
-              normalizada.forEach((h, j) => { colIdx[h] = j; });
+              normalizadaEncabezado = normalizada;
               break;
             }
           }
           if (idxEncabezado === -1) continue; // hoja sin formato reconocible
           hojasUsadas++;
+          // Busca por PALABRA CLAVE (no coincidencia exacta) — así reconoce
+          // tanto un encabezado corto ("RANGO", "LINEA") como uno largo con
+          // aclaración entre paréntesis ("SUBCATEGORÍA (RANGO/EXTENSIÓN)",
+          // "LINEA (BASICO/PREMIUM)"), que es como vienen los archivos reales
+          // de Kamila.
+          const idxPorPalabra = (...palabras) => normalizadaEncabezado.findIndex((h) => palabras.some((p) => h.includes(p)));
+          const idxRef = normalizadaEncabezado.indexOf("REF");
+          const idxCategoria = idxPorPalabra("CATEGORIA");
+          const idxDescripcion = idxPorPalabra("DESCRIPCION");
+          const idxTela = idxPorPalabra("TELA");
+          const idxSilueta = idxPorPalabra("SILUETA", "CONFECCION");
+          const idxSubcategoria = idxPorPalabra("SUBCATEGORIA", "RANGO");
+          // OJO: "LINEA" en los archivos manuales de Kamila significa
+          // básica/premium (nivel de producto) — es un concepto DISTINTO del
+          // campo "linea" que trae Busint (que en Busint es hombre/dama). Se
+          // guardan en campos separados (lineaProducto vs. linea) para no
+          // mezclarlos.
+          const idxLinea = idxPorPalabra("LINEA");
+          const idxBase = idxPorPalabra("BASE");
           const imagenesFila = rutasHojas[sIdx] ? await extraerImagenesDeHoja(zip, rutasHojas[sIdx], parser) : {};
           for (let i = idxEncabezado + 1; i < aoa.length; i++) {
             const fila = aoa[i] || [];
-            const ref = String(fila[colIdx["REF"]] ?? "").trim();
+            const ref = idxRef !== -1 ? String(fila[idxRef] ?? "").trim() : "";
             if (!ref) { filasSinRef++; continue; }
             const limpiar = (v) => String(v ?? "").replace(/\r?\n/g, " ").trim();
             const id = ref.replace(/\//g, "_");
@@ -5506,10 +5613,13 @@ function BusintSyncPanel() {
             if (foto) fotosArchivo++;
             combinado[id] = {
               ref,
-              categoria: colIdx["CATEGORIA"] !== undefined ? limpiar(fila[colIdx["CATEGORIA"]]) : "",
-              descripcion: colIdx["DESCRIPCION"] !== undefined ? limpiar(fila[colIdx["DESCRIPCION"]]) : "",
-              tela: colIdx["TELA"] !== undefined ? limpiar(fila[colIdx["TELA"]]) : "",
-              subcategoria: colIdx["RANGO"] !== undefined ? limpiar(fila[colIdx["RANGO"]]) : "",
+              categoria: idxCategoria !== -1 ? limpiar(fila[idxCategoria]) : "",
+              descripcion: idxDescripcion !== -1 ? limpiar(fila[idxDescripcion]) : "",
+              tela: idxTela !== -1 ? limpiar(fila[idxTela]) : "",
+              tipoConfeccion: idxSilueta !== -1 ? limpiar(fila[idxSilueta]) : "",
+              subcategoria: idxSubcategoria !== -1 ? limpiar(fila[idxSubcategoria]) : "",
+              lineaProducto: idxLinea !== -1 ? limpiar(fila[idxLinea]) : "",
+              base: idxBase !== -1 ? limpiar(fila[idxBase]) : "",
               foto: foto || combinado[id]?.foto || null,
               archivoOrigen: file.name,
             };
@@ -5535,7 +5645,13 @@ function BusintSyncPanel() {
         if (f.categoria && !previo.categoria) item.categoria = f.categoria;
         if (f.descripcion && !previo.descripcion) item.descripcion = f.descripcion;
         if (f.subcategoria && !previo.subcategoria) item.subcategoria = f.subcategoria;
+        if (f.tipoConfeccion && !previo.tipoConfeccion) item.tipoConfeccion = f.tipoConfeccion;
         if (f.tela) item.tela = f.tela; // Busint no expone tela — la del Excel manda
+        if (f.base && !previo.base) item.base = f.base; // Busint no expone base — la del Excel manda
+        // lineaProducto (básica/premium, de tus archivos) es un campo
+        // aparte de "linea" (hombre/dama, el que trae Busint) — nunca se
+        // pisan entre sí.
+        if (f.lineaProducto && !previo.lineaProducto) item.lineaProducto = f.lineaProducto;
         if (f.foto && !previo.foto) item.foto = f.foto;
         if (!previo.origen && !previo.actualizadoEn) { item.origen = "bitacora_excel"; item.origenArchivo = f.archivoOrigen; item.importadoEn = new Date().toISOString(); }
         return item;
@@ -5978,6 +6094,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
               Cada fila amarra una Categoría (y opcionalmente una Silueta puntual) a un prefijo de 2 dígitos y un segmento (0 al 10). Con esto, ATLAS sugiere solo el consecutivo — nunca se reinicia y nunca se repite.
             </div>
             <BusintSyncPanel />
+            <ReferenciasNoEnBusintView protos={protos} capsulas={capsulas} />
             <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1.3fr 0.8fr 0.7fr auto", gap: 8, marginBottom: 20, alignItems: "end" }}>
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Categoría</div>
