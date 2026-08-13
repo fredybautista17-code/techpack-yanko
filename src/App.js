@@ -5673,12 +5673,12 @@ function BusintSyncPanel() {
           const idxTela = idxPorPalabra("TELA");
           const idxSilueta = idxPorPalabra("SILUETA", "CONFECCION");
           const idxSubcategoria = idxPorPalabra("SUBCATEGORIA", "RANGO");
-          // OJO: "LINEA" en los archivos manuales de Kamila significa
-          // básica/premium (nivel de producto) — es un concepto DISTINTO del
-          // campo "linea" que trae Busint (que en Busint es hombre/dama). Se
-          // guardan en campos separados (lineaProducto vs. linea) para no
-          // mezclarlos.
-          const idxLinea = idxPorPalabra("LINEA");
+          // OJO: la columna "LINEA" de los archivos manuales de Kamila
+          // significa básica/premium — es un concepto DISTINTO de "Línea"
+          // en ATLAS (que es Dama/Caballero, igual que Busint) y también
+          // distinto del campo "linea" que trae Busint (hombre/dama). Para
+          // no mezclarlos, este dato se guarda como "nivel" (básica/premium).
+          const idxNivel = idxPorPalabra("LINEA");
           const idxBase = idxPorPalabra("BASE");
           const imagenesFila = rutasHojas[sIdx] ? await extraerImagenesDeHoja(zip, rutasHojas[sIdx], parser) : {};
           for (let i = idxEncabezado + 1; i < aoa.length; i++) {
@@ -5696,7 +5696,7 @@ function BusintSyncPanel() {
               tela: idxTela !== -1 ? limpiar(fila[idxTela]) : "",
               tipoConfeccion: idxSilueta !== -1 ? limpiar(fila[idxSilueta]) : "",
               subcategoria: idxSubcategoria !== -1 ? limpiar(fila[idxSubcategoria]) : "",
-              lineaProducto: idxLinea !== -1 ? limpiar(fila[idxLinea]) : "",
+              nivel: idxNivel !== -1 ? limpiar(fila[idxNivel]) : "",
               base: idxBase !== -1 ? limpiar(fila[idxBase]) : "",
               foto: foto || combinado[id]?.foto || null,
               archivoOrigen: file.name,
@@ -5731,10 +5731,10 @@ function BusintSyncPanel() {
         if (f.tipoConfeccion && !previo.tipoConfeccion) item.tipoConfeccion = f.tipoConfeccion;
         if (f.tela) item.tela = f.tela; // Busint no expone tela — la del Excel manda
         if (f.base && !previo.base) item.base = f.base; // Busint no expone base — la del Excel manda
-        // lineaProducto (básica/premium, de tus archivos) es un campo
-        // aparte de "linea" (hombre/dama, el que trae Busint) — nunca se
-        // pisan entre sí.
-        if (f.lineaProducto && !previo.lineaProducto) item.lineaProducto = f.lineaProducto;
+        // nivel (básica/premium, de tus archivos) es un campo aparte de
+        // "Línea" (Dama/Caballero) y de "linea" (hombre/dama, el que trae
+        // Busint) — nunca se pisan entre sí.
+        if (f.nivel && !previo.nivel) item.nivel = f.nivel;
         if (f.foto && !previo.foto) item.foto = f.foto;
         if (!previo.origen && !previo.actualizadoEn) { item.origen = "bitacora_excel"; item.origenArchivo = f.archivoOrigen; item.importadoEn = new Date().toISOString(); }
         return item;
