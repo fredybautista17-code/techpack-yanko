@@ -528,12 +528,16 @@ const INIT_CONFIG = {
   categorias: ["Cachetero","Byker","Capry","Leggins","Camiseta","Sisa","Top","Buso","Short","Enterizo","Body","Conjunto","Vestido","Blusa","Pantaloneta","Jogger","Traje de Baño","Bóxer","Pantys"],
   siluetas: ["Slimfit","Regularfit","Silueta Amplia","Oversize","Super Oversize","Estándar"],
   rangos: ["Normal (S,M,L,XL)","Doble Talla (S/M - M/L)","Talla U","Plus","Plus (1XL-2XL-3XL)"],
-  // Línea del producto (Dama/Caballero) — mismo criterio que usa Busint,
-  // distinta de Silueta (que es el corte: Slimfit, Oversize, etc.). Se usa
-  // como el criterio opcional para amarrar una Categoría a un prefijo/rango
-  // distinto en Códigos de Referencia — ej. la misma categoría podría tener
-  // un bloque de números para Dama y otro para Caballero.
-  lineas: ["Dama", "Caballero"],
+  // Línea del producto — mismo campo "linea" que trae Busint, distinta de
+  // Silueta (que es el corte: Slimfit, Oversize, etc.). OJO: en Busint esto
+  // NO son solo "Dama"/"Caballero" — son códigos compuestos reales, ej.
+  // "INFAN FEME BASICO" (Infantil Femenino Básico). Por eso no se adivinan
+  // acá: se quedan vacías por defecto y se llenan con el botón "🔄 Cargar
+  // líneas reales desde Busint" en Administración → Códigos de Referencia,
+  // que lee los valores tal cual vienen de la bitácora ya sincronizada. Se
+  // usa como criterio opcional para amarrar una Categoría a un
+  // prefijo/rango distinto en Códigos de Referencia.
+  lineas: [],
   disenadores: [],
   // Catálogo de codificación de referencias: cada entrada amarra una
   // Categoría (y opcionalmente una Silueta puntual) a un prefijo y un rango
@@ -6037,6 +6041,41 @@ const PLANTILLA_CODIGOS_REFERENCIA = [
   { categoria: "Siza Caballero", prefijo: "98", rangoInicio: 6001, rangoFin: 6999, desbordeInicio: "", desbordeFin: "" },
   { categoria: "Enterizos - Vestidos (Reform)", prefijo: "96", rangoInicio: 1001, rangoFin: 1999, desbordeInicio: "", desbordeFin: "" },
 ];
+// Llena config.lineas con los valores REALES que trae Busint en su campo
+// "linea" — no son solo "Dama"/"Caballero", son códigos compuestos (ej.
+// "INFAN FEME BASICO"), así que en vez de adivinarlos se leen directo de la
+// bitácora ya sincronizada (busint_referencias, la misma que usa
+// BusintSyncPanel/useMaestroReferenciasBusint) y se agregan los que falten.
+// Solo agrega — nunca borra valores que ya hayas puesto a mano.
+function SincronizarLineasBusintBtn({ config, onUpdateConfig }) {
+  const busint = useMaestroReferenciasBusint();
+  const [msg, setMsg] = useState("");
+  function sincronizar() {
+    const valores = new Set();
+    (busint.lista || []).forEach((r) => {
+      const v = String(r.linea || "").trim();
+      if (v) valores.add(v);
+    });
+    if (valores.size === 0) {
+      setMsg('⚠ Aún no hay bitácora de Busint sincronizada — usa "Sincronizar ahora" (arriba) primero.');
+      return;
+    }
+    const existentes = new Set(config.lineas || []);
+    const nuevas = [...valores].filter((v) => !existentes.has(v)).sort();
+    if (nuevas.length === 0) {
+      setMsg(`✅ Ya tienes las ${valores.size} línea(s) que trae Busint — nada nuevo que agregar.`);
+      return;
+    }
+    onUpdateConfig({ lineas: [...(config.lineas || []), ...nuevas] });
+    setMsg(`✅ Se agregaron ${nuevas.length} línea(s) nueva(s) desde Busint: ${nuevas.join(", ")}`);
+  }
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <Btn variant="secondary" onClick={sincronizar}>🔄 Cargar líneas reales desde Busint</Btn>
+      {msg && <div style={{ fontSize: 12, color: T.slate, marginTop: 6 }}>{msg}</div>}
+    </div>
+  );
+}
 function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula, onRestaurarProto, onRestaurarCapsula, onRestaurarRef, onPurgarProto, onPurgarCapsula, onPurgarRef, isAdmin }) {
   const [tab, setTab] = useState("etapas");
   const [newItem, setNewItem] = useState("");
@@ -6221,7 +6260,12 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
         )}
         {tab === "categorias" && <ListEditor listKey="categorias" title="Categorías" />}
         {tab === "siluetas" && <ListEditor listKey="siluetas" title="Siluetas" />}
-        {tab === "lineas" && <ListEditor listKey="lineas" title="Línea" />}
+        {tab === "lineas" && (
+          <div>
+            <SincronizarLineasBusintBtn config={config} onUpdateConfig={onUpdateConfig} />
+            <ListEditor listKey="lineas" title="Línea" />
+          </div>
+        )}
         {tab === "rangos" && <ListEditor listKey="rangos" title="Rangos" />}
         {tab === "codigos_referencia" && (
           <div>
@@ -6231,7 +6275,8 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
             </div>
             <BusintSyncPanel />
             <ReferenciasNoEnBusintView protos={protos} capsulas={capsulas} />
-            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 14 }}>
+              <SincronizarLineasBusintBtn config={config} onUpdateConfig={onUpdateConfig} />
               <Btn variant="secondary" onClick={cargarPlantillaCodigos}>📋 Cargar plantilla sugerida (98 dama/fábrica + 96 Reform)</Btn>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr 0.6fr 0.8fr 0.9fr auto", gap: 8, marginBottom: 8, alignItems: "end" }}>
