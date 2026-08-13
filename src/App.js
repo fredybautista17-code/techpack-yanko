@@ -637,6 +637,19 @@ function buscarFechaEstado(item, status) {
   const obs = (item.observations || []).filter((o) => o.type === "update" && o.text === texto);
   return obs.length ? obs[obs.length - 1].date : null;
 }
+// Limpia el "Usuario" (nombre de acceso) mientras se escribe: minúsculas,
+// sin tildes, sin espacios ni caracteres raros. Es necesario porque por
+// detrás se arma un correo interno de acceso a Firebase
+// (usuario@techpack-yanko.local) — un espacio u otro carácter inválido ahí
+// hace que Firebase rechace la cuenta con un error de "correo con formato
+// incorrecto" que no tiene relación aparente con el campo Usuario. Limpiar
+// en vivo evita ese error por completo en vez de solo avisarlo después.
+function sanitizarUsername(v) {
+  return String(v || "")
+    .normalize("NFD").replace(/[̀-ͯ]/g, "") // quita tildes/acentos
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, ""); // solo letras, números, punto, guion, guion bajo
+}
 function uid() { return Math.random().toString(36).slice(2, 9); }
 function daysAgo(d) { return Math.floor((Date.now() - new Date(d)) / 86400000); }
 function isOverdue(item, stages) {
@@ -5017,8 +5030,15 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
             </div>
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Usuario</label>
-              <input value={form.username} onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))} placeholder="Ej: laura" disabled={!!editUser} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: editUser ? T.canvas : T.white, outline: "none", fontFamily: "inherit", cursor: editUser ? "not-allowed" : "text" }} />
+              {/* Se limpia mientras se escribe (minúsculas, sin espacios ni
+                  acentos) — el nombre de usuario arma por detrás un correo
+                  interno de acceso (usuario@techpack-yanko.local) y un
+                  espacio ahí lo vuelve inválido para Firebase, lo que antes
+                  se veía como un error confuso de "correo con formato
+                  incorrecto" sin relación aparente con este campo. */}
+              <input value={form.username} onChange={(e) => setForm((f) => ({ ...f, username: sanitizarUsername(e.target.value) }))} placeholder="Ej: laura" disabled={!!editUser} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: editUser ? T.canvas : T.white, outline: "none", fontFamily: "inherit", cursor: editUser ? "not-allowed" : "text" }} />
               {editUser && <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>No se puede cambiar una vez creado.</div>}
+              {!editUser && <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Sin espacios ni tildes — así se escribe para iniciar sesión.</div>}
             </div>
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Contraseña</label>

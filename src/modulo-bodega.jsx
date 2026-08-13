@@ -1058,6 +1058,26 @@ function HistorialView({ despachos, currentUser, isAdmin, esContabilidad, esBode
     .filter((d) => !filtro.trim() || String(d.numero).includes(filtro.trim()) || (d.lineas || []).some((l) => (l.referencia || "").toUpperCase().includes(filtro.trim().toUpperCase())))
     .sort((a, b) => parseFloat(b.numero) - parseFloat(a.numero));
   const totalGeneral = visibles.reduce((s, d) => s + (d.totalDespacho || 0), 0);
+  // "¿Cuándo fue la última vez que se despachó la referencia X?" — busca
+  // coincidencia EXACTA de esa referencia (no solo "contiene", como el
+  // filtro de la tabla de abajo) en TODOS los despachos aprobados/
+  // históricos, sin importar quién los montó — es una pregunta sobre la
+  // referencia, no sobre el usuario que está buscando. Se queda con la
+  // fecha más reciente.
+  const refBuscada = filtro.trim().toUpperCase();
+  let ultimoUsoRef = null;
+  if (refBuscada) {
+    const coincidencias = [];
+    despachos.filter((d) => d.estado === "aprobado" || d.estado === "historico").forEach((d) => {
+      (d.lineas || []).forEach((l) => {
+        if ((l.referencia || "").trim().toUpperCase() === refBuscada) {
+          coincidencias.push({ fecha: d.fecha, numero: d.numero, cantidad: l.cantidad, creadoPor: d.creadoPor });
+        }
+      });
+    });
+    coincidencias.sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+    ultimoUsoRef = coincidencias[0] || null;
+  }
   return (
     <div>
       <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center" }}>
@@ -1066,6 +1086,17 @@ function HistorialView({ despachos, currentUser, isAdmin, esContabilidad, esBode
         </div>
         <div style={{ fontSize: 12, color: C.slate }}>{visibles.length} despachos · {fmtMoney(totalGeneral)}</div>
       </div>
+      {refBuscada && (
+        ultimoUsoRef ? (
+          <div style={{ padding: "10px 14px", background: C.blueBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: C.blue, fontWeight: 700 }}>
+            🕐 "{filtro.trim()}" se despachó por última vez el {fmtFechaISO(ultimoUsoRef.fecha)} — Despacho N° {ultimoUsoRef.numero} · Cantidad: {fmtNum(ultimoUsoRef.cantidad)} · Montado por: {ultimoUsoRef.creadoPor || "—"}
+          </div>
+        ) : (
+          <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: C.amber, fontWeight: 700 }}>
+            ⚠ "{filtro.trim()}" no tiene ningún despacho aprobado registrado con ese código exacto.
+          </div>
+        )
+      )}
       <Tabla
         vacio={esBodegaSolo ? "Aún no has montado ningún despacho." : "Sin despachos en el historial."}
         onRowClick={(f) => setAbierto(f)}
