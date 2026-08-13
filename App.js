@@ -529,6 +529,17 @@ const INIT_CONFIG = {
   siluetas: ["Slimfit","Regularfit","Silueta Amplia","Oversize","Super Oversize","Estándar"],
   rangos: ["Normal (S,M,L,XL)","Doble Talla (S/M - M/L)","Talla U","Plus","Plus (1XL-2XL-3XL)"],
   disenadores: [],
+  // Catálogo de codificación de referencias: cada entrada amarra una
+  // Categoría (y opcionalmente una Silueta puntual) a un prefijo y un rango
+  // de números (rangoInicio-rangoFin, ej. 201-299), más opcionalmente un
+  // rango de desborde (desbordeInicio-desbordeFin) al que saltar
+  // automáticamente cuando el rango principal se llene. Con esto,
+  // sugerirReferencia() calcula el consecutivo automático al crear un
+  // Prototipo o una Referencia de Cápsula. Si silueta queda vacío, la
+  // entrada aplica a toda la categoría. Editable en Administración →
+  // Códigos de Referencia (incluye un botón para cargar la plantilla
+  // sugerida a partir del cuadro real que maneja Industrias Yanko).
+  codigosReferencia: [],
   // Áreas de la compañía usadas en el módulo de KPIs (ver KPIsView), que
   // cubre TODA la empresa, no solo Diseño. Cada Puesto (colección
   // `kpi_puestos`) pertenece a UNA de estas áreas; cada persona y cada KPI
@@ -631,6 +642,130 @@ function isOverdue(item, stages) {
 }
 function today() { return new Date().toISOString().slice(0, 10); }
 function nowISO() { return new Date().toISOString(); }
+// Calcula el próximo consecutivo de referencia (Ej: "76-403") a partir del
+// catálogo config.codigosReferencia. Busca primero una entrada que amarre
+// exactamente categoria+silueta; si no hay, cae a una entrada de esa
+// categoría sin silueta puntual (aplica a toda la categoría). El corrido
+// (número dentro del segmento, del 01 al 99) nunca se reinicia: escanea
+// TODAS las referencias ya usadas (prototipos + referencias de cápsulas,
+// vivas o históricas) con ese mismo prefijo-segmento y sigue desde la más
+// alta encontrada, no desde las que existen hoy en pantalla.
+// Encuentra en config.codigosReferencia la entrada que amarra esta
+// categoria(+silueta) a un prefijo/segmento — exacta primero, luego la que
+// aplica a toda la categoría (silueta vacía).
+function buscarEntradaCodigoReferencia(categoria, silueta, config) {
+  const catalogo = config?.codigosReferencia || [];
+  if (!categoria || catalogo.length === 0) return null;
+  return (
+    catalogo.find((c) => c.categoria === categoria && c.silueta && c.silueta === silueta) ||
+    catalogo.find((c) => c.categoria === categoria && !c.silueta) ||
+    null
+  );
+}
+// Compara/busca referencias IGNORANDO el guion — Busint a veces guarda o
+// devuelve el mismo código SIN guion (ej. "985609" en vez de "98-5609"),
+// mientras que ATLAS siempre arma sus propias referencias CON guion
+// ("98-5609"). Sin esta normalización, el sistema no reconoce que son el
+// mismo código: no lo cuenta al calcular el siguiente consecutivo, y no lo
+// detecta como duplicado. Se usa en TODA comparación/búsqueda de una
+// referencia contra otra, tanto acá como en la Cloud Function
+// probarReferenciaBusint.
+function normalizarRefComparacion(v) {
+  return String(v || "").trim().toUpperCase().replace(/-/g, "");
+}
+// Extrae, de una o varias listas de códigos de referencia, los números
+// (corridos absolutos, ej. 401) que caen DENTRO de un rango [inicio, fin]
+// para un prefijo dado (ej. prefijo "76", rango 401-499). Reemplaza al
+// viejo esquema de "segmento" de ancho fijo (siempre bloques de 100) —
+// las categorías reales del cliente no tienen todas el mismo ancho (ej.
+// Conjuntos/Vestidos usa un bloque de 1000, Short Cachetero uno de 99), así
+// que cada entrada de config.codigosReferencia guarda su propio
+// rangoInicio/rangoFin. El guion es opcional al comparar (ver
+// normalizarRefComparacion) — si no se consideraran también las
+// referencias de Busint sin guion, el consecutivo sugerido podría chocar
+// con una que ATLAS nunca "vio".
+function numerosEnRango(prefijo, inicio, fin, ...listasDeRefs) {
+  const regex = new RegExp(`^${prefijo}(\\d+)$`);
+  const nums = [];
+  [].concat(...listasDeRefs).forEach((ref) => {
+    const m = regex.exec(normalizarRefComparacion(ref));
+    if (!m) return;
+    const num = parseInt(m[1], 10);
+    if (num >= inicio && num <= fin) nums.push(num);
+  });
+  return nums;
+}
+// Calcula el próximo consecutivo de referencia (Ej: "98-403") a partir del
+// catálogo config.codigosReferencia. El corrido nunca se reinicia: escanea
+// TODAS las referencias ya usadas — tanto en ATLAS (prototipos + referencias
+// de cápsulas) como en la bitácora local de Busint (busintLista, ver
+// useMaestroReferenciasBusint) — y sigue desde la más alta encontrada entre
+// las dos fuentes, para no chocar con una referencia que se haya creado
+// directo en Busint sin pasar por ATLAS.
+// Si el rango principal de la categoría ya se llenó (el siguiente número se
+// saldría de rangoFin) y la entrada tiene un rango de desborde configurado
+// (desbordeInicio/desbordeFin — ej. el cliente reserva 98-2200 a 98-2299
+// como "segunda vuelta" de Faldas una vez se agota 98-201 a 98-299), la
+// sugerencia salta automáticamente a ese rango de desborde en vez de
+// invadir el bloque de la categoría vecina.
+function sugerirReferencia(categoria, silueta, config, protos, capsulas, busintLista) {
+  const entrada = buscarEntradaCodigoReferencia(categoria, silueta, config);
+  if (!entrada || !entrada.prefijo) return null;
+  const prefijo = String(entrada.prefijo).trim();
+  const inicio = Number(entrada.rangoInicio) || 1;
+  const fin = Number(entrada.rangoFin) || inicio + 98;
+  const refsLocales = [
+    ...protos.map((p) => p.reference),
+    ...capsulas.flatMap((c) => (c.referencias || []).map((r) => r.reference)),
+  ];
+  const refsBusint = (busintLista || []).map((r) => r.ref);
+  const nums = numerosEnRango(prefijo, inicio, fin, refsLocales, refsBusint);
+  let rangoInicio = inicio;
+  let rangoFin = fin;
+  let siguiente = nums.length ? Math.max(...nums) + 1 : inicio;
+  const tieneDesborde = entrada.desbordeInicio != null && entrada.desbordeInicio !== "" && entrada.desbordeFin != null && entrada.desbordeFin !== "";
+  if (siguiente > fin && tieneDesborde) {
+    const inicioD = Number(entrada.desbordeInicio);
+    const finD = Number(entrada.desbordeFin);
+    const numsD = numerosEnRango(prefijo, inicioD, finD, refsLocales, refsBusint);
+    siguiente = numsD.length ? Math.max(...numsD) + 1 : inicioD;
+    rangoInicio = inicioD;
+    rangoFin = finD;
+  }
+  return { codigo: `${prefijo}-${String(siguiente).padStart(3, "0")}`, prefijo, rangoInicio, rangoFin };
+}
+// Busca si un código de referencia ya está en uso DENTRO de ATLAS mismo
+// (prototipos o referencias de cápsula) — a diferencia de la bitácora de
+// Busint (que puede tener hasta un día de rezago), esto siempre está al
+// segundo: protos/capsulas se leen en vivo de Firestore, así que un
+// duplicado creado hace 5 minutos ya se detecta aquí sin esperar ningún
+// sync.
+function buscarRefEnAtlas(refNorm, protos, capsulas) {
+  if (!refNorm) return null;
+  const proto = (protos || []).find((p) => normalizarRefComparacion(p.reference) === refNorm);
+  if (proto) return { tipo: "Prototipo", nombre: proto.name };
+  for (const cap of capsulas || []) {
+    const ref = (cap.referencias || []).find((r) => normalizarRefComparacion(r.reference) === refNorm);
+    if (ref) return { tipo: "Referencia de cápsula", nombre: `${ref.name} — ${cap.name}` };
+  }
+  return null;
+}
+// Las últimas N referencias (más altas) que YA existen en Busint dentro de
+// este mismo prefijo-segmento — se muestran junto a la sugerencia para que
+// el usuario vea el patrón real en vez de confiar a ciegas en un solo
+// número calculado.
+function ultimasReferenciasBusint(prefijo, inicio, fin, busintLista, n = 3) {
+  if (!prefijo || !busintLista) return [];
+  const regex = new RegExp(`^${prefijo}(\\d+)$`);
+  return busintLista
+    .map((r) => ({ ref: String(r.ref || "").trim(), m: regex.exec(normalizarRefComparacion(r.ref)) }))
+    .filter((x) => x.m)
+    .map((x) => ({ ref: x.ref, num: parseInt(x.m[1], 10) }))
+    .filter((x) => x.num >= inicio && x.num <= fin)
+    .sort((a, b) => b.num - a.num)
+    .slice(0, n)
+    .map((x) => x.ref);
+}
 // Permisos de módulo (visibilidad por sección: Prototipos, Cápsulas, Pedidos,
 // Clientes, Corte, Estadísticas, Contabilidad), separados de los permisos de
 // flujo de trabajo (editar/aprobar/declinar/admin). Cada sección se autoriza
@@ -984,9 +1119,86 @@ function PomTable({ pom, tallas }) {
   );
 }
 
-function NewProtoModal({ onSave, onClose, config }) {
+// Lee la bitácora local de referencias de Busint (colección Firestore
+// "busint_referencias", que se llena sola cada madrugada vía la función
+// programada syncReferenciasBusint, o al toque con el botón "Sincronizar
+// ahora" en Administración → Códigos de Referencia). Se prefirió leer de
+// Firestore en vez de llamar a Busint en vivo cada vez que alguien abre el
+// modal: es instantáneo, y sigue funcionando aunque el puente a Busint esté
+// caído en ese momento — el precio es que los datos pueden tener hasta un
+// día de rezago, aceptable para un catálogo que casi no cambia.
+function useMaestroReferenciasBusint() {
+  const [estado, setEstado] = useState({ cargando: true, error: "", lista: [], set: null });
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, "busint_referencias"),
+      (snap) => {
+        const lista = snap.docs.map((d) => d.data());
+        const set = new Set(lista.map((r) => normalizarRefComparacion(r.ref)));
+        setEstado({ cargando: false, error: "", lista, set });
+      },
+      (err) => {
+        setEstado({ cargando: false, error: err?.message || "No se pudo leer la bitácora de Busint.", lista: [], set: null });
+      }
+    );
+    return () => unsub();
+  }, []);
+  return estado;
+}
+// Caja compartida por "Nuevo Prototipo" y "Nueva Referencia": arriba la
+// sugerencia de consecutivo (con las últimas usadas en ese mismo
+// prefijo-segmento, para no tener que adivinar) y abajo el resultado de
+// verificar contra la bitácora de Busint lo que sea que esté hoy en el
+// campo Ref, venga de la sugerencia o escrita a mano.
+function SugerenciaYVerificacionRef({ sug, referencia, onUsar, busint, protos, capsulas }) {
+  const refNorm = normalizarRefComparacion(referencia);
+  const sugerencia = sug?.codigo || null;
+  if (!sugerencia && !refNorm) return null;
+  const ultimas = sug ? ultimasReferenciasBusint(sug.prefijo, sug.rangoInicio, sug.rangoFin, busint.lista) : [];
+  const enAtlas = refNorm ? buscarRefEnAtlas(refNorm, protos, capsulas) : null;
+  return (
+    <div style={{ padding: "10px 12px", background: T.canvas, borderRadius: 8, marginBottom: 12, border: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 6 }}>
+      {sugerencia && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 12.5, color: T.jade, fontWeight: 700 }}>
+          <span>
+            🔢 Sugerencia: <strong>{sugerencia}</strong>
+            {ultimas.length > 0 && <span style={{ color: T.slate, fontWeight: 600 }}> · últimas en Busint: {ultimas.join(", ")}</span>}
+          </span>
+          {!refNorm && <button onClick={onUsar} style={{ background: T.jade, color: T.white, border: "none", borderRadius: 6, padding: "4px 10px", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Usar</button>}
+        </div>
+      )}
+      {/* Chequeo contra ATLAS: siempre en vivo, sin ningún rezago — se detecta
+          al instante aunque el duplicado se haya creado hace 2 minutos. */}
+      {refNorm && enAtlas && (
+        <div style={{ fontSize: 12, color: T.coral, fontWeight: 700 }}>⚠ "{referencia}" YA EXISTE en ATLAS — {enAtlas.tipo}: {enAtlas.nombre}</div>
+      )}
+      {/* Chequeo contra Busint: viene de la bitácora local, puede tener hasta
+          un día de rezago (o lo que haya pasado desde el último "Sincronizar
+          ahora"). */}
+      {refNorm && busint.cargando && (
+        <div style={{ fontSize: 12, color: T.slate, fontWeight: 600 }}>🔎 Verificando "{referencia}" contra la bitácora de Busint...</div>
+      )}
+      {refNorm && !busint.cargando && busint.error && (
+        <div style={{ fontSize: 12, color: T.amber, fontWeight: 600 }}>⚠ No se pudo verificar contra Busint — {busint.error}</div>
+      )}
+      {refNorm && !busint.cargando && !busint.error && busint.lista.length === 0 && (
+        <div style={{ fontSize: 12, color: T.amber, fontWeight: 600 }}>ℹ Aún no hay bitácora de Busint sincronizada — hazlo desde Administración → Códigos de Referencia.</div>
+      )}
+      {refNorm && !busint.cargando && !busint.error && busint.lista.length > 0 && !enAtlas && (
+        busint.set.has(refNorm) ? (
+          <div style={{ fontSize: 12, color: T.coral, fontWeight: 700 }}>⚠ "{referencia}" YA EXISTE en Busint — elige otro consecutivo</div>
+        ) : (
+          <div style={{ fontSize: 12, color: T.jade, fontWeight: 700 }}>✅ "{referencia}" verificada — no existe en Busint, libre para usar</div>
+        )
+      )}
+    </div>
+  );
+}
+function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
   const [form, setForm] = useState({ name: "", categoria: "", silueta: "", rango: "", reference: "", assignedTo: "", cliente: "", mes: "", tipoTela: "", baseMolderia: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  const busint = useMaestroReferenciasBusint();
+  const sug = sugerirReferencia(form.categoria, form.silueta, config, protos || [], capsulas || [], busint.lista);
   function save() {
     if (!form.name || !form.reference) return;
     onSave({ id: uid(), ...form, status: "borrador", currentStage: "ilustracion", stageStartedAt: today(), createdAt: today(), promotedTo: null, image: null, bom: [], pom: [], observations: [] });
@@ -1004,6 +1216,7 @@ function NewProtoModal({ onSave, onClose, config }) {
         <Field label="Cliente"><FSel value={form.cliente} onChange={set("cliente")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
         <Field label="Mes"><FSel value={form.mes} onChange={set("mes")} options={MONTHS_ES} /></Field>
       </div>
+      <SugerenciaYVerificacionRef sug={sug} referencia={form.reference} onUsar={() => set("reference")(sug.codigo)} busint={busint} protos={protos} capsulas={capsulas} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: C-003" /></Field>
         <Field label="Responsable"><FSel value={form.assignedTo} onChange={set("assignedTo")} options={config.disenadores} /></Field>
@@ -1107,9 +1320,11 @@ function NewCapsulaModal({ onSave, onClose, config }) {
   );
 }
 
-function NewRefModal({ capsula, onSave, onClose, config }) {
+function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
   const [form, setForm] = useState({ name: "", reference: "", assignedTo: "", categoria: "", silueta: "", rango: "", colores: "", tallas: "", tipoTela: "", baseMolderia: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  const busint = useMaestroReferenciasBusint();
+  const sug = sugerirReferencia(form.categoria, form.silueta, config, protos || [], capsulas || [], busint.lista);
   function save() {
     if (!form.name || !form.reference) return;
     onSave(capsula.id, {
@@ -1125,6 +1340,7 @@ function NewRefModal({ capsula, onSave, onClose, config }) {
         <Field label="Categoría"><FSel value={form.categoria} onChange={set("categoria")} options={config.categorias} /></Field>
         <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config.siluetas} /></Field>
       </div>
+      <SugerenciaYVerificacionRef sug={sug} referencia={form.reference} onUsar={() => set("reference")(sug.codigo)} busint={busint} protos={protos} capsulas={capsulas} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: CM-001" /></Field>
         <Field label="Cliente"><FSel value={form.colores} onChange={set("colores")} options={(config.clientes || []).map((c) => c.nombre)} /></Field>
@@ -1514,6 +1730,16 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
     changeStatus("en_revision", {}, [obsNota]);
     setTab("chat");
   }
+  // Deshace un Aprobado/Declinado hecho por error (ej. la Directora Creativa
+  // le dio "Aprobar" a una ilustración que en realidad todavía no estaba
+  // lista) — vuelve a "En proceso" para que el flujo normal (Aprobar/
+  // Declinar/En revisión) quede disponible de nuevo. Antes, una vez el
+  // estado llegaba a "aprobado"/"declinado" no había NINGÚN botón para
+  // corregirlo — quedaba trabado ahí para siempre.
+  function deshacerAprobacion() {
+    const obs = { id: uid(), user: currentUser, role, text: `Se deshizo el estado "${STATUS[st]?.label}" — vuelve a "En proceso".`, date: nowISO(), type: "update", done: false };
+    patch({ status: "en_proceso", observations: [...item.observations, obs] });
+  }
   // Enviar UNA sola referencia desde el Detalle pasa por el MISMO mecanismo
   // que el envío por casillas (crearEnvioBitacora) — así cualquier envío,
   // individual o agrupado, siempre queda registrado en la Bitácora, sin dos
@@ -1652,6 +1878,12 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {noFinalState && canAprobar && <Btn variant="success" onClick={() => changeStatus("aprobado")}>✓ Aprobar</Btn>}
             {noFinalState && canDeclinar && <Btn variant="danger" onClick={() => changeStatus("declinado")}>✕ Declinar</Btn>}
+            {/* Escape hatch para un Aprobar/Declinar hecho por error: mismo
+                permiso que revisa Ilustración (Directora Creativa) o admin
+                general, no cualquiera con permiso de aprobar/declinar. */}
+            {!noFinalState && (canAdmin || canRevisarIlustracion) && (
+              <Btn variant="secondary" onClick={deshacerAprobacion}>↩ Deshacer {st === "aprobado" ? "aprobación" : "declinación"}</Btn>
+            )}
             {canAdmin && (
               <>
                 {noFinalState && !["enviado_cotizacion", "enviar_cliente", "preparada_para_enviar", "enviado"].includes(st) && (
@@ -1945,7 +2177,7 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
         <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
-            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar el prototipo <strong>"{confirmDel.name}"</strong>? Esta acción no se puede deshacer.</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar el prototipo <strong>"{confirmDel.name}"</strong>? Queda en la Papelera (Administración) por si hay que restaurarlo.</div>
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
               <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
               <Btn variant="danger" onClick={() => { onDeleteProto(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
@@ -2019,12 +2251,15 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
     </div>
   );
 }
-function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio }) {
+function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, onDeleteRef, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [mesFiltro, setMesFiltro] = useState("todos");
   const [editCap, setEditCap] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
+  // Confirmación para borrar UNA referencia dentro de una cápsula (no la
+  // cápsula completa) — guarda { capId, ref } del renglón que se va a borrar.
+  const [confirmDelRef, setConfirmDelRef] = useState(null);
   const [revisionCap, setRevisionCap] = useState(null);
   const [obsCapsula, setObsCapsula] = useState(null);
   // Selección múltiple para armar un envío/bitácora agrupado — una selección
@@ -2139,10 +2374,22 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
         <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
-            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar la cápsula <strong>"{confirmDel.name}"</strong>, sus {confirmDel.referencias?.length || 0} referencia{confirmDel.referencias?.length !== 1 ? "s" : ""} y los envíos de Bitácora registrados para esta cápsula? Esta acción no se puede deshacer.</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar la cápsula <strong>"{confirmDel.name}"</strong> y sus {confirmDel.referencias?.length || 0} referencia{confirmDel.referencias?.length !== 1 ? "s" : ""}? Queda en la Papelera (Administración) por si hay que restaurarla.</div>
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
               <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
               <Btn variant="danger" onClick={() => { onDeleteCapsula(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmDelRef && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar la referencia <strong>"{confirmDelRef.ref.reference}"</strong> ({confirmDelRef.ref.name})? Solo se borra esta referencia — el resto de la cápsula sigue intacta, y queda en la Papelera (Administración) por si hay que restaurarla.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmDelRef(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={() => { onDeleteRef(confirmDelRef.capId, confirmDelRef.ref.id); setConfirmDelRef(null); }}>Sí, eliminar</Btn>
             </div>
           </div>
         </div>
@@ -2244,6 +2491,15 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
                         title="Seleccionar para envío"
                         style={{ position: "absolute", top: 8, left: 8, zIndex: 2, width: 20, height: 20, cursor: "pointer" }}
                       />
+                    )}
+                    {isAdmin && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setConfirmDelRef({ capId: cap.id, ref: r }); }}
+                        title="Eliminar esta referencia"
+                        style={{ position: "absolute", top: 8, right: 8, zIndex: 2, width: 24, height: 24, borderRadius: 6, border: "none", background: T.coralBg, color: T.coral, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                      >
+                        🗑
+                      </button>
                     )}
                     <Card item={r} kind="ref" onClick={() => onSelectRef(cap.id, r.id)} role={role} perms={perms} stages={stages} />
                   </div>
@@ -5043,7 +5299,721 @@ function ClientesTab({ config, onUpdateConfig }) {
   );
 }
 
-function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula, isAdmin }) {
+// Muestra cuándo se sincronizó por última vez la bitácora local de Busint
+// (busint_referencias_meta/main, escrito tanto por la función programada
+// syncReferenciasBusint como por getReferenciasBusint) y deja forzar un
+// refresh inmediato sin tener que esperar a la pasada de las 5:00 a.m.
+// --- Lectura de imágenes incrustadas en un .xlsx (Foto de cada referencia) ---
+// SheetJS ("xlsx", edición community) no expone las imágenes incrustadas de
+// un archivo Excel — solo el texto de las celdas. Como un .xlsx es en
+// realidad un .zip (formato OOXML), las fotos SÍ se pueden leer abriendo el
+// paquete a mano con JSZip y siguiendo la misma cadena de referencias que
+// usa Excel internamente: hoja → xl/worksheets/sheetN.xml (trae un
+// <drawing r:id="…">) → xl/worksheets/_rels/sheetN.xml.rels (ese r:id
+// apunta a un drawingM.xml) → xl/drawings/drawingM.xml (cada imagen está
+// "anclada" a una fila con <xdr:from><xdr:row>) → xl/drawings/_rels/
+// drawingM.xml.rels (el r:embed de cada imagen apunta al archivo real en
+// xl/media/imageX.png). El número de fila del ancla es 0-based e igual de
+// índice que el array que arma XLSX.utils.sheet_to_json(ws,{header:1}) —
+// por eso alcanza con esa fila para saber a qué REF pertenece cada imagen.
+const OOXML_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+// Devuelve todos los elementos con ese nombre "local" (ignora el prefijo de
+// namespace del XML — algunos exportadores usan "xdr:", otros no) dentro de
+// un nodo/documento.
+function xmlLocalAll(root, localName) {
+  if (!root) return [];
+  return Array.from(root.getElementsByTagName("*")).filter((el) => el.localName === localName);
+}
+// Resuelve una ruta relativa tipo "../media/image1.png" contra un
+// directorio base tipo "xl/drawings", igual que lo haría un navegador.
+function resolverRutaXlsx(base, relativo) {
+  if (!relativo) return relativo;
+  if (relativo.startsWith("/")) return relativo.slice(1);
+  const partes = base.split("/");
+  for (const p of relativo.split("/")) {
+    if (p === "..") partes.pop();
+    else if (p !== ".") partes.push(p);
+  }
+  return partes.join("/");
+}
+// Comprime una imagen (bytes crudos) al mismo estándar que ya usa el resto
+// de la app para fotos (ImageUploader): máx. 800px de lado, JPEG calidad
+// 0.72 — así una foto de referencia no infla el documento de Firestore.
+function comprimirImagenBytesABase64(bytes, mime) {
+  return new Promise((resolve) => {
+    try {
+      const blob = new Blob([bytes], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 800;
+        let w = img.width, h = img.height;
+        if (w > MAX || h > MAX) {
+          if (w > h) { h = Math.round((h * MAX) / w); w = MAX; } else { w = Math.round((w * MAX) / h); h = MAX; }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        const out = canvas.toDataURL("image/jpeg", 0.72);
+        URL.revokeObjectURL(url);
+        resolve(out);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+      img.src = url;
+    } catch (e) {
+      resolve(null);
+    }
+  });
+}
+// Para cada hoja del workbook (en el mismo orden que wb.SheetNames de
+// SheetJS), devuelve la ruta interna del .xml de esa hoja dentro del .zip
+// (p.ej. "xl/worksheets/sheet1.xml"), leyendo xl/workbook.xml +
+// xl/_rels/workbook.xml.rels.
+async function mapaHojasARutaXlsx(zip, parser) {
+  const wbXmlText = await zip.file("xl/workbook.xml")?.async("text");
+  const wbRelsXmlText = await zip.file("xl/_rels/workbook.xml.rels")?.async("text");
+  if (!wbXmlText || !wbRelsXmlText) return [];
+  const wbDoc = parser.parseFromString(wbXmlText, "application/xml");
+  const wbRelsDoc = parser.parseFromString(wbRelsXmlText, "application/xml");
+  const sheetsEls = xmlLocalAll(wbDoc, "sheet");
+  const relEls = xmlLocalAll(wbRelsDoc, "Relationship");
+  return sheetsEls.map((s) => {
+    const rid = s.getAttributeNS(OOXML_REL_NS, "id");
+    const rel = relEls.find((r) => r.getAttribute("Id") === rid);
+    const target = rel?.getAttribute("Target") || "";
+    return target.startsWith("/") ? target.slice(1) : `xl/${target}`;
+  });
+}
+// Trae, para UNA hoja, un mapa {filaIndex0Based: dataURLimagenComprimida}
+// siguiendo la cadena hoja→drawing→relaciones→media descrita arriba. Si
+// algo en el XML no viene con la forma esperada, simplemente no trae fotos
+// de esa hoja (el resto del import por texto sigue funcionando igual).
+async function extraerImagenesDeHoja(zip, sheetPath, parser) {
+  const mapa = {};
+  try {
+    const sheetXmlText = await zip.file(sheetPath)?.async("text");
+    if (!sheetXmlText) return mapa;
+    const sheetDoc = parser.parseFromString(sheetXmlText, "application/xml");
+    const drawingEl = xmlLocalAll(sheetDoc, "drawing")[0];
+    if (!drawingEl) return mapa;
+    const drawingRid = drawingEl.getAttributeNS(OOXML_REL_NS, "id");
+    const sheetDir = sheetPath.slice(0, sheetPath.lastIndexOf("/"));
+    const sheetFile = sheetPath.slice(sheetPath.lastIndexOf("/") + 1);
+    const sheetRelsText = await zip.file(`${sheetDir}/_rels/${sheetFile}.rels`)?.async("text");
+    if (!sheetRelsText) return mapa;
+    const sheetRelsDoc = parser.parseFromString(sheetRelsText, "application/xml");
+    const relDraw = xmlLocalAll(sheetRelsDoc, "Relationship").find((r) => r.getAttribute("Id") === drawingRid);
+    if (!relDraw) return mapa;
+    const drawingPath = resolverRutaXlsx(sheetDir, relDraw.getAttribute("Target"));
+    const drawingXmlText = await zip.file(drawingPath)?.async("text");
+    if (!drawingXmlText) return mapa;
+    const drawingDoc = parser.parseFromString(drawingXmlText, "application/xml");
+    const drawingDir = drawingPath.slice(0, drawingPath.lastIndexOf("/"));
+    const drawingFile = drawingPath.slice(drawingPath.lastIndexOf("/") + 1);
+    const drawingRelsText = await zip.file(`${drawingDir}/_rels/${drawingFile}.rels`)?.async("text");
+    const drawingRelEls = drawingRelsText ? xmlLocalAll(parser.parseFromString(drawingRelsText, "application/xml"), "Relationship") : [];
+    const anchors = [...xmlLocalAll(drawingDoc, "twoCellAnchor"), ...xmlLocalAll(drawingDoc, "oneCellAnchor")];
+    for (const anchor of anchors) {
+      const from = xmlLocalAll(anchor, "from")[0];
+      const rowEl = from && xmlLocalAll(from, "row")[0];
+      const blip = xmlLocalAll(anchor, "blip")[0];
+      if (!rowEl || !blip) continue;
+      const fila = parseInt(rowEl.textContent, 10);
+      const embedRid = blip.getAttributeNS(OOXML_REL_NS, "embed");
+      const relImg = drawingRelEls.find((r) => r.getAttribute("Id") === embedRid);
+      if (!relImg || Number.isNaN(fila)) continue;
+      const mediaPath = resolverRutaXlsx(drawingDir, relImg.getAttribute("Target"));
+      const mediaFile = zip.file(mediaPath);
+      if (!mediaFile) continue;
+      const bytes = await mediaFile.async("uint8array");
+      const ext = (mediaPath.split(".").pop() || "png").toLowerCase();
+      const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "gif" ? "image/gif" : "image/png";
+      const dataUrl = await comprimirImagenBytesABase64(bytes, mime);
+      if (dataUrl) mapa[fila] = dataUrl;
+    }
+  } catch (e) {
+    // Hoja con XML atípico — se ignora solo la parte de fotos de esta hoja.
+  }
+  return mapa;
+}
+// Lista de referencias creadas dentro de ATLAS (prototipos + referencias de
+// cápsulas) que TODAVÍA no están confirmadas en Busint — para que el equipo
+// sepa cuáles hay que dar de alta allá antes de que alguien, trabajando
+// directo en Busint (sin pasar por ATLAS), reutilice por accidente ese
+// mismo número de consecutivo. "Confirmada en Busint" = el doc en
+// busint_referencias tiene el campo `actualizadoEn`, que SOLO lo pone una
+// sincronización real con Busint (ver guardarReferenciasBusintEnFirestore
+// en functions/index.js) — si el doc no existe, o existe solo por un
+// import manual de Excel (sin actualizadoEn), se cuenta como pendiente.
+function ReferenciasNoEnBusintView({ protos, capsulas }) {
+  const [busint, setBusint] = useState(null); // null = todavía cargando
+  useEffect(() => {
+    let activo = true;
+    getDocs(collection(db, "busint_referencias")).then((snap) => {
+      if (!activo) return;
+      // Indexado SIN guion (ver normalizarRefComparacion) — así una ref de
+      // ATLAS con guion ("98-5609") sí reconoce que Busint ya la tiene
+      // aunque esté guardada sin guion ("985609").
+      const mapa = {};
+      snap.docs.forEach((d) => {
+        const data = d.data();
+        const norm = normalizarRefComparacion(data.ref || d.id);
+        if (norm) mapa[norm] = data;
+      });
+      setBusint(mapa);
+    });
+    return () => { activo = false; };
+  }, []);
+
+  if (busint === null) {
+    return <div style={{ fontSize: 12.5, color: T.slate, padding: "10px 14px" }}>Revisando bitácora de Busint...</div>;
+  }
+
+  const items = [];
+  function anotar(ref, createdAt, origen) {
+    const codigo = String(ref || "").trim();
+    if (!codigo) return;
+    if (busint[normalizarRefComparacion(codigo)]?.actualizadoEn) return; // ya confirmada en Busint
+    items.push({ ref: codigo, createdAt: createdAt || "", origen });
+  }
+  (protos || []).forEach((p) => { if (!p.eliminado) anotar(p.reference, p.createdAt, "Prototipo"); });
+  (capsulas || []).forEach((c) => {
+    if (c.eliminado) return;
+    (c.referencias || []).forEach((r) => { if (!r.eliminado) anotar(r.reference, r.createdAt, `Cápsula: ${c.name || ""}`); });
+  });
+  // Si la misma ref aparece en más de un lugar, se queda solo la más
+  // antigua (la que más urge revisar).
+  const porRef = new Map();
+  items.forEach((it) => {
+    const previo = porRef.get(it.ref);
+    if (!previo || (it.createdAt && it.createdAt < previo.createdAt)) porRef.set(it.ref, it);
+  });
+  const pendientes = [...porRef.values()].sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+
+  function diasDesde(fechaISO) {
+    if (!fechaISO) return null;
+    const dias = Math.floor((Date.now() - new Date(fechaISO).getTime()) / 86400000);
+    return Number.isFinite(dias) ? dias : null;
+  }
+
+  return (
+    <div style={{ padding: "10px 14px", background: pendientes.length ? T.amberBg : T.jadeBg, border: `1px solid ${T.border}`, borderRadius: 8, marginBottom: 20 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: pendientes.length ? T.amber : T.jade, marginBottom: pendientes.length ? 8 : 0 }}>
+        {pendientes.length ? `⚠ ${pendientes.length} referencia(s) creadas en ATLAS que aún no están confirmadas en Busint` : "✓ Todas las referencias de ATLAS ya están confirmadas en Busint"}
+      </div>
+      {pendientes.length > 0 && (
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr style={{ textAlign: "left", borderBottom: `1px solid ${T.border}` }}>
+              <th style={{ padding: "4px 8px" }}>Ref</th>
+              <th style={{ padding: "4px 8px" }}>Origen</th>
+              <th style={{ padding: "4px 8px" }}>Creada</th>
+              <th style={{ padding: "4px 8px" }}>Días</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pendientes.map((p) => {
+              const dias = diasDesde(p.createdAt);
+              const urgente = dias != null && dias >= 3;
+              return (
+                <tr key={p.ref} style={{ borderBottom: `1px solid ${T.border}` }}>
+                  <td style={{ padding: "4px 8px", fontWeight: 700, color: T.ink }}>{p.ref}</td>
+                  <td style={{ padding: "4px 8px", color: T.slate }}>{p.origen}</td>
+                  <td style={{ padding: "4px 8px", color: T.slate }}>{p.createdAt || "—"}</td>
+                  <td style={{ padding: "4px 8px", color: urgente ? T.coral : T.slate, fontWeight: urgente ? 700 : 400 }}>{dias != null ? dias : "—"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+function BusintSyncPanel() {
+  const [meta, setMeta] = useState(null);
+  const [sincronizando, setSincronizando] = useState(false);
+  const [resultado, setResultado] = useState("");
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "busint_referencias_meta", "main"), (snap) => {
+      setMeta(snap.exists() ? snap.data() : null);
+    });
+    return () => unsub();
+  }, []);
+  const [exportando, setExportando] = useState(false);
+  // --- Importar bitácora externa desde Excel (p.ej. "KAMILA
+  // REFERENCIAS_PIJAMAS.xlsx") ---
+  // Algunas líneas/clientes (Kamila, etc.) manejan su propia bitácora de
+  // referencias por fuera de Busint (en Excel), con hojas por prefijo-
+  // segmento y columnas FOTO/REF/CATEGORIA/DESCRIPCION/TELA/RANGO. Para que
+  // ATLAS no sugiera un consecutivo que ya está tomado en esa bitácora (ni
+  // lo marque como duplicado si ya existe), esas referencias se importan
+  // acá mismo a la colección "busint_referencias" — así
+  // useMaestroReferenciasBusint()/sugerirReferencia()/
+  // SugerenciaYVerificacionRef ya las tienen en cuenta automáticamente, sin
+  // ningún cambio en esa lógica. No se pisan referencias que ya existan por
+  // sincronización con Busint: si el REF ya está en la bitácora, el import
+  // solo completa los campos que vengan vacíos (no borra lo que ya había).
+  const [importando, setImportando] = useState(false);
+  const [resultadoImport, setResultadoImport] = useState("");
+  // Guarda la última comparación (Busint vs. lo recién importado) para
+  // poder descargarla en Excel con colores sin tener que repetir el import.
+  const [comparacion, setComparacion] = useState(null);
+  const [descargandoComparacion, setDescargandoComparacion] = useState(false);
+  const fileInputRef = useRef(null);
+  // Quita tildes/diéresis y pasa a mayúsculas, para poder reconocer
+  // encabezados como "DESCRIPCIÓN" o "CATEGORÍA" sin importar acentos.
+  function normalizarEncabezado(v) {
+    return String(v ?? "")
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .trim()
+      .toUpperCase();
+  }
+  // Importa uno o varios archivos Excel de bitácora manual (p.ej. varias
+  // colecciones/clientes que hoy se llevan a mano) en una sola pasada:
+  // 1) Lee el texto de todas las hojas de todos los archivos con "xlsx".
+  // 2) Lee también las fotos incrustadas de cada hoja con JSZip (ver
+  //    extraerImagenesDeHoja arriba) y las amarra a la fila de su REF.
+  // 3) Combina todo contra lo que YA hay en Firestore (una sola lectura,
+  //    tomada ANTES de escribir nada) — así, si el mismo REF aparece en dos
+  //    archivos subidos juntos, no se cuenta como "nuevo" dos veces.
+  // 4) Escribe en "busint_referencias" completando solo lo que esté vacío
+  //    (Busint SIEMPRE manda si el dato ya vino de una sincronización real).
+  // 5) Arma la comparación de tres colores para el Excel descargable:
+  //    verde = el REF ya existe en Busint (coincide), amarillo = el REF
+  //    está en la bitácora manual pero Busint todavía no lo tiene, naranja
+  //    = existe en ambos lados pero la categoría/descripción no coincide.
+  async function importarBitacoraExcel(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    setImportando(true);
+    setResultadoImport("");
+    setComparacion(null);
+    try {
+      const XLSX = await import("xlsx");
+      const JSZip = (await import("jszip")).default;
+      const parser = new DOMParser();
+      const existentes = await getDocs(collection(db, "busint_referencias"));
+      const yaExisten = {};
+      // Mapa adicional SIN guion — Busint a veces guarda el mismo código sin
+      // guion (ver normalizarRefComparacion). Sin esto, una fila del Excel
+      // con guion ("98-5609") no reconocería que ese REF ya existe en
+      // Firestore como "985609", y terminaría creando un documento
+      // duplicado en vez de completar el que ya había.
+      const yaExistenPorNormal = {};
+      existentes.docs.forEach((d) => {
+        const data = d.data();
+        yaExisten[d.id] = data;
+        const norm = normalizarRefComparacion(data.ref || d.id);
+        if (norm) yaExistenPorNormal[norm] = { id: d.id, data };
+      });
+      // Acumulador combinado de TODOS los archivos subidos en esta pasada,
+      // indexado por id (ref saneado) — si el mismo REF aparece en más de
+      // un archivo, el último gana el texto pero no se pierde ninguna foto
+      // ya encontrada.
+      const combinado = {};
+      const porArchivo = [];
+      for (const file of files) {
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: "array" });
+        const zip = await JSZip.loadAsync(buf);
+        const rutasHojas = await mapaHojasARutaXlsx(zip, parser);
+        let hojasUsadas = 0, filasArchivo = 0, filasSinRef = 0, fotosArchivo = 0;
+        for (let sIdx = 0; sIdx < wb.SheetNames.length; sIdx++) {
+          const ws = wb.Sheets[wb.SheetNames[sIdx]];
+          const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+          // Busca la fila de encabezados (la que trae una celda "REF") —
+          // ignora la fila de título de arriba (p.ej. "PIJAMAS DAMA - KAMILA").
+          let idxEncabezado = -1;
+          let normalizadaEncabezado = [];
+          for (let i = 0; i < aoa.length; i++) {
+            const normalizada = (aoa[i] || []).map(normalizarEncabezado);
+            if (normalizada.indexOf("REF") !== -1) {
+              idxEncabezado = i;
+              normalizadaEncabezado = normalizada;
+              break;
+            }
+          }
+          if (idxEncabezado === -1) continue; // hoja sin formato reconocible
+          hojasUsadas++;
+          // Busca por PALABRA CLAVE (no coincidencia exacta) — así reconoce
+          // tanto un encabezado corto ("RANGO", "LINEA") como uno largo con
+          // aclaración entre paréntesis ("SUBCATEGORÍA (RANGO/EXTENSIÓN)",
+          // "LINEA (BASICO/PREMIUM)"), que es como vienen los archivos reales
+          // de Kamila.
+          const idxPorPalabra = (...palabras) => normalizadaEncabezado.findIndex((h) => palabras.some((p) => h.includes(p)));
+          const idxRef = normalizadaEncabezado.indexOf("REF");
+          const idxCategoria = idxPorPalabra("CATEGORIA");
+          const idxDescripcion = idxPorPalabra("DESCRIPCION");
+          const idxTela = idxPorPalabra("TELA");
+          const idxSilueta = idxPorPalabra("SILUETA", "CONFECCION");
+          const idxSubcategoria = idxPorPalabra("SUBCATEGORIA", "RANGO");
+          // OJO: "LINEA" en los archivos manuales de Kamila significa
+          // básica/premium (nivel de producto) — es un concepto DISTINTO del
+          // campo "linea" que trae Busint (que en Busint es hombre/dama). Se
+          // guardan en campos separados (lineaProducto vs. linea) para no
+          // mezclarlos.
+          const idxLinea = idxPorPalabra("LINEA");
+          const idxBase = idxPorPalabra("BASE");
+          const imagenesFila = rutasHojas[sIdx] ? await extraerImagenesDeHoja(zip, rutasHojas[sIdx], parser) : {};
+          for (let i = idxEncabezado + 1; i < aoa.length; i++) {
+            const fila = aoa[i] || [];
+            const ref = idxRef !== -1 ? String(fila[idxRef] ?? "").trim() : "";
+            if (!ref) { filasSinRef++; continue; }
+            const limpiar = (v) => String(v ?? "").replace(/\r?\n/g, " ").trim();
+            const id = ref.replace(/\//g, "_");
+            const foto = imagenesFila[i] || null;
+            if (foto) fotosArchivo++;
+            combinado[id] = {
+              ref,
+              categoria: idxCategoria !== -1 ? limpiar(fila[idxCategoria]) : "",
+              descripcion: idxDescripcion !== -1 ? limpiar(fila[idxDescripcion]) : "",
+              tela: idxTela !== -1 ? limpiar(fila[idxTela]) : "",
+              tipoConfeccion: idxSilueta !== -1 ? limpiar(fila[idxSilueta]) : "",
+              subcategoria: idxSubcategoria !== -1 ? limpiar(fila[idxSubcategoria]) : "",
+              lineaProducto: idxLinea !== -1 ? limpiar(fila[idxLinea]) : "",
+              base: idxBase !== -1 ? limpiar(fila[idxBase]) : "",
+              foto: foto || combinado[id]?.foto || null,
+              archivoOrigen: file.name,
+            };
+            filasArchivo++;
+          }
+        }
+        porArchivo.push({ nombre: file.name, hojasUsadas, filasArchivo, filasSinRef, fotosArchivo });
+      }
+      const filas = Object.values(combinado);
+      if (!filas.length) {
+        setResultadoImport(`⚠ No se encontró ninguna fila con REF reconocible en ${files.length === 1 ? `"${files[0].name}"` : `los ${files.length} archivos`}.`);
+        setImportando(false);
+        return;
+      }
+      // No se pisan campos que ya tengan valor por sincronización con
+      // Busint — el Excel solo COMPLETA lo que esté vacío. "actualizadoEn"
+      // solo lo pone la sincronización real con Busint (Cloud Function), así
+      // que sirve para saber con certeza si un REF YA está en Busint.
+      const items = filas.map((f) => {
+        // Si ya existe un doc con este REF salvo el guion (p.ej. Busint lo
+        // tiene como "985609" y el Excel trae "98-5609"), se reutiliza ESE
+        // mismo id — así se completa el doc real en vez de crear uno nuevo
+        // y duplicado.
+        const coincidencia = yaExistenPorNormal[normalizarRefComparacion(f.ref)];
+        const id = coincidencia ? coincidencia.id : f.ref.replace(/\//g, "_");
+        const previo = coincidencia ? coincidencia.data : (yaExisten[id] || {});
+        const item = { id, ref: previo.ref || f.ref };
+        if (f.categoria && !previo.categoria) item.categoria = f.categoria;
+        if (f.descripcion && !previo.descripcion) item.descripcion = f.descripcion;
+        if (f.subcategoria && !previo.subcategoria) item.subcategoria = f.subcategoria;
+        if (f.tipoConfeccion && !previo.tipoConfeccion) item.tipoConfeccion = f.tipoConfeccion;
+        if (f.tela) item.tela = f.tela; // Busint no expone tela — la del Excel manda
+        if (f.base && !previo.base) item.base = f.base; // Busint no expone base — la del Excel manda
+        // lineaProducto (básica/premium, de tus archivos) es un campo
+        // aparte de "linea" (hombre/dama, el que trae Busint) — nunca se
+        // pisan entre sí.
+        if (f.lineaProducto && !previo.lineaProducto) item.lineaProducto = f.lineaProducto;
+        if (f.foto && !previo.foto) item.foto = f.foto;
+        if (!previo.origen && !previo.actualizadoEn) { item.origen = "bitacora_excel"; item.origenArchivo = f.archivoOrigen; item.importadoEn = new Date().toISOString(); }
+        return item;
+      });
+      // Firestore permite máx. 500 escrituras por batch — se parte en
+      // bloques de 400 por margen (las fotos hacen cada doc más pesado).
+      for (let i = 0; i < items.length; i += 400) {
+        await fsBatch("busint_referencias", items.slice(i, i + 400));
+      }
+      // --- Comparación de 3 colores contra Busint (Busint = mando) ---
+      const verde = [], amarillo = [], naranja = [];
+      filas.forEach((f) => {
+        const previo = yaExistenPorNormal[normalizarRefComparacion(f.ref)]?.data;
+        const existeEnBusint = !!previo?.actualizadoEn;
+        if (!existeEnBusint) {
+          amarillo.push({ ref: f.ref, categoria: f.categoria, descripcion: f.descripcion, archivoOrigen: f.archivoOrigen });
+        } else {
+          const conflicto = (f.categoria && previo.categoria && f.categoria !== previo.categoria) || (f.descripcion && previo.descripcion && f.descripcion !== previo.descripcion);
+          if (conflicto) {
+            naranja.push({ ref: f.ref, categoriaBitacora: f.categoria, categoriaBusint: previo.categoria || "", descripcionBitacora: f.descripcion, descripcionBusint: previo.descripcion || "", archivoOrigen: f.archivoOrigen });
+          } else {
+            verde.push({ ref: f.ref, categoria: previo.categoria || f.categoria, descripcion: previo.descripcion || f.descripcion, archivoOrigen: f.archivoOrigen });
+          }
+        }
+      });
+      setComparacion({ verde, amarillo, naranja, generadoEn: new Date().toISOString() });
+      const nuevos = items.filter((it) => !yaExisten[it.id]).length;
+      const totalFotos = filas.filter((f) => f.foto).length;
+      const resumenArchivos = porArchivo.map((a) => `"${a.nombre}": ${a.filasArchivo} fila(s) en ${a.hojasUsadas} hoja(s)${a.fotosArchivo ? `, ${a.fotosArchivo} foto(s)` : ""}${a.filasSinRef ? `, ${a.filasSinRef} sin REF` : ""}`).join(" · ");
+      setResultadoImport(`✅ ${filas.length} referencia(s) combinadas — ${nuevos} nueva(s), ${filas.length - nuevos} ya existían (se completaron campos vacíos), ${totalFotos} con foto. ${amarillo.length} faltan en Busint, ${naranja.length} con datos distintos entre bitácora y Busint. ${resumenArchivos}`);
+    } catch (err) {
+      setResultadoImport(`⚠ No se pudo importar — ${err?.message || err}`);
+    }
+    setImportando(false);
+  }
+  function handleFileChange(e) {
+    const files = e.target.files;
+    const lista = files && files.length ? Array.from(files) : null;
+    e.target.value = ""; // permite volver a elegir los mismos archivos después
+    if (lista) importarBitacoraExcel(lista);
+  }
+  // Descarga la última comparación (ver importarBitacoraExcel) como un
+  // .xlsx con 3 hojas de color — mismo estilo de marca (T.ink/T.seam/etc.)
+  // que ya usa el resto de los exportadores de ATLAS.
+  async function descargarComparacionExcel() {
+    if (!comparacion) return;
+    setDescargandoComparacion(true);
+    try {
+      const XLSX = await import("xlsx-js-style");
+      const COLOR_INK = "1A1A2E", COLOR_SEAM = "C8B8A2";
+      const VERDE = "D7ECD9", AMARILLO = "FCEFC7", NARANJA = "FBDCC5";
+      const THIN = { style: "thin", color: { rgb: "E8E2DB" } };
+      const BOX = { top: THIN, bottom: THIN, left: THIN, right: THIN };
+      function hoja(titulo, encabezados, filas, colorFondo) {
+        const aoa = [encabezados, ...filas];
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        for (let r = 0; r < aoa.length; r++) {
+          for (let c = 0; c < encabezados.length; c++) {
+            const addr = XLSX.utils.encode_cell({ r, c });
+            if (!ws[addr]) ws[addr] = { t: "s", v: "" };
+            ws[addr].s = r === 0
+              ? { fill: { patternType: "solid", fgColor: { rgb: COLOR_INK } }, font: { bold: true, sz: 10, color: { rgb: COLOR_SEAM } }, border: BOX, alignment: { vertical: "center", horizontal: "center", wrapText: true } }
+              : { fill: { patternType: "solid", fgColor: { rgb: colorFondo } }, font: { sz: 10, color: { rgb: "1A1A2E" } }, border: BOX, alignment: { vertical: "center", horizontal: "left", wrapText: true } };
+          }
+        }
+        ws["!cols"] = encabezados.map(() => ({ wch: 26 }));
+        return ws;
+      }
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, hoja("Coincide", ["REF", "Categoría", "Descripción", "Archivo"], comparacion.verde.map((f) => [f.ref, f.categoria, f.descripcion, f.archivoOrigen]), VERDE), "Coincide con Busint");
+      XLSX.utils.book_append_sheet(wb, hoja("Falta", ["REF", "Categoría", "Descripción", "Archivo"], comparacion.amarillo.map((f) => [f.ref, f.categoria, f.descripcion, f.archivoOrigen]), AMARILLO), "Falta en Busint");
+      XLSX.utils.book_append_sheet(wb, hoja("Conflicto", ["REF", "Categoría (bitácora)", "Categoría (Busint)", "Descripción (bitácora)", "Descripción (Busint)", "Archivo"], comparacion.naranja.map((f) => [f.ref, f.categoriaBitacora, f.categoriaBusint, f.descripcionBitacora, f.descripcionBusint, f.archivoOrigen]), NARANJA), "Datos distintos");
+      XLSX.writeFile(wb, `Comparacion_Bitacora_vs_Busint_${today()}.xlsx`);
+    } catch (err) {
+      setResultadoImport(`⚠ No se pudo descargar la comparación — ${err?.message || err}`);
+    }
+    setDescargandoComparacion(false);
+  }
+  async function sincronizar() {
+    setSincronizando(true);
+    setResultado("");
+    try {
+      const llamar = httpsCallable(functionsClient, "getReferenciasBusint");
+      const resp = await llamar({});
+      setResultado(`✅ ${resp.data?.total ?? 0} referencias sincronizadas.`);
+    } catch (err) {
+      setResultado(`⚠ ${err?.message || "No se pudo sincronizar. Verifica que getReferenciasBusint esté desplegada."}`);
+    }
+    setSincronizando(false);
+  }
+  // Descarga toda la bitácora guardada en Firestore (busint_referencias) a
+  // un .xlsx, igual en espíritu al archivo de referencias que ya manejan
+  // por fuera (ej. "KAMILA REFERENCIAS_PIJAMAS.xlsx") — así queda algo para
+  // abrir y revisar sin tener que entrar a Firebase.
+  async function exportarBitacoraExcel() {
+    setExportando(true);
+    try {
+      const snap = await getDocs(collection(db, "busint_referencias"));
+      const filas = snap.docs
+        .map((d) => d.data())
+        .sort((a, b) => String(a.ref || "").localeCompare(String(b.ref || ""), "es", { numeric: true }));
+      const XLSX = await import("xlsx");
+      const wb = XLSX.utils.book_new();
+      // "BASE" y "TELA" quedan vacías a propósito: Busint no las expone en
+      // ApiGen_Referencias (no existen esos campos en su maestro), así que
+      // se llenan a mano en el Excel, igual que en el archivo de Kamila.
+      const aoa = [
+        ["REF", "BASE", "CATEGORIA", "DESCRIPCIÓN", "TELA", "SILUETA (TIPO DE CONFECCIÓN)", "LINEA (BASICO/PREMIUM)", "SUBCATEGORÍA (RANGO/EXTENSIÓN)"],
+        ...filas.map((f) => [f.ref || "", "", f.categoria || "", f.descripcion || "", "", f.tipoConfeccion || "", f.linea || "", f.subcategoria || ""]),
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), "Bitácora Busint");
+      XLSX.writeFile(wb, `Bitacora_Referencias_Busint_${today()}.xlsx`);
+    } catch (err) {
+      setResultado(`⚠ No se pudo exportar — ${err?.message || err}`);
+    }
+    setExportando(false);
+  }
+  // --- Probar 1 referencia en vivo (registro crudo completo de Busint) ---
+  // Pensado para revisar, antes de decidir capturar un campo nuevo, qué
+  // trae Busint REALMENTE para una ref puntual (ej. "98-5609") — Busint no
+  // tiene un endpoint de "una sola referencia", así que la Cloud Function
+  // consulta el maestro completo y filtra (ver probarReferenciaBusint).
+  const [refPrueba, setRefPrueba] = useState("");
+  const [probando, setProbando] = useState(false);
+  const [resultadoPrueba, setResultadoPrueba] = useState(null);
+  async function probarReferencia() {
+    const ref = refPrueba.trim();
+    if (!ref) return;
+    setProbando(true);
+    setResultadoPrueba(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "probarReferenciaBusint");
+      const resp = await llamar({ ref });
+      setResultadoPrueba(resp.data);
+    } catch (err) {
+      setResultadoPrueba({ error: err?.message || "No se pudo consultar. Verifica que probarReferenciaBusint esté desplegada." });
+    }
+    setProbando(false);
+  }
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 14px", background: T.denimBg, borderRadius: 8, marginBottom: 10 }}>
+        <div style={{ fontSize: 12.5, color: T.denim, fontWeight: 600 }}>
+          🔄 Bitácora de referencias Busint — se actualiza sola todos los días a las 5:00 a.m.
+          {meta?.ultimaSync && <div style={{ marginTop: 2 }}>Última sincronización: {new Date(meta.ultimaSync).toLocaleString("es-CO")} · {meta.total} referencias</div>}
+          {!meta && <div style={{ marginTop: 2 }}>Aún no se ha sincronizado ninguna vez.</div>}
+          {resultado && <div style={{ marginTop: 4 }}>{resultado}</div>}
+          {resultadoImport && <div style={{ marginTop: 4 }}>{resultadoImport}</div>}
+        </div>
+        <div style={{ display: "flex", gap: 8, flexShrink: 0, flexWrap: "wrap" }}>
+          <input ref={fileInputRef} type="file" accept=".xlsx,.xls" multiple style={{ display: "none" }} onChange={handleFileChange} />
+          <Btn variant="secondary" onClick={() => fileInputRef.current?.click()} disabled={importando}>{importando ? "Importando..." : "📤 Importar bitácora(s) Excel"}</Btn>
+          {comparacion && (
+            <Btn variant="secondary" onClick={descargarComparacionExcel} disabled={descargandoComparacion}>{descargandoComparacion ? "Generando..." : "📊 Descargar comparación"}</Btn>
+          )}
+          <Btn variant="secondary" onClick={exportarBitacoraExcel} disabled={exportando || !meta}>{exportando ? "Generando..." : "📥 Descargar Excel"}</Btn>
+          <Btn onClick={sincronizar} disabled={sincronizando}>{sincronizando ? "Sincronizando..." : "Sincronizar ahora"}</Btn>
+        </div>
+      </div>
+      <div style={{ padding: "10px 14px", background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 8 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, marginBottom: 8 }}>🧪 Probar una referencia puntual en vivo (registro crudo de Busint, sin filtrar)</div>
+        <div style={{ display: "flex", gap: 8, marginBottom: resultadoPrueba ? 10 : 0 }}>
+          <input value={refPrueba} onChange={(e) => setRefPrueba(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") probarReferencia(); }} placeholder="Ej: 98-5609" style={{ flex: 1, maxWidth: 220, padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+          <Btn variant="secondary" onClick={probarReferencia} disabled={probando || !refPrueba.trim()}>{probando ? "Consultando..." : "Probar"}</Btn>
+        </div>
+        {resultadoPrueba?.error && <div style={{ fontSize: 12.5, color: T.coral, fontWeight: 600 }}>⚠ {resultadoPrueba.error}</div>}
+        {resultadoPrueba && !resultadoPrueba.error && !resultadoPrueba.encontrada && (
+          <div style={{ fontSize: 12.5, color: T.slate }}>No se encontró "{refPrueba}" en el maestro de Busint ({resultadoPrueba.totalEnBusint} referencias revisadas).</div>
+        )}
+        {resultadoPrueba?.encontrada && (
+          <div>
+            <div style={{ fontSize: 11.5, color: T.slate, marginBottom: 6 }}>Encontrada — {resultadoPrueba.totalEnBusint} referencias revisadas en total. Estos son TODOS los campos que mandó Busint, sin filtrar:</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+              <tbody>
+                {Object.entries(resultadoPrueba.referencia).map(([k, v]) => (
+                  <tr key={k} style={{ borderBottom: `1px solid ${T.border}` }}>
+                    <td style={{ padding: "4px 8px", fontWeight: 700, color: T.ink, whiteSpace: "nowrap", verticalAlign: "top" }}>{k}</td>
+                    <td style={{ padding: "4px 8px", color: T.slate, wordBreak: "break-word" }}>{v === "" ? <em>(vacío)</em> : String(v)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+// Prototipos, cápsulas y referencias-de-cápsula con eliminado:true — nunca
+// se borran de Firestore al eliminarlos desde Prototipos/Cápsulas (ver
+// deleteProto/deleteCapsula/deleteRefFromCapsula), solo se marcan y se
+// esconden de protosVisibles/capsulasVisibles. Acá se pueden restaurar, o sí
+// borrar para siempre (purgar*, irreversible).
+function PapeleraView({ protos, capsulas, onRestaurarProto, onRestaurarCapsula, onRestaurarRef, onPurgarProto, onPurgarCapsula, onPurgarRef }) {
+  const [confirmPurga, setConfirmPurga] = useState(null);
+  const protosEliminados = protos.filter((p) => p.eliminado).sort((a, b) => (b.eliminadoEn || "").localeCompare(a.eliminadoEn || ""));
+  const capsulasEliminadas = capsulas.filter((c) => c.eliminado).sort((a, b) => (b.eliminadoEn || "").localeCompare(a.eliminadoEn || ""));
+  // Solo referencias eliminadas de cápsulas que SIGUEN vivas — si la cápsula
+  // entera está eliminada, sus referencias ya aparecen bajo "Cápsulas" y no
+  // hace falta listarlas dos veces.
+  const refsEliminadas = capsulas
+    .filter((c) => !c.eliminado)
+    .flatMap((c) => (c.referencias || []).filter((r) => r.eliminado).map((r) => ({ ...r, capsulaId: c.id, capsulaName: c.name })))
+    .sort((a, b) => (b.eliminadoEn || "").localeCompare(a.eliminadoEn || ""));
+  const total = protosEliminados.length + capsulasEliminadas.length + refsEliminadas.length;
+  function ejecutarPurga() {
+    if (!confirmPurga) return;
+    if (confirmPurga.tipo === "proto") onPurgarProto(confirmPurga.id);
+    if (confirmPurga.tipo === "capsula") onPurgarCapsula(confirmPurga.id);
+    if (confirmPurga.tipo === "ref") onPurgarRef(confirmPurga.capId, confirmPurga.id);
+    setConfirmPurga(null);
+  }
+  function Fila({ icono, titulo, subtitulo, eliminadoEn, eliminadoPor, onRestaurar, onPurgar }) {
+    return (
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: T.canvas, borderRadius: 8, border: `1px solid ${T.border}`, marginBottom: 8, gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{icono} {titulo}</div>
+          <div style={{ fontSize: 11.5, color: T.slate, marginTop: 2 }}>
+            {subtitulo ? `${subtitulo} · ` : ""}Eliminado {eliminadoEn ? new Date(eliminadoEn).toLocaleString("es-CO") : "—"}{eliminadoPor ? ` por ${eliminadoPor}` : ""}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn small variant="success" onClick={onRestaurar}>↩ Restaurar</Btn>
+          <Btn small variant="danger" onClick={onPurgar}>🗑 Eliminar definitivamente</Btn>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div>
+      {confirmPurga && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Eliminar definitivamente</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar <strong>"{confirmPurga.nombre}"</strong> para siempre? Esta vez sí es irreversible — ya no queda en la Papelera.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmPurga(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={ejecutarPurga}>Sí, eliminar para siempre</Btn>
+            </div>
+          </div>
+        </div>
+      )}
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Papelera</div>
+      <div style={{ fontSize: 12.5, color: T.slate, marginBottom: 16 }}>Prototipos, cápsulas y referencias eliminados quedan aquí — restáuralos o bórralos para siempre.</div>
+      {total === 0 && <div style={{ textAlign: "center", padding: 32, color: T.slate, fontSize: 13 }}>La papelera está vacía.</div>}
+      {protosEliminados.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 8 }}>Prototipos ({protosEliminados.length})</div>
+          {protosEliminados.map((p) => (
+            <Fila key={p.id} icono="⬡" titulo={`${p.name} — ${p.reference}`} subtitulo={p.cliente || ""} eliminadoEn={p.eliminadoEn} eliminadoPor={p.eliminadoPor}
+              onRestaurar={() => onRestaurarProto(p.id)} onPurgar={() => setConfirmPurga({ tipo: "proto", id: p.id, nombre: p.name })} />
+          ))}
+        </div>
+      )}
+      {capsulasEliminadas.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 8 }}>Cápsulas ({capsulasEliminadas.length})</div>
+          {capsulasEliminadas.map((c) => (
+            <Fila key={c.id} icono="🗂" titulo={c.name} subtitulo={`${c.referencias?.length || 0} referencia${c.referencias?.length !== 1 ? "s" : ""}`} eliminadoEn={c.eliminadoEn} eliminadoPor={c.eliminadoPor}
+              onRestaurar={() => onRestaurarCapsula(c.id)} onPurgar={() => setConfirmPurga({ tipo: "capsula", id: c.id, nombre: c.name })} />
+          ))}
+        </div>
+      )}
+      {refsEliminadas.length > 0 && (
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 8 }}>Referencias de cápsula ({refsEliminadas.length})</div>
+          {refsEliminadas.map((r) => (
+            <Fila key={r.id} icono="⬢" titulo={`${r.name} — ${r.reference}`} subtitulo={r.capsulaName} eliminadoEn={r.eliminadoEn} eliminadoPor={r.eliminadoPor}
+              onRestaurar={() => onRestaurarRef(r.capsulaId, r.id)} onPurgar={() => setConfirmPurga({ tipo: "ref", id: r.id, capId: r.capsulaId, nombre: r.name })} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+// Plantilla sugerida de Códigos de Referencia, a partir del cuadro real que
+// maneja Industrias Yanko (prefijo 98 = su fábrica / línea dama, incluye
+// Camisa y Siza Caballero porque se producen ahí mismo; 96 = Enterizos-
+// Vestidos "Reform"). Los bloques de 100 (Short Cachetero, Bicicletero,
+// Faldas, Capri, Leggins, Blusa Mangas, Siza, Top, Buso, Short) traen su
+// rango de desborde confirmado (+2000, ej. Faldas 201-299 pasa a 2200-2299
+// cuando se llena). Conjuntos/Enterizos-Vestidos (1000-1999) fue confirmado
+// tal cual. Camisa Caballero, Siza Caballero y Enterizos-Vestidos (Reform)
+// son un punto de partida razonable — no vinieron 100% confirmados, así que
+// quedan editables en esta misma pantalla (Eliminar + volver a Agregar con
+// el rango correcto) sin tocar nada de código.
+const PLANTILLA_CODIGOS_REFERENCIA = [
+  { categoria: "Short Cachetero", prefijo: "98", rangoInicio: 1, rangoFin: 99, desbordeInicio: 2000, desbordeFin: 2099 },
+  { categoria: "Bicicletero", prefijo: "98", rangoInicio: 101, rangoFin: 199, desbordeInicio: 2100, desbordeFin: 2199 },
+  { categoria: "Faldas", prefijo: "98", rangoInicio: 201, rangoFin: 299, desbordeInicio: 2200, desbordeFin: 2299 },
+  { categoria: "Capri", prefijo: "98", rangoInicio: 301, rangoFin: 399, desbordeInicio: 2300, desbordeFin: 2399 },
+  { categoria: "Leggins", prefijo: "98", rangoInicio: 401, rangoFin: 499, desbordeInicio: 2400, desbordeFin: 2499 },
+  { categoria: "Blusa Mangas", prefijo: "98", rangoInicio: 501, rangoFin: 599, desbordeInicio: 2500, desbordeFin: 2599 },
+  { categoria: "Siza", prefijo: "98", rangoInicio: 601, rangoFin: 699, desbordeInicio: 2600, desbordeFin: 2699 },
+  { categoria: "Top", prefijo: "98", rangoInicio: 701, rangoFin: 799, desbordeInicio: 2700, desbordeFin: 2799 },
+  { categoria: "Buso", prefijo: "98", rangoInicio: 801, rangoFin: 899, desbordeInicio: 2800, desbordeFin: 2899 },
+  { categoria: "Short", prefijo: "98", rangoInicio: 901, rangoFin: 999, desbordeInicio: 2900, desbordeFin: 2999 },
+  { categoria: "Conjuntos / Enterizos - Vestidos", prefijo: "98", rangoInicio: 1000, rangoFin: 1999, desbordeInicio: "", desbordeFin: "" },
+  { categoria: "Camisa Caballero", prefijo: "98", rangoInicio: 5001, rangoFin: 5999, desbordeInicio: "", desbordeFin: "" },
+  { categoria: "Siza Caballero", prefijo: "98", rangoInicio: 6001, rangoFin: 6999, desbordeInicio: "", desbordeFin: "" },
+  { categoria: "Enterizos - Vestidos (Reform)", prefijo: "96", rangoInicio: 1001, rangoFin: 1999, desbordeInicio: "", desbordeFin: "" },
+];
+function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula, onRestaurarProto, onRestaurarCapsula, onRestaurarRef, onPurgarProto, onPurgarCapsula, onPurgarRef, isAdmin }) {
   const [tab, setTab] = useState("etapas");
   const [newItem, setNewItem] = useState("");
   const [editItem, setEditItem] = useState(null);
@@ -5115,7 +6085,48 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // Corte, Ventas, Contabilidad, Planeación, etc.), por eso su permiso vive
   // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
   const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["kpis", "🎯 KPIs"], ["informes", "📋 Informes"]];
-  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"]];
+  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["papelera", "🗑 Papelera"]];
+  const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", silueta: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
+  function addCodigoReferencia() {
+    const prefijo = nuevoCodigo.prefijo.trim();
+    const rangoInicio = Number(nuevoCodigo.rangoInicio);
+    const rangoFin = Number(nuevoCodigo.rangoFin);
+    if (!nuevoCodigo.categoria || !prefijo || !rangoInicio || !rangoFin || rangoFin < rangoInicio) return;
+    onUpdateConfig({
+      codigosReferencia: [
+        ...(config.codigosReferencia || []),
+        {
+          id: uid(),
+          categoria: nuevoCodigo.categoria,
+          silueta: nuevoCodigo.silueta,
+          prefijo,
+          rangoInicio,
+          rangoFin,
+          desbordeInicio: nuevoCodigo.desbordeInicio === "" ? "" : Number(nuevoCodigo.desbordeInicio),
+          desbordeFin: nuevoCodigo.desbordeFin === "" ? "" : Number(nuevoCodigo.desbordeFin),
+        },
+      ],
+    });
+    setNuevoCodigo({ categoria: "", silueta: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
+  }
+  function removeCodigoReferencia(id) {
+    onUpdateConfig({ codigosReferencia: (config.codigosReferencia || []).filter((c) => c.id !== id) });
+  }
+  // Carga de un solo clic la plantilla sugerida (ver PLANTILLA_CODIGOS_REFERENCIA)
+  // — agrega también a config.categorias cualquier nombre de categoría que
+  // todavía no exista, para que el selector de "Nueva Referencia"/"Nuevo
+  // Prototipo" (que solo ofrece nombres de config.categorias) pueda
+  // encontrarlas. No duplica filas si ya existe una entrada con la misma
+  // categoría (y sin silueta) — para reemplazar una, elimínala primero.
+  function cargarPlantillaCodigos() {
+    const existentes = new Set((config.codigosReferencia || []).filter((c) => !c.silueta).map((c) => c.categoria));
+    const nuevasFilas = PLANTILLA_CODIGOS_REFERENCIA.filter((p) => !existentes.has(p.categoria)).map((p) => ({ id: uid(), silueta: "", ...p }));
+    const categoriasFaltantes = PLANTILLA_CODIGOS_REFERENCIA.map((p) => p.categoria).filter((c) => !(config.categorias || []).includes(c));
+    onUpdateConfig({
+      categorias: [...(config.categorias || []), ...categoriasFaltantes],
+      codigosReferencia: [...(config.codigosReferencia || []), ...nuevasFilas],
+    });
+  }
   function ListEditor({ listKey, title }) {
     return (
       <div>
@@ -5147,7 +6158,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
         <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: T.coral, marginBottom: 12 }}>⚠ Confirmar eliminación</div>
-            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar <strong>"{confirmDel.name}"</strong>? Esta acción no se puede deshacer.</div>
+            <div style={{ fontSize: 14, color: T.ink, marginBottom: 24 }}>¿Eliminar <strong>"{confirmDel.name}"</strong>? Queda en la Papelera por si hay que restaurarlo.</div>
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
               <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
               <Btn variant="danger" onClick={() => { if (confirmDel.tipo === "proto") onDeleteProto(confirmDel.id); else onDeleteCapsula(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
@@ -5187,6 +6198,70 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
         {tab === "categorias" && <ListEditor listKey="categorias" title="Categorías" />}
         {tab === "siluetas" && <ListEditor listKey="siluetas" title="Siluetas" />}
         {tab === "rangos" && <ListEditor listKey="rangos" title="Rangos" />}
+        {tab === "codigos_referencia" && (
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Códigos de Referencia</div>
+            <div style={{ fontSize: 12.5, color: T.slate, marginBottom: 16 }}>
+              Cada fila amarra una Categoría (y opcionalmente una Silueta puntual) a un prefijo y un rango de números (ej. 201 a 299). El "Desborde" es opcional: si el rango principal se llena, ATLAS sigue ahí solo, sin invadir el rango de la categoría vecina. Con esto, ATLAS sugiere el consecutivo — nunca se reinicia y nunca se repite.
+            </div>
+            <BusintSyncPanel />
+            <ReferenciasNoEnBusintView protos={protos} capsulas={capsulas} />
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+              <Btn variant="secondary" onClick={cargarPlantillaCodigos}>📋 Cargar plantilla sugerida (98 dama/fábrica + 96 Reform)</Btn>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr 0.6fr 0.8fr 0.9fr auto", gap: 8, marginBottom: 8, alignItems: "end" }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Categoría</div>
+                <FSel value={nuevoCodigo.categoria} onChange={(v) => setNuevoCodigo((f) => ({ ...f, categoria: v }))} options={config.categorias} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Silueta (opcional)</div>
+                <FSel value={nuevoCodigo.silueta} onChange={(v) => setNuevoCodigo((f) => ({ ...f, silueta: v }))} options={config.siluetas} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Prefijo</div>
+                <input value={nuevoCodigo.prefijo} onChange={(e) => setNuevoCodigo((f) => ({ ...f, prefijo: e.target.value }))} placeholder="Ej: 98" maxLength={4} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Rango (inicio - fin)</div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <input type="number" min={0} placeholder="201" value={nuevoCodigo.rangoInicio} onChange={(e) => setNuevoCodigo((f) => ({ ...f, rangoInicio: e.target.value }))} style={{ width: "100%", padding: "9px 8px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+                  <input type="number" min={0} placeholder="299" value={nuevoCodigo.rangoFin} onChange={(e) => setNuevoCodigo((f) => ({ ...f, rangoFin: e.target.value }))} style={{ width: "100%", padding: "9px 8px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Desborde (opcional)</div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <input type="number" min={0} placeholder="2200" value={nuevoCodigo.desbordeInicio} onChange={(e) => setNuevoCodigo((f) => ({ ...f, desbordeInicio: e.target.value }))} style={{ width: "100%", padding: "9px 8px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+                  <input type="number" min={0} placeholder="2299" value={nuevoCodigo.desbordeFin} onChange={(e) => setNuevoCodigo((f) => ({ ...f, desbordeFin: e.target.value }))} style={{ width: "100%", padding: "9px 8px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+                </div>
+              </div>
+              <Btn onClick={addCodigoReferencia}>+ Agregar</Btn>
+            </div>
+            <div style={{ fontSize: 11, color: T.slate, marginBottom: 16, fontStyle: "italic" }}>El Desborde es opcional — déjalo vacío si esa categoría no necesita una "segunda vuelta" cuando se llene su rango principal.</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {(config.codigosReferencia || []).length === 0 && (
+                <div style={{ fontSize: 13, color: T.slate, fontStyle: "italic" }}>Aún no hay códigos registrados.</div>
+              )}
+              {(config.codigosReferencia || []).map((c) => {
+                const rango = `${c.prefijo}-${String(c.rangoInicio).padStart(3, "0")} a ${c.prefijo}-${String(c.rangoFin).padStart(3, "0")}`;
+                const tieneDesborde = c.desbordeInicio !== "" && c.desbordeInicio != null && c.desbordeFin !== "" && c.desbordeFin != null;
+                const rangoDesborde = tieneDesborde ? `${c.prefijo}-${String(c.desbordeInicio).padStart(3, "0")} a ${c.prefijo}-${String(c.desbordeFin).padStart(3, "0")}` : null;
+                return (
+                  <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: T.canvas, borderRadius: 8, border: `1px solid ${T.border}` }}>
+                    <div>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: T.ink }}>{c.categoria}</span>
+                      {c.silueta && <span style={{ fontSize: 12, color: T.slate, marginLeft: 8 }}>· {c.silueta}</span>}
+                      <span style={{ fontSize: 12, color: T.denim, marginLeft: 10, fontWeight: 600 }}>{rango}</span>
+                      {tieneDesborde && <span style={{ fontSize: 12, color: T.amber, marginLeft: 10, fontWeight: 600 }}>· si se llena, sigue en {rangoDesborde}</span>}
+                    </div>
+                    <button onClick={() => removeCodigoReferencia(c.id)} style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "4px 10px", color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Eliminar</button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
         {tab === "disenadores" && <ListEditor listKey="disenadores" title="Diseñadores" />}
         {tab === "kpi_areas" && (
           <div>
@@ -5283,9 +6358,12 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
           <div>
             <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 20 }}>Gestión de Contenido</div>
             <div style={{ marginBottom: 24 }}>
-              <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>⬡ Prototipos <span style={{ fontSize: 12, color: T.slate, fontWeight: 400 }}>({protos.length} total)</span></div>
+              {/* Los eliminados (Papelera) no aparecen aquí — "Borrar" desde
+                  esta pantalla también es un borrado suave (ver deleteProto),
+                  así que quedan recuperables en Administración → Papelera. */}
+              <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>⬡ Prototipos <span style={{ fontSize: 12, color: T.slate, fontWeight: 400 }}>({protos.filter((p) => !p.eliminado).length} total)</span></div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {protos.map((p) => (
+                {protos.filter((p) => !p.eliminado).map((p) => (
                   <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
                     <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{p.name}</div>
@@ -5295,13 +6373,13 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                     {isAdmin && <button onClick={() => setConfirmDel({ id: p.id, tipo: "proto", name: p.name })} style={{ padding: "5px 10px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 6, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>🗑 Borrar</button>}
                   </div>
                 ))}
-                {!protos.length && <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin prototipos.</div>}
+                {!protos.filter((p) => !p.eliminado).length && <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin prototipos.</div>}
               </div>
             </div>
             <div>
-              <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>⬢ Cápsulas <span style={{ fontSize: 12, color: T.slate, fontWeight: 400 }}>({capsulas.length} total)</span></div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: T.ink, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>⬢ Cápsulas <span style={{ fontSize: 12, color: T.slate, fontWeight: 400 }}>({capsulas.filter((c) => !c.eliminado).length} total)</span></div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {capsulas.map((c) => (
+                {capsulas.filter((c) => !c.eliminado).map((c) => (
                   <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
                     <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>{c.name}</div>
@@ -5311,10 +6389,16 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                     {isAdmin && <button onClick={() => setConfirmDel({ id: c.id, tipo: "capsula", name: c.name })} style={{ padding: "5px 10px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 6, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>🗑 Borrar</button>}
                   </div>
                 ))}
-                {!capsulas.length && <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin cápsulas.</div>}
+                {!capsulas.filter((c) => !c.eliminado).length && <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 20 }}>Sin cápsulas.</div>}
               </div>
             </div>
           </div>
+        )}
+        {tab === "papelera" && (
+          <PapeleraView protos={protos} capsulas={capsulas}
+            onRestaurarProto={onRestaurarProto} onRestaurarCapsula={onRestaurarCapsula} onRestaurarRef={onRestaurarRef}
+            onPurgarProto={onPurgarProto} onPurgarCapsula={onPurgarCapsula} onPurgarRef={onPurgarRef}
+          />
         )}
       </div>
     </div>
@@ -6965,8 +8049,14 @@ function AppInner() {
     const conRef = (cap.referencias || []).find((r) => r.cliente || r.colores?.[0]);
     return conRef ? (conRef.cliente || conRef.colores?.[0]) : null;
   }
-  const protosVisibles = clienteAsociado ? protos.filter((p) => (p.cliente || p.colores?.[0]) === clienteAsociado) : protos;
-  const capsulasVisibles = clienteAsociado ? capsulas.filter((cap) => capsulaCliente(cap) === clienteAsociado) : capsulas;
+  // .eliminado: true son ítems en la Papelera (ver Administración → Papelera)
+  // — se esconden de toda la navegación normal aquí mismo, en un solo lugar,
+  // sin tocar protos/capsulas (los arrays "crudos" siguen completos porque
+  // varias funciones de escritura los usan como base para no perder datos).
+  const protosVisibles = (clienteAsociado ? protos.filter((p) => (p.cliente || p.colores?.[0]) === clienteAsociado) : protos).filter((p) => !p.eliminado);
+  const capsulasVisibles = (clienteAsociado ? capsulas.filter((cap) => capsulaCliente(cap) === clienteAsociado) : capsulas)
+    .filter((cap) => !cap.eliminado)
+    .map((cap) => ({ ...cap, referencias: (cap.referencias || []).filter((r) => !r.eliminado) }));
   const pedidosVisibles = clienteAsociado ? pedidos.filter((p) => p.cliente === clienteAsociado) : pedidos;
   const cronogramaMuestrasVisibles = clienteAsociado ? cronogramaMuestras.filter((c) => c.cliente === clienteAsociado) : cronogramaMuestras;
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
@@ -7466,19 +8556,66 @@ function AppInner() {
     await updateProto(protoId, { promotedTo: capId });
     notify({ id: uid(), icon: "⬆", title: "Promovido", msg: `${ref.name} añadida.` });
   }
-  async function deleteProto(id) { setProtos((ps) => ps.filter((p) => p.id !== id)); await fsDelete("prototipos", id); }
+  // BORRADO SUAVE (Papelera): "eliminar" desde Prototipos/Cápsulas nunca
+  // borra el documento de Firestore — solo lo marca con eliminado:true y lo
+  // esconde de protosVisibles/capsulasVisibles (ver más abajo). Así, un clic
+  // de más siempre se puede deshacer desde Administración → Papelera. El
+  // borrado DE VERDAD (fsDelete, irreversible) solo pasa en las funciones
+  // purgar*Definitivo, que solo vive dentro de la Papelera.
+  async function deleteProto(id) {
+    const updated = protos.map((p) => (p.id === id ? { ...p, eliminado: true, eliminadoEn: nowISO(), eliminadoPor: currentUser?.name || "" } : p));
+    setProtos(updated);
+    await fsSave("prototipos", id, updated.find((p) => p.id === id));
+  }
+  async function restaurarProto(id) {
+    const updated = protos.map((p) => (p.id === id ? { ...p, eliminado: false } : p));
+    setProtos(updated);
+    await fsSave("prototipos", id, updated.find((p) => p.id === id));
+  }
+  async function purgarProtoDefinitivo(id) {
+    setProtos((ps) => ps.filter((p) => p.id !== id));
+    await fsDelete("prototipos", id);
+  }
   // Borrar cápsula es una acción solo de Administrador (ver botón "🗑 Borrar"
-  // en CapsulasView, gateado por isAdmin). Al borrarla, también se borran los
-  // envíos de Bitácora que tengan referencias de ESA cápsula — si no,
-  // quedaban registros huérfanos apuntando a una cápsula que ya no existe.
+  // en CapsulasView, gateado por isAdmin) — ahora es borrado suave, ver nota
+  // arriba. Los envíos de Bitácora ya no se tocan aquí: si la cápsula se
+  // restaura desde la Papelera, sus envíos siguen intactos tal como estaban.
   async function deleteCapsula(id) {
-    setCapsulas((cs) => cs.filter((c) => c.id !== id));
+    const updated = capsulas.map((c) => (c.id === id ? { ...c, eliminado: true, eliminadoEn: nowISO(), eliminadoPor: currentUser?.name || "" } : c));
+    await updateCapsulasAndSave(updated);
+  }
+  async function restaurarCapsula(id) {
+    const updated = capsulas.map((c) => (c.id === id ? { ...c, eliminado: false } : c));
+    await updateCapsulasAndSave(updated);
+  }
+  // Purgar SÍ borra la cápsula de verdad — y solo en este caso (irreversible)
+  // se limpian también los envíos de Bitácora que le pertenecían, igual que
+  // hacía el borrado directo de antes.
+  async function purgarCapsulaDefinitivo(id) {
+    const updated = capsulas.filter((c) => c.id !== id);
+    setCapsulas(updated);
     await fsDelete("capsulas", id);
     const enviosDeEstaCapsula = bitacoraEnvios.filter((e) => (e.items || []).some((it) => it.capsulaId === id));
     if (enviosDeEstaCapsula.length) {
       setBitacoraEnvios((es) => es.filter((e) => !enviosDeEstaCapsula.some((x) => x.id === e.id)));
       await Promise.all(enviosDeEstaCapsula.map((e) => fsDelete("bitacora_envios", e.id)));
     }
+  }
+  // Borra (suave) UNA referencia dentro de una cápsula sin tocar la cápsula
+  // misma ni sus demás referencias — a diferencia de deleteCapsula (que
+  // afecta todo el paquete), esto es para "esta referencia se creó por
+  // error, pero el resto de la cápsula sigue viva".
+  async function deleteRefFromCapsula(capId, refId) {
+    const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, referencias: c.referencias.map((r) => (r.id !== refId ? r : { ...r, eliminado: true, eliminadoEn: nowISO(), eliminadoPor: currentUser?.name || "" })) }));
+    await updateCapsulasAndSave(updated);
+  }
+  async function restaurarRefDeCapsula(capId, refId) {
+    const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, referencias: c.referencias.map((r) => (r.id !== refId ? r : { ...r, eliminado: false })) }));
+    await updateCapsulasAndSave(updated);
+  }
+  async function purgarRefDefinitivo(capId, refId) {
+    const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, referencias: c.referencias.filter((r) => r.id !== refId) }));
+    await updateCapsulasAndSave(updated);
   }
   async function updateProtoName(id, patch) { await updateProto(id, patch); }
   async function updateCapsulaName(id, patch) { const updated = capsulas.map((c) => (c.id !== id ? c : { ...c, ...patch })); setCapsulas(updated); const cap = updated.find((c) => c.id === id); await fsSave("capsulas", id, cap); }
@@ -7703,9 +8840,9 @@ function AppInner() {
           onClose={() => setShowCambiarClave(false)}
         />
       )}
-      {modal === "new-proto" && <NewProtoModal onSave={addProto} onClose={() => setModal(null)} config={config} />}
+      {modal === "new-proto" && <NewProtoModal onSave={addProto} onClose={() => setModal(null)} config={config} protos={protos} capsulas={capsulas} />}
       {modal === "new-capsula" && <NewCapsulaModal onSave={addCapsula} onClose={() => setModal(null)} config={config} />}
-      {modal === "new-ref" && newRefCap && <NewRefModal capsula={newRefCap} onSave={addRef} onClose={() => { setModal(null); setNewRefCap(null); }} config={config} />}
+      {modal === "new-ref" && newRefCap && <NewRefModal capsula={newRefCap} onSave={addRef} onClose={() => { setModal(null); setNewRefCap(null); }} config={config} protos={protos} capsulas={capsulas} />}
       {modal === "promote" && promoteProto && <PromoteModal proto={promoteProto} capsulas={capsulas} onSave={promoteToCapsula} onClose={() => { setModal(null); setPromoteProto(null); }} config={config} />}
       {modal === "new-pedido" && <SubirPedidoModal2 onSave={addPedido} onClose={() => setModal(null)} pedidoConfig={pedidoConfig} pedidos={pedidos} clientes={config.clientes} />}
       <div style={{ display: "flex", minHeight: "100vh" }}>
@@ -7810,7 +8947,7 @@ function AppInner() {
                 onNewRef={(cap) => { setNewRefCap(cap); setModal("new-ref"); }}
                 onEditCapsula={updateCapsulaName}
                 stages={config.stages}
-                isAdmin={currentUser?.isAdmin} onDeleteCapsula={deleteCapsula} config={config}
+                isAdmin={currentUser?.isAdmin} onDeleteCapsula={deleteCapsula} onDeleteRef={deleteRefFromCapsula} config={config}
                 onSetIlustracion={setIlustracionCapsula}
                 onSendObsCapsula={sendObservacionCapsula}
                 onMarkDoneObsCapsula={markDoneObservacionCapsula}
@@ -7912,6 +9049,8 @@ function AppInner() {
             {view === "admin" && (currentUser?.isAdmin || canAccessAdminDiseno) && (
               <AdminView config={config} onUpdateConfig={saveConfig} users={users} onUpdateUsers={saveUsers} protos={protos} capsulas={capsulas}
                 onUpdateProto={updateProtoName} onUpdateCapsula={updateCapsulaName} onDeleteProto={deleteProto} onDeleteCapsula={deleteCapsula}
+                onRestaurarProto={restaurarProto} onRestaurarCapsula={restaurarCapsula} onRestaurarRef={restaurarRefDeCapsula}
+                onPurgarProto={purgarProtoDefinitivo} onPurgarCapsula={purgarCapsulaDefinitivo} onPurgarRef={purgarRefDefinitivo}
                 isAdmin={currentUser?.isAdmin}
               />
             )}
