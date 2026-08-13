@@ -5266,6 +5266,139 @@ function ClientesTab({ config, onUpdateConfig }) {
 // (busint_referencias_meta/main, escrito tanto por la función programada
 // syncReferenciasBusint como por getReferenciasBusint) y deja forzar un
 // refresh inmediato sin tener que esperar a la pasada de las 5:00 a.m.
+// --- Lectura de imágenes incrustadas en un .xlsx (Foto de cada referencia) ---
+// SheetJS ("xlsx", edición community) no expone las imágenes incrustadas de
+// un archivo Excel — solo el texto de las celdas. Como un .xlsx es en
+// realidad un .zip (formato OOXML), las fotos SÍ se pueden leer abriendo el
+// paquete a mano con JSZip y siguiendo la misma cadena de referencias que
+// usa Excel internamente: hoja → xl/worksheets/sheetN.xml (trae un
+// <drawing r:id="…">) → xl/worksheets/_rels/sheetN.xml.rels (ese r:id
+// apunta a un drawingM.xml) → xl/drawings/drawingM.xml (cada imagen está
+// "anclada" a una fila con <xdr:from><xdr:row>) → xl/drawings/_rels/
+// drawingM.xml.rels (el r:embed de cada imagen apunta al archivo real en
+// xl/media/imageX.png). El número de fila del ancla es 0-based e igual de
+// índice que el array que arma XLSX.utils.sheet_to_json(ws,{header:1}) —
+// por eso alcanza con esa fila para saber a qué REF pertenece cada imagen.
+const OOXML_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+// Devuelve todos los elementos con ese nombre "local" (ignora el prefijo de
+// namespace del XML — algunos exportadores usan "xdr:", otros no) dentro de
+// un nodo/documento.
+function xmlLocalAll(root, localName) {
+  if (!root) return [];
+  return Array.from(root.getElementsByTagName("*")).filter((el) => el.localName === localName);
+}
+// Resuelve una ruta relativa tipo "../media/image1.png" contra un
+// directorio base tipo "xl/drawings", igual que lo haría un navegador.
+function resolverRutaXlsx(base, relativo) {
+  if (!relativo) return relativo;
+  if (relativo.startsWith("/")) return relativo.slice(1);
+  const partes = base.split("/");
+  for (const p of relativo.split("/")) {
+    if (p === "..") partes.pop();
+    else if (p !== ".") partes.push(p);
+  }
+  return partes.join("/");
+}
+// Comprime una imagen (bytes crudos) al mismo estándar que ya usa el resto
+// de la app para fotos (ImageUploader): máx. 800px de lado, JPEG calidad
+// 0.72 — así una foto de referencia no infla el documento de Firestore.
+function comprimirImagenBytesABase64(bytes, mime) {
+  return new Promise((resolve) => {
+    try {
+      const blob = new Blob([bytes], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 800;
+        let w = img.width, h = img.height;
+        if (w > MAX || h > MAX) {
+          if (w > h) { h = Math.round((h * MAX) / w); w = MAX; } else { w = Math.round((w * MAX) / h); h = MAX; }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        const out = canvas.toDataURL("image/jpeg", 0.72);
+        URL.revokeObjectURL(url);
+        resolve(out);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+      img.src = url;
+    } catch (e) {
+      resolve(null);
+    }
+  });
+}
+// Para cada hoja del workbook (en el mismo orden que wb.SheetNames de
+// SheetJS), devuelve la ruta interna del .xml de esa hoja dentro del .zip
+// (p.ej. "xl/worksheets/sheet1.xml"), leyendo xl/workbook.xml +
+// xl/_rels/workbook.xml.rels.
+async function mapaHojasARutaXlsx(zip, parser) {
+  const wbXmlText = await zip.file("xl/workbook.xml")?.async("text");
+  const wbRelsXmlText = await zip.file("xl/_rels/workbook.xml.rels")?.async("text");
+  if (!wbXmlText || !wbRelsXmlText) return [];
+  const wbDoc = parser.parseFromString(wbXmlText, "application/xml");
+  const wbRelsDoc = parser.parseFromString(wbRelsXmlText, "application/xml");
+  const sheetsEls = xmlLocalAll(wbDoc, "sheet");
+  const relEls = xmlLocalAll(wbRelsDoc, "Relationship");
+  return sheetsEls.map((s) => {
+    const rid = s.getAttributeNS(OOXML_REL_NS, "id");
+    const rel = relEls.find((r) => r.getAttribute("Id") === rid);
+    const target = rel?.getAttribute("Target") || "";
+    return target.startsWith("/") ? target.slice(1) : `xl/${target}`;
+  });
+}
+// Trae, para UNA hoja, un mapa {filaIndex0Based: dataURLimagenComprimida}
+// siguiendo la cadena hoja→drawing→relaciones→media descrita arriba. Si
+// algo en el XML no viene con la forma esperada, simplemente no trae fotos
+// de esa hoja (el resto del import por texto sigue funcionando igual).
+async function extraerImagenesDeHoja(zip, sheetPath, parser) {
+  const mapa = {};
+  try {
+    const sheetXmlText = await zip.file(sheetPath)?.async("text");
+    if (!sheetXmlText) return mapa;
+    const sheetDoc = parser.parseFromString(sheetXmlText, "application/xml");
+    const drawingEl = xmlLocalAll(sheetDoc, "drawing")[0];
+    if (!drawingEl) return mapa;
+    const drawingRid = drawingEl.getAttributeNS(OOXML_REL_NS, "id");
+    const sheetDir = sheetPath.slice(0, sheetPath.lastIndexOf("/"));
+    const sheetFile = sheetPath.slice(sheetPath.lastIndexOf("/") + 1);
+    const sheetRelsText = await zip.file(`${sheetDir}/_rels/${sheetFile}.rels`)?.async("text");
+    if (!sheetRelsText) return mapa;
+    const sheetRelsDoc = parser.parseFromString(sheetRelsText, "application/xml");
+    const relDraw = xmlLocalAll(sheetRelsDoc, "Relationship").find((r) => r.getAttribute("Id") === drawingRid);
+    if (!relDraw) return mapa;
+    const drawingPath = resolverRutaXlsx(sheetDir, relDraw.getAttribute("Target"));
+    const drawingXmlText = await zip.file(drawingPath)?.async("text");
+    if (!drawingXmlText) return mapa;
+    const drawingDoc = parser.parseFromString(drawingXmlText, "application/xml");
+    const drawingDir = drawingPath.slice(0, drawingPath.lastIndexOf("/"));
+    const drawingFile = drawingPath.slice(drawingPath.lastIndexOf("/") + 1);
+    const drawingRelsText = await zip.file(`${drawingDir}/_rels/${drawingFile}.rels`)?.async("text");
+    const drawingRelEls = drawingRelsText ? xmlLocalAll(parser.parseFromString(drawingRelsText, "application/xml"), "Relationship") : [];
+    const anchors = [...xmlLocalAll(drawingDoc, "twoCellAnchor"), ...xmlLocalAll(drawingDoc, "oneCellAnchor")];
+    for (const anchor of anchors) {
+      const from = xmlLocalAll(anchor, "from")[0];
+      const rowEl = from && xmlLocalAll(from, "row")[0];
+      const blip = xmlLocalAll(anchor, "blip")[0];
+      if (!rowEl || !blip) continue;
+      const fila = parseInt(rowEl.textContent, 10);
+      const embedRid = blip.getAttributeNS(OOXML_REL_NS, "embed");
+      const relImg = drawingRelEls.find((r) => r.getAttribute("Id") === embedRid);
+      if (!relImg || Number.isNaN(fila)) continue;
+      const mediaPath = resolverRutaXlsx(drawingDir, relImg.getAttribute("Target"));
+      const mediaFile = zip.file(mediaPath);
+      if (!mediaFile) continue;
+      const bytes = await mediaFile.async("uint8array");
+      const ext = (mediaPath.split(".").pop() || "png").toLowerCase();
+      const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "gif" ? "image/gif" : "image/png";
+      const dataUrl = await comprimirImagenBytesABase64(bytes, mime);
+      if (dataUrl) mapa[fila] = dataUrl;
+    }
+  } catch (e) {
+    // Hoja con XML atípico — se ignora solo la parte de fotos de esta hoja.
+  }
+  return mapa;
+}
 function BusintSyncPanel() {
   const [meta, setMeta] = useState(null);
   const [sincronizando, setSincronizando] = useState(false);
@@ -5277,6 +5410,211 @@ function BusintSyncPanel() {
     return () => unsub();
   }, []);
   const [exportando, setExportando] = useState(false);
+  // --- Importar bitácora externa desde Excel (p.ej. "KAMILA
+  // REFERENCIAS_PIJAMAS.xlsx") ---
+  // Algunas líneas/clientes (Kamila, etc.) manejan su propia bitácora de
+  // referencias por fuera de Busint (en Excel), con hojas por prefijo-
+  // segmento y columnas FOTO/REF/CATEGORIA/DESCRIPCION/TELA/RANGO. Para que
+  // ATLAS no sugiera un consecutivo que ya está tomado en esa bitácora (ni
+  // lo marque como duplicado si ya existe), esas referencias se importan
+  // acá mismo a la colección "busint_referencias" — así
+  // useMaestroReferenciasBusint()/sugerirReferencia()/
+  // SugerenciaYVerificacionRef ya las tienen en cuenta automáticamente, sin
+  // ningún cambio en esa lógica. No se pisan referencias que ya existan por
+  // sincronización con Busint: si el REF ya está en la bitácora, el import
+  // solo completa los campos que vengan vacíos (no borra lo que ya había).
+  const [importando, setImportando] = useState(false);
+  const [resultadoImport, setResultadoImport] = useState("");
+  // Guarda la última comparación (Busint vs. lo recién importado) para
+  // poder descargarla en Excel con colores sin tener que repetir el import.
+  const [comparacion, setComparacion] = useState(null);
+  const [descargandoComparacion, setDescargandoComparacion] = useState(false);
+  const fileInputRef = useRef(null);
+  // Quita tildes/diéresis y pasa a mayúsculas, para poder reconocer
+  // encabezados como "DESCRIPCIÓN" o "CATEGORÍA" sin importar acentos.
+  function normalizarEncabezado(v) {
+    return String(v ?? "")
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .trim()
+      .toUpperCase();
+  }
+  // Importa uno o varios archivos Excel de bitácora manual (p.ej. varias
+  // colecciones/clientes que hoy se llevan a mano) en una sola pasada:
+  // 1) Lee el texto de todas las hojas de todos los archivos con "xlsx".
+  // 2) Lee también las fotos incrustadas de cada hoja con JSZip (ver
+  //    extraerImagenesDeHoja arriba) y las amarra a la fila de su REF.
+  // 3) Combina todo contra lo que YA hay en Firestore (una sola lectura,
+  //    tomada ANTES de escribir nada) — así, si el mismo REF aparece en dos
+  //    archivos subidos juntos, no se cuenta como "nuevo" dos veces.
+  // 4) Escribe en "busint_referencias" completando solo lo que esté vacío
+  //    (Busint SIEMPRE manda si el dato ya vino de una sincronización real).
+  // 5) Arma la comparación de tres colores para el Excel descargable:
+  //    verde = el REF ya existe en Busint (coincide), amarillo = el REF
+  //    está en la bitácora manual pero Busint todavía no lo tiene, naranja
+  //    = existe en ambos lados pero la categoría/descripción no coincide.
+  async function importarBitacoraExcel(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    setImportando(true);
+    setResultadoImport("");
+    setComparacion(null);
+    try {
+      const XLSX = await import("xlsx");
+      const JSZip = (await import("jszip")).default;
+      const parser = new DOMParser();
+      const existentes = await getDocs(collection(db, "busint_referencias"));
+      const yaExisten = {};
+      existentes.docs.forEach((d) => { yaExisten[d.id] = d.data(); });
+      // Acumulador combinado de TODOS los archivos subidos en esta pasada,
+      // indexado por id (ref saneado) — si el mismo REF aparece en más de
+      // un archivo, el último gana el texto pero no se pierde ninguna foto
+      // ya encontrada.
+      const combinado = {};
+      const porArchivo = [];
+      for (const file of files) {
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: "array" });
+        const zip = await JSZip.loadAsync(buf);
+        const rutasHojas = await mapaHojasARutaXlsx(zip, parser);
+        let hojasUsadas = 0, filasArchivo = 0, filasSinRef = 0, fotosArchivo = 0;
+        for (let sIdx = 0; sIdx < wb.SheetNames.length; sIdx++) {
+          const ws = wb.Sheets[wb.SheetNames[sIdx]];
+          const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+          // Busca la fila de encabezados (la que trae una celda "REF") —
+          // ignora la fila de título de arriba (p.ej. "PIJAMAS DAMA - KAMILA").
+          let idxEncabezado = -1;
+          let colIdx = {};
+          for (let i = 0; i < aoa.length; i++) {
+            const normalizada = (aoa[i] || []).map(normalizarEncabezado);
+            if (normalizada.indexOf("REF") !== -1) {
+              idxEncabezado = i;
+              normalizada.forEach((h, j) => { colIdx[h] = j; });
+              break;
+            }
+          }
+          if (idxEncabezado === -1) continue; // hoja sin formato reconocible
+          hojasUsadas++;
+          const imagenesFila = rutasHojas[sIdx] ? await extraerImagenesDeHoja(zip, rutasHojas[sIdx], parser) : {};
+          for (let i = idxEncabezado + 1; i < aoa.length; i++) {
+            const fila = aoa[i] || [];
+            const ref = String(fila[colIdx["REF"]] ?? "").trim();
+            if (!ref) { filasSinRef++; continue; }
+            const limpiar = (v) => String(v ?? "").replace(/\r?\n/g, " ").trim();
+            const id = ref.replace(/\//g, "_");
+            const foto = imagenesFila[i] || null;
+            if (foto) fotosArchivo++;
+            combinado[id] = {
+              ref,
+              categoria: colIdx["CATEGORIA"] !== undefined ? limpiar(fila[colIdx["CATEGORIA"]]) : "",
+              descripcion: colIdx["DESCRIPCION"] !== undefined ? limpiar(fila[colIdx["DESCRIPCION"]]) : "",
+              tela: colIdx["TELA"] !== undefined ? limpiar(fila[colIdx["TELA"]]) : "",
+              subcategoria: colIdx["RANGO"] !== undefined ? limpiar(fila[colIdx["RANGO"]]) : "",
+              foto: foto || combinado[id]?.foto || null,
+              archivoOrigen: file.name,
+            };
+            filasArchivo++;
+          }
+        }
+        porArchivo.push({ nombre: file.name, hojasUsadas, filasArchivo, filasSinRef, fotosArchivo });
+      }
+      const filas = Object.values(combinado);
+      if (!filas.length) {
+        setResultadoImport(`⚠ No se encontró ninguna fila con REF reconocible en ${files.length === 1 ? `"${files[0].name}"` : `los ${files.length} archivos`}.`);
+        setImportando(false);
+        return;
+      }
+      // No se pisan campos que ya tengan valor por sincronización con
+      // Busint — el Excel solo COMPLETA lo que esté vacío. "actualizadoEn"
+      // solo lo pone la sincronización real con Busint (Cloud Function), así
+      // que sirve para saber con certeza si un REF YA está en Busint.
+      const items = filas.map((f) => {
+        const id = f.ref.replace(/\//g, "_");
+        const previo = yaExisten[id] || {};
+        const item = { id, ref: previo.ref || f.ref };
+        if (f.categoria && !previo.categoria) item.categoria = f.categoria;
+        if (f.descripcion && !previo.descripcion) item.descripcion = f.descripcion;
+        if (f.subcategoria && !previo.subcategoria) item.subcategoria = f.subcategoria;
+        if (f.tela) item.tela = f.tela; // Busint no expone tela — la del Excel manda
+        if (f.foto && !previo.foto) item.foto = f.foto;
+        if (!previo.origen && !previo.actualizadoEn) { item.origen = "bitacora_excel"; item.origenArchivo = f.archivoOrigen; item.importadoEn = new Date().toISOString(); }
+        return item;
+      });
+      // Firestore permite máx. 500 escrituras por batch — se parte en
+      // bloques de 400 por margen (las fotos hacen cada doc más pesado).
+      for (let i = 0; i < items.length; i += 400) {
+        await fsBatch("busint_referencias", items.slice(i, i + 400));
+      }
+      // --- Comparación de 3 colores contra Busint (Busint = mando) ---
+      const verde = [], amarillo = [], naranja = [];
+      filas.forEach((f) => {
+        const id = f.ref.replace(/\//g, "_");
+        const previo = yaExisten[id];
+        const existeEnBusint = !!previo?.actualizadoEn;
+        if (!existeEnBusint) {
+          amarillo.push({ ref: f.ref, categoria: f.categoria, descripcion: f.descripcion, archivoOrigen: f.archivoOrigen });
+        } else {
+          const conflicto = (f.categoria && previo.categoria && f.categoria !== previo.categoria) || (f.descripcion && previo.descripcion && f.descripcion !== previo.descripcion);
+          if (conflicto) {
+            naranja.push({ ref: f.ref, categoriaBitacora: f.categoria, categoriaBusint: previo.categoria || "", descripcionBitacora: f.descripcion, descripcionBusint: previo.descripcion || "", archivoOrigen: f.archivoOrigen });
+          } else {
+            verde.push({ ref: f.ref, categoria: previo.categoria || f.categoria, descripcion: previo.descripcion || f.descripcion, archivoOrigen: f.archivoOrigen });
+          }
+        }
+      });
+      setComparacion({ verde, amarillo, naranja, generadoEn: new Date().toISOString() });
+      const nuevos = items.filter((it) => !yaExisten[it.id]).length;
+      const totalFotos = filas.filter((f) => f.foto).length;
+      const resumenArchivos = porArchivo.map((a) => `"${a.nombre}": ${a.filasArchivo} fila(s) en ${a.hojasUsadas} hoja(s)${a.fotosArchivo ? `, ${a.fotosArchivo} foto(s)` : ""}${a.filasSinRef ? `, ${a.filasSinRef} sin REF` : ""}`).join(" · ");
+      setResultadoImport(`✅ ${filas.length} referencia(s) combinadas — ${nuevos} nueva(s), ${filas.length - nuevos} ya existían (se completaron campos vacíos), ${totalFotos} con foto. ${amarillo.length} faltan en Busint, ${naranja.length} con datos distintos entre bitácora y Busint. ${resumenArchivos}`);
+    } catch (err) {
+      setResultadoImport(`⚠ No se pudo importar — ${err?.message || err}`);
+    }
+    setImportando(false);
+  }
+  function handleFileChange(e) {
+    const files = e.target.files;
+    const lista = files && files.length ? Array.from(files) : null;
+    e.target.value = ""; // permite volver a elegir los mismos archivos después
+    if (lista) importarBitacoraExcel(lista);
+  }
+  // Descarga la última comparación (ver importarBitacoraExcel) como un
+  // .xlsx con 3 hojas de color — mismo estilo de marca (T.ink/T.seam/etc.)
+  // que ya usa el resto de los exportadores de ATLAS.
+  async function descargarComparacionExcel() {
+    if (!comparacion) return;
+    setDescargandoComparacion(true);
+    try {
+      const XLSX = await import("xlsx-js-style");
+      const COLOR_INK = "1A1A2E", COLOR_SEAM = "C8B8A2";
+      const VERDE = "D7ECD9", AMARILLO = "FCEFC7", NARANJA = "FBDCC5";
+      const THIN = { style: "thin", color: { rgb: "E8E2DB" } };
+      const BOX = { top: THIN, bottom: THIN, left: THIN, right: THIN };
+      function hoja(titulo, encabezados, filas, colorFondo) {
+        const aoa = [encabezados, ...filas];
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        for (let r = 0; r < aoa.length; r++) {
+          for (let c = 0; c < encabezados.length; c++) {
+            const addr = XLSX.utils.encode_cell({ r, c });
+            if (!ws[addr]) ws[addr] = { t: "s", v: "" };
+            ws[addr].s = r === 0
+              ? { fill: { patternType: "solid", fgColor: { rgb: COLOR_INK } }, font: { bold: true, sz: 10, color: { rgb: COLOR_SEAM } }, border: BOX, alignment: { vertical: "center", horizontal: "center", wrapText: true } }
+              : { fill: { patternType: "solid", fgColor: { rgb: colorFondo } }, font: { sz: 10, color: { rgb: "1A1A2E" } }, border: BOX, alignment: { vertical: "center", horizontal: "left", wrapText: true } };
+          }
+        }
+        ws["!cols"] = encabezados.map(() => ({ wch: 26 }));
+        return ws;
+      }
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, hoja("Coincide", ["REF", "Categoría", "Descripción", "Archivo"], comparacion.verde.map((f) => [f.ref, f.categoria, f.descripcion, f.archivoOrigen]), VERDE), "Coincide con Busint");
+      XLSX.utils.book_append_sheet(wb, hoja("Falta", ["REF", "Categoría", "Descripción", "Archivo"], comparacion.amarillo.map((f) => [f.ref, f.categoria, f.descripcion, f.archivoOrigen]), AMARILLO), "Falta en Busint");
+      XLSX.utils.book_append_sheet(wb, hoja("Conflicto", ["REF", "Categoría (bitácora)", "Categoría (Busint)", "Descripción (bitácora)", "Descripción (Busint)", "Archivo"], comparacion.naranja.map((f) => [f.ref, f.categoriaBitacora, f.categoriaBusint, f.descripcionBitacora, f.descripcionBusint, f.archivoOrigen]), NARANJA), "Datos distintos");
+      XLSX.writeFile(wb, `Comparacion_Bitacora_vs_Busint_${today()}.xlsx`);
+    } catch (err) {
+      setResultadoImport(`⚠ No se pudo descargar la comparación — ${err?.message || err}`);
+    }
+    setDescargandoComparacion(false);
+  }
   async function sincronizar() {
     setSincronizando(true);
     setResultado("");
@@ -5316,17 +5654,73 @@ function BusintSyncPanel() {
     }
     setExportando(false);
   }
+  // --- Probar 1 referencia en vivo (registro crudo completo de Busint) ---
+  // Pensado para revisar, antes de decidir capturar un campo nuevo, qué
+  // trae Busint REALMENTE para una ref puntual (ej. "98-5609") — Busint no
+  // tiene un endpoint de "una sola referencia", así que la Cloud Function
+  // consulta el maestro completo y filtra (ver probarReferenciaBusint).
+  const [refPrueba, setRefPrueba] = useState("");
+  const [probando, setProbando] = useState(false);
+  const [resultadoPrueba, setResultadoPrueba] = useState(null);
+  async function probarReferencia() {
+    const ref = refPrueba.trim();
+    if (!ref) return;
+    setProbando(true);
+    setResultadoPrueba(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "probarReferenciaBusint");
+      const resp = await llamar({ ref });
+      setResultadoPrueba(resp.data);
+    } catch (err) {
+      setResultadoPrueba({ error: err?.message || "No se pudo consultar. Verifica que probarReferenciaBusint esté desplegada." });
+    }
+    setProbando(false);
+  }
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 14px", background: T.denimBg, borderRadius: 8, marginBottom: 20 }}>
-      <div style={{ fontSize: 12.5, color: T.denim, fontWeight: 600 }}>
-        🔄 Bitácora de referencias Busint — se actualiza sola todos los días a las 5:00 a.m.
-        {meta?.ultimaSync && <div style={{ marginTop: 2 }}>Última sincronización: {new Date(meta.ultimaSync).toLocaleString("es-CO")} · {meta.total} referencias</div>}
-        {!meta && <div style={{ marginTop: 2 }}>Aún no se ha sincronizado ninguna vez.</div>}
-        {resultado && <div style={{ marginTop: 4 }}>{resultado}</div>}
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 14px", background: T.denimBg, borderRadius: 8, marginBottom: 10 }}>
+        <div style={{ fontSize: 12.5, color: T.denim, fontWeight: 600 }}>
+          🔄 Bitácora de referencias Busint — se actualiza sola todos los días a las 5:00 a.m.
+          {meta?.ultimaSync && <div style={{ marginTop: 2 }}>Última sincronización: {new Date(meta.ultimaSync).toLocaleString("es-CO")} · {meta.total} referencias</div>}
+          {!meta && <div style={{ marginTop: 2 }}>Aún no se ha sincronizado ninguna vez.</div>}
+          {resultado && <div style={{ marginTop: 4 }}>{resultado}</div>}
+          {resultadoImport && <div style={{ marginTop: 4 }}>{resultadoImport}</div>}
+        </div>
+        <div style={{ display: "flex", gap: 8, flexShrink: 0, flexWrap: "wrap" }}>
+          <input ref={fileInputRef} type="file" accept=".xlsx,.xls" multiple style={{ display: "none" }} onChange={handleFileChange} />
+          <Btn variant="secondary" onClick={() => fileInputRef.current?.click()} disabled={importando}>{importando ? "Importando..." : "📤 Importar bitácora(s) Excel"}</Btn>
+          {comparacion && (
+            <Btn variant="secondary" onClick={descargarComparacionExcel} disabled={descargandoComparacion}>{descargandoComparacion ? "Generando..." : "📊 Descargar comparación"}</Btn>
+          )}
+          <Btn variant="secondary" onClick={exportarBitacoraExcel} disabled={exportando || !meta}>{exportando ? "Generando..." : "📥 Descargar Excel"}</Btn>
+          <Btn onClick={sincronizar} disabled={sincronizando}>{sincronizando ? "Sincronizando..." : "Sincronizar ahora"}</Btn>
+        </div>
       </div>
-      <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-        <Btn variant="secondary" onClick={exportarBitacoraExcel} disabled={exportando || !meta}>{exportando ? "Generando..." : "📥 Descargar Excel"}</Btn>
-        <Btn onClick={sincronizar} disabled={sincronizando}>{sincronizando ? "Sincronizando..." : "Sincronizar ahora"}</Btn>
+      <div style={{ padding: "10px 14px", background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 8 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, marginBottom: 8 }}>🧪 Probar una referencia puntual en vivo (registro crudo de Busint, sin filtrar)</div>
+        <div style={{ display: "flex", gap: 8, marginBottom: resultadoPrueba ? 10 : 0 }}>
+          <input value={refPrueba} onChange={(e) => setRefPrueba(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") probarReferencia(); }} placeholder="Ej: 98-5609" style={{ flex: 1, maxWidth: 220, padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+          <Btn variant="secondary" onClick={probarReferencia} disabled={probando || !refPrueba.trim()}>{probando ? "Consultando..." : "Probar"}</Btn>
+        </div>
+        {resultadoPrueba?.error && <div style={{ fontSize: 12.5, color: T.coral, fontWeight: 600 }}>⚠ {resultadoPrueba.error}</div>}
+        {resultadoPrueba && !resultadoPrueba.error && !resultadoPrueba.encontrada && (
+          <div style={{ fontSize: 12.5, color: T.slate }}>No se encontró "{refPrueba}" en el maestro de Busint ({resultadoPrueba.totalEnBusint} referencias revisadas).</div>
+        )}
+        {resultadoPrueba?.encontrada && (
+          <div>
+            <div style={{ fontSize: 11.5, color: T.slate, marginBottom: 6 }}>Encontrada — {resultadoPrueba.totalEnBusint} referencias revisadas en total. Estos son TODOS los campos que mandó Busint, sin filtrar:</div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+              <tbody>
+                {Object.entries(resultadoPrueba.referencia).map(([k, v]) => (
+                  <tr key={k} style={{ borderBottom: `1px solid ${T.border}` }}>
+                    <td style={{ padding: "4px 8px", fontWeight: 700, color: T.ink, whiteSpace: "nowrap", verticalAlign: "top" }}>{k}</td>
+                    <td style={{ padding: "4px 8px", color: T.slate, wordBreak: "break-word" }}>{v === "" ? <em>(vacío)</em> : String(v)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
