@@ -8797,10 +8797,31 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     if (!pedido) return;
     const corte = (pedido.cortesRealizados || []).find((c) => c.id === corteId);
     if (!corte) return;
+    const mesonAnterior = corte.meson || "";
     const cortesActualizados = pedido.cortesRealizados.map((c) =>
       c.id === corteId ? { ...c, meson: nuevoMeson || null } : c
     );
     await fsSave("pedidos_activos", pedidoId, { cortesRealizados: cortesActualizados });
+    // "Disponibilidad de Mesones" NO lee cortesRealizados — lee directo los
+    // docs de corte_programacion (lo que se programó en Programación de
+    // Mesones), que son un registro aparte y no se tocan solos al corregir
+    // el mesón acá. Si no se actualizan también esos docs, la disponibilidad
+    // sigue mostrando ocupado el mesón viejo (y libre el nuevo) aunque el
+    // corte real ya diga otra cosa — se buscan por pedido+fecha+planta+
+    // mesón anterior+referencia para no tocar otro corte que por casualidad
+    // haya usado el mismo mesón ese día.
+    if (mesonAnterior && mesonAnterior !== (nuevoMeson || "")) {
+      const refsDelCorte = new Set((corte.refs || []).map((r) => r.ref));
+      const coincidencias = (programacionCorte || []).filter(
+        (pr) =>
+          pr.pedidoId === pedidoId &&
+          pr.fechaProgramada === corte.fecha &&
+          pr.planta === corte.planta &&
+          pr.meson === mesonAnterior &&
+          refsDelCorte.has(pr.ref)
+      );
+      await Promise.all(coincidencias.map((pr) => fsSave("corte_programacion", pr.id, { meson: nuevoMeson || null })));
+    }
   }
   // Reinicio completo de pruebas (temporal, solo admin) — borra TODA la
   // colección corte_lotes, TODA corte_programacion (Programación de
