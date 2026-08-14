@@ -952,6 +952,11 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     if (!form.planta || !form.cortador || !form.fecha) return;
     const loteTrim = (form.lote || "").trim();
     if (loteTrim && lotesExistentes?.has(loteTrim.toUpperCase())) return;
+    // Si ya se puso lote acá, el corte pasa directo a "Históricos" sin pasar
+    // por "Cortes Aprobados" (donde normalmente se exige el Horario de
+    // Corte antes de dejarlo pasar) — así que se exige acá también, para no
+    // dejar un hueco por el que un corte llegue a Históricos sin horario.
+    if (loteTrim && (!form.horaInicio || !form.horaFin)) return;
     const refs = pedido.referencias
       .map((r) => ({
         refId: r.id,
@@ -1160,6 +1165,39 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
       {form.lote.trim() && lotesExistentes?.has(form.lote.trim().toUpperCase()) && (
         <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginTop: -10, marginBottom: 14 }}>
           ⚠ Ese número de lote ya está en uso — usa uno diferente o déjalo en blanco y complétalo después en "Cortes Aprobados".
+        </div>
+      )}
+      {/* Si ya se pone el lote acá mismo, este corte pasa DIRECTO a
+          "Históricos" sin pasar por "Cortes Aprobados" — y ahí es donde
+          normalmente se exige completar el Horario de Corte antes de dejarlo
+          pasar. Para no dejar un hueco, si hay lote también se exige el
+          horario acá mismo (si todavía no se sabe, mejor dejar el lote en
+          blanco y completarlo después). */}
+      {form.lote.trim() && (
+        <div style={{ marginBottom: 16, padding: "10px 12px", background: C.blueBg, borderRadius: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.blue, marginBottom: 6 }}>
+            Como ya pusiste el lote, este corte pasa directo a "Históricos" — completa el Horario de Corte:
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <input
+              type="time"
+              value={form.horaInicio}
+              onChange={(e) => setForm((f) => ({ ...f, horaInicio: e.target.value }))}
+              style={{ padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, color: C.ink, outline: "none", fontFamily: "inherit" }}
+            />
+            <span style={{ fontSize: 11, color: C.slate }}>a</span>
+            <input
+              type="time"
+              value={form.horaFin}
+              onChange={(e) => setForm((f) => ({ ...f, horaFin: e.target.value }))}
+              style={{ padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, color: C.ink, outline: "none", fontFamily: "inherit" }}
+            />
+          </div>
+          {(!form.horaInicio || !form.horaFin) && (
+            <div style={{ marginTop: 6, fontSize: 11, color: C.red, fontWeight: 700 }}>
+              ⚠ Falta completarlo para poder guardar — si todavía no lo sabes, borra el número de lote y complétalo después en "Cortes Aprobados".
+            </div>
+          )}
         </div>
       )}
       {/* Etapa 1 — Tendido: uno o más materiales (una prenda puede combinar
@@ -1735,7 +1773,7 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
         <Btn
           variant="success"
           onClick={save}
-          disabled={totalCortando() === 0 || !form.planta || !form.cortador || (form.lote.trim() && lotesExistentes?.has(form.lote.trim().toUpperCase()))}
+          disabled={totalCortando() === 0 || !form.planta || !form.cortador || (form.lote.trim() && lotesExistentes?.has(form.lote.trim().toUpperCase())) || (form.lote.trim() && (!form.horaInicio || !form.horaFin))}
         >
           ✓ Entrada de Corte
         </Btn>
