@@ -3672,6 +3672,28 @@ function PersonaKpiModal({ persona, puestos, onSave, onClose }) {
     </Modal>
   );
 }
+// Traslado rápido de un KPI ya existente a otro puesto, sin pasar por el
+// formulario completo de edición. Solo cambia el puestoId.
+function TrasladarKpiModal({ kpi, puestos, onSave, onClose }) {
+  const [puestoId, setPuestoId] = useState(kpi?.puestoId || "");
+  const puestoActual = puestos.find((p) => p.id === kpi?.puestoId);
+  return (
+    <Modal title={`🔀 Trasladar "${kpi?.nombre}" a otro puesto`} onClose={onClose} width={440}>
+      {puestoActual && (
+        <div style={{ fontSize: 13, color: T.slate, marginBottom: 14 }}>
+          Puesto actual: <strong style={{ color: T.ink }}>{puestoActual.nombre}</strong>
+        </div>
+      )}
+      <Field label="Nuevo puesto">
+        <SelectorPuesto value={puestoId} onChange={setPuestoId} puestos={puestos} />
+      </Field>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn variant="success" disabled={!puestoId || puestoId === kpi?.puestoId} onClick={() => onSave(puestoId)}>Trasladar</Btn>
+      </div>
+    </Modal>
+  );
+}
 // Alta/edición de un KPI del catálogo. Cada KPI pertenece a UN puesto — si al
 // guardar el nombre ya existe en OTRO puesto, se avisa (no se bloquea, por si
 // de verdad quieres repetirlo, pero queda claro que hay solapamiento).
@@ -3736,6 +3758,7 @@ function KPIsView({ areas, puestos, personas, catalogo, registros, isAdmin, onAd
   const [editKpi, setEditKpi] = useState(null);
   const [showNuevoKpi, setShowNuevoKpi] = useState(false);
   const [confirmDelKpi, setConfirmDelKpi] = useState(null);
+  const [trasladarKpi, setTrasladarKpi] = useState(null);
   const [editPuesto, setEditPuesto] = useState(null);
   const [showNuevoPuesto, setShowNuevoPuesto] = useState(false);
   const [confirmDelPuesto, setConfirmDelPuesto] = useState(null);
@@ -3786,6 +3809,7 @@ function KPIsView({ areas, puestos, personas, catalogo, registros, isAdmin, onAd
       {editPersona && <PersonaKpiModal persona={editPersona} puestos={puestos} onSave={(p) => { onUpdatePersona(editPersona.id, p); setEditPersona(null); }} onClose={() => setEditPersona(null)} />}
       {showNuevoKpi && <KpiCatalogoModal puestos={puestos} catalogo={catalogo} onSave={(k) => { onAddKpi(k); setShowNuevoKpi(false); }} onClose={() => setShowNuevoKpi(false)} />}
       {editKpi && <KpiCatalogoModal kpi={editKpi} puestos={puestos} catalogo={catalogo} onSave={(k) => { onUpdateKpi(editKpi.id, k); setEditKpi(null); }} onClose={() => setEditKpi(null)} />}
+      {trasladarKpi && <TrasladarKpiModal kpi={trasladarKpi} puestos={puestos} onSave={(nuevoPuestoId) => { onUpdateKpi(trasladarKpi.id, { puestoId: nuevoPuestoId }); setTrasladarKpi(null); }} onClose={() => setTrasladarKpi(null)} />}
       {confirmDelPuesto && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ background: T.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
@@ -3943,6 +3967,7 @@ function KPIsView({ areas, puestos, personas, catalogo, registros, isAdmin, onAd
                             {isAdmin && (
                               <div style={{ display: "flex", gap: 6 }}>
                                 <Btn small variant="ghost" onClick={() => setEditKpi(k)}>✏ Editar</Btn>
+                                <Btn small variant="ghost" onClick={() => setTrasladarKpi(k)}>🔀 Trasladar</Btn>
                                 <Btn small variant="danger" onClick={() => setConfirmDelKpi(k)}>🗑</Btn>
                               </div>
                             )}
