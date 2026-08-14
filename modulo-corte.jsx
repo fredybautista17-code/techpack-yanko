@@ -5133,7 +5133,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, onRegistrarCorteManual, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onDevolverCorteReal, onEditarCantidadesCorte, onActualizarHorarioCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onPartirCorte, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, onRegistrarCorteManual, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onDevolverCorteReal, onEditarCantidadesCorte, onActualizarHorarioCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Cuántos cortes (tandas físicas) separados se van a programar de una vez
   // con la selección actual — por defecto 1 (comportamiento de siempre). Si
@@ -5178,6 +5178,20 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // que ver con `fechaSel`, que es el día al que se está programando algo
   // nuevo en la pestaña Programar.
   const [calFecha, setCalFecha] = useState(today());
+  // Grupo (referencia de un día) que se está partiendo en varios cortes de
+  // una vez desde el Cronograma — null si no hay ninguno abierto. Se abre un
+  // cuadro chiquito para elegir en cuántos cortes partirlo (reparte la
+  // cantidad en partes iguales entre todos, talla por talla) y de ahí en
+  // adelante cada corte aparece separado, tanto en el Cronograma como en
+  // Producción Corte / Programación de Mesones.
+  const [partiendoGrupo, setPartiendoGrupo] = useState(null);
+  const [numPartes, setNumPartes] = useState(2);
+  async function confirmarPartirCorte() {
+    if (!partiendoGrupo || !onPartirCorte) return;
+    await onPartirCorte(partiendoGrupo, numPartes);
+    setPartiendoGrupo(null);
+    setNumPartes(2);
+  }
   // Referencias (código de estilo) desplegadas en la tabla de selección de
   // Programar — por defecto colapsadas, para que no se acumulen tantas
   // filas de colores cuando una referencia trae varios colores/pintas.
@@ -5785,6 +5799,30 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   const mesonesPendientesCount = pendientesConEstado.filter((p) => !(p.etapa === "programacion_hecha" && p.aprobado === true)).length;
   return (
     <div>
+      {partiendoGrupo && (
+        <Modal title={`✂ Partir ${partiendoGrupo.ref} en varios cortes`} onClose={() => setPartiendoGrupo(null)} width={440}>
+          <p style={{ margin: "0 0 14px", fontSize: 13, color: C.slate }}>
+            {partiendoGrupo.cliente} · #{partiendoGrupo.numero} · {partiendoGrupo.ref} — {fmtNum(partiendoGrupo.cantidadTotal)} unidades en total, {partiendoGrupo.colores.length} color{partiendoGrupo.colores.length !== 1 ? "es" : ""}.
+            Se reparte en partes iguales (talla por talla, cada color) entre los cortes que elijas — cada uno queda como un bloque separado, listo para programarle su propio mesón/cortador/horario.
+          </p>
+          <Field label="¿En cuántos cortes lo partes?">
+            <FInput
+              type="number"
+              value={String(numPartes)}
+              onChange={(v) => setNumPartes(Math.max(2, parseInt(v, 10) || 2))}
+            />
+          </Field>
+          {numPartes >= 2 && (
+            <div style={{ marginTop: 10, fontSize: 12, color: C.slate }}>
+              Quedaría aprox. {fmtNum(Math.round(partiendoGrupo.cantidadTotal / numPartes))} unidades por corte.
+            </div>
+          )}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 }}>
+            <Btn variant="secondary" onClick={() => setPartiendoGrupo(null)}>Cancelar</Btn>
+            <Btn variant="success" onClick={confirmarPartirCorte}>✂ Partir en {numPartes} cortes</Btn>
+          </div>
+        </Modal>
+      )}
       <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
         📅 Programación de Corte
       </h2>
@@ -6342,6 +6380,19 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                           >
                             {g.ref}{g.numeroCorte ? ` (${g.numeroCorte})` : ""} · {fmtNum(g.cantidadTotal)}
                           </div>
+                          {isAdmin && g.etapa !== "programacion_hecha" && !g.numeroCorte && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPartiendoGrupo(g);
+                                setNumPartes(2);
+                              }}
+                              title="Partir este lote en varios cortes"
+                              style={{ flexShrink: 0, background: C.violetBg, border: "none", borderRadius: 4, padding: "0 4px", color: C.violet, fontWeight: 800, fontSize: 10, cursor: "pointer" }}
+                            >
+                              ✂
+                            </button>
+                          )}
                           {isAdmin && (
                             <button
                               onClick={(e) => {
@@ -6614,9 +6665,24 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                               {g.etapa === "programacion_hecha" && ` · ${g.planta}${g.meson ? " · " + nombreMeson(g.planta, g.meson) : ""}`}
                             </div>
                           </div>
-                          <span style={{ fontSize: 10, fontWeight: 800, color: estadoColor, background: estadoBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
-                            {estadoLabel}
-                          </span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            {isAdmin && g.etapa !== "programacion_hecha" && !g.numeroCorte && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPartiendoGrupo(g);
+                                  setNumPartes(2);
+                                }}
+                                title="Partir este lote en varios cortes"
+                                style={{ background: C.violetBg, border: "none", borderRadius: 6, padding: "4px 8px", color: C.violet, fontWeight: 800, fontSize: 12, cursor: "pointer" }}
+                              >
+                                ✂
+                              </button>
+                            )}
+                            <span style={{ fontSize: 10, fontWeight: 800, color: estadoColor, background: estadoBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
+                              {estadoLabel}
+                            </span>
+                          </div>
                         </div>
                       );
                     })}
@@ -8432,6 +8498,61 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
   async function cancelarProgramacionCorte(id) {
     await fsDelete("corte_programacion", id);
   }
+  // Parte un grupo YA programado (una referencia de un día, con sus N
+  // colores) en varios cortes de una vez — ej. un lote de 576 en 2 cortes de
+  // 288 cada uno. Reparte cada talla de cada color en partes iguales (igual
+  // matemática que "Número de cortes a programar" en Programar), etiqueta
+  // cada mitad con su propio numeroCorte ("Corte 1", "Corte 2"...) y crea
+  // documentos nuevos independientes para cada una — así en Cronograma de
+  // Corte y en Producción Corte aparecen de una vez como bloques separados
+  // (288 + 288), cada uno listo para su propio mesón/cortador/horario en
+  // Programación de Mesones, sin tener que ir color por color desmarcando
+  // nada ahí. Los documentos originales (el bloque de 576 sin partir) se
+  // borran, ya quedan reemplazados por los partidos.
+  async function partirGrupoEnCortes(grupo, n) {
+    if (!grupo || n < 2) return;
+    const porCorte = Array.from({ length: n }, () => []);
+    grupo.colores.forEach((color) => {
+      const tallasPorCorte = Array.from({ length: n }, () => ({}));
+      Object.entries(color.tallas || {}).forEach(([talla, cant]) => {
+        const base = Math.floor(cant / n);
+        const resto = cant % n;
+        for (let i = 0; i < n; i++) {
+          const parte = base + (i < resto ? 1 : 0);
+          if (parte > 0) tallasPorCorte[i][talla] = parte;
+        }
+      });
+      for (let i = 0; i < n; i++) {
+        const cantidadProgramada = Object.values(tallasPorCorte[i]).reduce((s, v) => s + v, 0);
+        if (cantidadProgramada <= 0) continue;
+        porCorte[i].push({
+          id: uid(),
+          pedidoId: color.pedidoId,
+          numero: color.numero,
+          cliente: color.cliente,
+          ref: color.ref,
+          refId: color.refId || "",
+          descripcion: color.descripcion || "",
+          cantidadPendiente: color.cantidadPendiente || 0,
+          cantidadProgramada,
+          tallas: tallasPorCorte[i],
+          fechaProgramada: color.fechaProgramada,
+          creadoEn: new Date().toISOString(),
+          estado: "pendiente",
+          fechaCumplioISO: null,
+          numeroCorte: `Corte ${i + 1}`,
+        });
+      }
+    });
+    for (const lista of porCorte) {
+      for (const nuevo of lista) {
+        await fsSave("corte_programacion", nuevo.id, nuevo);
+      }
+    }
+    for (const color of grupo.colores) {
+      await fsDelete("corte_programacion", color.id);
+    }
+  }
   // Reprogramar: cambia solo la fecha comprometida de un ítem ya programado,
   // por si hay un cambio de plan — no hace falta cancelar y volver a marcar.
   async function editarFechaProgramacion(id, fecha) {
@@ -8938,6 +9059,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               programacion={programacionCorte}
               onProgramar={programarCorte}
               onCancelar={cancelarProgramacionCorte}
+              onPartirCorte={partirGrupoEnCortes}
               onEditarFecha={editarFechaProgramacion}
               onEditarCantidad={editarCantidadProgramacion}
               onEditarCumplido={editarCumplidoProgramacion}
