@@ -5454,33 +5454,45 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     const hInicio = edit?.horaInicio ?? c.horaInicio ?? c.horaFinTendido ?? "";
     const hFin = edit?.horaFin ?? c.horaFin ?? "";
     const cambiado = !!edit;
+    // El corte no puede haber arrancado antes de que terminara el tendido de
+    // ese mismo mesón — si alguien digita una hora anterior por error (se
+    // equivocó de AM/PM, escribió mal, etc.), se avisa y no se deja guardar.
+    const antesDeTendido = !!(c.horaFinTendido && hInicio && hInicio < c.horaFinTendido);
     return (
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 14, padding: "10px 12px", background: C.blueBg, borderRadius: 8 }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color: C.blue }}>Horario Corte:</span>
-        <input
-          type="time"
-          value={hInicio}
-          onChange={(e) => setHorarioCorteEdit((s) => ({ ...s, [c.id]: { horaInicio: e.target.value, horaFin: hFin } }))}
-          style={{ padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, color: C.ink, outline: "none", fontFamily: "inherit" }}
-        />
-        <span style={{ fontSize: 11, color: C.slate }}>a</span>
-        <input
-          type="time"
-          value={hFin}
-          onChange={(e) => setHorarioCorteEdit((s) => ({ ...s, [c.id]: { horaInicio: hInicio, horaFin: e.target.value } }))}
-          style={{ padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, color: C.ink, outline: "none", fontFamily: "inherit" }}
-        />
-        {cambiado && (
-          <Btn
-            small
-            variant="success"
-            onClick={async () => {
-              await onActualizarHorarioCorte(c.pedidoId, c.id, hInicio, hFin);
-              setHorarioCorteEdit((s) => { const n = { ...s }; delete n[c.id]; return n; });
-            }}
-          >
-            Guardar horario
-          </Btn>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14, padding: "10px 12px", background: C.blueBg, borderRadius: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: C.blue }}>Horario Corte:</span>
+          <input
+            type="time"
+            value={hInicio}
+            onChange={(e) => setHorarioCorteEdit((s) => ({ ...s, [c.id]: { horaInicio: e.target.value, horaFin: hFin } }))}
+            style={{ padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${antesDeTendido ? C.red : C.border}`, fontSize: 12, color: C.ink, outline: "none", fontFamily: "inherit" }}
+          />
+          <span style={{ fontSize: 11, color: C.slate }}>a</span>
+          <input
+            type="time"
+            value={hFin}
+            onChange={(e) => setHorarioCorteEdit((s) => ({ ...s, [c.id]: { horaInicio: hInicio, horaFin: e.target.value } }))}
+            style={{ padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, color: C.ink, outline: "none", fontFamily: "inherit" }}
+          />
+          {cambiado && (
+            <Btn
+              small
+              variant="success"
+              disabled={antesDeTendido}
+              onClick={async () => {
+                await onActualizarHorarioCorte(c.pedidoId, c.id, hInicio, hFin);
+                setHorarioCorteEdit((s) => { const n = { ...s }; delete n[c.id]; return n; });
+              }}
+            >
+              Guardar horario
+            </Btn>
+          )}
+        </div>
+        {antesDeTendido && (
+          <div style={{ fontSize: 11, color: C.red, fontWeight: 700 }}>
+            ⚠ La hora de inicio no puede ser antes de que terminó el tendido de ese mesón ({c.horaFinTendido}).
+          </div>
         )}
       </div>
     );
@@ -6989,6 +7001,10 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                       const texto = loteInputs[c.id] ?? "";
                       const dup = loteDuplicado(c, texto);
                       const refsTxt = (c.refs || []).map((r) => r.ref).join(", ");
+                      // No se puede pasar a Históricos (guardar el lote) sin
+                      // antes completar el Horario de Corte — así no se
+                      // pierde el dato ni queda pasando cosas a medias.
+                      const sinHorarioCorte = !c.horaInicio || !c.horaFin;
                       return (
                         <div key={c.id} style={{ borderRadius: 10, border: `1.5px solid ${C.border}`, overflow: "hidden" }}>
                           <div
@@ -7232,7 +7248,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                                 />
                                 <Btn
                                   variant="success"
-                                  disabled={!texto.trim() || dup}
+                                  disabled={!texto.trim() || dup || sinHorarioCorte}
                                   onClick={async () => {
                                     await onAsignarLoteReal(c.pedidoId, c.id, texto.trim());
                                     setLoteInputs((s) => { const n = { ...s }; delete n[c.id]; return n; });
@@ -7244,6 +7260,9 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                               </div>
                               {dup && (
                                 <div style={{ marginTop: 8, fontSize: 11, color: C.red, fontWeight: 700 }}>⚠ Ese número de lote ya está en uso — usa uno diferente.</div>
+                              )}
+                              {sinHorarioCorte && (
+                                <div style={{ marginTop: 8, fontSize: 11, color: C.red, fontWeight: 700 }}>⚠ Completa el Horario de Corte arriba (hora inicio y fin) antes de poder guardar el lote y pasar a Históricos.</div>
                               )}
                             </div>
                           )}
