@@ -5101,7 +5101,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onPartirCorte, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, onRegistrarCorteManual, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onDevolverCorteReal, onEditarCantidadesCorte, onActualizarHorarioCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onPartirCorte, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, onRegistrarCorteManual, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onDevolverCorteReal, onEditarCantidadesCorte, onActualizarHorarioCorte, onEditarMesonCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Cuántos cortes (tandas físicas) separados se van a programar de una vez
   // con la selección actual — por defecto 1 (comportamiento de siempre). Si
@@ -5259,6 +5259,12 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // según en cuál de las dos haya quedado el corte. Clave por id de corte;
   // { horaInicio, horaFin } mientras se está editando, se limpia al guardar.
   const [horarioCorteEdit, setHorarioCorteEdit] = useState({});
+  // Edición en línea del Mesón de un corte real ya registrado (Cortes
+  // Aprobados / Históricos) — para corregir cuando quedó mal asignado o
+  // quedó apuntando a un mesón que ya no existe en la configuración de la
+  // planta (se ve como un id crudo en vez de un nombre, ej. "1cjycti").
+  const [editandoMeson, setEditandoMeson] = useState(null);
+  const [mesonEditValor, setMesonEditValor] = useState("");
   // "Registrar Manual" (nuevo subTab): búsqueda de un pedido por número o
   // cliente sin importar su estado (activo/terminado/cerrado) — para poder
   // cargar retroactivamente un corte que se hizo pero nunca se registró en
@@ -5348,6 +5354,65 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
     const pl = (plantasConfig || []).find((p) => p.nombre === plantaNombre);
     const m = pl?.mesones?.find((mm) => mm.id === mesonId);
     return m?.nombre || mesonId;
+  }
+  // Campo "Mesón:" editable dentro del detalle de un corte real (Cortes
+  // Aprobados / Históricos) — reusado en las dos tablas. Se necesita porque
+  // un corte real puede quedar apuntando a un mesón que ya no existe en la
+  // configuración de la planta (se borró o se renombró), y ahí nombreMeson
+  // muestra el id crudo sin forma de corregirlo desde la pantalla normal.
+  function renderMesonEditable(c) {
+    const enEdicion = editandoMeson === c.id;
+    const mesonesPlanta = (plantasConfig || []).find((p) => p.nombre === c.planta)?.mesones || [];
+    if (!enEdicion) {
+      return (
+        <div>
+          <b>Mesón:</b> {nombreMeson(c.planta, c.meson) || "—"}
+          {isAdmin && (
+            <button
+              onClick={() => { setEditandoMeson(c.id); setMesonEditValor(c.meson || ""); }}
+              title="Corregir el mesón de este corte"
+              style={{ background: "none", border: "none", color: C.blue, cursor: "pointer", fontSize: 11, fontWeight: 700, padding: 0, marginLeft: 6 }}
+            >
+              ✎
+            </button>
+          )}
+        </div>
+      );
+    }
+    return (
+      <div>
+        <b>Mesón:</b>
+        <div style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center" }}>
+          <select
+            value={mesonEditValor}
+            onChange={(e) => setMesonEditValor(e.target.value)}
+            style={{ padding: "4px 6px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, color: C.ink, outline: "none", fontFamily: "inherit", flex: 1, minWidth: 0 }}
+          >
+            <option value="">— Sin mesón —</option>
+            {mesonesPlanta.map((m) => (
+              <option key={m.id} value={m.id}>{m.nombre}</option>
+            ))}
+            {c.meson && !mesonesPlanta.some((m) => m.id === c.meson) && (
+              <option value={c.meson}>{c.meson} (no encontrado)</option>
+            )}
+          </select>
+          <button
+            onClick={async () => { await onEditarMesonCorte(c.pedidoId, c.id, mesonEditValor || null); setEditandoMeson(null); }}
+            title="Guardar"
+            style={{ background: C.jade, border: "none", borderRadius: 6, padding: "4px 10px", color: C.white, fontWeight: 700, fontSize: 11, cursor: "pointer", flexShrink: 0 }}
+          >
+            ✓
+          </button>
+          <button
+            onClick={() => setEditandoMeson(null)}
+            title="Cancelar"
+            style={{ background: "none", border: "none", color: C.slate, fontWeight: 700, fontSize: 11, cursor: "pointer", flexShrink: 0 }}
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+    );
   }
   // Capas totales de un grupo (una referencia, uno o varios colores) —
   // OJO: a diferencia de largoTrazo (un solo trazo físico compartido entre
@@ -6942,7 +7007,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                             <div style={{ padding: "14px 16px", background: C.canvas, borderTop: `1px solid ${C.border}` }}>
                               <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 12, fontSize: 12, color: C.ink }}>
                                 <div><b>Planta:</b> {c.planta || "—"}</div>
-                                <div><b>Mesón:</b> {nombreMeson(c.planta, c.meson) || "—"}</div>
+                                {renderMesonEditable(c)}
                                 <div><b>Cortador:</b> {c.cortador || "—"}</div>
                                 <div><b>Tela:</b> {c.tipoTela || "—"}</div>
                                 <div><b>Trazo:</b> {c.largoTrazo ? `${c.largoTrazo} m` : "—"}</div>
@@ -7231,7 +7296,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                               <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 12, fontSize: 12, color: C.ink }}>
                                 <div><b>Lote:</b> {c.lote || "—"}</div>
                                 <div><b>Planta:</b> {c.planta || "—"}</div>
-                                <div><b>Mesón:</b> {nombreMeson(c.planta, c.meson) || "—"}</div>
+                                {renderMesonEditable(c)}
                                 <div><b>Cortador:</b> {c.cortador || "—"}</div>
                                 <div><b>Tela:</b> {c.tipoTela || "—"}</div>
                                 <div><b>Trazo:</b> {c.largoTrazo ? `${c.largoTrazo} m` : "—"}</div>
@@ -8703,6 +8768,21 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     );
     await fsSave("pedidos_activos", pedidoId, { cortesRealizados: cortesActualizados });
   }
+  // Corrige el mesón de un corte real ya registrado (Cortes Aprobados o
+  // Históricos) — hace falta cuando quedó mal asignado, o cuando apunta a un
+  // mesón que ya no existe en la configuración de la planta (se ve como un
+  // id crudo, ej. "1cjycti", en vez de un nombre). `nuevoMeson` es el id del
+  // mesón elegido en el desplegable, o null para dejarlo sin asignar.
+  async function editarMesonCorte(pedidoId, corteId, nuevoMeson) {
+    const pedido = pedidos.find((p) => p.id === pedidoId);
+    if (!pedido) return;
+    const corte = (pedido.cortesRealizados || []).find((c) => c.id === corteId);
+    if (!corte) return;
+    const cortesActualizados = pedido.cortesRealizados.map((c) =>
+      c.id === corteId ? { ...c, meson: nuevoMeson || null } : c
+    );
+    await fsSave("pedidos_activos", pedidoId, { cortesRealizados: cortesActualizados });
+  }
   // Reinicio completo de pruebas (temporal, solo admin) — borra TODA la
   // colección corte_lotes, TODA corte_programacion (Programación de
   // Mesones), y vacía cortesRealizados de cada pedido activo (revirtiendo a
@@ -9054,6 +9134,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               onDevolverCorteReal={devolverCorteAIngreso}
               onEditarCantidadesCorte={editarCantidadesCorteReal}
               onActualizarHorarioCorte={actualizarHorarioCorte}
+              onEditarMesonCorte={editarMesonCorte}
               subTabInicial={navProduccion?.subTab}
               produccionSubTabInicial={navProduccion?.produccionSubTab}
               navProduccionTs={navProduccion?.ts}
