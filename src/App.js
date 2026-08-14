@@ -3600,19 +3600,20 @@ function PuestoKpiModal({ puesto, areas, onSave, onClose }) {
       <Field label="Funciones asignadas (responsabilidades esperadas)">
         <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 8 }}>
           {funciones.map((f, i) => (
-            <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <span style={{ width: 20, flexShrink: 0, textAlign: "right", fontSize: 12, fontWeight: 700, color: T.slate }}>{i + 1}.</span>
-              <input
+            <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+              <span style={{ width: 20, flexShrink: 0, textAlign: "right", fontSize: 12, fontWeight: 700, color: T.slate, marginTop: 8 }}>{i + 1}.</span>
+              <textarea
                 value={f}
                 onChange={(e) => actualizarFuncion(i, e.target.value)}
                 placeholder="Ej: Elaborar moldes base según ficha técnica"
-                style={{ flex: 1, padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}
+                rows={2}
+                style={{ flex: 1, padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical", lineHeight: 1.4, minHeight: 40 }}
               />
               <button
                 onClick={() => quitarFuncion(i)}
                 disabled={funciones.length === 1}
                 title="Quitar función"
-                style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "6px 9px", color: T.coral, fontWeight: 700, cursor: funciones.length === 1 ? "not-allowed" : "pointer", opacity: funciones.length === 1 ? 0.5 : 1, flexShrink: 0 }}
+                style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "6px 9px", color: T.coral, fontWeight: 700, cursor: funciones.length === 1 ? "not-allowed" : "pointer", opacity: funciones.length === 1 ? 0.5 : 1, flexShrink: 0, marginTop: 4 }}
               >
                 ✕
               </button>
