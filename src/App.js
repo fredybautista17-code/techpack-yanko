@@ -3566,13 +3566,16 @@ function FuncionesPreview({ funciones, style }) {
 // botones y el consecutivo (1, 2, 3...) se pone solo según el orden de la
 // lista. Es la base de todo el módulo — Personas y KPIs del catálogo se
 // cuelgan de un puesto.
-function PuestoKpiModal({ puesto, areas, onSave, onClose }) {
+function PuestoKpiModal({ puesto, areas, puestos, onUpdatePuesto, onSave, onClose }) {
   const [nombre, setNombre] = useState(puesto?.nombre || "");
   const [area, setArea] = useState(puesto?.area || "");
   const [funciones, setFunciones] = useState(() => {
     const arr = funcionesArray(puesto?.funciones);
     return arr.length ? arr : [""];
   });
+  const [transferirIdx, setTransferirIdx] = useState(null);
+  const [destinoTransfer, setDestinoTransfer] = useState("");
+  const otrosPuestos = (puestos || []).filter((p) => p.id !== puesto?.id);
   function actualizarFuncion(i, val) {
     setFunciones((fs) => fs.map((f, idx) => (idx === i ? val : f)));
   }
@@ -3581,6 +3584,21 @@ function PuestoKpiModal({ puesto, areas, onSave, onClose }) {
   }
   function quitarFuncion(i) {
     setFunciones((fs) => (fs.length === 1 ? fs : fs.filter((_, idx) => idx !== i)));
+  }
+  function transferirFuncion(i) {
+    const texto = (funciones[i] || "").trim();
+    if (!texto || !destinoTransfer || !puesto || !onUpdatePuesto) return;
+    const destino = (puestos || []).find((p) => p.id === destinoTransfer);
+    if (!destino) return;
+    onUpdatePuesto(destino.id, { funciones: [...funcionesArray(destino.funciones), texto] });
+    setFunciones((fs) => {
+      const restante = fs.filter((_, idx) => idx !== i);
+      const limpio = restante.map((f) => f.trim()).filter(Boolean);
+      onUpdatePuesto(puesto.id, { funciones: limpio.length ? limpio : [] });
+      return restante.length ? restante : [""];
+    });
+    setTransferirIdx(null);
+    setDestinoTransfer("");
   }
   function save() {
     if (!nombre.trim() || !area) return;
@@ -3600,23 +3618,62 @@ function PuestoKpiModal({ puesto, areas, onSave, onClose }) {
       <Field label="Funciones asignadas (responsabilidades esperadas)">
         <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 8 }}>
           {funciones.map((f, i) => (
-            <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-              <span style={{ width: 20, flexShrink: 0, textAlign: "right", fontSize: 12, fontWeight: 700, color: T.slate, marginTop: 8 }}>{i + 1}.</span>
-              <textarea
-                value={f}
-                onChange={(e) => actualizarFuncion(i, e.target.value)}
-                placeholder="Ej: Elaborar moldes base según ficha técnica"
-                rows={2}
-                style={{ flex: 1, padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical", lineHeight: 1.4, minHeight: 40 }}
-              />
-              <button
-                onClick={() => quitarFuncion(i)}
-                disabled={funciones.length === 1}
-                title="Quitar función"
-                style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "6px 9px", color: T.coral, fontWeight: 700, cursor: funciones.length === 1 ? "not-allowed" : "pointer", opacity: funciones.length === 1 ? 0.5 : 1, flexShrink: 0, marginTop: 4 }}
-              >
-                ✕
-              </button>
+            <div key={i} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <span style={{ width: 20, flexShrink: 0, textAlign: "right", fontSize: 12, fontWeight: 700, color: T.slate, marginTop: 8 }}>{i + 1}.</span>
+                <textarea
+                  value={f}
+                  onChange={(e) => actualizarFuncion(i, e.target.value)}
+                  placeholder="Ej: Elaborar moldes base según ficha técnica"
+                  rows={2}
+                  style={{ flex: 1, padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical", lineHeight: 1.4, minHeight: 40 }}
+                />
+                {puesto && !!otrosPuestos.length && (
+                  <button
+                    onClick={() => { setTransferirIdx(transferirIdx === i ? null : i); setDestinoTransfer(""); }}
+                    title="Trasladar esta función a otro puesto"
+                    style={{ background: T.denimBg, border: "none", borderRadius: 6, padding: "6px 9px", color: T.denim, fontWeight: 700, cursor: "pointer", flexShrink: 0, marginTop: 4 }}
+                  >
+                    🔀
+                  </button>
+                )}
+                <button
+                  onClick={() => quitarFuncion(i)}
+                  disabled={funciones.length === 1}
+                  title="Quitar función"
+                  style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "6px 9px", color: T.coral, fontWeight: 700, cursor: funciones.length === 1 ? "not-allowed" : "pointer", opacity: funciones.length === 1 ? 0.5 : 1, flexShrink: 0, marginTop: 4 }}
+                >
+                  ✕
+                </button>
+              </div>
+              {transferirIdx === i && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginLeft: 28, padding: "8px 10px", background: T.denimBg, borderRadius: 8 }}>
+                  <span style={{ fontSize: 12, color: T.ink, fontWeight: 600, flexShrink: 0 }}>Mover a:</span>
+                  <select
+                    value={destinoTransfer}
+                    onChange={(e) => setDestinoTransfer(e.target.value)}
+                    style={{ flex: 1, padding: "6px 8px", border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", background: T.white, color: T.ink }}
+                  >
+                    <option value="">Selecciona un puesto...</option>
+                    {otrosPuestos.map((p) => (
+                      <option key={p.id} value={p.id}>{p.nombre} ({p.area})</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => transferirFuncion(i)}
+                    disabled={!destinoTransfer}
+                    style={{ background: destinoTransfer ? T.denim : T.border, border: "none", borderRadius: 6, padding: "6px 12px", color: T.white, fontWeight: 700, fontSize: 12, cursor: destinoTransfer ? "pointer" : "not-allowed" }}
+                  >
+                    Mover
+                  </button>
+                  <button
+                    onClick={() => { setTransferirIdx(null); setDestinoTransfer(""); }}
+                    style={{ background: "none", border: "none", color: T.slate, fontWeight: 600, fontSize: 12, cursor: "pointer" }}
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -3803,8 +3860,8 @@ function KPIsView({ areas, puestos, personas, catalogo, registros, isAdmin, onAd
 
   return (
     <div>
-      {showNuevoPuesto && <PuestoKpiModal areas={areas} onSave={(p) => { onAddPuesto(p); setShowNuevoPuesto(false); }} onClose={() => setShowNuevoPuesto(false)} />}
-      {editPuesto && <PuestoKpiModal puesto={editPuesto} areas={areas} onSave={(p) => { onUpdatePuesto(editPuesto.id, p); setEditPuesto(null); }} onClose={() => setEditPuesto(null)} />}
+      {showNuevoPuesto && <PuestoKpiModal areas={areas} puestos={puestos} onUpdatePuesto={onUpdatePuesto} onSave={(p) => { onAddPuesto(p); setShowNuevoPuesto(false); }} onClose={() => setShowNuevoPuesto(false)} />}
+      {editPuesto && <PuestoKpiModal puesto={editPuesto} areas={areas} puestos={puestos} onUpdatePuesto={onUpdatePuesto} onSave={(p) => { onUpdatePuesto(editPuesto.id, p); setEditPuesto(null); }} onClose={() => setEditPuesto(null)} />}
       {showNuevaPersona && <PersonaKpiModal puestos={puestos} onSave={(p) => { onAddPersona(p); setShowNuevaPersona(false); }} onClose={() => setShowNuevaPersona(false)} />}
       {editPersona && <PersonaKpiModal persona={editPersona} puestos={puestos} onSave={(p) => { onUpdatePersona(editPersona.id, p); setEditPersona(null); }} onClose={() => setEditPersona(null)} />}
       {showNuevoKpi && <KpiCatalogoModal puestos={puestos} catalogo={catalogo} onSave={(k) => { onAddKpi(k); setShowNuevoKpi(false); }} onClose={() => setShowNuevoKpi(false)} />}
