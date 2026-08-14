@@ -8797,7 +8797,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     if (!pedido) return;
     const corte = (pedido.cortesRealizados || []).find((c) => c.id === corteId);
     if (!corte) return;
-    const mesonAnterior = corte.meson || "";
     const cortesActualizados = pedido.cortesRealizados.map((c) =>
       c.id === corteId ? { ...c, meson: nuevoMeson || null } : c
     );
@@ -8805,23 +8804,19 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     // "Disponibilidad de Mesones" NO lee cortesRealizados — lee directo los
     // docs de corte_programacion (lo que se programó en Programación de
     // Mesones), que son un registro aparte y no se tocan solos al corregir
-    // el mesón acá. Si no se actualizan también esos docs, la disponibilidad
-    // sigue mostrando ocupado el mesón viejo (y libre el nuevo) aunque el
-    // corte real ya diga otra cosa — se buscan por pedido+fecha+planta+
-    // mesón anterior+referencia para no tocar otro corte que por casualidad
-    // haya usado el mismo mesón ese día.
-    if (mesonAnterior && mesonAnterior !== (nuevoMeson || "")) {
-      const refsDelCorte = new Set((corte.refs || []).map((r) => r.ref));
-      const coincidencias = (programacionCorte || []).filter(
-        (pr) =>
-          pr.pedidoId === pedidoId &&
-          pr.fechaProgramada === corte.fecha &&
-          pr.planta === corte.planta &&
-          pr.meson === mesonAnterior &&
-          refsDelCorte.has(pr.ref)
-      );
-      await Promise.all(coincidencias.map((pr) => fsSave("corte_programacion", pr.id, { meson: nuevoMeson || null })));
-    }
+    // el mesón acá.
+    // OJO: no se compara contra el mesón "anterior" guardado en el corte
+    // real — ese dato puede venir ya desactualizado (por ejemplo si esto ya
+    // se intentó corregir antes de este arreglo) y el filtro nunca
+    // encontraba el doc correcto. En vez de eso, se sincronizan TODOS los
+    // docs de corte_programacion de esa referencia en ese pedido que no
+    // coincidan ya con el mesón nuevo — así el dato real siempre manda,
+    // sin importar qué tuviera guardado antes corte_programacion.
+    const refsDelCorte = new Set((corte.refs || []).map((r) => r.ref));
+    const coincidencias = (programacionCorte || []).filter(
+      (pr) => pr.pedidoId === pedidoId && refsDelCorte.has(pr.ref) && pr.meson !== (nuevoMeson || null)
+    );
+    await Promise.all(coincidencias.map((pr) => fsSave("corte_programacion", pr.id, { meson: nuevoMeson || null })));
   }
   // Reinicio completo de pruebas (temporal, solo admin) — borra TODA la
   // colección corte_lotes, TODA corte_programacion (Programación de
