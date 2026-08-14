@@ -6668,7 +6668,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                       <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{r.name}</div>
                       <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10, marginBottom: 4 }}>Permisos de flujo de trabajo</div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte", "aprobar_despacho"].map((perm) => (
+                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte", "aprobar_despacho", "editar_kpis"].map((perm) => (
                           <span key={perm} onClick={() => onUpdateConfig({ roles: config.roles.map((x) => (x.id !== r.id ? x : { ...x, perms: x.perms.includes(perm) ? x.perms.filter((p) => p !== perm) : [...x.perms, perm] })) })}
                             style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: r.perms.includes(perm) ? T.jadeBg : "#EDEDF2", color: r.perms.includes(perm) ? T.jade : T.slate, border: `1px solid ${r.perms.includes(perm) ? T.jade : T.border}` }}
                           >{perm}</span>
@@ -9060,6 +9060,10 @@ function AppInner() {
     // la persona de bodega montó) — separado de "admin" para poder asignarlo
     // a alguien puntual sin darle el resto de permisos de administrador.
     aprobarDespacho: userRoleData?.perms?.includes("aprobar_despacho") ?? false,
+    // Permiso dedicado para editar el módulo de KPIs (puestos, funciones,
+    // catálogo de KPIs — crear/editar/borrar/trasladar) sin darle a la
+    // persona el resto de permisos de administrador general.
+    editarKpis: userRoleData?.perms?.includes("editar_kpis") ?? false,
   };
   // Visibilidad de módulos, decidida sección por sección con moduloVisible en
   // vez de reutilizar directamente perms.corte / perms.admin — así cada
@@ -9368,7 +9372,7 @@ function AppInner() {
                 personas={kpiPersonas}
                 catalogo={kpiCatalogo}
                 registros={kpiRegistros}
-                isAdmin={currentUser?.isAdmin}
+                isAdmin={currentUser?.isAdmin || perms.editarKpis}
                 onAddPuesto={addKpiPuesto}
                 onUpdatePuesto={updateKpiPuesto}
                 onDeletePuesto={deleteKpiPuesto}
