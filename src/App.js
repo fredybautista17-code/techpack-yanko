@@ -3606,7 +3606,7 @@ function PuestoKpiModal({ puesto, areas, puestos, onUpdatePuesto, onSave, onClos
     onSave({ nombre: nombre.trim(), area, funciones: limpio });
   }
   return (
-    <Modal title={puesto ? "Editar Puesto" : "Nuevo Puesto"} onClose={onClose} width={520}>
+    <Modal title={puesto ? "Editar Puesto" : "Nuevo Puesto"} onClose={onClose} width={640}>
       <Field label="Nombre del puesto"><FInput value={nombre} onChange={setNombre} placeholder="Ej: Patronista" /></Field>
       <Field label="Área">
         {areas.length ? (
@@ -3625,8 +3625,8 @@ function PuestoKpiModal({ puesto, areas, puestos, onUpdatePuesto, onSave, onClos
                   value={f}
                   onChange={(e) => actualizarFuncion(i, e.target.value)}
                   placeholder="Ej: Elaborar moldes base según ficha técnica"
-                  rows={2}
-                  style={{ flex: 1, padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical", lineHeight: 1.4, minHeight: 40 }}
+                  rows={4}
+                  style={{ flex: 1, padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical", lineHeight: 1.4, minHeight: 84 }}
                 />
                 {puesto && !!otrosPuestos.length && (
                   <button
