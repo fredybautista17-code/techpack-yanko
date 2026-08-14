@@ -1970,12 +1970,42 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
     largoTrazo: grupo.largoTrazo ? String(grupo.largoTrazo) : "",
     horaInicioEstimada: grupo.horaInicioEstimada || "",
     horaFinEstimada: grupo.horaFinEstimada || "",
+    // Etiqueta libre para distinguir cortes cuando un mismo lote de un día
+    // se reparte en más de un corte físico (ej. "Corte 1", "Corte 2") — se
+    // guarda tal cual en cada color incluido en ESTE guardado, para poder
+    // diferenciarlos después en Ingreso de Corte Real / Históricos.
+    numeroCorte: grupo.colores.find((c) => c.numeroCorte)?.numeroCorte || "",
   });
   // Tablero de disponibilidad de mesones (ver más abajo, tableroMesones).
   const [showTablero, setShowTablero] = useState(false);
-  // Tallas involucradas en esta referencia (unión de las tallas de todos los
-  // colores) — ordenadas con el mismo criterio que el resto del sistema.
-  const tallasGrupo = ordenarTallas([...new Set(grupo.colores.flatMap((c) => Object.keys(c.tallas || {})))]);
+  // Qué colores de la referencia se están programando EN ESTE corte — por
+  // defecto, todos los que todavía no tienen un corte guardado (la primera
+  // vez que se abre esto son todos, así que arranca igual que antes: un solo
+  // corte con todos los colores). Si un lote se va a partir en 2+ cortes
+  // físicos (distinto mesón/cortador/horario cada uno), se desmarcan acá los
+  // colores que NO van en este corte, se guarda, y al volver a abrir la
+  // referencia los que faltan quedan preseleccionados solos para el
+  // siguiente corte. Los colores ya programados en un corte previo se
+  // pueden volver a marcar a mano si hay que corregir algo antes de que se
+  // apruebe.
+  const [seleccionados, setSeleccionados] = useState(() => {
+    const pendientes = grupo.colores.filter((c) => c.etapa !== "programacion_hecha");
+    const base = pendientes.length ? pendientes : grupo.colores;
+    return new Set(base.map((c) => c.id));
+  });
+  function toggleSeleccionado(colorId) {
+    setSeleccionados((s) => {
+      const next = new Set(s);
+      if (next.has(colorId)) next.delete(colorId);
+      else next.add(colorId);
+      return next;
+    });
+  }
+  const coloresSeleccionados = grupo.colores.filter((c) => seleccionados.has(c.id));
+  // Tallas involucradas en ESTE corte (unión de las tallas de los colores
+  // seleccionados) — ordenadas con el mismo criterio que el resto del
+  // sistema.
+  const tallasGrupo = ordenarTallas([...new Set(coloresSeleccionados.flatMap((c) => Object.keys(c.tallas || {})))]);
   // Curva de tallas: cuántas veces se marca cada talla dentro de un mismo
   // trazo — es UNA sola para todo el trazo, compartida por todos los
   // colores (todos se tienden y cortan juntos con la misma disposición).
@@ -2100,7 +2130,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
   // de trazo, distinta cantidad de capas cada uno) — si hay referencia
   // vinculada, suma también sus colores (mismo trazo físico para ambas).
   function metrosTotales() {
-    const propios = grupo.colores.reduce((s, c) => s + calcColor(c).metrosColor, 0);
+    const propios = coloresSeleccionados.reduce((s, c) => s + calcColor(c).metrosColor, 0);
     const vinculados = refVinculada ? refVinculada.colores.reduce((s, c) => s + calcColorVinculada(c).metrosColor, 0) : 0;
     return propios + vinculados;
   }
@@ -2119,11 +2149,14 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
   // el total del grupo, solo aplica si está agrupado.
   const capacidad = mesonSel ? mesonSel.metros : null;
   const capacidadCompartida = grupoMeson ? grupoMeson.metros : null;
-  // Todos los colores de esta referencia comparten un solo trazo físico, así
-  // que se excluyen TODOS sus docs (no solo uno) al calcular lo ya reservado
-  // en el mesón — si no, el propio trazo se restaría de la capacidad. Si hay
-  // referencia vinculada, sus colores también se excluyen (mismo trazo).
-  const idsGrupo = grupo.colores.map((c) => c.id).concat(refVinculada ? refVinculada.colores.map((c) => c.id) : []);
+  // Los colores de ESTE corte comparten un solo trazo físico, así que se
+  // excluyen TODOS sus docs (no solo uno) al calcular lo ya reservado en el
+  // mesón — si no, el propio trazo se restaría de la capacidad. Los colores
+  // de la misma referencia que quedaron en OTRO corte (ya guardado con su
+  // propio mesón/horario) no se excluyen — su reserva cuenta normal, como
+  // la de cualquier otro trazo. Si hay referencia vinculada, sus colores
+  // también se excluyen (mismo trazo).
+  const idsGrupo = coloresSeleccionados.map((c) => c.id).concat(refVinculada ? refVinculada.colores.map((c) => c.id) : []);
   // Horas estimadas — obligatorias para guardar. Además de bloquear el
   // guardado (ver horasFaltantes/horasInvalidas más abajo), son las que
   // definen qué otros cortes de ese mesón "compiten" por el mismo espacio.
@@ -2186,6 +2219,11 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
   const tiempoTotalEstimadoMin = tendidoEstimadoMin !== null ? tendidoEstimadoMin + (tiempoTeorico || 0) : null;
   const telasDatalistId = `telas-prog-hecha-${grupo.pedidoId}-${grupo.ref}`;
   const cantidadTotal = grupo.colores.reduce((s, c) => s + (c.cantidadProgramada ?? c.cantidadPendiente ?? 0), 0);
+  // Cantidad de SOLO los colores marcados para este corte — cuando el lote
+  // se reparte en varios cortes, esto es lo que de verdad se va a tender/
+  // cortar ahora (cantidadTotal sigue siendo el total de la referencia
+  // completa, para que el usuario vea las dos cifras).
+  const cantidadEsteCorte = coloresSeleccionados.reduce((s, c) => s + (c.cantidadProgramada ?? c.cantidadPendiente ?? 0), 0);
   // Tablero de disponibilidad: lista CADA mesón de esta planta por separado
   // (incluso los que comparten grupo, como Mesón 2 y Mesón 3) porque cada
   // uno conserva su propio tope individual además del total compartido — su
@@ -2219,7 +2257,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
   // mismo `datosComunes` en cada uno de sus docs de corte_programacion, cada
   // uno conservando su propia cantidad (ya definida por color al programar).
   function save() {
-    if (!form.planta || !form.meson || !form.cortador || !form.fechaProgramada || excedeCapacidad || horasFaltantes || horasInvalidas) return;
+    if (!coloresSeleccionados.length || !form.planta || !form.meson || !form.cortador || !form.fechaProgramada || excedeCapacidad || horasFaltantes || horasInvalidas) return;
     // Curva limpia: solo tallas con un número puesto, guardada como objeto
     // { talla: cantidad } para poder mostrarla igual en Ingreso de Corte
     // Real / Históricos.
@@ -2250,6 +2288,9 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
       tendidoEstimadoMin: tendidoEstimadoMin,
       tiempoTotalEstimadoMin: tiempoTotalEstimadoMin,
       vinculoTrazoId,
+      // Etiqueta de corte (ej. "Corte 1") cuando el lote se reparte en más
+      // de un corte físico — vacío/null si no aplica.
+      numeroCorte: form.numeroCorte?.trim() || null,
       // Cada vez que se guarda (sea la primera vez o una edición posterior a
       // una aprobación), queda "pendiente de aprobación" de nuevo — si los
       // datos cambiaron, el analista tiene que revisarlos otra vez.
@@ -2262,8 +2303,10 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
     // Capas es por color: cada color guarda su propia cantidad de capas y
     // sus propios metros calculados (mismo largo de trazo para todos). Si
     // hay referencia vinculada, capasDeColor devuelve la compartida para
-    // todos por igual.
-    grupo.colores.forEach((c) => {
+    // todos por igual. Solo se guardan los colores marcados para ESTE corte
+    // — los demás (si el lote se repartió en varios cortes) quedan sin
+    // tocar, pendientes para cuando se programe su propio corte.
+    coloresSeleccionados.forEach((c) => {
       const { capasColor, metrosColor } = calcColor(c);
       const cantidadPorDocena = parseFloat(cantidadPorDocenaPorColor[c.id]) || null;
       onSave(c.id, { ...datosComunes, capas: capasColor, metrosTendido: metrosColor, cantidadPorDocena });
@@ -2353,7 +2396,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
                 onChange={(v) => setForm((f) => ({ ...f, fechaProgramada: v }))}
               />
             </Field>
-            <Field label="Cantidad Programada (total)">
+            <Field label={coloresSeleccionados.length < grupo.colores.length ? "Cantidad de este corte" : "Cantidad Programada (total)"}>
               <div
                 style={{
                   padding: "9px 12px",
@@ -2365,8 +2408,24 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
                   fontSize: 13,
                 }}
               >
-                {fmtNum(cantidadTotal)}
+                {fmtNum(cantidadEsteCorte)}
+                {coloresSeleccionados.length < grupo.colores.length && (
+                  <span style={{ fontWeight: 400, color: C.slate }}> de {fmtNum(cantidadTotal)} en total</span>
+                )}
               </div>
+            </Field>
+          </div>
+          {/* Cuando el lote de esta referencia se va a cortar en más de un
+              corte físico (distinto mesón/cortador/horario), esta etiqueta
+              libre distingue cuál corte es cuál en Ingreso de Corte Real /
+              Históricos — opcional, se puede dejar en blanco si no aplica. */}
+          <div style={{ marginBottom: 16 }}>
+            <Field label="N° de Corte (opcional, si este lote se reparte en varios cortes)">
+              <FInput
+                value={form.numeroCorte}
+                onChange={(v) => setForm((f) => ({ ...f, numeroCorte: v }))}
+                placeholder="Ej: Corte 1"
+              />
             </Field>
           </div>
           {/* Referencia vinculada: otra referencia (de cualquier pedido) que
@@ -2576,7 +2635,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
               Capas por Color
             </div>
             <div style={{ fontSize: 11, color: C.slate, marginBottom: 8 }}>
-              Clic en un color para ver el desglose por talla (curva × capas de ese color, comparado talla por talla contra lo real del pedido).
+              Clic en un color para ver el desglose por talla (curva × capas de ese color, comparado talla por talla contra lo real del pedido). Si este lote se va a cortar en varios cortes distintos, desmarca acá los colores que NO van en este — quedan pendientes para programarlos aparte.
             </div>
             <div style={{ display: "grid", gap: 8 }}>
               {grupo.colores.map((c) => {
@@ -2584,6 +2643,8 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
                 const coincide = marcadas > 0 && calc.capasColor > 0 && calc.diff === 0;
                 const hayDatos = marcadas > 0 && calc.capasColor > 0;
                 const abierto = colorAbierto === c.id;
+                const incluido = seleccionados.has(c.id);
+                const yaProgramado = c.etapa === "programacion_hecha";
                 return (
                   <div
                     key={c.id}
@@ -2592,20 +2653,37 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
                       border: `1.5px solid ${C.border}`,
                       background: C.canvas,
                       overflow: "hidden",
+                      opacity: incluido ? 1 : 0.55,
                     }}
                   >
                     <div
                       onClick={() => setColorAbierto(abierto ? null : c.id)}
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "1.1fr 0.8fr 0.8fr 1fr 1fr auto auto",
+                        gridTemplateColumns: "auto 1.1fr 0.8fr 0.8fr 1fr 1fr auto auto",
                         gap: 10,
                         alignItems: "center",
                         padding: "8px 12px",
                         cursor: "pointer",
                       }}
                     >
-                      <div style={{ fontWeight: 800, color: C.ink, fontSize: 13 }}>{c.descripcion || c.ref || c.color || "—"}</div>
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={incluido}
+                          onChange={() => toggleSeleccionado(c.id)}
+                          title={incluido ? "Incluido en este corte" : "No incluido en este corte"}
+                          style={{ width: 16, height: 16, cursor: "pointer" }}
+                        />
+                      </div>
+                      <div style={{ fontWeight: 800, color: C.ink, fontSize: 13 }}>
+                        {c.descripcion || c.ref || c.color || "—"}
+                        {yaProgramado && (
+                          <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.violet, background: C.violetBg, padding: "1px 6px", borderRadius: 8 }}>
+                            {c.numeroCorte || "ya programado"}
+                          </span>
+                        )}
+                      </div>
                       <div onClick={(e) => e.stopPropagation()}>
                         <FInput
                           type="number"
@@ -2734,9 +2812,9 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
             <Btn
               variant="success"
               onClick={save}
-              disabled={!form.planta || !form.meson || !form.cortador || !form.fechaProgramada || excedeCapacidad || horasFaltantes || horasInvalidas}
+              disabled={!coloresSeleccionados.length || !form.planta || !form.meson || !form.cortador || !form.fechaProgramada || excedeCapacidad || horasFaltantes || horasInvalidas}
             >
-              ✓ Guardar datos teóricos del corte
+              ✓ Guardar datos teóricos del corte{coloresSeleccionados.length < grupo.colores.length ? ` (${coloresSeleccionados.length} de ${grupo.colores.length} colores)` : ""}
             </Btn>
           </div>
         </div>
@@ -5593,7 +5671,14 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   function agruparPorRef(items) {
     const gruposMap = new Map();
     items.forEach((it) => {
-      const gkey = `${it.pedidoId}__${it.ref}`;
+      // Si esta referencia se partió en varios cortes (distinto mesón/
+      // cortador/horario cada uno, ver "N° de Corte" en Programación de
+      // Mesones), cada etiqueta de corte arma SU PROPIO grupo — así el
+      // Cronograma de Corte y Producción Corte muestran cada corte por
+      // separado (ej. 288 + 288) en vez de un solo bloque de 576. Los
+      // colores que todavía no se les asignó ningún corte (numeroCorte
+      // vacío) siguen agrupados juntos, como siempre.
+      const gkey = `${it.pedidoId}__${it.ref}__${it.numeroCorte || ""}`;
       if (!gruposMap.has(gkey)) {
         gruposMap.set(gkey, {
           key: gkey,
@@ -5601,6 +5686,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
           numero: it.numero,
           cliente: it.cliente,
           ref: it.ref,
+          numeroCorte: it.numeroCorte || null,
           colores: [],
           cantidadTotal: 0,
           vencido: false,
@@ -6238,7 +6324,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                         <div key={g.key} style={{ display: "flex", alignItems: "stretch", gap: 2 }}>
                           <div
                             onClick={() => abrirFlujoCorte(g)}
-                            title={`${g.cliente} · #${g.numero} · ${g.ref} (${g.colores.length} color${g.colores.length !== 1 ? "es" : ""}) — ${g.etapa === "programacion_hecha" ? "Ir a Entrada de Corte" : "Ir a Programación Hecha"}`}
+                            title={`${g.cliente} · #${g.numero} · ${g.ref}${g.numeroCorte ? ` (${g.numeroCorte})` : ""} (${g.colores.length} color${g.colores.length !== 1 ? "es" : ""}) — ${g.etapa === "programacion_hecha" ? "Ir a Entrada de Corte" : "Ir a Programación Hecha"}`}
                             style={{
                               flex: 1,
                               minWidth: 0,
@@ -6254,7 +6340,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                               fontWeight: 700,
                             }}
                           >
-                            {g.ref} · {fmtNum(g.cantidadTotal)}
+                            {g.ref}{g.numeroCorte ? ` (${g.numeroCorte})` : ""} · {fmtNum(g.cantidadTotal)}
                           </div>
                           {isAdmin && (
                             <button
@@ -6376,7 +6462,14 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                           style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderRadius: 10, cursor: "pointer", border: `1.5px solid ${C.border}`, background: C.white }}
                         >
                           <div>
-                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{g.cliente} · #{g.numero} · {g.ref}</div>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>
+                              {g.cliente} · #{g.numero} · {g.ref}
+                              {g.numeroCorte && (
+                                <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.violet, background: C.violetBg, padding: "1px 6px", borderRadius: 8 }}>
+                                  {g.numeroCorte}
+                                </span>
+                              )}
+                            </div>
                             <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>{g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid.</div>
                           </div>
                           <span style={{ fontSize: 10, fontWeight: 800, color: C.amber, background: C.amberBg, padding: "4px 10px", borderRadius: 10, whiteSpace: "nowrap" }}>
@@ -6400,7 +6493,14 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                           style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 16px", borderRadius: 10, cursor: "pointer", border: `1.5px solid ${C.border}`, background: C.white }}
                         >
                           <div>
-                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{g.cliente} · #{g.numero} · {g.ref}</div>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>
+                              {g.cliente} · #{g.numero} · {g.ref}
+                              {g.numeroCorte && (
+                                <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.violet, background: C.violetBg, padding: "1px 6px", borderRadius: 8 }}>
+                                  {g.numeroCorte}
+                                </span>
+                              )}
+                            </div>
                             <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
                               {g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid. · {g.planta}{g.meson ? " · " + nombreMeson(g.planta, g.meson) : ""}
                             </div>
@@ -6501,7 +6601,14 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                           }}
                         >
                           <div>
-                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{g.cliente} · #{g.numero} · {g.ref}</div>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>
+                              {g.cliente} · #{g.numero} · {g.ref}
+                              {g.numeroCorte && (
+                                <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.violet, background: C.violetBg, padding: "1px 6px", borderRadius: 8 }}>
+                                  {g.numeroCorte}
+                                </span>
+                              )}
+                            </div>
                             <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
                               {g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid.
                               {g.etapa === "programacion_hecha" && ` · ${g.planta}${g.meson ? " · " + nombreMeson(g.planta, g.meson) : ""}`}
@@ -6681,7 +6788,14 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                           }}
                         >
                           <div>
-                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{g.cliente} · #{g.numero} · {g.ref}</div>
+                            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>
+                              {g.cliente} · #{g.numero} · {g.ref}
+                              {g.numeroCorte && (
+                                <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.violet, background: C.violetBg, padding: "1px 6px", borderRadius: 8 }}>
+                                  {g.numeroCorte}
+                                </span>
+                              )}
+                            </div>
                             <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
                               {g.colores.length} color{g.colores.length !== 1 ? "es" : ""} · {fmtNum(g.cantidadTotal)} unid. · {g.planta}{g.meson ? ` · ${nombreMeson(g.planta, g.meson)}` : ""}
                             </div>
