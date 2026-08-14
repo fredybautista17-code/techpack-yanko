@@ -1997,6 +1997,28 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
     });
     return c;
   });
+  // Cantidad por docena — cuántas unidades trae empacada cada docena de este
+  // color (no siempre son 12: puede variar según cómo venga la mezcla de
+  // tallas del empaque). Es un atajo para no calcular capas a mano: apenas
+  // se pone este número, se calcula solo cuántas capas hacen falta
+  // (capas = cantidad real del color ÷ cantidad por docena) y se rellena el
+  // campo de Capas de una vez — sigue siendo editable a mano después, por si
+  // hay que ajustarlo.
+  const [cantidadPorDocenaPorColor, setCantidadPorDocenaPorColor] = useState(() => {
+    const c = {};
+    grupo.colores.forEach((color) => {
+      c[color.id] = color.cantidadPorDocena ? String(color.cantidadPorDocena) : "";
+    });
+    return c;
+  });
+  function actualizarCantidadPorDocena(colorId, valor, cantidadReal) {
+    setCantidadPorDocenaPorColor((s) => ({ ...s, [colorId]: valor }));
+    const docena = parseFloat(valor) || 0;
+    if (docena > 0 && cantidadReal > 0) {
+      const capasSugeridas = Math.round(cantidadReal / docena);
+      setCapasPorColor((s) => ({ ...s, [colorId]: String(capasSugeridas) }));
+    }
+  }
   // Qué color tiene desplegado su desglose por talla (curva × capas de ESE
   // color, comparado talla por talla contra lo real del pedido) — null si
   // ninguno. Solo un color abierto a la vez para no saturar la pantalla.
@@ -2243,7 +2265,8 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
     // todos por igual.
     grupo.colores.forEach((c) => {
       const { capasColor, metrosColor } = calcColor(c);
-      onSave(c.id, { ...datosComunes, capas: capasColor, metrosTendido: metrosColor });
+      const cantidadPorDocena = parseFloat(cantidadPorDocenaPorColor[c.id]) || null;
+      onSave(c.id, { ...datosComunes, capas: capasColor, metrosTendido: metrosColor, cantidadPorDocena });
     });
     // Referencia vinculada: mismos datos comunes (planta/mesón/tela/trazo/
     // capas/horario/vinculoTrazoId), pero con SU PROPIA curva de tallas —
@@ -2273,8 +2296,8 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
     else onClose();
   }
   return (
-    <div style={{ border: `1.5px solid ${C.border}`, borderRadius: 14, background: C.white, padding: 20 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, gap: 12 }}>
+    <Modal
+      title={
         <div>
           <div style={{ fontSize: 16, fontWeight: 800, color: C.ink }}>
             🔧 {grupo.cliente} · #{grupo.numero} · {grupo.ref}
@@ -2282,17 +2305,17 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
               <span style={{ color: C.violet }}> + {refVinculada.cliente} · #{refVinculada.numero} · {refVinculada.ref}</span>
             )}
           </div>
-          <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
+          <div style={{ fontSize: 12, color: C.slate, marginTop: 2, fontWeight: 400 }}>
             {grupo.colores.length} color{grupo.colores.length !== 1 ? "es" : ""} · Cantidad total {fmtNum(cantidadTotal)}
             {refVinculada && (
               <span style={{ color: C.violet, fontWeight: 700 }}> · vinculada con otra referencia en el mismo trazo</span>
             )}
           </div>
         </div>
-        <Btn variant="secondary" onClick={onClose}>
-          ‹ Volver a la lista
-        </Btn>
-      </div>
+      }
+      onClose={onClose}
+      width={980}
+    >
       {aprobado && (
         <div style={{ padding: "10px 14px", borderRadius: 8, marginBottom: 16, fontSize: 12, fontWeight: 700, background: C.greenBg, color: C.green }}>
           ✓ Aprobada Analista{aprobadoPorTxt ? ` por ${aprobadoPorTxt}` : ""}{aprobadoFechaTxt ? ` el ${fmtFechaISO(aprobadoFechaTxt.slice(0, 10))}` : ""}. Si cambias y guardas los datos, vuelve a quedar pendiente de aprobación.
@@ -2575,7 +2598,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
                       onClick={() => setColorAbierto(abierto ? null : c.id)}
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "1.2fr 0.8fr 1fr 1fr auto auto",
+                        gridTemplateColumns: "1.1fr 0.8fr 0.8fr 1fr 1fr auto auto",
                         gap: 10,
                         alignItems: "center",
                         padding: "8px 12px",
@@ -2583,6 +2606,14 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
                       }}
                     >
                       <div style={{ fontWeight: 800, color: C.ink, fontSize: 13 }}>{c.descripcion || c.ref || c.color || "—"}</div>
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <FInput
+                          type="number"
+                          value={cantidadPorDocenaPorColor[c.id] || ""}
+                          onChange={(v) => actualizarCantidadPorDocena(c.id, v, calc.cantidadReal)}
+                          placeholder="Cant. x docena"
+                        />
+                      </div>
                       <div onClick={(e) => e.stopPropagation()}>
                         <FInput
                           type="number"
@@ -2792,7 +2823,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
           )}
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 // ─── DETALLE PEDIDO ───────────────────────────────────────────────────────────
