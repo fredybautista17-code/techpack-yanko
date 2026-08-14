@@ -1978,34 +1978,19 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
   });
   // Tablero de disponibilidad de mesones (ver más abajo, tableroMesones).
   const [showTablero, setShowTablero] = useState(false);
-  // Qué colores de la referencia se están programando EN ESTE corte — por
-  // defecto, todos los que todavía no tienen un corte guardado (la primera
-  // vez que se abre esto son todos, así que arranca igual que antes: un solo
-  // corte con todos los colores). Si un lote se va a partir en 2+ cortes
-  // físicos (distinto mesón/cortador/horario cada uno), se desmarcan acá los
-  // colores que NO van en este corte, se guarda, y al volver a abrir la
-  // referencia los que faltan quedan preseleccionados solos para el
-  // siguiente corte. Los colores ya programados en un corte previo se
-  // pueden volver a marcar a mano si hay que corregir algo antes de que se
-  // apruebe.
-  const [seleccionados, setSeleccionados] = useState(() => {
-    const pendientes = grupo.colores.filter((c) => c.etapa !== "programacion_hecha");
-    const base = pendientes.length ? pendientes : grupo.colores;
-    return new Set(base.map((c) => c.id));
-  });
-  function toggleSeleccionado(colorId) {
-    setSeleccionados((s) => {
-      const next = new Set(s);
-      if (next.has(colorId)) next.delete(colorId);
-      else next.add(colorId);
-      return next;
-    });
-  }
-  const coloresSeleccionados = grupo.colores.filter((c) => seleccionados.has(c.id));
-  // Tallas involucradas en ESTE corte (unión de las tallas de los colores
-  // seleccionados) — ordenadas con el mismo criterio que el resto del
-  // sistema.
-  const tallasGrupo = ordenarTallas([...new Set(coloresSeleccionados.flatMap((c) => Object.keys(c.tallas || {})))]);
+  // Este panel siempre programa TODOS los colores de `grupo` de una vez — si
+  // un lote se necesita partir en varios cortes físicos (distinto mesón/
+  // cortador/horario), eso se hace ANTES, con el botón "✂ Partir en cortes"
+  // en el Cronograma o en la lista de Producción Corte (ver
+  // partirGrupoEnCortes) — ese botón crea de una vez cada corte como un
+  // grupo aparte, ya separado, sin depender de que alguien marque/desmarque
+  // colores acá (evita errores). Por eso ya no hay selección de colores en
+  // este panel: `grupo` que llega acá ya es exactamente lo que se va a
+  // cortar.
+  const coloresSeleccionados = grupo.colores;
+  // Tallas involucradas en esta referencia (unión de las tallas de todos los
+  // colores) — ordenadas con el mismo criterio que el resto del sistema.
+  const tallasGrupo = ordenarTallas([...new Set(grupo.colores.flatMap((c) => Object.keys(c.tallas || {})))]);
   // Curva de tallas: cuántas veces se marca cada talla dentro de un mismo
   // trazo — es UNA sola para todo el trazo, compartida por todos los
   // colores (todos se tienden y cortan juntos con la misma disposición).
@@ -2635,7 +2620,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
               Capas por Color
             </div>
             <div style={{ fontSize: 11, color: C.slate, marginBottom: 8 }}>
-              Clic en un color para ver el desglose por talla (curva × capas de ese color, comparado talla por talla contra lo real del pedido). Si este lote se va a cortar en varios cortes distintos, desmarca acá los colores que NO van en este — quedan pendientes para programarlos aparte.
+              Clic en un color para ver el desglose por talla (curva × capas de ese color, comparado talla por talla contra lo real del pedido).
             </div>
             <div style={{ display: "grid", gap: 8 }}>
               {grupo.colores.map((c) => {
@@ -2643,8 +2628,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
                 const coincide = marcadas > 0 && calc.capasColor > 0 && calc.diff === 0;
                 const hayDatos = marcadas > 0 && calc.capasColor > 0;
                 const abierto = colorAbierto === c.id;
-                const incluido = seleccionados.has(c.id);
-                const yaProgramado = c.etapa === "programacion_hecha";
                 return (
                   <div
                     key={c.id}
@@ -2653,36 +2636,21 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, estadistica
                       border: `1.5px solid ${C.border}`,
                       background: C.canvas,
                       overflow: "hidden",
-                      opacity: incluido ? 1 : 0.55,
                     }}
                   >
                     <div
                       onClick={() => setColorAbierto(abierto ? null : c.id)}
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "auto 1.1fr 0.8fr 0.8fr 1fr 1fr auto auto",
+                        gridTemplateColumns: "1.1fr 0.8fr 0.8fr 1fr 1fr auto auto",
                         gap: 10,
                         alignItems: "center",
                         padding: "8px 12px",
                         cursor: "pointer",
                       }}
                     >
-                      <div onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          checked={incluido}
-                          onChange={() => toggleSeleccionado(c.id)}
-                          title={incluido ? "Incluido en este corte" : "No incluido en este corte"}
-                          style={{ width: 16, height: 16, cursor: "pointer" }}
-                        />
-                      </div>
                       <div style={{ fontWeight: 800, color: C.ink, fontSize: 13 }}>
                         {c.descripcion || c.ref || c.color || "—"}
-                        {yaProgramado && (
-                          <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.violet, background: C.violetBg, padding: "1px 6px", borderRadius: 8 }}>
-                            {c.numeroCorte || "ya programado"}
-                          </span>
-                        )}
                       </div>
                       <div onClick={(e) => e.stopPropagation()}>
                         <FInput
