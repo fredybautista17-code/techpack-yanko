@@ -3619,25 +3619,43 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVinc
     </div>
   );
 }
-// Funciones asignadas de un puesto: antes era un solo texto libre, ahora es
-// una lista numerada (un renglón por función). `funcionesArray` normaliza
-// cualquiera de las dos formas — soporta puestos viejos que todavía tengan
-// `funciones` guardado como string plano — para que tanto el modal de
-// edición como las vistas de solo lectura trabajen siempre con un array.
+// Funciones asignadas de un puesto: cada función es { texto, manejaArchivos,
+// rutas } — manejaArchivos/rutas dicen si esa función implica trabajar con
+// archivos y en qué carpeta/ruta se encuentran, para que quede documentado
+// sin tener que preguntarle a la persona. `funcionesArray` normaliza
+// formatos viejos (puestos con `funciones` guardado como string plano, o
+// como array de puros strings antes de que existiera manejaArchivos/rutas)
+// para que tanto el modal de edición como las vistas de solo lectura
+// trabajen siempre con la misma forma de objeto.
 function funcionesArray(funciones) {
-  if (Array.isArray(funciones)) return funciones.filter((f) => f && f.trim());
-  if (typeof funciones === "string" && funciones.trim()) return [funciones.trim()];
-  return [];
+  let arr = [];
+  if (Array.isArray(funciones)) arr = funciones;
+  else if (typeof funciones === "string" && funciones.trim()) arr = [funciones];
+  return arr
+    .map((f) =>
+      typeof f === "string"
+        ? { texto: f.trim(), manejaArchivos: false, rutas: "" }
+        : { texto: (f?.texto || "").trim(), manejaArchivos: !!f?.manejaArchivos, rutas: f?.rutas || "" }
+    )
+    .filter((f) => f.texto);
 }
 // Lista numerada de solo lectura (Puestos, Registro Mensual, Catálogo de
-// KPIs) — no se repite el numerado a mano en cada vista.
+// KPIs) — no se repite el numerado a mano en cada vista. Si la función
+// maneja archivos, se ve un badge 📁 con la(s) ruta(s) debajo del texto.
 function FuncionesPreview({ funciones, style }) {
   const lista = funcionesArray(funciones);
   if (!lista.length) return null;
   return (
     <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: T.slate, ...style }}>
       {lista.map((f, i) => (
-        <li key={i} style={{ marginBottom: 2 }}>{f}</li>
+        <li key={i} style={{ marginBottom: 4 }}>
+          {f.texto}
+          {f.manejaArchivos && (
+            <div style={{ marginTop: 2, fontSize: 11, color: T.denim, fontWeight: 600 }}>
+              📁 {f.rutas?.trim() ? f.rutas : "Maneja archivos (sin ruta especificada)"}
+            </div>
+          )}
+        </li>
       ))}
     </ol>
   );
@@ -3651,40 +3669,44 @@ function FuncionesPreview({ funciones, style }) {
 function PuestoKpiModal({ puesto, areas, puestos, onUpdatePuesto, onSave, onClose }) {
   const [nombre, setNombre] = useState(puesto?.nombre || "");
   const [area, setArea] = useState(puesto?.area || "");
+  const vacia = () => ({ texto: "", manejaArchivos: false, rutas: "" });
   const [funciones, setFunciones] = useState(() => {
     const arr = funcionesArray(puesto?.funciones);
-    return arr.length ? arr : [""];
+    return arr.length ? arr : [vacia()];
   });
   const [transferirIdx, setTransferirIdx] = useState(null);
   const [destinoTransfer, setDestinoTransfer] = useState("");
   const otrosPuestos = (puestos || []).filter((p) => p.id !== puesto?.id);
-  function actualizarFuncion(i, val) {
-    setFunciones((fs) => fs.map((f, idx) => (idx === i ? val : f)));
+  function actualizarFuncion(i, campo, val) {
+    setFunciones((fs) => fs.map((f, idx) => (idx === i ? { ...f, [campo]: val } : f)));
   }
   function agregarFuncion() {
-    setFunciones((fs) => [...fs, ""]);
+    setFunciones((fs) => [...fs, vacia()]);
   }
   function quitarFuncion(i) {
     setFunciones((fs) => (fs.length === 1 ? fs : fs.filter((_, idx) => idx !== i)));
   }
+  function limpiarFuncion(f) {
+    return { texto: (f.texto || "").trim(), manejaArchivos: !!f.manejaArchivos, rutas: (f.rutas || "").trim() };
+  }
   function transferirFuncion(i) {
-    const texto = (funciones[i] || "").trim();
-    if (!texto || !destinoTransfer || !puesto || !onUpdatePuesto) return;
+    const item = limpiarFuncion(funciones[i] || vacia());
+    if (!item.texto || !destinoTransfer || !puesto || !onUpdatePuesto) return;
     const destino = (puestos || []).find((p) => p.id === destinoTransfer);
     if (!destino) return;
-    onUpdatePuesto(destino.id, { funciones: [...funcionesArray(destino.funciones), texto] });
+    onUpdatePuesto(destino.id, { funciones: [...funcionesArray(destino.funciones), item] });
     setFunciones((fs) => {
       const restante = fs.filter((_, idx) => idx !== i);
-      const limpio = restante.map((f) => f.trim()).filter(Boolean);
+      const limpio = restante.map(limpiarFuncion).filter((f) => f.texto);
       onUpdatePuesto(puesto.id, { funciones: limpio.length ? limpio : [] });
-      return restante.length ? restante : [""];
+      return restante.length ? restante : [vacia()];
     });
     setTransferirIdx(null);
     setDestinoTransfer("");
   }
   function save() {
     if (!nombre.trim() || !area) return;
-    const limpio = funciones.map((f) => f.trim()).filter(Boolean);
+    const limpio = funciones.map(limpiarFuncion).filter((f) => f.texto);
     onSave({ nombre: nombre.trim(), area, funciones: limpio });
   }
   return (
@@ -3703,13 +3725,32 @@ function PuestoKpiModal({ puesto, areas, puestos, onUpdatePuesto, onSave, onClos
             <div key={i} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
                 <span style={{ width: 20, flexShrink: 0, textAlign: "right", fontSize: 12, fontWeight: 700, color: T.slate, marginTop: 8 }}>{i + 1}.</span>
-                <textarea
-                  value={f}
-                  onChange={(e) => actualizarFuncion(i, e.target.value)}
-                  placeholder="Ej: Elaborar moldes base según ficha técnica"
-                  rows={4}
-                  style={{ flex: 1, padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical", lineHeight: 1.4, minHeight: 84 }}
-                />
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+                  <textarea
+                    value={f.texto}
+                    onChange={(e) => actualizarFuncion(i, "texto", e.target.value)}
+                    placeholder="Ej: Elaborar moldes base según ficha técnica"
+                    rows={4}
+                    style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical", lineHeight: 1.4, minHeight: 84, boxSizing: "border-box" }}
+                  />
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: T.ink, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={!!f.manejaArchivos}
+                      onChange={(e) => actualizarFuncion(i, "manejaArchivos", e.target.checked)}
+                    />
+                    Maneja archivos
+                  </label>
+                  {f.manejaArchivos && (
+                    <textarea
+                      value={f.rutas}
+                      onChange={(e) => actualizarFuncion(i, "rutas", e.target.value)}
+                      placeholder="Ruta(s) donde se encuentran, ej: D:\Documentos\techpack-yanko\src (una por línea si son varias)"
+                      rows={2}
+                      style={{ width: "100%", padding: "6px 10px", border: `1.5px solid ${T.denim}`, borderRadius: 8, fontSize: 12, color: T.ink, background: T.denimBg, outline: "none", fontFamily: "inherit", resize: "vertical", lineHeight: 1.4, boxSizing: "border-box" }}
+                    />
+                  )}
+                </div>
                 {puesto && !!otrosPuestos.length && (
                   <button
                     onClick={() => { setTransferirIdx(transferirIdx === i ? null : i); setDestinoTransfer(""); }}
@@ -9195,7 +9236,22 @@ function AppInner() {
   // Pedidos). Si además tiene Pedidos u otra sección, ya no aplica este atajo
   // de pantalla completa — ve el shell normal con solo esas secciones visibles.
   const isPlaneadorPuro = canAccessCorte && !canAccessPedidos && !canAccessProtos && !canAccessCapsulas && !canAccessPedidosClientes && !canAccessStats && !perms.editar && !perms.aprobar && !currentUser?.isAdmin;
-  const isContabilidadPura = canAccessContabilidad && !canAccessDiseno;
+  // Igual que "Planeador puro" arriba: este atajo de pantalla completa solo
+  // debe aplicar si Contabilidad es LO ÚNICO que el rol puede ver. Antes solo
+  // se fijaba en "!canAccessDiseno", así que un rol con Contabilidad + Bodega
+  // (o + Planta/Planeación/Nómina/KPIs/Informes/Corte) caía en este atajo
+  // igual y quedaba encerrado en Contabilidad sin poder llegar a Bodega — se
+  // agregan todas las demás secciones de nivel superior a la condición.
+  const isContabilidadPura =
+    canAccessContabilidad &&
+    !canAccessDiseno &&
+    !canAccessCorte &&
+    !canAccessBodega &&
+    !canAccessPlanta &&
+    !canAccessPlaneacion &&
+    !canAccessNomina &&
+    !canAccessKpis &&
+    !canAccessInformes;
   if (appState === "loading") return <LoadingScreen message="Conectando con Firebase..." />;
   if (appState === "login" || !currentUser) return <LoginScreen externalError={loginError} />;
   if (isPlaneadorPuro) {
