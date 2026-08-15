@@ -362,7 +362,7 @@ function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint })
     </div>
   );
 }
-function MontarDespachoView({ despachos, currentUser, onGuardado }) {
+function MontarDespachoView({ despachos, currentUser, onGuardado, coleccionDespachos }) {
   const [numControl, setNumControl] = useState("");
   const [fecha, setFecha] = useState(today());
   const [lineas, setLineas] = useState([lineaVacia()]);
@@ -427,7 +427,7 @@ function MontarDespachoView({ despachos, currentUser, onGuardado }) {
         total: calcularTotalLinea(l),
         barras: l.barras || [],
       }));
-      await fsSave("despachosVenezuela", id, {
+      await fsSave(coleccionDespachos, id, {
         id,
         numero: numeroSiguiente,
         numControl: numControl.trim(),
@@ -707,7 +707,7 @@ function PinModal({ pinReal, onCorrecto, onClose }) {
 // cantidad, traslado, corte, bulto, descripción, marca, segmento, códigos de
 // barra); si quien edita también puede ver precio/descuento (Contabilidad o
 // Administración), se le agrega esa fila debajo de cada línea.
-function EditarDespachoModal({ despacho, currentUser, puedeEditarPrecio, onClose, onGuardado }) {
+function EditarDespachoModal({ despacho, currentUser, puedeEditarPrecio, onClose, onGuardado, coleccionDespachos }) {
   const [numControl, setNumControl] = useState(despacho.numControl || "");
   const [fecha, setFecha] = useState(despacho.fecha || today());
   const [lineas, setLineas] = useState(() =>
@@ -772,7 +772,7 @@ function EditarDespachoModal({ despacho, currentUser, puedeEditarPrecio, onClose
         total: calcularTotalLinea(l),
         barras: l.barras || [],
       }));
-      await fsSave("despachosVenezuela", despacho.id, {
+      await fsSave(coleccionDespachos, despacho.id, {
         numControl: numControl.trim(),
         fecha,
         lineas: lineasGuardar,
@@ -853,7 +853,7 @@ function CodigoEdicionView({ pinActual, onGuardar }) {
     </div>
   );
 }
-function DetalleDespachoModal({ despacho, onClose, onGuardado, currentUser, isAdmin, esContabilidad, esBodegaSolo, pinEdicion, onEliminar }) {
+function DetalleDespachoModal({ despacho, onClose, onGuardado, currentUser, isAdmin, esContabilidad, esBodegaSolo, pinEdicion, onEliminar, coleccionDespachos }) {
   const [editando, setEditando] = useState(false);
   const [pidiendoPin, setPidiendoPin] = useState(false);
   const esPropio = !!despacho.creadoPor && despacho.creadoPor === (currentUser?.name || currentUser?.username);
@@ -930,6 +930,7 @@ function DetalleDespachoModal({ despacho, onClose, onGuardado, currentUser, isAd
           despacho={despacho}
           currentUser={currentUser}
           puedeEditarPrecio={puedeEditarPrecio}
+          coleccionDespachos={coleccionDespachos}
           onClose={() => setEditando(false)}
           onGuardado={() => {
             setEditando(false);
@@ -969,7 +970,7 @@ function LineaRevisionRow({ linea, onChange }) {
     </tr>
   );
 }
-function RevisarYAprobarModal({ despacho, currentUser, onClose, onGuardado }) {
+function RevisarYAprobarModal({ despacho, currentUser, onClose, onGuardado, coleccionDespachos }) {
   const [lineas, setLineas] = useState(() =>
     (despacho.lineas || []).map((l) => ({ ...l, cantidad: String(l.cantidad ?? ""), precio: String(l.precio ?? ""), dcto: String(l.dcto ?? "0") }))
   );
@@ -989,7 +990,7 @@ function RevisarYAprobarModal({ despacho, currentUser, onClose, onGuardado }) {
     setGuardando(true);
     try {
       const lineasGuardar = lineasParaGuardar();
-      await fsSave("despachosVenezuela", despacho.id, {
+      await fsSave(coleccionDespachos, despacho.id, {
         lineas: lineasGuardar,
         totalDespacho: lineasGuardar.reduce((s, l) => s + l.total, 0),
         revisadoPor: currentUser?.name || currentUser?.username || "",
@@ -1004,7 +1005,7 @@ function RevisarYAprobarModal({ despacho, currentUser, onClose, onGuardado }) {
     setGuardando(true);
     try {
       const lineasGuardar = lineasParaGuardar();
-      await fsSave("despachosVenezuela", despacho.id, {
+      await fsSave(coleccionDespachos, despacho.id, {
         lineas: lineasGuardar,
         totalDespacho: lineasGuardar.reduce((s, l) => s + l.total, 0),
         estado: "aprobado",
@@ -1052,7 +1053,7 @@ function RevisarYAprobarModal({ despacho, currentUser, onClose, onGuardado }) {
   );
 }
 // ─── POR APROBAR (Contabilidad revisa cantidades, pone precio/dcto y aprueba) ─
-function PorAprobarView({ despachos, currentUser, puedeAprobar }) {
+function PorAprobarView({ despachos, currentUser, puedeAprobar, coleccionDespachos }) {
   const [abierto, setAbierto] = useState(null);
   const pendientes = despachos.filter((d) => d.estado === "montado").sort((a, b) => parseFloat(a.numero) - parseFloat(b.numero));
   return (
@@ -1074,7 +1075,7 @@ function PorAprobarView({ despachos, currentUser, puedeAprobar }) {
         filas={pendientes}
       />
       {abierto && puedeAprobar && (
-        <RevisarYAprobarModal despacho={abierto} currentUser={currentUser} onClose={() => setAbierto(null)} onGuardado={() => setAbierto(null)} />
+        <RevisarYAprobarModal despacho={abierto} currentUser={currentUser} coleccionDespachos={coleccionDespachos} onClose={() => setAbierto(null)} onGuardado={() => setAbierto(null)} />
       )}
     </div>
   );
@@ -1085,7 +1086,7 @@ function PorAprobarView({ despachos, currentUser, puedeAprobar }) {
 // usuario de Bodega sin esos dos permisos, se le muestran TODOS sus propios
 // despachos sin importar el estado — antes no tenían dónde verlos ni
 // corregirlos mientras seguían pendientes de aprobación.
-function HistorialView({ despachos, currentUser, isAdmin, esContabilidad, esBodegaSolo, pinEdicion, onEliminar }) {
+function HistorialView({ despachos, currentUser, isAdmin, esContabilidad, esBodegaSolo, pinEdicion, onEliminar, coleccionDespachos }) {
   const [abierto, setAbierto] = useState(null);
   const [filtro, setFiltro] = useState("");
   const base = esBodegaSolo
@@ -1158,13 +1159,14 @@ function HistorialView({ despachos, currentUser, isAdmin, esContabilidad, esBode
           esBodegaSolo={esBodegaSolo}
           pinEdicion={pinEdicion}
           onEliminar={onEliminar}
+          coleccionDespachos={coleccionDespachos}
         />
       )}
     </div>
   );
 }
 // ─── ABONOS (ledger simple) ─────────────────────────────────────────────────
-function AbonosView({ abonos, currentUser, puedeEditar }) {
+function AbonosView({ abonos, currentUser, puedeEditar, coleccionAbonos }) {
   const [fecha, setFecha] = useState(today());
   const [monto, setMonto] = useState("");
   const [concepto, setConcepto] = useState("");
@@ -1177,7 +1179,7 @@ function AbonosView({ abonos, currentUser, puedeEditar }) {
     setGuardando(true);
     try {
       const id = uid();
-      await fsSave("abonosVenezuela", id, {
+      await fsSave(coleccionAbonos, id, {
         id, fecha, monto: Number(monto), concepto: concepto.trim(),
         origen: "manual",
         creadoPor: currentUser?.name || currentUser?.username || "",
@@ -1191,7 +1193,7 @@ function AbonosView({ abonos, currentUser, puedeEditar }) {
     }
   }
   async function borrarAbono(a) {
-    await fsDelete("abonosVenezuela", a.id);
+    await fsDelete(coleccionAbonos, a.id);
   }
 
   return (
@@ -1650,40 +1652,40 @@ async function parseDespachosVenezuelaExcel(file) {
 
   return { despachos, abonos, avisos, totalAbonoOficial };
 }
-async function importarADespachosFirestore(despachos, abonos, currentUser) {
+async function importarADespachosFirestore(despachos, abonos, currentUser, coleccionDespachos, coleccionAbonos) {
   const CHUNK = 400;
   for (let i = 0; i < despachos.length; i += CHUNK) {
     const batch = writeBatch(db);
     despachos.slice(i, i + CHUNK).forEach((d) => {
-      batch.set(doc(db, "despachosVenezuela", d.id), { ...d, importadoPor: currentUser?.name || currentUser?.username || "" }, { merge: true });
+      batch.set(doc(db, coleccionDespachos, d.id), { ...d, importadoPor: currentUser?.name || currentUser?.username || "" }, { merge: true });
     });
     await batch.commit();
   }
   for (let i = 0; i < abonos.length; i += CHUNK) {
     const batch = writeBatch(db);
     abonos.slice(i, i + CHUNK).forEach((a) => {
-      batch.set(doc(db, "abonosVenezuela", a.id), { ...a, importadoPor: currentUser?.name || currentUser?.username || "" }, { merge: true });
+      batch.set(doc(db, coleccionAbonos, a.id), { ...a, importadoPor: currentUser?.name || currentUser?.username || "" }, { merge: true });
     });
     await batch.commit();
   }
 }
-async function borrarHistoricoImportado(despachosExistentes, abonosExistentes) {
+async function borrarHistoricoImportado(despachosExistentes, abonosExistentes, coleccionDespachos, coleccionAbonos) {
   const CHUNK = 400;
   const idsDespachos = despachosExistentes.filter((d) => d.estado === "historico").map((d) => d.id);
   const idsAbonos = abonosExistentes.filter((a) => a.origen === "importado").map((a) => a.id);
   for (let i = 0; i < idsDespachos.length; i += CHUNK) {
     const batch = writeBatch(db);
-    idsDespachos.slice(i, i + CHUNK).forEach((id) => batch.delete(doc(db, "despachosVenezuela", id)));
+    idsDespachos.slice(i, i + CHUNK).forEach((id) => batch.delete(doc(db, coleccionDespachos, id)));
     await batch.commit();
   }
   for (let i = 0; i < idsAbonos.length; i += CHUNK) {
     const batch = writeBatch(db);
-    idsAbonos.slice(i, i + CHUNK).forEach((id) => batch.delete(doc(db, "abonosVenezuela", id)));
+    idsAbonos.slice(i, i + CHUNK).forEach((id) => batch.delete(doc(db, coleccionAbonos, id)));
     await batch.commit();
   }
   return { despachosBorrados: idsDespachos.length, abonosBorrados: idsAbonos.length };
 }
-function ImportarHistoricoView({ currentUser, despachosExistentes, abonosExistentes }) {
+function ImportarHistoricoView({ currentUser, despachosExistentes, abonosExistentes, coleccionDespachos, coleccionAbonos, destino }) {
   const [analizando, setAnalizando] = useState(false);
   const [resultado, setResultado] = useState(null);
   const [importando, setImportando] = useState(false);
@@ -1714,7 +1716,7 @@ function ImportarHistoricoView({ currentUser, despachosExistentes, abonosExisten
     setImportando(true);
     setError(null);
     try {
-      await importarADespachosFirestore(resultado.despachos, resultado.abonos, currentUser);
+      await importarADespachosFirestore(resultado.despachos, resultado.abonos, currentUser, coleccionDespachos, coleccionAbonos);
       setImportado(true);
     } catch (err) {
       setError(err?.message || String(err));
@@ -1730,7 +1732,7 @@ function ImportarHistoricoView({ currentUser, despachosExistentes, abonosExisten
     setError(null);
     setBorrado(null);
     try {
-      const r = await borrarHistoricoImportado(despachosExistentes, abonosExistentes);
+      const r = await borrarHistoricoImportado(despachosExistentes, abonosExistentes, coleccionDespachos, coleccionAbonos);
       setBorrado(r);
     } catch (err) {
       setError(err?.message || String(err));
@@ -1742,7 +1744,11 @@ function ImportarHistoricoView({ currentUser, despachosExistentes, abonosExisten
   return (
     <div>
       <div style={{ fontSize: 13, color: C.slate, marginBottom: 16, lineHeight: 1.6 }}>
-        Sube el archivo <strong>DESPACHOS KAMILA VENEZUELA.xlsx</strong>. Se analiza primero (sin guardar nada) para que revises el resultado antes de confirmar. Es seguro volver a correrlo — actualiza los mismos registros en vez de duplicarlos.
+        {destino === "Venezuela" ? (
+          <>Sube el archivo <strong>DESPACHOS KAMILA VENEZUELA.xlsx</strong>. Se analiza primero (sin guardar nada) para que revises el resultado antes de confirmar. Es seguro volver a correrlo — actualiza los mismos registros en vez de duplicarlos.</>
+        ) : (
+          <>Este importador está validado contra el formato del histórico de <strong>Venezuela</strong> (546 hojas "DESPACHO N°"). Se guardará en los datos de <strong>{destino}</strong> — solo úsalo aquí si el archivo de {destino} tiene la misma estructura de hojas y columnas.</>
+        )}
         <br />
         Los abonos se toman tanto de <strong>dentro de cada hoja DESPACHO 2 a 546</strong> como de las <strong>10 hojas sueltas de depósitos</strong> (ABONO PANELES, DEPOSITOS JULIO/AGOSTO/SEP/OCT/NOV, DUBO, DEPOSITOS CUENTA YULIANA M-J, DICIEMBRE, ENERO).
       </div>
@@ -1839,18 +1845,39 @@ function DashboardBodegaView({ despachos, abonos }) {
   );
 }
 // ─── RAÍZ DEL MÓDULO ────────────────────────────────────────────────────────
+// Destinos de despacho — cada uno con sus propios datos, completamente
+// separados (colección "despachos"+destino y "abonos"+destino en
+// Firestore), como si fueran bodegas distintas que comparten la misma app.
+// Para agregar un destino nuevo más adelante, solo hay que agregarlo acá.
+const DESTINOS_BODEGA = ["Venezuela", "Dubái", "Colombia"];
+// Firestore no acepta tildes/espacios como parte "limpia" de un nombre de
+// colección aunque técnicamente los permite — se usa una versión sin tildes
+// para el nombre real de la colección (Dubái -> Dubai), pero el label que ve
+// el usuario sí lleva tilde.
+function slugDestino(destino) {
+  return String(destino || "Venezuela")
+    .normalize("NFD")
+    .replace(new RegExp("[\\u0300-\\u036f]", "g"), "");
+}
 export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAccessContabilidad, soloLecturaBodega, onVolver, onLogout }) {
   const [subView, setSubView] = useState("dashboard");
+  const [destino, setDestino] = useState("Venezuela");
   const [despachos, setDespachos] = useState([]);
   const [abonos, setAbonos] = useState([]);
   const [pinEdicion, setPinEdicion] = useState("");
   const [loading, setLoading] = useState(true);
+  const coleccionDespachos = `despachos${slugDestino(destino)}`;
+  const coleccionAbonos = `abonos${slugDestino(destino)}`;
+  // Se vuelve a suscribir cada vez que cambia el destino — cada uno tiene su
+  // propia colección en Firestore, así que hay que soltar los listeners
+  // viejos y abrir los nuevos (por eso [destino] en las dependencias).
   useEffect(() => {
-    const unsubDespachos = onSnapshot(collection(db, "despachosVenezuela"), (snap) => {
+    setLoading(true);
+    const unsubDespachos = onSnapshot(collection(db, coleccionDespachos), (snap) => {
       setDespachos(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
       setLoading(false);
     });
-    const unsubAbonos = onSnapshot(collection(db, "abonosVenezuela"), (snap) => {
+    const unsubAbonos = onSnapshot(collection(db, coleccionAbonos), (snap) => {
       setAbonos(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
     });
     const unsubConfig = onSnapshot(doc(db, "bodega_config", "main"), (snap) => {
@@ -1861,7 +1888,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
       unsubAbonos();
       unsubConfig();
     };
-  }, []);
+  }, [coleccionDespachos, coleccionAbonos]);
   async function guardarPinEdicion(pin) {
     setPinEdicion(pin);
     await fsSave("bodega_config", "main", { pinEdicion: pin });
@@ -1871,7 +1898,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
   // DetalleDespachoModal.
   async function eliminarDespacho(id) {
     setDespachos((ds) => ds.filter((d) => d.id !== id));
-    await fsDelete("despachosVenezuela", id);
+    await fsDelete(coleccionDespachos, id);
   }
   const isAdmin = !!currentUser?.isAdmin;
   // Usuario de "solo lectura" (típicamente rol Cliente): ve todo el
@@ -1923,7 +1950,16 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
       <div style={{ width: 220, background: C.ink, padding: "24px 14px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
         <div style={{ marginBottom: 20 }}>
           <div style={{ fontSize: 15, fontWeight: 900, color: C.white }}>📦 Bodega</div>
-          <div style={{ fontSize: 10, color: C.seam, marginTop: 2, letterSpacing: "0.1em", textTransform: "uppercase" }}>Despachos Venezuela</div>
+          <div style={{ fontSize: 10, color: C.seam, marginTop: 2, letterSpacing: "0.1em", textTransform: "uppercase" }}>Despachos</div>
+          <select
+            value={destino}
+            onChange={(e) => { setDestino(e.target.value); setSubView("dashboard"); }}
+            style={{ marginTop: 8, width: "100%", padding: "7px 10px", borderRadius: 8, border: "1px solid rgba(200,184,162,0.35)", background: "#2A2A45", color: C.white, fontSize: 12, fontWeight: 700, fontFamily: "inherit", outline: "none", cursor: "pointer" }}
+          >
+            {DESTINOS_BODEGA.map((d) => (
+              <option key={d} value={d} style={{ color: C.ink }}>{d}</option>
+            ))}
+          </select>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "#2A2A45", borderRadius: 10, marginBottom: 16 }}>
           <div style={{ width: 32, height: 32, borderRadius: "50%", background: `linear-gradient(135deg,${C.seam},#9E8870)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, color: C.ink, flexShrink: 0 }}>
@@ -1973,10 +2009,11 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
           <h1 style={{ margin: "0 0 20px", fontSize: 20, fontWeight: 900, color: C.ink }}>
             {NAV.find((n) => n.id === subView)?.label || ""}
+            <span style={{ fontSize: 13, fontWeight: 700, color: C.slate, marginLeft: 10 }}>· {destino}</span>
           </h1>
           {subView === "dashboard" && <DashboardBodegaView despachos={despachos} abonos={abonos} />}
-          {subView === "montar" && <MontarDespachoView despachos={despachos} currentUser={currentUser} onGuardado={() => setSubView("dashboard")} />}
-          {subView === "aprobar" && puedeAprobar && <PorAprobarView despachos={despachos} currentUser={currentUser} puedeAprobar={puedeAprobar} />}
+          {subView === "montar" && <MontarDespachoView despachos={despachos} currentUser={currentUser} coleccionDespachos={coleccionDespachos} onGuardado={() => setSubView("dashboard")} />}
+          {subView === "aprobar" && puedeAprobar && <PorAprobarView despachos={despachos} currentUser={currentUser} puedeAprobar={puedeAprobar} coleccionDespachos={coleccionDespachos} />}
           {subView === "historial" && (
             <HistorialView
               despachos={despachos}
@@ -1986,10 +2023,20 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
               esBodegaSolo={esBodegaSolo}
               pinEdicion={pinEdicion}
               onEliminar={eliminarDespacho}
+              coleccionDespachos={coleccionDespachos}
             />
           )}
-          {subView === "abonos" && <AbonosView abonos={abonos} currentUser={currentUser} puedeEditar={puedeEditarAbonos} />}
-          {subView === "importar" && isAdmin && <ImportarHistoricoView currentUser={currentUser} despachosExistentes={despachos} abonosExistentes={abonos} />}
+          {subView === "abonos" && <AbonosView abonos={abonos} currentUser={currentUser} puedeEditar={puedeEditarAbonos} coleccionAbonos={coleccionAbonos} />}
+          {subView === "importar" && isAdmin && (
+            <ImportarHistoricoView
+              currentUser={currentUser}
+              despachosExistentes={despachos}
+              abonosExistentes={abonos}
+              coleccionDespachos={coleccionDespachos}
+              coleccionAbonos={coleccionAbonos}
+              destino={destino}
+            />
+          )}
           {subView === "codigo" && isAdmin && <CodigoEdicionView pinActual={pinEdicion} onGuardar={guardarPinEdicion} />}
         </div>
       </div>
