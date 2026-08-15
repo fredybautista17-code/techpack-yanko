@@ -1773,6 +1773,261 @@ async function borrarHistoricoImportado(despachosExistentes, abonosExistentes, c
   }
   return { despachosBorrados: idsDespachos.length, abonosBorrados: idsAbonos.length };
 }
+// ─── IMPORTADOR HISTÓRICO DUBO (archivo "DESPACHOS  DUBO.xlsx") ────────────
+// A diferencia de Venezuela (una hoja "DESPACHO N" por número consecutivo,
+// formato casi uniforme), acá cada hoja es una fecha de entrega distinta y
+// ya viene identificada por su propio nombre (ej. "13-08-2025") — un
+// despacho por hoja, sin numeración propia. El formato de columnas cambia
+// bastante entre 2023 y 2026 (con o sin SUBTOTAL/IVA, con o sin columna
+// REMISION por línea, con o sin TRASLADO único en el encabezado, y hasta una
+// hoja de 2023 sin fila de encabezado en absoluto) así que las columnas se
+// detectan por su texto en vez de por posición fija. La fecha se toma
+// siempre del NOMBRE de la hoja (no del encabezado interno "FECHA:") porque
+// varias hojas traen ese campo con el año mal digitado (ej. la hoja
+// "26-01-2024" dice adentro "FECHA: 2023-01-26"). Validado a mano: cuadra
+// exacto contra la hoja "CONSOLI-PAGADO" en 34 de las 35 hojas de despacho;
+// la única que no cuadra (08-07-2023, calculado el doble de lo oficial)
+// queda marcada en avisos para revisar en el Excel original.
+const HOJAS_NO_DESPACHO_DUBO = new Set(["CONSOLI-PAGADO", "observacione de entrega "]);
+function slugHojaDubo(nombre) {
+  return String(nombre).trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-+|-+$)/g, "");
+}
+function fechaDesdeNombreHojaDubo(nombre) {
+  const m = String(nombre).trim().match(/^(\d{2})-(\d{2})-(\d{4})/);
+  if (!m) return null;
+  const [, d, mo, y] = m;
+  return `${y}-${mo}-${d}`;
+}
+function clasificarColumnaDubo(headerCell) {
+  const nv = normCell(headerCell);
+  if (!nv) return null;
+  if (nv === "REF" || nv.startsWith("REFERENCIA")) return "referencia";
+  if (nv === "CANT" || nv.startsWith("CANTIDAD")) return "cantidad";
+  if (nv === "SUBTOTAL") return "subtotal";
+  if (nv === "IVA") return "iva";
+  if (nv === "REMISION") return "remisionLinea";
+  if (nv === "0.5" || nv === "50%") return "precioMitad";
+  if (nv.startsWith("PRECIO") || nv === "VALOR UNITARIO") return "precioFull";
+  if (nv.startsWith("TOTAL") || nv === "VALOR TOTAL") return "total";
+  return null;
+}
+// Única hoja del archivo (2023-11-20) sin fila de encabezado de texto — los
+// datos empiezan directo después del bloque REMITE/DESTINO/FECHA con
+// columnas fijas por posición (Ubicación, Referencia, Descripción, Cantidad,
+// Precio full, Mitad, Total). Se detecta buscando la primera fila con esa
+// forma (2 columnas de texto + 4 columnas numéricas seguidas).
+function detectarTablaPosicionalDubo(rows) {
+  for (let r = 0; r < rows.length; r++) {
+    const row = rows[r] || [];
+    if (row.length < 7) continue;
+    if (
+      row[0] && typeof row[0] === "string" &&
+      row[1] !== null && row[1] !== undefined && row[1] !== "" &&
+      numCell(row[3]) !== null && numCell(row[4]) !== null &&
+      numCell(row[5]) !== null && numCell(row[6]) !== null
+    ) {
+      return r;
+    }
+  }
+  return null;
+}
+function parseHojaDespachoDubo(rows) {
+  let numTrasladoHeader = null;
+  for (let r = 0; r < Math.min(10, rows.length); r++) {
+    const row = rows[r] || [];
+    for (let c = 0; c < row.length; c++) {
+      if (normCell(row[c]) === "TRASLADO") {
+        const v = row[c + 1];
+        if (v !== null && v !== undefined && String(v).trim() !== "") numTrasladoHeader = String(v).trim();
+      }
+    }
+  }
+  let hr = -1, hc = -1, colmap = {};
+  outer: for (let r = 0; r < rows.length; r++) {
+    const row = rows[r] || [];
+    for (let c = 0; c < row.length; c++) {
+      const nv = normCell(row[c]);
+      if (nv === "REF" || nv.startsWith("REFERENCIA")) { hr = r; hc = c; break outer; }
+    }
+  }
+  if (hr === -1) {
+    const rInicio = detectarTablaPosicionalDubo(rows);
+    if (rInicio === null) return null;
+    hr = rInicio - 1;
+    hc = 1;
+    colmap = { 1: "referencia", 3: "cantidad", 4: "precioFull", 5: "precioMitad", 6: "total" };
+  } else {
+    const headerRow = rows[hr] || [];
+    headerRow.forEach((v, c) => {
+      const tipo = clasificarColumnaDubo(v);
+      if (tipo) colmap[c] = tipo;
+    });
+  }
+  const colIdxs = Object.keys(colmap).map(Number);
+  const totalCol = colIdxs.find((c) => colmap[c] === "total");
+
+  const crudas = [];
+  const avisosLinea = [];
+  let blanks = 0;
+  let r = hr + 1;
+  let stopRow = null;
+  while (r < rows.length) {
+    const row = rows[r] || [];
+    const refNorm = normCell(row[hc]);
+    if (refNorm.startsWith("TOTAL")) { stopRow = r; break; }
+    if (!refNorm) {
+      const algunNumero = colIdxs.some((c) => numCell(row[c]) !== null);
+      if (!algunNumero) {
+        blanks++;
+        if (blanks >= 3) { stopRow = r - blanks + 1; break; }
+        r++; continue;
+      }
+      stopRow = r;
+      break;
+    }
+    blanks = 0;
+    const item = { referencia: row[hc] };
+    colIdxs.forEach((c) => { item[colmap[c]] = row[c] ?? null; });
+    // Nota suelta en alguna columna sin mapear (ej. "FALDAS DE DEVOLUCION",
+    // vista en la hoja 14-06-2023) — se avisa pero la línea igual se
+    // importa, porque su total ya está incluido en el cierre de la hoja.
+    row.forEach((v, c) => {
+      if (c === hc || colmap[c]) return;
+      if (v !== null && v !== undefined && String(v).trim() !== "" && numCell(v) === null) {
+        avisosLinea.push(`fila "${String(row[hc]).trim()}": nota "${String(v).trim()}"`);
+      }
+    });
+    crudas.push(item);
+    r++;
+  }
+  if (stopRow === null) stopRow = rows.length;
+
+  // Total de cierre: se busca solo en la fila donde se cortó y, si ahí no
+  // trae valor, en la siguiente (algunas hojas traen 2 filas de cierre:
+  // primero una con la cantidad total sin plata, luego la real "TOTAL...
+  // $"). Una ventana más ancha se metía en secciones sueltas más abajo (ej.
+  // "UNIDADES DEVUELTAS" en la hoja 30-12-2025) y agarraba un número que no
+  // era el cierre real.
+  let totalOficial = null;
+  for (let rr = stopRow; rr < Math.min(stopRow + 2, rows.length); rr++) {
+    const row = rows[rr] || [];
+    if (totalCol !== undefined) {
+      const v = numCell(row[totalCol]);
+      if (v !== null && v !== 0) { totalOficial = v; break; }
+    }
+  }
+  if (totalOficial === null) {
+    const row = rows[stopRow] || [];
+    for (let c = row.length - 1; c >= 0; c--) {
+      const v = numCell(row[c]);
+      if (v !== null && v !== 0) { totalOficial = v; break; }
+    }
+  }
+
+  // Aviso si hay una sección de devoluciones pegada después del cierre — no
+  // se importa (no es una venta más), pero se avisa para que quede
+  // registrado que existe en el Excel original.
+  let tieneDevoluciones = false;
+  for (let rr = stopRow; rr < Math.min(stopRow + 10, rows.length); rr++) {
+    const row = rows[rr] || [];
+    if (row.some((v) => normCell(v).includes("DEVOL"))) { tieneDevoluciones = true; break; }
+  }
+
+  return { numTrasladoHeader, lineas: crudas, totalOficial, avisosLinea, tieneDevoluciones };
+}
+async function parseDespachosDuboExcel(file) {
+  const XLSX = await import("xlsx");
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: "array", cellDates: true });
+
+  // Ledger oficial "CONSOLI-PAGADO": fecha + valor por cada entrega — se usa
+  // como respaldo solo cuando la hoja misma no trae una fila de total
+  // reconocible (tomando, de las oficiales de esa fecha, la que quede más
+  // cerca del total calculado, por si hubo más de una hoja el mismo día).
+  const oficialesPorFecha = {};
+  if (wb.SheetNames.includes("CONSOLI-PAGADO")) {
+    const filas = XLSX.utils.sheet_to_json(wb.Sheets["CONSOLI-PAGADO"], { header: 1, raw: true, defval: null });
+    filas.forEach((row) => {
+      if (!row) return;
+      const fechaCell = row[1];
+      const valor = numCell(row[2]);
+      if (fechaCell instanceof Date && valor !== null) {
+        const iso = fechaCell.toISOString().slice(0, 10);
+        (oficialesPorFecha[iso] = oficialesPorFecha[iso] || []).push(valor);
+      }
+    });
+  }
+
+  const despachos = [];
+  const avisos = [];
+  wb.SheetNames.forEach((name) => {
+    if (HOJAS_NO_DESPACHO_DUBO.has(name)) return;
+    const fecha = fechaDesdeNombreHojaDubo(name);
+    if (!fecha) { avisos.push(`${name}: no se pudo leer la fecha del nombre de la hoja — revisar a mano.`); return; }
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null });
+    const parsed = parseHojaDespachoDubo(rows);
+    if (!parsed) { avisos.push(`${name}: no se encontró la tabla de referencias — revisar a mano.`); return; }
+    const { numTrasladoHeader, lineas, totalOficial, avisosLinea, tieneDevoluciones } = parsed;
+    avisosLinea.forEach((n) => avisos.push(`${name}: ${n}.`));
+    if (tieneDevoluciones) avisos.push(`${name}: tiene una sección de "UNIDADES DEVUELTAS" (u otra devolución) después del total — no se importó, revisar aparte.`);
+    if (!lineas.length) { avisos.push(`${name}: sin líneas detectadas — revisar a mano.`); return; }
+
+    const lineasFinal = lineas.map((l) => {
+      const remisionLinea = (l.remisionLinea ?? "").toString().trim();
+      const cantidad = numCell(l.cantidad) || 0;
+      const precioMitad = numCell(l.precioMitad);
+      const precioFull = numCell(l.precioFull);
+      const precio = precioMitad ?? (precioFull !== null ? precioFull / 2 : null) ?? 0;
+      const total = numCell(l.total) ?? (cantidad && precio ? cantidad * precio : 0);
+      return {
+        referencia: (l.referencia ?? "").toString().trim(),
+        cantidad,
+        numTraslado: remisionLinea || (numTrasladoHeader ?? ""),
+        numCorte: "",
+        numBulto: "",
+        descripcion: "",
+        marca: "",
+        segmento: "",
+        precio,
+        dcto: 0,
+        total,
+        barras: [],
+      };
+    });
+    const totalCalc = lineasFinal.reduce((s, l) => s + (l.total || 0), 0);
+
+    const candidatas = oficialesPorFecha[fecha] || [];
+    let totalOficialCuadre = totalOficial;
+    if (totalOficialCuadre === null && candidatas.length) {
+      totalOficialCuadre = candidatas.reduce((mejor, v) => (Math.abs(v - totalCalc) < Math.abs(mejor - totalCalc) ? v : mejor), candidatas[0]);
+    }
+    if (totalOficialCuadre !== null && Math.abs(totalCalc - totalOficialCuadre) > Math.max(1000, totalOficialCuadre * 0.01)) {
+      avisos.push(`${name}: calculado ${fmtMoney(totalCalc)} ≠ oficial ${fmtMoney(totalOficialCuadre)} — revisar a mano.`);
+    }
+
+    // numTraslado a nivel de despacho: solo si TODAS las líneas comparten un
+    // mismo valor (formato normal, un TRASLADO para toda la hoja) — en las 2
+    // hojas con REMISION por línea se deja vacío acá porque cada línea trae
+    // la suya propia (queda igual visible dentro de cada línea).
+    const numTrasladosUnicos = new Set(lineasFinal.map((l) => l.numTraslado).filter(Boolean));
+    const numControl = numTrasladosUnicos.size === 1 ? [...numTrasladosUnicos][0] : (numTrasladoHeader || "");
+
+    despachos.push({
+      id: `hist-dubo-${slugHojaDubo(name)}`,
+      numero: numControl || fecha,
+      numControl,
+      fecha,
+      estado: "historico",
+      lineas: lineasFinal,
+      totalDespacho: totalCalc || totalOficialCuadre || 0,
+      totalOficial: totalOficialCuadre,
+      origen: "importado",
+      creadoEn: new Date().toISOString(),
+    });
+  });
+
+  return { despachos, abonos: [], avisos, totalAbonoOficial: null };
+}
 function ImportarHistoricoView({ currentUser, despachosExistentes, abonosExistentes, coleccionDespachos, coleccionAbonos, destino }) {
   const [analizando, setAnalizando] = useState(false);
   const [resultado, setResultado] = useState(null);
@@ -1791,7 +2046,7 @@ function ImportarHistoricoView({ currentUser, despachosExistentes, abonosExisten
     setImportado(false);
     setError(null);
     try {
-      const r = await parseDespachosVenezuelaExcel(file);
+      const r = destino === "Dubo" ? await parseDespachosDuboExcel(file) : await parseDespachosVenezuelaExcel(file);
       setResultado(r);
     } catch (err) {
       setError(err?.message || String(err));
@@ -1834,11 +2089,17 @@ function ImportarHistoricoView({ currentUser, despachosExistentes, abonosExisten
       <div style={{ fontSize: 13, color: C.slate, marginBottom: 16, lineHeight: 1.6 }}>
         {destino === "Venezuela" ? (
           <>Sube el archivo <strong>DESPACHOS KAMILA VENEZUELA.xlsx</strong>. Se analiza primero (sin guardar nada) para que revises el resultado antes de confirmar. Es seguro volver a correrlo — actualiza los mismos registros en vez de duplicarlos.</>
+        ) : destino === "Dubo" ? (
+          <>Sube el archivo <strong>DESPACHOS  DUBO.xlsx</strong>. Cada hoja es una fecha de entrega distinta (una hoja = un despacho) — se analiza primero (sin guardar nada) para que revises el resultado antes de confirmar. Es seguro volver a correrlo — actualiza los mismos registros en vez de duplicarlos. El número de REMISION/TRASLADO se guarda cuando la hoja lo trae; se deja vacío cuando no.</>
         ) : (
           <>Este importador está validado contra el formato del histórico de <strong>Venezuela</strong> (546 hojas "DESPACHO N°"). Se guardará en los datos de <strong>{destino}</strong> — solo úsalo aquí si el archivo de {destino} tiene la misma estructura de hojas y columnas.</>
         )}
         <br />
-        Los abonos se toman tanto de <strong>dentro de cada hoja DESPACHO 2 a 546</strong> como de las <strong>10 hojas sueltas de depósitos</strong> (ABONO PANELES, DEPOSITOS JULIO/AGOSTO/SEP/OCT/NOV, DUBO, DEPOSITOS CUENTA YULIANA M-J, DICIEMBRE, ENERO).
+        {destino === "Dubo" ? (
+          <>Este archivo no trae hojas de abonos o depósitos — solo se importan despachos.</>
+        ) : (
+          <>Los abonos se toman tanto de <strong>dentro de cada hoja DESPACHO 2 a 546</strong> como de las <strong>10 hojas sueltas de depósitos</strong> (ABONO PANELES, DEPOSITOS JULIO/AGOSTO/SEP/OCT/NOV, DUBO, DEPOSITOS CUENTA YULIANA M-J, DICIEMBRE, ENERO).</>
+        )}
       </div>
       {yaImportado && (
         <div style={{ padding: "10px 14px", background: C.amberBg, color: C.amber, borderRadius: 8, fontSize: 12, fontWeight: 700, marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
@@ -1852,7 +2113,7 @@ function ImportarHistoricoView({ currentUser, despachosExistentes, abonosExisten
         </div>
       )}
       <input type="file" accept=".xlsx,.xls" onChange={onFile} disabled={analizando} style={{ marginBottom: 16 }} />
-      {analizando && <div style={{ color: C.slate, fontSize: 13 }}>Analizando archivo (546 hojas)... puede tardar un momento.</div>}
+      {analizando && <div style={{ color: C.slate, fontSize: 13 }}>Analizando archivo... puede tardar un momento.</div>}
       {error && (
         <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 12, fontWeight: 700, marginBottom: 16 }}>
           Error al procesar: {error}
@@ -1937,11 +2198,11 @@ function DashboardBodegaView({ despachos, abonos }) {
 // separados (colección "despachos"+destino y "abonos"+destino en
 // Firestore), como si fueran bodegas distintas que comparten la misma app.
 // Para agregar un destino nuevo más adelante, solo hay que agregarlo acá.
-const DESTINOS_BODEGA = ["Venezuela", "Dubái", "Colombia"];
+const DESTINOS_BODEGA = ["Venezuela", "Dubo", "Colombia"];
 // Firestore no acepta tildes/espacios como parte "limpia" de un nombre de
 // colección aunque técnicamente los permite — se usa una versión sin tildes
-// para el nombre real de la colección (Dubái -> Dubai), pero el label que ve
-// el usuario sí lleva tilde.
+// para el nombre real de la colección, pero el label que ve el usuario sí
+// puede llevar tilde si algún destino la necesita.
 function slugDestino(destino) {
   return String(destino || "Venezuela")
     .normalize("NFD")
