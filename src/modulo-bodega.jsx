@@ -1231,6 +1231,94 @@ function AbonosView({ abonos, currentUser, puedeEditar, coleccionAbonos }) {
     </div>
   );
 }
+// ─── SALDO YULIANA (cuenta aparte, no se mezcla con Abonos de despachos) ───
+// A diferencia de "Abonos" (pagos contra el total de despachos, alimenta el
+// Saldo del Dashboard de Bodega), esto es una cuenta corriente propia:
+// depósitos que aumentan el saldo, y anticipos/traslados/pagos que lo
+// reducen — como en la hoja de Excel (TOTAL DEPOSITOS YULIANA, ANTICIPO
+// TRASLADO A VENE..., PAGO UNIFORMES, SALDO YULIANA). Se guarda en su propia
+// colección para no distorsionar el cálculo de Abonos/Saldo de despachos.
+function SaldoYulianaView({ entradas, currentUser, puedeEditar, coleccionSaldoYuliana }) {
+  const [fecha, setFecha] = useState(today());
+  const [tipo, setTipo] = useState("deposito");
+  const [monto, setMonto] = useState("");
+  const [concepto, setConcepto] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const ordenados = [...entradas].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+  const totalDepositos = entradas.filter((e) => e.tipo === "deposito").reduce((s, e) => s + (Number(e.monto) || 0), 0);
+  const totalSalidas = entradas.filter((e) => e.tipo === "salida").reduce((s, e) => s + (Number(e.monto) || 0), 0);
+  const saldo = totalDepositos - totalSalidas;
+
+  async function agregarEntrada() {
+    if (!fecha || !Number(monto)) return;
+    setGuardando(true);
+    try {
+      const id = uid();
+      await fsSave(coleccionSaldoYuliana, id, {
+        id, fecha, tipo, monto: Math.abs(Number(monto)), concepto: concepto.trim(),
+        creadoPor: currentUser?.name || currentUser?.username || "",
+        creadoEn: new Date().toISOString(),
+      });
+      setFecha(today());
+      setMonto("");
+      setConcepto("");
+    } finally {
+      setGuardando(false);
+    }
+  }
+  async function borrarEntrada(e) {
+    await fsDelete(coleccionSaldoYuliana, e.id);
+  }
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 20 }}>
+        <KPI icon="💵" label="Total Depósitos" value={fmtMoney(totalDepositos)} color={C.green} bg={C.greenBg} />
+        <KPI icon="📤" label="Anticipos / Salidas" value={fmtMoney(totalSalidas)} color={C.red} bg={C.redBg} />
+        <KPI icon="⚖️" label="Saldo Yuliana" value={fmtMoney(saldo)} color={C.violet} bg={C.violetBg} />
+      </div>
+      {puedeEditar ? (
+        <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: 16, marginBottom: 20 }}>
+          <div style={{ fontWeight: 800, fontSize: 12, color: C.slate, marginBottom: 10 }}>NUEVO MOVIMIENTO</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr 1fr 2fr auto", gap: 10, alignItems: "end" }}>
+            <Field label="Fecha"><FInput type="date" value={fecha} onChange={setFecha} /></Field>
+            <Field label="Tipo">
+              <select
+                value={tipo}
+                onChange={(e) => setTipo(e.target.value)}
+                style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, color: C.ink, fontFamily: "inherit", outline: "none" }}
+              >
+                <option value="deposito">Depósito (suma)</option>
+                <option value="salida">Anticipo / Traslado / Pago (resta)</option>
+              </select>
+            </Field>
+            <Field label="Monto"><FInput type="number" value={monto} onChange={setMonto} /></Field>
+            <Field label="Concepto"><FInput value={concepto} onChange={setConcepto} placeholder="Ej: Anticipo traslado a Vene 05/12/2025" /></Field>
+            <div style={{ marginBottom: 14 }}>
+              <Btn onClick={agregarEntrada} disabled={guardando || !fecha || !Number(monto)}>{guardando ? "Guardando..." : "+ Agregar"}</Btn>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 20 }}>Solo Administración o Contabilidad pueden agregar o borrar movimientos — aquí puedes ver el registro.</div>
+      )}
+      <Tabla
+        vacio="Sin movimientos registrados."
+        columnas={[
+          { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+          { key: "tipo", label: "Tipo", render: (f) => (f.tipo === "deposito" ? <span style={{ color: C.green, fontWeight: 700 }}>Depósito</span> : <span style={{ color: C.red, fontWeight: 700 }}>Salida</span>) },
+          { key: "concepto", label: "Concepto" },
+          { key: "monto", label: "Monto", align: "right", render: (f) => <span style={{ color: f.tipo === "deposito" ? C.green : C.red, fontWeight: 700 }}>{f.tipo === "deposito" ? "+" : "−"}{fmtMoney(f.monto)}</span> },
+          {
+            key: "acciones", label: "", align: "right",
+            render: (f) => (puedeEditar ? <span onClick={() => borrarEntrada(f)} style={{ cursor: "pointer", color: C.red, fontWeight: 700, fontSize: 11 }}>Borrar</span> : null),
+          },
+        ]}
+        filas={ordenados}
+      />
+    </div>
+  );
+}
 // ─── IMPORTADOR DEL HISTÓRICO (DESPACHOS KAMILA VENEZUELA.xlsx) ────────────
 // Lógica validada a mano contra el archivo real: 546 hojas "DESPACHO N" con
 // formato distinto según la época (2022-2026), pero casi todas tienen una
@@ -1864,10 +1952,12 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
   const [destino, setDestino] = useState("Venezuela");
   const [despachos, setDespachos] = useState([]);
   const [abonos, setAbonos] = useState([]);
+  const [saldoYuliana, setSaldoYuliana] = useState([]);
   const [pinEdicion, setPinEdicion] = useState("");
   const [loading, setLoading] = useState(true);
   const coleccionDespachos = `despachos${slugDestino(destino)}`;
   const coleccionAbonos = `abonos${slugDestino(destino)}`;
+  const coleccionSaldoYuliana = `cuentaYuliana${slugDestino(destino)}`;
   // Se vuelve a suscribir cada vez que cambia el destino — cada uno tiene su
   // propia colección en Firestore, así que hay que soltar los listeners
   // viejos y abrir los nuevos (por eso [destino] en las dependencias).
@@ -1880,15 +1970,19 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
     const unsubAbonos = onSnapshot(collection(db, coleccionAbonos), (snap) => {
       setAbonos(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
     });
+    const unsubSaldoYuliana = onSnapshot(collection(db, coleccionSaldoYuliana), (snap) => {
+      setSaldoYuliana(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
     const unsubConfig = onSnapshot(doc(db, "bodega_config", "main"), (snap) => {
       setPinEdicion(snap.exists() ? snap.data()?.pinEdicion || "" : "");
     });
     return () => {
       unsubDespachos();
       unsubAbonos();
+      unsubSaldoYuliana();
       unsubConfig();
     };
-  }, [coleccionDespachos, coleccionAbonos]);
+  }, [coleccionDespachos, coleccionAbonos, coleccionSaldoYuliana]);
   async function guardarPinEdicion(pin) {
     setPinEdicion(pin);
     await fsSave("bodega_config", "main", { pinEdicion: pin });
@@ -1931,6 +2025,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
     ...(puedeAprobar ? [{ id: "aprobar", icon: "✅", label: "Por Aprobar", badge: pendientesCount }] : []),
     { id: "historial", icon: "🕘", label: "Historial" },
     { id: "abonos", icon: "💵", label: "Abonos" },
+    { id: "saldoYuliana", icon: "🧾", label: "Saldo Yuliana" },
     ...(isAdmin ? [{ id: "importar", icon: "⬆️", label: "Importar Histórico" }] : []),
     ...(isAdmin ? [{ id: "codigo", icon: "🔐", label: "Código Edición" }] : []),
   ];
@@ -2027,6 +2122,9 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
             />
           )}
           {subView === "abonos" && <AbonosView abonos={abonos} currentUser={currentUser} puedeEditar={puedeEditarAbonos} coleccionAbonos={coleccionAbonos} />}
+          {subView === "saldoYuliana" && (
+            <SaldoYulianaView entradas={saldoYuliana} currentUser={currentUser} puedeEditar={puedeEditarAbonos} coleccionSaldoYuliana={coleccionSaldoYuliana} />
+          )}
           {subView === "importar" && isAdmin && (
             <ImportarHistoricoView
               currentUser={currentUser}
