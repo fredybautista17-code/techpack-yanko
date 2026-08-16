@@ -976,8 +976,23 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
   );
   const cargaActiva = cargaId ? cargasOrdenadas.find((c) => c.id === cargaId) || cargasOrdenadas[0] : cargasOrdenadas[0];
   const lotes = useMemo(() => cargaActiva?.lotes || [], [cargaActiva]);
-  const reporteSemiterminado = useMemo(() => generarSeguimientoSemiterminado(lotes), [lotes]);
-  const reportePlanta = useMemo(() => generarAgrupadoPlanta(lotes, "nombrePlanta"), [lotes]);
+  // Buscador de lote — solo afecta las pestañas Semiterminado y En Planta
+  // (las que trabajan por lote suelto), no las demás vistas agrupadas por
+  // cliente/pedido. Filtra por número de lote o por referencia antes de
+  // agrupar, así el "Sin lotes..." de cada bloque también sirve como aviso
+  // de "no hay resultados" cuando la búsqueda no encuentra nada.
+  const [busquedaLote, setBusquedaLote] = useState("");
+  const busquedaLoteNorm = busquedaLote.trim().toLowerCase();
+  const lotesBuscados = useMemo(() => {
+    if (!busquedaLoteNorm) return lotes;
+    return lotes.filter(
+      (l) =>
+        String(l.numLote ?? "").toLowerCase().includes(busquedaLoteNorm) ||
+        (l.referencia || "").toLowerCase().includes(busquedaLoteNorm)
+    );
+  }, [lotes, busquedaLoteNorm]);
+  const reporteSemiterminado = useMemo(() => generarSeguimientoSemiterminado(lotesBuscados), [lotesBuscados]);
+  const reportePlanta = useMemo(() => generarAgrupadoPlanta(lotesBuscados, "nombrePlanta"), [lotesBuscados]);
   const reporteCliente = useMemo(() => generarAgrupadoPlanta(lotes, "nombreCliente"), [lotes]);
   const reporteClienteAgrupado = useMemo(() => generarAgrupadoPlanta(lotes, "clienteAgrupado"), [lotes]);
   const reporteCronograma = useMemo(() => generarCronograma(lotes), [lotes]);
@@ -1214,6 +1229,16 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
               </button>
             ))}
           </div>
+          {(tab === "semiterminado" || tab === "en_planta") && (
+            <div style={{ marginBottom: 16 }}>
+              <input
+                value={busquedaLote}
+                onChange={(e) => setBusquedaLote(e.target.value)}
+                placeholder="🔍 Buscar por número de lote o referencia..."
+                style={{ padding: "8px 12px", border: `1.5px solid ${busquedaLote ? C.ink : C.border}`, borderRadius: 8, fontSize: 13, minWidth: 280, outline: "none", fontFamily: "inherit" }}
+              />
+            </div>
+          )}
           {tab === "semiterminado" && <BloqueSeguimientoSemiterminado data={reporteSemiterminado} />}
           {tab === "bpt" && <BloqueBPT data={reporteBPT} />}
           {tab === "en_planta" && <BloqueAgrupado titulo="Planta" primeraColLabel="Nombre Planta" data={reportePlanta} mostrarFechaEntrega />}
