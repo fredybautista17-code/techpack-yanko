@@ -124,6 +124,21 @@ function EstadoBadge({ estado }) {
     </span>
   );
 }
+function UbicacionBadge({ ubicacion }) {
+  const map = {
+    Corte: { bg: C.blueBg, color: C.blue },
+    BMP: { bg: C.amberBg, color: C.amber },
+    Planta: { bg: C.greenBg, color: C.green },
+    Semiterminado: { bg: C.violetBg, color: C.violet },
+    BPT: { bg: C.blueBg, color: C.blue },
+  };
+  const s = map[ubicacion] || { bg: C.canvas, color: C.slate };
+  return (
+    <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 12, fontWeight: 800, background: s.bg, color: s.color, whiteSpace: "nowrap" }}>
+      {ubicacion}
+    </span>
+  );
+}
 // ─── PARSEO DE HOJA1 ───────────────────────────────────────────────────────────
 // Hoja1 viene de un ERP: cada lote aparece en 2 filas — una fila de PEDIDO
 // (col B>0, trae Fecha Entrega Pedido en D) y una fila de INVENTARIO (col B=0,
@@ -976,11 +991,13 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
   );
   const cargaActiva = cargaId ? cargasOrdenadas.find((c) => c.id === cargaId) || cargasOrdenadas[0] : cargasOrdenadas[0];
   const lotes = useMemo(() => cargaActiva?.lotes || [], [cargaActiva]);
-  // Buscador de lote — solo afecta las pestañas Semiterminado y En Planta
-  // (las que trabajan por lote suelto), no las demás vistas agrupadas por
-  // cliente/pedido. Filtra por número de lote o por referencia antes de
-  // agrupar, así el "Sin lotes..." de cada bloque también sirve como aviso
-  // de "no hay resultados" cuando la búsqueda no encuentra nada.
+  // Buscador de lote — global, no depende de en qué pestaña estés parado.
+  // Filtra por número de lote o por referencia y, si hay resultados, se
+  // muestra un aviso arriba con dónde está cada uno AHORA MISMO
+  // (ubicacionActual ya viene calculado por agruparLotes: Corte/BMP/
+  // Planta/Semiterminado/BPT), sin que el usuario tenga que ir probando
+  // pestaña por pestaña. Además, dentro de Semiterminado y En Planta, sigue
+  // filtrando la tabla de esa pestaña como filtro rápido adicional.
   const [busquedaLote, setBusquedaLote] = useState("");
   const busquedaLoteNorm = busquedaLote.trim().toLowerCase();
   const lotesBuscados = useMemo(() => {
@@ -1208,6 +1225,44 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
             <KPI icon="🧶" label="Semiterminado" value={fmtNum(kpis.enSemiterminado)} color={C.violet} bg={C.violetBg} />
             <KPI icon="⚠" label="Pedidos vencidos" value={fmtNum(kpis.vencidos)} color={C.red} bg={C.redBg} />
           </div>
+          <div style={{ marginBottom: 16 }}>
+            <input
+              value={busquedaLote}
+              onChange={(e) => setBusquedaLote(e.target.value)}
+              placeholder="🔍 Buscar lote por número o referencia — te dice dónde está ahora mismo..."
+              style={{ padding: "8px 12px", border: `1.5px solid ${busquedaLote ? C.ink : C.border}`, borderRadius: 8, fontSize: 13, minWidth: 340, outline: "none", fontFamily: "inherit" }}
+            />
+            {busquedaLoteNorm && (
+              <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                {!lotesBuscados.length ? (
+                  <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 12, fontWeight: 700 }}>
+                    Ningún lote coincide con "{busquedaLote}".
+                  </div>
+                ) : (
+                  lotesBuscados.map((l) => (
+                    <div key={l.numLote} style={{ padding: "10px 14px", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 10, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+                      <div style={{ fontWeight: 800, color: C.ink, fontSize: 13 }}>Lote #{l.numLote}</div>
+                      <div style={{ fontSize: 12, color: C.slate }}>{l.referencia}{l.categoria ? ` · ${l.categoria}` : ""}</div>
+                      <div style={{ fontSize: 12, color: C.slate }}>{l.nombreCliente}{l.numPedido ? ` · Pedido #${l.numPedido}` : ""}</div>
+                      <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 12, color: C.slate }}>📍 Está en:</span>
+                        <UbicacionBadge ubicacion={l.ubicacionActual} />
+                        <span style={{ fontSize: 12, color: C.slate, fontWeight: 700 }}>{fmtNum(l.unidadesUbicacion)} und.</span>
+                      </div>
+                      {l.ubicacionActual === "Planta" && l.nombrePlanta && (
+                        <div style={{ fontSize: 12, color: C.slate, width: "100%" }}>Planta: <strong>{l.nombrePlanta}</strong></div>
+                      )}
+                      {l.ubicacionActual === "Semiterminado" && (
+                        <div style={{ fontSize: 12, color: C.slate, width: "100%" }}>
+                          Proceso donde quedó: <strong>{l.procesoDondeQuedo || "—"}</strong>{l.ultimaSalidaTexto ? ` · Última salida: ${l.ultimaSalidaTexto}` : ""}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
           <div style={{ display: "flex", gap: 6, marginBottom: 18, flexWrap: "wrap" }}>
             {REPORTES.map((r) => (
               <button
@@ -1229,16 +1284,6 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
               </button>
             ))}
           </div>
-          {(tab === "semiterminado" || tab === "en_planta") && (
-            <div style={{ marginBottom: 16 }}>
-              <input
-                value={busquedaLote}
-                onChange={(e) => setBusquedaLote(e.target.value)}
-                placeholder="🔍 Buscar por número de lote o referencia..."
-                style={{ padding: "8px 12px", border: `1.5px solid ${busquedaLote ? C.ink : C.border}`, borderRadius: 8, fontSize: 13, minWidth: 280, outline: "none", fontFamily: "inherit" }}
-              />
-            </div>
-          )}
           {tab === "semiterminado" && <BloqueSeguimientoSemiterminado data={reporteSemiterminado} />}
           {tab === "bpt" && <BloqueBPT data={reporteBPT} />}
           {tab === "en_planta" && <BloqueAgrupado titulo="Planta" primeraColLabel="Nombre Planta" data={reportePlanta} mostrarFechaEntrega />}
