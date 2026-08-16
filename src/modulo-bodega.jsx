@@ -2049,6 +2049,16 @@ async function parseDespachosDuboExcel(file) {
     const numTrasladosUnicos = new Set(lineasFinal.map((l) => l.numTraslado).filter(Boolean));
     const numControl = numTrasladosUnicos.size === 1 ? [...numTrasladosUnicos][0] : (numTrasladoHeader || "");
 
+    // Excepción confirmada con el usuario: la hoja 08-07-2023 despachó
+    // $1.974.946,34 en mercancía, pero de eso Dubo solo pagó $981.592,12 (el
+    // resto se resolvió de otra forma, no queda pendiente). En vez de dejar
+    // el total del despacho en lo despachado y tener que sumar un abono
+    // aparte, se deja el total del despacho directamente en lo pagado — así
+    // el saldo de Dubo queda cuadrado sin pasos extra. Las líneas de detalle
+    // (119 referencias) se dejan igual, solo cambia el total.
+    let totalDespachoFinal = totalCalc || totalOficialCuadre || 0;
+    if (name === "08-07-2023") totalDespachoFinal = 981592.12;
+
     despachos.push({
       id: `hist-dubo-${slugHojaDubo(name)}`,
       numero: numControl || fecha,
@@ -2056,7 +2066,7 @@ async function parseDespachosDuboExcel(file) {
       fecha,
       estado: "historico",
       lineas: lineasFinal,
-      totalDespacho: totalCalc || totalOficialCuadre || 0,
+      totalDespacho: totalDespachoFinal,
       totalOficial: totalOficialCuadre,
       origen: "importado",
       creadoEn: new Date().toISOString(),
