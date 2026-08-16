@@ -1924,13 +1924,50 @@ function parseHojaDespachoDubo(rows) {
     }
   }
 
-  // Aviso si hay una sección de devoluciones pegada después del cierre — no
-  // se importa (no es una venta más), pero se avisa para que quede
-  // registrado que existe en el Excel original.
-  let tieneDevoluciones = false;
-  for (let rr = stopRow; rr < Math.min(stopRow + 10, rows.length); rr++) {
+  // Algunas hojas (vista en 30-12-2025) traen, PEGADO después del cierre
+  // normal, bloques extra de "UNIDADES DEVUELTAS" / "UNIDADES SIN FACTURA"
+  // que SÍ cuentan para lo que Dubo pagó — no son devoluciones que se
+  // restan, son líneas adicionales de la misma entrega — y terminan en una
+  // fila "GRAN TOTAL" que es el cierre real (y el que cuadra contra
+  // CONSOLI-PAGADO). Si aparece un "GRAN TOTAL" después del cierre normal,
+  // se recorren esas filas de en medio agregando las que sí son líneas de
+  // producto (tienen referencia y cantidad) — se saltan las etiquetas de
+  // sección y las filas de subtotal — y el "GRAN TOTAL" reemplaza al total
+  // de cierre normal.
+  let granTotalRow = -1;
+  for (let rr = stopRow; rr < Math.min(stopRow + 40, rows.length); rr++) {
     const row = rows[rr] || [];
-    if (row.some((v) => normCell(v).includes("DEVOL"))) { tieneDevoluciones = true; break; }
+    if (row.some((v) => normCell(v).includes("GRAN TOTAL"))) { granTotalRow = rr; break; }
+  }
+  let tieneDevoluciones = false;
+  if (granTotalRow !== -1) {
+    for (let rr = stopRow + 1; rr < granTotalRow; rr++) {
+      const row = rows[rr] || [];
+      const refNorm = normCell(row[hc]);
+      if (!refNorm || /^(UNIDADES|TOTAL|GRAN)/.test(refNorm)) continue;
+      const cantVal = colIdxs.some((c) => colmap[c] === "cantidad") ? numCell(row[colIdxs.find((c) => colmap[c] === "cantidad")]) : null;
+      if (cantVal === null) continue;
+      const item = { referencia: row[hc] };
+      colIdxs.forEach((c) => { item[colmap[c]] = row[c] ?? null; });
+      crudas.push(item);
+    }
+    const grRow = rows[granTotalRow] || [];
+    let t = null;
+    for (let c = grRow.length - 1; c >= 0; c--) {
+      const v = numCell(grRow[c]);
+      if (v !== null && v !== 0) { t = v; break; }
+    }
+    if (t !== null) totalOficial = t;
+    avisosLinea.push(`se agregaron las líneas de "UNIDADES DEVUELTAS"/"UNIDADES SIN FACTURA" que trae la hoja después del cierre — el total final ahora sale de la fila "GRAN TOTAL".`);
+  } else {
+    // Aviso si hay una sección de devoluciones pegada después del cierre y
+    // NO hay un "GRAN TOTAL" que las sume — ahí sí no se importa (no es una
+    // venta más), pero se avisa para que quede registrado que existe en el
+    // Excel original.
+    for (let rr = stopRow; rr < Math.min(stopRow + 10, rows.length); rr++) {
+      const row = rows[rr] || [];
+      if (row.some((v) => normCell(v).includes("DEVOL"))) { tieneDevoluciones = true; break; }
+    }
   }
 
   return { numTrasladoHeader, lineas: crudas, totalOficial, avisosLinea, tieneDevoluciones };
@@ -2026,7 +2063,25 @@ async function parseDespachosDuboExcel(file) {
     });
   });
 
-  return { despachos, abonos: [], avisos, totalAbonoOficial: null };
+  // Hojas duplicadas del mismo despacho — vista en 02-03-2026 y 05-03-2026:
+  // mismo TRASLADO (3309), las 90 filas idénticas y el mismo total, pero
+  // "CONSOLI-PAGADO" solo trae ese pago UNA vez (el 2026-03-02) — alguien
+  // copió la hoja y le cambió la fecha por error. Si dos hojas comparten
+  // TRASLADO y total, se importa solo la primera para no duplicar la plata;
+  // la otra queda marcada en avisos por si hay que revisarla a mano.
+  const vistos = new Map();
+  const despachosSinDuplicados = [];
+  despachos.forEach((d) => {
+    const clave = d.numControl ? `${d.numControl}|${Math.round(d.totalDespacho)}` : null;
+    if (clave && vistos.has(clave)) {
+      avisos.push(`${d.fecha}: hoja duplicada del despacho TRASLADO ${d.numControl} (mismo total que la hoja de ${vistos.get(clave)}) — no se importó para no duplicar la plata.`);
+      return;
+    }
+    if (clave) vistos.set(clave, d.fecha);
+    despachosSinDuplicados.push(d);
+  });
+
+  return { despachos: despachosSinDuplicados, abonos: [], avisos, totalAbonoOficial: null };
 }
 function ImportarHistoricoView({ currentUser, despachosExistentes, abonosExistentes, coleccionDespachos, coleccionAbonos, destino }) {
   const [analizando, setAnalizando] = useState(false);

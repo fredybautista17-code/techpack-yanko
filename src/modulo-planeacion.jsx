@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, Fragment } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import {
   getFirestore,
@@ -51,9 +51,6 @@ function today() {
 }
 function fmtNum(n) {
   return Number(n || 0).toLocaleString("es-CO");
-}
-function fmtMoney(n) {
-  return Number(n || 0).toLocaleString("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 });
 }
 // ─── UI ATOMS ─────────────────────────────────────────────────────────────────
 function Btn({ children, onClick, variant = "primary", small, disabled }) {
@@ -194,19 +191,6 @@ function estadoDe(dias) {
   if (dias <= 7) return "URGENTE";
   return "EN TIEMPO";
 }
-// Comparación flexible de nombre de cliente para el filtro de "Cliente
-// asociado" (usuarios de acceso restringido a un solo cliente) — no exige
-// coincidencia exacta porque el mismo cliente puede venir con variantes
-// distintas en el Excel de Planeación (p.ej. "KAMILA GROUP SAS-KAMILA
-// COLOMBIA" en vez de "KAMILA COLOMBIA"): ignora mayúsculas/espacios y basta
-// con que uno contenga al otro.
-function coincideCliente(nombre, clienteAsociado) {
-  if (!clienteAsociado) return true;
-  const a = String(nombre || "").trim().toUpperCase();
-  const b = String(clienteAsociado || "").trim().toUpperCase();
-  if (!a || !b) return false;
-  return a === b || a.includes(b) || b.includes(a);
-}
 // Encuentra en qué bloque de proceso (de los 15) quedó el lote: si hay algún
 // bloque con salida pero sin entrega (pendiente), toma el de salida más
 // reciente entre los pendientes; si hay empate prefiere "TERMINACION", si no
@@ -246,7 +230,7 @@ function agruparLotes(rows) {
   const A = colIdx("A"), B = colIdx("B"), D = colIdx("D"), F = colIdx("F"),
     H = colIdx("H"), N = colIdx("N"), S = colIdx("S"), U = colIdx("U"),
     V = colIdx("V"), X = colIdx("X"), Z = colIdx("Z"), AA = colIdx("AA"), AC = colIdx("AC"),
-    AG = colIdx("AG"), AJ = colIdx("AJ");
+    AF = colIdx("AF"), AG = colIdx("AG"), AJ = colIdx("AJ");
   const grupos = new Map();
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r];
@@ -274,6 +258,7 @@ function agruparLotes(rows) {
     const invPlanta = Number(filaInv[Z]) || 0;
     const nombrePlanta = filaInv[AA] || "";
     const fechaEntregaConf = filaInv[AC];
+    const fechaEntBPT = filaInv[AF];
     const invBPT = Number(filaInv[AG]) || 0;
     const invSemiterminado = Number(filaInv[AJ]) || 0;
     const procesos = NOMBRE_COLS.map((nc, i) => ({
@@ -311,6 +296,7 @@ function agruparLotes(rows) {
       invBPT,
       invSemiterminado,
       fechaEntregaConfISO: dateToISO(fechaEntregaConf),
+      fechaEntBPTISO: dateToISO(fechaEntBPT),
       fechaEntregaPedidoISO: dateToISO(fechaEntregaPedido),
       procesoDondeQuedo,
       ultimaSalidaTexto,
@@ -344,13 +330,12 @@ function generarSeguimientoSemiterminado(lotes) {
       categoria: l.categoria,
       unidades: l.invSemiterminado,
       procesoDondeQuedo: l.procesoDondeQuedo || "(Sin proceso)",
-      cliente: l.nombreCliente || "(Sin cliente)",
       ultimaSalida: l.ultimaSalidaTexto,
+      nombreCliente: l.nombreCliente || "(Sin cliente)",
     }))
-    .sort((a, b) => a.procesoDondeQuedo.localeCompare(b.procesoDondeQuedo) || a.cliente.localeCompare(b.cliente) || a.numLote - b.numLote);
+    .sort((a, b) => a.procesoDondeQuedo.localeCompare(b.procesoDondeQuedo) || a.numLote - b.numLote);
   const totalLotes = filas.length;
   const totalUnidades = filas.reduce((s, f) => s + f.unidades, 0);
-  // Resumen por Proceso (como antes).
   const grupos = new Map();
   filas.forEach((f) => {
     if (!grupos.has(f.procesoDondeQuedo)) grupos.set(f.procesoDondeQuedo, { lotes: 0, unidades: 0 });
@@ -366,44 +351,24 @@ function generarSeguimientoSemiterminado(lotes) {
       pct: totalUnidades > 0 ? g.unidades / totalUnidades : 0,
     }))
     .sort((a, b) => b.unidades - a.unidades);
-  // Resumen por Cliente — totales por cliente (para la pestaña "Por
-  // Cliente"); el desglose de procesos de cada cliente se calcula en el
-  // componente filtrando `filas` por cliente.
+  // Resumen por Cliente + Proceso Donde Quedó: mismas métricas que el
+  // resumen por proceso (lotes/unidades/% de unidades), pero desglosado
+  // también por cliente — para ver, por ejemplo, cuántas unidades de KAMILA
+  // están detenidas en TERMINACION vs. las de otro cliente.
   const gruposCliente = new Map();
   filas.forEach((f) => {
-    if (!gruposCliente.has(f.cliente)) gruposCliente.set(f.cliente, { lotes: 0, unidades: 0 });
-    const g = gruposCliente.get(f.cliente);
+    const clave = `${f.nombreCliente}||${f.procesoDondeQuedo}`;
+    if (!gruposCliente.has(clave)) {
+      gruposCliente.set(clave, { cliente: f.nombreCliente, proceso: f.procesoDondeQuedo, lotes: 0, unidades: 0 });
+    }
+    const g = gruposCliente.get(clave);
     g.lotes += 1;
     g.unidades += f.unidades;
   });
-  const resumenClientes = [...gruposCliente.entries()]
-    .map(([cliente, g]) => ({
-      cliente,
-      lotes: g.lotes,
-      unidades: g.unidades,
-      pct: totalUnidades > 0 ? g.unidades / totalUnidades : 0,
-    }))
-    .sort((a, b) => b.unidades - a.unidades);
-  // Resumen por Referencia — para la pestaña "Por Referencia" (saber cuánto
-  // hay de cada semiterminado puntual, sin importar en qué proceso o cliente).
-  const gruposReferencia = new Map();
-  filas.forEach((f) => {
-    const ref = f.referencia || "(Sin referencia)";
-    if (!gruposReferencia.has(ref)) gruposReferencia.set(ref, { lotes: 0, unidades: 0 });
-    const g = gruposReferencia.get(ref);
-    g.lotes += 1;
-    g.unidades += f.unidades;
-  });
-  const resumenReferencias = [...gruposReferencia.entries()]
-    .map(([referencia, g]) => ({
-      referencia,
-      lotes: g.lotes,
-      unidades: g.unidades,
-      pct: totalUnidades > 0 ? g.unidades / totalUnidades : 0,
-    }))
-    .sort((a, b) => b.unidades - a.unidades);
-  const procesosDistintos = resumen.length;
-  return { filas, resumen, resumenClientes, resumenReferencias, totalLotes, totalUnidades, procesosDistintos };
+  const resumenPorCliente = [...gruposCliente.values()]
+    .map((g) => ({ ...g, pct: totalUnidades > 0 ? g.unidades / totalUnidades : 0 }))
+    .sort((a, b) => a.cliente.localeCompare(b.cliente) || b.unidades - a.unidades);
+  return { filas, resumen, resumenPorCliente, totalLotes, totalUnidades, procesosDistintos: resumen.length };
 }
 // Compartido por En Planta / Por Cliente / Cliente Agrupado — solo cambia el
 // campo por el que se agrupa (planta, cliente, o cliente agrupado KAMILA).
@@ -417,14 +382,6 @@ function generarAgrupadoPlanta(lotes, campoAgrupador) {
       referencia: l.referencia,
       cantidad: l.invPlanta,
       fechaEntregaConf: l.fechaEntregaConfISO,
-      // Días que lleva atrasado respecto a la fecha de entrega de
-      // CONFECCIÓN (no la del pedido) — diasEntre da negativo cuando ya se
-      // pasó la fecha, así que se invierte para mostrar un número positivo
-      // de días de atraso (0 si no está vencido o no tiene fecha).
-      diasAtraso: (() => {
-        const d = diasEntre(l.fechaEntregaConfISO);
-        return d !== null && d < 0 ? -d : 0;
-      })(),
     }))
     .sort((a, b) => a.grupo.localeCompare(b.grupo) || a.categoria.localeCompare(b.categoria));
   const gruposUnicos = [...new Set(filas.map((f) => f.grupo))].sort((a, b) => a.localeCompare(b));
@@ -477,7 +434,7 @@ function generarPorPedido(lotes) {
     });
 }
 function generarBMP(lotes) {
-  const filas = lotes
+  return lotes
     .filter((l) => l.invBMP > 0)
     .map((l) => ({
       categoria: l.categoria,
@@ -491,46 +448,31 @@ function generarBMP(lotes) {
       diasRestantesPedido: diasEntre(l.fechaEntregaPedidoISO),
     }))
     .sort((a, b) => a.categoria.localeCompare(b.categoria) || a.cliente.localeCompare(b.cliente));
-  const totalLotes = filas.length;
-  const totalUnidades = filas.reduce((s, f) => s + f.cantidadBMP, 0);
-  // Resumen por Cliente — mismo patrón que Semiterminados: total por cliente
-  // arriba, y el detalle de lotes de ese cliente se filtra de `filas` al
-  // hacer clic (ver BloqueBMP).
-  const gruposCliente = new Map();
-  filas.forEach((f) => {
-    const cli = f.cliente || "(Sin cliente)";
-    if (!gruposCliente.has(cli)) gruposCliente.set(cli, { lotes: 0, unidades: 0 });
-    const g = gruposCliente.get(cli);
-    g.lotes += 1;
-    g.unidades += f.cantidadBMP;
-  });
-  const resumenClientes = [...gruposCliente.entries()]
-    .map(([cliente, g]) => ({
-      cliente,
-      lotes: g.lotes,
-      unidades: g.unidades,
-      pct: totalUnidades > 0 ? g.unidades / totalUnidades : 0,
-    }))
-    .sort((a, b) => b.unidades - a.unidades);
-  return { filas, resumenClientes, totalLotes, totalUnidades };
 }
-// Mismo criterio que generarBMP, pero para lotes que ya llegaron a Bodega de
-// Producto Terminado (invBPT, columna AG del Excel) — listos para despacho.
+// Informe "BPT": lotes que ya están en Bodega de Producto Terminado
+// (invBPT > 0), agrupados por cliente, con los días transcurridos desde que
+// entraron a BPT (columna "Fecha Ent BPT" de Hoja1).
 function generarBPT(lotes) {
-  return lotes
+  const filas = lotes
     .filter((l) => l.invBPT > 0)
     .map((l) => ({
-      categoria: l.categoria,
-      cliente: l.nombreCliente,
-      referencia: l.referencia,
+      cliente: l.nombreCliente || "(Sin cliente)",
       numLote: l.numLote,
-      cantidadBPT: l.invBPT,
-      fechaCorte: l.fechaCorteISO,
-      diasParaCorte: diasEntre(l.fechaCorteISO),
-      fechaEntregaPedido: l.fechaEntregaPedidoISO,
-      diasRestantesPedido: diasEntre(l.fechaEntregaPedidoISO),
+      referencia: l.referencia,
+      categoria: l.categoria,
+      cantidad: l.invBPT,
+      fechaEntBPT: l.fechaEntBPTISO,
+      diasEnBPT: l.fechaEntBPTISO ? -diasEntre(l.fechaEntBPTISO) : null,
     }))
-    .sort((a, b) => a.categoria.localeCompare(b.categoria) || a.cliente.localeCompare(b.cliente));
+    .sort((a, b) => (b.diasEnBPT ?? -Infinity) - (a.diasEnBPT ?? -Infinity) || a.cliente.localeCompare(b.cliente));
+  const clientesUnicos = [...new Set(filas.map((f) => f.cliente))].sort((a, b) => a.localeCompare(b));
+  const resumen = clientesUnicos.map((c) => {
+    const deCliente = filas.filter((f) => f.cliente === c);
+    return { cliente: c, lotes: deCliente.length, unidades: deCliente.reduce((s, f) => s + f.cantidad, 0) };
+  });
+  const totalLotes = filas.length;
+  const totalUnidades = filas.reduce((s, f) => s + f.cantidad, 0);
+  return { filas, resumen, totalLotes, totalUnidades };
 }
 function generarProgramacionYanko(lotes) {
   const filas = lotes
@@ -547,207 +489,14 @@ function generarProgramacionYanko(lotes) {
     .sort((a, b) => a.categoria.localeCompare(b.categoria) || (a.fechaEntregaPedido || "").localeCompare(b.fechaEntregaPedido || ""));
   const kamilaLotes = lotes.filter((l) => l.clienteAgrupado === "KAMILA (COLOMBIA + VENEZUELA)" && (l.invPlanta > 0 || l.invBMP > 0));
   const categorias = [...new Set(kamilaLotes.map((l) => l.categoria))].sort();
-  // La columna "Planta" de esta comparación es específicamente Planta Yanko
-  // (así se titula la sección) — sin este filtro, un lote Kamila en OTRA
-  // planta (ej. Carlos) con inventario en planta también sumaba acá, dando
-  // la impresión de que estaba en Yanko cuando en realidad no.
   const comparacion = categorias.map((cat) => {
-    const planta = kamilaLotes.filter((l) => l.categoria === cat && l.invPlanta > 0 && l.nombrePlanta === PLANTA_YANKO);
+    const planta = kamilaLotes.filter((l) => l.categoria === cat && l.invPlanta > 0);
     const bmp = kamilaLotes.filter((l) => l.categoria === cat && l.invBMP > 0);
     const plantaUnid = planta.reduce((s, l) => s + l.invPlanta, 0);
     const bmpUnid = bmp.reduce((s, l) => s + l.invBMP, 0);
     return { categoria: cat, plantaUnid, plantaLotes: planta.length, bmpUnid, bmpLotes: bmp.length, total: plantaUnid + bmpUnid };
   });
   return { filas, comparacion };
-}
-// ─── COMPARAR PERÍODOS ──────────────────────────────────────────────────────────
-// Los informes de arriba (En Planta, Por Cliente, BMP, etc.) solo muestran el
-// estado de la ÚLTIMA carga subida — una foto del momento, sin forma de ver
-// qué cambió desde ayer/la semana pasada/el mes pasado. Esto usa el
-// histórico completo de cargas (planeacion_cargas) para comparar dos fechas
-// cualquiera y mostrar la diferencia.
-function calcularKpisLotes(lotes) {
-  return {
-    total: lotes.length,
-    enPlanta: lotes.filter((l) => l.invPlanta > 0).length,
-    enBMP: lotes.filter((l) => l.invBMP > 0).length,
-    enSemiterminado: lotes.filter((l) => l.invSemiterminado > 0).length,
-    vencidos: lotes.filter((l) => l.fechaEntregaPedidoISO && diasEntre(l.fechaEntregaPedidoISO) < 0).length,
-  };
-}
-function restarDiasISO(fechaISO, dias) {
-  const [y, m, d] = fechaISO.split("-").map(Number);
-  const dt = new Date(y, m - 1, d);
-  dt.setDate(dt.getDate() - dias);
-  return dt.toISOString().slice(0, 10);
-}
-// Dada una fecha objetivo, busca dentro de las cargas ya subidas la más
-// cercana a esa fecha SIN pasarse (la más reciente que sea <= fechaISO) — si
-// no hay ninguna tan vieja, se queda con la más antigua que exista, para que
-// los atajos rápidos (Ayer, Semana pasada, etc.) siempre encuentren algo con
-// qué comparar aunque no haya carga exacta de ese día.
-function cargaMasCercanaA(cargasOrdenadas, fechaISO) {
-  const candidatas = cargasOrdenadas.filter((c) => (c.fecha || "") <= fechaISO);
-  if (candidatas.length) return candidatas[0];
-  return cargasOrdenadas[cargasOrdenadas.length - 1] || null;
-}
-// Junta dos "resumen" (los que devuelve generarAgrupadoPlanta: [{grupo,
-// lotes, unidades}]) en una sola lista con la diferencia por grupo —
-// incluyendo grupos que solo existen en uno de los dos períodos (ej. un
-// cliente nuevo, o uno que ya no tiene nada en planta).
-function compararResumenes(resumenA, resumenB) {
-  const nombres = [...new Set([...resumenA.map((r) => r.grupo), ...resumenB.map((r) => r.grupo)])].sort((a, b) => a.localeCompare(b));
-  return nombres
-    .map((nombre) => {
-      const a = resumenA.find((r) => r.grupo === nombre);
-      const b = resumenB.find((r) => r.grupo === nombre);
-      const unidadesA = a?.unidades || 0;
-      const unidadesB = b?.unidades || 0;
-      return { grupo: nombre, unidadesA, unidadesB, diferencia: unidadesB - unidadesA };
-    })
-    .sort((x, y) => Math.abs(y.diferencia) - Math.abs(x.diferencia));
-}
-function TablaComparacion({ filas, primeraColLabel }) {
-  if (!filas.length) {
-    return (
-      <div style={{ textAlign: "center", padding: 24, color: C.slate, fontSize: 13, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
-        Sin datos.
-      </div>
-    );
-  }
-  return (
-    <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-        <thead>
-          <tr style={{ background: C.ink }}>
-            {[primeraColLabel, "Período base", "Período actual", "Diferencia"].map((h, i) => (
-              <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: i === 0 ? "left" : "right", fontWeight: 700, fontSize: 10 }}>{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {filas.map((f, i) => (
-            <tr key={f.grupo} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-              <td style={{ padding: "7px 12px" }}>{f.grupo}</td>
-              <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(f.unidadesA)}</td>
-              <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(f.unidadesB)}</td>
-              <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 700, color: f.diferencia > 0 ? C.green : f.diferencia < 0 ? C.red : C.slate }}>
-                {f.diferencia > 0 ? "▲ " : f.diferencia < 0 ? "▼ " : ""}{fmtNum(Math.abs(f.diferencia))}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-function KpiComparado({ icon, label, a, b, color, bg }) {
-  const diff = b - a;
-  return (
-    <div style={{ background: bg, borderRadius: 12, padding: 14 }}>
-      <div style={{ fontSize: 11, color, fontWeight: 700, marginBottom: 6 }}>{icon} {label}</div>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-        <div style={{ fontSize: 20, fontWeight: 900, color: C.ink }}>{fmtNum(b)}</div>
-        <div style={{ fontSize: 11, color: C.slate }}>antes: {fmtNum(a)}</div>
-      </div>
-      {diff !== 0 ? (
-        <div style={{ fontSize: 11, fontWeight: 700, color: diff > 0 ? C.green : C.red, marginTop: 2 }}>
-          {diff > 0 ? "▲" : "▼"} {fmtNum(Math.abs(diff))}
-        </div>
-      ) : (
-        <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>Sin cambio</div>
-      )}
-    </div>
-  );
-}
-function BloqueCompararPeriodos({ cargasOrdenadas, clienteAsociado }) {
-  const [cargaIdB, setCargaIdB] = useState(cargasOrdenadas[0]?.id || null); // período actual (más reciente por defecto)
-  const [cargaIdA, setCargaIdA] = useState(cargasOrdenadas[1]?.id || cargasOrdenadas[0]?.id || null); // período base
-  const cargaB = cargasOrdenadas.find((c) => c.id === cargaIdB) || cargasOrdenadas[0] || null;
-  const cargaA = cargasOrdenadas.find((c) => c.id === cargaIdA) || cargasOrdenadas[1] || cargasOrdenadas[0] || null;
-  function usarPreset(dias) {
-    if (!cargaB) return;
-    const cargaCercana = cargaMasCercanaA(cargasOrdenadas, restarDiasISO(cargaB.fecha, dias));
-    if (cargaCercana) setCargaIdA(cargaCercana.id);
-  }
-  const lotesA = useMemo(() => {
-    const todos = cargaA?.lotes || [];
-    return clienteAsociado ? todos.filter((l) => coincideCliente(l.nombreCliente, clienteAsociado)) : todos;
-  }, [cargaA, clienteAsociado]);
-  const lotesB = useMemo(() => {
-    const todos = cargaB?.lotes || [];
-    return clienteAsociado ? todos.filter((l) => coincideCliente(l.nombreCliente, clienteAsociado)) : todos;
-  }, [cargaB, clienteAsociado]);
-  const kpisA = useMemo(() => calcularKpisLotes(lotesA), [lotesA]);
-  const kpisB = useMemo(() => calcularKpisLotes(lotesB), [lotesB]);
-  const comparacionCliente = useMemo(
-    () => compararResumenes(generarAgrupadoPlanta(lotesA, "nombreCliente").resumen, generarAgrupadoPlanta(lotesB, "nombreCliente").resumen),
-    [lotesA, lotesB]
-  );
-  const comparacionPlanta = useMemo(
-    () => compararResumenes(generarAgrupadoPlanta(lotesA, "nombrePlanta").resumen, generarAgrupadoPlanta(lotesB, "nombrePlanta").resumen),
-    [lotesA, lotesB]
-  );
-  if (!cargasOrdenadas.length) {
-    return <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>Todavía no hay cargas para comparar.</div>;
-  }
-  return (
-    <div>
-      <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 700 }}>
-        Compara el estado de dos cargas distintas para ver qué cambió — usa los atajos rápidos (toman la carga más cercana a esa fecha) o elige las cargas a mano.
-      </p>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-        <Btn small variant="secondary" onClick={() => usarPreset(1)}>Ayer vs. Hoy</Btn>
-        <Btn small variant="secondary" onClick={() => usarPreset(7)}>Semana pasada vs. Esta semana</Btn>
-        <Btn small variant="secondary" onClick={() => usarPreset(15)}>Quincena pasada vs. Esta quincena</Btn>
-        <Btn small variant="secondary" onClick={() => usarPreset(30)}>Mes pasado vs. Este mes</Btn>
-      </div>
-      <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 20, flexWrap: "wrap" }}>
-        <div>
-          <div style={{ fontSize: 10, color: C.slate, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Período base</div>
-          <select
-            value={cargaIdA || ""}
-            onChange={(e) => setCargaIdA(e.target.value)}
-            style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
-          >
-            {cargasOrdenadas.map((c) => (
-              <option key={c.id} value={c.id}>Carga {c.fecha}</option>
-            ))}
-          </select>
-        </div>
-        <div style={{ fontSize: 18, color: C.slate }}>→</div>
-        <div>
-          <div style={{ fontSize: 10, color: C.slate, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Período actual</div>
-          <select
-            value={cargaIdB || ""}
-            onChange={(e) => setCargaIdB(e.target.value)}
-            style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
-          >
-            {cargasOrdenadas.map((c) => (
-              <option key={c.id} value={c.id}>Carga {c.fecha}</option>
-            ))}
-          </select>
-        </div>
-      </div>
-      {!cargaA || !cargaB ? (
-        <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>Elige las dos cargas a comparar.</div>
-      ) : (
-        <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 24 }}>
-            <KpiComparado icon="📦" label="Total lotes" a={kpisA.total} b={kpisB.total} color={C.ink} bg={C.canvas} />
-            <KpiComparado icon="🏭" label="En Planta" a={kpisA.enPlanta} b={kpisB.enPlanta} color={C.green} bg={C.greenBg} />
-            <KpiComparado icon="🧵" label="En BMP" a={kpisA.enBMP} b={kpisB.enBMP} color={C.amber} bg={C.amberBg} />
-            <KpiComparado icon="🧶" label="Semiterminado" a={kpisA.enSemiterminado} b={kpisB.enSemiterminado} color={C.violet} bg={C.violetBg} />
-            <KpiComparado icon="⚠" label="Vencidos" a={kpisA.vencidos} b={kpisB.vencidos} color={C.red} bg={C.redBg} />
-          </div>
-          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>POR CLIENTE (unidades en planta)</div>
-          <TablaComparacion filas={comparacionCliente} primeraColLabel="Cliente" />
-          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, margin: "24px 0 10px" }}>POR PLANTA (unidades en planta)</div>
-          <TablaComparacion filas={comparacionPlanta} primeraColLabel="Planta" />
-        </>
-      )}
-    </div>
-  );
 }
 // ─── SUBIR HOJA1 ────────────────────────────────────────────────────────────────
 function SubirHoja1Modal({ onConfirm, onClose }) {
@@ -859,17 +608,41 @@ function Tabla({ columnas, filas, vacio }) {
     </div>
   );
 }
-function BloqueAgrupado({ titulo, primeraColLabel, data }) {
-  // Grupo (planta/cliente/cliente agrupado) que el usuario abrió desde el
-  // resumen — null si ninguno. Al hacer clic en una fila del resumen se
-  // despliega, debajo, el detalle de lotes de ESE grupo puntual (en vez de
-  // tener que buscarlo a mano en la tabla completa de abajo).
-  const [grupoAbierto, setGrupoAbierto] = useState(null);
-  const filasGrupoAbierto = grupoAbierto ? data.filas.filter((f) => f.grupo === grupoAbierto) : [];
+function BloqueAgrupado({ titulo, primeraColLabel, data, mostrarFechaEntrega }) {
+  const [grupoSel, setGrupoSel] = useState(null);
+  const filasGrupoSel = grupoSel ? data.filas.filter((f) => f.grupo === grupoSel) : [];
+  const columnasDetalle = [
+    { key: "grupo", label: primeraColLabel },
+    { key: "categoria", label: "Categoría" },
+    { key: "numLote", label: "Num Lote", align: "right" },
+    { key: "referencia", label: "Referencia" },
+    { key: "cantidad", label: "Cant. en Planta", align: "right", render: (f) => fmtNum(f.cantidad) },
+  ];
+  if (mostrarFechaEntrega) {
+    columnasDetalle.push({ key: "fechaEntregaConf", label: "Fecha Entrega Conf.", render: (f) => fmtFechaISO(f.fechaEntregaConf) });
+  }
   return (
     <div>
+      {grupoSel && (
+        <Modal title={`Lotes de ${grupoSel}`} onClose={() => setGrupoSel(null)} width={720}>
+          <div style={{ marginBottom: 14, fontSize: 12, color: C.slate }}>
+            {filasGrupoSel.length} lote{filasGrupoSel.length !== 1 ? "s" : ""} · {fmtNum(filasGrupoSel.reduce((s, f) => s + f.cantidad, 0))} unidades en total
+          </div>
+          <Tabla
+            vacio="Sin lotes."
+            columnas={[
+              { key: "numLote", label: "Num Lote" },
+              { key: "referencia", label: "Referencia" },
+              { key: "categoria", label: "Categoría" },
+              { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
+              { key: "fechaEntregaConf", label: "Fecha Entrega Conf.", render: (f) => fmtFechaISO(f.fechaEntregaConf) },
+            ]}
+            filas={filasGrupoSel}
+          />
+        </Modal>
+      )}
       {data.resumen.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
+        <div style={{ marginBottom: 20 }}>
           <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>RESUMEN POR {titulo.toUpperCase()}</div>
           <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -882,17 +655,14 @@ function BloqueAgrupado({ titulo, primeraColLabel, data }) {
               </thead>
               <tbody>
                 {data.resumen.map((r, i) => (
-                  <tr
-                    key={r.grupo}
-                    onClick={() => setGrupoAbierto(grupoAbierto === r.grupo ? null : r.grupo)}
-                    title="Ver lotes de este grupo"
-                    style={{
-                      background: grupoAbierto === r.grupo ? C.violetBg : i % 2 === 0 ? C.canvas : C.white,
-                      borderBottom: `1px solid ${C.border}`,
-                      cursor: "pointer",
-                    }}
-                  >
-                    <td style={{ padding: "7px 12px" }}>{r.grupo}</td>
+                  <tr key={r.grupo} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                    <td
+                      onClick={() => setGrupoSel(r.grupo)}
+                      title="Ver lotes"
+                      style={{ padding: "7px 12px", cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3, color: C.blue, fontWeight: 600 }}
+                    >
+                      {r.grupo}
+                    </td>
                     <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
                     <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
                   </tr>
@@ -909,37 +679,8 @@ function BloqueAgrupado({ titulo, primeraColLabel, data }) {
           </div>
         </div>
       )}
-      {grupoAbierto && (
-        <Modal title={`Lotes de "${grupoAbierto}"`} onClose={() => setGrupoAbierto(null)} width={720}>
-          <div style={{ marginBottom: 14, fontSize: 12, color: C.slate }}>
-            {filasGrupoAbierto.length} lote{filasGrupoAbierto.length !== 1 ? "s" : ""} · {fmtNum(filasGrupoAbierto.reduce((s, f) => s + f.cantidad, 0))} unidades en total
-          </div>
-          <Tabla
-            vacio="Sin lotes en este grupo."
-            columnas={[
-              { key: "categoria", label: "Categoría" },
-              { key: "numLote", label: "Num Lote", align: "right" },
-              { key: "referencia", label: "Referencia" },
-              { key: "cantidad", label: "Cant. en Planta", align: "right", render: (f) => fmtNum(f.cantidad) },
-              { key: "diasAtraso", label: "Días de Atraso", align: "right", render: (f) => (f.diasAtraso > 0 ? f.diasAtraso : "—"), color: (f) => (f.diasAtraso > 0 ? C.red : C.slate) },
-            ]}
-            filas={filasGrupoAbierto}
-          />
-        </Modal>
-      )}
-      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>DETALLE COMPLETO</div>
-      <Tabla
-        vacio="Sin lotes en planta."
-        columnas={[
-          { key: "grupo", label: primeraColLabel },
-          { key: "categoria", label: "Categoría" },
-          { key: "numLote", label: "Num Lote", align: "right" },
-          { key: "referencia", label: "Referencia" },
-          { key: "cantidad", label: "Cant. en Planta", align: "right", render: (f) => fmtNum(f.cantidad) },
-          { key: "diasAtraso", label: "Días de Atraso", align: "right", render: (f) => (f.diasAtraso > 0 ? f.diasAtraso : "—"), color: (f) => (f.diasAtraso > 0 ? C.red : C.slate) },
-        ]}
-        filas={data.filas}
-      />
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>DETALLE POR LOTE</div>
+      <Tabla vacio="Sin lotes en planta." columnas={columnasDetalle} filas={data.filas} />
     </div>
   );
 }
@@ -947,33 +688,11 @@ function BloqueAgrupado({ titulo, primeraColLabel, data }) {
 // de unidades) + detalle de lotes agrupado por proceso, en vez de la tabla
 // plana que tenía antes el reporte de Semiterminado.
 function BloqueSeguimientoSemiterminado({ data }) {
-  const { filas, resumen, resumenClientes, resumenReferencias, totalLotes, totalUnidades, procesosDistintos } = data;
-  const [vista, setVista] = useState("proceso");
-  const [clienteAbierto, setClienteAbierto] = useState(null);
-  // Proceso puntual seleccionado en la pestaña "Por Proceso" (ej. TERMINACION,
-  // BAJADA DE VINILO) — filtra `filas` a solo los lotes que están ahí.
-  const [procesoSel, setProcesoSel] = useState("");
+  const { filas, resumen, resumenPorCliente, totalLotes, totalUnidades, procesosDistintos } = data;
+  const [subTab, setSubTab] = useState("proceso");
   if (!totalLotes) {
     return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Sin lotes en semiterminado.</div>;
   }
-  const filasProcesoSel = procesoSel ? filas.filter((f) => f.procesoDondeQuedo === procesoSel) : [];
-  // Desglose de procesos del cliente actualmente abierto en el modal —
-  // filtra `filas` (que ya trae `cliente`) y agrupa por procesoDondeQuedo.
-  const procesosClienteAbierto = (() => {
-    if (!clienteAbierto) return [];
-    const deCliente = filas.filter((f) => f.cliente === clienteAbierto);
-    const totalCliente = deCliente.reduce((s, f) => s + f.unidades, 0);
-    const grupos = new Map();
-    deCliente.forEach((f) => {
-      if (!grupos.has(f.procesoDondeQuedo)) grupos.set(f.procesoDondeQuedo, { lotes: 0, unidades: 0 });
-      const g = grupos.get(f.procesoDondeQuedo);
-      g.lotes += 1;
-      g.unidades += f.unidades;
-    });
-    return [...grupos.entries()]
-      .map(([proceso, g]) => ({ proceso, lotes: g.lotes, unidades: g.unidades, pct: totalCliente > 0 ? g.unidades / totalCliente : 0 }))
-      .sort((a, b) => b.unidades - a.unidades);
-  })();
   return (
     <div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 20 }}>
@@ -983,191 +702,99 @@ function BloqueSeguimientoSemiterminado({ data }) {
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
         <div
-          onClick={() => setVista("proceso")}
-          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: vista === "proceso" ? C.ink : C.white, color: vista === "proceso" ? C.seam : C.ink, border: `1px solid ${vista === "proceso" ? C.ink : C.border}` }}
+          onClick={() => setSubTab("proceso")}
+          style={{
+            cursor: "pointer",
+            padding: "9px 16px",
+            borderRadius: 10,
+            fontWeight: 800,
+            fontSize: 12,
+            background: subTab === "proceso" ? C.ink : C.white,
+            color: subTab === "proceso" ? C.seam : C.ink,
+            border: `1px solid ${subTab === "proceso" ? C.ink : C.border}`,
+          }}
         >
-          POR PROCESO
+          RESUMEN POR PROCESO
         </div>
         <div
-          onClick={() => setVista("cliente")}
-          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: vista === "cliente" ? C.ink : C.white, color: vista === "cliente" ? C.seam : C.ink, border: `1px solid ${vista === "cliente" ? C.ink : C.border}` }}
+          onClick={() => setSubTab("cliente")}
+          style={{
+            cursor: "pointer",
+            padding: "9px 16px",
+            borderRadius: 10,
+            fontWeight: 800,
+            fontSize: 12,
+            background: subTab === "cliente" ? C.ink : C.white,
+            color: subTab === "cliente" ? C.seam : C.ink,
+            border: `1px solid ${subTab === "cliente" ? C.ink : C.border}`,
+          }}
         >
-          POR CLIENTE
-        </div>
-        <div
-          onClick={() => setVista("referencia")}
-          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: vista === "referencia" ? C.ink : C.white, color: vista === "referencia" ? C.seam : C.ink, border: `1px solid ${vista === "referencia" ? C.ink : C.border}` }}
-        >
-          POR REFERENCIA
+          RESUMEN POR CLIENTE
         </div>
       </div>
-      {vista === "proceso" && (
-        <>
-          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>RESUMEN POR PROCESO</div>
-          <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 24 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr style={{ background: C.ink }}>
-                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Proceso Donde Quedó</th>
-                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
-                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
-                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
+      {subTab === "proceso" && (
+        <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 24 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: C.ink }}>
+                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Proceso Donde Quedó</th>
+                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
+                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
+                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
+              </tr>
+            </thead>
+            <tbody>
+              {resumen.map((r, i) => (
+                <tr key={r.proceso} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                  <td style={{ padding: "7px 12px" }}>{r.proceso}</td>
+                  <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
+                  <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
+                  <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
                 </tr>
-              </thead>
-              <tbody>
-                {resumen.map((r, i) => (
-                  <tr key={r.proceso} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                    <td style={{ padding: "7px 12px" }}>{r.proceso}</td>
-                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
-                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
-                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr style={{ background: "#FFF2CC" }}>
-                  <td style={{ padding: "8px 12px", fontWeight: 800, color: C.ink }}>TOTAL</td>
-                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalLotes)}</td>
-                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalUnidades)}</td>
-                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>100%</td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>VER UN PROCESO PUNTUAL</div>
-          <div style={{ marginBottom: 14 }}>
-            <select
-              value={procesoSel}
-              onChange={(e) => setProcesoSel(e.target.value)}
-              style={{ padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit", minWidth: 260 }}
-            >
-              <option value="">Selecciona un proceso (ej. TERMINACION, BAJADA DE VINILO)...</option>
-              {resumen.map((r) => (
-                <option key={r.proceso} value={r.proceso}>{r.proceso || "(Sin proceso)"} · {fmtNum(r.unidades)} und</option>
               ))}
-            </select>
-          </div>
-          {procesoSel && (
-            <div style={{ marginBottom: 24 }}>
-              <div style={{ fontSize: 11, color: C.slate, marginBottom: 8 }}>
-                {fmtNum(filasProcesoSel.length)} lote{filasProcesoSel.length !== 1 ? "s" : ""} · {fmtNum(filasProcesoSel.reduce((s, f) => s + f.unidades, 0))} unidades en "{procesoSel}"
-              </div>
-              <Tabla
-                vacio="Sin lotes en este proceso."
-                columnas={[
-                  { key: "cliente", label: "Cliente" },
-                  { key: "numLote", label: "Num Lote", align: "right" },
-                  { key: "referencia", label: "Referencia" },
-                  { key: "categoria", label: "Categoría" },
-                  { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
-                  { key: "ultimaSalida", label: "Última Salida (sin entrega)" },
-                ]}
-                filas={filasProcesoSel}
-              />
-            </div>
-          )}
-        </>
+            </tbody>
+            <tfoot>
+              <tr style={{ background: "#FFF2CC" }}>
+                <td style={{ padding: "8px 12px", fontWeight: 800, color: C.ink }}>TOTAL</td>
+                <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalLotes)}</td>
+                <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalUnidades)}</td>
+                <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>100%</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
       )}
-      {vista === "cliente" && (
-        <>
-          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>RESUMEN POR CLIENTE</div>
-          <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Clic en un cliente para ver en qué procesos tiene lotes.</div>
-          <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 24 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr style={{ background: C.ink }}>
-                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Cliente</th>
-                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
-                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
-                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
+      {subTab === "cliente" && (
+        <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 24 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: C.ink }}>
+                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Cliente</th>
+                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Proceso Donde Quedó</th>
+                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
+                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
+                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
+              </tr>
+            </thead>
+            <tbody>
+              {resumenPorCliente.map((r, i) => (
+                <tr key={`${r.cliente}-${r.proceso}`} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                  <td style={{ padding: "7px 12px" }}>{r.cliente}</td>
+                  <td style={{ padding: "7px 12px" }}>{r.proceso}</td>
+                  <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
+                  <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
+                  <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
                 </tr>
-              </thead>
-              <tbody>
-                {resumenClientes.map((r, i) => (
-                  <tr
-                    key={r.cliente}
-                    onClick={() => setClienteAbierto(r.cliente)}
-                    title="Ver procesos de este cliente"
-                    style={{
-                      background: clienteAbierto === r.cliente ? C.violetBg : i % 2 === 0 ? C.canvas : C.white,
-                      borderBottom: `1px solid ${C.border}`,
-                      cursor: "pointer",
-                    }}
-                  >
-                    <td style={{ padding: "7px 12px" }}>{r.cliente}</td>
-                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
-                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
-                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr style={{ background: "#FFF2CC" }}>
-                  <td style={{ padding: "8px 12px", fontWeight: 800, color: C.ink }}>TOTAL</td>
-                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalLotes)}</td>
-                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalUnidades)}</td>
-                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>100%</td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        </>
-      )}
-      {vista === "referencia" && (
-        <>
-          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>RESUMEN POR REFERENCIA</div>
-          <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 24 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr style={{ background: C.ink }}>
-                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Referencia</th>
-                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
-                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
-                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
-                </tr>
-              </thead>
-              <tbody>
-                {resumenReferencias.map((r, i) => (
-                  <tr key={r.referencia} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                    <td style={{ padding: "7px 12px" }}>{r.referencia}</td>
-                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
-                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
-                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr style={{ background: "#FFF2CC" }}>
-                  <td style={{ padding: "8px 12px", fontWeight: 800, color: C.ink }}>TOTAL</td>
-                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalLotes)}</td>
-                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalUnidades)}</td>
-                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>100%</td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        </>
-      )}
-      {clienteAbierto && (
-        <Modal title={`Procesos de "${clienteAbierto}"`} onClose={() => setClienteAbierto(null)} width={560}>
-          <Tabla
-            vacio="Sin procesos para este cliente."
-            columnas={[
-              { key: "proceso", label: "Proceso Donde Quedó" },
-              { key: "lotes", label: "Lotes", align: "right", render: (f) => fmtNum(f.lotes) },
-              { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
-              { key: "pct", label: "% del cliente", align: "right", render: (f) => `${Math.round(f.pct * 100)}%` },
-            ]}
-            filas={procesosClienteAbierto}
-          />
-        </Modal>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
       <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>DETALLE DE LOTES POR PROCESO</div>
       <Tabla
         vacio="Sin lotes en semiterminado."
         columnas={[
           { key: "procesoDondeQuedo", label: "Proceso Donde Quedó" },
-          { key: "cliente", label: "Cliente" },
           { key: "numLote", label: "Num Lote", align: "right" },
           { key: "referencia", label: "Referencia" },
           { key: "categoria", label: "Categoría" },
@@ -1176,555 +803,6 @@ function BloqueSeguimientoSemiterminado({ data }) {
         ]}
         filas={filas}
       />
-    </div>
-  );
-}
-// Mismo patrón de BloqueSeguimientoSemiterminado (KPI de total + pestaña Por
-// Cliente + clic abre ventana con el detalle de ese cliente), aplicado a BMP.
-function BloqueBMP({ data, currentUser }) {
-  const { filas, resumenClientes, totalLotes, totalUnidades } = data;
-  const [vista, setVista] = useState("detalle");
-  const [clienteAbierto, setClienteAbierto] = useState(null);
-  if (!totalLotes) {
-    return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Sin lotes en BMP.</div>;
-  }
-  const filasClienteAbierto = clienteAbierto ? filas.filter((f) => f.cliente === clienteAbierto) : [];
-  return (
-    <div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 20 }}>
-        <KPI icon="📦" label="Total Lotes en BMP" value={fmtNum(totalLotes)} color={C.ink} bg={C.canvas} />
-        <KPI icon="🧵" label="Total Unidades en BMP" value={fmtNum(totalUnidades)} color={C.amber} bg={C.amberBg} />
-      </div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-        <div
-          onClick={() => setVista("detalle")}
-          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: vista === "detalle" ? C.ink : C.white, color: vista === "detalle" ? C.seam : C.ink, border: `1px solid ${vista === "detalle" ? C.ink : C.border}` }}
-        >
-          DETALLE
-        </div>
-        <div
-          onClick={() => setVista("cliente")}
-          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: vista === "cliente" ? C.ink : C.white, color: vista === "cliente" ? C.seam : C.ink, border: `1px solid ${vista === "cliente" ? C.ink : C.border}` }}
-        >
-          POR CLIENTE
-        </div>
-        <div
-          onClick={() => setVista("programador")}
-          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: vista === "programador" ? C.ink : C.white, color: vista === "programador" ? C.seam : C.ink, border: `1px solid ${vista === "programador" ? C.ink : C.border}` }}
-        >
-          📅 PROGRAMADOR DE PLANTA
-        </div>
-        <div
-          onClick={() => setVista("verificador_precio")}
-          style={{ cursor: "pointer", padding: "9px 16px", borderRadius: 10, fontWeight: 800, fontSize: 12, background: vista === "verificador_precio" ? C.ink : C.white, color: vista === "verificador_precio" ? C.seam : C.ink, border: `1px solid ${vista === "verificador_precio" ? C.ink : C.border}` }}
-        >
-          🔎 VERIFICADOR DE PRECIO
-        </div>
-      </div>
-      {vista === "programador" && <ProgramadorPlantaView filas={filas} currentUser={currentUser} />}
-      {vista === "verificador_precio" && <VerificadorPrecioBMPView />}
-      {vista === "detalle" && (
-        <Tabla
-          vacio="Sin lotes en BMP."
-          columnas={[
-            { key: "categoria", label: "Categoría" },
-            { key: "cliente", label: "Cliente" },
-            { key: "referencia", label: "Referencia" },
-            { key: "numLote", label: "Num Lote" },
-            { key: "cantidadBMP", label: "Cantidad BMP", align: "right", render: (f) => fmtNum(f.cantidadBMP) },
-            { key: "fechaCorte", label: "Fecha Corte", render: (f) => fmtFechaISO(f.fechaCorte) || "—" },
-            { key: "diasParaCorte", label: "Días para Corte", align: "right", render: (f) => (f.diasParaCorte ?? "—"), color: (f) => (f.diasParaCorte < 0 ? C.red : C.ink) },
-            { key: "fechaEntregaPedido", label: "Fecha Entrega Pedido", render: (f) => fmtFechaISO(f.fechaEntregaPedido) || "—" },
-            { key: "diasRestantesPedido", label: "Días Rest. Pedido", align: "right", render: (f) => (f.diasRestantesPedido ?? "—"), color: (f) => (f.diasRestantesPedido < 0 ? C.red : C.ink) },
-          ]}
-          filas={filas}
-        />
-      )}
-      {vista === "cliente" && (
-        <>
-          <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Clic en un cliente para ver el detalle de sus lotes en BMP.</div>
-          <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 24 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr style={{ background: C.ink }}>
-                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Cliente</th>
-                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
-                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
-                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
-                </tr>
-              </thead>
-              <tbody>
-                {resumenClientes.map((r, i) => (
-                  <tr
-                    key={r.cliente}
-                    onClick={() => setClienteAbierto(r.cliente)}
-                    title="Ver lotes de este cliente en BMP"
-                    style={{
-                      background: clienteAbierto === r.cliente ? C.violetBg : i % 2 === 0 ? C.canvas : C.white,
-                      borderBottom: `1px solid ${C.border}`,
-                      cursor: "pointer",
-                    }}
-                  >
-                    <td style={{ padding: "7px 12px" }}>{r.cliente}</td>
-                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
-                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
-                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr style={{ background: "#FFF2CC" }}>
-                  <td style={{ padding: "8px 12px", fontWeight: 800, color: C.ink }}>TOTAL</td>
-                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalLotes)}</td>
-                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalUnidades)}</td>
-                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>100%</td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        </>
-      )}
-      {clienteAbierto && (
-        <Modal title={`BMP de "${clienteAbierto}"`} onClose={() => setClienteAbierto(null)} width={680}>
-          <Tabla
-            vacio="Sin lotes para este cliente."
-            columnas={[
-              { key: "categoria", label: "Categoría" },
-              { key: "referencia", label: "Referencia" },
-              { key: "numLote", label: "Num Lote" },
-              { key: "cantidadBMP", label: "Cantidad BMP", align: "right", render: (f) => fmtNum(f.cantidadBMP) },
-              { key: "fechaCorte", label: "Fecha Corte", render: (f) => fmtFechaISO(f.fechaCorte) || "—" },
-              { key: "fechaEntregaPedido", label: "Fecha Entrega Pedido", render: (f) => fmtFechaISO(f.fechaEntregaPedido) || "—" },
-            ]}
-            filas={filasClienteAbierto}
-          />
-        </Modal>
-      )}
-    </div>
-  );
-}
-// ─── PROGRAMADOR DE PLANTA (BMP → días con capacidad) ──────────────────────────
-// Asigna lotes que están en BMP a días específicos de Planta, respetando una
-// capacidad diaria (en unidades) editable por día — mismo espíritu que la
-// "Programación de Mesones" de Corte, pero con un solo recurso (Planta no
-// tiene mesones), así que la capacidad es un único número por día en vez de
-// por mesón/grupo. Un lote se puede repartir en varios días (se programa por
-// cantidad, no todo-o-nada) — lo pendiente de cada lote es su cantidadBMP
-// menos lo ya asignado en `planta_bmp_programacion`.
-const DEFAULT_CAPACIDAD_DIA = null; // sin límite por defecto — se puede fijar una capacidad puntual por día haciendo clic en "Sin límite" desde la vista
-function ProgramadorPlantaView({ filas, currentUser }) {
-  const [asignaciones, setAsignaciones] = useState([]);
-  const [capacidades, setCapacidades] = useState({});
-  const [modalLote, setModalLote] = useState(null);
-  const [editandoCap, setEditandoCap] = useState(null);
-  useEffect(() => {
-    const unsub1 = onSnapshot(collection(db, "planta_bmp_programacion"), (snap) => {
-      setAsignaciones(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    });
-    const unsub2 = onSnapshot(collection(db, "planta_bmp_capacidad"), (snap) => {
-      const m = {};
-      snap.docs.forEach((d) => { m[d.id] = d.data().capacidad; });
-      setCapacidades(m);
-    });
-    return () => { unsub1(); unsub2(); };
-  }, []);
-  const pendientePorLote = useMemo(() => {
-    const m = new Map();
-    filas.forEach((f) => m.set(f.numLote, f.cantidadBMP));
-    asignaciones.forEach((a) => {
-      if (m.has(a.numLote)) m.set(a.numLote, m.get(a.numLote) - (a.cantidad || 0));
-    });
-    return m;
-  }, [filas, asignaciones]);
-  const lotesConPendiente = useMemo(
-    () =>
-      filas
-        .map((f) => ({ ...f, pendiente: Math.max(0, Math.round(pendientePorLote.get(f.numLote) ?? f.cantidadBMP)) }))
-        .filter((f) => f.pendiente > 0)
-        .sort((a, b) => (a.diasParaCorte ?? 999) - (b.diasParaCorte ?? 999)),
-    [filas, pendientePorLote]
-  );
-  const dias = useMemo(() => [...new Set(asignaciones.map((a) => a.fecha))].sort(), [asignaciones]);
-  async function programar(fila, fecha, cantidad, nombrePlanta, precioConfeccion) {
-    await fsSave("planta_bmp_programacion", uid(), {
-      numLote: fila.numLote,
-      referencia: fila.referencia,
-      categoria: fila.categoria,
-      cliente: fila.cliente,
-      cantidad,
-      fecha,
-      nombrePlanta: nombrePlanta || "",
-      precioConfeccion: Number(precioConfeccion) || 0,
-      creadoEn: new Date().toISOString(),
-      creadoPor: currentUser?.name || "—",
-    });
-    setModalLote(null);
-  }
-  async function quitarAsignacion(id) {
-    await fsDelete("planta_bmp_programacion", id);
-  }
-  async function guardarCapacidad(fecha, valor) {
-    // Dejar el campo vacío vuelve el día a "sin límite" (se borra el registro
-    // de capacidad de ese día en vez de guardar un 0, que sí bloquearía todo).
-    if (String(valor).trim() === "") {
-      await fsDelete("planta_bmp_capacidad", fecha);
-    } else {
-      await fsSave("planta_bmp_capacidad", fecha, { capacidad: Number(valor) || 0 });
-    }
-    setEditandoCap(null);
-  }
-  const totalPendiente = lotesConPendiente.reduce((s, f) => s + f.pendiente, 0);
-  const totalProgramado = asignaciones.reduce((s, a) => s + (a.cantidad || 0), 0);
-  return (
-    <div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 20 }}>
-        <KPI icon="🗓" label="Unidades por Programar" value={fmtNum(totalPendiente)} color={C.amber} bg={C.amberBg} />
-        <KPI icon="✅" label="Unidades Ya Programadas" value={fmtNum(totalProgramado)} color={C.green} bg={C.greenBg} />
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: 20, alignItems: "start" }}>
-        <div>
-          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>LOTES POR PROGRAMAR</div>
-          {!lotesConPendiente.length ? (
-            <div style={{ textAlign: "center", padding: 30, color: C.slate, fontSize: 13, background: C.canvas, borderRadius: 10 }}>
-              Todos los lotes de BMP ya están programados.
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {lotesConPendiente.map((f) => (
-                <div key={f.numLote} style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 12px", background: C.white }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{f.referencia} · Lote {f.numLote}</div>
-                      <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>{f.cliente} · {f.categoria}</div>
-                      <div style={{ fontSize: 11, color: f.diasParaCorte < 0 ? C.red : C.slate, marginTop: 4 }}>
-                        Corte: {fmtFechaISO(f.fechaCorte) || "—"}{f.diasParaCorte != null ? ` (${f.diasParaCorte}d)` : ""}
-                      </div>
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{fmtNum(f.pendiente)}</div>
-                      <div style={{ fontSize: 10, color: C.slate }}>pendiente</div>
-                    </div>
-                  </div>
-                  <Btn small variant="primary" onClick={() => setModalLote(f)}>📅 Programar</Btn>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        <div>
-          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>PROGRAMACIÓN POR DÍA</div>
-          {!dias.length ? (
-            <div style={{ textAlign: "center", padding: 30, color: C.slate, fontSize: 13, background: C.canvas, borderRadius: 10 }}>
-              Aún no hay lotes programados a ningún día.
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {dias.map((fecha) => {
-                const asigDia = asignaciones.filter((a) => a.fecha === fecha);
-                const usado = asigDia.reduce((s, a) => s + (a.cantidad || 0), 0);
-                const capacidad = capacidades[fecha] ?? DEFAULT_CAPACIDAD_DIA;
-                const disponible = capacidad != null ? capacidad - usado : null;
-                const sobreCapacidad = disponible !== null && disponible < 0;
-                const costoDia = asigDia.reduce((s, a) => s + (a.cantidad || 0) * (a.precioConfeccion || 0), 0);
-                return (
-                  <div key={fecha} style={{ border: `1px solid ${sobreCapacidad ? C.red : C.border}`, borderRadius: 10, overflow: "hidden" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: sobreCapacidad ? C.redBg : C.canvas }}>
-                      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>{fmtFechaISO(fecha)}</div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
-                        <span style={{ color: C.slate }}>{fmtNum(usado)} programadas /</span>
-                        {editandoCap === fecha ? (
-                          <input
-                            type="number"
-                            autoFocus
-                            defaultValue={capacidad ?? ""}
-                            placeholder="Sin límite"
-                            onBlur={(e) => guardarCapacidad(fecha, e.target.value)}
-                            onKeyDown={(e) => e.key === "Enter" && guardarCapacidad(fecha, e.target.value)}
-                            style={{ width: 80, padding: "3px 6px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }}
-                          />
-                        ) : (
-                          <span
-                            onClick={() => setEditandoCap(fecha)}
-                            style={{ cursor: "pointer", fontWeight: 700, color: capacidad == null ? C.slate : C.ink, textDecoration: "underline dotted" }}
-                            title="Click para fijar un límite de capacidad para este día (opcional)"
-                          >
-                            {capacidad == null ? "sin límite" : fmtNum(capacidad)}
-                          </span>
-                        )}
-                        {capacidad != null && (
-                          <span style={{ fontWeight: 800, color: sobreCapacidad ? C.red : C.green }}>
-                            {sobreCapacidad ? `${fmtNum(Math.abs(disponible))} sobre` : `${fmtNum(disponible)} disp.`}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    {costoDia > 0 && (
-                      <div style={{ padding: "6px 12px", fontSize: 11, color: C.slate, borderTop: `1px solid ${C.border}`, background: "#FAFAF7" }}>
-                        💲 Costo confección del día: <strong style={{ color: C.ink }}>{fmtMoney(costoDia)}</strong>
-                      </div>
-                    )}
-                    <div>
-                      {asigDia.map((a) => (
-                        <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "8px 12px", borderTop: `1px solid ${C.border}`, fontSize: 12 }}>
-                          <div>
-                            <span style={{ fontWeight: 700, color: C.ink }}>{a.referencia}</span>
-                            <span style={{ color: C.slate }}> · Lote {a.numLote} · {a.cliente}</span>
-                            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
-                              {a.nombrePlanta ? `🏭 ${a.nombrePlanta}` : "🏭 Sin planta asignada"}
-                              {a.precioConfeccion > 0 ? ` · ${fmtMoney(a.precioConfeccion)}/und` : ""}
-                            </div>
-                          </div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                            <span style={{ fontWeight: 700, color: C.ink }}>{fmtNum(a.cantidad)}</span>
-                            <button
-                              onClick={() => quitarAsignacion(a.id)}
-                              title="Quitar del día"
-                              style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 13 }}
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-      {modalLote && (
-        <ProgramarBMPModal
-          fila={modalLote}
-          capacidades={capacidades}
-          asignaciones={asignaciones}
-          onConfirm={(fecha, cantidad, nombrePlanta, precioConfeccion) => programar(modalLote, fecha, cantidad, nombrePlanta, precioConfeccion)}
-          onClose={() => setModalLote(null)}
-        />
-      )}
-    </div>
-  );
-}
-function ProgramarBMPModal({ fila, capacidades, asignaciones, onConfirm, onClose }) {
-  const [fecha, setFecha] = useState(today());
-  const [cantidad, setCantidad] = useState(fila.pendiente);
-  // Plantas ya usadas antes (para el datalist de sugerencias) y último precio
-  // de confección registrado para esta misma referencia — así no hay que
-  // volver a escribirlo cada vez que se repite una referencia ya conocida.
-  const plantasUsadas = useMemo(() => [...new Set(asignaciones.map((a) => a.nombrePlanta).filter(Boolean))].sort(), [asignaciones]);
-  const ultimaParaRef = useMemo(() => {
-    const deEstaRef = asignaciones.filter((a) => a.referencia === fila.referencia && (a.nombrePlanta || a.precioConfeccion));
-    return deEstaRef.sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || ""))[0] || null;
-  }, [asignaciones, fila.referencia]);
-  const [nombrePlanta, setNombrePlanta] = useState(ultimaParaRef?.nombrePlanta || "");
-  const [precioConfeccion, setPrecioConfeccion] = useState(ultimaParaRef?.precioConfeccion || "");
-  // Verificador de precio (mismo que la pestaña "Verificador de Precio" de
-  // BMP y que el módulo Planta) pero ya filtrado por la referencia de este
-  // lote — para saber qué precio pactado/real trae esa referencia sin tener
-  // que salir del modal a buscarlo a mano.
-  const entradasPlanta = useEntradasPlantaActivas();
-  const historialPrecio = useMemo(() => {
-    const ref = (fila.referencia || "").toLowerCase();
-    if (!ref) return [];
-    return entradasPlanta
-      .filter((e) => (e.refExt || "").toLowerCase() === ref || String(e.refN || "").toLowerCase() === ref)
-      .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
-      .slice(0, 3);
-  }, [entradasPlanta, fila.referencia]);
-  const usadoDia = asignaciones.filter((a) => a.fecha === fecha).reduce((s, a) => s + (a.cantidad || 0), 0);
-  const capacidad = capacidades[fecha] ?? DEFAULT_CAPACIDAD_DIA;
-  const disponible = capacidad != null ? capacidad - usadoDia : null;
-  const superaCapacidad = disponible !== null && disponible < cantidad;
-  return (
-    <Modal title={`Programar Lote ${fila.numLote}`} onClose={onClose} width={420}>
-      <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>
-        {fila.referencia} · {fila.cliente} · {fila.categoria}
-        <br />
-        Pendiente por programar: <strong style={{ color: C.ink }}>{fmtNum(fila.pendiente)}</strong> unidades
-      </div>
-      <div style={{ marginBottom: 14 }}>
-        <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>Día de Planta</label>
-        <input
-          type="date"
-          value={fecha}
-          onChange={(e) => setFecha(e.target.value)}
-          style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
-        />
-        <div style={{ fontSize: 11, marginTop: 6, color: superaCapacidad ? C.red : C.slate }}>
-          {capacidad == null
-            ? `${fmtNum(usadoDia)} unidades ya programadas para ese día · sin límite de capacidad`
-            : `Capacidad del día: ${fmtNum(usadoDia)} / ${fmtNum(capacidad)} usadas · ${fmtNum(disponible)} disponibles`}
-        </div>
-      </div>
-      <div style={{ marginBottom: 18 }}>
-        <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>Cantidad a Programar</label>
-        <input
-          type="number"
-          value={cantidad}
-          max={fila.pendiente}
-          min={1}
-          onChange={(e) => setCantidad(Number(e.target.value))}
-          style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
-        />
-      </div>
-      <div style={{ marginBottom: 14 }}>
-        <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>Nombre de la Planta</label>
-        <input
-          list="plantas-bmp-sugeridas"
-          value={nombrePlanta}
-          onChange={(e) => setNombrePlanta(e.target.value)}
-          placeholder="Ej: Industrias Yanko Módulo Centro"
-          style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
-        />
-        <datalist id="plantas-bmp-sugeridas">
-          {plantasUsadas.map((p) => <option key={p} value={p} />)}
-        </datalist>
-      </div>
-      {historialPrecio.length > 0 && (
-        <div style={{ marginBottom: 14, padding: "10px 12px", background: C.canvas, borderRadius: 8, border: `1px solid ${C.border}` }}>
-          <div style={{ fontSize: 10, fontWeight: 800, color: C.ink, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.04em" }}>
-            🔎 Historial de precio · {fila.referencia}
-          </div>
-          {historialPrecio.map((h, i) => (
-            <div
-              key={i}
-              style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, padding: "5px 0", borderTop: i > 0 ? `1px solid ${C.border}` : "none" }}
-            >
-              <span style={{ color: C.slate }}>{fmtFechaISO(h.fecha)} · {h.nombrePlanta}</span>
-              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ color: C.slate }}>Teórico ${fmtNum(h.precioTeorico)}</span>
-                <span style={{ fontWeight: 800, color: h.precioEntrada !== h.precioTeorico ? C.red : C.green }}>
-                  Entrada ${fmtNum(h.precioEntrada)}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setPrecioConfeccion(h.precioEntrada)}
-                  style={{ fontSize: 11, color: C.blue, background: "none", border: "none", cursor: "pointer", textDecoration: "underline", padding: 0 }}
-                >
-                  usar
-                </button>
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-      {!historialPrecio.length && entradasPlanta.length > 0 && (
-        <div style={{ fontSize: 11, color: C.slate, marginBottom: 14 }}>
-          Sin historial de precio de entrada para {fila.referencia} todavía.
-        </div>
-      )}
-      <div style={{ marginBottom: 18 }}>
-        <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>Precio de Confección (por unidad)</label>
-        <input
-          type="number"
-          value={precioConfeccion}
-          min={0}
-          step="0.01"
-          onChange={(e) => setPrecioConfeccion(e.target.value)}
-          placeholder="0"
-          style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
-        />
-        {Number(precioConfeccion) > 0 && cantidad > 0 && (
-          <div style={{ fontSize: 11, marginTop: 6, color: C.slate }}>
-            Costo total de este lote: <strong style={{ color: C.ink }}>{fmtMoney(Number(precioConfeccion) * cantidad)}</strong>
-          </div>
-        )}
-      </div>
-      {superaCapacidad && (
-        <div style={{ fontSize: 12, color: C.red, marginBottom: 12, fontWeight: 700 }}>
-          ⚠ Esta cantidad supera la capacidad disponible de ese día.
-        </div>
-      )}
-      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn variant="primary" onClick={() => cantidad > 0 && onConfirm(fecha, Math.min(cantidad, fila.pendiente), nombrePlanta.trim(), precioConfeccion)}>Confirmar</Btn>
-      </div>
-    </Modal>
-  );
-}
-// ─── VERIFICADOR DE PRECIO DE CONFECCIÓN (mismo que en Módulo Planta) ──────────
-// Se suscribe directo a `planta_entradas_cargas` (la misma colección que llena
-// el módulo Planta al subir "ENTRADAS DE PLANTA.xlsx") para poder buscar por
-// referencia acá mismo, sin tener que salir a otro módulo — busca las últimas
-// entradas y compara precio teórico (ValPlanta, fijo por referencia en la
-// ficha técnica) vs. precio de entrada real (VaEnt, puede variar entrada a
-// entrada) para detectar cuándo una planta cobró distinto a lo pactado.
-// Hook compartido — lo usan tanto el Verificador (pestaña propia, con
-// búsqueda libre) como el modal de Programar Lote (búsqueda automática por
-// la referencia del lote, para sugerir qué precio de confección poner).
-function useEntradasPlantaActivas() {
-  const [cargasEntradas, setCargasEntradas] = useState([]);
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, "planta_entradas_cargas"), (snap) => {
-      setCargasEntradas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
-    });
-    return () => unsub();
-  }, []);
-  return useMemo(() => {
-    const ordenadas = [...cargasEntradas].sort((a, b) => (b.creadoEn || b.fecha || "").localeCompare(a.creadoEn || a.fecha || ""));
-    return ordenadas[0]?.entradas || [];
-  }, [cargasEntradas]);
-}
-function VerificadorPrecioBMPView() {
-  const entradas = useEntradasPlantaActivas();
-  const [busqueda, setBusqueda] = useState("");
-  const resultado = useMemo(() => {
-    const q = busqueda.trim().toLowerCase();
-    if (!q) return [];
-    return entradas
-      .filter((e) => (e.refExt || "").toLowerCase() === q || String(e.refN || "").toLowerCase() === q)
-      .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
-      .slice(0, 5);
-  }, [entradas, busqueda]);
-  const planta = resultado[0]?.nombrePlanta || null;
-  if (!entradas.length) {
-    return (
-      <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13, background: C.canvas, borderRadius: 12, border: `1px dashed ${C.border}` }}>
-        Aún no hay ninguna carga de "Entradas de Planta" subida (se sube desde el módulo Planta) — en cuanto haya una, se puede buscar por referencia acá mismo.
-      </div>
-    );
-  }
-  return (
-    <div>
-      <div style={{ marginBottom: 18, maxWidth: 360 }}>
-        <input
-          type="text"
-          value={busqueda}
-          onChange={(e) => setBusqueda(e.target.value)}
-          placeholder="Escribe la referencia (ej. GM1002)"
-          style={{ width: "100%", padding: "10px 14px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit", boxSizing: "border-box" }}
-        />
-      </div>
-      {!busqueda.trim() ? (
-        <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Escribe una referencia para ver sus últimas entradas.</div>
-      ) : !resultado.length ? (
-        <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>No se encontraron entradas con esa referencia.</div>
-      ) : (
-        <>
-          {planta && (
-            <div style={{ marginBottom: 14, fontSize: 13, color: C.slate }}>
-              Planta: <span style={{ fontWeight: 800, color: C.ink }}>{planta}</span>
-            </div>
-          )}
-          <Tabla
-            vacio="Sin entradas para esa referencia."
-            columnas={[
-              { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
-              { key: "nombrePlanta", label: "Planta" },
-              { key: "precioTeorico", label: "Precio teórico", align: "right", render: (f) => `$${fmtNum(f.precioTeorico)}` },
-              {
-                key: "precioEntrada",
-                label: "Precio de entrada",
-                align: "right",
-                render: (f) => `$${fmtNum(f.precioEntrada)}`,
-                color: (f) => (f.precioEntrada !== f.precioTeorico ? C.red : C.green),
-              },
-            ]}
-            filas={resultado}
-          />
-        </>
-      )}
     </div>
   );
 }
@@ -1818,20 +896,74 @@ function BloqueCronograma({ data }) {
     </div>
   );
 }
+// Informe "BPT": resumen por cliente (Lotes/Unidades) arriba, y detalle por
+// lote (Cliente/Num Lote/Referencia/Cantidad/Días en BPT) abajo, ordenado
+// por más días primero para ver de inmediato lo que lleva más tiempo ahí.
+function BloqueBPT({ data }) {
+  const { filas, resumen, totalLotes, totalUnidades } = data;
+  return (
+    <div>
+      {resumen.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>RESUMEN POR CLIENTE</div>
+          <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: C.ink }}>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Cliente</th>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
+                </tr>
+              </thead>
+              <tbody>
+                {resumen.map((r, i) => (
+                  <tr key={r.cliente} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                    <td style={{ padding: "7px 12px" }}>{r.cliente}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr style={{ background: "#FFF2CC" }}>
+                  <td style={{ padding: "8px 12px", fontWeight: 800, color: C.ink }}>TOTAL EN BPT</td>
+                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalLotes)}</td>
+                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalUnidades)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>DETALLE POR LOTE</div>
+      <Tabla
+        vacio="Sin lotes en BPT."
+        columnas={[
+          { key: "cliente", label: "Cliente" },
+          { key: "numLote", label: "Num Lote", align: "right" },
+          { key: "referencia", label: "Referencia" },
+          { key: "categoria", label: "Categoría" },
+          { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
+          { key: "diasEnBPT", label: "Días en BPT", align: "right", render: (f) => (f.diasEnBPT === null || f.diasEnBPT === undefined ? "—" : fmtNum(f.diasEnBPT)) },
+        ]}
+        filas={filas}
+      />
+    </div>
+  );
+}
 // ─── VISTA PRINCIPAL: INFORMES ─────────────────────────────────────────────────
 const REPORTES = [
   { id: "en_planta", label: "En Planta", icon: "🏭" },
   { id: "semiterminado", label: "Semiterminado", icon: "🧶" },
+  { id: "bpt", label: "BPT", icon: "🏷" },
   { id: "por_cliente", label: "Por Cliente", icon: "🤝" },
   { id: "cliente_agrupado", label: "Cliente Agrupado", icon: "🏢" },
   { id: "cronograma", label: "Cronograma Entrega", icon: "📅" },
   { id: "por_pedido", label: "Por Pedido", icon: "📦" },
   { id: "bmp", label: "BMP", icon: "🧵" },
-  { id: "bpt", label: "BPT", icon: "🏬" },
   { id: "programacion_yanko", label: "Programación Yanko", icon: "🎯" },
-  { id: "medidor_entregas", label: "Medidor de Entregas", icon: "🚚" },
 ];
-function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser }) {
+function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
   const [showUpload, setShowUpload] = useState(false);
   const [cargaId, setCargaId] = useState(null);
   const [tab, setTab] = useState("en_planta");
@@ -1843,16 +975,7 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
     (a, b) => (b.creadoEn || b.fecha).localeCompare(a.creadoEn || a.fecha)
   );
   const cargaActiva = cargaId ? cargasOrdenadas.find((c) => c.id === cargaId) || cargasOrdenadas[0] : cargasOrdenadas[0];
-  // Usuario con "Cliente asociado" (acceso restringido a un solo cliente):
-  // se filtra acá, en el único punto donde se arma `lotes` a partir de la
-  // carga — así todos los informes de abajo (por planta, por cliente,
-  // cronograma, BMP, BPT, etc.) ya solo ven los lotes de su cliente, sin
-  // tener que repetir el filtro en cada uno.
-  const clienteAsociado = currentUser?.clienteAsociado || "";
-  const lotes = useMemo(() => {
-    const todos = cargaActiva?.lotes || [];
-    return clienteAsociado ? todos.filter((l) => coincideCliente(l.nombreCliente, clienteAsociado)) : todos;
-  }, [cargaActiva, clienteAsociado]);
+  const lotes = useMemo(() => cargaActiva?.lotes || [], [cargaActiva]);
   const reporteSemiterminado = useMemo(() => generarSeguimientoSemiterminado(lotes), [lotes]);
   const reportePlanta = useMemo(() => generarAgrupadoPlanta(lotes, "nombrePlanta"), [lotes]);
   const reporteCliente = useMemo(() => generarAgrupadoPlanta(lotes, "nombreCliente"), [lotes]);
@@ -1879,21 +1002,21 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
     // % de unidades) + detalle de lotes lado a lado, en vez de la antigua
     // hoja plana "Informe Semiterminado".
     {
-      const { filas: segFilas, resumen: segResumen, resumenClientes: segResumenClientes, totalLotes: segTotalLotes, totalUnidades: segTotalUnidades, procesosDistintos: segProcesos } = reporteSemiterminado;
+      const { filas: segFilas, resumen: segResumen, totalLotes: segTotalLotes, totalUnidades: segTotalUnidades, procesosDistintos: segProcesos } = reporteSemiterminado;
       const resumenRows = [
         ["Proceso Donde Quedó", "Lotes", "Unidades", "% Unidades"],
         ...segResumen.map((r) => [r.proceso, r.lotes, r.unidades, `${Math.round(r.pct * 100)}%`]),
         ["TOTAL", segTotalLotes, segTotalUnidades, "100%"],
       ];
       const detalleRows = [
-        ["Proceso Donde Quedó", "Cliente", "Num Lote", "Referencia", "Categoría", "Unidades", "Última Salida"],
-        ...segFilas.map((f) => [f.procesoDondeQuedo, f.cliente, f.numLote, f.referencia, f.categoria, f.unidades, f.ultimaSalida]),
+        ["Proceso Donde Quedó", "Num Lote", "Referencia", "Categoría", "Unidades", "Última Salida"],
+        ...segFilas.map((f) => [f.procesoDondeQuedo, f.numLote, f.referencia, f.categoria, f.unidades, f.ultimaSalida]),
       ];
       const maxRows = Math.max(resumenRows.length, detalleRows.length);
       const combined = [];
       for (let i = 0; i < maxRows; i++) {
         const left = resumenRows[i] || ["", "", "", ""];
-        const right = detalleRows[i] || ["", "", "", "", "", "", ""];
+        const right = detalleRows[i] || ["", "", "", "", "", ""];
         combined.push([...left, "", ...right]);
       }
       XLSX.utils.book_append_sheet(
@@ -1910,26 +1033,6 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
         ]),
         "Informe de Seguimiento"
       );
-      // Hoja aparte: resumen por cliente, con el desglose de procesos de cada
-      // cliente debajo (para responder "por cliente qué procesos tiene").
-      const clienteRows = [["SEMITERMINADO — RESUMEN POR CLIENTE"], [], ["Cliente", "Lotes", "Unidades", "% Unidades"]];
-      segResumenClientes.forEach((r) => {
-        clienteRows.push([r.cliente, r.lotes, r.unidades, `${Math.round(r.pct * 100)}%`]);
-        const deCliente = segFilas.filter((f) => f.cliente === r.cliente);
-        const porProceso = new Map();
-        deCliente.forEach((f) => {
-          if (!porProceso.has(f.procesoDondeQuedo)) porProceso.set(f.procesoDondeQuedo, { lotes: 0, unidades: 0 });
-          const g = porProceso.get(f.procesoDondeQuedo);
-          g.lotes += 1;
-          g.unidades += f.unidades;
-        });
-        [...porProceso.entries()]
-          .sort((a, b) => b[1].unidades - a[1].unidades)
-          .forEach(([proceso, g]) => clienteRows.push(["", `  ${proceso}`, g.lotes, g.unidades]));
-        clienteRows.push([]);
-      });
-      clienteRows.push(["TOTAL", segTotalLotes, segTotalUnidades, "100%"]);
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(clienteRows), "Semiterminado Por Cliente");
     }
     function hojaAgrupada(nombreHoja, primeraCol, data) {
       const filas = [
@@ -1980,12 +1083,25 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
       wb,
       XLSX.utils.aoa_to_sheet([
         ["Categoría", "Cliente", "Referencia", "Num Lote", "Cantidad BMP", "Fecha Corte", "Días para Corte", "Fecha Entrega Pedido", "Días Rest. Pedido"],
-        ...reporteBMP.filas.map((r) => [
+        ...reporteBMP.map((r) => [
           r.categoria, r.cliente, r.referencia, r.numLote, r.cantidadBMP,
           fmtFechaISO(r.fechaCorte), r.diasParaCorte, fmtFechaISO(r.fechaEntregaPedido), r.diasRestantesPedido,
         ]),
       ]),
       "Informe BMP"
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet([
+        ["Cliente", "Num Lote", "Referencia", "Categoría", "Cantidad", "Fecha Ent. BPT", "Días en BPT"],
+        ...reporteBPT.filas.map((f) => [f.cliente, f.numLote, f.referencia, f.categoria, f.cantidad, fmtFechaISO(f.fechaEntBPT), f.diasEnBPT]),
+        [],
+        ["RESUMEN POR CLIENTE"],
+        ["Cliente", "Lotes", "Unidades"],
+        ...reporteBPT.resumen.map((r) => [r.cliente, r.lotes, r.unidades]),
+        ["TOTAL EN BPT", reporteBPT.totalLotes, reporteBPT.totalUnidades],
+      ]),
+      "Informe BPT"
     );
     const totalKamila = reporteYanko.comparacion.reduce(
       (acc, r) => ({
@@ -2018,7 +1134,7 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
       {showUpload && (
         <SubirHoja1Modal
           onConfirm={(lotesNuevos) => {
-            const nuevaCarga = { id: uid(), fecha: today(), lotes: lotesNuevos, creadoEn: new Date().toISOString(), subidoPor: currentUser?.name || "—" };
+            const nuevaCarga = { id: uid(), fecha: today(), lotes: lotesNuevos, creadoEn: new Date().toISOString() };
             onAddCarga(nuevaCarga);
             setCargaId(nuevaCarga.id);
           }}
@@ -2030,7 +1146,7 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Informes</h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
             {cargaActiva
-              ? `Carga del ${cargaActiva.fecha}${cargaActiva.creadoEn ? ` · Actualizado ${fmtFechaHora(cargaActiva.creadoEn)}` : ""}${cargaActiva.subidoPor ? ` · Subido por ${cargaActiva.subidoPor}` : ""}`
+              ? `Carga del ${cargaActiva.fecha}${cargaActiva.creadoEn ? ` · Actualizado ${fmtFechaHora(cargaActiva.creadoEn)}` : ""}`
               : "Sin cargas de Hoja1 todavía"}
           </p>
         </div>
@@ -2045,7 +1161,6 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
                 <option key={c.id} value={c.id}>
                   Carga {c.fecha}
                   {c.creadoEn ? ` · ${fmtFechaHora(c.creadoEn).split(" ")[1]}` : ""}
-                  {c.subidoPor ? ` · ${c.subidoPor}` : ""}
                 </option>
               ))}
             </select>
@@ -2100,7 +1215,8 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
             ))}
           </div>
           {tab === "semiterminado" && <BloqueSeguimientoSemiterminado data={reporteSemiterminado} />}
-          {tab === "en_planta" && <BloqueAgrupado titulo="Planta" primeraColLabel="Nombre Planta" data={reportePlanta} />}
+          {tab === "bpt" && <BloqueBPT data={reporteBPT} />}
+          {tab === "en_planta" && <BloqueAgrupado titulo="Planta" primeraColLabel="Nombre Planta" data={reportePlanta} mostrarFechaEntrega />}
           {tab === "por_cliente" && <BloqueAgrupado titulo="Cliente" primeraColLabel="Nombre Cliente" data={reporteCliente} />}
           {tab === "cliente_agrupado" && <BloqueAgrupado titulo="Cliente Agrupado" primeraColLabel="Cliente Agrupado" data={reporteClienteAgrupado} />}
           {tab === "cronograma" && <BloqueCronograma data={reporteCronograma} />}
@@ -2123,21 +1239,21 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
               filas={reportePorPedido}
             />
           )}
-          {tab === "bmp" && <BloqueBMP data={reporteBMP} currentUser={currentUser} />}
-          {tab === "bpt" && (
+          {tab === "bmp" && (
             <Tabla
-              vacio="Sin lotes en BPT."
+              vacio="Sin lotes en BMP."
               columnas={[
                 { key: "categoria", label: "Categoría" },
                 { key: "cliente", label: "Cliente" },
                 { key: "referencia", label: "Referencia" },
                 { key: "numLote", label: "Num Lote" },
-                { key: "cantidadBPT", label: "Cantidad BPT", align: "right", render: (f) => fmtNum(f.cantidadBPT) },
+                { key: "cantidadBMP", label: "Cantidad BMP", align: "right", render: (f) => fmtNum(f.cantidadBMP) },
                 { key: "fechaCorte", label: "Fecha Corte", render: (f) => fmtFechaISO(f.fechaCorte) || "—" },
+                { key: "diasParaCorte", label: "Días para Corte", align: "right", render: (f) => (f.diasParaCorte ?? "—"), color: (f) => (f.diasParaCorte < 0 ? C.red : C.ink) },
                 { key: "fechaEntregaPedido", label: "Fecha Entrega Pedido", render: (f) => fmtFechaISO(f.fechaEntregaPedido) || "—" },
                 { key: "diasRestantesPedido", label: "Días Rest. Pedido", align: "right", render: (f) => (f.diasRestantesPedido ?? "—"), color: (f) => (f.diasRestantesPedido < 0 ? C.red : C.ink) },
               ]}
-              filas={reporteBPT}
+              filas={reporteBMP}
             />
           )}
           {tab === "programacion_yanko" && (
@@ -2205,356 +1321,8 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, currentUser 
               )}
             </div>
           )}
-          {tab === "medidor_entregas" && <MedidorEntregasView lotes={lotes} />}
         </>
       )}
-    </div>
-  );
-}
-// ─── MEDIDOR DE ENTREGAS ────────────────────────────────────────────────────
-// Por cliente: suma lo que hay disponible en las 4 etapas del pipeline
-// (Planta, BMP, Semiterminado, BPT) de la carga activa y lo compara contra
-// una meta de unidades que se pone a mano por cliente/mes — pensado para
-// responder "¿qué me falta despachar/entregar para cerrar el mes con este
-// cliente?". La meta se guarda por mes (`planeacion_metas_entrega`, id
-// determinístico `MES__CLIENTE`) para poder volver a ver meses anteriores.
-function slugCliente(c) {
-  return String(c || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").slice(0, 60) || "SIN_CLIENTE";
-}
-// Días de cumplimiento del pedido: positivo = días que faltan para la fecha
-// de entrega al cliente (fechaEntregaPedidoISO); negativo = días que YA
-// lleva vencido. Es la urgencia real para decidir qué lotes escoger primero
-// al armar la meta del mes — un lote sin fecha de pedido (ej. inventario sin
-// pedido asociado todavía) devuelve null y se ordena al final.
-function diasCumplimiento(lote) {
-  if (!lote.fechaEntregaPedidoISO) return null;
-  const hoy = new Date();
-  hoy.setHours(0, 0, 0, 0);
-  const fecha = new Date(lote.fechaEntregaPedidoISO);
-  fecha.setHours(0, 0, 0, 0);
-  return Math.round((fecha - hoy) / 86400000);
-}
-function textoCumplimiento(dias) {
-  if (dias === null) return { texto: "Sin fecha de pedido", color: C.slate };
-  if (dias < 0) return { texto: `Vencido hace ${Math.abs(dias)}d`, color: C.red };
-  if (dias === 0) return { texto: "Vence hoy", color: C.red };
-  if (dias <= 3) return { texto: `Faltan ${dias}d`, color: C.amber };
-  return { texto: `Faltan ${dias}d`, color: C.green };
-}
-// Cantidad total de un lote (sumando lo que tenga en cualquiera de las 4
-// etapas) — mismo criterio que usa porCliente/categorias para sumar el
-// total disponible, así "seleccionado" se compara en las mismas unidades
-// que la meta.
-function cantidadLote(l) {
-  return (l.invPlanta || 0) + (l.invBMP || 0) + (l.invSemiterminado || 0) + (l.invBPT || 0);
-}
-function MedidorEntregasView({ lotes }) {
-  const [metas, setMetas] = useState({});
-  const [editandoMeta, setEditandoMeta] = useState(null);
-  const mesActual = new Date().toISOString().slice(0, 7);
-  const [mesSel, setMesSel] = useState(mesActual);
-  // Qué fila de categoría está desplegada mostrando sus lotes — solo una a
-  // la vez, guardada como "cliente__categoria" para no chocar entre tarjetas
-  // de clientes distintos.
-  const [categoriaAbierta, setCategoriaAbierta] = useState(null);
-  // Lista de clientes colapsada por defecto — clic en uno lo despliega
-  // (solo uno abierto a la vez, para no saturar la pantalla con 10+
-  // clientes expandidos).
-  const [clienteAbierto, setClienteAbierto] = useState(null);
-  // Selección manual de lotes para cumplir la meta del mes, por cliente —
-  // una planta puede tener trabajo represado de varias categorías para
-  // varias semanas o meses, así que en vez de repartir automático por
-  // etapa, aquí decides tú, categoría por categoría, mirando qué tan
-  // vencido/próximo está cada pedido, cuáles lotes cuentan para ESTE mes.
-  const [seleccion, setSeleccion] = useState({});
-
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, "planeacion_metas_entrega"), (snap) => {
-      const m = {};
-      snap.docs.forEach((d) => { m[d.id] = d.data(); });
-      setMetas(m);
-    });
-    return () => unsub();
-  }, []);
-
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, "planeacion_seleccion_meta"), (snap) => {
-      const s = {};
-      snap.docs.forEach((d) => { s[d.id] = d.data(); });
-      setSeleccion(s);
-    });
-    return () => unsub();
-  }, []);
-  function idSeleccion(cliente) { return `${mesSel}__${slugCliente(cliente)}`; }
-  function lotesSeleccionados(cliente) { return seleccion[idSeleccion(cliente)]?.lotes || []; }
-  async function toggleLoteSeleccionado(cliente, numLote) {
-    const id = idSeleccion(cliente);
-    const actuales = seleccion[id]?.lotes || [];
-    const nuevos = actuales.includes(numLote) ? actuales.filter((n) => n !== numLote) : [...actuales, numLote];
-    await fsSave("planeacion_seleccion_meta", id, { cliente, mes: mesSel, lotes: nuevos });
-  }
-
-  const porCliente = useMemo(() => {
-    const map = new Map();
-    lotes.forEach((l) => {
-      const cli = l.clienteAgrupado || l.nombreCliente || "(Sin cliente)";
-      if (!map.has(cli)) map.set(cli, { cliente: cli, planta: 0, bmp: 0, semiterminado: 0, bpt: 0, categorias: new Map() });
-      const g = map.get(cli);
-      g.planta += l.invPlanta || 0;
-      g.bmp += l.invBMP || 0;
-      g.semiterminado += l.invSemiterminado || 0;
-      g.bpt += l.invBPT || 0;
-      // Desglose por categoría dentro de cada cliente — mismas 4 etapas, para
-      // ver de qué categorías es el inventario disponible (ej. cuánto de los
-      // 30 mil de Kamila son Shorts vs. Camisetas).
-      const cat = l.categoria || "(Sin categoría)";
-      if (!g.categorias.has(cat)) g.categorias.set(cat, { categoria: cat, planta: 0, bmp: 0, semiterminado: 0, bpt: 0 });
-      const c = g.categorias.get(cat);
-      c.planta += l.invPlanta || 0;
-      c.bmp += l.invBMP || 0;
-      c.semiterminado += l.invSemiterminado || 0;
-      c.bpt += l.invBPT || 0;
-    });
-    return [...map.values()]
-      .map((g) => ({
-        ...g,
-        total: g.planta + g.bmp + g.semiterminado + g.bpt,
-        categorias: [...g.categorias.values()]
-          .map((c) => ({ ...c, total: c.planta + c.bmp + c.semiterminado + c.bpt }))
-          .filter((c) => c.total > 0)
-          .sort((a, b) => b.total - a.total),
-      }))
-      .filter((g) => g.total > 0)
-      .sort((a, b) => b.total - a.total);
-  }, [lotes]);
-
-  async function guardarMeta(cliente, valor) {
-    const id = `${mesSel}__${slugCliente(cliente)}`;
-    await fsSave("planeacion_metas_entrega", id, { cliente, mes: mesSel, meta: Number(valor) || 0 });
-    setEditandoMeta(null);
-  }
-
-  return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-        <label style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>Mes a cerrar:</label>
-        <input
-          type="month"
-          value={mesSel}
-          onChange={(e) => setMesSel(e.target.value)}
-          style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, fontFamily: "inherit" }}
-        />
-      </div>
-      <div style={{ fontSize: 11, color: C.slate, marginBottom: 18 }}>
-        Suma lo que cada cliente tiene disponible ahora mismo en Planta + BMP + Semiterminado + BPT (de la carga activa) y lo compara con la meta de unidades que le pongas para el mes. Clic en la meta para editarla.
-      </div>
-      {!porCliente.length ? (
-        <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Sin inventario disponible en esta carga.</div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {porCliente.map((g) => {
-            const id = `${mesSel}__${slugCliente(g.cliente)}`;
-            const meta = metas[id]?.meta || 0;
-            const pct = meta > 0 ? Math.min(100, Math.round((g.total / meta) * 100)) : null;
-            const falta = meta > 0 ? Math.max(0, meta - g.total) : null;
-            const abierto = clienteAbierto === g.cliente;
-            // Todos los lotes de este cliente (todas las categorías) — se
-            // usan para armar la lista de lotes por semana en la
-            // programación de despacho, más abajo.
-            const lotesCliente = lotes.filter((l) => (l.clienteAgrupado || l.nombreCliente || "(Sin cliente)") === g.cliente);
-            return (
-              <div key={g.cliente} style={{ border: `1px solid ${C.border}`, borderRadius: 12, background: C.white, overflow: "hidden" }}>
-                {/* Fila colapsada: nombre del cliente + una barra de avance
-                    compacta (si tiene meta) o el total (si no) — clic la
-                    despliega. Nada más se ve hasta que se abre. */}
-                <div
-                  onClick={() => setClienteAbierto(abierto ? null : g.cliente)}
-                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14, padding: "14px 16px", cursor: "pointer", flexWrap: "wrap" }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontSize: 11, color: C.slate }}>{abierto ? "▾" : "▸"}</span>
-                    <span style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{g.cliente}</span>
-                  </div>
-                  {meta > 0 ? (
-                    <div style={{ minWidth: 160 }}>
-                      <div style={{ height: 8, borderRadius: 5, background: C.canvas, overflow: "hidden" }}>
-                        <div style={{ height: "100%", width: `${pct}%`, background: pct >= 100 ? C.green : C.amber, borderRadius: 5 }} />
-                      </div>
-                      <div style={{ fontSize: 10, color: C.slate, marginTop: 3 }}>{fmtNum(g.total)} / {fmtNum(meta)} ({pct}%)</div>
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: 12, color: C.slate }}>Total: <strong style={{ color: C.ink }}>{fmtNum(g.total)}</strong></div>
-                  )}
-                </div>
-                {abierto && (
-                <div style={{ padding: "0 16px 16px" }}>
-                <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
-                  {editandoMeta === g.cliente ? (
-                    <input
-                      type="number"
-                      autoFocus
-                      defaultValue={meta}
-                      onClick={(e) => e.stopPropagation()}
-                      onBlur={(e) => guardarMeta(g.cliente, e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && guardarMeta(g.cliente, e.target.value)}
-                      style={{ width: 110, padding: "5px 10px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }}
-                    />
-                  ) : (
-                    <span
-                      onClick={(e) => { e.stopPropagation(); setEditandoMeta(g.cliente); }}
-                      style={{ cursor: "pointer", fontSize: 12, color: C.slate }}
-                      title="Clic para poner/editar la meta del mes"
-                    >
-                      Meta: <strong style={{ color: C.ink, textDecoration: "underline dotted" }}>{meta ? fmtNum(meta) : "poner meta"}</strong>
-                    </span>
-                  )}
-                </div>
-                {meta > 0 && (
-                  <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 11, color: C.slate }}>
-                      Disponible: {fmtNum(g.total)} / {fmtNum(meta)} unidades ({pct}%){falta > 0 ? ` · faltan ${fmtNum(falta)}` : " · meta cubierta 🎉"}
-                    </div>
-                  </div>
-                )}
-                {(() => {
-                  const numsSel = lotesSeleccionados(g.cliente);
-                  const totalSel = lotesCliente.filter((l) => numsSel.includes(l.numLote)).reduce((s, l) => s + cantidadLote(l), 0);
-                  const pctSel = meta > 0 ? Math.min(100, Math.round((totalSel / meta) * 100)) : null;
-                  if (!numsSel.length && !meta) return null;
-                  return (
-                    <div style={{ marginBottom: 14, padding: "10px 14px", background: C.blueBg, borderRadius: 10, border: `1.5px solid ${C.blue}` }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: C.blue, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 4 }}>
-                        ✅ Seleccionado para cumplir la meta
-                      </div>
-                      <div style={{ fontSize: 15, fontWeight: 800, color: C.ink }}>
-                        {fmtNum(totalSel)}{meta > 0 ? ` / ${fmtNum(meta)} (${pctSel}%)` : ""} <span style={{ fontSize: 11, fontWeight: 600, color: C.slate }}>· {numsSel.length} lote{numsSel.length !== 1 ? "s" : ""}</span>
-                      </div>
-                    </div>
-                  );
-                })()}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: g.categorias.length ? 14 : 0 }}>
-                  <MiniStatEntrega label="Planta" value={g.planta} color={C.green} bg={C.greenBg} />
-                  <MiniStatEntrega label="BMP" value={g.bmp} color={C.amber} bg={C.amberBg} />
-                  <MiniStatEntrega label="Semiterminado" value={g.semiterminado} color={C.violet} bg={C.violetBg} />
-                  <MiniStatEntrega label="BPT" value={g.bpt} color={C.blue} bg={C.blueBg} />
-                </div>
-                {g.categorias.length > 0 && (
-                  <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 16 }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                      <thead>
-                        <tr style={{ background: C.ink }}>
-                          {["Categoría", "Planta", "BMP", "Semiterminado", "BPT", "Total"].map((h, i) => (
-                            <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: i === 0 ? "left" : "right", fontWeight: 700, fontSize: 10 }}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {g.categorias.map((c, i) => {
-                          const claveCat = `${g.cliente}__${c.categoria}`;
-                          const abierta = categoriaAbierta === claveCat;
-                          // Los lotes reales detrás de este número — mismo
-                          // cliente + categoría, y con algo de inventario en
-                          // alguna de las 4 etapas (si no, no aporta al total).
-                          const lotesCategoria = lotes
-                            .filter(
-                              (l) =>
-                                (l.clienteAgrupado || l.nombreCliente || "(Sin cliente)") === g.cliente &&
-                                (l.categoria || "(Sin categoría)") === c.categoria &&
-                                (l.invPlanta > 0 || l.invBMP > 0 || l.invSemiterminado > 0 || l.invBPT > 0)
-                            )
-                            // Más urgente primero: pedido más vencido / más
-                            // próximo a vencer arriba, sin fecha al final —
-                            // así se selecciona de arriba hacia abajo.
-                            .sort((a, b) => {
-                              const da = diasCumplimiento(a);
-                              const db_ = diasCumplimiento(b);
-                              if (da === null && db_ === null) return 0;
-                              if (da === null) return 1;
-                              if (db_ === null) return -1;
-                              return da - db_;
-                            });
-                          const numsSel = lotesSeleccionados(g.cliente);
-                          return (
-                            <Fragment key={c.categoria}>
-                              <tr
-                                onClick={() => setCategoriaAbierta(abierta ? null : claveCat)}
-                                style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}`, cursor: "pointer" }}
-                              >
-                                <td style={{ padding: "7px 12px" }}>{abierta ? "▾" : "▸"} {c.categoria}</td>
-                                <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(c.planta)}</td>
-                                <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(c.bmp)}</td>
-                                <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(c.semiterminado)}</td>
-                                <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(c.bpt)}</td>
-                                <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 700, color: C.ink }}>{fmtNum(c.total)}</td>
-                              </tr>
-                              {abierta && (
-                                <tr>
-                                  <td colSpan={6} style={{ padding: 0, background: C.canvas, borderBottom: `1px solid ${C.border}` }}>
-                                    <div style={{ padding: "10px 16px" }}>
-                                      {!lotesCategoria.length ? (
-                                        <div style={{ fontSize: 11, color: C.slate }}>Sin lotes.</div>
-                                      ) : (
-                                        <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
-                                          <thead>
-                                            <tr>
-                                              {["", "Lote", "Referencia", "Cantidad", "Etapa actual", "Cumplimiento pedido"].map((h) => (
-                                                <th key={h} style={{ textAlign: h === "Cantidad" ? "right" : "left", padding: "4px 8px", color: C.slate, fontWeight: 700 }}>{h}</th>
-                                              ))}
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            {lotesCategoria.map((l) => {
-                                              const marcado = numsSel.includes(l.numLote);
-                                              const dias = diasCumplimiento(l);
-                                              const { texto, color } = textoCumplimiento(dias);
-                                              return (
-                                                <tr key={l.numLote} style={{ borderTop: `1px solid ${C.border}`, background: marcado ? C.blueBg : "transparent" }}>
-                                                  <td style={{ padding: "4px 8px" }}>
-                                                    <input
-                                                      type="checkbox"
-                                                      checked={marcado}
-                                                      onChange={(e) => { e.stopPropagation(); toggleLoteSeleccionado(g.cliente, l.numLote); }}
-                                                      onClick={(e) => e.stopPropagation()}
-                                                      style={{ cursor: "pointer" }}
-                                                    />
-                                                  </td>
-                                                  <td style={{ padding: "4px 8px" }}>{l.numLote}</td>
-                                                  <td style={{ padding: "4px 8px" }}>{l.referencia}</td>
-                                                  <td style={{ padding: "4px 8px", textAlign: "right", fontWeight: 700 }}>{fmtNum(cantidadLote(l))}</td>
-                                                  <td style={{ padding: "4px 8px" }}>{l.ubicacionActual}</td>
-                                                  <td style={{ padding: "4px 8px", color, fontWeight: 700 }}>{texto}</td>
-                                                </tr>
-                                              );
-                                            })}
-                                          </tbody>
-                                        </table>
-                                      )}
-                                    </div>
-                                  </td>
-                                </tr>
-                              )}
-                            </Fragment>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-                </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-function MiniStatEntrega({ label, value, color, bg }) {
-  return (
-    <div style={{ background: bg, borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
-      <div style={{ fontSize: 14, fontWeight: 800, color }}>{fmtNum(value)}</div>
-      <div style={{ fontSize: 10, color: C.slate, fontWeight: 600 }}>{label}</div>
     </div>
   );
 }
@@ -2677,9 +1445,10 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
       <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
           {subView === "home" && <HomePlaneacion onGoInformes={() => setSubView("informes")} />}
-          {subView === "informes" && <InformesView cargas={cargas} onAddCarga={addCarga} onDeleteCarga={deleteCarga} isAdmin={isAdmin} currentUser={currentUser} />}
+          {subView === "informes" && <InformesView cargas={cargas} onAddCarga={addCarga} onDeleteCarga={deleteCarga} isAdmin={isAdmin} />}
         </div>
       </div>
     </div>
   );
 }
+
