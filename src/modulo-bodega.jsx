@@ -2258,6 +2258,108 @@ function DashboardBodegaView({ despachos, abonos }) {
     </div>
   );
 }
+// ─── ESTADO DE CUENTA KAMILA GROUP ──────────────────────────────────────────
+// KAMILA GROUP despacha por dos destinos (Venezuela y Dubo) que en Bodega
+// viven en colecciones totalmente separadas — esta vista los junta en un
+// solo estado de cuenta consolidado, sin tocar cómo se guardan. Colombia
+// queda fuera a propósito (destino aparte, no es KAMILA GROUP).
+// Saldo = Total Despachado (Venezuela + Dubo) − Total Abonado (Venezuela + Dubo).
+function EstadoCuentaKamilaView({ data }) {
+  const { despachosVenezuela, despachosDubo, abonosVenezuela, abonosDubo, loading } = data;
+  const movimientos = useMemo(() => {
+    if (loading) return [];
+    const contables = (lista, destino) =>
+      lista
+        .filter((d) => d.estado === "aprobado" || d.estado === "historico")
+        .map((d) => ({
+          tipo: "despacho",
+          destino,
+          fecha: d.fecha || "",
+          monto: d.totalDespacho || 0,
+          detalle: d.numero || d.numControl || "—",
+          id: `${destino}-desp-${d.id}`,
+        }));
+    const abonosLista = (lista, destino) =>
+      lista.map((a) => ({
+        tipo: "abono",
+        destino,
+        fecha: a.fecha || "",
+        monto: Number(a.monto) || 0,
+        detalle: a.concepto || "Abono",
+        id: `${destino}-abono-${a.id}`,
+      }));
+    const todos = [
+      ...contables(despachosVenezuela, "Venezuela"),
+      ...contables(despachosDubo, "Dubo"),
+      ...abonosLista(abonosVenezuela, "Venezuela"),
+      ...abonosLista(abonosDubo, "Dubo"),
+    ];
+    todos.sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
+    let saldo = 0;
+    return todos.map((m) => {
+      saldo += m.tipo === "despacho" ? m.monto : -m.monto;
+      return { ...m, saldoCorrido: saldo };
+    });
+  }, [despachosVenezuela, despachosDubo, abonosVenezuela, abonosDubo, loading]);
+  const totalDespachado = movimientos.filter((m) => m.tipo === "despacho").reduce((s, m) => s + m.monto, 0);
+  const totalAbonado = movimientos.filter((m) => m.tipo === "abono").reduce((s, m) => s + m.monto, 0);
+  const saldo = totalDespachado - totalAbonado;
+  if (loading) {
+    return <div style={{ color: C.slate, fontSize: 13 }}>Cargando estado de cuenta...</div>;
+  }
+  return (
+    <div>
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>🧾 Estado de Cuenta — KAMILA GROUP</div>
+        <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>Consolidado Venezuela + Dubo (Colombia no se incluye)</div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 24 }}>
+        <KPI icon="🚚" label="Total Despachado" value={fmtMoney(totalDespachado)} color={C.blue} bg={C.blueBg} sub="Venezuela + Dubo" />
+        <KPI icon="💵" label="Total Abonado" value={fmtMoney(totalAbonado)} color={C.green} bg={C.greenBg} sub="Venezuela + Dubo" />
+        <KPI icon="⚖️" label="Saldo" value={fmtMoney(saldo)} color={saldo > 0 ? C.red : C.green} bg={saldo > 0 ? C.redBg : C.greenBg} />
+      </div>
+      <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "100px 90px 1fr 130px 130px 140px", gap: 8, padding: "10px 16px", background: C.canvas, fontSize: 11, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+          <div>Fecha</div>
+          <div>Destino</div>
+          <div>Detalle</div>
+          <div style={{ textAlign: "right" }}>Despachado</div>
+          <div style={{ textAlign: "right" }}>Abonado</div>
+          <div style={{ textAlign: "right" }}>Saldo</div>
+        </div>
+        {!movimientos.length && (
+          <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay movimientos todavía.</div>
+        )}
+        {movimientos.map((m) => (
+          <div
+            key={m.id}
+            style={{ display: "grid", gridTemplateColumns: "100px 90px 1fr 130px 130px 140px", gap: 8, padding: "10px 16px", borderTop: `1px solid ${C.border}`, fontSize: 12, color: C.ink, alignItems: "center" }}
+          >
+            <div>{fmtFechaISO(m.fecha)}</div>
+            <div>
+              <span
+                style={{
+                  padding: "2px 8px",
+                  borderRadius: 20,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  background: m.destino === "Venezuela" ? C.violetBg : C.amberBg,
+                  color: m.destino === "Venezuela" ? C.violet : C.amber,
+                }}
+              >
+                {m.destino}
+              </span>
+            </div>
+            <div>{m.tipo === "despacho" ? `Despacho ${m.detalle}` : m.detalle}</div>
+            <div style={{ textAlign: "right", color: C.blue, fontWeight: 700 }}>{m.tipo === "despacho" ? fmtMoney(m.monto) : ""}</div>
+            <div style={{ textAlign: "right", color: C.green, fontWeight: 700 }}>{m.tipo === "abono" ? fmtMoney(m.monto) : ""}</div>
+            <div style={{ textAlign: "right", fontWeight: 800, color: m.saldoCorrido > 0 ? C.red : C.green }}>{fmtMoney(m.saldoCorrido)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 // ─── RAÍZ DEL MÓDULO ────────────────────────────────────────────────────────
 // Destinos de despacho — cada uno con sus propios datos, completamente
 // separados (colección "despachos"+destino y "abonos"+destino en
@@ -2281,6 +2383,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
   const [saldoYuliana, setSaldoYuliana] = useState([]);
   const [pinEdicion, setPinEdicion] = useState("");
   const [loading, setLoading] = useState(true);
+  const [estadoKamila, setEstadoKamila] = useState({ despachosVenezuela: [], despachosDubo: [], abonosVenezuela: [], abonosDubo: [], loading: true });
   const coleccionDespachos = `despachos${slugDestino(destino)}`;
   const coleccionAbonos = `abonos${slugDestino(destino)}`;
   const coleccionSaldoYuliana = `cuentaYuliana${slugDestino(destino)}`;
@@ -2309,6 +2412,38 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
       unsubConfig();
     };
   }, [coleccionDespachos, coleccionAbonos, coleccionSaldoYuliana]);
+  // Estado de Cuenta KAMILA GROUP: junta Venezuela + Dubo en una sola vista,
+  // sin importar qué destino esté elegido en el selector de arriba. Solo se
+  // suscribe mientras esa pestaña está abierta, para no leer 4 colecciones
+  // extra todo el tiempo si nadie la está mirando.
+  useEffect(() => {
+    if (subView !== "estadoCuentaKamila") return;
+    setEstadoKamila((s) => ({ ...s, loading: true }));
+    let cargados = { dv: false, dd: false, av: false, ad: false };
+    function marcarCargado(clave) {
+      cargados = { ...cargados, [clave]: true };
+      if (cargados.dv && cargados.dd && cargados.av && cargados.ad) {
+        setEstadoKamila((s) => ({ ...s, loading: false }));
+      }
+    }
+    const unsubDV = onSnapshot(collection(db, "despachosVenezuela"), (snap) => {
+      setEstadoKamila((s) => ({ ...s, despachosVenezuela: snap.docs.map((d) => ({ ...d.data(), id: d.id })) }));
+      marcarCargado("dv");
+    });
+    const unsubDD = onSnapshot(collection(db, "despachosDubo"), (snap) => {
+      setEstadoKamila((s) => ({ ...s, despachosDubo: snap.docs.map((d) => ({ ...d.data(), id: d.id })) }));
+      marcarCargado("dd");
+    });
+    const unsubAV = onSnapshot(collection(db, "abonosVenezuela"), (snap) => {
+      setEstadoKamila((s) => ({ ...s, abonosVenezuela: snap.docs.map((d) => ({ ...d.data(), id: d.id })) }));
+      marcarCargado("av");
+    });
+    const unsubAD = onSnapshot(collection(db, "abonosDubo"), (snap) => {
+      setEstadoKamila((s) => ({ ...s, abonosDubo: snap.docs.map((d) => ({ ...d.data(), id: d.id })) }));
+      marcarCargado("ad");
+    });
+    return () => { unsubDV(); unsubDD(); unsubAV(); unsubAD(); };
+  }, [subView]);
   async function guardarPinEdicion(pin) {
     setPinEdicion(pin);
     await fsSave("bodega_config", "main", { pinEdicion: pin });
@@ -2352,6 +2487,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
     { id: "historial", icon: "🕘", label: "Historial" },
     { id: "abonos", icon: "💵", label: "Abonos" },
     { id: "saldoYuliana", icon: "🧾", label: "Saldo Yuliana" },
+    ...(isAdmin || puedeEditarAbonos ? [{ id: "estadoCuentaKamila", icon: "📊", label: "Estado de Cuenta Kamila" }] : []),
     ...(isAdmin ? [{ id: "importar", icon: "⬆️", label: "Importar Histórico" }] : []),
     ...(isAdmin ? [{ id: "codigo", icon: "🔐", label: "Código Edición" }] : []),
   ];
@@ -2430,7 +2566,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
           <h1 style={{ margin: "0 0 20px", fontSize: 20, fontWeight: 900, color: C.ink }}>
             {NAV.find((n) => n.id === subView)?.label || ""}
-            <span style={{ fontSize: 13, fontWeight: 700, color: C.slate, marginLeft: 10 }}>· {destino}</span>
+            {subView !== "estadoCuentaKamila" && <span style={{ fontSize: 13, fontWeight: 700, color: C.slate, marginLeft: 10 }}>· {destino}</span>}
           </h1>
           {subView === "dashboard" && <DashboardBodegaView despachos={despachos} abonos={abonos} />}
           {subView === "montar" && <MontarDespachoView despachos={despachos} currentUser={currentUser} coleccionDespachos={coleccionDespachos} onGuardado={() => setSubView("dashboard")} />}
@@ -2451,6 +2587,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
           {subView === "saldoYuliana" && (
             <SaldoYulianaView entradas={saldoYuliana} currentUser={currentUser} puedeEditar={puedeEditarAbonos} coleccionSaldoYuliana={coleccionSaldoYuliana} />
           )}
+          {subView === "estadoCuentaKamila" && (isAdmin || puedeEditarAbonos) && <EstadoCuentaKamilaView data={estadoKamila} />}
           {subView === "importar" && isAdmin && (
             <ImportarHistoricoView
               currentUser={currentUser}
