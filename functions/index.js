@@ -235,7 +235,15 @@ async function consultarFacturadoBusint(fechaInicio, fechaFin) {
   }
 
   const filas = await resp.json();
-  return Array.isArray(filas) ? filas : [];
+  const filasArr = Array.isArray(filas) ? filas : [];
+  logger.info("consultarFacturadoBusint recibió respuesta", {
+    fechaInicio,
+    fechaFin,
+    totalFilas: filasArr.length,
+    bytesAprox: JSON.stringify(filasArr[0] || {}).length * filasArr.length,
+    primeraFila: filasArr[0] || null,
+  });
+  return filasArr;
 }
 
 function cryptoRandomId() {
@@ -733,7 +741,7 @@ exports.listarDocumentosBusintCliente = onCall(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 300,
-    memory: "512MiB",
+    memory: "1GiB",
   },
   async (request) => {
     const { fechaInicio, fechaFin, codigoCliente } = request.data || {};
