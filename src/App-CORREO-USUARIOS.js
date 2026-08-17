@@ -4642,7 +4642,18 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
     }
     setCreando(false);
   }
-  function deleteUser(id) { if (id === "u1") return; onUpdateUsers(users.filter((u) => u.id !== id)); }
+  function deleteUser(id) {
+    if (id === "u1") return;
+    if (!window.confirm("¿Seguro que quieres ELIMINAR este usuario?\n\nSe pierde el registro de quién hizo qué en el sistema. Si ya no va a trabajar contigo pero quieres conservar su historial, mejor usa el botón \"⛔ Desactivar\" en vez de Eliminar.")) return;
+    onUpdateUsers(users.filter((u) => u.id !== id));
+  }
+  // Desactivar conserva el usuario (y todo lo que hizo) en la base de datos,
+  // solo le impide volver a iniciar sesión (ver el chequeo `activo === false`
+  // en cargarDatos). Es la opción recomendada frente a Eliminar cuando
+  // alguien deja de trabajar con nosotros.
+  function toggleActivo(u) {
+    onUpdateUsers(users.map((x) => (x.id === u.id ? { ...x, activo: x.activo === false ? true : false } : x)));
+  }
   // Resetear la clave de OTRO usuario también pasa por una Cloud Function
   // (Fase B) — el navegador del admin no tiene permiso para cambiar la clave
   // de otra cuenta de Firebase Auth directamente, solo la propia. La función
@@ -4777,19 +4788,37 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {users.map((u) => (
-          <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 18px", background: T.canvas, borderRadius: 12, border: `1px solid ${T.border}` }}>
+          <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 18px", background: u.activo === false ? "#F2F2F2" : T.canvas, borderRadius: 12, border: `1px solid ${T.border}` }}>
             <Avatar name={u.name} size={42} />
-            <div style={{ flex: 1 }}>
+            <div style={{ flex: 1, opacity: u.activo === false ? 0.55 : 1 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <span style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>{u.name}</span>
                 {u.isAdmin && <span style={{ padding: "2px 8px", borderRadius: 4, background: T.ink, color: T.seam, fontSize: 10, fontWeight: 800 }}>ADMIN</span>}
                 <span style={{ padding: "2px 8px", borderRadius: 4, background: u.role === "Cliente" ? T.violetBg : T.denimBg, color: u.role === "Cliente" ? T.violet : T.denim, fontSize: 10, fontWeight: 700 }}>{u.role}</span>
+                {u.activo === false && <span style={{ padding: "2px 8px", borderRadius: 4, background: T.coralBg, color: T.coral, fontSize: 10, fontWeight: 800 }}>INACTIVO</span>}
               </div>
               <div style={{ fontSize: 12, color: T.slate, marginTop: 3 }}>@{u.username}{u.email ? ` · ${u.email}` : ""}</div>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <button onClick={() => setChangePwdId(u.id)} style={{ padding: "6px 12px", background: T.amberBg, border: `1px solid ${T.amber}44`, borderRadius: 8, color: T.amber, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>🔑 Clave</button>
               <button onClick={() => openEdit(u)} style={{ padding: "6px 12px", background: T.denimBg, border: `1px solid ${T.denim}44`, borderRadius: 8, color: T.denim, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>✏ Editar</button>
+              {u.id !== "u1" && (
+                <button
+                  onClick={() => toggleActivo(u)}
+                  style={{
+                    padding: "6px 12px",
+                    background: u.activo === false ? T.jadeBg : "#F0F0F0",
+                    border: `1px solid ${u.activo === false ? T.jade + "44" : T.border}`,
+                    borderRadius: 8,
+                    color: u.activo === false ? T.jade : T.slate,
+                    fontWeight: 700,
+                    fontSize: 12,
+                    cursor: "pointer",
+                  }}
+                >
+                  {u.activo === false ? "✓ Activar" : "⛔ Desactivar"}
+                </button>
+              )}
               {u.id !== "u1" && <button onClick={() => deleteUser(u.id)} style={{ padding: "6px 12px", background: T.coralBg, border: `1px solid ${T.coral}44`, borderRadius: 8, color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Eliminar</button>}
             </div>
           </div>
@@ -7029,6 +7058,13 @@ function AppInner() {
           await signOut(auth);
           return;
         }
+        // Usuario desactivado (dejó de trabajar con nosotros, pero se
+        // conserva su historial en vez de borrarlo): no se le deja entrar.
+        if (perfil.activo === false) {
+          setLoginError("Tu usuario fue desactivado. Contacta a un administrador.");
+          await signOut(auth);
+          return;
+        }
         setCurrentUser(perfil);
         const unsubUsers = onSnapshot(collection(db, "users"), (snap) => {
           const updatedUsers = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
@@ -7036,6 +7072,14 @@ function AppInner() {
           setCurrentUser((cu) => {
             if (!cu) return cu;
             const fresh = updatedUsers.find((u) => u.id === cu.id);
+            if (fresh && fresh.activo === false) {
+              // Un admin desactivó a este usuario mientras tenía la sesión
+              // abierta (otra pestaña/dispositivo) — se le cierra la sesión
+              // de inmediato en vez de esperar a que recargue la página.
+              setLoginError("Tu usuario fue desactivado. Contacta a un administrador.");
+              signOut(auth).catch(() => {});
+              return cu;
+            }
             return fresh ? { ...cu, ...fresh } : cu;
           });
         });
