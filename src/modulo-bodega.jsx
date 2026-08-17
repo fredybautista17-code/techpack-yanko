@@ -503,6 +503,14 @@ const ESTILO_DATO = { fill: { fgColor: { rgb: "D9E6F5" } }, border: TODOS_LOS_BO
 const ESTILO_TOTAL = { font: { bold: true }, border: TODOS_LOS_BORDES, alignment: { horizontal: "center" } };
 const ESTILO_TOTAL_VACIA = { border: TODOS_LOS_BORDES };
 const FORMATO_MONEDA = '"$" #,##0';
+// Estilos extra para el Estado de Cuenta KAMILA GROUP: despachos en azul
+// (igual que el resto de Bodega), abonos en verde (para distinguirlos de un
+// vistazo), y el saldo final en rojo si KAMILA todavía debe o verde si está
+// al día/a favor — mismo criterio de color que ya usa el dashboard normal.
+const ESTILO_ABONO = { fill: { fgColor: { rgb: "D9EAD3" } }, border: TODOS_LOS_BORDES, alignment: { vertical: "center" } };
+const ESTILO_SUBTOTAL = { font: { bold: true }, fill: { fgColor: { rgb: "FCE8B2" } }, border: TODOS_LOS_BORDES, alignment: { horizontal: "center" } };
+const ESTILO_SALDO_ROJO = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "C0392B" } }, border: TODOS_LOS_BORDES, alignment: { horizontal: "center" } };
+const ESTILO_SALDO_VERDE = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "2E7D32" } }, border: TODOS_LOS_BORDES, alignment: { horizontal: "center" } };
 // Molde fijo del Excel original de Busint: siempre 31 filas (se rellena
 // con celdas vacías del mismo color/borde aunque el despacho tenga menos
 // líneas). Si un despacho llegara a tener MÁS de 25 líneas, la hoja crece
@@ -2258,6 +2266,46 @@ function DashboardBodegaView({ despachos, abonos }) {
     </div>
   );
 }
+// Descarga el estado de cuenta consolidado en Excel: una fila por
+// movimiento (despacho o abono, de cualquiera de los dos destinos)
+// ordenados por fecha con el saldo corriendo, y al final el desglose de
+// Saldo Venezuela / Saldo Dubo / Saldo Total KAMILA GROUP resaltado en
+// colores. Misma librería y mismos estilos que ya usa el resto de Bodega.
+async function exportarEstadoCuentaKamilaExcel(movimientos, desglose) {
+  const XLSX = await import("xlsx-js-style");
+  const headers = ["FECHA", "DESTINO", "DETALLE", "DESPACHADO", "ABONADO", "SALDO CORRIDO"];
+  const grid = [];
+  grid.push(headers.map((h) => celda(h, ESTILO_HEADER)));
+  movimientos.forEach((m) => {
+    const estiloFila = m.tipo === "despacho" ? ESTILO_DATO : ESTILO_ABONO;
+    grid.push([
+      celda(fmtFechaISO(m.fecha), estiloFila),
+      celda(m.destino, estiloFila),
+      celda(m.tipo === "despacho" ? `Despacho ${m.detalle}` : m.detalle, estiloFila),
+      celda(m.tipo === "despacho" ? m.monto : "", estiloFila, FORMATO_MONEDA),
+      celda(m.tipo === "abono" ? m.monto : "", estiloFila, FORMATO_MONEDA),
+      celda(m.saldoCorrido, estiloFila, FORMATO_MONEDA),
+    ]);
+  });
+  grid.push(new Array(headers.length).fill(null).map(() => celda("", ESTILO_TOTAL_VACIA)));
+  function filaResumen(etiqueta, valor, estilo) {
+    const fila = new Array(headers.length).fill(null).map(() => celda("", ESTILO_TOTAL_VACIA));
+    fila[2] = celda(etiqueta, estilo);
+    fila[5] = celda(valor, estilo, FORMATO_MONEDA);
+    return fila;
+  }
+  grid.push(filaResumen("SALDO VENEZUELA", desglose.saldoVenezuela, ESTILO_SUBTOTAL));
+  grid.push(filaResumen("SALDO DUBO", desglose.saldoDubo, ESTILO_SUBTOTAL));
+  grid.push(filaResumen("SALDO TOTAL — KAMILA GROUP", desglose.saldoTotal, desglose.saldoTotal > 0 ? ESTILO_SALDO_ROJO : ESTILO_SALDO_VERDE));
+
+  const ws = XLSX.utils.aoa_to_sheet(grid);
+  ws["!cols"] = [{ wch: 12 }, { wch: 12 }, { wch: 30 }, { wch: 16 }, { wch: 16 }, { wch: 16 }];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Estado de Cuenta Kamila");
+  const hoy = today();
+  XLSX.writeFile(wb, `Estado de Cuenta KAMILA GROUP ${hoy}.xlsx`);
+}
 // ─── ESTADO DE CUENTA KAMILA GROUP ──────────────────────────────────────────
 // KAMILA GROUP despacha por dos destinos (Venezuela y Dubo) que en Bodega
 // viven en colecciones totalmente separadas — esta vista los junta en un
@@ -2301,22 +2349,36 @@ function EstadoCuentaKamilaView({ data }) {
       return { ...m, saldoCorrido: saldo };
     });
   }, [despachosVenezuela, despachosDubo, abonosVenezuela, abonosDubo, loading]);
-  const totalDespachado = movimientos.filter((m) => m.tipo === "despacho").reduce((s, m) => s + m.monto, 0);
-  const totalAbonado = movimientos.filter((m) => m.tipo === "abono").reduce((s, m) => s + m.monto, 0);
-  const saldo = totalDespachado - totalAbonado;
+  const porDestino = (dest) => {
+    const desp = movimientos.filter((m) => m.tipo === "despacho" && m.destino === dest).reduce((s, m) => s + m.monto, 0);
+    const abo = movimientos.filter((m) => m.tipo === "abono" && m.destino === dest).reduce((s, m) => s + m.monto, 0);
+    return { despachado: desp, abonado: abo, saldo: desp - abo };
+  };
+  const ve = porDestino("Venezuela");
+  const du = porDestino("Dubo");
+  const totalDespachado = ve.despachado + du.despachado;
+  const totalAbonado = ve.abonado + du.abonado;
+  const saldo = ve.saldo + du.saldo;
   if (loading) {
     return <div style={{ color: C.slate, fontSize: 13 }}>Cargando estado de cuenta...</div>;
   }
   return (
     <div>
-      <div style={{ marginBottom: 20 }}>
-        <div style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>🧾 Estado de Cuenta — KAMILA GROUP</div>
-        <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>Consolidado Venezuela + Dubo (Colombia no se incluye)</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>🧾 Estado de Cuenta — KAMILA GROUP</div>
+          <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>Consolidado Venezuela + Dubo (Colombia no se incluye)</div>
+        </div>
+        <Btn onClick={() => exportarEstadoCuentaKamilaExcel(movimientos, { saldoVenezuela: ve.saldo, saldoDubo: du.saldo, saldoTotal: saldo })}>⬇ Descargar Excel</Btn>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 24 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 12 }}>
         <KPI icon="🚚" label="Total Despachado" value={fmtMoney(totalDespachado)} color={C.blue} bg={C.blueBg} sub="Venezuela + Dubo" />
         <KPI icon="💵" label="Total Abonado" value={fmtMoney(totalAbonado)} color={C.green} bg={C.greenBg} sub="Venezuela + Dubo" />
-        <KPI icon="⚖️" label="Saldo" value={fmtMoney(saldo)} color={saldo > 0 ? C.red : C.green} bg={saldo > 0 ? C.redBg : C.greenBg} />
+        <KPI icon="⚖️" label="Saldo Total" value={fmtMoney(saldo)} color={saldo > 0 ? C.red : C.green} bg={saldo > 0 ? C.redBg : C.greenBg} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 24 }}>
+        <KPI icon="🇻🇪" label="Saldo Venezuela" value={fmtMoney(ve.saldo)} color={ve.saldo > 0 ? C.red : C.green} bg={ve.saldo > 0 ? C.redBg : C.greenBg} sub={`Despachado ${fmtMoney(ve.despachado)} · Abonado ${fmtMoney(ve.abonado)}`} />
+        <KPI icon="📦" label="Saldo Dubo" value={fmtMoney(du.saldo)} color={du.saldo > 0 ? C.red : C.green} bg={du.saldo > 0 ? C.redBg : C.greenBg} sub={`Despachado ${fmtMoney(du.despachado)} · Abonado ${fmtMoney(du.abonado)}`} />
       </div>
       <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
         <div style={{ display: "grid", gridTemplateColumns: "100px 90px 1fr 130px 130px 140px", gap: 8, padding: "10px 16px", background: C.canvas, fontSize: 11, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: "0.04em" }}>
