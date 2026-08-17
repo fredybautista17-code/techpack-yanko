@@ -619,8 +619,8 @@ exports.getReferenciasBusint = onCall(
 exports.buscarTrasladoBusintPorNumero = onCall(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
-    timeoutSeconds: 60,
-    memory: "256MiB",
+    timeoutSeconds: 180,
+    memory: "512MiB",
   },
   async (request) => {
     const numBuscado = String(request.data?.numeroTraslado ?? "").trim();
@@ -732,8 +732,8 @@ exports.buscarTrasladoBusintPorNumero = onCall(
 exports.listarDocumentosBusintCliente = onCall(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
-    timeoutSeconds: 90,
-    memory: "256MiB",
+    timeoutSeconds: 300,
+    memory: "512MiB",
   },
   async (request) => {
     const { fechaInicio, fechaFin, codigoCliente } = request.data || {};
@@ -746,78 +746,90 @@ exports.listarDocumentosBusintCliente = onCall(
     }
     const codigoBuscado = String(codigoCliente).trim();
 
-    let filas, referencias;
+    // Todo el resto de la función queda envuelto en un try/catch propio
+    // (además del que ya cubre las dos llamadas a Busint) para que un error
+    // inesperado en el agrupamiento no salga al navegador como un genérico
+    // "internal" sin pista de qué pasó — queda registrado con el mensaje y
+    // la línea exactos en Cloud Functions → Logs.
     try {
-      [filas, referencias] = await Promise.all([
-        consultarFacturadoBusint(fechaInicio, fechaFin),
-        consultarCatalogoBusint("ApiGen_Referencias"),
-      ]);
+      let filas, referencias;
+      try {
+        [filas, referencias] = await Promise.all([
+          consultarFacturadoBusint(fechaInicio, fechaFin),
+          consultarCatalogoBusint("ApiGen_Referencias"),
+        ]);
+      } catch (err) {
+        logger.error("Error consultando Busint (listarDocumentosBusintCliente)", { error: String(err) });
+        throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+      }
+
+      const filasCliente = filas.filter((f) => String(f.codigoCliente ?? "").trim() === codigoBuscado);
+
+      const descripcionPorRef = new Map();
+      referencias.forEach((r) => {
+        const ref = String(r.ref || "").trim().toUpperCase();
+        if (ref && !descripcionPorRef.has(ref)) descripcionPorRef.set(ref, (r.descripcionLarga || "").trim());
+      });
+
+      // Primer nivel: agrupar por documento (doc). Segundo nivel (igual que
+      // en buscarTrasladoBusintPorNumero): agrupar las filas de cada
+      // documento por referencia+pinta+color, sumando las tallas en una
+      // sola línea.
+      const porDoc = new Map();
+      filasCliente.forEach((f) => {
+        const doc = String(f.doc ?? "").trim();
+        if (!doc) return;
+        if (!porDoc.has(doc)) {
+          porDoc.set(doc, {
+            doc,
+            tipo: (f.tipo || "").trim(),
+            fecha: soloFecha(f.fechaFact),
+            grupos: new Map(),
+          });
+        }
+        const docObj = porDoc.get(doc);
+        const ref = String(f.ref || "").trim();
+        const claveLinea = `${ref}|${f.pinta || ""}|${f.color || ""}`;
+        if (!docObj.grupos.has(claveLinea)) {
+          docObj.grupos.set(claveLinea, {
+            referencia: ref,
+            descripcion: descripcionPorRef.get(ref.toUpperCase()) || [f.pinta, f.color].filter(Boolean).join(" "),
+            cantidad: 0,
+            precio: Number(f.precio) || 0,
+            numTraslado: doc,
+            barras: [],
+          });
+        }
+        const linea = docObj.grupos.get(claveLinea);
+        linea.cantidad += Math.round(Number(f.cant) || 0);
+        const talla = String(f.talla || "").trim();
+        const cbarraI = String(f.cbarraI ?? "").trim();
+        const cbarraE = String(f.cbarraE ?? "").trim();
+        const cbarraM = String(f.cbarraM ?? "").trim();
+        if (talla && (cbarraI || cbarraE || cbarraM) && !linea.barras.some((b) => b.talla === talla)) {
+          linea.barras.push({ talla, cbarraI, cbarraE, cbarraM });
+        }
+      });
+
+      var documentos = [...porDoc.values()]
+        .map((d) => {
+          const lineas = [...d.grupos.values()];
+          return {
+            doc: d.doc,
+            tipo: d.tipo,
+            fecha: d.fecha,
+            totalUnidades: lineas.reduce((s, l) => s + l.cantidad, 0),
+            totalValor: lineas.reduce((s, l) => s + l.cantidad * l.precio, 0),
+            totalLineas: lineas.length,
+            lineas,
+          };
+        })
+        .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
     } catch (err) {
-      logger.error("Error consultando Busint (listarDocumentosBusintCliente)", { error: String(err) });
-      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+      if (err instanceof HttpsError) throw err;
+      logger.error("Error inesperado en listarDocumentosBusintCliente", { error: String(err), stack: err?.stack });
+      throw new HttpsError("internal", `Error inesperado: ${err?.message || String(err)}`);
     }
-
-    const filasCliente = filas.filter((f) => String(f.codigoCliente ?? "").trim() === codigoBuscado);
-
-    const descripcionPorRef = new Map();
-    referencias.forEach((r) => {
-      const ref = String(r.ref || "").trim().toUpperCase();
-      if (ref && !descripcionPorRef.has(ref)) descripcionPorRef.set(ref, (r.descripcionLarga || "").trim());
-    });
-
-    // Primer nivel: agrupar por documento (doc). Segundo nivel (igual que en
-    // buscarTrasladoBusintPorNumero): agrupar las filas de cada documento
-    // por referencia+pinta+color, sumando las tallas en una sola línea.
-    const porDoc = new Map();
-    filasCliente.forEach((f) => {
-      const doc = String(f.doc ?? "").trim();
-      if (!doc) return;
-      if (!porDoc.has(doc)) {
-        porDoc.set(doc, {
-          doc,
-          tipo: (f.tipo || "").trim(),
-          fecha: soloFecha(f.fechaFact),
-          grupos: new Map(),
-        });
-      }
-      const docObj = porDoc.get(doc);
-      const ref = String(f.ref || "").trim();
-      const claveLinea = `${ref}|${f.pinta || ""}|${f.color || ""}`;
-      if (!docObj.grupos.has(claveLinea)) {
-        docObj.grupos.set(claveLinea, {
-          referencia: ref,
-          descripcion: descripcionPorRef.get(ref.toUpperCase()) || [f.pinta, f.color].filter(Boolean).join(" "),
-          cantidad: 0,
-          precio: Number(f.precio) || 0,
-          numTraslado: doc,
-          barras: [],
-        });
-      }
-      const linea = docObj.grupos.get(claveLinea);
-      linea.cantidad += Math.round(Number(f.cant) || 0);
-      const talla = String(f.talla || "").trim();
-      const cbarraI = String(f.cbarraI ?? "").trim();
-      const cbarraE = String(f.cbarraE ?? "").trim();
-      const cbarraM = String(f.cbarraM ?? "").trim();
-      if (talla && (cbarraI || cbarraE || cbarraM) && !linea.barras.some((b) => b.talla === talla)) {
-        linea.barras.push({ talla, cbarraI, cbarraE, cbarraM });
-      }
-    });
-
-    const documentos = [...porDoc.values()]
-      .map((d) => {
-        const lineas = [...d.grupos.values()];
-        return {
-          doc: d.doc,
-          tipo: d.tipo,
-          fecha: d.fecha,
-          totalUnidades: lineas.reduce((s, l) => s + l.cantidad, 0),
-          totalValor: lineas.reduce((s, l) => s + l.cantidad * l.precio, 0),
-          totalLineas: lineas.length,
-          lineas,
-        };
-      })
-      .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
 
     return { fechaInicio, fechaFin, codigoCliente: codigoBuscado, totalDocumentos: documentos.length, documentos };
   }

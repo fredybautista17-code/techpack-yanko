@@ -392,7 +392,7 @@ function fechaHaceNDias(n) {
 // usaron en un despacho anterior (por su N° de documento, guardado como
 // numTraslado en cada línea) salen marcados y bloqueados para no duplicar.
 function SelectorDocumentosBusintView({ despachosExistentes, onCargar, onClose }) {
-  const [fechaInicio, setFechaInicio] = useState(fechaHaceNDias(90));
+  const [fechaInicio, setFechaInicio] = useState(fechaHaceNDias(45));
   const [fechaFin, setFechaFin] = useState(today());
   const [buscando, setBuscando] = useState(false);
   const [documentos, setDocumentos] = useState(null);
