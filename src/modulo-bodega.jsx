@@ -290,9 +290,15 @@ function lineaVacia() {
 // Etapa 1 (Bodega): referencia, códigos de barra, cantidades y todo lo
 // demás — SIN precio ni descuento. Esos dos campos los define Contabilidad
 // en la etapa de revisión ("Por Aprobar"), no bodega.
-function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint }) {
+function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint, destino }) {
   const [grupoNuevo, setGrupoNuevo] = useState("");
   const [codigoNuevo, setCodigoNuevo] = useState("");
+  // Dubo llega siempre con precio y descuento ya conocidos (vienen de Busint
+  // al cargar la factura/traslado), así que en vez de marca/segmento/N° Corte
+  // /códigos de barra (que Dubo no usa) se muestra directo precio/dcto/total.
+  // El resto de destinos sigue igual: bodega no ve precio, eso lo define
+  // Contabilidad en la etapa de revisión.
+  const esDubo = destino === "Dubo";
   // Agrega (o reemplaza si ya existía) el código de barra de un grupo de
   // talla a mano. Se guarda con la MISMA forma que trae Busint (cbarraI),
   // para que la exportación a Excel lo encuentre igual sin importar si
@@ -330,47 +336,73 @@ function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint })
         <Field label="Cantidad">
           <FInput type="number" value={linea.cantidad} onChange={(v) => onChange({ ...linea, cantidad: v })} />
         </Field>
-        <Field label="N° Corte">
-          <FInput value={linea.numCorte} onChange={(v) => onChange({ ...linea, numCorte: v })} />
-        </Field>
+        {esDubo ? (
+          <Field label="N° Bulto">
+            <FInput value={linea.numBulto} onChange={(v) => onChange({ ...linea, numBulto: v })} placeholder="1/3" />
+          </Field>
+        ) : (
+          <Field label="N° Corte">
+            <FInput value={linea.numCorte} onChange={(v) => onChange({ ...linea, numCorte: v })} />
+          </Field>
+        )}
       </div>
       {linea.busintEncontrada === false && (
         <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginTop: -8, marginBottom: 10 }}>
           No se encontró esa referencia en Busint — completa los datos a mano.
         </div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 10 }}>
-        <Field label="Descripción">
-          <FInput value={linea.descripcion} onChange={(v) => onChange({ ...linea, descripcion: v })} />
-        </Field>
-        <Field label="Marca">
-          <FSel value={linea.marca} onChange={(v) => onChange({ ...linea, marca: v })} options={MARCAS_BODEGA} />
-        </Field>
-        <Field label="Segmento">
-          <FSel value={linea.segmento} onChange={(v) => onChange({ ...linea, segmento: v })} options={SEGMENTOS_BODEGA} />
-        </Field>
-        <Field label="N° Bulto">
-          <FInput value={linea.numBulto} onChange={(v) => onChange({ ...linea, numBulto: v })} placeholder="1/3" />
-        </Field>
-      </div>
-      <div style={{ marginTop: 10 }}>
-        <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Códigos de barra por grupo de talla</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr auto", gap: 8, alignItems: "center", marginBottom: 8 }}>
-          <FSel value={grupoNuevo} onChange={setGrupoNuevo} options={CURVA_TALLAS_ESTANDAR} />
-          <FInput value={codigoNuevo} onChange={setCodigoNuevo} placeholder="Código de barra (o escanea con la pistola)" onEnter={agregarCodigo} />
-          <Btn small variant="secondary" onClick={agregarCodigo} disabled={!grupoNuevo || !codigoNuevo.trim()}>+ Agregar</Btn>
-        </div>
-        {linea.barras && linea.barras.length > 0 && (
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {linea.barras.map((b, i) => (
-              <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", background: C.blueBg, borderRadius: 6, fontSize: 11, color: C.blue }}>
-                <strong>{b.talla || "—"}</strong> {b.cbarraI || b.cbarraE || b.cbarraM || "sin código"}
-                <span onClick={() => quitarCodigo(b.talla)} style={{ cursor: "pointer", color: C.red, fontWeight: 800 }}>✕</span>
-              </div>
-            ))}
+      {esDubo ? (
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 10 }}>
+          <Field label="Descripción">
+            <FInput value={linea.descripcion} onChange={(v) => onChange({ ...linea, descripcion: v })} />
+          </Field>
+          <Field label="Precio">
+            <FInput type="number" value={linea.precio} onChange={(v) => onChange({ ...linea, precio: v })} />
+          </Field>
+          <Field label="Dcto (por unidad)">
+            <FInput type="number" value={linea.dcto} onChange={(v) => onChange({ ...linea, dcto: v })} />
+          </Field>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>Total línea</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, padding: "9px 0" }}>{fmtMoney(calcularTotalLinea(linea))}</div>
           </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 10 }}>
+            <Field label="Descripción">
+              <FInput value={linea.descripcion} onChange={(v) => onChange({ ...linea, descripcion: v })} />
+            </Field>
+            <Field label="Marca">
+              <FSel value={linea.marca} onChange={(v) => onChange({ ...linea, marca: v })} options={MARCAS_BODEGA} />
+            </Field>
+            <Field label="Segmento">
+              <FSel value={linea.segmento} onChange={(v) => onChange({ ...linea, segmento: v })} options={SEGMENTOS_BODEGA} />
+            </Field>
+            <Field label="N° Bulto">
+              <FInput value={linea.numBulto} onChange={(v) => onChange({ ...linea, numBulto: v })} placeholder="1/3" />
+            </Field>
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Códigos de barra por grupo de talla</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr auto", gap: 8, alignItems: "center", marginBottom: 8 }}>
+              <FSel value={grupoNuevo} onChange={setGrupoNuevo} options={CURVA_TALLAS_ESTANDAR} />
+              <FInput value={codigoNuevo} onChange={setCodigoNuevo} placeholder="Código de barra (o escanea con la pistola)" onEnter={agregarCodigo} />
+              <Btn small variant="secondary" onClick={agregarCodigo} disabled={!grupoNuevo || !codigoNuevo.trim()}>+ Agregar</Btn>
+            </div>
+            {linea.barras && linea.barras.length > 0 && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {linea.barras.map((b, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", background: C.blueBg, borderRadius: 6, fontSize: 11, color: C.blue }}>
+                    <strong>{b.talla || "—"}</strong> {b.cbarraI || b.cbarraE || b.cbarraM || "sin código"}
+                    <span onClick={() => quitarCodigo(b.talla)} style={{ cursor: "pointer", color: C.red, fontWeight: 800 }}>✕</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -713,6 +745,7 @@ function MontarDespachoView({ despachos, currentUser, onGuardado, coleccionDespa
           onChange={(nueva) => actualizarLinea(i, nueva)}
           onRemove={() => quitarLinea(i)}
           onBuscarBusint={() => buscarEnBusint(i)}
+          destino={destino}
         />
       ))}
       <div style={{ marginBottom: 20 }}>
@@ -722,7 +755,11 @@ function MontarDespachoView({ despachos, currentUser, onGuardado, coleccionDespa
         <div>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase" }}>Total de unidades</div>
           <div style={{ fontSize: 22, fontWeight: 900, color: C.ink }}>{fmtNum(totalUnidades)}</div>
-          <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>El precio y el descuento los define Contabilidad al revisar el despacho.</div>
+          {destino === "Dubo" ? (
+            <div style={{ fontSize: 13, color: C.slate, marginTop: 2 }}>Total: <strong style={{ color: C.ink }}>{fmtMoney(lineas.reduce((s, l) => s + calcularTotalLinea(l), 0))}</strong></div>
+          ) : (
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>El precio y el descuento los define Contabilidad al revisar el despacho.</div>
+          )}
         </div>
         <Btn onClick={guardarDespacho} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Montar Despacho"}</Btn>
       </div>
