@@ -1,15 +1,19 @@
 /**
  * Integración con la API de Busint (Órdenes de Pedidos).
  *
- * Dos funciones distintas comparten las mismas credenciales y el mismo
- * endpoint de Busint:
+ * (2026-08-17) NOTA IMPORTANTE: este archivo (functions/index.js, el que
+ * package.json marca como "main" — el que de verdad se despliega con
+ * `firebase deploy --only functions`) se había quedado desincronizado de
+ * `functions/index.js.js` (un archivo suelto, sin usar, que había ido
+ * acumulando funciones nuevas por separado — mismo tipo de problema que se
+ * encontró con src/App.js vs src/App-CORREO-USUARIOS.js). Este archivo se
+ * reconstruyó a partir de index.js.js (la versión más reciente: sin VPN,
+ * habla directo a Busint) y se le agregó de vuelta `getReferenciasBusint`
+ * (que index.js.js no tenía) más dos funciones nuevas. index.js.js queda
+ * como referencia histórica pero ya no se usa para nada — se puede borrar
+ * cuando se quiera.
  *
- * 1. `syncPedidosBusint` (programada, corre sola cada 6 horas): reemplaza el
- *    flujo manual de "descargar Excel de Busint → subirlo al aplicativo".
- *    Consulta los últimos 14 días y guarda en Firestore los pedidos que aún
- *    no existan.
- *
- * 2. `getPedidosVigentesBusint` (bajo demanda, "callable" desde la app): se
+ * 1. `getPedidosVigentesBusint` (bajo demanda, "callable" desde la app): se
  *    usa para el Informe de Pedidos Vigentes por Cliente — consulta Busint
  *    EN VIVO para el rango de fechas que el usuario escoja en pantalla (no
  *    depende de lo que ya esté guardado en Firestore), agrupados por cliente
@@ -39,28 +43,71 @@
  *    completo: se muestra igual (sin excluir nada por facturación) y se
  *    avisa con `avisoFacturacion` en la respuesta.
  *
+ * 2. `getPedidosExistentesBusint`: usado por "Revisar contra Busint" (Pedidos
+ *    y módulo Corte) — devuelve la lista de números de pedido que Busint
+ *    todavía tiene hoy en un rango de fechas.
+ *
+ * 3. `getOrdenBusintPorNumero`: diagnóstico — trae las filas crudas que
+ *    Busint devuelve para un número de pedido puntual.
+ *
+ * 4. `getClientesBusint`: usado por Administrador General → Clientes →
+ *    "Importar de Busint" — trae el maestro completo de clientes.
+ *
+ * 5. `migrarUsuariosAFirebaseAuth`: migración (Fase A) del login antiguo
+ *    (comparación de clave en texto plano contra la colección `users`) hacia
+ *    Firebase Authentication real.
+ *
+ * 6. `adminCrearUsuario` / `adminCambiarClaveUsuario`: Fase B de esa misma
+ *    migración — ahora que el login real ya usa Firebase Auth, Admin →
+ *    Usuarios necesita crear cuentas reales al dar de alta un usuario nuevo,
+ *    y resetear la clave de OTRO usuario ya no lo puede hacer el navegador
+ *    directamente (solo el propio). Ambas verifican que quien llama esté
+ *    autenticado Y sea administrador antes de hacer nada — ver
+ *    `verificarLlamadorEsAdmin` más abajo.
+ *
+ * 7. `buscarReferenciaBusint`: usado por módulo Bodega → Despachos → Montar
+ *    Despacho — al escribir una referencia trae de Busint su descripción,
+ *    precio y códigos de barra por talla/color, para no digitarlos a mano.
+ *
+ * 8. `getReferenciasBusint`: usado desde "Nuevo Prototipo"/"Nueva Referencia"
+ *    (Diseño) para verificar en vivo si un consecutivo sugerido ya existe en
+ *    Busint antes de dejar crearlo.
+ *
+ * 9. `buscarTrasladoBusintPorNumero`: usado por módulo Bodega → Despachos →
+ *    Montar Despacho (destino Dubo) — trae TODAS las líneas de un Traslado
+ *    de Busint a partir de su número (el "TRASLADO Nº ####" impreso en la
+ *    remisión), para no tener que digitar referencia por referencia cuando
+ *    un traslado trae 100+ líneas.
+ *
  * CREDENCIALES: el token y la URL base de Busint NUNCA se escriben en este
  * archivo (que queda en un repositorio público) — se leen como "secrets" de
  * Firebase, configurados una sola vez desde la línea de comandos:
  *
  *   firebase functions:secrets:set BUSINT_TOKEN
  *   firebase functions:secrets:set BUSINT_BASE_URL
- *   firebase functions:secrets:set BUSINT_PROXY_SECRET
+ *   firebase functions:secrets:set MIGRACION_CLAVE
  *
- * IMPORTANTE — Busint Cloud exige conectarse por VPN (WireGuard) para poder
- * usar la API; una Cloud Function no puede mantener una VPN abierta por sí
- * sola. Por eso estas funciones NO le hablan directo a Busint: le hablan a
- * una VM-puente (una máquina virtual siempre conectada a la VPN de Busint,
- * que reenvía la petición) — ver vm-busint-relay-startup.sh. En este caso:
- *   - BUSINT_BASE_URL = la dirección de esa VM-puente, ej: http://IP:8080
- *     (SIN "/" al final)
- *   - BUSINT_PROXY_SECRET = el mismo secreto configurado en la VM, para que
- *     solo esta función pueda usar el puente (nadie más que sepa la IP).
+ * (2026-07-30) Busint eliminó el requisito de VPN para consumir esta API —
+ * ahora se le habla DIRECTO a https://api-yanko-gen.busint.info, confirmado
+ * con una prueba real (curl con el token, sin VPN, devolvió pedidos). Antes
+ * era necesario pasar por una VM-puente siempre conectada a la VPN de
+ * Busint (con su propio secreto BUSINT_PROXY_SECRET) porque una Cloud
+ * Function no puede mantener una VPN abierta por sí sola; ya no hace falta
+ * ese puente, así que se quitó del código:
+ *   - BUSINT_BASE_URL ahora es la URL de Busint directamente
+ *     (https://api-yanko-gen.busint.info, SIN "/" al final).
+ *   - Si la VM-puente sigue corriendo, ya se puede apagar una vez se
+ *     confirme que esta versión funciona bien en producción.
  *
- * Ver README_BUSINT_SYNC.md para la guía completa de despliegue. Si ya
- * desplegaste `syncPedidosBusint` antes, estos secrets ya están configurados
- * y `getPedidosVigentesBusint` los reutiliza tal cual — no hace falta
- * volver a pegarlos en ningún lado.
+ * NOTA: este archivo tenía antes una función programada (`syncPedidosBusint`,
+ * corría sola cada 6 horas) que copiaba pedidos de Busint a la colección
+ * "pedidos". Se retiró — ese auto-sync generaba una base separada y
+ * desincronizada de la que realmente importa (la que corta el módulo Corte),
+ * y nunca reflejaba con certeza qué seguía vigente. El flujo actual es:
+ * getPedidosVigentesBusint (consulta en vivo, siempre fresca) + el botón
+ * "Congelar como base de Corte" en la pantalla de Vigentes, que escribe
+ * directo a la colección "pedidos_activos" — una sola fuente de verdad que
+ * tanto Pedidos como Corte leen.
  */
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { defineSecret } = require("firebase-functions/params");
@@ -72,7 +119,6 @@ const db = admin.firestore();
 
 const BUSINT_TOKEN = defineSecret("BUSINT_TOKEN");
 const BUSINT_BASE_URL = defineSecret("BUSINT_BASE_URL");
-const BUSINT_PROXY_SECRET = defineSecret("BUSINT_PROXY_SECRET");
 
 function fmtFecha(d) {
   return d.toISOString().slice(0, 10);
@@ -93,7 +139,6 @@ function soloFecha(iso) {
 async function consultarOrdenesBusint(fechaInicio, fechaFin) {
   const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
   const token = BUSINT_TOKEN.value();
-  const proxySecret = BUSINT_PROXY_SECRET.value();
 
   const form = new FormData();
   form.append("Token", token);
@@ -102,7 +147,6 @@ async function consultarOrdenesBusint(fechaInicio, fechaFin) {
 
   const resp = await fetch(`${baseUrl}/consultas/ApiGen_OrdenesDePedidoBusint`, {
     method: "POST",
-    headers: { "X-Proxy-Secret": proxySecret },
     body: form,
   });
 
@@ -173,7 +217,6 @@ function agruparFilasBusintPorPedido(filas) {
 async function consultarFacturadoBusint(fechaInicio, fechaFin) {
   const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
   const token = BUSINT_TOKEN.value();
-  const proxySecret = BUSINT_PROXY_SECRET.value();
 
   const form = new FormData();
   form.append("Token", token);
@@ -182,7 +225,6 @@ async function consultarFacturadoBusint(fechaInicio, fechaFin) {
 
   const resp = await fetch(`${baseUrl}/consultas/ApiGen_FacturadoBusint`, {
     method: "POST",
-    headers: { "X-Proxy-Secret": proxySecret },
     body: form,
   });
 
@@ -200,21 +242,6 @@ function cryptoRandomId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-// NOTA: este archivo tenía antes una función programada (`syncPedidosBusint`,
-// corría sola cada 6 horas) que copiaba pedidos de Busint a la colección
-// "pedidos". Se retiró — ese auto-sync generaba una base separada y
-// desincronizada de la que realmente importa (la que corta el módulo Corte),
-// y nunca reflejaba con certeza qué seguía vigente. El flujo actual es:
-// getPedidosVigentesBusint (consulta en vivo, siempre fresca) + el botón
-// "Congelar como base de Corte" en la pantalla de Vigentes, que escribe
-// directo a la colección "pedidos_activos" — una sola fuente de verdad que
-// tanto Pedidos como Corte leen. Si vuelves a ver un despliegue que mencione
-// `syncPedidosBusint`, es una versión vieja de este archivo.
-// IMPORTANTE AL DESPLEGAR: `firebase deploy --only functions` puede
-// preguntar si quieres borrar la función `syncPedidosBusint` porque ya no
-// está en este código — contesta que sí, así se apaga también el
-// Cloud Scheduler que la disparaba cada 6 horas.
-
 // Informe de Pedidos Vigentes por Cliente — consulta Busint EN VIVO (no lee
 // Firestore) para el rango { fechaInicio, fechaFin } que envía la pantalla,
 // y devuelve solo los pedidos cuya fecha de despacho es hoy o está en el
@@ -222,7 +249,7 @@ function cryptoRandomId() {
 // `httpsCallable(functions, "getPedidosVigentesBusint")({ fechaInicio, fechaFin })`.
 exports.getPedidosVigentesBusint = onCall(
   {
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_PROXY_SECRET],
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 60,
     memory: "256MiB",
   },
@@ -244,19 +271,6 @@ exports.getPedidosVigentesBusint = onCall(
     const porPedido = agruparFilasBusintPorPedido(filas);
     const hoyISO = new Date().toISOString().slice(0, 10);
 
-    // a) Pedidos ya facturados/despachados: se consulta ApiGen_FacturadoBusint
-    // desde la misma fechaInicio elegida hasta HOY (no hasta fechaFin, porque
-    // un pedido dentro del rango puede facturarse después de fechaFin,
-    // incluso después de hoy si fechaFin quedó en el pasado). Busint factura
-    // por REFERENCIA, no por pedido completo — un pedido con 8 referencias
-    // puede tener solo 1 facturada y las otras 7 sin cortar todavía (visto en
-    // el reporte "Prioridades de Despacho" de Busint: pedido con 40% de sus
-    // unidades facturadas). Por eso NO basta con que el pedido "aparezca" en
-    // ApiGen_FacturadoBusint — hay que sumar las unidades facturadas
-    // (`cant`) de todas sus filas y compararlas contra el total pedido; solo
-    // se excluye del informe si ya está 100% facturado. Si esta consulta
-    // falla, no se cae el informe: se sigue igual sin excluir nada por
-    // facturación, y se avisa en la respuesta con `avisoFacturacion`.
     let facturadoPorPedido = new Map();
     let avisoFacturacion = null;
     try {
@@ -272,10 +286,6 @@ exports.getPedidosVigentesBusint = onCall(
       avisoFacturacion = "No se pudo consultar la facturación de Busint — este informe puede estar mostrando pedidos que ya se facturaron.";
     }
 
-    // b) Para los que no están facturados, se cruza con la carga más
-    // reciente de Planeación (misma colección `planeacion_cargas` que usa el
-    // módulo Planta) por número de pedido, para saber si ya tiene lote (y en
-    // qué etapa va) o si todavía no ha iniciado producción ("sin cortar").
     const cargasPlaneacionSnap = await db.collection("planeacion_cargas").get();
     const cargasPlaneacion = cargasPlaneacionSnap.docs.map((d) => d.data());
     cargasPlaneacion.sort((a, b) => String(b.creadoEn || b.fecha || "").localeCompare(String(a.creadoEn || a.fecha || "")));
@@ -288,17 +298,9 @@ exports.getPedidosVigentesBusint = onCall(
       lotesPorPedido.get(numPedido).push({ numLote: l.numLote, ubicacionActual: l.ubicacionActual || "En proceso" });
     });
 
-    // Pedidos que un administrador marcó como "ocultar" desde la pantalla del
-    // informe — normalmente porque Busint los está generando mal (p. ej. por
-    // algo interno de facturación aún sin identificar) y no son demanda real.
-    // Ocultar NO borra ni modifica nada en Busint, solo evita que este
-    // informe los muestre.
     const ocultosSnap = await db.collection("pedidos_ocultos_busint").get();
     const ocultosSet = new Set(ocultosSnap.docs.map((d) => String(d.data().numero || d.id).trim()));
 
-    // "Vigente" = todavía no está 100% facturado. Además se marca `vencido`
-    // cuando la fecha de despacho (programada por Busint) ya pasó, para
-    // diferenciarlo visualmente de los que van a tiempo.
     const porClienteMap = new Map();
     for (const [, pedido] of porPedido) {
       if (ocultosSet.has(pedido.numero)) continue;
@@ -333,8 +335,6 @@ exports.getPedidosVigentesBusint = onCall(
     }
 
     const porCliente = [...porClienteMap.values()].sort((a, b) => a.cliente.localeCompare(b.cliente));
-    // Los vencidos (fecha de despacho ya pasada, sin terminar de cortar)
-    // aparecen primero dentro de cada cliente — son los más urgentes.
     porCliente.forEach((g) =>
       g.pedidos.sort((a, b) => {
         if (a.vencido !== b.vencido) return a.vencido ? -1 : 1;
@@ -364,7 +364,7 @@ exports.getPedidosVigentesBusint = onCall(
 // pegado como activo para siempre.
 exports.getPedidosExistentesBusint = onCall(
   {
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_PROXY_SECRET],
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 60,
     memory: "256MiB",
   },
@@ -386,11 +386,44 @@ exports.getPedidosExistentesBusint = onCall(
   }
 );
 
-// NOTA: este archivo tenía antes `getOrdenBusintPorNumero`, una herramienta
-// de diagnóstico para consultar filas crudas de un pedido puntual (se usó
-// para investigar el caso del pedido #1445). Se retiró — ya no se usa desde
-// que el flujo de Vigentes + Ventas Perdidas + Congelar resuelve esa misma
-// pregunta directamente en pantalla.
+// Diagnóstico: trae las filas CRUDAS (sin agrupar, sin filtrar campos) que
+// ApiGen_OrdenesDePedidoBusint devuelve para un número de pedido puntual, en
+// el rango de fechas dado. Se usa desde la pantalla de Pedidos para
+// responder la pregunta "¿este pedido todavía existe en Busint, y con qué
+// datos exactos?" sin adivinar — muestra tal cual lo que Busint responde.
+exports.getOrdenBusintPorNumero = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const { fechaInicio, fechaFin, numeroPedido } = request.data || {};
+    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    if (!fechaValida(fechaInicio) || !fechaValida(fechaFin)) {
+      throw new HttpsError("invalid-argument", "fechaInicio y fechaFin son obligatorias, en formato AAAA-MM-DD.");
+    }
+    const numeroBuscado = String(numeroPedido ?? "").trim();
+    if (!numeroBuscado) {
+      throw new HttpsError("invalid-argument", "numeroPedido es obligatorio.");
+    }
+    let filas;
+    try {
+      filas = await consultarOrdenesBusint(fechaInicio, fechaFin);
+    } catch (err) {
+      logger.error("Error consultando Busint (getOrdenBusintPorNumero)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+    }
+    const filasCoincidentes = filas.filter((f) => String(f.numPed ?? "").trim() === numeroBuscado);
+    return {
+      fechaInicio,
+      fechaFin,
+      numeroPedido: numeroBuscado,
+      totalFilasEnRango: filas.length,
+      filasCoincidentes,
+    };
+  }
+);
 
 // Consulta el maestro de clientes de Busint ("ApiGen_Clientes") — a
 // diferencia de las órdenes de pedido, este endpoint no recibe rango de
@@ -398,14 +431,12 @@ exports.getPedidosExistentesBusint = onCall(
 async function consultarClientesBusint() {
   const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
   const token = BUSINT_TOKEN.value();
-  const proxySecret = BUSINT_PROXY_SECRET.value();
 
   const form = new FormData();
   form.append("Token", token);
 
   const resp = await fetch(`${baseUrl}/consultas/ApiGen_Clientes`, {
     method: "POST",
-    headers: { "X-Proxy-Secret": proxySecret },
     body: form,
   });
 
@@ -427,7 +458,7 @@ async function consultarClientesBusint() {
 // solo entrega los datos crudos de Busint.
 exports.getClientesBusint = onCall(
   {
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_PROXY_SECRET],
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 60,
     memory: "256MiB",
   },
@@ -452,59 +483,108 @@ exports.getClientesBusint = onCall(
       }))
       .filter((c) => c.nombre);
 
-    // Ordenado alfabéticamente para que la revisión en pantalla sea
-    // predecible (Busint no garantiza ningún orden particular).
     clientes.sort((a, b) => a.nombre.localeCompare(b.nombre));
 
     return { generadoEn: new Date().toISOString(), total: clientes.length, clientes };
   }
 );
 
-// Consulta el maestro de referencias de Busint ("ApiGen_Referencias") —
-// igual que ApiGen_Clientes, no recibe rango de fechas: siempre trae TODAS
-// las referencias creadas hasta hoy en Busint, tal como están ahora mismo.
-async function consultarReferenciasBusint() {
+// Trae de Busint el maestro completo de referencias ("ApiGen_Referencias") y
+// de códigos de barra ("ApiGen_CodigosDeBarra") — ninguno de los dos acepta
+// filtro en la API de Busint (siempre traen TODO el catálogo), así que se
+// filtra acá adentro por la referencia pedida antes de responder, para no
+// mandarle al navegador miles de filas que no necesita.
+async function consultarCatalogoBusint(endpoint) {
   const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
   const token = BUSINT_TOKEN.value();
-  const proxySecret = BUSINT_PROXY_SECRET.value();
-
   const form = new FormData();
   form.append("Token", token);
-
-  const resp = await fetch(`${baseUrl}/consultas/ApiGen_Referencias`, {
-    method: "POST",
-    headers: { "X-Proxy-Secret": proxySecret },
-    body: form,
-  });
-
+  const resp = await fetch(`${baseUrl}/consultas/${endpoint}`, { method: "POST", body: form });
   if (!resp.ok) {
     const texto = await resp.text().catch(() => "");
-    logger.error("Busint respondió con error (ApiGen_Referencias)", { status: resp.status, texto });
+    logger.error(`Busint respondió con error (${endpoint})`, { status: resp.status, texto });
     throw new Error(`Busint respondió ${resp.status}`);
   }
-
   const filas = await resp.json();
   return Array.isArray(filas) ? filas : [];
 }
 
-// Callable usado desde "Nuevo Prototipo" y "Nueva Referencia" (Diseño), en
-// la cajita donde ATLAS sugiere el próximo consecutivo (ver
-// sugerirReferencia() en App.js). Antes de dejar crear la referencia, la
-// pantalla verifica en vivo contra Busint si ese código ya existe allá —
-// Busint es el sistema autoritativo aguas abajo, así que aunque el
-// consecutivo esté libre en ATLAS, puede que ya lo hayan usado por fuera.
-// Se entrega solo el código (más 2-3 campos livianos de contexto) para que
-// la respuesta sea rápida aunque el maestro tenga miles de filas.
+// Usado por módulo Bodega → Despachos → Montar Despacho: al escribir una
+// referencia, autocompleta descripción/precio (ApiGen_Referencias) y los
+// códigos de barra por talla/color (ApiGen_CodigosDeBarra) de esa misma
+// referencia, para no tener que digitarlos a mano.
+exports.buscarReferenciaBusint = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const refBuscada = String(request.data?.ref || "").trim().toUpperCase();
+    if (!refBuscada) {
+      throw new HttpsError("invalid-argument", "Debes indicar una referencia.");
+    }
+
+    let referencias, codigosBarra;
+    try {
+      [referencias, codigosBarra] = await Promise.all([
+        consultarCatalogoBusint("ApiGen_Referencias"),
+        consultarCatalogoBusint("ApiGen_CodigosDeBarra"),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint (buscarReferenciaBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+    }
+
+    const refsCoincidentes = referencias.filter((r) => String(r.ref || "").trim().toUpperCase() === refBuscada);
+    const barrasCoincidentes = codigosBarra
+      .filter((c) => String(c.ref || "").trim().toUpperCase() === refBuscada)
+      .map((c) => ({
+        talla: (c.talla || "").trim(),
+        pinta: (c.pinta || "").trim(),
+        color: (c.color || "").trim(),
+        cbarraI: (c.cbarraI || "").trim(),
+        cbarraE: (c.cbarraE || "").trim(),
+        cbarraM: (c.cbarraM || "").trim(),
+      }));
+
+    if (!refsCoincidentes.length && !barrasCoincidentes.length) {
+      return { encontrada: false, ref: refBuscada, descripcion: "", precioPM: null, precioP: null, costoFT: null, tallas: [], barras: [] };
+    }
+
+    const r0 = refsCoincidentes[0] || {};
+    const tallas = [...new Set(refsCoincidentes.map((r) => (r.tallas || "").trim()).filter(Boolean))];
+
+    return {
+      encontrada: true,
+      ref: refBuscada,
+      descripcion: (r0.descripcionLarga || "").trim(),
+      categoria: (r0.categoria || "").trim(),
+      tipoProducto: (r0.tipoProducto || "").trim(),
+      precioPM: r0.precioPM ?? null,
+      precioP: r0.precioP ?? null,
+      costoFT: r0.costoFT ?? null,
+      tallas,
+      barras: barrasCoincidentes,
+    };
+  }
+);
+
+// Consulta el maestro de referencias de Busint ("ApiGen_Referencias") — no
+// recibe filtro, siempre trae todo el catálogo tal como está hoy. Usado
+// desde "Nuevo Prototipo"/"Nueva Referencia" (Diseño) para verificar en vivo
+// si un consecutivo sugerido ya existe en Busint antes de dejar crearlo (ver
+// sugerirReferencia() en App.js).
 exports.getReferenciasBusint = onCall(
   {
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_PROXY_SECRET],
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 60,
     memory: "256MiB",
   },
   async () => {
     let filas;
     try {
-      filas = await consultarReferenciasBusint();
+      filas = await consultarCatalogoBusint("ApiGen_Referencias");
     } catch (err) {
       logger.error("Error consultando Busint (getReferenciasBusint)", { error: String(err) });
       throw new HttpsError("unavailable", "No se pudo consultar el maestro de referencias de Busint. Intenta de nuevo en unos minutos.");
@@ -519,5 +599,420 @@ exports.getReferenciasBusint = onCall(
       .filter((r) => r.ref);
 
     return { generadoEn: new Date().toISOString(), total: referencias.length, referencias };
+  }
+);
+
+// Usado por módulo Bodega → Despachos → Montar Despacho (destino Dubo): en
+// vez de digitar cada referencia una por una, trae de un tirón TODAS las
+// líneas de un Traslado de Busint a partir de su número (el que aparece
+// impreso como "TRASLADO Nº ####" en la remisión), agrupando las filas por
+// talla que entrega ApiGen_FacturadoBusint en una sola línea por
+// referencia+pinta+color — igual que se ve en el PDF del traslado.
+//
+// Busint no tiene un endpoint dedicado a "traslados": vienen mezclados
+// dentro de ApiGen_FacturadoBusint (junto con facturas normales y
+// devoluciones), identificados por el campo "doc" (el número de documento).
+// Por default busca en los últimos 180 días; si se manda `fechaAprox`
+// (AAAA-MM-DD, la fecha que aparece en la remisión), se acota la búsqueda a
+// ±20/10 días alrededor de esa fecha — más rápido y más preciso si el
+// traslado es viejo.
+exports.buscarTrasladoBusintPorNumero = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const numBuscado = String(request.data?.numeroTraslado ?? "").trim();
+    if (!numBuscado) {
+      throw new HttpsError("invalid-argument", "Debes indicar el número de traslado.");
+    }
+    const fechaAprox = request.data?.fechaAprox;
+    const fechaValida = typeof fechaAprox === "string" && /^\d{4}-\d{2}-\d{2}$/.test(fechaAprox);
+    let fechaInicio, fechaFin;
+    const hoy = new Date();
+    if (fechaValida) {
+      const centro = new Date(`${fechaAprox}T00:00:00Z`);
+      fechaInicio = new Date(centro);
+      fechaInicio.setUTCDate(fechaInicio.getUTCDate() - 20);
+      fechaFin = new Date(centro);
+      fechaFin.setUTCDate(fechaFin.getUTCDate() + 10);
+    } else {
+      fechaInicio = new Date(hoy);
+      fechaInicio.setUTCDate(fechaInicio.getUTCDate() - 180);
+      fechaFin = hoy;
+    }
+    const iso = (d) => d.toISOString().slice(0, 10);
+
+    let filas, referencias;
+    try {
+      [filas, referencias] = await Promise.all([
+        consultarFacturadoBusint(iso(fechaInicio), iso(fechaFin)),
+        consultarCatalogoBusint("ApiGen_Referencias"),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint (buscarTrasladoBusintPorNumero)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+    }
+
+    const filasTraslado = filas.filter((f) => String(f.doc ?? "").trim() === numBuscado);
+    if (!filasTraslado.length) {
+      return {
+        encontrado: false,
+        numeroTraslado: numBuscado,
+        rangoConsultado: { fechaInicio: iso(fechaInicio), fechaFin: iso(fechaFin) },
+        lineas: [],
+      };
+    }
+
+    const descripcionPorRef = new Map();
+    referencias.forEach((r) => {
+      const ref = String(r.ref || "").trim().toUpperCase();
+      if (ref && !descripcionPorRef.has(ref)) descripcionPorRef.set(ref, (r.descripcionLarga || "").trim());
+    });
+
+    // Cada fila de Busint es por talla — se agrupan en una sola línea por
+    // referencia+pinta+color, sumando cantidad, igual que se ve en el PDF.
+    // ApiGen_FacturadoBusint también trae el código de barra por talla
+    // (cbarraI/cbarraE/cbarraM) en la misma fila, así que se guarda de una
+    // vez — no hace falta escanearlo aparte.
+    const grupos = new Map();
+    filasTraslado.forEach((f) => {
+      const ref = String(f.ref || "").trim();
+      const clave = `${ref}|${f.pinta || ""}|${f.color || ""}`;
+      if (!grupos.has(clave)) {
+        grupos.set(clave, {
+          referencia: ref,
+          descripcion: descripcionPorRef.get(ref.toUpperCase()) || [f.pinta, f.color].filter(Boolean).join(" "),
+          cantidad: 0,
+          precio: Number(f.precio) || 0,
+          numTraslado: numBuscado,
+          barras: [],
+        });
+      }
+      const grupo = grupos.get(clave);
+      grupo.cantidad += Math.round(Number(f.cant) || 0);
+      const talla = String(f.talla || "").trim();
+      const cbarraI = String(f.cbarraI ?? "").trim();
+      const cbarraE = String(f.cbarraE ?? "").trim();
+      const cbarraM = String(f.cbarraM ?? "").trim();
+      if (talla && (cbarraI || cbarraE || cbarraM) && !grupo.barras.some((b) => b.talla === talla)) {
+        grupo.barras.push({ talla, cbarraI, cbarraE, cbarraM });
+      }
+    });
+
+    const lineas = [...grupos.values()];
+    // ApiGen_FacturadoBusint trae mezclados facturas normales, traslados
+    // externos, traslados en consignación y devoluciones — este mismo
+    // endpoint (y por lo tanto este mismo buscador) sirve para traer
+    // CUALQUIERA de esos por su número de documento, no solo traslados; el
+    // campo "tipo" de Busint dice cuál es.
+    return {
+      encontrado: true,
+      numeroTraslado: numBuscado,
+      tipo: (filasTraslado[0]?.tipo || "").trim() || null,
+      fecha: soloFecha(filasTraslado[0]?.fechaFact) || null,
+      totalLineas: lineas.length,
+      totalUnidades: lineas.reduce((s, l) => s + l.cantidad, 0),
+      lineas,
+    };
+  }
+);
+
+// Usado por módulo Bodega → Despachos → Montar Despacho (destino Dubo):
+// Dubo se factura en Busint día a día como "traslado externo" (una
+// remisión chiquita por día), y solo de vez en cuando (cada mes o más) se
+// junta un grupo de esas remisiones en un despacho físico real. Esta
+// función trae, para un rango de fechas y un cliente puntual (Dubo =
+// codigoCliente 118, confirmado contra la remisión que se subió), TODOS
+// los documentos (traslados/facturas) que Busint tiene registrados en ese
+// rango, cada uno con sus líneas ya listas para cargar — así la pantalla
+// puede mostrar una lista con casillas y armar UN SOLO despacho con las que
+// se marquen, sin tener que escribir número por número.
+exports.listarDocumentosBusintCliente = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 90,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const { fechaInicio, fechaFin, codigoCliente } = request.data || {};
+    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    if (!fechaValida(fechaInicio) || !fechaValida(fechaFin)) {
+      throw new HttpsError("invalid-argument", "fechaInicio y fechaFin son obligatorias, en formato AAAA-MM-DD.");
+    }
+    if (codigoCliente === undefined || codigoCliente === null || codigoCliente === "") {
+      throw new HttpsError("invalid-argument", "codigoCliente es obligatorio.");
+    }
+    const codigoBuscado = String(codigoCliente).trim();
+
+    let filas, referencias;
+    try {
+      [filas, referencias] = await Promise.all([
+        consultarFacturadoBusint(fechaInicio, fechaFin),
+        consultarCatalogoBusint("ApiGen_Referencias"),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint (listarDocumentosBusintCliente)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+    }
+
+    const filasCliente = filas.filter((f) => String(f.codigoCliente ?? "").trim() === codigoBuscado);
+
+    const descripcionPorRef = new Map();
+    referencias.forEach((r) => {
+      const ref = String(r.ref || "").trim().toUpperCase();
+      if (ref && !descripcionPorRef.has(ref)) descripcionPorRef.set(ref, (r.descripcionLarga || "").trim());
+    });
+
+    // Primer nivel: agrupar por documento (doc). Segundo nivel (igual que en
+    // buscarTrasladoBusintPorNumero): agrupar las filas de cada documento
+    // por referencia+pinta+color, sumando las tallas en una sola línea.
+    const porDoc = new Map();
+    filasCliente.forEach((f) => {
+      const doc = String(f.doc ?? "").trim();
+      if (!doc) return;
+      if (!porDoc.has(doc)) {
+        porDoc.set(doc, {
+          doc,
+          tipo: (f.tipo || "").trim(),
+          fecha: soloFecha(f.fechaFact),
+          grupos: new Map(),
+        });
+      }
+      const docObj = porDoc.get(doc);
+      const ref = String(f.ref || "").trim();
+      const claveLinea = `${ref}|${f.pinta || ""}|${f.color || ""}`;
+      if (!docObj.grupos.has(claveLinea)) {
+        docObj.grupos.set(claveLinea, {
+          referencia: ref,
+          descripcion: descripcionPorRef.get(ref.toUpperCase()) || [f.pinta, f.color].filter(Boolean).join(" "),
+          cantidad: 0,
+          precio: Number(f.precio) || 0,
+          numTraslado: doc,
+          barras: [],
+        });
+      }
+      const linea = docObj.grupos.get(claveLinea);
+      linea.cantidad += Math.round(Number(f.cant) || 0);
+      const talla = String(f.talla || "").trim();
+      const cbarraI = String(f.cbarraI ?? "").trim();
+      const cbarraE = String(f.cbarraE ?? "").trim();
+      const cbarraM = String(f.cbarraM ?? "").trim();
+      if (talla && (cbarraI || cbarraE || cbarraM) && !linea.barras.some((b) => b.talla === talla)) {
+        linea.barras.push({ talla, cbarraI, cbarraE, cbarraM });
+      }
+    });
+
+    const documentos = [...porDoc.values()]
+      .map((d) => {
+        const lineas = [...d.grupos.values()];
+        return {
+          doc: d.doc,
+          tipo: d.tipo,
+          fecha: d.fecha,
+          totalUnidades: lineas.reduce((s, l) => s + l.cantidad, 0),
+          totalValor: lineas.reduce((s, l) => s + l.cantidad * l.precio, 0),
+          totalLineas: lineas.length,
+          lineas,
+        };
+      })
+      .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+
+    return { fechaInicio, fechaFin, codigoCliente: codigoBuscado, totalDocumentos: documentos.length, documentos };
+  }
+);
+
+// ─── MIGRACIÓN A FIREBASE AUTHENTICATION (Fase A) ─────────────────────────
+//
+// Hoy el login del aplicativo compara la clave escrita a mano contra la
+// colección `users` de Firestore, que guarda las contraseñas en texto
+// plano y se lee completa ANTES de que la persona inicie sesión — por eso
+// las reglas de seguridad de Firestore no pueden exigir sesión iniciada sin
+// romper el login. Este es el primer paso para arreglarlo de raíz: crear,
+// por detrás y sin tocar el login actual, una cuenta REAL de Firebase
+// Authentication para cada usuario que ya existe.
+//
+// Firebase Auth pide un "correo" para el login por clave — como acá se
+// entra con nombre de usuario (no correo), se arma uno falso con el mismo
+// username: usuario@techpack-yanko.local. Nadie necesita memorizar nada
+// nuevo. La clave que ya tiene cada persona se reutiliza tal cual.
+//
+// Es segura de correr varias veces: si un usuario ya tiene el campo
+// `authUid` guardado (ya fue migrado), se salta. No borra ni modifica la
+// colección `users` existente — solo le agrega `authUid` a cada documento,
+// para poder ligarlo más adelante (Fase B) a la cuenta real.
+//
+// Protegida con una clave secreta propia (no con sesión iniciada, porque en
+// este punto nadie puede iniciar sesión todavía con Firebase Auth).
+const MIGRACION_CLAVE = defineSecret("MIGRACION_CLAVE");
+
+exports.migrarUsuariosAFirebaseAuth = onCall(
+  {
+    secrets: [MIGRACION_CLAVE],
+    timeoutSeconds: 120,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const clave = request.data?.clave;
+    if (!clave || clave !== MIGRACION_CLAVE.value()) {
+      throw new HttpsError("permission-denied", "Clave de migración incorrecta.");
+    }
+
+    const usersSnap = await db.collection("users").get();
+    const migrados = [];
+    const yaExistian = [];
+    const errores = [];
+
+    for (const doc of usersSnap.docs) {
+      const data = doc.data();
+      if (data.authUid) {
+        yaExistian.push(data.username);
+        continue;
+      }
+      const username = String(data.username || "").trim().toLowerCase();
+      if (!username) {
+        errores.push({ id: doc.id, motivo: "Documento sin username." });
+        continue;
+      }
+      const email = `${username}@techpack-yanko.local`;
+      const password = data.password;
+      if (!password || String(password).length < 6) {
+        errores.push({
+          id: doc.id,
+          username,
+          motivo: "Clave ausente o muy corta (Firebase exige mínimo 6 caracteres) — cámbiala primero desde Admin → Usuarios y vuelve a correr la migración.",
+        });
+        continue;
+      }
+      try {
+        let userRecord;
+        try {
+          userRecord = await admin.auth().createUser({
+            email,
+            password: String(password),
+            displayName: data.name || username,
+          });
+        } catch (err) {
+          if (err.code === "auth/email-already-exists") {
+            userRecord = await admin.auth().getUserByEmail(email);
+          } else {
+            throw err;
+          }
+        }
+        await doc.ref.update({ authUid: userRecord.uid });
+        migrados.push(username);
+      } catch (err) {
+        errores.push({ id: doc.id, username, motivo: String(err.message || err) });
+      }
+    }
+
+    logger.info(
+      `Migración a Firebase Auth: ${migrados.length} migrado(s), ${yaExistian.length} ya exist(ía/ían), ${errores.length} con error.`
+    );
+    return { migrados, yaExistian, errores };
+  }
+);
+
+// ─── FASE B: ADMINISTRACIÓN DE USUARIOS SOBRE FIREBASE AUTH REAL ──────────
+//
+// Ahora que el login real usa Firebase Authentication (ya no compara clave
+// en texto plano), dos acciones de Admin → Usuarios necesitan pasar por una
+// Cloud Function con permisos de administrador, porque el navegador de
+// quien administra NO tiene permiso para tocar la cuenta de Firebase Auth de
+// OTRA persona (solo la propia):
+//   - Crear un usuario nuevo: hay que crear su cuenta real de Firebase Auth
+//     además de su documento en Firestore, si no, no podría iniciar sesión.
+//   - Resetear la clave de otro usuario: cambiar la clave de una cuenta de
+//     Firebase Auth que no es la tuya requiere el SDK de administrador
+//     (`admin.auth().updateUser`), el cliente no puede hacerlo directo.
+// Ambas funciones exigen sesión iniciada (`request.auth`) Y que quien llama
+// tenga `isAdmin: true` en su propio documento de `users` — se verifica
+// buscando ese documento por `authUid == request.auth.uid`.
+async function verificarLlamadorEsAdmin(request) {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+  }
+  const snap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+  if (snap.empty || !snap.docs[0].data().isAdmin) {
+    throw new HttpsError("permission-denied", "Solo un administrador puede hacer esto.");
+  }
+  return snap.docs[0];
+}
+
+exports.adminCrearUsuario = onCall(
+  { timeoutSeconds: 60, memory: "256MiB" },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const { name, username, password, role, isAdmin, clienteAsociado } = request.data || {};
+    const nombreLimpio = String(name || "").trim();
+    const usernameNorm = String(username || "").trim().toLowerCase();
+    if (!nombreLimpio || !usernameNorm || !password) {
+      throw new HttpsError("invalid-argument", "Nombre, usuario y contraseña son obligatorios.");
+    }
+    if (String(password).length < 6) {
+      throw new HttpsError("invalid-argument", "La contraseña debe tener al menos 6 caracteres.");
+    }
+    const dupSnap = await db.collection("users").where("username", "==", usernameNorm).limit(1).get();
+    if (!dupSnap.empty) {
+      throw new HttpsError("already-exists", "Ese usuario ya existe.");
+    }
+    const email = `${usernameNorm}@techpack-yanko.local`;
+    let userRecord;
+    try {
+      userRecord = await admin.auth().createUser({ email, password: String(password), displayName: nombreLimpio });
+    } catch (err) {
+      if (err.code === "auth/email-already-exists") {
+        throw new HttpsError("already-exists", "Ya existe una cuenta de acceso con ese nombre de usuario.");
+      }
+      throw new HttpsError("internal", String(err.message || err));
+    }
+    const avatar = nombreLimpio.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+    const docRef = db.collection("users").doc();
+    await docRef.set({
+      id: docRef.id,
+      name: nombreLimpio,
+      username: usernameNorm,
+      role: role || "Equipo Interno",
+      isAdmin: !!isAdmin,
+      avatar,
+      authUid: userRecord.uid,
+      // Cliente asociado (opcional): si viene con dato, ese usuario solo ve
+      // en Prototipos/Cápsulas/Pedidos/Estadísticas/Historial/Bitácora/
+      // Cronograma lo que pertenece a ese cliente puntual — pensado para
+      // cuentas de acceso restringido de un cliente que no debe ver el
+      // trabajo de otros clientes.
+      clienteAsociado: clienteAsociado ? String(clienteAsociado).trim() : "",
+    });
+    return { id: docRef.id };
+  }
+);
+
+exports.adminCambiarClaveUsuario = onCall(
+  { timeoutSeconds: 60, memory: "256MiB" },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const { userId, nuevaClave } = request.data || {};
+    if (!userId || !nuevaClave || String(nuevaClave).length < 6) {
+      throw new HttpsError("invalid-argument", "Selecciona un usuario y una contraseña de al menos 6 caracteres.");
+    }
+    const targetDoc = await db.collection("users").doc(userId).get();
+    if (!targetDoc.exists) {
+      throw new HttpsError("not-found", "Usuario no encontrado.");
+    }
+    const targetData = targetDoc.data();
+    let authUid = targetData.authUid;
+    if (!authUid) {
+      // Usuario nunca migrado a Firebase Auth (caso raro post Fase A) — se
+      // crea la cuenta ahora mismo en vez de fallar.
+      const usernameNorm = String(targetData.username || "").trim().toLowerCase();
+      const email = `${usernameNorm}@techpack-yanko.local`;
+      const userRecord = await admin.auth().createUser({ email, password: String(nuevaClave), displayName: targetData.name || usernameNorm });
+      authUid = userRecord.uid;
+      await targetDoc.ref.update({ authUid });
+    } else {
+      await admin.auth().updateUser(authUid, { password: String(nuevaClave) });
+    }
+    return { ok: true };
   }
 );

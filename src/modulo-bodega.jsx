@@ -254,9 +254,20 @@ function Tabla({ columnas, filas, vacio, onRowClick }) {
     </div>
   );
 }
-// Próximo número consecutivo de despacho: sigue la numeración real (el
-// histórico importado llega hasta 546), nunca vuelve a empezar en 1.
-function siguienteNumeroDespacho(despachos) {
+// Próximo número consecutivo de despacho.
+// Venezuela (y por default cualquier otro destino): sigue la numeración real
+// de Busint (el histórico importado llega hasta 546), nunca vuelve a
+// empezar en 1.
+// Dubo es distinto: el histórico se importó con el N° de Traslado de Busint
+// como "numero" (3556, 3309, 3170...) porque ahí no existía todavía el
+// concepto de "despacho" propio de ATLAS — un despacho de Dubo junta VARIOS
+// traslados/facturas de Busint en un solo envío. Por eso, para Dubo, el
+// consecutivo simplemente cuenta despachos (34 despachos existentes → el
+// siguiente es 35), sin mezclarse con los números de traslado de Busint.
+function siguienteNumeroDespacho(despachos, destino) {
+  if (destino === "Dubo") {
+    return despachos.length + 1;
+  }
   const max = despachos.reduce((m, d) => Math.max(m, Number(d.numero) || 0), 546);
   return max + 1;
 }
@@ -363,16 +374,206 @@ function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint })
     </div>
   );
 }
-function MontarDespachoView({ despachos, currentUser, onGuardado, coleccionDespachos }) {
+// Código de cliente de GRUPO DUBO SAS en Busint — confirmado contra la
+// remisión real ("TRASLADO Nº 3170", "Codigo Cliente: 118") que se subió
+// para armar este flujo. Se usa para filtrar "listarDocumentosBusintCliente"
+// solo a los documentos de Dubo, sin traer los de todos los demás clientes.
+const CODIGO_CLIENTE_DUBO = "118";
+function fechaHaceNDias(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+// Dubo se factura en Busint día a día como "traslado externo" (una remisión
+// chiquita por día) y solo cada tanto (mes o más) se junta un grupo de esas
+// remisiones en un despacho físico real. Esta pantalla trae TODOS los
+// documentos de Busint de Dubo en un rango de fechas, para elegir con
+// casillas cuáles se van a combinar en el despacho de hoy — los que ya se
+// usaron en un despacho anterior (por su N° de documento, guardado como
+// numTraslado en cada línea) salen marcados y bloqueados para no duplicar.
+function SelectorDocumentosBusintView({ despachosExistentes, onCargar, onClose }) {
+  const [fechaInicio, setFechaInicio] = useState(fechaHaceNDias(90));
+  const [fechaFin, setFechaFin] = useState(today());
+  const [buscando, setBuscando] = useState(false);
+  const [documentos, setDocumentos] = useState(null);
+  const [error, setError] = useState("");
+  const [seleccionados, setSeleccionados] = useState(new Set());
+
+  const usados = useMemo(() => {
+    const s = new Set();
+    despachosExistentes.forEach((d) => (d.lineas || []).forEach((l) => { if (l.numTraslado) s.add(String(l.numTraslado).trim()); }));
+    return s;
+  }, [despachosExistentes]);
+
+  async function buscar() {
+    setBuscando(true);
+    setError("");
+    setDocumentos(null);
+    setSeleccionados(new Set());
+    try {
+      const llamar = httpsCallable(functionsClient, "listarDocumentosBusintCliente");
+      const resp = await llamar({ fechaInicio, fechaFin, codigoCliente: CODIGO_CLIENTE_DUBO });
+      setDocumentos(resp.data.documentos || []);
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar Busint.");
+    } finally {
+      setBuscando(false);
+    }
+  }
+  function toggle(doc) {
+    setSeleccionados((s) => {
+      const n = new Set(s);
+      if (n.has(doc)) n.delete(doc);
+      else n.add(doc);
+      return n;
+    });
+  }
+  const elegidos = (documentos || []).filter((d) => seleccionados.has(d.doc));
+  const totalUnidadesElegidas = elegidos.reduce((s, d) => s + d.totalUnidades, 0);
+
+  return (
+    <Modal title="Facturas / Traslados pendientes — Dubo" onClose={onClose} width={860}>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Desde"><FInput type="date" value={fechaInicio} onChange={setFechaInicio} /></Field>
+        <Field label="Hasta"><FInput type="date" value={fechaFin} onChange={setFechaFin} /></Field>
+        <div style={{ marginBottom: 14 }}>
+          <Btn onClick={buscar} disabled={buscando}>{buscando ? "Buscando..." : "🔍 Buscar en Busint"}</Btn>
+        </div>
+      </div>
+      {error && <div style={{ padding: "8px 12px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 12, fontWeight: 600, marginBottom: 12 }}>⚠ {error}</div>}
+      {documentos && (
+        documentos.length === 0 ? (
+          <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay documentos de Dubo en ese rango de fechas.</div>
+        ) : (
+          <>
+            <div style={{ maxHeight: 380, overflowY: "auto", border: `1px solid ${C.border}`, borderRadius: 10 }}>
+              {documentos.map((d) => {
+                const yaUsado = usados.has(String(d.doc).trim());
+                const marcado = seleccionados.has(d.doc);
+                return (
+                  <label
+                    key={d.doc}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      padding: "10px 14px",
+                      borderBottom: `1px solid ${C.border}`,
+                      cursor: yaUsado ? "not-allowed" : "pointer",
+                      opacity: yaUsado ? 0.45 : 1,
+                      background: marcado ? C.violetBg : "transparent",
+                    }}
+                  >
+                    <input type="checkbox" checked={marcado} disabled={yaUsado} onChange={() => toggle(d.doc)} />
+                    <div style={{ width: 70, fontWeight: 800, fontSize: 13, color: C.ink }}>{d.doc}</div>
+                    <div style={{ width: 90, fontSize: 11, color: C.slate }}>{fmtFechaISO(d.fecha)}</div>
+                    <div style={{ width: 100, fontSize: 11, color: C.slate }}>{d.tipo || "—"}</div>
+                    <div style={{ flex: 1, fontSize: 12, color: C.slate }}>{d.totalLineas} líneas · {fmtNum(d.totalUnidades)} und.</div>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>{fmtMoney(d.totalValor)}</div>
+                    {yaUsado && <div style={{ fontSize: 10, color: C.red, fontWeight: 800, marginLeft: 8, whiteSpace: "nowrap" }}>YA USADO</div>}
+                  </label>
+                );
+              })}
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16 }}>
+              <div style={{ fontSize: 12, color: C.slate }}>
+                {seleccionados.size} documento{seleccionados.size !== 1 ? "s" : ""} seleccionado{seleccionados.size !== 1 ? "s" : ""} · {fmtNum(totalUnidadesElegidas)} unidades
+              </div>
+              <Btn onClick={() => onCargar(elegidos)} disabled={!elegidos.length}>
+                Cargar {elegidos.length || ""} seleccionada{elegidos.length !== 1 ? "s" : ""}
+              </Btn>
+            </div>
+          </>
+        )
+      )}
+    </Modal>
+  );
+}
+function MontarDespachoView({ despachos, currentUser, onGuardado, coleccionDespachos, destino }) {
   const [numControl, setNumControl] = useState("");
   const [fecha, setFecha] = useState(today());
   const [lineas, setLineas] = useState([lineaVacia()]);
   const [guardando, setGuardando] = useState(false);
-  const numeroSiguiente = useMemo(() => siguienteNumeroDespacho(despachos), [despachos]);
+  const numeroSiguiente = useMemo(() => siguienteNumeroDespacho(despachos, destino), [despachos, destino]);
   const totalUnidades = lineas.reduce((s, l) => s + (Number(l.cantidad) || 0), 0);
+  // Traer un Traslado completo de Busint (solo Dubo): en vez de digitar
+  // referencia por referencia, se busca por el N° de Traslado impreso en la
+  // remisión y se auto-llenan todas las líneas de un tirón.
+  const [numTrasladoBuscar, setNumTrasladoBuscar] = useState("");
+  const [fechaAproxBuscar, setFechaAproxBuscar] = useState("");
+  const [buscandoTraslado, setBuscandoTraslado] = useState(false);
+  const [avisoTraslado, setAvisoTraslado] = useState(null);
+  const [mostrarBuscadorPuntual, setMostrarBuscadorPuntual] = useState(false);
+  const [mostrarSelector, setMostrarSelector] = useState(false);
 
   function actualizarLinea(idx, nueva) {
     setLineas((ls) => ls.map((l, i) => (i === idx ? nueva : l)));
+  }
+  // Recibe los documentos que se marcaron en el listado (SelectorDocumentosBusintView)
+  // y junta TODAS sus líneas en un solo despacho — así un envío que combina,
+  // por ejemplo, 5 remisiones diarias de Dubo queda como un único despacho
+  // en ATLAS, no cinco por separado.
+  function cargarDocumentosSeleccionados(docs) {
+    const todasLasLineas = docs.flatMap((doc) =>
+      doc.lineas.map((l) => ({
+        id: uid(),
+        referencia: l.referencia,
+        cantidad: String(l.cantidad),
+        numTraslado: l.numTraslado || doc.doc,
+        numCorte: "",
+        numBulto: "",
+        descripcion: l.descripcion || "",
+        marca: "",
+        segmento: "",
+        precio: String(l.precio || ""),
+        dcto: "0",
+        barras: l.barras || [],
+        buscando: false,
+        busintEncontrada: true,
+      }))
+    );
+    setLineas(todasLasLineas);
+    setNumControl(docs.map((d) => d.doc).join(" + "));
+    setAvisoTraslado({ tipo: "ok", msg: `Se cargaron ${todasLasLineas.length} líneas de ${docs.length} documento${docs.length !== 1 ? "s" : ""} (${docs.map((d) => d.doc).join(", ")}) — revísalas abajo antes de guardar.` });
+    setMostrarSelector(false);
+  }
+  async function traerTrasladoDeBusint() {
+    const num = numTrasladoBuscar.trim();
+    if (!num) return;
+    setBuscandoTraslado(true);
+    setAvisoTraslado(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "buscarTrasladoBusintPorNumero");
+      const resp = await llamar({ numeroTraslado: num, fechaAprox: fechaAproxBuscar || undefined });
+      const d = resp.data;
+      if (!d.encontrado || !d.lineas.length) {
+        setAvisoTraslado({ tipo: "error", msg: `No se encontró el Traslado ${num} en Busint. Si es viejo, escribe también la fecha aproximada para ampliar la búsqueda.` });
+        return;
+      }
+      const nuevasLineas = d.lineas.map((l) => ({
+        id: uid(),
+        referencia: l.referencia,
+        cantidad: String(l.cantidad),
+        numTraslado: l.numTraslado || num,
+        numCorte: "",
+        numBulto: "",
+        descripcion: l.descripcion || "",
+        marca: "",
+        segmento: "",
+        precio: String(l.precio || ""),
+        dcto: "0",
+        barras: l.barras || [],
+        buscando: false,
+        busintEncontrada: true,
+      }));
+      setLineas(nuevasLineas);
+      setNumControl(num);
+      setAvisoTraslado({ tipo: "ok", msg: `Se trajeron ${d.totalLineas} líneas${d.tipo ? ` (${d.tipo})` : ""} del documento ${num}${d.fecha ? ` — ${fmtFechaISO(d.fecha)}` : ""} — revísalas abajo antes de guardar.` });
+    } catch (err) {
+      setAvisoTraslado({ tipo: "error", msg: err?.message || "No se pudo consultar Busint." });
+    } finally {
+      setBuscandoTraslado(false);
+    }
   }
   async function buscarEnBusint(idx) {
     const ref = lineas[idx].referencia.trim();
@@ -463,6 +664,47 @@ function MontarDespachoView({ despachos, currentUser, onGuardado, coleccionDespa
           <FInput type="date" value={fecha} onChange={setFecha} />
         </Field>
       </div>
+      {destino === "Dubo" && (
+        <div style={{ background: C.violetBg, border: `1px solid ${C.violet}33`, borderRadius: 12, padding: 16, marginBottom: 20 }}>
+          <div style={{ fontWeight: 800, fontSize: 13, color: C.violet, marginBottom: 4 }}>📋 Cargar desde Busint</div>
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 12 }}>
+            Dubo se factura día a día en Busint — cuando decidas hacer el despacho, elige de la lista cuáles facturas/traslados se van a juntar en este envío. Las que ya usaste en un despacho anterior salen marcadas para que no las repitas.
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <Btn onClick={() => setMostrarSelector(true)}>📋 Ver facturas / traslados pendientes</Btn>
+            <span onClick={() => setMostrarBuscadorPuntual((v) => !v)} style={{ fontSize: 12, color: C.violet, fontWeight: 700, cursor: "pointer", textDecoration: "underline" }}>
+              {mostrarBuscadorPuntual ? "Ocultar búsqueda puntual" : "o busca un documento puntual por número"}
+            </span>
+          </div>
+          {mostrarBuscadorPuntual && (
+            <div style={{ display: "flex", gap: 10, alignItems: "end", flexWrap: "wrap", marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.violet}22` }}>
+              <div style={{ flex: "0 0 180px" }}>
+                <Field label="N° Traslado / Factura">
+                  <FInput value={numTrasladoBuscar} onChange={setNumTrasladoBuscar} placeholder="Ej. 3170" onEnter={traerTrasladoDeBusint} />
+                </Field>
+              </div>
+              <div style={{ flex: "0 0 170px" }}>
+                <Field label="Fecha aprox. (opcional)">
+                  <FInput type="date" value={fechaAproxBuscar} onChange={setFechaAproxBuscar} />
+                </Field>
+              </div>
+              <div style={{ marginBottom: 14 }}>
+                <Btn variant="secondary" onClick={traerTrasladoDeBusint} disabled={!numTrasladoBuscar.trim() || buscandoTraslado}>
+                  {buscandoTraslado ? "Buscando en Busint..." : "🔍 Traer todas las líneas"}
+                </Btn>
+              </div>
+            </div>
+          )}
+          {avisoTraslado && (
+            <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, background: avisoTraslado.tipo === "ok" ? C.greenBg : C.redBg, color: avisoTraslado.tipo === "ok" ? C.green : C.red }}>
+              {avisoTraslado.tipo === "ok" ? "✓" : "⚠"} {avisoTraslado.msg}
+            </div>
+          )}
+        </div>
+      )}
+      {mostrarSelector && (
+        <SelectorDocumentosBusintView despachosExistentes={despachos} onCargar={cargarDocumentosSeleccionados} onClose={() => setMostrarSelector(false)} />
+      )}
       {lineas.map((l, i) => (
         <LineaDespachoCard
           key={l.id}
@@ -2667,7 +2909,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
             {subView !== "estadoCuentaKamila" && <span style={{ fontSize: 13, fontWeight: 700, color: C.slate, marginLeft: 10 }}>· {destino}</span>}
           </h1>
           {subView === "dashboard" && <DashboardBodegaView despachos={despachos} abonos={abonos} />}
-          {subView === "montar" && <MontarDespachoView despachos={despachos} currentUser={currentUser} coleccionDespachos={coleccionDespachos} onGuardado={() => setSubView("dashboard")} />}
+          {subView === "montar" && <MontarDespachoView despachos={despachos} currentUser={currentUser} coleccionDespachos={coleccionDespachos} destino={destino} onGuardado={() => setSubView("dashboard")} />}
           {subView === "aprobar" && puedeAprobar && <PorAprobarView despachos={despachos} currentUser={currentUser} puedeAprobar={puedeAprobar} coleccionDespachos={coleccionDespachos} destino={destino} />}
           {subView === "historial" && (
             <HistorialView
