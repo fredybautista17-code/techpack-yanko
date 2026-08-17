@@ -79,6 +79,7 @@ function Btn({ children, onClick, variant = "primary", small, disabled }) {
     success: { background: C.green, color: C.white, border: "none" },
     danger: { background: C.red, color: C.white, border: "none" },
     ghost: { background: "transparent", color: C.blue, border: `1.5px solid ${C.blue}` },
+    amber: { background: C.amber, color: C.white, border: "none" },
   };
   const s = S[variant] || S.primary;
   return (
@@ -978,15 +979,31 @@ function LineaRevisionRow({ linea, onChange }) {
     </tr>
   );
 }
-function RevisarYAprobarModal({ despacho, currentUser, onClose, onGuardado, coleccionDespachos }) {
+function RevisarYAprobarModal({ despacho, currentUser, onClose, onGuardado, coleccionDespachos, destino }) {
   const [lineas, setLineas] = useState(() =>
     (despacho.lineas || []).map((l) => ({ ...l, cantidad: String(l.cantidad ?? ""), precio: String(l.precio ?? ""), dcto: String(l.dcto ?? "0") }))
   );
   const [guardando, setGuardando] = useState(false);
+  const [numTrasladoGlobal, setNumTrasladoGlobal] = useState("");
   const totalDespacho = lineas.reduce((s, l) => s + calcularTotalLinea(l), 0);
 
   function actualizarLinea(idx, nueva) {
     setLineas((ls) => ls.map((l, i) => (i === idx ? nueva : l)));
+  }
+  // El traslado de Busint viene con UN solo N° de Traslado para TODA la
+  // remisión (a veces 100+ líneas) — escribirlo línea por línea sería
+  // absurdo, así que esto lo pone en todas de una sola vez.
+  function aplicarTrasladoATodas() {
+    if (!numTrasladoGlobal.trim()) return;
+    setLineas((ls) => ls.map((l) => ({ ...l, numTraslado: numTrasladoGlobal.trim() })));
+  }
+  // Dubo solo recibe prendas de bodega de segundas: SIEMPRE van con 50% de
+  // descuento sobre el precio de catálogo (Busint), sin excepción. En vez de
+  // que Contabilidad calcule y escriba el 50% de cada línea a mano (puede
+  // haber cientos), este botón lo aplica de una vez a partir del precio ya
+  // cargado en cada línea.
+  function aplicar50PorcientoATodas() {
+    setLineas((ls) => ls.map((l) => ({ ...l, dcto: String((Number(l.precio) || 0) / 2) })));
   }
   function lineasParaGuardar() {
     return lineas.map((l) => {
@@ -1037,6 +1054,25 @@ function RevisarYAprobarModal({ despacho, currentUser, onClose, onGuardado, cole
       <div style={{ fontSize: 11, color: C.slate, marginBottom: 12 }}>
         Bodega montó la referencia, cantidades y códigos de barra. Revisa las cantidades (corrígelas si hace falta), pon el N° de Traslado, el precio y el descuento por unidad de cada línea.
       </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 10, padding: 12 }}>
+        <div style={{ flex: "0 0 220px" }}>
+          <Field label="N° Traslado (todo el despacho)">
+            <FInput value={numTrasladoGlobal} onChange={setNumTrasladoGlobal} placeholder="Ej. 3170" onEnter={aplicarTrasladoATodas} />
+          </Field>
+        </div>
+        <Btn small variant="secondary" onClick={aplicarTrasladoATodas} disabled={!numTrasladoGlobal.trim()}>
+          Aplicar a todas las líneas
+        </Btn>
+        {destino === "Dubo" && (
+          <>
+            <div style={{ width: 1, alignSelf: "stretch", background: C.border, margin: "0 4px" }} />
+            <Btn small variant="amber" onClick={aplicar50PorcientoATodas}>
+              🏷 Aplicar 50% descuento (segundas Dubo)
+            </Btn>
+            <div style={{ fontSize: 11, color: C.slate, maxWidth: 220 }}>Pone el descuento en la mitad del precio de cada línea — Dubo solo recibe segundas.</div>
+          </>
+        )}
+      </div>
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
@@ -1061,7 +1097,7 @@ function RevisarYAprobarModal({ despacho, currentUser, onClose, onGuardado, cole
   );
 }
 // ─── POR APROBAR (Contabilidad revisa cantidades, pone precio/dcto y aprueba) ─
-function PorAprobarView({ despachos, currentUser, puedeAprobar, coleccionDespachos }) {
+function PorAprobarView({ despachos, currentUser, puedeAprobar, coleccionDespachos, destino }) {
   const [abierto, setAbierto] = useState(null);
   const pendientes = despachos.filter((d) => d.estado === "montado").sort((a, b) => parseFloat(a.numero) - parseFloat(b.numero));
   return (
@@ -1083,7 +1119,7 @@ function PorAprobarView({ despachos, currentUser, puedeAprobar, coleccionDespach
         filas={pendientes}
       />
       {abierto && puedeAprobar && (
-        <RevisarYAprobarModal despacho={abierto} currentUser={currentUser} coleccionDespachos={coleccionDespachos} onClose={() => setAbierto(null)} onGuardado={() => setAbierto(null)} />
+        <RevisarYAprobarModal despacho={abierto} currentUser={currentUser} coleccionDespachos={coleccionDespachos} destino={destino} onClose={() => setAbierto(null)} onGuardado={() => setAbierto(null)} />
       )}
     </div>
   );
@@ -2632,7 +2668,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
           </h1>
           {subView === "dashboard" && <DashboardBodegaView despachos={despachos} abonos={abonos} />}
           {subView === "montar" && <MontarDespachoView despachos={despachos} currentUser={currentUser} coleccionDespachos={coleccionDespachos} onGuardado={() => setSubView("dashboard")} />}
-          {subView === "aprobar" && puedeAprobar && <PorAprobarView despachos={despachos} currentUser={currentUser} puedeAprobar={puedeAprobar} coleccionDespachos={coleccionDespachos} />}
+          {subView === "aprobar" && puedeAprobar && <PorAprobarView despachos={despachos} currentUser={currentUser} puedeAprobar={puedeAprobar} coleccionDespachos={coleccionDespachos} destino={destino} />}
           {subView === "historial" && (
             <HistorialView
               despachos={despachos}
