@@ -492,7 +492,11 @@ function SelectorDocumentosBusintView({ despachosExistentes, onCargar, onClose }
 function MontarDespachoView({ despachos, currentUser, onGuardado, coleccionDespachos, destino }) {
   const [numControl, setNumControl] = useState("");
   const [fecha, setFecha] = useState(today());
-  const [lineas, setLineas] = useState([lineaVacia()]);
+  // Dubo casi siempre carga sus líneas desde Busint (botón "Cargar desde
+  // Busint" más abajo), así que no tiene sentido arrancar con una tarjeta de
+  // línea vacía a mano — solo estorba. El resto de destinos sí arranca con
+  // una línea lista para escribir, como siempre.
+  const [lineas, setLineas] = useState(() => (destino === "Dubo" ? [] : [lineaVacia()]));
   const [guardando, setGuardando] = useState(false);
   const numeroSiguiente = useMemo(() => siguienteNumeroDespacho(despachos, destino), [despachos, destino]);
   const totalUnidades = lineas.reduce((s, l) => s + (Number(l.cantidad) || 0), 0);
@@ -2858,8 +2862,10 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
     ...(puedeAprobar ? [{ id: "aprobar", icon: "✅", label: "Por Aprobar", badge: pendientesCount }] : []),
     { id: "historial", icon: "🕘", label: "Historial" },
     { id: "abonos", icon: "💵", label: "Abonos" },
-    { id: "saldoYuliana", icon: "🧾", label: "Saldo Yuliana" },
-    ...(isAdmin || puedeEditarAbonos ? [{ id: "estadoCuentaKamila", icon: "📊", label: "Estado de Cuenta Kamila" }] : []),
+    // Saldo Yuliana y Estado de Cuenta Kamila son cuentas propias de
+    // Venezuela — no aplican en la pestaña Dubo, así que se ocultan ahí.
+    ...(destino === "Dubo" ? [] : [{ id: "saldoYuliana", icon: "🧾", label: "Saldo Yuliana" }]),
+    ...(destino !== "Dubo" && (isAdmin || puedeEditarAbonos) ? [{ id: "estadoCuentaKamila", icon: "📊", label: "Estado de Cuenta Kamila" }] : []),
     ...(isAdmin ? [{ id: "importar", icon: "⬆️", label: "Importar Histórico" }] : []),
     ...(isAdmin ? [{ id: "codigo", icon: "🔐", label: "Código Edición" }] : []),
   ];
