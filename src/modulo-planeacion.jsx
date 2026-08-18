@@ -706,11 +706,44 @@ function BloqueAgrupado({ titulo, primeraColLabel, data, mostrarFechaEntrega }) 
 function BloqueSeguimientoSemiterminado({ data }) {
   const { filas, resumen, resumenPorCliente, totalLotes, totalUnidades, procesosDistintos } = data;
   const [subTab, setSubTab] = useState("proceso");
+  // Ventana de detalle: clic en una fila de "Resumen por Proceso" o de
+  // "Resumen por Cliente" abre esto con la lista de lotes puntual (filtrada
+  // por proceso, o por cliente+proceso) en vez de tener que buscarlos en la
+  // tabla larga de abajo.
+  const [detalleAbierto, setDetalleAbierto] = useState(null);
   if (!totalLotes) {
     return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Sin lotes en semiterminado.</div>;
   }
+  function abrirProceso(proceso) {
+    setDetalleAbierto({ titulo: `Lotes en "${proceso}"`, filas: filas.filter((f) => f.procesoDondeQuedo === proceso) });
+  }
+  function abrirClienteProceso(cliente, proceso) {
+    setDetalleAbierto({
+      titulo: `${cliente} — "${proceso}"`,
+      filas: filas.filter((f) => f.nombreCliente === cliente && f.procesoDondeQuedo === proceso),
+    });
+  }
   return (
     <div>
+      {detalleAbierto && (
+        <Modal title={detalleAbierto.titulo} onClose={() => setDetalleAbierto(null)} width={720}>
+          <div style={{ marginBottom: 12, fontSize: 12, color: C.slate }}>
+            {fmtNum(detalleAbierto.filas.length)} lote{detalleAbierto.filas.length !== 1 ? "s" : ""} · {fmtNum(detalleAbierto.filas.reduce((s, f) => s + f.unidades, 0))} unidades
+          </div>
+          <Tabla
+            vacio="Sin lotes."
+            columnas={[
+              { key: "nombreCliente", label: "Cliente" },
+              { key: "numLote", label: "Num Lote", align: "right" },
+              { key: "referencia", label: "Referencia" },
+              { key: "categoria", label: "Categoría" },
+              { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
+              { key: "ultimaSalida", label: "Última Salida (sin entrega)" },
+            ]}
+            filas={detalleAbierto.filas}
+          />
+        </Modal>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 20 }}>
         <KPI icon="📦" label="Total Lotes" value={fmtNum(totalLotes)} color={C.ink} bg={C.canvas} />
         <KPI icon="🧶" label="Total Unidades" value={fmtNum(totalUnidades)} color={C.violet} bg={C.violetBg} />
@@ -749,61 +782,77 @@ function BloqueSeguimientoSemiterminado({ data }) {
         </div>
       </div>
       {subTab === "proceso" && (
-        <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 24 }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-            <thead>
-              <tr style={{ background: C.ink }}>
-                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Proceso Donde Quedó</th>
-                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
-                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
-                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
-              </tr>
-            </thead>
-            <tbody>
-              {resumen.map((r, i) => (
-                <tr key={r.proceso} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                  <td style={{ padding: "7px 12px" }}>{r.proceso}</td>
-                  <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
-                  <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
-                  <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
+        <div>
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Clic en un proceso para ver qué lotes tiene.</div>
+          <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 24 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: C.ink }}>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Proceso Donde Quedó</th>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
                 </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr style={{ background: "#FFF2CC" }}>
-                <td style={{ padding: "8px 12px", fontWeight: 800, color: C.ink }}>TOTAL</td>
-                <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalLotes)}</td>
-                <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalUnidades)}</td>
-                <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>100%</td>
-              </tr>
-            </tfoot>
-          </table>
+              </thead>
+              <tbody>
+                {resumen.map((r, i) => (
+                  <tr
+                    key={r.proceso}
+                    onClick={() => abrirProceso(r.proceso)}
+                    title="Ver lotes de este proceso"
+                    style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}`, cursor: "pointer" }}
+                  >
+                    <td style={{ padding: "7px 12px" }}>{r.proceso}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr style={{ background: "#FFF2CC" }}>
+                  <td style={{ padding: "8px 12px", fontWeight: 800, color: C.ink }}>TOTAL</td>
+                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalLotes)}</td>
+                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>{fmtNum(totalUnidades)}</td>
+                  <td style={{ padding: "8px 12px", fontWeight: 800, textAlign: "right", color: C.ink }}>100%</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
         </div>
       )}
       {subTab === "cliente" && (
-        <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 24 }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-            <thead>
-              <tr style={{ background: C.ink }}>
-                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Cliente</th>
-                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Proceso Donde Quedó</th>
-                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
-                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
-                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
-              </tr>
-            </thead>
-            <tbody>
-              {resumenPorCliente.map((r, i) => (
-                <tr key={`${r.cliente}-${r.proceso}`} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                  <td style={{ padding: "7px 12px" }}>{r.cliente}</td>
-                  <td style={{ padding: "7px 12px" }}>{r.proceso}</td>
-                  <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
-                  <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
-                  <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
+        <div>
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Clic en una fila para ver esos lotes puntuales.</div>
+          <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 24 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: C.ink }}>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Cliente</th>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Proceso Donde Quedó</th>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Lotes</th>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Unidades</th>
+                  <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>% Unidades</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {resumenPorCliente.map((r, i) => (
+                  <tr
+                    key={`${r.cliente}-${r.proceso}`}
+                    onClick={() => abrirClienteProceso(r.cliente, r.proceso)}
+                    title="Ver estos lotes"
+                    style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}`, cursor: "pointer" }}
+                  >
+                    <td style={{ padding: "7px 12px" }}>{r.cliente}</td>
+                    <td style={{ padding: "7px 12px" }}>{r.proceso}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.lotes)}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(r.unidades)}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>{Math.round(r.pct * 100)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
       <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>DETALLE DE LOTES POR PROCESO</div>
@@ -811,6 +860,7 @@ function BloqueSeguimientoSemiterminado({ data }) {
         vacio="Sin lotes en semiterminado."
         columnas={[
           { key: "procesoDondeQuedo", label: "Proceso Donde Quedó" },
+          { key: "nombreCliente", label: "Cliente" },
           { key: "numLote", label: "Num Lote", align: "right" },
           { key: "referencia", label: "Referencia" },
           { key: "categoria", label: "Categoría" },
@@ -1044,17 +1094,34 @@ function VerificadorPrecioTalleresView({ entradas }) {
 // que BMP va a ENVIAR. Se guarda en Firestore ("planeacion_programacion_bmp")
 // para que quede el registro aunque cambie la carga de Hoja1.
 const selEstiloBMP = { padding: "6px 8px", border: `1.5px solid ${C.border}`, borderRadius: 6, fontSize: 12, color: C.ink, background: C.white, fontFamily: "inherit" };
-function FilaProgramadorBMP({ lote, existente, plantas, onProgramar, onEditar, onCancelar }) {
+function FilaProgramadorBMP({ lote, existente, plantas, entradasTalleres, onProgramar, onEditar, onCancelar }) {
   const yaEnCatalogo = !existente || plantas.includes(existente.plantaDestino);
   const [planta, setPlanta] = useState(existente && !yaEnCatalogo ? "__otra__" : existente?.plantaDestino || "");
   const [plantaLibre, setPlantaLibre] = useState(existente && !yaEnCatalogo ? existente.plantaDestino : "");
   const [fecha, setFecha] = useState(existente?.fechaProgramada || today());
+  const [precioConfeccion, setPrecioConfeccion] = useState(existente?.precioConfeccion || "");
   const plantaFinal = planta === "__otra__" ? plantaLibre.trim() : planta;
-  const hayCambios = !existente || plantaFinal !== existente.plantaDestino || fecha !== existente.fechaProgramada;
+  const hayCambios =
+    !existente ||
+    plantaFinal !== existente.plantaDestino ||
+    fecha !== existente.fechaProgramada ||
+    Number(precioConfeccion || 0) !== Number(existente.precioConfeccion || 0);
+  // Último precio de entrada visto para esta referencia (mismo dato del
+  // Verificador de Precio de Talleres) — para sugerir el precio de
+  // confección sin tener que ir a buscarlo a otra pestaña.
+  const ultimoPrecioRef = useMemo(() => {
+    const ref = (lote.referencia || "").toLowerCase();
+    if (!ref) return null;
+    const encontrada = (entradasTalleres || [])
+      .filter((e) => (e.refExt || "").toLowerCase() === ref || String(e.refN || "").toLowerCase() === ref)
+      .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))[0];
+    return encontrada || null;
+  }, [entradasTalleres, lote.referencia]);
+  const costo = Number(precioConfeccion || 0) * Number(lote.cantidadBMP || 0);
   function guardar() {
     if (!plantaFinal || !fecha) return;
-    if (existente) onEditar(existente.id, plantaFinal, fecha);
-    else onProgramar(lote, plantaFinal, fecha);
+    if (existente) onEditar(existente.id, plantaFinal, fecha, precioConfeccion);
+    else onProgramar(lote, plantaFinal, fecha, precioConfeccion);
   }
   return (
     <tr style={{ background: existente ? C.greenBg : C.white, borderBottom: `1px solid ${C.border}` }}>
@@ -1084,6 +1151,28 @@ function FilaProgramadorBMP({ lote, existente, plantas, onProgramar, onEditar, o
       <td style={{ padding: "7px 12px" }}>
         <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={selEstiloBMP} />
       </td>
+      <td style={{ padding: "7px 12px" }}>
+        <input
+          type="number"
+          min={0}
+          step="0.01"
+          value={precioConfeccion}
+          onChange={(e) => setPrecioConfeccion(e.target.value)}
+          placeholder="0"
+          style={{ ...selEstiloBMP, width: 80 }}
+        />
+        {ultimoPrecioRef && Number(precioConfeccion || 0) !== Number(ultimoPrecioRef.precioEntrada || 0) && (
+          <button
+            type="button"
+            onClick={() => setPrecioConfeccion(ultimoPrecioRef.precioEntrada)}
+            title={`Última entrada: $${fmtNum(ultimoPrecioRef.precioEntrada)} · ${ultimoPrecioRef.nombrePlanta || ""}`}
+            style={{ display: "block", marginTop: 4, fontSize: 10, color: C.blue, background: "none", border: "none", cursor: "pointer", textDecoration: "underline", padding: 0 }}
+          >
+            usar ${fmtNum(ultimoPrecioRef.precioEntrada)}
+          </button>
+        )}
+        {costo > 0 && <div style={{ fontSize: 10, color: C.slate, marginTop: 4, whiteSpace: "nowrap" }}>Costo: ${fmtNum(costo)}</div>}
+      </td>
       <td style={{ padding: "7px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
         <Btn small onClick={guardar} disabled={!plantaFinal || !fecha || (existente && !hayCambios)}>
           {existente ? "Guardar" : "Programar"}
@@ -1100,29 +1189,38 @@ function FilaProgramadorBMP({ lote, existente, plantas, onProgramar, onEditar, o
     </tr>
   );
 }
-function ProgramadorBMPView({ reporteBMP, programacion, plantas, onProgramar, onEditar, onCancelar }) {
+function ProgramadorBMPView({ reporteBMP, programacion, plantas, entradasTalleres, onProgramar, onEditar, onCancelar }) {
   const porNumLote = useMemo(() => {
     const map = new Map();
     programacion.forEach((p) => map.set(p.numLote, p));
     return map;
   }, [programacion]);
+  const costoTotalProgramado = useMemo(
+    () => programacion.reduce((s, p) => s + Number(p.precioConfeccion || 0) * Number(p.cantidadBMP || 0), 0),
+    [programacion]
+  );
   return (
     <div>
       <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 14, maxWidth: 640 }}>
-        Elige la planta/taller destino y la fecha comprometida de cada lote directamente en su fila. Apenas le des Programar/Guardar queda registrado ahí mismo.
+        Elige la planta/taller destino, la fecha comprometida y (si aplica) el precio de confección de cada lote directamente en su fila. Apenas le des Programar/Guardar queda registrado ahí mismo.
       </div>
+      {costoTotalProgramado > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <KPI icon="💲" label="Costo Confección Programado" value={`$${fmtNum(costoTotalProgramado)}`} color={C.amber} bg={C.amberBg} />
+        </div>
+      )}
       <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead>
             <tr style={{ background: C.ink }}>
-              {["Num Lote", "Num Pedido", "Referencia", "Categoría", "Cantidad BMP", "Planta Destino", "Fecha Envío", ""].map((h, i) => (
+              {["Num Lote", "Num Pedido", "Referencia", "Categoría", "Cantidad BMP", "Planta Destino", "Fecha Envío", "Precio Confección", ""].map((h, i) => (
                 <th key={i} style={{ padding: "9px 12px", color: C.seam, textAlign: i === 4 ? "right" : "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {!reporteBMP.length ? (
-              <tr><td colSpan={8} style={{ textAlign: "center", padding: 30, color: C.slate, fontSize: 13 }}>Sin lotes en BMP.</td></tr>
+              <tr><td colSpan={9} style={{ textAlign: "center", padding: 30, color: C.slate, fontSize: 13 }}>Sin lotes en BMP.</td></tr>
             ) : (
               reporteBMP.map((l) => (
                 <FilaProgramadorBMP
@@ -1130,6 +1228,7 @@ function ProgramadorBMPView({ reporteBMP, programacion, plantas, onProgramar, on
                   lote={l}
                   existente={porNumLote.get(l.numLote) || null}
                   plantas={plantas}
+                  entradasTalleres={entradasTalleres}
                   onProgramar={onProgramar}
                   onEditar={onEditar}
                   onCancelar={onCancelar}
@@ -1520,6 +1619,7 @@ function InformesView({
               reporteBMP={reporteBMP}
               programacion={programacionBMP || []}
               plantas={catalogoPlantas || []}
+              entradasTalleres={entradasTalleres}
               onProgramar={onProgramarBMP}
               onEditar={onEditarProgramacionBMP}
               onCancelar={onCancelarProgramacionBMP}
@@ -1678,7 +1778,7 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     });
     return () => unsub();
   }, []);
-  async function programarLoteBMP(lote, plantaDestino, fechaProgramada) {
+  async function programarLoteBMP(lote, plantaDestino, fechaProgramada, precioConfeccion) {
     const nuevo = {
       id: uid(),
       numLote: lote.numLote,
@@ -1689,16 +1789,18 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
       cantidadBMP: lote.cantidadBMP,
       plantaDestino,
       fechaProgramada,
+      precioConfeccion: Number(precioConfeccion) || 0,
       creadoEn: new Date().toISOString(),
       programadoPor: currentUser?.name || currentUser?.email || "",
     };
     setProgramacionBMP((ps) => [...ps, nuevo]);
     await fsSave("planeacion_programacion_bmp", nuevo.id, nuevo);
   }
-  async function editarProgramacionBMP(id, plantaDestino, fechaProgramada) {
-    setProgramacionBMP((ps) => ps.map((p) => (p.id === id ? { ...p, plantaDestino, fechaProgramada } : p)));
+  async function editarProgramacionBMP(id, plantaDestino, fechaProgramada, precioConfeccion) {
+    const precio = Number(precioConfeccion) || 0;
+    setProgramacionBMP((ps) => ps.map((p) => (p.id === id ? { ...p, plantaDestino, fechaProgramada, precioConfeccion: precio } : p)));
     const actual = programacionBMP.find((p) => p.id === id);
-    if (actual) await fsSave("planeacion_programacion_bmp", id, { ...actual, plantaDestino, fechaProgramada });
+    if (actual) await fsSave("planeacion_programacion_bmp", id, { ...actual, plantaDestino, fechaProgramada, precioConfeccion: precio });
   }
   async function cancelarProgramacionBMP(id) {
     setProgramacionBMP((ps) => ps.filter((p) => p.id !== id));
