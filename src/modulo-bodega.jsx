@@ -1414,9 +1414,14 @@ function HistorialView({ despachos, currentUser, isAdmin, esContabilidad, esBode
   const base = esBodegaSolo
     ? despachos.filter((d) => d.creadoPor === (currentUser?.name || currentUser?.username))
     : despachos.filter((d) => d.estado === "aprobado" || d.estado === "historico");
+  // Ordenado por fecha (el más nuevo primero) y no por "numero": en Dubo,
+  // parte del histórico importado quedó con el N° de Traslado de Busint como
+  // "numero" (3556, 3309...) y otra parte con una fecha como "numero" — al
+  // mezclarse, ordenar por numero salía en un orden sin sentido. La fecha sí
+  // es confiable en todos los despachos, de cualquier destino.
   const visibles = base
     .filter((d) => !filtro.trim() || String(d.numero).includes(filtro.trim()) || (d.lineas || []).some((l) => (l.referencia || "").toUpperCase().includes(filtro.trim().toUpperCase())))
-    .sort((a, b) => parseFloat(b.numero) - parseFloat(a.numero));
+    .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "") || parseFloat(b.numero) - parseFloat(a.numero));
   const totalGeneral = visibles.reduce((s, d) => s + (d.totalDespacho || 0), 0);
   // "¿Cuándo fue la última vez que se despachó la referencia X?" — busca
   // coincidencia EXACTA de esa referencia (no solo "contiene", como el
