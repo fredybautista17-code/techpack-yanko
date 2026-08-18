@@ -1037,197 +1037,103 @@ function VerificadorPrecioTalleresView({ entradas }) {
 }
 // ─── PROGRAMADOR DE BMP → PLANTA ────────────────────────────────────────────────
 // Deja elegir, lote por lote, a qué planta/taller se va a enviar y con qué
-// fecha comprometida. Es independiente de "Programación Diaria" del módulo
+// fecha comprometida — todo en la misma fila de la tabla, sin ventana
+// emergente: apenas se guarda, la fila muestra el resultado ahí mismo al
+// lado del botón. Es independiente de "Programación Diaria" del módulo
 // Planta (esa es sobre lo que Planta Yanko va a ENTREGAR); esta es sobre lo
 // que BMP va a ENVIAR. Se guarda en Firestore ("planeacion_programacion_bmp")
 // para que quede el registro aunque cambie la carga de Hoja1.
-function ProgramarLoteBMPModal({ lote, plantas, onConfirm, onClose }) {
-  const [planta, setPlanta] = useState("");
-  const [plantaLibre, setPlantaLibre] = useState("");
-  const [fecha, setFecha] = useState(today());
+const selEstiloBMP = { padding: "6px 8px", border: `1.5px solid ${C.border}`, borderRadius: 6, fontSize: 12, color: C.ink, background: C.white, fontFamily: "inherit" };
+function FilaProgramadorBMP({ lote, existente, plantas, onProgramar, onEditar, onCancelar }) {
+  const yaEnCatalogo = !existente || plantas.includes(existente.plantaDestino);
+  const [planta, setPlanta] = useState(existente && !yaEnCatalogo ? "__otra__" : existente?.plantaDestino || "");
+  const [plantaLibre, setPlantaLibre] = useState(existente && !yaEnCatalogo ? existente.plantaDestino : "");
+  const [fecha, setFecha] = useState(existente?.fechaProgramada || today());
   const plantaFinal = planta === "__otra__" ? plantaLibre.trim() : planta;
-  function confirmar() {
+  const hayCambios = !existente || plantaFinal !== existente.plantaDestino || fecha !== existente.fechaProgramada;
+  function guardar() {
     if (!plantaFinal || !fecha) return;
-    onConfirm(lote, plantaFinal, fecha);
-    onClose();
+    if (existente) onEditar(existente.id, plantaFinal, fecha);
+    else onProgramar(lote, plantaFinal, fecha);
   }
   return (
-    <Modal title={`Programar envío — Lote ${lote.numLote}`} onClose={onClose} width={460}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, padding: "12px 14px", background: C.amberBg, borderRadius: 8, marginBottom: 18, fontSize: 12, color: C.amber }}>
-        <div>
-          <div style={{ fontWeight: 700 }}>Referencia</div>
-          <div>{lote.referencia}</div>
-        </div>
-        <div>
-          <div style={{ fontWeight: 700 }}>Cantidad en BMP</div>
-          <div>{fmtNum(lote.cantidadBMP)}</div>
-        </div>
-      </div>
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Planta / taller destino</div>
-        <select
-          value={planta}
-          onChange={(e) => setPlanta(e.target.value)}
-          style={{ width: "100%", padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
-        >
+    <tr style={{ background: existente ? C.greenBg : C.white, borderBottom: `1px solid ${C.border}` }}>
+      <td style={{ padding: "7px 12px" }}>{lote.numLote}</td>
+      <td style={{ padding: "7px 12px" }}>{lote.numPedido || "—"}</td>
+      <td style={{ padding: "7px 12px" }}>{lote.referencia}</td>
+      <td style={{ padding: "7px 12px" }}>{lote.categoria}</td>
+      <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(lote.cantidadBMP)}</td>
+      <td style={{ padding: "7px 12px" }}>
+        <select value={planta} onChange={(e) => setPlanta(e.target.value)} style={{ ...selEstiloBMP, minWidth: 130 }}>
           <option value="">Selecciona…</option>
           {plantas.map((p) => (
             <option key={p} value={p}>{p}</option>
           ))}
-          <option value="__otra__">Otra (escribir)…</option>
+          <option value="__otra__">Otra…</option>
         </select>
         {planta === "__otra__" && (
           <input
             type="text"
             value={plantaLibre}
             onChange={(e) => setPlantaLibre(e.target.value)}
-            placeholder="Nombre de la planta/taller"
-            style={{ width: "100%", marginTop: 8, padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
+            placeholder="Nombre"
+            style={{ ...selEstiloBMP, marginLeft: 6, width: 110 }}
           />
         )}
-      </div>
-      <div style={{ marginBottom: 18 }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Fecha comprometida de envío</div>
-        <input
-          type="date"
-          value={fecha}
-          onChange={(e) => setFecha(e.target.value)}
-          style={{ width: "100%", padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
-        />
-      </div>
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn variant="danger" onClick={confirmar} disabled={!plantaFinal || !fecha}>Programar</Btn>
-      </div>
-    </Modal>
-  );
-}
-function EditarProgramacionBMPModal({ fila, plantas, onConfirm, onClose }) {
-  const yaEnCatalogo = plantas.includes(fila.plantaDestino);
-  const [planta, setPlanta] = useState(yaEnCatalogo ? fila.plantaDestino : "__otra__");
-  const [plantaLibre, setPlantaLibre] = useState(yaEnCatalogo ? "" : fila.plantaDestino || "");
-  const [fecha, setFecha] = useState(fila.fechaProgramada || today());
-  const plantaFinal = planta === "__otra__" ? plantaLibre.trim() : planta;
-  function confirmar() {
-    if (!plantaFinal || !fecha) return;
-    onConfirm(fila.id, plantaFinal, fecha);
-    onClose();
-  }
-  return (
-    <Modal title={`Editar programación — Lote ${fila.numLote}`} onClose={onClose} width={460}>
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Planta / taller destino</div>
-        <select
-          value={planta}
-          onChange={(e) => setPlanta(e.target.value)}
-          style={{ width: "100%", padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
-        >
-          <option value="">Selecciona…</option>
-          {plantas.map((p) => (
-            <option key={p} value={p}>{p}</option>
-          ))}
-          <option value="__otra__">Otra (escribir)…</option>
-        </select>
-        {planta === "__otra__" && (
-          <input
-            type="text"
-            value={plantaLibre}
-            onChange={(e) => setPlantaLibre(e.target.value)}
-            placeholder="Nombre de la planta/taller"
-            style={{ width: "100%", marginTop: 8, padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
-          />
+      </td>
+      <td style={{ padding: "7px 12px" }}>
+        <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={selEstiloBMP} />
+      </td>
+      <td style={{ padding: "7px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
+        <Btn small onClick={guardar} disabled={!plantaFinal || !fecha || (existente && !hayCambios)}>
+          {existente ? "Guardar" : "Programar"}
+        </Btn>
+        {existente && (
+          <button
+            onClick={() => onCancelar(existente.id)}
+            style={{ marginLeft: 8, background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+          >
+            ✕ Quitar
+          </button>
         )}
-      </div>
-      <div style={{ marginBottom: 18 }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Fecha comprometida de envío</div>
-        <input
-          type="date"
-          value={fecha}
-          onChange={(e) => setFecha(e.target.value)}
-          style={{ width: "100%", padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
-        />
-      </div>
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn variant="danger" onClick={confirmar} disabled={!plantaFinal || !fecha}>Guardar</Btn>
-      </div>
-    </Modal>
+      </td>
+    </tr>
   );
 }
 function ProgramadorBMPView({ reporteBMP, programacion, plantas, onProgramar, onEditar, onCancelar }) {
-  const [programando, setProgramando] = useState(null);
-  const [editando, setEditando] = useState(null);
-  const numLotesProgramados = useMemo(() => new Set(programacion.map((p) => p.numLote)), [programacion]);
-  const sinProgramar = useMemo(() => reporteBMP.filter((l) => !numLotesProgramados.has(l.numLote)), [reporteBMP, numLotesProgramados]);
-  const programadosOrdenados = useMemo(
-    () => [...programacion].sort((a, b) => (a.fechaProgramada || "").localeCompare(b.fechaProgramada || "")),
-    [programacion]
-  );
+  const porNumLote = useMemo(() => {
+    const map = new Map();
+    programacion.forEach((p) => map.set(p.numLote, p));
+    return map;
+  }, [programacion]);
   return (
     <div>
-      {programando && (
-        <ProgramarLoteBMPModal lote={programando} plantas={plantas} onConfirm={onProgramar} onClose={() => setProgramando(null)} />
-      )}
-      {editando && (
-        <EditarProgramacionBMPModal fila={editando} plantas={plantas} onConfirm={onEditar} onClose={() => setEditando(null)} />
-      )}
-      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, margin: "0 0 10px" }}>BMP SIN PROGRAMAR — ELEGIR PLANTA DESTINO</div>
+      <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 14, maxWidth: 640 }}>
+        Elige la planta/taller destino y la fecha comprometida de cada lote directamente en su fila. Apenas le des Programar/Guardar queda registrado ahí mismo.
+      </div>
       <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead>
             <tr style={{ background: C.ink }}>
-              {["Num Lote", "Num Pedido", "Referencia", "Categoría", "Cantidad BMP", ""].map((h, i) => (
+              {["Num Lote", "Num Pedido", "Referencia", "Categoría", "Cantidad BMP", "Planta Destino", "Fecha Envío", ""].map((h, i) => (
                 <th key={i} style={{ padding: "9px 12px", color: C.seam, textAlign: i === 4 ? "right" : "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {!sinProgramar.length ? (
-              <tr><td colSpan={6} style={{ textAlign: "center", padding: 30, color: C.slate, fontSize: 13 }}>Todo lo que hay en BMP ya está programado.</td></tr>
+            {!reporteBMP.length ? (
+              <tr><td colSpan={8} style={{ textAlign: "center", padding: 30, color: C.slate, fontSize: 13 }}>Sin lotes en BMP.</td></tr>
             ) : (
-              sinProgramar.map((l, i) => (
-                <tr key={l.numLote} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                  <td style={{ padding: "7px 12px" }}>{l.numLote}</td>
-                  <td style={{ padding: "7px 12px" }}>{l.numPedido || "—"}</td>
-                  <td style={{ padding: "7px 12px" }}>{l.referencia}</td>
-                  <td style={{ padding: "7px 12px" }}>{l.categoria}</td>
-                  <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(l.cantidadBMP)}</td>
-                  <td style={{ padding: "7px 12px", textAlign: "right" }}>
-                    <Btn small onClick={() => setProgramando(l)}>Programar</Btn>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, margin: "28px 0 10px" }}>PROGRAMADOS</div>
-      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-          <thead>
-            <tr style={{ background: C.ink }}>
-              {["Num Lote", "Referencia", "Categoría", "Cantidad", "Planta Destino", "Fecha Envío", ""].map((h, i) => (
-                <th key={i} style={{ padding: "9px 12px", color: C.seam, textAlign: i === 3 ? "right" : "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {!programadosOrdenados.length ? (
-              <tr><td colSpan={7} style={{ textAlign: "center", padding: 30, color: C.slate, fontSize: 13 }}>Aún no hay lotes programados.</td></tr>
-            ) : (
-              programadosOrdenados.map((p, i) => (
-                <tr key={p.id} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                  <td style={{ padding: "7px 12px" }}>{p.numLote}</td>
-                  <td style={{ padding: "7px 12px" }}>{p.referencia}</td>
-                  <td style={{ padding: "7px 12px" }}>{p.categoria}</td>
-                  <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(p.cantidadBMP)}</td>
-                  <td style={{ padding: "7px 12px", fontWeight: 700 }}>{p.plantaDestino}</td>
-                  <td style={{ padding: "7px 12px" }}>{fmtFechaISO(p.fechaProgramada)}</td>
-                  <td style={{ padding: "7px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
-                    <Btn small variant="secondary" onClick={() => setEditando(p)}>Editar</Btn>{" "}
-                    <Btn small variant="danger" onClick={() => onCancelar(p.id)}>Cancelar</Btn>
-                  </td>
-                </tr>
+              reporteBMP.map((l) => (
+                <FilaProgramadorBMP
+                  key={l.numLote}
+                  lote={l}
+                  existente={porNumLote.get(l.numLote) || null}
+                  plantas={plantas}
+                  onProgramar={onProgramar}
+                  onEditar={onEditar}
+                  onCancelar={onCancelar}
+                />
               ))
             )}
           </tbody>
