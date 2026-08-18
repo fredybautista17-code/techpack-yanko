@@ -6470,6 +6470,10 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["kpis", "🎯 KPIs"], ["informes", "📋 Informes"]];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["papelera", "🗑 Papelera"]];
   const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
+  // Si tiene valor, el formulario de arriba está EDITANDO esa fila (en vez
+  // de crear una nueva) — así se puede corregir, por ejemplo, una fila que
+  // quedó amarrada a una Línea de más sin tener que borrarla y rehacerla.
+  const [editandoIdCodigo, setEditandoIdCodigo] = useState(null);
   // Categorías con el acordeón de Códigos de Referencia desplegado — solo
   // guarda los nombres abiertos, para no perder el estado al agregar o
   // eliminar filas.
@@ -6482,31 +6486,54 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
       return next;
     });
   }
-  function addCodigoReferencia() {
+  function limpiarFormCodigo() {
+    setNuevoCodigo({ categoria: "", linea: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
+    setEditandoIdCodigo(null);
+  }
+  // Agrega una fila nueva, o si editandoIdCodigo tiene valor, guarda los
+  // cambios sobre esa fila existente en vez de crear una duplicada.
+  function guardarCodigoReferencia() {
     const prefijo = nuevoCodigo.prefijo.trim();
     const rangoInicio = Number(nuevoCodigo.rangoInicio);
     const rangoFin = Number(nuevoCodigo.rangoFin);
     if (!nuevoCodigo.categoria || !prefijo || !rangoInicio || !rangoFin || rangoFin < rangoInicio) return;
-    onUpdateConfig({
-      codigosReferencia: [
-        ...(config.codigosReferencia || []),
-        {
-          id: uid(),
-          categoria: nuevoCodigo.categoria,
-          linea: nuevoCodigo.linea,
-          cliente: nuevoCodigo.cliente,
-          prefijo,
-          rangoInicio,
-          rangoFin,
-          desbordeInicio: nuevoCodigo.desbordeInicio === "" ? "" : Number(nuevoCodigo.desbordeInicio),
-          desbordeFin: nuevoCodigo.desbordeFin === "" ? "" : Number(nuevoCodigo.desbordeFin),
-        },
-      ],
+    const datos = {
+      categoria: nuevoCodigo.categoria,
+      linea: nuevoCodigo.linea,
+      cliente: nuevoCodigo.cliente,
+      prefijo,
+      rangoInicio,
+      rangoFin,
+      desbordeInicio: nuevoCodigo.desbordeInicio === "" ? "" : Number(nuevoCodigo.desbordeInicio),
+      desbordeFin: nuevoCodigo.desbordeFin === "" ? "" : Number(nuevoCodigo.desbordeFin),
+    };
+    if (editandoIdCodigo) {
+      onUpdateConfig({
+        codigosReferencia: (config.codigosReferencia || []).map((c) => (c.id === editandoIdCodigo ? { ...c, ...datos } : c)),
+      });
+    } else {
+      onUpdateConfig({ codigosReferencia: [...(config.codigosReferencia || []), { id: uid(), ...datos }] });
+    }
+    limpiarFormCodigo();
+  }
+  // Carga los datos de una fila existente en el formulario de arriba para
+  // corregirla (ver guardarCodigoReferencia).
+  function iniciarEdicionCodigo(c) {
+    setNuevoCodigo({
+      categoria: c.categoria || "",
+      linea: c.linea || "",
+      cliente: c.cliente || "",
+      prefijo: c.prefijo || "",
+      rangoInicio: c.rangoInicio ?? "",
+      rangoFin: c.rangoFin ?? "",
+      desbordeInicio: c.desbordeInicio ?? "",
+      desbordeFin: c.desbordeFin ?? "",
     });
-    setNuevoCodigo({ categoria: "", linea: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
+    setEditandoIdCodigo(c.id);
   }
   function removeCodigoReferencia(id) {
     onUpdateConfig({ codigosReferencia: (config.codigosReferencia || []).filter((c) => c.id !== id) });
+    if (editandoIdCodigo === id) limpiarFormCodigo();
   }
   // Carga de un solo clic la plantilla sugerida (ver PLANTILLA_CODIGOS_REFERENCIA)
   // — agrega también a config.categorias cualquier nombre de categoría que
@@ -6647,8 +6674,16 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                   <input type="number" min={0} placeholder="2299" value={nuevoCodigo.desbordeFin} onChange={(e) => setNuevoCodigo((f) => ({ ...f, desbordeFin: e.target.value }))} style={{ width: "100%", padding: "9px 8px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
                 </div>
               </div>
-              <Btn onClick={addCodigoReferencia}>+ Agregar</Btn>
+              <div style={{ display: "flex", gap: 6 }}>
+                <Btn onClick={guardarCodigoReferencia}>{editandoIdCodigo ? "💾 Guardar cambios" : "+ Agregar"}</Btn>
+                {editandoIdCodigo && <Btn variant="secondary" onClick={limpiarFormCodigo}>Cancelar</Btn>}
+              </div>
             </div>
+            {editandoIdCodigo && (
+              <div style={{ padding: "8px 12px", background: T.violetBg, borderRadius: 8, marginBottom: 10, fontSize: 12, color: T.violet, fontWeight: 600 }}>
+                ✎ Editando la fila de arriba — cambia lo que necesites y dale "Guardar cambios" (o "Cancelar" para dejarla como estaba).
+              </div>
+            )}
             <div style={{ fontSize: 11, color: T.slate, marginBottom: 16, fontStyle: "italic" }}>Línea, Cliente y Desborde son opcionales — déjalos vacíos si esa categoría aplica a cualquier línea/cliente, o no necesita una "segunda vuelta" cuando se llene su rango principal.</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {(config.codigosReferencia || []).length === 0 && (
@@ -6697,7 +6732,10 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                                     <span style={{ fontSize: 12, color: T.denim, fontWeight: 600 }}>{rango}</span>
                                     {tieneDesborde && <span style={{ fontSize: 12, color: T.amber, marginLeft: 10, fontWeight: 600 }}>· si se llena, sigue en {rangoDesborde}</span>}
                                   </div>
-                                  <button onClick={() => removeCodigoReferencia(c.id)} style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "4px 10px", color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Eliminar</button>
+                                  <div style={{ display: "flex", gap: 6 }}>
+                                    <button onClick={() => iniciarEdicionCodigo(c)} style={{ background: T.denimBg, border: "none", borderRadius: 6, padding: "4px 10px", color: T.denim, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Editar</button>
+                                    <button onClick={() => removeCodigoReferencia(c.id)} style={{ background: T.coralBg, border: "none", borderRadius: 6, padding: "4px 10px", color: T.coral, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Eliminar</button>
+                                  </div>
                                 </div>
                               );
                             })}
