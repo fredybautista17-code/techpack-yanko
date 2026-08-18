@@ -538,6 +538,21 @@ const INIT_CONFIG = {
   // usa como criterio opcional para amarrar una Categoría a un
   // prefijo/rango distinto en Códigos de Referencia.
   lineas: [],
+  // Como config.lineas trae docenas de valores compuestos reales de Busint
+  // (ej. "INFAN FEME BASICO", "CABA DEPORT PREMIUN") sería un dolor de
+  // cabeza crear una fila de Código de Referencia por cada línea puntual
+  // solo para diferenciar Dama/Caballero/Niña/Niño. En vez de eso, cada
+  // línea se clasifica UNA vez en un grupo (ver lineaGrupoMap más abajo), y
+  // una fila de Código de Referencia puede amarrarse a ese grupo entero
+  // (ej. Categoría Camiseta + Cliente Kamila + Grupo Caballero → prefijo
+  // 97) en vez de a una línea puntual. Una fila con Línea puntual (más
+  // específica) sigue ganando sobre una de Grupo si ambas aplican — ver
+  // buscarEntradaCodigoReferencia().
+  gruposLinea: ["Dama", "Caballero", "Niña", "Niño"],
+  // Mapa { "NOMBRE DE LÍNEA": "Grupo" } — se llena en Administración → Línea.
+  // Una línea sin entrada acá no pertenece a ningún grupo (no matchea
+  // ninguna fila de Código de Referencia que use Grupo).
+  lineaGrupoMap: {},
   disenadores: [],
   // Catálogo de codificación de referencias: cada entrada amarra una
   // Categoría (y opcionalmente una Silueta puntual) a un prefijo y un rango
@@ -684,18 +699,23 @@ function nowISO() { return new Date().toISOString(); }
 // Encuentra en config.codigosReferencia la entrada que amarra esta
 // categoria(+línea)(+cliente) a un prefijo/rango. El prefijo puede depender
 // del cliente (cada cliente puede tener su propio rango de números), así
-// que primero se descartan las filas que tengan Línea o Cliente puntuales
-// que NO coincidan con lo buscado (esas son de otra línea/otro cliente), y
-// entre las que quedan gana la más específica: Cliente+Línea > Cliente >
-// Línea > genérica (sin línea ni cliente, aplica a toda la categoría).
+// que primero se descartan las filas que tengan Línea, Grupo o Cliente
+// puntuales que NO coincidan con lo buscado (esas son de otra línea/otro
+// grupo/otro cliente), y entre las que quedan gana la más específica:
+// Cliente+Línea > Cliente+Grupo > Cliente > Línea > Grupo > genérica (sin
+// línea/grupo/cliente, aplica a toda la categoría). El Grupo de la línea
+// elegida sale de config.lineaGrupoMap (ver DEFAULT_CONFIG.lineaGrupoMap) —
+// así una fila puede amarrarse a "toda línea de Caballero" sin tener que
+// enumerar cada línea puntual de Busint.
 function buscarEntradaCodigoReferencia(categoria, linea, cliente, config) {
   const catalogo = (config?.codigosReferencia || []).filter((c) => c.categoria === categoria);
   if (!categoria || catalogo.length === 0) return null;
+  const grupo = (config?.lineaGrupoMap || {})[linea] || "";
   const candidatas = catalogo.filter(
-    (c) => (!c.cliente || c.cliente === cliente) && (!c.linea || c.linea === linea)
+    (c) => (!c.cliente || c.cliente === cliente) && (!c.linea || c.linea === linea) && (!c.grupo || c.grupo === grupo)
   );
   if (candidatas.length === 0) return null;
-  const especificidad = (c) => (c.cliente ? 2 : 0) + (c.linea ? 1 : 0);
+  const especificidad = (c) => (c.cliente ? 4 : 0) + (c.linea ? 2 : 0) + (c.grupo ? 1 : 0);
   return candidatas.reduce((mejor, c) => (especificidad(c) > especificidad(mejor) ? c : mejor), candidatas[0]);
 }
 // Compara/busca referencias IGNORANDO el guion — Busint a veces guarda o
@@ -6516,7 +6536,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
   const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["kpis", "🎯 KPIs"], ["informes", "📋 Informes"]];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["papelera", "🗑 Papelera"]];
-  const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
+  const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", grupo: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
   // Si tiene valor, el formulario de arriba está EDITANDO esa fila (en vez
   // de crear una nueva) — así se puede corregir, por ejemplo, una fila que
   // quedó amarrada a una Línea de más sin tener que borrarla y rehacerla.
@@ -6534,7 +6554,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     });
   }
   function limpiarFormCodigo() {
-    setNuevoCodigo({ categoria: "", linea: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
+    setNuevoCodigo({ categoria: "", linea: "", grupo: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
     setEditandoIdCodigo(null);
   }
   // Agrega una fila nueva, o si editandoIdCodigo tiene valor, guarda los
@@ -6547,6 +6567,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     const datos = {
       categoria: nuevoCodigo.categoria,
       linea: nuevoCodigo.linea,
+      grupo: nuevoCodigo.grupo,
       cliente: nuevoCodigo.cliente,
       prefijo,
       rangoInicio,
@@ -6569,6 +6590,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     setNuevoCodigo({
       categoria: c.categoria || "",
       linea: c.linea || "",
+      grupo: c.grupo || "",
       cliente: c.cliente || "",
       prefijo: c.prefijo || "",
       rangoInicio: c.rangoInicio ?? "",
@@ -6673,6 +6695,45 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
           <div>
             <SincronizarLineasBusintBtn config={config} onUpdateConfig={onUpdateConfig} />
             <ListEditor listKey="lineas" title="Línea" />
+            <div style={{ marginTop: 28, paddingTop: 24, borderTop: `1px solid ${T.border}` }}>
+              <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Grupos de Línea</div>
+              <div style={{ fontSize: 12.5, color: T.slate, marginBottom: 16 }}>
+                Cada Línea de arriba (que trae docenas de valores compuestos reales de Busint, ej. "CABA DEPORT PREMIUN") se clasifica una sola vez en un Grupo (Dama, Caballero, Niña, Niño). Con eso, en Código de Referencia puedes amarrar una regla a "todo el grupo Caballero" en vez de tener que enumerar cada línea puntual.
+              </div>
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 8, textTransform: "uppercase" }}>Nombres de grupo</div>
+                <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                  <input value={newItem} onChange={(e) => setNewItem(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addToList("gruposLinea")} placeholder="Ej: Unisex" style={{ flex: 1, maxWidth: 260, padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }} />
+                  <Btn small onClick={() => addToList("gruposLinea")}>+ Agregar grupo</Btn>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {(config.gruposLinea || []).map((g) => (
+                    <div key={g} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", background: T.canvas, borderRadius: 20, border: `1px solid ${T.border}` }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: T.ink }}>{g}</span>
+                      <button onClick={() => removeFromList("gruposLinea", g)} style={{ background: "none", border: "none", color: T.coral, fontWeight: 800, cursor: "pointer", fontSize: 13 }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {(config.lineas || []).length === 0 ? (
+                <div style={{ fontSize: 13, color: T.slate, fontStyle: "italic" }}>Aún no hay líneas cargadas arriba.</div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {config.lineas.map((linea) => (
+                    <div key={linea} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 12px", background: T.canvas, borderRadius: 8, border: `1px solid ${T.border}` }}>
+                      <span style={{ fontSize: 13, color: T.ink, fontWeight: 600 }}>{linea}</span>
+                      <div style={{ width: 200 }}>
+                        <FSel
+                          value={(config.lineaGrupoMap || {})[linea] || ""}
+                          onChange={(v) => onUpdateConfig({ lineaGrupoMap: { ...(config.lineaGrupoMap || {}), [linea]: v } })}
+                          options={config.gruposLinea || []}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
         {tab === "rangos" && <ListEditor listKey="rangos" title="Rangos" />}
@@ -6688,20 +6749,25 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
               <SincronizarLineasBusintBtn config={config} onUpdateConfig={onUpdateConfig} />
               <Btn variant="secondary" onClick={cargarPlantillaCodigos}>📋 Cargar plantilla sugerida (98 dama/fábrica + 96 Reform)</Btn>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Categoría</div>
                 <FSel value={nuevoCodigo.categoria} onChange={(v) => setNuevoCodigo((f) => ({ ...f, categoria: v }))} options={config.categorias} />
               </div>
               <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Línea (opcional)</div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Línea puntual (opcional)</div>
                 <FSel value={nuevoCodigo.linea} onChange={(v) => setNuevoCodigo((f) => ({ ...f, linea: v }))} options={config.lineas} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Grupo de línea (opcional)</div>
+                <FSel value={nuevoCodigo.grupo} onChange={(v) => setNuevoCodigo((f) => ({ ...f, grupo: v }))} options={config.gruposLinea || []} />
               </div>
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Cliente (opcional)</div>
                 <FSel value={nuevoCodigo.cliente} onChange={(v) => setNuevoCodigo((f) => ({ ...f, cliente: v }))} options={(config.clientes || []).map((c) => c.nombre)} />
               </div>
             </div>
+            <div style={{ fontSize: 11, color: T.slate, marginBottom: 10, fontStyle: "italic" }}>Usa "Línea puntual" solo para una excepción específica (ej. una línea con su propio prefijo); para reglas por Dama/Caballero/Niña/Niño usa "Grupo de línea" — cada línea se clasifica una sola vez en Administración → Línea.</div>
             <div style={{ display: "grid", gridTemplateColumns: "0.6fr 0.9fr 0.9fr auto", gap: 8, marginBottom: 8, alignItems: "end" }}>
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>Prefijo</div>
@@ -6775,6 +6841,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                                 <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: T.white, borderRadius: 8, border: `1px solid ${T.border}` }}>
                                   <div>
                                     {c.linea && <span style={{ fontSize: 12, color: T.slate, marginRight: 8 }}>· {c.linea}</span>}
+                                    {c.grupo && <span style={{ fontSize: 12, color: T.denim, marginRight: 8, fontWeight: 600 }}>· Grupo: {c.grupo}</span>}
                                     {c.cliente && <span style={{ fontSize: 12, color: T.violet, marginRight: 8, fontWeight: 600 }}>· {c.cliente}</span>}
                                     <span style={{ fontSize: 12, color: T.denim, fontWeight: 600 }}>{rango}</span>
                                     {tieneDesborde && <span style={{ fontSize: 12, color: T.amber, marginLeft: 10, fontWeight: 600 }}>· si se llena, sigue en {rangoDesborde}</span>}
