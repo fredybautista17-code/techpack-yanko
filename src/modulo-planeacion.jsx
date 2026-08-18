@@ -456,6 +456,7 @@ function generarBMP(lotes) {
       cliente: l.nombreCliente,
       referencia: l.referencia,
       numLote: l.numLote,
+      numPedido: l.numPedido,
       cantidadBMP: l.invBMP,
       fechaCorte: l.fechaCorteISO,
       diasParaCorte: diasEntre(l.fechaCorteISO),
@@ -1034,6 +1035,207 @@ function VerificadorPrecioTalleresView({ entradas }) {
     </div>
   );
 }
+// ─── PROGRAMADOR DE BMP → PLANTA ────────────────────────────────────────────────
+// Deja elegir, lote por lote, a qué planta/taller se va a enviar y con qué
+// fecha comprometida. Es independiente de "Programación Diaria" del módulo
+// Planta (esa es sobre lo que Planta Yanko va a ENTREGAR); esta es sobre lo
+// que BMP va a ENVIAR. Se guarda en Firestore ("planeacion_programacion_bmp")
+// para que quede el registro aunque cambie la carga de Hoja1.
+function ProgramarLoteBMPModal({ lote, plantas, onConfirm, onClose }) {
+  const [planta, setPlanta] = useState("");
+  const [plantaLibre, setPlantaLibre] = useState("");
+  const [fecha, setFecha] = useState(today());
+  const plantaFinal = planta === "__otra__" ? plantaLibre.trim() : planta;
+  function confirmar() {
+    if (!plantaFinal || !fecha) return;
+    onConfirm(lote, plantaFinal, fecha);
+    onClose();
+  }
+  return (
+    <Modal title={`Programar envío — Lote ${lote.numLote}`} onClose={onClose} width={460}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, padding: "12px 14px", background: C.amberBg, borderRadius: 8, marginBottom: 18, fontSize: 12, color: C.amber }}>
+        <div>
+          <div style={{ fontWeight: 700 }}>Referencia</div>
+          <div>{lote.referencia}</div>
+        </div>
+        <div>
+          <div style={{ fontWeight: 700 }}>Cantidad en BMP</div>
+          <div>{fmtNum(lote.cantidadBMP)}</div>
+        </div>
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Planta / taller destino</div>
+        <select
+          value={planta}
+          onChange={(e) => setPlanta(e.target.value)}
+          style={{ width: "100%", padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
+        >
+          <option value="">Selecciona…</option>
+          {plantas.map((p) => (
+            <option key={p} value={p}>{p}</option>
+          ))}
+          <option value="__otra__">Otra (escribir)…</option>
+        </select>
+        {planta === "__otra__" && (
+          <input
+            type="text"
+            value={plantaLibre}
+            onChange={(e) => setPlantaLibre(e.target.value)}
+            placeholder="Nombre de la planta/taller"
+            style={{ width: "100%", marginTop: 8, padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
+          />
+        )}
+      </div>
+      <div style={{ marginBottom: 18 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Fecha comprometida de envío</div>
+        <input
+          type="date"
+          value={fecha}
+          onChange={(e) => setFecha(e.target.value)}
+          style={{ width: "100%", padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
+        />
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn variant="danger" onClick={confirmar} disabled={!plantaFinal || !fecha}>Programar</Btn>
+      </div>
+    </Modal>
+  );
+}
+function EditarProgramacionBMPModal({ fila, plantas, onConfirm, onClose }) {
+  const yaEnCatalogo = plantas.includes(fila.plantaDestino);
+  const [planta, setPlanta] = useState(yaEnCatalogo ? fila.plantaDestino : "__otra__");
+  const [plantaLibre, setPlantaLibre] = useState(yaEnCatalogo ? "" : fila.plantaDestino || "");
+  const [fecha, setFecha] = useState(fila.fechaProgramada || today());
+  const plantaFinal = planta === "__otra__" ? plantaLibre.trim() : planta;
+  function confirmar() {
+    if (!plantaFinal || !fecha) return;
+    onConfirm(fila.id, plantaFinal, fecha);
+    onClose();
+  }
+  return (
+    <Modal title={`Editar programación — Lote ${fila.numLote}`} onClose={onClose} width={460}>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Planta / taller destino</div>
+        <select
+          value={planta}
+          onChange={(e) => setPlanta(e.target.value)}
+          style={{ width: "100%", padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
+        >
+          <option value="">Selecciona…</option>
+          {plantas.map((p) => (
+            <option key={p} value={p}>{p}</option>
+          ))}
+          <option value="__otra__">Otra (escribir)…</option>
+        </select>
+        {planta === "__otra__" && (
+          <input
+            type="text"
+            value={plantaLibre}
+            onChange={(e) => setPlantaLibre(e.target.value)}
+            placeholder="Nombre de la planta/taller"
+            style={{ width: "100%", marginTop: 8, padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
+          />
+        )}
+      </div>
+      <div style={{ marginBottom: 18 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Fecha comprometida de envío</div>
+        <input
+          type="date"
+          value={fecha}
+          onChange={(e) => setFecha(e.target.value)}
+          style={{ width: "100%", padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
+        />
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn variant="danger" onClick={confirmar} disabled={!plantaFinal || !fecha}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+function ProgramadorBMPView({ reporteBMP, programacion, plantas, onProgramar, onEditar, onCancelar }) {
+  const [programando, setProgramando] = useState(null);
+  const [editando, setEditando] = useState(null);
+  const numLotesProgramados = useMemo(() => new Set(programacion.map((p) => p.numLote)), [programacion]);
+  const sinProgramar = useMemo(() => reporteBMP.filter((l) => !numLotesProgramados.has(l.numLote)), [reporteBMP, numLotesProgramados]);
+  const programadosOrdenados = useMemo(
+    () => [...programacion].sort((a, b) => (a.fechaProgramada || "").localeCompare(b.fechaProgramada || "")),
+    [programacion]
+  );
+  return (
+    <div>
+      {programando && (
+        <ProgramarLoteBMPModal lote={programando} plantas={plantas} onConfirm={onProgramar} onClose={() => setProgramando(null)} />
+      )}
+      {editando && (
+        <EditarProgramacionBMPModal fila={editando} plantas={plantas} onConfirm={onEditar} onClose={() => setEditando(null)} />
+      )}
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, margin: "28px 0 10px" }}>BMP SIN PROGRAMAR — ELEGIR PLANTA DESTINO</div>
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: C.ink }}>
+              {["Num Lote", "Num Pedido", "Referencia", "Categoría", "Cantidad BMP", ""].map((h, i) => (
+                <th key={i} style={{ padding: "9px 12px", color: C.seam, textAlign: i === 4 ? "right" : "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {!sinProgramar.length ? (
+              <tr><td colSpan={6} style={{ textAlign: "center", padding: 30, color: C.slate, fontSize: 13 }}>Todo lo que hay en BMP ya está programado.</td></tr>
+            ) : (
+              sinProgramar.map((l, i) => (
+                <tr key={l.numLote} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                  <td style={{ padding: "7px 12px" }}>{l.numLote}</td>
+                  <td style={{ padding: "7px 12px" }}>{l.numPedido || "—"}</td>
+                  <td style={{ padding: "7px 12px" }}>{l.referencia}</td>
+                  <td style={{ padding: "7px 12px" }}>{l.categoria}</td>
+                  <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(l.cantidadBMP)}</td>
+                  <td style={{ padding: "7px 12px", textAlign: "right" }}>
+                    <Btn small onClick={() => setProgramando(l)}>Programar</Btn>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, margin: "28px 0 10px" }}>PROGRAMADOS</div>
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: C.ink }}>
+              {["Num Lote", "Referencia", "Categoría", "Cantidad", "Planta Destino", "Fecha Envío", ""].map((h, i) => (
+                <th key={i} style={{ padding: "9px 12px", color: C.seam, textAlign: i === 3 ? "right" : "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {!programadosOrdenados.length ? (
+              <tr><td colSpan={7} style={{ textAlign: "center", padding: 30, color: C.slate, fontSize: 13 }}>Aún no hay lotes programados.</td></tr>
+            ) : (
+              programadosOrdenados.map((p, i) => (
+                <tr key={p.id} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                  <td style={{ padding: "7px 12px" }}>{p.numLote}</td>
+                  <td style={{ padding: "7px 12px" }}>{p.referencia}</td>
+                  <td style={{ padding: "7px 12px" }}>{p.categoria}</td>
+                  <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtNum(p.cantidadBMP)}</td>
+                  <td style={{ padding: "7px 12px", fontWeight: 700 }}>{p.plantaDestino}</td>
+                  <td style={{ padding: "7px 12px" }}>{fmtFechaISO(p.fechaProgramada)}</td>
+                  <td style={{ padding: "7px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <Btn small variant="secondary" onClick={() => setEditando(p)}>Editar</Btn>{" "}
+                    <Btn small variant="danger" onClick={() => onCancelar(p.id)}>Cancelar</Btn>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 // ─── VISTA PRINCIPAL: INFORMES ─────────────────────────────────────────────────
 const REPORTES = [
   { id: "en_planta", label: "En Planta", icon: "🏭" },
@@ -1047,7 +1249,18 @@ const REPORTES = [
   { id: "programacion_yanko", label: "Programación Yanko", icon: "🎯" },
   { id: "precio_talleres", label: "Verificador de Precio (Talleres)", icon: "🔍" },
 ];
-function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, entradasTalleres }) {
+function InformesView({
+  cargas,
+  onAddCarga,
+  onDeleteCarga,
+  isAdmin,
+  entradasTalleres,
+  catalogoPlantas,
+  programacionBMP,
+  onProgramarBMP,
+  onEditarProgramacionBMP,
+  onCancelarProgramacionBMP,
+}) {
   const [showUpload, setShowUpload] = useState(false);
   const [cargaId, setCargaId] = useState(null);
   const [tab, setTab] = useState("en_planta");
@@ -1395,6 +1608,16 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, entradasTall
               filas={reporteBMP}
             />
           )}
+          {tab === "bmp" && (
+            <ProgramadorBMPView
+              reporteBMP={reporteBMP}
+              programacion={programacionBMP || []}
+              plantas={catalogoPlantas || []}
+              onProgramar={onProgramarBMP}
+              onEditar={onEditarProgramacionBMP}
+              onCancelar={onCancelarProgramacionBMP}
+            />
+          )}
           {tab === "programacion_yanko" && (
             <div>
               <Tabla
@@ -1519,6 +1742,15 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     const entradas = cargaEntradasPlantaActiva?.entradas || [];
     return entradas.filter((e) => e.nombrePlanta !== PLANTA_YANKO);
   }, [cargaEntradasPlantaActiva]);
+  // Catálogo de plantas/talleres destino para el Programador de BMP: se toma
+  // de todos los nombres de planta que ya han aparecido, en cualquier carga,
+  // del Excel de Entradas de Planta (mismo dato que alimenta el Verificador
+  // de Precio de Talleres) — no es una lista fija, crece sola con el uso.
+  const catalogoPlantas = useMemo(() => {
+    const set = new Set();
+    cargasEntradasPlanta.forEach((c) => (c.entradas || []).forEach((e) => { if (e.nombrePlanta) set.add(e.nombrePlanta); }));
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [cargasEntradasPlanta]);
   async function addCarga(carga) {
     setCargas((cs) => [...cs, carga]);
     await fsSave("planeacion_cargas", carga.id, carga);
@@ -1526,6 +1758,44 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
   async function deleteCarga(id) {
     setCargas((cs) => cs.filter((c) => c.id !== id));
     await fsDelete("planeacion_cargas", id);
+  }
+  // Programador de BMP → Planta: cada registro dice qué lote se programó,
+  // para qué planta/taller y con qué fecha comprometida de envío. Es
+  // independiente de la Programación Diaria de Planta (esa es sobre lo que
+  // Planta Yanko va a ENTREGAR; esta es sobre lo que BMP va a ENVIAR a una
+  // planta/taller).
+  const [programacionBMP, setProgramacionBMP] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_programacion_bmp"), (snap) => {
+      setProgramacionBMP(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  async function programarLoteBMP(lote, plantaDestino, fechaProgramada) {
+    const nuevo = {
+      id: uid(),
+      numLote: lote.numLote,
+      numPedido: lote.numPedido || "",
+      referencia: lote.referencia,
+      categoria: lote.categoria,
+      cliente: lote.cliente,
+      cantidadBMP: lote.cantidadBMP,
+      plantaDestino,
+      fechaProgramada,
+      creadoEn: new Date().toISOString(),
+      programadoPor: currentUser?.name || currentUser?.email || "",
+    };
+    setProgramacionBMP((ps) => [...ps, nuevo]);
+    await fsSave("planeacion_programacion_bmp", nuevo.id, nuevo);
+  }
+  async function editarProgramacionBMP(id, plantaDestino, fechaProgramada) {
+    setProgramacionBMP((ps) => ps.map((p) => (p.id === id ? { ...p, plantaDestino, fechaProgramada } : p)));
+    const actual = programacionBMP.find((p) => p.id === id);
+    if (actual) await fsSave("planeacion_programacion_bmp", id, { ...actual, plantaDestino, fechaProgramada });
+  }
+  async function cancelarProgramacionBMP(id) {
+    setProgramacionBMP((ps) => ps.filter((p) => p.id !== id));
+    await fsDelete("planeacion_programacion_bmp", id);
   }
   const isAdmin = currentUser?.isAdmin;
   const NAV = [
@@ -1602,7 +1872,20 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
       <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
           {subView === "home" && <HomePlaneacion onGoInformes={() => setSubView("informes")} />}
-          {subView === "informes" && <InformesView cargas={cargas} onAddCarga={addCarga} onDeleteCarga={deleteCarga} isAdmin={isAdmin} entradasTalleres={entradasTalleres} />}
+          {subView === "informes" && (
+            <InformesView
+              cargas={cargas}
+              onAddCarga={addCarga}
+              onDeleteCarga={deleteCarga}
+              isAdmin={isAdmin}
+              entradasTalleres={entradasTalleres}
+              catalogoPlantas={catalogoPlantas}
+              programacionBMP={programacionBMP}
+              onProgramarBMP={programarLoteBMP}
+              onEditarProgramacionBMP={editarProgramacionBMP}
+              onCancelarProgramacionBMP={cancelarProgramacionBMP}
+            />
+          )}
         </div>
       </div>
     </div>
