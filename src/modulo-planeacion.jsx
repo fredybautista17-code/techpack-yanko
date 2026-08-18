@@ -966,6 +966,74 @@ function BloqueBPT({ data }) {
     </div>
   );
 }
+// ─── VERIFICADOR DE PRECIO DE CONFECCIÓN — TALLERES ────────────────────────────
+// Misma idea que el Verificador de Precio de Confección de Planta (módulo
+// Planta → Dashboard de Entregas): busca por referencia y compara CostoFT
+// (precio teórico, fijado en la ficha técnica) contra VaEnt (precio real de
+// esa entrada puntual) para detectar cobros mal digitados. La diferencia es
+// que esta vista, dentro de Planeación, mira TODAS las entradas del mismo
+// Excel "Entradas de Planta" EXCEPTO las de la planta propia (esas ya se
+// verifican en el módulo Planta) — o sea, esta es la versión para Talleres
+// externos. Los datos vienen de la misma colección "planta_entradas_cargas"
+// que sube el módulo Planta; Planeación solo la lee, no la modifica.
+// (PLANTA_YANKO ya está definido más arriba en este archivo, se reutiliza.)
+function VerificadorPrecioTalleresView({ entradas }) {
+  const [busqueda, setBusqueda] = useState("");
+  const resultado = useMemo(() => {
+    const q = busqueda.trim().toLowerCase();
+    if (!q) return [];
+    return entradas
+      .filter((e) => (e.refExt || "").toLowerCase() === q || String(e.refN || "").toLowerCase() === q)
+      .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
+      .slice(0, 5);
+  }, [entradas, busqueda]);
+  const taller = resultado[0]?.nombrePlanta || null;
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 16, maxWidth: 640 }}>
+        Busca una referencia para ver sus últimas entradas a talleres externos y comparar el precio teórico (CostoFT) contra el precio con el que realmente entró (VaEnt). Las que no coinciden salen en rojo.
+      </div>
+      <div style={{ marginBottom: 18, maxWidth: 360 }}>
+        <input
+          type="text"
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="Escribe la referencia (ej. GM1002)"
+          style={{ width: "100%", padding: "10px 14px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
+        />
+      </div>
+      {!busqueda.trim() ? (
+        <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Escribe una referencia para ver sus últimas entradas.</div>
+      ) : !resultado.length ? (
+        <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>No se encontraron entradas de taller con esa referencia.</div>
+      ) : (
+        <>
+          {taller && (
+            <div style={{ marginBottom: 14, fontSize: 13, color: C.slate }}>
+              Taller: <span style={{ fontWeight: 800, color: C.ink }}>{taller}</span>
+            </div>
+          )}
+          <Tabla
+            vacio="Sin entradas para esa referencia."
+            columnas={[
+              { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+              { key: "nombrePlanta", label: "Taller" },
+              { key: "precioTeorico", label: "Precio teórico", align: "right", render: (f) => `$${fmtNum(f.precioTeorico)}` },
+              {
+                key: "precioEntrada",
+                label: "Precio de entrada",
+                align: "right",
+                render: (f) => `$${fmtNum(f.precioEntrada)}`,
+                color: (f) => (f.precioEntrada !== f.precioTeorico ? C.red : C.green),
+              },
+            ]}
+            filas={resultado}
+          />
+        </>
+      )}
+    </div>
+  );
+}
 // ─── VISTA PRINCIPAL: INFORMES ─────────────────────────────────────────────────
 const REPORTES = [
   { id: "en_planta", label: "En Planta", icon: "🏭" },
@@ -977,8 +1045,9 @@ const REPORTES = [
   { id: "por_pedido", label: "Por Pedido", icon: "📦" },
   { id: "bmp", label: "BMP", icon: "🧵" },
   { id: "programacion_yanko", label: "Programación Yanko", icon: "🎯" },
+  { id: "precio_talleres", label: "Verificador de Precio (Talleres)", icon: "🔍" },
 ];
-function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
+function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin, entradasTalleres }) {
   const [showUpload, setShowUpload] = useState(false);
   const [cargaId, setCargaId] = useState(null);
   const [tab, setTab] = useState("en_planta");
@@ -1391,6 +1460,7 @@ function InformesView({ cargas, onAddCarga, onDeleteCarga, isAdmin }) {
               )}
             </div>
           )}
+          {tab === "precio_talleres" && <VerificadorPrecioTalleresView entradas={entradasTalleres || []} />}
         </>
       )}
     </div>
@@ -1425,6 +1495,7 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
   const [subView, setSubView] = useState("informes");
   const [cargas, setCargas] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [cargasEntradasPlanta, setCargasEntradasPlanta] = useState([]);
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "planeacion_cargas"), (snap) => {
       setCargas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
@@ -1432,6 +1503,22 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     });
     return () => unsub();
   }, []);
+  // Verificador de Precio de Confección (Talleres): reutiliza las cargas de
+  // "Entradas de Planta" que sube el módulo Planta — Planeación solo las lee.
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planta_entradas_cargas"), (snap) => {
+      setCargasEntradasPlanta(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  const cargaEntradasPlantaActiva = useMemo(() => {
+    if (!cargasEntradasPlanta.length) return null;
+    return [...cargasEntradasPlanta].sort((a, b) => (b.creadoEn || b.fecha || "").localeCompare(a.creadoEn || a.fecha || ""))[0];
+  }, [cargasEntradasPlanta]);
+  const entradasTalleres = useMemo(() => {
+    const entradas = cargaEntradasPlantaActiva?.entradas || [];
+    return entradas.filter((e) => e.nombrePlanta !== PLANTA_YANKO);
+  }, [cargaEntradasPlantaActiva]);
   async function addCarga(carga) {
     setCargas((cs) => [...cs, carga]);
     await fsSave("planeacion_cargas", carga.id, carga);
@@ -1515,7 +1602,7 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
       <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
           {subView === "home" && <HomePlaneacion onGoInformes={() => setSubView("informes")} />}
-          {subView === "informes" && <InformesView cargas={cargas} onAddCarga={addCarga} onDeleteCarga={deleteCarga} isAdmin={isAdmin} />}
+          {subView === "informes" && <InformesView cargas={cargas} onAddCarga={addCarga} onDeleteCarga={deleteCarga} isAdmin={isAdmin} entradasTalleres={entradasTalleres} />}
         </div>
       </div>
     </div>
