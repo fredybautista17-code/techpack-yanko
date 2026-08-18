@@ -1171,7 +1171,7 @@ function ProgramadorBMPView({ reporteBMP, programacion, plantas, onProgramar, on
       {editando && (
         <EditarProgramacionBMPModal fila={editando} plantas={plantas} onConfirm={onEditar} onClose={() => setEditando(null)} />
       )}
-      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, margin: "28px 0 10px" }}>BMP SIN PROGRAMAR — ELEGIR PLANTA DESTINO</div>
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, margin: "0 0 10px" }}>BMP SIN PROGRAMAR — ELEGIR PLANTA DESTINO</div>
       <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead>
@@ -1248,6 +1248,7 @@ const REPORTES = [
   { id: "bmp", label: "BMP", icon: "🧵" },
   { id: "programacion_yanko", label: "Programación Yanko", icon: "🎯" },
   { id: "precio_talleres", label: "Verificador de Precio (Talleres)", icon: "🔍" },
+  { id: "programador_bmp", label: "Programador BMP → Planta", icon: "🚚" },
 ];
 function InformesView({
   cargas,
@@ -1608,7 +1609,7 @@ function InformesView({
               filas={reporteBMP}
             />
           )}
-          {tab === "bmp" && (
+          {tab === "programador_bmp" && (
             <ProgramadorBMPView
               reporteBMP={reporteBMP}
               programacion={programacionBMP || []}
