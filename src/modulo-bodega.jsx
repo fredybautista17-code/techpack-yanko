@@ -2625,9 +2625,11 @@ async function exportarEstadoCuentaKamilaExcel(movimientos, desglose) {
 // viven en colecciones totalmente separadas — esta vista los junta en un
 // solo estado de cuenta consolidado, sin tocar cómo se guardan. Colombia
 // queda fuera a propósito (destino aparte, no es KAMILA GROUP).
-// Saldo = Total Despachado (Venezuela + Dubo) − Total Abonado (Venezuela + Dubo).
+// Saldo = Total Despachado (Venezuela + Dubo) − (Abonos Venezuela + Saldo
+// Yuliana). Yuliana es la cuenta que de verdad mueve la plata de Dubo — los
+// Abonos Dubo (la pestaña "Abonos" dentro del destino Dubo) NO entran acá.
 function EstadoCuentaKamilaView({ data }) {
-  const { despachosVenezuela, despachosDubo, abonosVenezuela, abonosDubo, loading } = data;
+  const { despachosVenezuela, despachosDubo, abonosVenezuela, yulianaVenezuela, loading } = data;
   const movimientos = useMemo(() => {
     if (loading) return [];
     const contables = (lista, destino) =>
@@ -2650,11 +2652,28 @@ function EstadoCuentaKamilaView({ data }) {
         detalle: a.concepto || "Abono",
         id: `${destino}-abono-${a.id}`,
       }));
+    // Cada entrada de Yuliana se convierte en un "abono" contra Dubo: un
+    // depósito resta del saldo (como cualquier abono), y una salida/anticipo
+    // hace lo contrario, así que entra con el monto en negativo — así el
+    // saldo corrido de la tabla y el KPI "Abonado" quedan matemáticamente
+    // correctos sin inventar un tercer tipo de movimiento.
+    const yulianaLista = (lista) =>
+      lista.map((e) => {
+        const monto = Number(e.monto) || 0;
+        return {
+          tipo: "abono",
+          destino: "Dubo",
+          fecha: e.fecha || "",
+          monto: e.tipo === "salida" ? -monto : monto,
+          detalle: e.concepto || (e.tipo === "salida" ? "Salida Yuliana" : "Depósito Yuliana"),
+          id: `yuliana-${e.id}`,
+        };
+      });
     const todos = [
       ...contables(despachosVenezuela, "Venezuela"),
       ...contables(despachosDubo, "Dubo"),
       ...abonosLista(abonosVenezuela, "Venezuela"),
-      ...abonosLista(abonosDubo, "Dubo"),
+      ...yulianaLista(yulianaVenezuela),
     ];
     todos.sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
     let saldo = 0;
@@ -2662,7 +2681,7 @@ function EstadoCuentaKamilaView({ data }) {
       saldo += m.tipo === "despacho" ? m.monto : -m.monto;
       return { ...m, saldoCorrido: saldo };
     });
-  }, [despachosVenezuela, despachosDubo, abonosVenezuela, abonosDubo, loading]);
+  }, [despachosVenezuela, despachosDubo, abonosVenezuela, yulianaVenezuela, loading]);
   const porDestino = (dest) => {
     const desp = movimientos.filter((m) => m.tipo === "despacho" && m.destino === dest).reduce((s, m) => s + m.monto, 0);
     const abo = movimientos.filter((m) => m.tipo === "abono" && m.destino === dest).reduce((s, m) => s + m.monto, 0);
@@ -2687,12 +2706,12 @@ function EstadoCuentaKamilaView({ data }) {
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 12 }}>
         <KPI icon="🚚" label="Total Despachado" value={fmtMoney(totalDespachado)} color={C.blue} bg={C.blueBg} sub="Venezuela + Dubo" />
-        <KPI icon="💵" label="Total Abonado" value={fmtMoney(totalAbonado)} color={C.green} bg={C.greenBg} sub="Venezuela + Dubo" />
+        <KPI icon="💵" label="Total Abonado" value={fmtMoney(totalAbonado)} color={C.green} bg={C.greenBg} sub="Abonos Venezuela + Yuliana" />
         <KPI icon="⚖️" label="Saldo Total" value={fmtMoney(saldo)} color={saldo > 0 ? C.red : C.green} bg={saldo > 0 ? C.redBg : C.greenBg} />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 24 }}>
         <KPI icon="🇻🇪" label="Saldo Venezuela" value={fmtMoney(ve.saldo)} color={ve.saldo > 0 ? C.red : C.green} bg={ve.saldo > 0 ? C.redBg : C.greenBg} sub={`Despachado ${fmtMoney(ve.despachado)} · Abonado ${fmtMoney(ve.abonado)}`} />
-        <KPI icon="📦" label="Saldo Dubo" value={fmtMoney(du.saldo)} color={du.saldo > 0 ? C.red : C.green} bg={du.saldo > 0 ? C.redBg : C.greenBg} sub={`Despachado ${fmtMoney(du.despachado)} · Abonado ${fmtMoney(du.abonado)}`} />
+        <KPI icon="📦" label="Saldo Dubo" value={fmtMoney(du.saldo)} color={du.saldo > 0 ? C.red : C.green} bg={du.saldo > 0 ? C.redBg : C.greenBg} sub={`Despachado ${fmtMoney(du.despachado)} · Yuliana ${fmtMoney(du.abonado)}`} />
       </div>
       <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
         <div style={{ display: "grid", gridTemplateColumns: "100px 90px 1fr 130px 130px 140px", gap: 8, padding: "10px 16px", background: C.canvas, fontSize: 11, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: "0.04em" }}>
@@ -2759,7 +2778,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
   const [saldoYuliana, setSaldoYuliana] = useState([]);
   const [pinEdicion, setPinEdicion] = useState("");
   const [loading, setLoading] = useState(true);
-  const [estadoKamila, setEstadoKamila] = useState({ despachosVenezuela: [], despachosDubo: [], abonosVenezuela: [], abonosDubo: [], loading: true });
+  const [estadoKamila, setEstadoKamila] = useState({ despachosVenezuela: [], despachosDubo: [], abonosVenezuela: [], yulianaVenezuela: [], loading: true });
   const coleccionDespachos = `despachos${slugDestino(destino)}`;
   const coleccionAbonos = `abonos${slugDestino(destino)}`;
   const coleccionSaldoYuliana = `cuentaYuliana${slugDestino(destino)}`;
@@ -2795,10 +2814,13 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
   useEffect(() => {
     if (subView !== "estadoCuentaKamila") return;
     setEstadoKamila((s) => ({ ...s, loading: true }));
-    let cargados = { dv: false, dd: false, av: false, ad: false };
+    // El saldo Kamila resta Abonos Venezuela + Saldo Yuliana (la cuenta
+    // Yuliana de Venezuela) — Abonos Dubo ya NO entra en esta cuenta, por
+    // eso aquí se suscribe "cuentaYulianaVenezuela" en vez de "abonosDubo".
+    let cargados = { dv: false, dd: false, av: false, yv: false };
     function marcarCargado(clave) {
       cargados = { ...cargados, [clave]: true };
-      if (cargados.dv && cargados.dd && cargados.av && cargados.ad) {
+      if (cargados.dv && cargados.dd && cargados.av && cargados.yv) {
         setEstadoKamila((s) => ({ ...s, loading: false }));
       }
     }
@@ -2814,11 +2836,11 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
       setEstadoKamila((s) => ({ ...s, abonosVenezuela: snap.docs.map((d) => ({ ...d.data(), id: d.id })) }));
       marcarCargado("av");
     });
-    const unsubAD = onSnapshot(collection(db, "abonosDubo"), (snap) => {
-      setEstadoKamila((s) => ({ ...s, abonosDubo: snap.docs.map((d) => ({ ...d.data(), id: d.id })) }));
-      marcarCargado("ad");
+    const unsubYV = onSnapshot(collection(db, "cuentaYulianaVenezuela"), (snap) => {
+      setEstadoKamila((s) => ({ ...s, yulianaVenezuela: snap.docs.map((d) => ({ ...d.data(), id: d.id })) }));
+      marcarCargado("yv");
     });
-    return () => { unsubDV(); unsubDD(); unsubAV(); unsubAD(); };
+    return () => { unsubDV(); unsubDD(); unsubAV(); unsubYV(); };
   }, [subView]);
   async function guardarPinEdicion(pin) {
     setPinEdicion(pin);
