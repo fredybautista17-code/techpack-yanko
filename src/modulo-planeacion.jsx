@@ -1017,17 +1017,16 @@ function BloqueBPT({ data }) {
     </div>
   );
 }
-// ─── VERIFICADOR DE PRECIO DE CONFECCIÓN — TALLERES ────────────────────────────
+// ─── VERIFICADOR DE PRECIO DE CONFECCIÓN ────────────────────────────────────────
 // Misma idea que el Verificador de Precio de Confección de Planta (módulo
 // Planta → Dashboard de Entregas): busca por referencia y compara CostoFT
 // (precio teórico, fijado en la ficha técnica) contra VaEnt (precio real de
-// esa entrada puntual) para detectar cobros mal digitados. La diferencia es
-// que esta vista, dentro de Planeación, mira TODAS las entradas del mismo
-// Excel "Entradas de Planta" EXCEPTO las de la planta propia (esas ya se
-// verifican en el módulo Planta) — o sea, esta es la versión para Talleres
-// externos. Los datos vienen de la misma colección "planta_entradas_cargas"
-// que sube el módulo Planta; Planeación solo la lee, no la modifica.
-// (PLANTA_YANKO ya está definido más arriba en este archivo, se reutiliza.)
+// esa entrada puntual) para detectar cobros mal digitados. Mira TODAS las
+// entradas del mismo Excel "Entradas de Planta" — planta propia (Industrias
+// Yanko Módulo Centro) y talleres externos por igual, para que funcione
+// igual sin importar a dónde se haya programado el lote. Los datos vienen de
+// la misma colección "planta_entradas_cargas" que sube el módulo Planta;
+// Planeación solo la lee, no la modifica.
 // Compara referencias IGNORANDO el guion y espacios — igual que
 // normalizarRefComparacion en App.js: Busint/Entradas de Planta a veces
 // guardan el mismo código sin guion (ej. "961189") mientras que en otras
@@ -1866,10 +1865,13 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     if (!cargasEntradasPlanta.length) return null;
     return [...cargasEntradasPlanta].sort((a, b) => (b.creadoEn || b.fecha || "").localeCompare(a.creadoEn || a.fecha || ""))[0];
   }, [cargasEntradasPlanta]);
-  const entradasTalleres = useMemo(() => {
-    const entradas = cargaEntradasPlantaActiva?.entradas || [];
-    return entradas.filter((e) => e.nombrePlanta !== PLANTA_YANKO);
-  }, [cargaEntradasPlantaActiva]);
+  // Todas las entradas de la carga activa de "Entradas de Planta" — planta
+  // propia (INDUSTRIAS YANKO MODULO CENTRO) Y talleres externos por igual.
+  // Antes esto excluía la planta propia (de ahí el nombre "entradasTalleres"),
+  // pero el Programador BMP → Planta también programa lotes CON destino a la
+  // planta propia, así que el verificador tiene que buscar ahí también —
+  // igual que el Verificador de Precio de Confección del módulo Planta.
+  const entradasTalleres = useMemo(() => cargaEntradasPlantaActiva?.entradas || [], [cargaEntradasPlantaActiva]);
   // Catálogo de plantas/talleres destino para el Programador de BMP: se toma
   // de todos los nombres de planta que ya han aparecido, en cualquier carga,
   // del Excel de Entradas de Planta (mismo dato que alimenta el Verificador
