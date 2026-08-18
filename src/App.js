@@ -779,7 +779,7 @@ function sugerirReferencia(categoria, linea, cliente, config, protos, capsulas, 
     rangoInicio = inicioD;
     rangoFin = finD;
   }
-  return { codigo: `${prefijo}-${String(siguiente).padStart(3, "0")}`, prefijo, rangoInicio, rangoFin };
+  return { codigo: `${prefijo}-${String(siguiente).padStart(3, "0")}`, prefijo, rangoInicio, rangoFin, siguiente };
 }
 // Busca si un código de referencia ya está en uso DENTRO de ATLAS mismo
 // (prototipos o referencias de cápsula) — a diferencia de la bitácora de
@@ -1279,21 +1279,68 @@ function useMaestroReferenciasBusint() {
 // prefijo-segmento, para no tener que adivinar) y abajo el resultado de
 // verificar contra la bitácora de Busint lo que sea que esté hoy en el
 // campo Ref, venga de la sugerencia o escrita a mano.
+// Genera, a partir del consecutivo sugerido, hasta N candidatos seguidos
+// (mismo prefijo, dentro del mismo rango activo — principal o desborde, el
+// que haya calculado sugerirReferencia) para que el usuario pueda elegir
+// otro con un clic si el primero choca (ej. porque Busint tiene algo
+// creado directo ahí que la bitácora local todavía no sincronizó). Cada
+// candidato se verifica en vivo contra ATLAS y contra la bitácora de
+// Busint — solo los libres quedan clicables.
+function candidatosReferencia(sug, busint, protos, capsulas, n = 5) {
+  if (!sug) return [];
+  const candidatos = [];
+  for (let num = sug.siguiente; num <= sug.rangoFin && candidatos.length < n; num++) {
+    const codigo = `${sug.prefijo}-${String(num).padStart(3, "0")}`;
+    const refNorm = normalizarRefComparacion(codigo);
+    const enAtlas = buscarRefEnAtlas(refNorm, protos, capsulas);
+    const enBusint = busint?.set?.has(refNorm) || false;
+    candidatos.push({ codigo, libre: !enAtlas && !enBusint });
+  }
+  return candidatos;
+}
 function SugerenciaYVerificacionRef({ sug, referencia, onUsar, busint, protos, capsulas }) {
   const refNorm = normalizarRefComparacion(referencia);
   const sugerencia = sug?.codigo || null;
   if (!sugerencia && !refNorm) return null;
   const ultimas = sug ? ultimasReferenciasBusint(sug.prefijo, sug.rangoInicio, sug.rangoFin, busint.lista) : [];
   const enAtlas = refNorm ? buscarRefEnAtlas(refNorm, protos, capsulas) : null;
+  const candidatos = !refNorm ? candidatosReferencia(sug, busint, protos, capsulas) : [];
   return (
     <div style={{ padding: "10px 12px", background: T.canvas, borderRadius: 8, marginBottom: 12, border: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 6 }}>
       {sugerencia && (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 12.5, color: T.jade, fontWeight: 700 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 12.5, color: candidatos[0]?.libre === false ? T.coral : T.jade, fontWeight: 700 }}>
           <span>
             🔢 Sugerencia: <strong>{sugerencia}</strong>
+            {candidatos[0]?.libre === false && <span> — ya ocupado, mira las otras opciones abajo</span>}
             {ultimas.length > 0 && <span style={{ color: T.slate, fontWeight: 600 }}> · últimas en Busint: {ultimas.join(", ")}</span>}
           </span>
-          {!refNorm && <button onClick={onUsar} style={{ background: T.jade, color: T.white, border: "none", borderRadius: 6, padding: "4px 10px", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Usar</button>}
+          {!refNorm && candidatos[0]?.libre !== false && <button onClick={() => onUsar(sug.codigo)} style={{ background: T.jade, color: T.white, border: "none", borderRadius: 6, padding: "4px 10px", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Usar</button>}
+        </div>
+      )}
+      {candidatos.length > 1 && (
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, fontSize: 11.5 }}>
+          <span style={{ color: T.slate, fontWeight: 600 }}>Otras opciones libres:</span>
+          {candidatos.slice(1).map((c) => (
+            <button
+              key={c.codigo}
+              onClick={() => c.libre && onUsar(c.codigo)}
+              disabled={!c.libre}
+              title={c.libre ? "Usar este consecutivo" : "Ya está ocupado"}
+              style={{
+                background: c.libre ? T.white : T.coralBg,
+                color: c.libre ? T.denim : T.coral,
+                border: `1px solid ${c.libre ? T.border : T.coral}`,
+                borderRadius: 6,
+                padding: "3px 8px",
+                fontWeight: 700,
+                fontSize: 11,
+                cursor: c.libre ? "pointer" : "not-allowed",
+                textDecoration: c.libre ? "none" : "line-through",
+              }}
+            >
+              {c.codigo}
+            </button>
+          ))}
         </div>
       )}
       {/* Chequeo contra ATLAS: siempre en vivo, sin ningún rezago — se detecta
@@ -1346,7 +1393,7 @@ function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
         <Field label="Rango"><FSel value={form.rango} onChange={set("rango")} options={config.rangos} /></Field>
         <Field label="Mes"><FSel value={form.mes} onChange={set("mes")} options={MONTHS_ES} /></Field>
       </div>
-      <SugerenciaYVerificacionRef sug={sug} referencia={form.reference} onUsar={() => set("reference")(sug.codigo)} busint={busint} protos={protos} capsulas={capsulas} />
+      <SugerenciaYVerificacionRef sug={sug} referencia={form.reference} onUsar={(codigo) => set("reference")(codigo)} busint={busint} protos={protos} capsulas={capsulas} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: C-003" /></Field>
         <Field label="Responsable"><FSel value={form.assignedTo} onChange={set("assignedTo")} options={config.disenadores} /></Field>
@@ -1475,7 +1522,7 @@ function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
         <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config.siluetas} /></Field>
       </div>
       <Field label="Línea"><FSel value={form.linea} onChange={set("linea")} options={config.lineas} /></Field>
-      <SugerenciaYVerificacionRef sug={sug} referencia={form.reference} onUsar={() => set("reference")(sug.codigo)} busint={busint} protos={protos} capsulas={capsulas} />
+      <SugerenciaYVerificacionRef sug={sug} referencia={form.reference} onUsar={(codigo) => set("reference")(codigo)} busint={busint} protos={protos} capsulas={capsulas} />
       <Field label="Ref"><FInput value={form.reference} onChange={set("reference")} placeholder="Ej: CM-001" /></Field>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Responsable"><FSel value={form.assignedTo} onChange={set("assignedTo")} options={config.disenadores} /></Field>
