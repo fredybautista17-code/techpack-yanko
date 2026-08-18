@@ -290,15 +290,9 @@ function lineaVacia() {
 // Etapa 1 (Bodega): referencia, códigos de barra, cantidades y todo lo
 // demás — SIN precio ni descuento. Esos dos campos los define Contabilidad
 // en la etapa de revisión ("Por Aprobar"), no bodega.
-function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint, destino }) {
+function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint }) {
   const [grupoNuevo, setGrupoNuevo] = useState("");
   const [codigoNuevo, setCodigoNuevo] = useState("");
-  // Dubo llega siempre con precio y descuento ya conocidos (vienen de Busint
-  // al cargar la factura/traslado), así que en vez de marca/segmento/N° Corte
-  // /códigos de barra (que Dubo no usa) se muestra directo precio/dcto/total.
-  // El resto de destinos sigue igual: bodega no ve precio, eso lo define
-  // Contabilidad en la etapa de revisión.
-  const esDubo = destino === "Dubo";
   // Agrega (o reemplaza si ya existía) el código de barra de un grupo de
   // talla a mano. Se guarda con la MISMA forma que trae Busint (cbarraI),
   // para que la exportación a Excel lo encuentre igual sin importar si
@@ -336,73 +330,47 @@ function LineaDespachoCard({ linea, index, onChange, onRemove, onBuscarBusint, d
         <Field label="Cantidad">
           <FInput type="number" value={linea.cantidad} onChange={(v) => onChange({ ...linea, cantidad: v })} />
         </Field>
-        {esDubo ? (
-          <Field label="N° Bulto">
-            <FInput value={linea.numBulto} onChange={(v) => onChange({ ...linea, numBulto: v })} placeholder="1/3" />
-          </Field>
-        ) : (
-          <Field label="N° Corte">
-            <FInput value={linea.numCorte} onChange={(v) => onChange({ ...linea, numCorte: v })} />
-          </Field>
-        )}
+        <Field label="N° Corte">
+          <FInput value={linea.numCorte} onChange={(v) => onChange({ ...linea, numCorte: v })} />
+        </Field>
       </div>
       {linea.busintEncontrada === false && (
         <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginTop: -8, marginBottom: 10 }}>
           No se encontró esa referencia en Busint — completa los datos a mano.
         </div>
       )}
-      {esDubo ? (
-        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 10 }}>
-          <Field label="Descripción">
-            <FInput value={linea.descripcion} onChange={(v) => onChange({ ...linea, descripcion: v })} />
-          </Field>
-          <Field label="Precio">
-            <FInput type="number" value={linea.precio} onChange={(v) => onChange({ ...linea, precio: v })} />
-          </Field>
-          <Field label="Dcto (por unidad)">
-            <FInput type="number" value={linea.dcto} onChange={(v) => onChange({ ...linea, dcto: v })} />
-          </Field>
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>Total línea</div>
-            <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, padding: "9px 0" }}>{fmtMoney(calcularTotalLinea(linea))}</div>
-          </div>
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 10 }}>
+        <Field label="Descripción">
+          <FInput value={linea.descripcion} onChange={(v) => onChange({ ...linea, descripcion: v })} />
+        </Field>
+        <Field label="Marca">
+          <FSel value={linea.marca} onChange={(v) => onChange({ ...linea, marca: v })} options={MARCAS_BODEGA} />
+        </Field>
+        <Field label="Segmento">
+          <FSel value={linea.segmento} onChange={(v) => onChange({ ...linea, segmento: v })} options={SEGMENTOS_BODEGA} />
+        </Field>
+        <Field label="N° Bulto">
+          <FInput value={linea.numBulto} onChange={(v) => onChange({ ...linea, numBulto: v })} placeholder="1/3" />
+        </Field>
+      </div>
+      <div style={{ marginTop: 10 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Códigos de barra por grupo de talla</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr auto", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <FSel value={grupoNuevo} onChange={setGrupoNuevo} options={CURVA_TALLAS_ESTANDAR} />
+          <FInput value={codigoNuevo} onChange={setCodigoNuevo} placeholder="Código de barra (o escanea con la pistola)" onEnter={agregarCodigo} />
+          <Btn small variant="secondary" onClick={agregarCodigo} disabled={!grupoNuevo || !codigoNuevo.trim()}>+ Agregar</Btn>
         </div>
-      ) : (
-        <>
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 10 }}>
-            <Field label="Descripción">
-              <FInput value={linea.descripcion} onChange={(v) => onChange({ ...linea, descripcion: v })} />
-            </Field>
-            <Field label="Marca">
-              <FSel value={linea.marca} onChange={(v) => onChange({ ...linea, marca: v })} options={MARCAS_BODEGA} />
-            </Field>
-            <Field label="Segmento">
-              <FSel value={linea.segmento} onChange={(v) => onChange({ ...linea, segmento: v })} options={SEGMENTOS_BODEGA} />
-            </Field>
-            <Field label="N° Bulto">
-              <FInput value={linea.numBulto} onChange={(v) => onChange({ ...linea, numBulto: v })} placeholder="1/3" />
-            </Field>
-          </div>
-          <div style={{ marginTop: 10 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Códigos de barra por grupo de talla</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr auto", gap: 8, alignItems: "center", marginBottom: 8 }}>
-              <FSel value={grupoNuevo} onChange={setGrupoNuevo} options={CURVA_TALLAS_ESTANDAR} />
-              <FInput value={codigoNuevo} onChange={setCodigoNuevo} placeholder="Código de barra (o escanea con la pistola)" onEnter={agregarCodigo} />
-              <Btn small variant="secondary" onClick={agregarCodigo} disabled={!grupoNuevo || !codigoNuevo.trim()}>+ Agregar</Btn>
-            </div>
-            {linea.barras && linea.barras.length > 0 && (
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {linea.barras.map((b, i) => (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", background: C.blueBg, borderRadius: 6, fontSize: 11, color: C.blue }}>
-                    <strong>{b.talla || "—"}</strong> {b.cbarraI || b.cbarraE || b.cbarraM || "sin código"}
-                    <span onClick={() => quitarCodigo(b.talla)} style={{ cursor: "pointer", color: C.red, fontWeight: 800 }}>✕</span>
-                  </div>
-                ))}
+        {linea.barras && linea.barras.length > 0 && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {linea.barras.map((b, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", background: C.blueBg, borderRadius: 6, fontSize: 11, color: C.blue }}>
+                <strong>{b.talla || "—"}</strong> {b.cbarraI || b.cbarraE || b.cbarraM || "sin código"}
+                <span onClick={() => quitarCodigo(b.talla)} style={{ cursor: "pointer", color: C.red, fontWeight: 800 }}>✕</span>
               </div>
-            )}
+            ))}
           </div>
-        </>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -745,7 +713,6 @@ function MontarDespachoView({ despachos, currentUser, onGuardado, coleccionDespa
           onChange={(nueva) => actualizarLinea(i, nueva)}
           onRemove={() => quitarLinea(i)}
           onBuscarBusint={() => buscarEnBusint(i)}
-          destino={destino}
         />
       ))}
       <div style={{ marginBottom: 20 }}>
@@ -755,11 +722,7 @@ function MontarDespachoView({ despachos, currentUser, onGuardado, coleccionDespa
         <div>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase" }}>Total de unidades</div>
           <div style={{ fontSize: 22, fontWeight: 900, color: C.ink }}>{fmtNum(totalUnidades)}</div>
-          {destino === "Dubo" ? (
-            <div style={{ fontSize: 13, color: C.slate, marginTop: 2 }}>Total: <strong style={{ color: C.ink }}>{fmtMoney(lineas.reduce((s, l) => s + calcularTotalLinea(l), 0))}</strong></div>
-          ) : (
-            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>El precio y el descuento los define Contabilidad al revisar el despacho.</div>
-          )}
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>El precio y el descuento los define Contabilidad al revisar el despacho.</div>
         </div>
         <Btn onClick={guardarDespacho} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Montar Despacho"}</Btn>
       </div>
@@ -802,6 +765,14 @@ const CAPACIDAD_LINEAS = 25;
 const COLS_BASE = 13; // columna espaciadora + 12 campos (REF..TOTAL)
 const COL_HEADERS_BASE = ["REF", "CANTIDAD", "N° TRASLADO", "N° DE CORTE", "N° DE BULTO COMO VIENE MARCADOS", "DESCRIPCION", "MARCA", "SEGMENTO", "PRECIO", "DCTO", "TOTAL DCTTO", "TOTAL"];
 const COLS_MONEDA = new Set([9, 10, 11, 12]);
+// Molde reducido SOLO para el Excel de Dubo: a diferencia de Venezuela/
+// Colombia, Dubo no usa marca, segmento, N° de Corte, N° de Bulto ni códigos
+// de barra por talla (esos campos siguen existiendo en el formulario de
+// Bodega por si acaso, pero no se piden en este despacho) — así que el
+// Excel que se descarga sale con menos columnas y la descripción más ancha.
+// Esto es solo para la exportación; el formulario en pantalla no cambia.
+const COLS_BASE_DUBO = 9; // columna espaciadora + 8 campos (REF..TOTAL)
+const COL_HEADERS_DUBO = ["REF", "CANTIDAD", "N° TRASLADO", "DESCRIPCION", "PRECIO", "DCTO", "TOTAL DCTTO", "TOTAL"];
 
 function celda(v, style, numFmt) {
   if (v === null || v === undefined || v === "") {
@@ -822,18 +793,24 @@ function celda(v, style, numFmt) {
 
 // (CURVA_TALLAS_ESTANDAR y normTalla ahora están definidos arriba, junto a
 // TALLAS_BODEGA, para poder usarlos también en Montar Despacho.)
-async function exportarDespachoExcel(despacho) {
+async function exportarDespachoExcel(despacho, esDubo) {
   const XLSX = await import("xlsx-js-style");
   const lineas = despacho.lineas || [];
-  const tallas = [...CURVA_TALLAS_ESTANDAR];
-  lineas.forEach((l) => (l.barras || []).forEach((b) => {
-    if (!b.talla) return;
-    const yaExiste = tallas.some((t) => normTalla(t) === normTalla(b.talla));
-    if (!yaExiste) tallas.push(b.talla);
-  }));
+  // Dubo no lleva columnas de código de barra por talla en su Excel.
+  const tallas = esDubo ? [] : [...CURVA_TALLAS_ESTANDAR];
+  if (!esDubo) {
+    lineas.forEach((l) => (l.barras || []).forEach((b) => {
+      if (!b.talla) return;
+      const yaExiste = tallas.some((t) => normTalla(t) === normTalla(b.talla));
+      if (!yaExiste) tallas.push(b.talla);
+    }));
+  }
+  const colsBase = esDubo ? COLS_BASE_DUBO : COLS_BASE;
+  const colHeaders = esDubo ? COL_HEADERS_DUBO : COL_HEADERS_BASE;
   const nColsTallas = tallas.length;
-  const nColsTotal = COLS_BASE + nColsTallas;
+  const nColsTotal = colsBase + nColsTallas;
   const nFilasDatos = Math.max(CAPACIDAD_LINEAS, lineas.length);
+  const nColsBase = colHeaders.length;
 
   const grid = [];
   // fila 0: espaciadora
@@ -852,7 +829,7 @@ async function exportarDespachoExcel(despacho) {
   // fila 3: encabezado de tabla (banda azul completa, incluye cupos de talla vacíos)
   const filaHeader = [];
   for (let c = 1; c <= nColsTotal - 1; c++) {
-    const label = c <= 12 ? COL_HEADERS_BASE[c - 1] : (tallas[c - COLS_BASE] || "");
+    const label = c <= nColsBase ? colHeaders[c - 1] : (tallas[c - colsBase] || "");
     filaHeader[c] = celda(label, ESTILO_HEADER);
   }
   grid.push(filaHeader);
@@ -862,22 +839,33 @@ async function exportarDespachoExcel(despacho) {
     const fila = [];
     if (l) {
       const totalDcto = (Number(l.precio) || 0) - (Number(l.dcto) || 0);
-      fila[1] = celda(l.referencia || "", ESTILO_DATO);
-      fila[2] = celda(Number(l.cantidad) || 0, ESTILO_DATO);
-      fila[3] = celda(l.numTraslado || "", ESTILO_DATO);
-      fila[4] = celda(l.numCorte || "", ESTILO_DATO);
-      fila[5] = celda(l.numBulto || "", ESTILO_DATO);
-      fila[6] = celda(l.descripcion || "", ESTILO_DATO);
-      fila[7] = celda(l.marca || "", ESTILO_DATO);
-      fila[8] = celda(l.segmento || "", ESTILO_DATO);
-      fila[9] = celda(Number(l.precio) || 0, ESTILO_DATO, FORMATO_MONEDA);
-      fila[10] = celda(Number(l.dcto) || 0, ESTILO_DATO, FORMATO_MONEDA);
-      fila[11] = celda(totalDcto, ESTILO_DATO, FORMATO_MONEDA);
-      fila[12] = celda(Number(l.total) || 0, ESTILO_DATO, FORMATO_MONEDA);
-      for (let t = 0; t < nColsTallas; t++) {
-        const nombreTalla = tallas[t];
-        const b = nombreTalla ? (l.barras || []).find((x) => normTalla(x.talla) === normTalla(nombreTalla)) : null;
-        fila[COLS_BASE + t] = celda(b ? (b.cbarraI || b.cbarraE || b.cbarraM || "") : "", ESTILO_DATO);
+      if (esDubo) {
+        fila[1] = celda(l.referencia || "", ESTILO_DATO);
+        fila[2] = celda(Number(l.cantidad) || 0, ESTILO_DATO);
+        fila[3] = celda(l.numTraslado || "", ESTILO_DATO);
+        fila[4] = celda(l.descripcion || "", ESTILO_DATO);
+        fila[5] = celda(Number(l.precio) || 0, ESTILO_DATO, FORMATO_MONEDA);
+        fila[6] = celda(Number(l.dcto) || 0, ESTILO_DATO, FORMATO_MONEDA);
+        fila[7] = celda(totalDcto, ESTILO_DATO, FORMATO_MONEDA);
+        fila[8] = celda(Number(l.total) || 0, ESTILO_DATO, FORMATO_MONEDA);
+      } else {
+        fila[1] = celda(l.referencia || "", ESTILO_DATO);
+        fila[2] = celda(Number(l.cantidad) || 0, ESTILO_DATO);
+        fila[3] = celda(l.numTraslado || "", ESTILO_DATO);
+        fila[4] = celda(l.numCorte || "", ESTILO_DATO);
+        fila[5] = celda(l.numBulto || "", ESTILO_DATO);
+        fila[6] = celda(l.descripcion || "", ESTILO_DATO);
+        fila[7] = celda(l.marca || "", ESTILO_DATO);
+        fila[8] = celda(l.segmento || "", ESTILO_DATO);
+        fila[9] = celda(Number(l.precio) || 0, ESTILO_DATO, FORMATO_MONEDA);
+        fila[10] = celda(Number(l.dcto) || 0, ESTILO_DATO, FORMATO_MONEDA);
+        fila[11] = celda(totalDcto, ESTILO_DATO, FORMATO_MONEDA);
+        fila[12] = celda(Number(l.total) || 0, ESTILO_DATO, FORMATO_MONEDA);
+        for (let t = 0; t < nColsTallas; t++) {
+          const nombreTalla = tallas[t];
+          const b = nombreTalla ? (l.barras || []).find((x) => normTalla(x.talla) === normTalla(nombreTalla)) : null;
+          fila[colsBase + t] = celda(b ? (b.cbarraI || b.cbarraE || b.cbarraM || "") : "", ESTILO_DATO);
+        }
       }
     } else {
       for (let c = 1; c <= nColsTotal - 1; c++) fila[c] = celda("", ESTILO_DATO);
@@ -889,19 +877,26 @@ async function exportarDespachoExcel(despacho) {
   // fila de totales
   const totalUnd = lineas.reduce((s, l) => s + (Number(l.cantidad) || 0), 0);
   const totalGeneral = lineas.reduce((s, l) => s + (Number(l.total) || 0), 0);
-  const nBultos = new Set(lineas.map((l) => l.numBulto)).size;
   const filaTotales = [];
   for (let c = 1; c <= nColsTotal - 1; c++) filaTotales[c] = celda("", ESTILO_TOTAL_VACIA);
   filaTotales[1] = celda("TOTAL UND", ESTILO_TOTAL);
   filaTotales[2] = celda(totalUnd, ESTILO_TOTAL);
-  filaTotales[4] = celda("TOTAL BTS", ESTILO_TOTAL);
-  filaTotales[5] = celda(nBultos, ESTILO_TOTAL);
-  filaTotales[11] = celda("TOTAL", ESTILO_TOTAL);
-  filaTotales[12] = celda(totalGeneral, ESTILO_TOTAL, FORMATO_MONEDA);
+  if (esDubo) {
+    filaTotales[7] = celda("TOTAL", ESTILO_TOTAL);
+    filaTotales[8] = celda(totalGeneral, ESTILO_TOTAL, FORMATO_MONEDA);
+  } else {
+    const nBultos = new Set(lineas.map((l) => l.numBulto)).size;
+    filaTotales[4] = celda("TOTAL BTS", ESTILO_TOTAL);
+    filaTotales[5] = celda(nBultos, ESTILO_TOTAL);
+    filaTotales[11] = celda("TOTAL", ESTILO_TOTAL);
+    filaTotales[12] = celda(totalGeneral, ESTILO_TOTAL, FORMATO_MONEDA);
+  }
   grid.push(filaTotales);
 
   const ws = XLSX.utils.aoa_to_sheet(grid);
-  ws["!cols"] = [{ wch: 3 }, { wch: 10 }, { wch: 9 }, { wch: 12 }, { wch: 11 }, { wch: 20 }, { wch: 28 }, { wch: 10 }, { wch: 10 }, { wch: 11 }, { wch: 9 }, { wch: 13 }, { wch: 13 }, ...Array.from({ length: nColsTallas }, () => ({ wch: 16 }))];
+  ws["!cols"] = esDubo
+    ? [{ wch: 3 }, { wch: 10 }, { wch: 9 }, { wch: 12 }, { wch: 40 }, { wch: 11 }, { wch: 9 }, { wch: 13 }, { wch: 13 }]
+    : [{ wch: 3 }, { wch: 10 }, { wch: 9 }, { wch: 12 }, { wch: 11 }, { wch: 20 }, { wch: 28 }, { wch: 10 }, { wch: 10 }, { wch: 11 }, { wch: 9 }, { wch: 13 }, { wch: 13 }, ...Array.from({ length: nColsTallas }, () => ({ wch: 16 }))];
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, `DESPACHO ${despacho.numero}`.slice(0, 31));
@@ -1171,7 +1166,7 @@ function DetalleDespachoModal({ despacho, onClose, onGuardado, currentUser, isAd
         <div><div style={{ color: C.slate, fontWeight: 700 }}>Total</div><div style={{ fontWeight: 800 }}>{fmtMoney(despacho.totalDespacho)}</div></div>
       </div>
       <div style={{ marginBottom: 14, display: "flex", gap: 10 }}>
-        <Btn variant="secondary" small onClick={() => exportarDespachoExcel(despacho)}>⬇ Exportar a Excel</Btn>
+        <Btn variant="secondary" small onClick={() => exportarDespachoExcel(despacho, coleccionDespachos === "despachosDubo")}>⬇ Exportar a Excel</Btn>
         {(puedeEditarDirecto || puedeEditarConPin) && (
           <Btn variant="secondary" small onClick={onClickEditar}>{puedeEditarConPin ? "🔒 Editar (código)" : "✎ Editar"}</Btn>
         )}
