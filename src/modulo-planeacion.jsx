@@ -1028,13 +1028,21 @@ function BloqueBPT({ data }) {
 // externos. Los datos vienen de la misma colección "planta_entradas_cargas"
 // que sube el módulo Planta; Planeación solo la lee, no la modifica.
 // (PLANTA_YANKO ya está definido más arriba en este archivo, se reutiliza.)
+// Compara referencias IGNORANDO el guion y espacios — igual que
+// normalizarRefComparacion en App.js: Busint/Entradas de Planta a veces
+// guardan el mismo código sin guion (ej. "961189") mientras que en otras
+// pantallas se escribe o se ve con guion ("96-1189"). Sin esto, una
+// búsqueda con o sin guion no encontraba entradas que sí existían.
+function normalizarRef(v) {
+  return String(v || "").trim().toUpperCase().replace(/[-\s]/g, "");
+}
 function VerificadorPrecioTalleresView({ entradas }) {
   const [busqueda, setBusqueda] = useState("");
   const resultado = useMemo(() => {
-    const q = busqueda.trim().toLowerCase();
+    const q = normalizarRef(busqueda);
     if (!q) return [];
     return entradas
-      .filter((e) => (e.refExt || "").toLowerCase() === q || String(e.refN || "").toLowerCase() === q)
+      .filter((e) => normalizarRef(e.refExt) === q || normalizarRef(e.refN) === q)
       .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
       .slice(0, 5);
   }, [entradas, busqueda]);
@@ -1110,10 +1118,10 @@ function FilaProgramadorBMP({ lote, existente, plantas, entradasTalleres, onProg
   // Verificador de Precio de Talleres) — para sugerir el precio de
   // confección sin tener que ir a buscarlo a otra pestaña.
   const ultimoPrecioRef = useMemo(() => {
-    const ref = (lote.referencia || "").toLowerCase();
+    const ref = normalizarRef(lote.referencia);
     if (!ref) return null;
     const encontrada = (entradasTalleres || [])
-      .filter((e) => (e.refExt || "").toLowerCase() === ref || String(e.refN || "").toLowerCase() === ref)
+      .filter((e) => normalizarRef(e.refExt) === ref || normalizarRef(e.refN) === ref)
       .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))[0];
     return encontrada || null;
   }, [entradasTalleres, lote.referencia]);
