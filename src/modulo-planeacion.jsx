@@ -1047,6 +1047,18 @@ function VerificadorPrecioTalleresView({ entradas }) {
       .slice(0, 5);
   }, [entradas, busqueda]);
   const taller = resultado[0]?.nombrePlanta || null;
+  // Distingue "no hay ningún dato cargado todavía" (nadie ha subido Entradas
+  // de Planta en el módulo Planta) de "sí hay datos, pero no para esta
+  // referencia puntual" — sin esto, ambos casos se veían igual y no había
+  // forma de saber si el problema era la búsqueda o que faltaba subir el
+  // Excel de Entradas de Planta.
+  if (!entradas.length) {
+    return (
+      <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13, background: C.canvas, borderRadius: 12, border: `1px dashed ${C.border}` }}>
+        Aún no hay ninguna carga de "Entradas de Planta" subida (se sube desde el módulo Planta, botón "Subir Entradas"). En cuanto haya una, se puede buscar por referencia acá mismo.
+      </div>
+    );
+  }
   return (
     <div>
       <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 16, maxWidth: 640 }}>
@@ -1162,8 +1174,14 @@ function ProgramarLoteBMPModal({ lote, existente, plantas, entradasTalleres, onC
             </div>
           ))}
         </div>
+      ) : !(entradasTalleres || []).length ? (
+        <div style={{ fontSize: 11, color: C.slate, marginBottom: 16 }}>
+          Aún no hay ninguna carga de "Entradas de Planta" subida (se sube desde el módulo Planta) — por eso no hay historial para ninguna referencia todavía. Esto no impide programar el lote.
+        </div>
       ) : (
-        <div style={{ fontSize: 11, color: C.slate, marginBottom: 16 }}>Sin entradas registradas para "{refBuscada}" todavía.</div>
+        <div style={{ fontSize: 11, color: C.slate, marginBottom: 16 }}>
+          Sin entradas registradas para "{refBuscada}" todavía — puede que este lote nunca se haya enviado antes a un taller. Esto no impide programarlo.
+        </div>
       )}
       <div style={{ marginBottom: 14 }}>
         <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>Planta / taller destino</label>
