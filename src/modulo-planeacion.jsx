@@ -1233,6 +1233,7 @@ function ProgramarLoteBMPModal({ lote, existente, plantas, entradasTalleres, onC
 }
 function ProgramadorBMPView({ reporteBMP, programacion, plantas, entradasTalleres, onProgramar, onEditar, onCancelar }) {
   const [modalLote, setModalLote] = useState(null);
+  const [mostrarVerificador, setMostrarVerificador] = useState(false);
   const porNumLote = useMemo(() => {
     const map = new Map();
     programacion.forEach((p) => map.set(p.numLote, p));
@@ -1242,11 +1243,37 @@ function ProgramadorBMPView({ reporteBMP, programacion, plantas, entradasTallere
     () => programacion.reduce((s, p) => s + Number(p.precioConfeccion || 0) * Number(p.cantidadBMP || 0), 0),
     [programacion]
   );
+  // Verificador de Precio, pero automático por fila (mismo criterio que el
+  // Verificador de Planta: última entrada de esa referencia, Precio teórico
+  // vs. Precio de entrada, en rojo si no coinciden) — así no hay que
+  // escribir la referencia a mano para ver si ya tuvo entradas antes.
+  const ultimaEntradaPorRef = useMemo(() => {
+    const map = new Map();
+    (entradasTalleres || []).forEach((e) => {
+      [e.refExt, e.refN].forEach((raw) => {
+        const key = normalizarRef(raw);
+        if (!key) return;
+        const actual = map.get(key);
+        if (!actual || (e.fecha || "") > (actual.fecha || "")) map.set(key, e);
+      });
+    });
+    return map;
+  }, [entradasTalleres]);
   const existenteAbierto = modalLote ? porNumLote.get(modalLote.numLote) || null : null;
   return (
     <div>
       <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 14, maxWidth: 640 }}>
         Dale Programar a un lote para escribir su referencia, ver sus entradas anteriores, elegir la planta destino, el precio de confección y el valor total del lote.
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <Btn small variant={mostrarVerificador ? "primary" : "secondary"} onClick={() => setMostrarVerificador((v) => !v)}>
+          🔍 Verificador de Precio {mostrarVerificador ? "▲" : "▼"}
+        </Btn>
+        {mostrarVerificador && (
+          <div style={{ marginTop: 12, padding: 16, background: C.white, borderRadius: 14, border: `1px solid ${C.border}` }}>
+            <VerificadorPrecioTalleresView entradas={entradasTalleres || []} />
+          </div>
+        )}
       </div>
       {costoTotalProgramado > 0 && (
         <div style={{ marginBottom: 14 }}>
@@ -1270,18 +1297,19 @@ function ProgramadorBMPView({ reporteBMP, programacion, plantas, entradasTallere
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead>
             <tr style={{ background: C.ink }}>
-              {["Referencia", "Lote", "Cantidad", "Categoría", "Estado", ""].map((h, i) => (
+              {["Referencia", "Lote", "Cantidad", "Categoría", "Estado", "Verificador de Precio", ""].map((h, i) => (
                 <th key={i} style={{ padding: "9px 12px", color: C.seam, textAlign: i === 2 ? "right" : "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {!reporteBMP.length ? (
-              <tr><td colSpan={6} style={{ textAlign: "center", padding: 30, color: C.slate, fontSize: 13 }}>Sin lotes en BMP.</td></tr>
+              <tr><td colSpan={7} style={{ textAlign: "center", padding: 30, color: C.slate, fontSize: 13 }}>Sin lotes en BMP.</td></tr>
             ) : (
               reporteBMP.map((l, i) => {
                 const p = porNumLote.get(l.numLote) || null;
                 const valorLote = p ? Number(p.precioConfeccion || 0) * Number(p.cantidadBMP || 0) : 0;
+                const ultimaEntrada = ultimaEntradaPorRef.get(normalizarRef(l.referencia)) || null;
                 return (
                   <tr key={l.numLote} style={{ background: p ? C.greenBg : i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
                     <td style={{ padding: "7px 12px", fontWeight: 700 }}>{l.referencia}</td>
@@ -1298,6 +1326,21 @@ function ProgramadorBMPView({ reporteBMP, programacion, plantas, entradasTallere
                         </div>
                       ) : (
                         <span style={{ color: C.slate }}>Sin programar</span>
+                      )}
+                    </td>
+                    <td style={{ padding: "7px 12px" }}>
+                      {ultimaEntrada ? (
+                        <div style={{ fontSize: 11 }}>
+                          <div style={{ color: C.slate }}>{fmtFechaISO(ultimaEntrada.fecha)} · {ultimaEntrada.nombrePlanta}</div>
+                          <div>
+                            <span style={{ color: C.slate }}>Teórico ${fmtNum(ultimaEntrada.precioTeorico)}</span>{" "}
+                            <span style={{ fontWeight: 800, color: ultimaEntrada.precioEntrada !== ultimaEntrada.precioTeorico ? C.red : C.green }}>
+                              Entrada ${fmtNum(ultimaEntrada.precioEntrada)}
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <span style={{ color: C.slate, fontSize: 11 }}>Sin entradas</span>
                       )}
                     </td>
                     <td style={{ padding: "7px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
@@ -1332,7 +1375,6 @@ const REPORTES = [
   { id: "por_pedido", label: "Por Pedido", icon: "📦" },
   { id: "bmp", label: "BMP", icon: "🧵" },
   { id: "programacion_yanko", label: "Programación Yanko", icon: "🎯" },
-  { id: "precio_talleres", label: "Verificador de Precio (Talleres)", icon: "🔍" },
   { id: "programador_bmp", label: "Programador BMP → Planta", icon: "🚚" },
 ];
 function InformesView({
@@ -1770,7 +1812,6 @@ function InformesView({
               )}
             </div>
           )}
-          {tab === "precio_talleres" && <VerificadorPrecioTalleresView entradas={entradasTalleres || []} />}
         </>
       )}
     </div>
