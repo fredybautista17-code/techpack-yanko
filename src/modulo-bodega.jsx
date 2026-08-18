@@ -2887,7 +2887,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
     // Saldo Yuliana y Estado de Cuenta Kamila son cuentas propias de
     // Venezuela — no aplican en la pestaña Dubo, así que se ocultan ahí.
     ...(destino === "Dubo" ? [] : [{ id: "saldoYuliana", icon: "🧾", label: "Saldo Yuliana" }]),
-    ...(destino !== "Dubo" && (isAdmin || puedeEditarAbonos) ? [{ id: "estadoCuentaKamila", icon: "📊", label: "Estado de Cuenta Kamila" }] : []),
+    ...(destino !== "Dubo" && (isAdmin || puedeEditarAbonos || soloLectura) ? [{ id: "estadoCuentaKamila", icon: "📊", label: "Estado de Cuenta Kamila" }] : []),
     ...(isAdmin ? [{ id: "importar", icon: "⬆️", label: "Importar Histórico" }] : []),
     ...(isAdmin ? [{ id: "codigo", icon: "🔐", label: "Código Edición" }] : []),
   ];
@@ -2987,7 +2987,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
           {subView === "saldoYuliana" && (
             <SaldoYulianaView entradas={saldoYuliana} currentUser={currentUser} puedeEditar={puedeEditarAbonos} coleccionSaldoYuliana={coleccionSaldoYuliana} />
           )}
-          {subView === "estadoCuentaKamila" && (isAdmin || puedeEditarAbonos) && <EstadoCuentaKamilaView data={estadoKamila} />}
+          {subView === "estadoCuentaKamila" && (isAdmin || puedeEditarAbonos || soloLectura) && <EstadoCuentaKamilaView data={estadoKamila} />}
           {subView === "importar" && isAdmin && (
             <ImportarHistoricoView
               currentUser={currentUser}
