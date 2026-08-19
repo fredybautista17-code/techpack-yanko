@@ -2020,6 +2020,11 @@ function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionC
   // Detalle genérico: cualquier KPI que se haga clic abre este mismo modal,
   // solo cambian título/columnas/filas.
   const [detalle, setDetalle] = useState(null);
+  // Las dos tablas de abajo empiezan cerradas — se despliegan al hacer clic
+  // en su encabezado, igual que el resto de secciones colapsables de
+  // Planeación (ej. el Verificador de Precio dentro de Programador BMP).
+  const [mostrarPlantas, setMostrarPlantas] = useState(false);
+  const [mostrarBMPPendiente, setMostrarBMPPendiente] = useState(false);
   const columnasPlantas = [
     { key: "estado", label: "Estado", render: (f) => <EstadoBadge estado={f.estado} /> },
     { key: "diasRestantesPedido", label: "Días", align: "right", render: (f) => (f.diasRestantesPedido ?? "—") },
@@ -2105,14 +2110,30 @@ function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionC
         />
       </div>
       <div style={{ marginBottom: 28 }}>
-        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 4 }}>Plantas — cumplimiento de pedidos</div>
+        <div
+          onClick={() => setMostrarPlantas((v) => !v)}
+          style={{ cursor: "pointer", userSelect: "none", display: "flex", alignItems: "baseline", gap: 8 }}
+        >
+          <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 4 }}>Plantas — cumplimiento de pedidos</div>
+          <span style={{ fontSize: 12, color: C.blue, fontWeight: 700 }}>{mostrarPlantas ? "▲ ocultar" : "▼ ver"}</span>
+        </div>
         <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>Lotes en planta, ordenados por cuál pedido se vence primero.</div>
-        <Tabla vacio="No hay lotes en planta en la carga activa." columnas={columnasPlantas} filas={miDia.plantasIncumpliendo} />
+        {mostrarPlantas && (
+          <Tabla vacio="No hay lotes en planta en la carga activa." columnas={columnasPlantas} filas={miDia.plantasIncumpliendo} />
+        )}
       </div>
       <div style={{ marginBottom: 28 }}>
-        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 4 }}>BMP — pendiente de programar hacia planta</div>
+        <div
+          onClick={() => setMostrarBMPPendiente((v) => !v)}
+          style={{ cursor: "pointer", userSelect: "none", display: "flex", alignItems: "baseline", gap: 8 }}
+        >
+          <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 4 }}>BMP — pendiente de programar hacia planta</div>
+          <span style={{ fontSize: 12, color: C.blue, fontWeight: 700 }}>{mostrarBMPPendiente ? "▲ ocultar" : "▼ ver"}</span>
+        </div>
         <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>Lotes en BMP que todavía no tienen planta/fecha asignada en Programador BMP → Planta.</div>
-        <Tabla vacio="No hay lotes de BMP pendientes de programar." columnas={columnasBMP} filas={miDia.bmpPendiente} />
+        {mostrarBMPPendiente && (
+          <Tabla vacio="No hay lotes de BMP pendientes de programar." columnas={columnasBMP} filas={miDia.bmpPendiente} />
+        )}
       </div>
     </div>
   );
