@@ -1896,8 +1896,17 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
   }
   // Al mandar a "En cotización" se pide el precio en un modal (ver
   // PrecioCotizacionModal) y queda guardado en el mismo patch que el cambio
-  // de estado — no en dos escrituras separadas.
-  function handleCotizacion(precio) { changeStatus("enviado_cotizacion", { precioCotizacion: precio }); }
+  // de estado — no en dos escrituras separadas. Además, igual que
+  // handleMarcarPreparada avanza la Ruta Crítica a "Por Enviar", este botón
+  // avanza la Ruta Crítica a "Cotización" (si todavía no había llegado ahí),
+  // para que el letrero bajo la barra se actualice solo, sin tener que
+  // además darle "Avanzar →" aparte.
+  function handleCotizacion(precio) {
+    const targetIdx = stages.findIndex((s) => s.id === "cotizacion");
+    const curIdx = stages.findIndex((s) => s.id === item.currentStage);
+    const extra = targetIdx >= 0 && targetIdx > curIdx ? { currentStage: "cotizacion", stageStartedAt: today() } : {};
+    changeStatus("enviado_cotizacion", { precioCotizacion: precio, ...extra });
+  }
   // Solo para referencias de cápsula (kind === "ref"): marca la referencia
   // como lista para enviar SIN crear todavía el envío/bitácora — eso se
   // registra en conjunto, una sola vez, cuando TODAS las referencias de la
