@@ -660,13 +660,13 @@ function TableroMesonesDia({ items }) {
   const sinHorario = items.filter((it) => pctHora(it.horaInicioEstimada) === null || pctHora(it.horaFinEstimada) === null);
   const grupos = useMemo(() => {
     const map = new Map();
-    conHorario.forEach((it) => {
+    items.forEach((it) => {
+      if (pctHora(it.horaInicioEstimada) === null || pctHora(it.horaFinEstimada) === null) return;
       const clave = `${it.planta} · ${it.meson}`;
       if (!map.has(clave)) map.set(clave, []);
       map.get(clave).push(it);
     });
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items]);
   const horasRegla = [6, 8, 10, 12, 14, 16, 18, 20];
   if (!items.length) {
