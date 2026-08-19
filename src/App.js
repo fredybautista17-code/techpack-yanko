@@ -2020,6 +2020,17 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
     if (!canAdmin) return;
     if (stageIdx >= stages.length - 1) return;
     const next = stages[stageIdx + 1];
+    // Llegar a la etapa de Cotización con "Avanzar →" pasa por el mismo
+    // modal de precio que el botón "📤 Cotización" de abajo — así el
+    // letrero de Ruta Crítica y la insignia de estado (arriba a la derecha)
+    // siempre quedan sincronizados, sin importar por cuál de los dos
+    // caminos se llegue. Si el estado ya venía de cotización en adelante
+    // (por ejemplo, se retrocedió y se vuelve a avanzar), no hace falta
+    // repetir el modal.
+    if (next.id === "cotizacion" && !["enviado_cotizacion", "enviar_cliente", "preparada_para_enviar", "enviado"].includes(st)) {
+      setShowPrecioCotizacion(true);
+      return;
+    }
     const obs = { id: uid(), user: currentUser, role, text: `Etapa: ${stages[stageIdx].label} → ${next.label}.`, date: nowISO(), type: "update", done: false };
     patch({ currentStage: next.id, stageStartedAt: today(), observations: [...item.observations, obs] });
   }
