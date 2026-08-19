@@ -110,6 +110,7 @@
  * tanto Pedidos como Corte leen.
  */
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
@@ -1131,5 +1132,208 @@ exports.adminCambiarClaveUsuario = onCall(
       await admin.auth().updateUser(authUid, { password: String(nuevaClave) });
     }
     return { ok: true };
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────
+// (2026-08-19) Restaurada — se había quitado de este archivo en un commit
+// anterior y quedó desincronizada con lo desplegado en producción; el
+// usuario confirmó que TODAVÍA la necesita, así que vuelve tal cual estaba.
+//
+// Avisos de prototipos/cápsulas vencidos (por correo).
+//
+// Corre una vez al día. Revisa TODOS los prototipos y las referencias
+// dentro de cada cápsula, calcula si están "vencidos" (llevan más días en
+// su etapa actual de los que esa etapa tiene configurados en
+// config/main.stages) usando la MISMA regla que ya usa la app en pantalla
+// (ver `isOverdue` en src/App.js), y manda un correo:
+//
+//   - A la diseñadora asignada a ese prototipo/referencia: un aviso
+//     motivador para que lo destrabe.
+//   - A Dayana, Karen y Yuliana (encargada de colecciones, aux. de
+//     colecciones y directora creativa): un aviso pidiendo apoyo para esa
+//     diseñadora.
+//
+// Se manda UNA sola vez por cada vez que un ítem cae en "vencido" — no se
+// repite todos los días mientras siga vencido. Para lograrlo, cada ítem
+// guarda en qué etapa ya se avisó (`vencidoAvisadoEtapa`); si sigue vencido
+// en la MISMA etapa, no se vuelve a avisar; si avanza de etapa y luego se
+// vuelve a vencer en una etapa distinta, sí se avisa de nuevo.
+//
+// CONFIGURACIÓN (ya debería estar hecha de antes, pero por si toca
+// rehacerla — por ejemplo si nunca se corrió `npm install` en este entorno
+// nuevo):
+//   1. Dentro de la carpeta functions/: npm install
+//      (nodemailer ya quedó agregado a package.json)
+//   2. Los secretos EMAIL_USER / EMAIL_APP_PASSWORD deberían seguir
+//      existiendo en Secret Manager de este proyecto de antes — si el
+//      deploy se queja de que faltan, créalos de nuevo:
+//        firebase functions:secrets:set EMAIL_USER
+//        firebase functions:secrets:set EMAIL_APP_PASSWORD
+//      (la contraseña es una "contraseña de aplicación" de Gmail, no la
+//      contraseña normal de esa cuenta de Google)
+//   3. firebase deploy --only functions
+//
+// Los destinatarios fijos (Dayana/Karen/Yuliana) y cada diseñadora se
+// buscan por NOMBRE dentro de la colección `users` (campo `email`, el que
+// se agrega desde Administración → Usuarios en la app) — si cambian de
+// correo, se actualiza ahí, sin tocar este archivo ni volver a desplegar.
+// ─────────────────────────────────────────────────────────────────────────
+const EMAIL_USER = defineSecret("EMAIL_USER");
+const EMAIL_APP_PASSWORD = defineSecret("EMAIL_APP_PASSWORD");
+const nodemailer = require("nodemailer");
+
+const RECIPIENTES_APOYO = ["Dayana", "Karen", "Yuliana"];
+const STAGES_TERMINALES = new Set(["enviado_cotizacion", "enviar_cliente", "enviado", "recibido_cliente", "aprobado", "declinado"]);
+
+function diasDesde(iso) {
+  if (!iso) return 0;
+  return Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+}
+
+function estaVencido(item, stagesMap) {
+  if (!item.currentStage || STAGES_TERMINALES.has(item.status)) return false;
+  const limite = stagesMap.get(item.currentStage);
+  if (limite == null || !item.stageStartedAt) return false;
+  return diasDesde(item.stageStartedAt) > limite;
+}
+
+// Busca el correo de un usuario por nombre (comparación floja: minúsculas,
+// sin espacios de más, y por coincidencia parcial en ambos sentidos) —
+// porque el nombre guardado en "Responsable"/config.disenadores puede no
+// ser palabra por palabra idéntico al nombre completo del usuario.
+function buscarCorreoPorNombre(nombreBuscado, usuarios) {
+  if (!nombreBuscado) return null;
+  const buscado = String(nombreBuscado).trim().toLowerCase();
+  if (!buscado) return null;
+  const match = usuarios.find((u) => {
+    const nombreUsuario = String(u.name || "").trim().toLowerCase();
+    if (!nombreUsuario || !u.email) return false;
+    return nombreUsuario === buscado || nombreUsuario.includes(buscado) || buscado.includes(nombreUsuario);
+  });
+  return match ? match.email : null;
+}
+
+function crearTransporte() {
+  return nodemailer.createTransport({
+    service: "gmail",
+    auth: { user: EMAIL_USER.value(), pass: EMAIL_APP_PASSWORD.value() },
+  });
+}
+
+async function mandarCorreo(transporte, destinatarios, asunto, textoHtml) {
+  const destinos = destinatarios.filter(Boolean);
+  if (!destinos.length) return;
+  await transporte.sendMail({
+    from: `ATLAS <${EMAIL_USER.value()}>`,
+    to: destinos.join(","),
+    subject: asunto,
+    html: textoHtml,
+  });
+}
+
+async function revisarYAvisarVencidos() {
+  const [configSnap, usersSnap, protosSnap, capsulasSnap] = await Promise.all([
+    db.collection("config").doc("main").get(),
+    db.collection("users").get(),
+    db.collection("prototipos").get(),
+    db.collection("capsulas").get(),
+  ]);
+
+  const stages = configSnap.exists ? (configSnap.data().stages || []) : [];
+  const stagesMap = new Map(stages.map((s) => [s.id, s.days]));
+  const usuarios = usersSnap.docs.map((d) => d.data());
+
+  const correosApoyo = RECIPIENTES_APOYO.map((n) => buscarCorreoPorNombre(n, usuarios)).filter(Boolean);
+  if (correosApoyo.length < RECIPIENTES_APOYO.length) {
+    logger.warn("No se encontró correo para todos los destinatarios de apoyo (Dayana/Karen/Yuliana) — revisa que tengan correo cargado en Administración → Usuarios.");
+  }
+
+  const transporte = crearTransporte();
+  let avisosEnviados = 0;
+
+  // ── Prototipos ──
+  for (const doc of protosSnap.docs) {
+    const item = doc.data();
+    if (!estaVencido(item, stagesMap)) continue;
+    if (item.vencidoAvisadoEtapa === item.currentStage) continue; // ya se avisó en esta etapa
+
+    const correoDisenadora = buscarCorreoPorNombre(item.assignedTo, usuarios);
+    const nombreItem = `${item.name || "Prototipo"}${item.reference ? ` (${item.reference})` : ""}`;
+    const etapaLabel = stages.find((s) => s.id === item.currentStage)?.label || item.currentStage;
+
+    await mandarCorreo(
+      transporte,
+      [correoDisenadora],
+      `⏰ ${nombreItem} va atrasado en ${etapaLabel}`,
+      `<p>Hola ${item.assignedTo || ""},</p><p>El prototipo <strong>${nombreItem}</strong> lleva más días de los previstos en la etapa de <strong>${etapaLabel}</strong>.</p><p>¡Vamos, tú puedes avanzarlo! 💪</p>`
+    );
+    await mandarCorreo(
+      transporte,
+      correosApoyo,
+      `⏰ ${nombreItem} necesita una mano — atrasado en ${etapaLabel}`,
+      `<p>Hola,</p><p>Ayudemos a <strong>${item.assignedTo || "la diseñadora"}</strong> — el prototipo <strong>${nombreItem}</strong> está retrasado en la etapa de <strong>${etapaLabel}</strong>.</p><p>¿Vemos entre todas cómo destrabarlo?</p>`
+    );
+
+    await doc.ref.update({ vencidoAvisadoEtapa: item.currentStage });
+    avisosEnviados++;
+  }
+
+  // ── Referencias dentro de cápsulas ──
+  for (const doc of capsulasSnap.docs) {
+    const cap = doc.data();
+    const referencias = cap.referencias || [];
+    let huboCambios = false;
+
+    for (const refItem of referencias) {
+      if (!estaVencido(refItem, stagesMap)) continue;
+      if (refItem.vencidoAvisadoEtapa === refItem.currentStage) continue;
+
+      const asignado = refItem.assignedTo || cap.assignedTo;
+      const correoDisenadora = buscarCorreoPorNombre(asignado, usuarios);
+      const nombreItem = `${refItem.name || "Referencia"}${refItem.reference ? ` (${refItem.reference})` : ""} — Cápsula ${cap.name || ""}`;
+      const etapaLabel = stages.find((s) => s.id === refItem.currentStage)?.label || refItem.currentStage;
+
+      await mandarCorreo(
+        transporte,
+        [correoDisenadora],
+        `⏰ ${nombreItem} va atrasada en ${etapaLabel}`,
+        `<p>Hola ${asignado || ""},</p><p>La referencia <strong>${nombreItem}</strong> lleva más días de los previstos en la etapa de <strong>${etapaLabel}</strong>.</p><p>¡Vamos, tú puedes avanzarla! 💪</p>`
+      );
+      await mandarCorreo(
+        transporte,
+        correosApoyo,
+        `⏰ ${nombreItem} necesita una mano — atrasada en ${etapaLabel}`,
+        `<p>Hola,</p><p>Ayudemos a <strong>${asignado || "la diseñadora"}</strong> — la referencia <strong>${nombreItem}</strong> está retrasada en la etapa de <strong>${etapaLabel}</strong>.</p><p>¿Vemos entre todas cómo destrabarlo?</p>`
+      );
+
+      refItem.vencidoAvisadoEtapa = refItem.currentStage;
+      huboCambios = true;
+      avisosEnviados++;
+    }
+
+    if (huboCambios) {
+      await doc.ref.update({ referencias });
+    }
+  }
+
+  logger.info(`Avisos de vencidos: ${avisosEnviados} aviso(s) enviado(s).`);
+  return { avisosEnviados };
+}
+
+// Corre una vez al día a las 8am (hora Bogotá). Para probar más seguido
+// mientras confirmas que funciona, cambia el schedule temporalmente (ej.
+// "every 10 minutes") y vuelve a desplegar — después vuelve a dejarlo en
+// "every day 08:00" y despliega de nuevo.
+exports.avisarVencidos = onSchedule(
+  {
+    schedule: "every day 08:00",
+    timeZone: "America/Bogota",
+    secrets: [EMAIL_USER, EMAIL_APP_PASSWORD],
+    timeoutSeconds: 300,
+    memory: "256MiB",
+  },
+  async () => {
+    await revisarYAvisarVencidos();
   }
 );
