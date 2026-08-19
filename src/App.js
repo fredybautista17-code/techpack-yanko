@@ -1905,18 +1905,21 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
       });
     }
   }
-  // Al mandar a "En cotización" se pide el precio en un modal (ver
-  // PrecioCotizacionModal) y queda guardado en el mismo patch que el cambio
-  // de estado — no en dos escrituras separadas. Además, igual que
-  // handleMarcarPreparada avanza la Ruta Crítica a "Por Enviar", este botón
-  // avanza la Ruta Crítica a "Cotización" (si todavía no había llegado ahí),
-  // para que el letrero bajo la barra se actualice solo, sin tener que
-  // además darle "Avanzar →" aparte.
-  function handleCotizacion(precio) {
+  // El botón "📤 Cotización" cambia el Estado a "En cotización" DE UNA VEZ,
+  // sin pedir precio (el precio se pone aparte, con el botón "💲 Precio",
+  // cuando se tenga). Igual que handleMarcarPreparada avanza la Ruta
+  // Crítica a "Por Enviar", este también avanza la Ruta Crítica a
+  // "Cotización" si todavía no había llegado ahí — así el letrero bajo la
+  // barra y la insignia de Estado (arriba a la derecha) cambian juntos, con
+  // un solo clic.
+  function handleMarcarCotizacion() {
     const targetIdx = stages.findIndex((s) => s.id === "cotizacion");
     const curIdx = stages.findIndex((s) => s.id === item.currentStage);
-    const extra = targetIdx >= 0 && targetIdx > curIdx ? { currentStage: "cotizacion", stageStartedAt: today() } : {};
-    changeStatus("enviado_cotizacion", { precioCotizacion: precio, ...extra });
+    const avanzaEtapa = targetIdx >= 0 && targetIdx > curIdx;
+    const extraObs = avanzaEtapa
+      ? [{ id: uid(), user: currentUser, role, text: `Etapa: ${stages[curIdx]?.label || item.currentStage} → ${stages[targetIdx].label}.`, date: nowISO(), type: "update", done: false }]
+      : [];
+    changeStatus("enviado_cotizacion", avanzaEtapa ? { currentStage: "cotizacion", stageStartedAt: today() } : {}, extraObs);
   }
   // Solo para referencias de cápsula (kind === "ref"): marca la referencia
   // como lista para enviar SIN crear todavía el envío/bitácora — eso se
@@ -2020,15 +2023,12 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
     if (!canAdmin) return;
     if (stageIdx >= stages.length - 1) return;
     const next = stages[stageIdx + 1];
-    // Llegar a la etapa de Cotización con "Avanzar →" pasa por el mismo
-    // modal de precio que el botón "📤 Cotización" de abajo — así el
-    // letrero de Ruta Crítica y la insignia de estado (arriba a la derecha)
-    // siempre quedan sincronizados, sin importar por cuál de los dos
-    // caminos se llegue. Si el estado ya venía de cotización en adelante
-    // (por ejemplo, se retrocedió y se vuelve a avanzar), no hace falta
-    // repetir el modal.
+    // Llegar a la etapa de Cotización con "Avanzar →" hace lo mismo que el
+    // botón "📤 Cotización" de abajo — así el letrero de Ruta Crítica y la
+    // insignia de Estado (arriba a la derecha) siempre quedan sincronizados,
+    // sin importar por cuál de los dos caminos se llegue.
     if (next.id === "cotizacion" && !["enviado_cotizacion", "enviar_cliente", "preparada_para_enviar", "enviado"].includes(st)) {
-      setShowPrecioCotizacion(true);
+      handleMarcarCotizacion();
       return;
     }
     const obs = { id: uid(), user: currentUser, role, text: `Etapa: ${stages[stageIdx].label} → ${next.label}.`, date: nowISO(), type: "update", done: false };
@@ -2064,7 +2064,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
       {showEnviado && <EnviadoModal onSave={handleEnviado} onClose={() => setShowEnviado(false)} />}
       {showTaller && <EnviarTallerModal item={item} existing={tallerMasReciente?.estado !== "enviado" ? tallerMasReciente : null} ultimoTaller={tallerMasReciente} config={config} onSave={handleGuardarTaller} onClose={() => setShowTaller(false)} />}
       {showRevision && <NotaRevisionModal onSave={handleMarcarRevision} onClose={() => setShowRevision(false)} />}
-      {showPrecioCotizacion && <PrecioCotizacionModal item={item} onSave={(precio) => { handleCotizacion(precio); setShowPrecioCotizacion(false); }} onClose={() => setShowPrecioCotizacion(false)} />}
+      {showPrecioCotizacion && <PrecioCotizacionModal item={item} onSave={(precio) => { patch({ precioCotizacion: precio }); setShowPrecioCotizacion(false); }} onClose={() => setShowPrecioCotizacion(false)} />}
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
         <button onClick={onBack} style={{ background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, color: T.ink }}>← Volver</button>
         <div style={{ flex: 1 }}>
@@ -2127,17 +2127,24 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
                     )}
                   </>
                 )}
-                {noFinalState && st !== "enviado_cotizacion" && st !== "enviar_cliente" && st !== "preparada_para_enviar" && st !== "enviado" && <Btn variant="ghost" onClick={() => setShowPrecioCotizacion(true)}>📤 Cotización</Btn>}
-                {/* Píldora del precio cotizado: visible desde que se manda a
-                    cotización en adelante (todo el tramo de envío), y
-                    editable con un clic mientras no esté ya Enviado. */}
-                {item.precioCotizacion != null && ["enviado_cotizacion", "enviar_cliente", "preparada_para_enviar", "enviado"].includes(st) && (
-                  <button
-                    onClick={() => st !== "enviado" && setShowPrecioCotizacion(true)}
-                    style={{ padding: "9px 18px", background: T.violetBg, color: T.violet, border: `1.5px solid ${T.violet}`, borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: st !== "enviado" ? "pointer" : "default" }}
-                  >
-                    💲 {fmtCOP(item.precioCotizacion)}
-                  </button>
+                {/* "Cotización" cambia el Estado de una vez (sin pedir
+                    precio) — el precio se pone aparte con el botón/píldora
+                    de al lado, en cualquier momento, antes o después de
+                    marcar Cotización. */}
+                {noFinalState && st !== "enviado_cotizacion" && st !== "enviar_cliente" && st !== "preparada_para_enviar" && st !== "enviado" && (
+                  <Btn variant="ghost" onClick={handleMarcarCotizacion}>📤 Cotización</Btn>
+                )}
+                {noFinalState && st !== "enviado" && (
+                  item.precioCotizacion != null ? (
+                    <button
+                      onClick={() => setShowPrecioCotizacion(true)}
+                      style={{ padding: "9px 18px", background: T.violetBg, color: T.violet, border: `1.5px solid ${T.violet}`, borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}
+                    >
+                      💲 {fmtCOP(item.precioCotizacion)}
+                    </button>
+                  ) : (
+                    <Btn variant="ghost" onClick={() => setShowPrecioCotizacion(true)}>💲 Precio</Btn>
+                  )
                 )}
                 {st === "enviado_cotizacion" && <button onClick={() => changeStatus("enviar_cliente")} style={{ padding: "9px 18px", background: "#ECFEFF", color: "#0E7490", border: "1.5px solid #0E7490", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>✈ Enviar al Cliente</button>}
                 {/* Un prototipo suelto sigue enviándose solo (abre el modal de
