@@ -522,7 +522,7 @@ const INIT_CONFIG = {
     { id: "pds", label: "PDS", short: "PDS", days: 2 },
     { id: "corte", label: "Corte", short: "CORT", days: 4 },
     { id: "confeccion", label: "Confección", short: "CONF", days: 5 },
-    { id: "cotizacion", label: "Cotización", short: "COT", days: 1 },
+    { id: "cotizacion", label: "Cotización", short: "COTIZACIÓN", days: 1 },
     { id: "por_enviar", label: "Por Enviar", short: "P.ENV", days: 2 },
   ],
   categorias: ["Cachetero","Byker","Capry","Leggins","Camiseta","Sisa","Top","Buso","Short","Enterizo","Body","Conjunto","Vestido","Blusa","Pantaloneta","Jogger","Traje de Baño","Bóxer","Pantys"],
@@ -973,7 +973,10 @@ function StageBar({ currentStage, stages, compact }) {
             <div style={{ height: compact ? 4 : 6, borderRadius: 2, background: done ? T.jade : active ? T.denim : T.border, position: "relative" }}>
               {active && <div style={{ position: "absolute", right: 0, top: "50%", transform: "translateY(-50%)", width: compact ? 8 : 10, height: compact ? 8 : 10, borderRadius: "50%", background: T.denim, border: "2px solid white" }} />}
             </div>
-            {!compact && <div style={{ fontSize: 9, color: active ? T.denim : T.slate, fontWeight: active ? 700 : 400, marginTop: 3 }}>{s.short}</div>}
+            {/* La etapa de Cotización se escribe completa (no "COT") — así lo
+                pidió el usuario, para que no se confunda con una abreviatura
+                rara; las demás etapas siguen mostrando su abreviatura corta. */}
+            {!compact && <div style={{ fontSize: 9, color: active ? T.denim : T.slate, fontWeight: active ? 700 : 400, marginTop: 3 }}>{s.id === "cotizacion" ? "COTIZACIÓN" : s.short}</div>}
           </div>
         );
       })}
