@@ -2124,7 +2124,12 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
             )}
             {canAdmin && (
               <>
-                {noFinalState && !["enviado_cotizacion", "enviar_cliente", "preparada_para_enviar", "enviado"].includes(st) && (
+                {/* "En proceso" y "En revisión" quedan disponibles incluso
+                    después de mandar a Cotización (o más adelante) — así
+                    siempre hay por dónde devolverse si algo cambió, sin
+                    tener que deshacer todo el tramo de envío. Solo se
+                    ocultan si ya quedó "Enviado" (estado final de verdad). */}
+                {noFinalState && st !== "enviado" && (
                   <>
                     <Btn variant="ghost" onClick={() => changeStatus("en_proceso")}>En proceso</Btn>
                     {item.currentStage !== "ilustracion" && (
