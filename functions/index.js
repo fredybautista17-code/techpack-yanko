@@ -543,14 +543,33 @@ async function consultarCatalogoBusint(endpoint) {
 // "items"/"data"/"rows") — por eso quien llama a esto debe pasar el
 // resultado crudo por `extraerFilasBusintBD` antes de asumir nada.
 async function consultarTablaBusintBD(tableName, page, pageSize) {
-  const baseUrl = BUSINT_BD_BASE_URL.value().replace(/\/+$/, "");
-  const apiKey = BUSINT_BD_API_KEY.value();
+  // .trim() por si el valor del secreto quedó con un salto de línea o
+  // espacio de más al pegarlo — eso rompe la URL y `fetch` falla con un
+  // "fetch failed" genérico que no dice por qué.
+  const baseUrlRaw = String(BUSINT_BD_BASE_URL.value() || "").trim();
+  const apiKey = String(BUSINT_BD_API_KEY.value() || "").trim();
+  if (!baseUrlRaw) {
+    throw new Error('El secreto BUSINT_BD_BASE_URL está vacío o no configurado. Corre: firebase functions:secrets:set BUSINT_BD_BASE_URL (valor: https://api-yanko-bd.busint.info) y vuelve a desplegar.');
+  }
+  if (!apiKey) {
+    throw new Error("El secreto BUSINT_BD_API_KEY está vacío o no configurado. Corre: firebase functions:secrets:set BUSINT_BD_API_KEY y vuelve a desplegar.");
+  }
+  const baseUrl = baseUrlRaw.replace(/\/+$/, "");
   const url = `${baseUrl}/api/Query?tableName=${encodeURIComponent(tableName)}&page=${page}&pageSize=${pageSize}`;
-  const resp = await fetch(url, { method: "POST", headers: { "X-Api-Key": apiKey, accept: "*/*" } });
+  let resp;
+  try {
+    resp = await fetch(url, { method: "POST", headers: { "X-Api-Key": apiKey, accept: "*/*" } });
+  } catch (err) {
+    // "fetch failed" de Node/undici no dice la causa real en err.message —
+    // viene adentro de err.cause (DNS, TLS, conexión rechazada, etc.).
+    const causa = err?.cause ? String(err.cause.message || err.cause) : null;
+    logger.error("Fetch de bajo nivel falló contra Busint BD", { url, causa, error: String(err) });
+    throw new Error(`No se pudo conectar a "${url}"${causa ? ` — causa: ${causa}` : ""}. Revisa que BUSINT_BD_BASE_URL sea exactamente el host correcto (sin espacios ni saltos de línea).`);
+  }
   if (!resp.ok) {
     const texto = await resp.text().catch(() => "");
-    logger.error(`Busint BD respondió con error (${tableName})`, { status: resp.status, texto });
-    throw new Error(`Busint BD respondió ${resp.status}${texto ? `: ${texto}` : ""}`);
+    logger.error(`Busint BD respondió con error (${tableName})`, { status: resp.status, texto, url });
+    throw new Error(`Busint BD respondió ${resp.status} en ${url}${texto ? `: ${texto}` : ""}`);
   }
   return resp.json();
 }
