@@ -1432,9 +1432,13 @@ function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
     </Modal>
   );
 }
-function EditRefModal({ refData: refItem, onSave, onClose, config }) {
+function EditRefModal({ refData: refItem, onSave, onClose, config, protos }) {
   const [form, setForm] = useState({ name: refItem?.name || "", reference: refItem?.reference || "", assignedTo: refItem?.assignedTo || "", categoria: refItem?.categoria || "", silueta: refItem?.silueta || "", colores: refItem?.colores?.[0] || "", tallas: refItem?.tallas?.[0] || "", tipoTela: refItem?.tipoTela || "", baseMolderia: refItem?.baseMolderia || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  // Si esta referencia se promovió desde un prototipo (fromProtoId), se
+  // trae acá su número de referencia — de solo lectura, porque el vínculo
+  // ya quedó fijado al promover y no se debe poder cambiar desde acá.
+  const protoOrigen = refItem?.fromProtoId ? (protos || []).find((p) => p.id === refItem.fromProtoId) : null;
   function save() {
     if (!form.name || !form.reference) return;
     onSave({ ...form, colores: form.colores ? [form.colores] : [], tallas: form.tallas ? [form.tallas] : [] });
@@ -1443,6 +1447,13 @@ function EditRefModal({ refData: refItem, onSave, onClose, config }) {
   return (
     <Modal title={`Editar Referencia — ${refItem?.reference}`} onClose={onClose} width={560}>
       <Field label="Nombre"><FInput value={form.name} onChange={set("name")} placeholder="Nombre de la referencia" /></Field>
+      {refItem?.fromProtoId && (
+        <Field label="Prototipo">
+          <div style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.slate, background: T.canvas }}>
+            {protoOrigen ? protoOrigen.reference : "(prototipo no encontrado)"}
+          </div>
+        </Field>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Categoría"><FSel value={form.categoria} onChange={set("categoria")} options={config.categorias} /></Field>
         <Field label="Silueta"><FSel value={form.silueta} onChange={set("silueta")} options={config.siluetas} /></Field>
@@ -1849,7 +1860,7 @@ function ObservacionesCapsulaModal({ capsula, currentUser, role, onSend, onMarkD
     </Modal>
   );
 }
-function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, onPromote, notify, onLogHistorial, capsula, stages, currentUser, config, cronogramaMuestras, onSendTaller, onUpdateTaller, onCrearEnvio }) {
+function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, onPromote, notify, onLogHistorial, capsula, stages, currentUser, config, cronogramaMuestras, onSendTaller, onUpdateTaller, onCrearEnvio, protos }) {
   const [tab, setTab] = useState("overview");
   const [showEdit, setShowEdit] = useState(false);
   const [showEnviado, setShowEnviado] = useState(false);
@@ -2038,7 +2049,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
   return (
     <div>
       {showEdit && kind === "proto" && <EditProtoModal proto={item} config={config} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
-      {showEdit && kind === "ref" && <EditRefModal refData={item} config={config} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
+      {showEdit && kind === "ref" && <EditRefModal refData={item} config={config} protos={protos} onSave={(p) => onUpdateItem(p)} onClose={() => setShowEdit(false)} />}
       {showEnviado && <EnviadoModal onSave={handleEnviado} onClose={() => setShowEnviado(false)} />}
       {showTaller && <EnviarTallerModal item={item} existing={tallerMasReciente?.estado !== "enviado" ? tallerMasReciente : null} ultimoTaller={tallerMasReciente} config={config} onSave={handleGuardarTaller} onClose={() => setShowTaller(false)} />}
       {showRevision && <NotaRevisionModal onSave={handleMarcarRevision} onClose={() => setShowRevision(false)} />}
@@ -9661,7 +9672,7 @@ function AppInner() {
               />
             )}
             {view === "ref-detail" && selRef && selCap && (
-              <DetailView item={selRef} kind="ref" role={role} perms={perms} capsulas={capsulas} capsula={selCap}
+              <DetailView item={selRef} kind="ref" role={role} perms={perms} capsulas={capsulas} capsula={selCap} protos={protos}
                 onBack={() => setView("capsulas")}
                 onUpdateItem={(p) => updateRef(selCap.id, selRef.id, p)}
                 onLogHistorial={logHistorial}
