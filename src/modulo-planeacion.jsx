@@ -82,18 +82,44 @@ function Btn({ children, onClick, variant = "primary", small, disabled }) {
   );
 }
 function Modal({ title, onClose, children, width = 560 }) {
+  // Botón para agrandar la ventana a casi toda la pantalla (95vw/95vh) — se
+  // aplica a TODAS las ventanas de Planeación porque todas pasan por este
+  // mismo componente. Empieza en su tamaño normal; el usuario decide si la
+  // quiere más grande.
+  const [expandido, setExpandido] = useState(false);
   return (
     <div
       style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
       onClick={onClose}
     >
       <div
-        style={{ background: C.white, borderRadius: 14, width: "100%", maxWidth: width, maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}
+        style={{
+          background: C.white,
+          borderRadius: 14,
+          width: "100%",
+          maxWidth: expandido ? "95vw" : width,
+          maxHeight: expandido ? "95vh" : "90vh",
+          height: expandido ? "95vh" : "auto",
+          overflow: "hidden",
+          display: "flex",
+          flexDirection: "column",
+          boxShadow: "0 24px 80px rgba(26,26,46,0.18)",
+          transition: "max-width 0.15s, height 0.15s",
+        }}
         onClick={(e) => e.stopPropagation()}
       >
         <div style={{ padding: "18px 24px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
           <span style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>{title}</span>
-          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: C.slate }}>×</button>
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <button
+              onClick={() => setExpandido((v) => !v)}
+              title={expandido ? "Reducir ventana" : "Agrandar ventana"}
+              style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: C.slate, lineHeight: 1 }}
+            >
+              {expandido ? "⤡" : "⤢"}
+            </button>
+            <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: C.slate, lineHeight: 1 }}>×</button>
+          </div>
         </div>
         <div style={{ padding: 24, overflowY: "auto" }}>{children}</div>
       </div>
@@ -397,6 +423,7 @@ function generarAgrupadoPlanta(lotes, campoAgrupador) {
       referencia: l.referencia,
       cantidad: l.invPlanta,
       fechaEntregaConf: l.fechaEntregaConfISO,
+      diasParaEntrega: diasEntre(l.fechaEntregaConfISO),
     }))
     .sort((a, b) => a.grupo.localeCompare(b.grupo) || a.categoria.localeCompare(b.categoria));
   const gruposUnicos = [...new Set(filas.map((f) => f.grupo))].sort((a, b) => a.localeCompare(b));
@@ -636,6 +663,13 @@ function BloqueAgrupado({ titulo, primeraColLabel, data, mostrarFechaEntrega }) 
   ];
   if (mostrarFechaEntrega) {
     columnasDetalle.push({ key: "fechaEntregaConf", label: "Fecha Entrega Conf.", render: (f) => fmtFechaISO(f.fechaEntregaConf) });
+    columnasDetalle.push({
+      key: "diasParaEntrega",
+      label: "Días para Vencer",
+      align: "right",
+      render: (f) => (f.diasParaEntrega ?? "—"),
+      color: (f) => (f.diasParaEntrega < 0 ? C.red : f.diasParaEntrega <= 3 ? C.amber : C.ink),
+    });
   }
   return (
     <div>
@@ -652,6 +686,13 @@ function BloqueAgrupado({ titulo, primeraColLabel, data, mostrarFechaEntrega }) 
               { key: "categoria", label: "Categoría" },
               { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
               { key: "fechaEntregaConf", label: "Fecha Entrega Conf.", render: (f) => fmtFechaISO(f.fechaEntregaConf) },
+              {
+                key: "diasParaEntrega",
+                label: "Días para Vencer",
+                align: "right",
+                render: (f) => (f.diasParaEntrega ?? "—"),
+                color: (f) => (f.diasParaEntrega < 0 ? C.red : f.diasParaEntrega <= 3 ? C.amber : C.ink),
+              },
             ]}
             filas={filasGrupoSel}
           />
