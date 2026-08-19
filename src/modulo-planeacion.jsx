@@ -711,9 +711,14 @@ function BloqueSeguimientoSemiterminado({ data }) {
   // por proceso, o por cliente+proceso) en vez de tener que buscarlos en la
   // tabla larga de abajo.
   const [detalleAbierto, setDetalleAbierto] = useState(null);
+  // Filtro de proceso para la tabla de abajo — independiente del clic en
+  // Resumen por Proceso/Cliente (ese abre una ventana puntual), esto deja el
+  // "Detalle de Lotes por Proceso" filtrado mientras se sigue navegando.
+  const [procesoFiltro, setProcesoFiltro] = useState("");
   if (!totalLotes) {
     return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Sin lotes en semiterminado.</div>;
   }
+  const filasFiltradas = procesoFiltro ? filas.filter((f) => f.procesoDondeQuedo === procesoFiltro) : filas;
   function abrirProceso(proceso) {
     setDetalleAbierto({ titulo: `Lotes en "${proceso}"`, filas: filas.filter((f) => f.procesoDondeQuedo === proceso) });
   }
@@ -855,9 +860,37 @@ function BloqueSeguimientoSemiterminado({ data }) {
           </div>
         </div>
       )}
-      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>DETALLE DE LOTES POR PROCESO</div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
+        <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>DETALLE DE LOTES POR PROCESO</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <label style={{ fontSize: 12, color: C.slate, fontWeight: 600 }}>Filtrar por proceso:</label>
+          <select
+            value={procesoFiltro}
+            onChange={(e) => setProcesoFiltro(e.target.value)}
+            style={{ padding: "7px 10px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 12, fontWeight: 700, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit", minWidth: 220 }}
+          >
+            <option value="">Todos los procesos</option>
+            {resumen.map((r) => (
+              <option key={r.proceso} value={r.proceso}>{r.proceso || "(Sin proceso)"} · {fmtNum(r.unidades)} und</option>
+            ))}
+          </select>
+          {procesoFiltro && (
+            <button
+              onClick={() => setProcesoFiltro("")}
+              style={{ fontSize: 11, color: C.blue, background: "none", border: "none", cursor: "pointer", textDecoration: "underline", padding: 0 }}
+            >
+              Quitar filtro
+            </button>
+          )}
+        </div>
+      </div>
+      {procesoFiltro && (
+        <div style={{ fontSize: 11, color: C.slate, marginBottom: 8 }}>
+          {fmtNum(filasFiltradas.length)} lote{filasFiltradas.length !== 1 ? "s" : ""} · {fmtNum(filasFiltradas.reduce((s, f) => s + f.unidades, 0))} unidades en "{procesoFiltro}"
+        </div>
+      )}
       <Tabla
-        vacio="Sin lotes en semiterminado."
+        vacio="Sin lotes para este filtro."
         columnas={[
           { key: "procesoDondeQuedo", label: "Proceso Donde Quedó" },
           { key: "nombreCliente", label: "Cliente" },
@@ -867,7 +900,7 @@ function BloqueSeguimientoSemiterminado({ data }) {
           { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
           { key: "ultimaSalida", label: "Última Salida (sin entrega)" },
         ]}
-        filas={filas}
+        filas={filasFiltradas}
       />
     </div>
   );
