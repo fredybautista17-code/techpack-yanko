@@ -541,6 +541,40 @@ function generarProgramacionYanko(lotes) {
   });
   return { filas, comparacion };
 }
+// "Mi Día" — Planeadora. Motor de prioridad compartido: cada tabla se ordena
+// por días restantes hasta la Fecha Entrega Pedido (fechaEntregaPedidoISO),
+// no por importancia arbitraria del área — así lo pidió el usuario ("es que
+// al final nos llegue a cumplir los pedidos"). Los mismos criterios se
+// reutilizarán para los "Mi Día" de Anny Beltrán (Terminación) y Sarai
+// Méndez (Termofijación) más adelante.
+function generarMiDiaPlaneadora(lotes, reporteBMP, programacionBMP) {
+  const plantasIncumpliendo = lotes
+    .filter((l) => l.invPlanta > 0)
+    .map((l) => {
+      const dias = diasEntre(l.fechaEntregaPedidoISO);
+      return {
+        numLote: l.numLote,
+        numPedido: l.numPedido,
+        referencia: l.referencia,
+        categoria: l.categoria,
+        cliente: l.nombreCliente,
+        planta: l.nombrePlanta || "(Sin planta)",
+        cantidad: l.invPlanta,
+        fechaEntregaPedido: l.fechaEntregaPedidoISO,
+        diasRestantesPedido: dias,
+        estado: estadoDe(dias),
+      };
+    })
+    .sort((a, b) => (a.diasRestantesPedido ?? Infinity) - (b.diasRestantesPedido ?? Infinity));
+  // BMP pendiente de programar hacia planta: lotes de reporteBMP cuyo
+  // numLote todavía no tiene una fila en planeacion_programacion_bmp.
+  const numLotesProgramados = new Set(programacionBMP.map((p) => p.numLote));
+  const bmpPendiente = reporteBMP
+    .filter((f) => !numLotesProgramados.has(f.numLote))
+    .map((f) => ({ ...f, estado: estadoDe(f.diasRestantesPedido) }))
+    .sort((a, b) => (a.diasRestantesPedido ?? Infinity) - (b.diasRestantesPedido ?? Infinity));
+  return { plantasIncumpliendo, bmpPendiente };
+}
 // ─── SUBIR HOJA1 ────────────────────────────────────────────────────────────────
 function SubirHoja1Modal({ onConfirm, onClose }) {
   const [cargando, setCargando] = useState(false);
@@ -1914,9 +1948,85 @@ function HomePlaneacion({ onGoInformes }) {
     </div>
   );
 }
+// "Mi Día" de la Planeadora: prioridades del día ordenadas por cercanía de
+// vencimiento del pedido — Plantas (cumplimiento) y BMP (pendiente de
+// programar hacia planta). Mesones (Corte) queda como pendiente honesto:
+// su estructura de datos vive en modulo-corte.jsx y aún no se ha mapeado en
+// detalle, así que por ahora se deja un aviso en vez de un resumen a medias.
+function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP }) {
+  const miDia = useMemo(() => generarMiDiaPlaneadora(lotes, reporteBMP, programacionBMP), [lotes, reporteBMP, programacionBMP]);
+  const plantasVencidas = miDia.plantasIncumpliendo.filter((f) => f.diasRestantesPedido < 0).length;
+  const plantasUrgentes = miDia.plantasIncumpliendo.filter((f) => f.diasRestantesPedido >= 0 && f.diasRestantesPedido <= 7).length;
+  const bmpVencidos = miDia.bmpPendiente.filter((f) => f.diasRestantesPedido < 0).length;
+  const bmpUrgentes = miDia.bmpPendiente.filter((f) => f.diasRestantesPedido >= 0 && f.diasRestantesPedido <= 7).length;
+  return (
+    <div>
+      <div style={{ marginBottom: 22 }}>
+        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>☀️ Mi Día</h2>
+        <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>
+          Prioridades de hoy, ordenadas por cercanía de la Fecha Entrega Pedido — lo más próximo a vencer va primero.
+        </p>
+      </div>
+      {!lotes.length && (
+        <div style={{ background: C.white, borderRadius: 14, padding: 24, border: `1px solid ${C.border}`, color: C.slate, fontSize: 13, marginBottom: 20 }}>
+          Aún no hay ninguna carga de Hoja1 subida en Informes. Sube una carga para ver aquí las prioridades del día.
+        </div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
+        <KPI icon="🏭" label="Plantas vencidas" value={plantasVencidas} color={C.red} bg={C.redBg} />
+        <KPI icon="🏭" label="Plantas urgentes (≤7 días)" value={plantasUrgentes} color={C.amber} bg={C.amberBg} />
+        <KPI icon="📦" label="BMP sin programar — vencidos" value={bmpVencidos} color={C.red} bg={C.redBg} />
+        <KPI icon="📦" label="BMP sin programar — urgentes (≤7 días)" value={bmpUrgentes} color={C.amber} bg={C.amberBg} />
+      </div>
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 4 }}>Plantas — cumplimiento de pedidos</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>Lotes en planta, ordenados por cuál pedido se vence primero.</div>
+        <Tabla
+          vacio="No hay lotes en planta en la carga activa."
+          columnas={[
+            { key: "estado", label: "Estado", render: (f) => <EstadoBadge estado={f.estado} /> },
+            { key: "diasRestantesPedido", label: "Días", align: "right", render: (f) => (f.diasRestantesPedido ?? "—") },
+            { key: "numLote", label: "Lote" },
+            { key: "referencia", label: "Referencia" },
+            { key: "categoria", label: "Categoría" },
+            { key: "cliente", label: "Cliente" },
+            { key: "planta", label: "Planta" },
+            { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
+            { key: "fechaEntregaPedido", label: "Fecha Entrega Pedido", render: (f) => fmtFechaISO(f.fechaEntregaPedido) },
+          ]}
+          filas={miDia.plantasIncumpliendo}
+        />
+      </div>
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 4 }}>BMP — pendiente de programar hacia planta</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>Lotes en BMP que todavía no tienen planta/fecha asignada en Programador BMP → Planta.</div>
+        <Tabla
+          vacio="No hay lotes de BMP pendientes de programar."
+          columnas={[
+            { key: "estado", label: "Estado", render: (f) => <EstadoBadge estado={f.estado} /> },
+            { key: "diasRestantesPedido", label: "Días", align: "right", render: (f) => (f.diasRestantesPedido ?? "—") },
+            { key: "numLote", label: "Lote" },
+            { key: "referencia", label: "Referencia" },
+            { key: "categoria", label: "Categoría" },
+            { key: "cliente", label: "Cliente" },
+            { key: "cantidadBMP", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidadBMP) },
+            { key: "fechaEntregaPedido", label: "Fecha Entrega Pedido", render: (f) => fmtFechaISO(f.fechaEntregaPedido) },
+          ]}
+          filas={miDia.bmpPendiente}
+        />
+      </div>
+      <div style={{ background: C.violetBg, borderRadius: 14, padding: 18, border: `1px solid ${C.violet}22` }}>
+        <div style={{ fontWeight: 800, fontSize: 13, color: C.violet, marginBottom: 4 }}>🔜 Mesones (Corte)</div>
+        <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5 }}>
+          La programación de mesones vive en el módulo de Corte. Todavía no está integrada aquí — se suma en una siguiente entrega junto con el correo diario/semanal.
+        </div>
+      </div>
+    </div>
+  );
+}
 // ─── ROOT MÓDULO PLANEACIÓN ─────────────────────────────────────────────────────
 export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
-  const [subView, setSubView] = useState("informes");
+  const [subView, setSubView] = useState(() => (currentUser?.name === "Planeadora" ? "mi_dia" : "informes"));
   const [cargas, setCargas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [cargasEntradasPlanta, setCargasEntradasPlanta] = useState([]);
@@ -2004,8 +2114,19 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     await fsDelete("planeacion_programacion_bmp", id);
   }
   const isAdmin = currentUser?.isAdmin;
+  const esPlaneadora = currentUser?.name === "Planeadora";
+  // "Mi Día" trabaja siempre sobre la carga más reciente de Hoja1 (sin
+  // selector manual, a diferencia de Informes) — mismo criterio de "más
+  // reciente por creadoEn/fecha" que usa InformesView.
+  const lotesActivos = useMemo(() => {
+    if (!cargas.length) return [];
+    const ordenadas = [...cargas].sort((a, b) => (b.creadoEn || b.fecha).localeCompare(a.creadoEn || a.fecha));
+    return ordenadas[0]?.lotes || [];
+  }, [cargas]);
+  const reporteBMPActivo = useMemo(() => generarBMP(lotesActivos), [lotesActivos]);
   const NAV = [
     { id: "home", icon: "◉", label: "Inicio" },
+    ...(esPlaneadora ? [{ id: "mi_dia", icon: "☀️", label: "Mi Día" }] : []),
     { id: "informes", icon: "📊", label: "Informes" },
   ];
   if (loading) {
@@ -2078,6 +2199,9 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
       <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
           {subView === "home" && <HomePlaneacion onGoInformes={() => setSubView("informes")} />}
+          {subView === "mi_dia" && (
+            <MiDiaPlaneadoraView lotes={lotesActivos} reporteBMP={reporteBMPActivo} programacionBMP={programacionBMP} />
+          )}
           {subView === "informes" && (
             <InformesView
               cargas={cargas}
