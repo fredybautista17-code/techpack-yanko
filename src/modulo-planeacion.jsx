@@ -626,10 +626,107 @@ function generarMesonesHoy(programacionCorte, corteConfig) {
         planta: planta?.nombre || (p.planta ? "(sin nombre)" : "Sin asignar"),
         meson: meson?.nombre || (p.meson ? "(sin nombre)" : "Sin asignar"),
         cortador: p.cortador || "Sin asignar",
+        horaInicioEstimada: p.horaInicioEstimada || "",
+        horaFinEstimada: p.horaFinEstimada || "",
         estado: p.aprobado ? "Aprobado" : p.etapa === "programacion_hecha" ? "Programado" : "Por programar mesón",
       };
     })
     .sort((a, b) => (a.planta || "").localeCompare(b.planta || "") || (a.referencia || "").localeCompare(b.referencia || ""));
+}
+// ─── TABLERO VISUAL DE MESONES (Mi Día) ────────────────────────────────────────
+// Ventana del día que se dibuja en el tablero — de 6:00 a.m. a 8:00 p.m., el
+// horario habitual de planta. Lo que quede fuera de esa franja igual se
+// dibuja pegado al borde (clamp), no se pierde.
+const HORA_INICIO_TABLERO = 6;
+const HORA_FIN_TABLERO = 20;
+function pctHora(hhmm) {
+  if (!hhmm || typeof hhmm !== "string") return null;
+  const partes = hhmm.split(":");
+  if (partes.length !== 2) return null;
+  const h = Number(partes[0]);
+  const m = Number(partes[1]);
+  if (isNaN(h) || isNaN(m)) return null;
+  const minutos = h * 60 + m;
+  const inicio = HORA_INICIO_TABLERO * 60;
+  const fin = HORA_FIN_TABLERO * 60;
+  return Math.min(100, Math.max(0, ((minutos - inicio) / (fin - inicio)) * 100));
+}
+// Una fila por planta+mesón, con un bloque de color por cada corte
+// programado hoy, ubicado según horaInicioEstimada/horaFinEstimada (mismos
+// datos que ya guarda Corte al hacer la Programación de Mesones). Lo que
+// todavía no tiene horario puesto se lista aparte, no se dibuja a ciegas.
+function TableroMesonesDia({ items }) {
+  const conHorario = items.filter((it) => pctHora(it.horaInicioEstimada) !== null && pctHora(it.horaFinEstimada) !== null);
+  const sinHorario = items.filter((it) => pctHora(it.horaInicioEstimada) === null || pctHora(it.horaFinEstimada) === null);
+  const grupos = useMemo(() => {
+    const map = new Map();
+    conHorario.forEach((it) => {
+      const clave = `${it.planta} · ${it.meson}`;
+      if (!map.has(clave)) map.set(clave, []);
+      map.get(clave).push(it);
+    });
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
+  const horasRegla = [6, 8, 10, 12, 14, 16, 18, 20];
+  if (!items.length) {
+    return <div style={{ textAlign: "center", padding: 24, color: C.slate, fontSize: 13 }}>No hay cortes programados para hoy.</div>;
+  }
+  return (
+    <div style={{ marginBottom: 20 }}>
+      {!!grupos.length && (
+        <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: "14px 16px 10px" }}>
+          <div style={{ position: "relative", height: 16, marginLeft: 178, marginBottom: 8 }}>
+            {horasRegla.map((h) => (
+              <span
+                key={h}
+                style={{ position: "absolute", left: `${((h - HORA_INICIO_TABLERO) / (HORA_FIN_TABLERO - HORA_INICIO_TABLERO)) * 100}%`, fontSize: 10, color: C.slate, fontWeight: 700 }}
+              >
+                {h}:00
+              </span>
+            ))}
+          </div>
+          {grupos.map(([clave, filas]) => (
+            <div key={clave} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <div
+                title={clave}
+                style={{ width: 168, flexShrink: 0, fontSize: 12, fontWeight: 700, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              >
+                {clave}
+              </div>
+              <div style={{ position: "relative", flex: 1, height: 32, background: C.canvas, borderRadius: 8 }}>
+                {filas.map((it) => {
+                  const left = pctHora(it.horaInicioEstimada);
+                  const right = pctHora(it.horaFinEstimada);
+                  const width = Math.max(right - left, 3);
+                  const color = it.estado === "Aprobado" ? C.green : it.estado === "Programado" ? C.violet : C.amber;
+                  return (
+                    <div
+                      key={it.id}
+                      title={`${it.cortador} · ${it.referencia} · ${it.horaInicioEstimada}–${it.horaFinEstimada}`}
+                      style={{
+                        position: "absolute", left: `${left}%`, width: `${width}%`, top: 3, bottom: 3,
+                        background: color, color: C.white, borderRadius: 6, fontSize: 10, fontWeight: 700,
+                        display: "flex", alignItems: "center", padding: "0 6px", overflow: "hidden", whiteSpace: "nowrap",
+                      }}
+                    >
+                      {it.cortador} · {it.referencia}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {!!sinHorario.length && (
+        <div style={{ marginTop: 12, fontSize: 12, color: C.slate }}>
+          <strong style={{ color: C.ink }}>Sin horario asignado todavía:</strong>{" "}
+          {sinHorario.map((it) => `${it.referencia} (${it.planta} · ${it.meson})`).join(", ")}
+        </div>
+      )}
+    </div>
+  );
 }
 // ─── SUBIR HOJA1 ────────────────────────────────────────────────────────────────
 function SubirHoja1Modal({ onConfirm, onClose }) {
@@ -2020,6 +2117,9 @@ function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionC
   // Detalle genérico: cualquier KPI que se haga clic abre este mismo modal,
   // solo cambian título/columnas/filas.
   const [detalle, setDetalle] = useState(null);
+  // La Programación de Mesones tiene su propio modal (no el genérico de
+  // `detalle`) porque además de la tabla lleva el tablero visual dibujado.
+  const [mostrarMesonesModal, setMostrarMesonesModal] = useState(false);
   // Las dos tablas de abajo empiezan cerradas — se despliegan al hacer clic
   // en su encabezado, igual que el resto de secciones colapsables de
   // Planeación (ej. el Verificador de Precio dentro de Programador BMP).
@@ -2072,6 +2172,12 @@ function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionC
           <Tabla vacio={detalle.vacio} columnas={detalle.columnas} filas={detalle.filas} />
         </Modal>
       )}
+      {mostrarMesonesModal && (
+        <Modal title="Programación de mesones — hoy" onClose={() => setMostrarMesonesModal(false)} width={900}>
+          <TableroMesonesDia items={mesonesHoy} />
+          <Tabla vacio="No hay cortes programados para hoy en Corte." columnas={columnasMesones} filas={mesonesHoy} />
+        </Modal>
+      )}
       <div style={{ marginBottom: 22 }}>
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>☀️ Mi Día</h2>
         <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>
@@ -2090,7 +2196,7 @@ function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionC
         />
         <KPI
           icon="✂️" label="Programación de mesones (hoy)" value={mesonesHoy.length} color={C.violet} bg={C.violetBg}
-          onClick={() => setDetalle({ titulo: "Programación de mesones — hoy", columnas: columnasMesones, filas: mesonesHoy, vacio: "No hay cortes programados para hoy en Corte." })}
+          onClick={() => setMostrarMesonesModal(true)}
         />
         <KPI
           icon="📦" label="BMP vencidos (pedido)" value={bmpVencidos.length} color={C.red} bg={C.redBg}
