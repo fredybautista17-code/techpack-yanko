@@ -119,6 +119,21 @@ const db = admin.firestore();
 
 const BUSINT_TOKEN = defineSecret("BUSINT_TOKEN");
 const BUSINT_BASE_URL = defineSecret("BUSINT_BASE_URL");
+// (2026-08-19) API NUEVA de Busint ("BD"), distinta a la de arriba — es la
+// que trae acceso a TODAS las tablas internas de Busint (incluida
+// "planeacion cargas", que es lo que reemplazaría la subida manual de Hoja1
+// en Planeación). Es una API completamente aparte: otro host
+// (api-yanko-bd.busint.info, no api-yanko-gen.busint.info), otro esquema de
+// autenticación (header "X-Api-Key", no un campo "Token" en el form-data) y
+// otro patrón de endpoint (GET/POST a /api/Query?tableName=X&page=Y&pageSize=Z,
+// no /consultas/X). Configurar UNA VEZ desde la terminal (nunca escribir la
+// llave acá, este archivo queda en un repo):
+//   firebase functions:secrets:set BUSINT_BD_BASE_URL
+//     (valor: https://api-yanko-bd.busint.info)
+//   firebase functions:secrets:set BUSINT_BD_API_KEY
+//     (valor: la X-Api-Key que dio Busint)
+const BUSINT_BD_BASE_URL = defineSecret("BUSINT_BD_BASE_URL");
+const BUSINT_BD_API_KEY = defineSecret("BUSINT_BD_API_KEY");
 
 function fmtFecha(d) {
   return d.toISOString().slice(0, 10);
@@ -507,7 +522,10 @@ async function consultarCatalogoBusint(endpoint) {
   const token = BUSINT_TOKEN.value();
   const form = new FormData();
   form.append("Token", token);
-  const resp = await fetch(`${baseUrl}/consultas/${endpoint}`, { method: "POST", body: form });
+  // encodeURIComponent porque muchos nombres de catálogo de Busint traen
+  // espacios y guiones sueltos (ej. "planeacion cargas desglosado") — sin
+  // esto la URL queda mal formada y Busint responde 404/400.
+  const resp = await fetch(`${baseUrl}/consultas/${encodeURIComponent(endpoint)}`, { method: "POST", body: form });
   if (!resp.ok) {
     const texto = await resp.text().catch(() => "");
     logger.error(`Busint respondió con error (${endpoint})`, { status: resp.status, texto });
@@ -516,6 +534,85 @@ async function consultarCatalogoBusint(endpoint) {
   const filas = await resp.json();
   return Array.isArray(filas) ? filas : [];
 }
+
+// Consulta la API "BD" nueva de Busint: GET a /api/Query?tableName=X&page=Y
+// &pageSize=Z, autenticado con header X-Api-Key (no Token en el body). No se
+// conoce todavía la forma exacta del JSON de respuesta (puede venir como
+// arreglo plano o como objeto con la lista adentro bajo alguna llave tipo
+// "items"/"data"/"rows") — por eso quien llama a esto debe pasar el
+// resultado crudo por `extraerFilasBusintBD` antes de asumir nada.
+async function consultarTablaBusintBD(tableName, page, pageSize) {
+  const baseUrl = BUSINT_BD_BASE_URL.value().replace(/\/+$/, "");
+  const apiKey = BUSINT_BD_API_KEY.value();
+  const url = `${baseUrl}/api/Query?tableName=${encodeURIComponent(tableName)}&page=${page}&pageSize=${pageSize}`;
+  const resp = await fetch(url, { method: "POST", headers: { "X-Api-Key": apiKey, accept: "*/*" } });
+  if (!resp.ok) {
+    const texto = await resp.text().catch(() => "");
+    logger.error(`Busint BD respondió con error (${tableName})`, { status: resp.status, texto });
+    throw new Error(`Busint BD respondió ${resp.status}${texto ? `: ${texto}` : ""}`);
+  }
+  return resp.json();
+}
+// La respuesta de /api/Query no está documentada todavía — prueba las
+// formas más comunes (arreglo plano, o un objeto con la lista bajo una de
+// estas llaves) antes de rendirse. Si no reconoce nada, devuelve null y
+// quien llama muestra el objeto crudo tal cual para poder verlo.
+function extraerFilasBusintBD(data) {
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === "object") {
+    for (const key of ["items", "data", "rows", "results", "Items", "Data", "Rows", "Results", "value", "Value"]) {
+      if (Array.isArray(data[key])) return data[key];
+    }
+  }
+  return null;
+}
+// Diagnóstico genérico: consulta CUALQUIER tabla de la API "BD" de Busint
+// por su nombre exacto (tal cual aparece en la lista que dio Busint, ej.
+// "planeacion cargas", "ia_seguimientolotesv_data") y devuelve solo una
+// muestra chica — para explorar tablas nuevas que todavía no se conectaron
+// a ATLAS (columnas y unas pocas filas) sin traer todo. Se usa desde
+// Administración → "🔌 Busint (prueba)".
+exports.getCatalogoBusintCrudo = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
+  async (request) => {
+    const endpoint = String(request.data?.endpoint || "").trim();
+    if (!endpoint) {
+      throw new HttpsError("invalid-argument", "Debes indicar el nombre de la tabla a consultar.");
+    }
+    const limite = Math.min(Math.max(parseInt(request.data?.limite) || 10, 1), 50);
+    const pagina = Math.max(parseInt(request.data?.pagina) || 1, 1);
+    let data;
+    try {
+      data = await consultarTablaBusintBD(endpoint, pagina, limite);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getCatalogoBusintCrudo)", { endpoint, error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar "${endpoint}" en Busint: ${err?.message || String(err)}`);
+    }
+    const filas = extraerFilasBusintBD(data);
+    if (filas) {
+      return {
+        endpoint,
+        reconocido: true,
+        total: filas.length,
+        columnas: filas.length ? Object.keys(filas[0]) : [],
+        muestra: filas.slice(0, limite),
+      };
+    }
+    // No se reconoció la forma de la respuesta — se devuelve tal cual para
+    // poder verla y ajustar `extraerFilasBusintBD` con la llave correcta.
+    return {
+      endpoint,
+      reconocido: false,
+      total: null,
+      columnas: data && typeof data === "object" ? Object.keys(data) : [],
+      muestra: [data],
+    };
+  }
+);
 
 // Usado por módulo Bodega → Despachos → Montar Despacho: al escribir una
 // referencia, autocompleta descripción/precio (ApiGen_Referencias) y los

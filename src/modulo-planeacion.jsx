@@ -2244,11 +2244,97 @@ function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionC
     </div>
   );
 }
+// Acceso directo de nivel superior a "Mi Día" — se entra desde el menú de
+// ATLAS (junto a "Dashboard"), sin pasar primero por el módulo completo de
+// Planeación. Trae sus propias suscripciones de Firestore (las mismas 4 que
+// antes vivían dentro de ModuloPlaneacion) porque es una pantalla
+// independiente, montada por separado desde App.js.
+export function MiDiaStandalone({ currentUser, onVolver, onLogout }) {
+  const [cargas, setCargas] = useState([]);
+  const [programacionBMP, setProgramacionBMP] = useState([]);
+  const [programacionCorte, setProgramacionCorte] = useState([]);
+  const [corteConfig, setCorteConfig] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_cargas"), (snap) => {
+      setCargas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_programacion_bmp"), (snap) => {
+      setProgramacionBMP(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "corte_programacion"), (snap) => {
+      setProgramacionCorte(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "corte_config", "main"), (snap) => {
+      setCorteConfig(snap.exists() ? snap.data() : null);
+    });
+    return () => unsub();
+  }, []);
+  // Misma regla que usaba Informes/ModuloPlaneacion: siempre la carga de
+  // Hoja1 más reciente, sin selector manual.
+  const lotesActivos = useMemo(() => {
+    if (!cargas.length) return [];
+    const ordenadas = [...cargas].sort((a, b) => (b.creadoEn || b.fecha).localeCompare(a.creadoEn || a.fecha));
+    return ordenadas[0]?.lotes || [];
+  }, [cargas]);
+  const reporteBMPActivo = useMemo(() => generarBMP(lotesActivos), [lotesActivos]);
+  if (loading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.canvas }}>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>☀️</div>
+          <div style={{ color: C.slate }}>Cargando Mi Día...</div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 32px", background: C.ink }}>
+        {onVolver && (
+          <button onClick={onVolver} style={{ background: "transparent", border: "1px solid rgba(200,184,162,0.3)", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, color: C.seam }}>
+            ← Volver
+          </button>
+        )}
+        <div style={{ flex: 1, fontSize: 14, fontWeight: 800, color: C.white }}>☀️ Mi Día — {currentUser?.name}</div>
+        {onLogout && (
+          <button onClick={onLogout} style={{ background: "transparent", border: "none", cursor: "pointer", color: "rgba(232,93,74,0.85)", fontWeight: 700, fontSize: 12 }}>
+            ⏏ Cerrar sesión
+          </button>
+        )}
+      </div>
+      <div style={{ padding: "28px 32px" }}>
+        <div style={{ maxWidth: 1400, margin: "0 auto" }}>
+          <MiDiaPlaneadoraView
+            lotes={lotesActivos}
+            reporteBMP={reporteBMPActivo}
+            programacionBMP={programacionBMP}
+            programacionCorte={programacionCorte}
+            corteConfig={corteConfig}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
 // ─── ROOT MÓDULO PLANEACIÓN ─────────────────────────────────────────────────────
 export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
-  const [subView, setSubView] = useState(() =>
-    /^planeadora?$/i.test(String(currentUser?.username || currentUser?.name || "").trim()) ? "mi_dia" : "informes"
-  );
+  // "Mi Día" de la Planeadora ya no vive acá adentro — se movió a un acceso
+  // directo de nivel superior en el menú de ATLAS (junto a "Dashboard"), ver
+  // MiDiaStandalone más abajo en este mismo archivo. Este módulo vuelve a
+  // ser el mismo para todos: aterriza en Informes.
+  const [subView, setSubView] = useState("informes");
   const [cargas, setCargas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [cargasEntradasPlanta, setCargasEntradasPlanta] = useState([]);
@@ -2335,42 +2421,9 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     setProgramacionBMP((ps) => ps.filter((p) => p.id !== id));
     await fsDelete("planeacion_programacion_bmp", id);
   }
-  // Para el KPI "Programación de mesones" de Mi Día — Planeación solo LEE lo
-  // que el módulo de Corte ya programó (corte_programacion) y su catálogo de
-  // plantas/mesones (corte_config/main, para poder mostrar nombres en vez de
-  // ids). No se escribe nada acá; Corte sigue siendo el dueño de ese dato.
-  const [programacionCorte, setProgramacionCorte] = useState([]);
-  const [corteConfig, setCorteConfig] = useState(null);
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, "corte_programacion"), (snap) => {
-      setProgramacionCorte(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
-    });
-    return () => unsub();
-  }, []);
-  useEffect(() => {
-    const unsub = onSnapshot(doc(db, "corte_config", "main"), (snap) => {
-      setCorteConfig(snap.exists() ? snap.data() : null);
-    });
-    return () => unsub();
-  }, []);
   const isAdmin = currentUser?.isAdmin;
-  // Se compara contra `username` (el identificador estable, definido al
-  // crear la cuenta) en vez de `name` (texto libre editable por un admin en
-  // cualquier momento) — en la cuenta real este usuario aparece como
-  // "planeador"/"Planeador", así que aceptamos ambas variantes de género.
-  const esPlaneadora = /^planeadora?$/i.test(String(currentUser?.username || currentUser?.name || "").trim());
-  // "Mi Día" trabaja siempre sobre la carga más reciente de Hoja1 (sin
-  // selector manual, a diferencia de Informes) — mismo criterio de "más
-  // reciente por creadoEn/fecha" que usa InformesView.
-  const lotesActivos = useMemo(() => {
-    if (!cargas.length) return [];
-    const ordenadas = [...cargas].sort((a, b) => (b.creadoEn || b.fecha).localeCompare(a.creadoEn || a.fecha));
-    return ordenadas[0]?.lotes || [];
-  }, [cargas]);
-  const reporteBMPActivo = useMemo(() => generarBMP(lotesActivos), [lotesActivos]);
   const NAV = [
     { id: "home", icon: "◉", label: "Inicio" },
-    ...(esPlaneadora ? [{ id: "mi_dia", icon: "☀️", label: "Mi Día" }] : []),
     { id: "informes", icon: "📊", label: "Informes" },
   ];
   if (loading) {
@@ -2443,15 +2496,6 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
       <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
           {subView === "home" && <HomePlaneacion onGoInformes={() => setSubView("informes")} />}
-          {subView === "mi_dia" && (
-            <MiDiaPlaneadoraView
-              lotes={lotesActivos}
-              reporteBMP={reporteBMPActivo}
-              programacionBMP={programacionBMP}
-              programacionCorte={programacionCorte}
-              corteConfig={corteConfig}
-            />
-          )}
           {subView === "informes" && (
             <InformesView
               cargas={cargas}

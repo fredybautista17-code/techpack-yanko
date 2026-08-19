@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import ModuloCorte from "./modulo-corte";
 import ModuloContabilidad from "./modulo-contabilidad";
-import ModuloPlaneacion from "./modulo-planeacion";
+import ModuloPlaneacion, { MiDiaStandalone } from "./modulo-planeacion";
 import ModuloPlanta from "./modulo-planta";
 import ModuloBodega from "./modulo-bodega";
 import ModuloNomina from "./modulo-nomina";
@@ -6587,7 +6587,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // Corte, Ventas, Contabilidad, Planeación, etc.), por eso su permiso vive
   // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
   const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["kpis", "🎯 KPIs"], ["informes", "📋 Informes"]];
-  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["papelera", "🗑 Papelera"]];
+  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["papelera", "🗑 Papelera"], ["busint_test", "🔌 Busint (prueba)"]];
   const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", grupo: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
   // Si tiene valor, el formulario de arriba está EDITANDO esa fila (en vez
   // de crear una nueva) — así se puede corregir, por ejemplo, una fila que
@@ -7052,7 +7052,80 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
             onPurgarProto={onPurgarProto} onPurgarCapsula={onPurgarCapsula} onPurgarRef={onPurgarRef}
           />
         )}
+        {tab === "busint_test" && <BusintCatalogoTestView />}
       </div>
+    </div>
+  );
+}
+// Herramienta de diagnóstico: consulta cualquier catálogo de Busint por su
+// nombre exacto (tal cual sale en la lista de "consultas" de Busint) y
+// muestra sus columnas + una muestra de filas — para explorar catálogos
+// nuevos (ej. "planeacion cargas") antes de conectarlos de verdad a algún
+// módulo. Requiere que `getCatalogoBusintCrudo` ya esté desplegada en
+// Firebase Functions (`firebase deploy --only functions`).
+function BusintCatalogoTestView() {
+  const [endpoint, setEndpoint] = useState("");
+  const [limite, setLimite] = useState("10");
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState("");
+  const [resultado, setResultado] = useState(null);
+  async function consultar() {
+    const nombre = endpoint.trim();
+    if (!nombre) return;
+    setCargando(true);
+    setError("");
+    setResultado(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getCatalogoBusintCrudo");
+      const resp = await llamar({ endpoint: nombre, limite: parseInt(limite) || 10 });
+      setResultado(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar Busint.");
+    } finally {
+      setCargando(false);
+    }
+  }
+  return (
+    <div>
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Probar catálogo crudo de Busint</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Escribe el nombre EXACTO del catálogo tal cual aparece en la lista de Busint (respeta mayúsculas, espacios y guiones — ej. <code>planeacion cargas</code>) y consulta una muestra chica para ver qué columnas trae.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Nombre del catálogo">
+          <FInput value={endpoint} onChange={setEndpoint} placeholder="Ej: planeacion cargas" />
+        </Field>
+        <div style={{ width: 90 }}>
+          <Field label="Muestra"><FInput type="number" value={limite} onChange={setLimite} /></Field>
+        </div>
+        <div style={{ marginBottom: 14 }}>
+          <Btn onClick={consultar} disabled={cargando || !endpoint.trim()}>{cargando ? "Consultando..." : "🔍 Consultar"}</Btn>
+        </div>
+      </div>
+      {error && <div style={{ padding: "10px 14px", background: T.coralBg, color: T.coral, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>⚠ {error}</div>}
+      {resultado && (
+        <div>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: T.slate }}>
+            <span>Catálogo: <strong style={{ color: T.ink }}>{resultado.endpoint}</strong></span>
+            <span>Total de filas: <strong style={{ color: T.ink }}>{resultado.total ?? "—"}</strong></span>
+          </div>
+          {resultado.reconocido === false && (
+            <div style={{ padding: "8px 12px", background: T.amberBg, color: T.amber, borderRadius: 8, fontSize: 12, fontWeight: 600, marginBottom: 12 }}>
+              ⚠ No reconocí dónde viene la lista dentro de la respuesta — abajo está el objeto completo tal cual llegó, para verlo.
+            </div>
+          )}
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Columnas ({resultado.columnas.length})</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 }}>
+            {resultado.columnas.map((c) => (
+              <span key={c} style={{ padding: "3px 10px", background: T.denimBg, color: T.denim, borderRadius: 20, fontSize: 12, fontWeight: 600 }}>{c}</span>
+            ))}
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Muestra ({resultado.muestra.length} filas)</div>
+          <pre style={{ background: T.canvas, borderRadius: 10, padding: 16, fontSize: 12, overflowX: "auto", maxHeight: 420, border: `1px solid ${T.border}` }}>
+            {JSON.stringify(resultado.muestra, null, 2)}
+          </pre>
+        </div>
+      )}
     </div>
   );
 }
@@ -9517,6 +9590,9 @@ function AppInner() {
   if (moduloActivo === "planeacion") {
     return <ModuloPlaneacion currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
+  if (moduloActivo === "mi_dia") {
+    return <MiDiaStandalone currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+  }
   if (moduloActivo === "planta") {
     return <ModuloPlanta currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
@@ -9562,6 +9638,9 @@ function AppInner() {
           </div>
           <button onClick={() => setShowCambiarClave(true)} style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "6px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: "transparent", color: "rgba(200,184,162,0.5)", fontWeight: 600, fontSize: 11, marginBottom: 12, textAlign: "left" }}>🔑 Cambiar contraseña</button>
           <button onClick={() => setView("dashboard")} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: view === "dashboard" ? T.seam : "transparent", color: view === "dashboard" ? T.ink : "#8888AA", fontWeight: view === "dashboard" ? 800 : 500, fontSize: 13, textAlign: "left", marginBottom: 8 }}><span style={{ fontSize: 15 }}>◉</span> Dashboard</button>
+          {/^planeadora?$/i.test(currentUser?.username || currentUser?.name || "") && (
+            <button onClick={() => setModuloActivo("mi_dia")} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: moduloActivo === "mi_dia" ? T.seam : "transparent", color: moduloActivo === "mi_dia" ? T.ink : "#8888AA", fontWeight: moduloActivo === "mi_dia" ? 800 : 500, fontSize: 13, textAlign: "left", marginBottom: 8 }}><span style={{ fontSize: 15 }}>☀️</span> Mi Día</button>
+          )}
           <div style={{ height: 1, background: "rgba(200,184,162,0.15)", marginBottom: 10 }} />
           <nav style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2, overflowY: "auto" }}>
             {AREAS.map((area) => {
