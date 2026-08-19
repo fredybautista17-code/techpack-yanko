@@ -7788,9 +7788,69 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
 // guarda el sueldo ACTUAL de cada trabajador (no un histórico mes a mes), así
 // que para Día y Año se estima a partir de ese sueldo actual — se avisa en
 // pantalla que esa parte es una aproximación, no un dato histórico real.
-function CentroCosto({ pedidos, trabajadores }) {
+function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin }) {
   const hoy = today();
   const [periodo, setPeriodo] = useState("mes"); // "dia" | "mes" | "anio"
+  const [recalculando, setRecalculando] = useState(false);
+  const [resultadoRecalculo, setResultadoRecalculo] = useState(null);
+  // Corrige cortes YA registrados (de cualquier fecha, incluso pedidos
+  // cerrados) cuyo ingreso quedó mal calculado porque, al momento de
+  // guardarse, la referencia todavía no tenía precio en el archivo de
+  // Precios Corte (quedó en $0) o tenía un precio viejo. `precio` e
+  // `ingresoCorte` se guardan congelados dentro de cada corte al crearse —
+  // subir un archivo de precios nuevo NO los actualiza solo, hay que
+  // recalcularlos a mano con esto. Solo toca las referencias cuyo precio
+  // actual en el archivo es DISTINTO al que quedó guardado en el corte.
+  async function recalcularPrecios() {
+    if (!preciosMap || !preciosMap.size) {
+      alert("No hay un archivo de Precios Corte cargado todavía — súbelo primero en Admin Corte.");
+      return;
+    }
+    if (
+      !window.confirm(
+        "Esto revisa TODOS los cortes ya registrados (de cualquier fecha, incluso pedidos cerrados) y actualiza el precio/ingreso de las referencias cuyo precio en el archivo más reciente sea distinto al que quedó guardado. ¿Continuar?"
+      )
+    ) {
+      return;
+    }
+    setRecalculando(true);
+    setResultadoRecalculo(null);
+    let pedidosActualizados = 0;
+    let cortesActualizados = 0;
+    let refsActualizadas = 0;
+    let deltaIngreso = 0;
+    try {
+      for (const p of pedidos) {
+        if (!p.cortesRealizados || !p.cortesRealizados.length) continue;
+        let cambioPedido = false;
+        const nuevosCortes = p.cortesRealizados.map((c) => {
+          let cambioCorte = false;
+          const nuevosRefs = (c.refs || []).map((r) => {
+            const nuevoPrecio = preciosMap.get(String(r.ref || "").trim());
+            if (nuevoPrecio != null && nuevoPrecio !== (r.precio || 0)) {
+              cambioCorte = true;
+              refsActualizadas++;
+              return { ...r, precio: nuevoPrecio };
+            }
+            return r;
+          });
+          if (!cambioCorte) return c;
+          cambioPedido = true;
+          cortesActualizados++;
+          const nuevoIngreso = nuevosRefs.reduce((s, r) => s + (r.total || 0) * (r.precio || 0), 0);
+          deltaIngreso += nuevoIngreso - (c.ingresoCorte || 0);
+          return { ...c, refs: nuevosRefs, ingresoCorte: nuevoIngreso };
+        });
+        if (cambioPedido) {
+          await fsSave("pedidos_activos", p.id, { cortesRealizados: nuevosCortes });
+          pedidosActualizados++;
+        }
+      }
+      setResultadoRecalculo({ pedidosActualizados, cortesActualizados, refsActualizadas, deltaIngreso });
+    } finally {
+      setRecalculando(false);
+    }
+  }
   const [fechaDia, setFechaDia] = useState(hoy);
   const [mesSel, setMesSel] = useState(new Date().getMonth() + 1);
   const [anioSel, setAnioSel] = useState(new Date().getFullYear());
@@ -7898,9 +7958,54 @@ function CentroCosto({ pedidos, trabajadores }) {
   );
   return (
     <div>
-      <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
-        💰 Centro de Costo — Corte
-      </h2>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
+          💰 Centro de Costo — Corte
+        </h2>
+        {isAdmin && (
+          <button
+            onClick={recalcularPrecios}
+            disabled={recalculando}
+            title="Actualiza el precio/ingreso de cortes ya registrados cuya referencia tenía un precio distinto (o en $0) al momento de guardarse"
+            style={{
+              padding: "8px 14px",
+              borderRadius: 8,
+              border: `1px solid ${C.border}`,
+              background: C.white,
+              color: C.ink,
+              fontWeight: 700,
+              fontSize: 12,
+              cursor: recalculando ? "default" : "pointer",
+              opacity: recalculando ? 0.6 : 1,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {recalculando ? "Recalculando…" : "🔄 Recalcular precios de cortes ya registrados"}
+          </button>
+        )}
+      </div>
+      {resultadoRecalculo && (
+        <div
+          style={{
+            marginBottom: 14,
+            padding: "10px 14px",
+            borderRadius: 10,
+            background: resultadoRecalculo.cortesActualizados > 0 ? C.greenBg : C.canvas,
+            border: `1px solid ${resultadoRecalculo.cortesActualizados > 0 ? C.green : C.border}`,
+            fontSize: 12.5,
+            color: C.ink,
+          }}
+        >
+          {resultadoRecalculo.cortesActualizados > 0 ? (
+            <>
+              ✓ Se actualizaron <b>{resultadoRecalculo.refsActualizadas}</b> referencia(s) en <b>{resultadoRecalculo.cortesActualizados}</b> corte(s) de <b>{resultadoRecalculo.pedidosActualizados}</b> pedido(s) — ingreso total ajustado en{" "}
+              <b>{fmtCOP(resultadoRecalculo.deltaIngreso)}</b>.
+            </>
+          ) : (
+            "No había cortes con precios desactualizados — todo estaba al día."
+          )}
+        </div>
+      )}
       <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 680 }}>
         "Ingreso" = unidades cortadas × precio/prenda de cada corte registrado en el periodo (dato real). "Costo" = sueldo integral de nómina
         {periodo !== "mes" && (
@@ -9215,7 +9320,12 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
             />
           )}
           {view === "costo" && (
-            <CentroCosto pedidos={pedidos} trabajadores={corteConfig.nomina?.trabajadores || []} />
+            <CentroCosto
+              pedidos={pedidos}
+              trabajadores={corteConfig.nomina?.trabajadores || []}
+              preciosMap={preciosMap}
+              isAdmin={puedeEditarCorte}
+            />
           )}
           {view === "admin" && isAdmin && (
             <AdminCorte config={corteConfig} onSave={saveConfig} onReiniciarCortes={reiniciarTodosLosCortes} currentUser={currentUser} ultimaCargaPrecios={ultimaCargaPrecios} />
