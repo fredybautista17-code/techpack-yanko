@@ -428,6 +428,14 @@ function SelectorDocumentosBusintView({ despachosExistentes, onCargar, onClose }
       return n;
     });
   }
+  // Documentos que sí se pueden marcar (los "YA USADO" quedan afuera, igual
+  // que al hacer clic uno por uno). "Seleccionar todo" alterna entre marcar
+  // todos esos y dejar la lista vacía.
+  const seleccionables = (documentos || []).filter((d) => !usados.has(String(d.doc).trim()));
+  const todosSeleccionados = seleccionables.length > 0 && seleccionables.every((d) => seleccionados.has(d.doc));
+  function toggleTodo() {
+    setSeleccionados(todosSeleccionados ? new Set() : new Set(seleccionables.map((d) => d.doc)));
+  }
   const elegidos = (documentos || []).filter((d) => seleccionados.has(d.doc));
   const totalUnidadesElegidas = elegidos.reduce((s, d) => s + d.totalUnidades, 0);
 
@@ -446,6 +454,10 @@ function SelectorDocumentosBusintView({ despachosExistentes, onCargar, onClose }
           <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay documentos de Dubo en ese rango de fechas.</div>
         ) : (
           <>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, cursor: seleccionables.length ? "pointer" : "default", fontSize: 12, fontWeight: 700, color: C.ink }}>
+              <input type="checkbox" checked={todosSeleccionados} disabled={!seleccionables.length} onChange={toggleTodo} />
+              Seleccionar todo ({seleccionables.length} disponible{seleccionables.length !== 1 ? "s" : ""})
+            </label>
             <div style={{ maxHeight: 380, overflowY: "auto", border: `1px solid ${C.border}`, borderRadius: 10 }}>
               {documentos.map((d) => {
                 const yaUsado = usados.has(String(d.doc).trim());
