@@ -2026,7 +2026,9 @@ function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP }) {
 }
 // ─── ROOT MÓDULO PLANEACIÓN ─────────────────────────────────────────────────────
 export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
-  const [subView, setSubView] = useState(() => (currentUser?.name === "Planeadora" ? "mi_dia" : "informes"));
+  const [subView, setSubView] = useState(() =>
+    /^planeadora?$/i.test(String(currentUser?.username || currentUser?.name || "").trim()) ? "mi_dia" : "informes"
+  );
   const [cargas, setCargas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [cargasEntradasPlanta, setCargasEntradasPlanta] = useState([]);
@@ -2114,7 +2116,11 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     await fsDelete("planeacion_programacion_bmp", id);
   }
   const isAdmin = currentUser?.isAdmin;
-  const esPlaneadora = currentUser?.name === "Planeadora";
+  // Se compara contra `username` (el identificador estable, definido al
+  // crear la cuenta) en vez de `name` (texto libre editable por un admin en
+  // cualquier momento) — en la cuenta real este usuario aparece como
+  // "planeador"/"Planeador", así que aceptamos ambas variantes de género.
+  const esPlaneadora = /^planeadora?$/i.test(String(currentUser?.username || currentUser?.name || "").trim());
   // "Mi Día" trabaja siempre sobre la carga más reciente de Hoja1 (sin
   // selector manual, a diferencia de Informes) — mismo criterio de "más
   // reciente por creadoEn/fecha" que usa InformesView.
