@@ -1394,7 +1394,7 @@ function SugerenciaYVerificacionRef({ sug, referencia, onUsar, busint, protos, c
   );
 }
 function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
-  const [form, setForm] = useState({ name: "", categoria: "", silueta: "", linea: "", rango: "", reference: "", assignedTo: "", cliente: "", mes: "", tipoTela: "", baseMolderia: "" });
+  const [form, setForm] = useState({ name: "", categoria: "", silueta: "", linea: "", rango: "", reference: "", assignedTo: "", cliente: "", mes: "", tipoTela: "", baseMolderia: "", numPrototipo: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const busint = useMaestroReferenciasBusint();
   const sug = sugerirReferencia(form.categoria, form.linea, form.cliente, config, protos || [], capsulas || [], busint.lista);
@@ -1425,6 +1425,7 @@ function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
         <Field label="Tipo de Tela"><FInput value={form.tipoTela} onChange={set("tipoTela")} placeholder="Ej: Diamante, Lycra" /></Field>
         <Field label="Base de Moldería"><FInput value={form.baseMolderia} onChange={set("baseMolderia")} placeholder="Ej: BM-045" /></Field>
       </div>
+      <Field label="# Prototipo"><FInput value={form.numPrototipo} onChange={set("numPrototipo")} placeholder="Ej: PTGM170" /></Field>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn onClick={save}>Crear Prototipo</Btn>
@@ -1433,11 +1434,12 @@ function NewProtoModal({ onSave, onClose, config, protos, capsulas }) {
   );
 }
 function EditRefModal({ refData: refItem, onSave, onClose, config, protos }) {
-  const [form, setForm] = useState({ name: refItem?.name || "", reference: refItem?.reference || "", assignedTo: refItem?.assignedTo || "", categoria: refItem?.categoria || "", silueta: refItem?.silueta || "", colores: refItem?.colores?.[0] || "", tallas: refItem?.tallas?.[0] || "", tipoTela: refItem?.tipoTela || "", baseMolderia: refItem?.baseMolderia || "" });
+  const [form, setForm] = useState({ name: refItem?.name || "", reference: refItem?.reference || "", assignedTo: refItem?.assignedTo || "", categoria: refItem?.categoria || "", silueta: refItem?.silueta || "", colores: refItem?.colores?.[0] || "", tallas: refItem?.tallas?.[0] || "", tipoTela: refItem?.tipoTela || "", baseMolderia: refItem?.baseMolderia || "", numPrototipo: refItem?.numPrototipo || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   // Si esta referencia se promovió desde un prototipo (fromProtoId), se
   // trae acá su número de referencia — de solo lectura, porque el vínculo
-  // ya quedó fijado al promover y no se debe poder cambiar desde acá.
+  // ya quedó fijado al promover y no se debe poder cambiar desde acá. Es
+  // distinto del campo "# Prototipo" de abajo, que es de texto libre.
   const protoOrigen = refItem?.fromProtoId ? (protos || []).find((p) => p.id === refItem.fromProtoId) : null;
   function save() {
     if (!form.name || !form.reference) return;
@@ -1448,7 +1450,7 @@ function EditRefModal({ refData: refItem, onSave, onClose, config, protos }) {
     <Modal title={`Editar Referencia — ${refItem?.reference}`} onClose={onClose} width={560}>
       <Field label="Nombre"><FInput value={form.name} onChange={set("name")} placeholder="Nombre de la referencia" /></Field>
       {refItem?.fromProtoId && (
-        <Field label="Prototipo">
+        <Field label="Prototipo de origen">
           <div style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.slate, background: T.canvas }}>
             {protoOrigen ? protoOrigen.reference : "(prototipo no encontrado)"}
           </div>
@@ -1470,6 +1472,7 @@ function EditRefModal({ refData: refItem, onSave, onClose, config, protos }) {
         <Field label="Tipo de Tela"><FInput value={form.tipoTela} onChange={set("tipoTela")} placeholder="Ej: Diamante, Lycra" /></Field>
         <Field label="Base de Moldería"><FInput value={form.baseMolderia} onChange={set("baseMolderia")} placeholder="Ej: BM-045" /></Field>
       </div>
+      <Field label="# Prototipo"><FInput value={form.numPrototipo} onChange={set("numPrototipo")} placeholder="Ej: PTGM170" /></Field>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn onClick={save}>Guardar cambios</Btn>
@@ -1478,7 +1481,7 @@ function EditRefModal({ refData: refItem, onSave, onClose, config, protos }) {
   );
 }
 function EditProtoModal({ proto, onSave, onClose, config }) {
-  const [form, setForm] = useState({ name: proto?.name || "", categoria: proto?.categoria || "", silueta: proto?.silueta || "", rango: proto?.rango || "", reference: proto?.reference || "", assignedTo: proto?.assignedTo || "", cliente: proto?.cliente || "", mes: proto?.mes || "", tipoTela: proto?.tipoTela || "", baseMolderia: proto?.baseMolderia || "" });
+  const [form, setForm] = useState({ name: proto?.name || "", categoria: proto?.categoria || "", silueta: proto?.silueta || "", rango: proto?.rango || "", reference: proto?.reference || "", assignedTo: proto?.assignedTo || "", cliente: proto?.cliente || "", mes: proto?.mes || "", tipoTela: proto?.tipoTela || "", baseMolderia: proto?.baseMolderia || "", numPrototipo: proto?.numPrototipo || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function save() { if (!form.name || !form.reference) return; onSave(form); onClose(); }
   return (
@@ -1501,6 +1504,7 @@ function EditProtoModal({ proto, onSave, onClose, config }) {
         <Field label="Tipo de Tela"><FInput value={form.tipoTela} onChange={set("tipoTela")} placeholder="Ej: Diamante, Lycra" /></Field>
         <Field label="Base de Moldería"><FInput value={form.baseMolderia} onChange={set("baseMolderia")} placeholder="Ej: BM-045" /></Field>
       </div>
+      <Field label="# Prototipo"><FInput value={form.numPrototipo} onChange={set("numPrototipo")} placeholder="Ej: PTGM170" /></Field>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn onClick={save}>Guardar cambios</Btn>
@@ -1532,7 +1536,7 @@ function NewCapsulaModal({ onSave, onClose, config }) {
 }
 
 function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
-  const [form, setForm] = useState({ name: "", reference: "", assignedTo: "", categoria: "", silueta: "", linea: "", rango: "", colores: "", tallas: "", tipoTela: "", baseMolderia: "" });
+  const [form, setForm] = useState({ name: "", reference: "", assignedTo: "", categoria: "", silueta: "", linea: "", rango: "", colores: "", tallas: "", tipoTela: "", baseMolderia: "", numPrototipo: "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const busint = useMaestroReferenciasBusint();
   // OJO: en este formulario el campo "Cliente" en pantalla se guarda bajo
@@ -1542,7 +1546,7 @@ function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
   function save() {
     if (!form.name || !form.reference) return;
     onSave(capsula.id, {
-      id: uid(), name: form.name, reference: form.reference, categoria: form.categoria, silueta: form.silueta, linea: form.linea, rango: form.rango, fromProtoId: null, status: "borrador", currentStage: "ilustracion", stageStartedAt: today(), assignedTo: form.assignedTo, createdAt: today(), image: null, colores: form.colores ? [form.colores] : [], tallas: form.tallas ? [form.tallas] : [], tipoTela: form.tipoTela, baseMolderia: form.baseMolderia, bom: [], pom: [], approvals: [],
+      id: uid(), name: form.name, reference: form.reference, categoria: form.categoria, silueta: form.silueta, linea: form.linea, rango: form.rango, fromProtoId: null, status: "borrador", currentStage: "ilustracion", stageStartedAt: today(), assignedTo: form.assignedTo, createdAt: today(), image: null, colores: form.colores ? [form.colores] : [], tallas: form.tallas ? [form.tallas] : [], tipoTela: form.tipoTela, baseMolderia: form.baseMolderia, numPrototipo: form.numPrototipo, bom: [], pom: [], approvals: [],
       observations: [{ id: uid(), user: "Sistema", role: "Sistema", text: "Referencia creada.", date: nowISO(), type: "info", done: true }],
     });
     onClose();
@@ -1566,6 +1570,7 @@ function NewRefModal({ capsula, onSave, onClose, config, protos, capsulas }) {
         <Field label="Tipo de Tela"><FInput value={form.tipoTela} onChange={set("tipoTela")} placeholder="Ej: Diamante, Lycra" /></Field>
         <Field label="Base de Moldería"><FInput value={form.baseMolderia} onChange={set("baseMolderia")} placeholder="Ej: BM-045" /></Field>
       </div>
+      <Field label="# Prototipo"><FInput value={form.numPrototipo} onChange={set("numPrototipo")} placeholder="Ej: PTGM170" /></Field>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn onClick={save}>Crear Referencia</Btn>
@@ -1703,7 +1708,7 @@ function PromoteModal({ proto, capsulas, onSave, onClose, config }) {
   function save() {
     if (!capId || !refName || !refCode) return;
     onSave(capId, {
-      id: uid(), name: refName, reference: refCode, categoria: proto.categoria, silueta: proto.silueta, rango: proto.rango, fromProtoId: proto.id, status: "en_proceso", currentStage: proto.currentStage, stageStartedAt: today(), assignedTo: proto.assignedTo, createdAt: today(), image: proto.image, colores: cliente ? [cliente] : [], tallas: rangoTallas ? [rangoTallas] : [], bom: [...proto.bom], pom: [...proto.pom], approvals: [],
+      id: uid(), name: refName, reference: refCode, categoria: proto.categoria, silueta: proto.silueta, rango: proto.rango, fromProtoId: proto.id, numPrototipo: proto.numPrototipo || "", status: "en_proceso", currentStage: proto.currentStage, stageStartedAt: today(), assignedTo: proto.assignedTo, createdAt: today(), image: proto.image, colores: cliente ? [cliente] : [], tallas: rangoTallas ? [rangoTallas] : [], bom: [...proto.bom], pom: [...proto.pom], approvals: [],
       observations: [{ id: uid(), user: "Sistema", role: "Sistema", text: `Promovida desde ${proto.reference}.`, date: nowISO(), type: "info", done: false }],
     }, proto.id);
     onClose();
@@ -2220,6 +2225,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
             {[
               { label: "Responsable", value: item.assignedTo || "—" },
               { label: "Ref", value: item.reference },
+              { label: "# Prototipo", value: item.numPrototipo || "—" },
               { label: "Cliente", value: item.cliente || item.colores?.[0] || "—" },
               { label: "Tipo de Tela", value: item.tipoTela || "—" },
               { label: "Base de Moldería", value: item.baseMolderia || "—" },
