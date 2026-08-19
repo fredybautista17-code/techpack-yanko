@@ -8,6 +8,7 @@ import {
   deleteDoc,
   onSnapshot,
 } from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -18,6 +19,7 @@ const firebaseConfig = {
 };
 const fbApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
+const functionsClient = getFunctions(fbApp);
 async function fsSave(col, id, data) {
   await setDoc(doc(db, col, id), data, { merge: true });
 }
@@ -198,6 +200,16 @@ function dateToISO(d) {
   if (!esFechaValida(d)) return null;
   const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+// Parsea un texto ISO (YYYY-MM-DD) a Date en hora LOCAL — `new Date(iso)`
+// lo interpreta en UTC y puede correrse un día según la zona horaria del
+// navegador; esto evita ese corrimiento. Se usa al recalcular
+// semanaEntregaISO cuando se refresca el inventario desde Busint.
+function isoToLocalDate(iso) {
+  if (!iso) return null;
+  const [y, m, d] = String(iso).split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
 }
 function fmtFecha(d) {
   if (!esFechaValida(d)) return "";
@@ -1652,6 +1664,72 @@ function InformesView({
   const [showUpload, setShowUpload] = useState(false);
   const [cargaId, setCargaId] = useState(null);
   const [tab, setTab] = useState("en_planta");
+  const [actualizandoInv, setActualizandoInv] = useState(false);
+  const [resultadoInv, setResultadoInv] = useState(null);
+  // Refresca SOLO el inventario por lote (Planta/BMP/Corte/BPT/
+  // Semiterminado) contra la API "BD" de Busint — el cliente y la fecha de
+  // entrega del pedido siguen viniendo de Hoja1 y no se tocan acá, porque
+  // esta API no tiene una llave confiable para cruzar lote↔pedido (solo por
+  // referencia, que puede repetirse en varios pedidos). El cruce SÍ es
+  // confiable por número de lote (`Numero_de_Lote` en Busint = `numLote`
+  // acá), así que solo se actualizan los 5 campos de inventario + planta,
+  // y se recalculan `ubicacionActual`/`unidadesUbicacion`/`semanaEntregaISO`
+  // con la misma lógica que usa `agruparLotes` al subir Hoja1.
+  async function actualizarInventarioBusint() {
+    if (!cargaActiva) return;
+    setActualizandoInv(true);
+    setResultadoInv(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getInventarioLotesBusintBD");
+      const resp = await llamar();
+      const filasBusint = resp.data?.lotes || [];
+      const porNumLote = new Map(filasBusint.map((f) => [f.numLote, f]));
+      let actualizados = 0;
+      const nuevosLotes = (cargaActiva.lotes || []).map((l) => {
+        const upd = porNumLote.get(l.numLote);
+        if (!upd) return l;
+        const cambio =
+          upd.invCorte !== l.invCorte ||
+          upd.invBMP !== l.invBMP ||
+          upd.invPlanta !== l.invPlanta ||
+          upd.invBPT !== l.invBPT ||
+          upd.invSemiterminado !== l.invSemiterminado;
+        if (!cambio) return l;
+        actualizados++;
+        const merged = {
+          ...l,
+          invCorte: upd.invCorte,
+          invBMP: upd.invBMP,
+          invPlanta: upd.invPlanta,
+          invBPT: upd.invBPT,
+          invSemiterminado: upd.invSemiterminado,
+          nombrePlanta: upd.nombrePlanta || l.nombrePlanta,
+        };
+        let ubicacionActual = "Sin inventario";
+        let unidadesUbicacion = 0;
+        if (merged.invBPT > 0) { ubicacionActual = "BPT"; unidadesUbicacion = merged.invBPT; }
+        else if (merged.invSemiterminado > 0) { ubicacionActual = "Semiterminado"; unidadesUbicacion = merged.invSemiterminado; }
+        else if (merged.invPlanta > 0) { ubicacionActual = "Planta"; unidadesUbicacion = merged.invPlanta; }
+        else if (merged.invBMP > 0) { ubicacionActual = "BMP"; unidadesUbicacion = merged.invBMP; }
+        else if (merged.invCorte > 0) { ubicacionActual = "Corte"; unidadesUbicacion = merged.invCorte; }
+        merged.ubicacionActual = ubicacionActual;
+        merged.unidadesUbicacion = unidadesUbicacion;
+        merged.semanaEntregaISO = merged.invPlanta > 0 ? dateToISO(lunesDeSemana(isoToLocalDate(merged.fechaEntregaConfISO))) : null;
+        return merged;
+      });
+      if (actualizados > 0) {
+        await fsSave("planeacion_cargas", cargaActiva.id, {
+          lotes: nuevosLotes,
+          ultimaActualizacionInventarioISO: new Date().toISOString(),
+        });
+      }
+      setResultadoInv({ actualizados, totalBusint: filasBusint.length });
+    } catch (err) {
+      setResultadoInv({ error: err?.message || String(err) });
+    } finally {
+      setActualizandoInv(false);
+    }
+  }
   // Ordena por `creadoEn` (timestamp completo con hora) cuando existe, para
   // que dos cargas del mismo día queden en el orden real en que se subieron
   // — antes solo se ordenaba por `fecha` (solo día), así que el orden entre
@@ -1870,6 +1948,16 @@ function InformesView({
           {cargaActiva && (
             <Btn variant="secondary" onClick={exportarExcel}>📤 Exportar Excel</Btn>
           )}
+          {cargaActiva && (
+            <Btn
+              variant="secondary"
+              onClick={actualizarInventarioBusint}
+              disabled={actualizandoInv}
+              title="Refresca cuánto hay en Planta/BMP/Corte/BPT/Semiterminado de cada lote, cruzando por número de lote contra Busint — el cliente y la fecha de entrega siguen viniendo de Hoja1"
+            >
+              {actualizandoInv ? "Actualizando…" : "🔄 Actualizar inventario"}
+            </Btn>
+          )}
           <Btn variant="danger" onClick={() => setShowUpload(true)}>📥 Subir Hoja1</Btn>
           {isAdmin && cargaActiva && (
             <button
@@ -1882,6 +1970,25 @@ function InformesView({
           )}
         </div>
       </div>
+      {resultadoInv && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: "10px 14px",
+            borderRadius: 10,
+            background: resultadoInv.error ? C.redBg : resultadoInv.actualizados > 0 ? C.greenBg : C.canvas,
+            border: `1px solid ${resultadoInv.error ? C.red : resultadoInv.actualizados > 0 ? C.green : C.border}`,
+            fontSize: 12.5,
+            color: C.ink,
+          }}
+        >
+          {resultadoInv.error
+            ? `⚠ No se pudo actualizar: ${resultadoInv.error}`
+            : resultadoInv.actualizados > 0
+            ? `✓ Se actualizó el inventario de ${resultadoInv.actualizados} lote(s) contra Busint.`
+            : "El inventario ya estaba al día — nada que actualizar."}
+        </div>
+      )}
       {!cargaActiva ? (
         <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
           Aún no has subido ninguna Hoja1. Usa "Subir Hoja1" para generar el primer set de informes.

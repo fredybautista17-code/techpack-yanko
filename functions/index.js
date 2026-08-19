@@ -634,6 +634,61 @@ exports.getCatalogoBusintCrudo = onCall(
   }
 );
 
+// Trae TODAS las filas de una tabla de Busint BD, paginando sola (la API
+// entrega de a `pageSize` filas por página) hasta que una página llega
+// vacía/incompleta o se alcanza `maxPaginas` — tope de seguridad para no
+// dejar un loop corriendo para siempre si la API cambia de forma
+// inesperada.
+async function consultarTablaBusintBDCompleta(tableName, pageSize = 500, maxPaginas = 30) {
+  let todas = [];
+  for (let page = 1; page <= maxPaginas; page++) {
+    const data = await consultarTablaBusintBD(tableName, page, pageSize);
+    const filas = extraerFilasBusintBD(data);
+    if (!filas || !filas.length) break;
+    todas = todas.concat(filas);
+    if (filas.length < pageSize) break; // última página (vino incompleta)
+  }
+  return todas;
+}
+// (2026-08-19) Refresca SOLO el inventario por lote (Planta/BMP/Corte/BPT/
+// Semiterminado) contra la tabla `ia_seguimientolotesv_data` de la API "BD"
+// de Busint — NO trae cliente ni fecha de entrega de pedido, esos siguen
+// viniendo de "Subir Hoja1": se investigó reemplazar Hoja1 por completo,
+// pero esta API no tiene una llave confiable para cruzar lote↔pedido (solo
+// por referencia, que puede repetirse en varios pedidos a la vez), así que
+// se decidió NO arriesgar esos datos. El cruce por `Numero_de_Lote` (→
+// `numLote` en ATLAS) sí es una llave directa y sin ambigüedad, por eso
+// esto es seguro. Ver el merge/recalculo en modulo-planeacion.jsx
+// (`actualizarInventarioBusint`, dentro de InformesView).
+exports.getInventarioLotesBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async () => {
+    let filas;
+    try {
+      filas = await consultarTablaBusintBDCompleta("ia_seguimientolotesv_data");
+    } catch (err) {
+      logger.error("Error consultando ia_seguimientolotesv_data (getInventarioLotesBusintBD)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar el inventario en Busint: ${err?.message || String(err)}`);
+    }
+    const lotes = filas
+      .map((f) => ({
+        numLote: Number(f.Numero_de_Lote),
+        invCorte: Number(f.Inventario_corte) || 0,
+        invBMP: Number(f.Inventario_en_bodega_de_materia_prima) || 0,
+        invPlanta: Number(f.Inventario_en_planta) || 0,
+        invBPT: Number(f.Inventario_en_bodega_de_producto_terminado) || 0,
+        invSemiterminado: Number(f.Inventario_en_semiterminado) || 0,
+        nombrePlanta: f.Nombre_planta_de_confeccion || null,
+      }))
+      .filter((l) => Number.isFinite(l.numLote) && l.numLote > 0);
+    return { total: lotes.length, lotes };
+  }
+);
+
 // Usado por módulo Bodega → Despachos → Montar Despacho: al escribir una
 // referencia, autocompleta descripción/precio (ApiGen_Referencias) y los
 // códigos de barra por talla/color (ApiGen_CodigosDeBarra) de esa misma
