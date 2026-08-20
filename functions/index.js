@@ -1329,6 +1329,46 @@ exports.getReferenciasBusint = onCall(
   }
 );
 
+// (2026-08-20) RESTAURADA — existía en producción pero se había perdido del
+// código fuente local (una de las 3 funciones huérfanas detectadas al
+// desplegar el 19-08-2026; se decidió borrarla en ese momento y luego
+// resultó que sí se seguía usando desde Administración → Códigos de
+// Referencia → "Probar una referencia puntual en vivo"). Ignora guiones al
+// comparar (98-423 = 98423), igual que normalizarRefComparacion en
+// src/App.js — devuelve el registro CRUDO de Busint tal cual, sin filtrar
+// campos, para depurar qué trae realmente el maestro.
+function normalizarRefComparacion(v) {
+  return String(v || "").trim().toUpperCase().replace(/-/g, "");
+}
+exports.probarReferenciaBusint = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const { ref } = request.data || {};
+    const refBuscada = String(ref || "").trim();
+    if (!refBuscada) {
+      throw new HttpsError("invalid-argument", "ref es obligatorio.");
+    }
+    let filas;
+    try {
+      filas = await consultarCatalogoBusint("ApiGen_Referencias");
+    } catch (err) {
+      logger.error("Error consultando Busint (probarReferenciaBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar el maestro de referencias de Busint. Intenta de nuevo en unos minutos.");
+    }
+    const normBuscada = normalizarRefComparacion(refBuscada);
+    const encontrada = filas.find((f) => normalizarRefComparacion(f.ref) === normBuscada);
+    return {
+      encontrada: !!encontrada,
+      totalEnBusint: filas.length,
+      referencia: encontrada || null,
+    };
+  }
+);
+
 // Usado por módulo Bodega → Despachos → Montar Despacho (destino Dubo): en
 // vez de digitar cada referencia una por una, trae de un tirón TODAS las
 // líneas de un Traslado de Busint a partir de su número (el que aparece
