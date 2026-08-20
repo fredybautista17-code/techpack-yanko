@@ -1,0 +1,53 @@
+[debug] [2026-08-20T12:03:05.773Z] ----------------------------------------------------------------------
+[debug] [2026-08-20T12:03:05.792Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\FREDY\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js deploy --only functions
+[debug] [2026-08-20T12:03:05.793Z] CLI Version:   15.27.0
+[debug] [2026-08-20T12:03:05.793Z] Platform:      win32
+[debug] [2026-08-20T12:03:05.794Z] Node Version:  v24.19.0
+[debug] [2026-08-20T12:03:05.794Z] Detected Agent: unknown
+[debug] [2026-08-20T12:03:05.794Z] Time:          Thu Aug 20 2026 07:03:05 GMT-0500 (hora estándar de Colombia)
+[debug] [2026-08-20T12:03:05.795Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-08-20T12:04:37.977Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-08-20T12:04:37.979Z] > authorizing via signed-in user (fredybautista17@gmail.com)
+[debug] [2026-08-20T12:04:37.980Z] [iam] checking project techpack-yanko-f37b8 for permissions ["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]
+[debug] [2026-08-20T12:04:38.020Z] Checked if tokens are valid: false, expires at: 1787198777720
+[debug] [2026-08-20T12:04:38.020Z] Checked if tokens are valid: false, expires at: 1787198777720
+[debug] [2026-08-20T12:04:38.020Z] > refreshing access token with scopes: []
+[debug] [2026-08-20T12:04:38.026Z] >>> [apiv2][query] POST https://www.googleapis.com/oauth2/v3/token [none]
+[debug] [2026-08-20T12:04:38.026Z] >>> [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-08-20T12:04:39.487Z] <<< [apiv2][status] POST https://www.googleapis.com/oauth2/v3/token 200
+[debug] [2026-08-20T12:04:39.487Z] <<< [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-08-20T12:04:39.522Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/techpack-yanko-f37b8:testIamPermissions [none]
+[debug] [2026-08-20T12:04:39.523Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/techpack-yanko-f37b8:testIamPermissions  x-goog-user-project=techpack-yanko-f37b8
+[debug] [2026-08-20T12:04:39.523Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/techpack-yanko-f37b8:testIamPermissions {"permissions":["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]}
+[debug] [2026-08-20T12:04:40.305Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/techpack-yanko-f37b8:testIamPermissions 200
+[debug] [2026-08-20T12:04:40.307Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/techpack-yanko-f37b8:testIamPermissions {"permissions":["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]}
+[debug] [2026-08-20T12:04:40.314Z] Checked if tokens are valid: true, expires at: 1787231078487
+[debug] [2026-08-20T12:04:40.315Z] Checked if tokens are valid: true, expires at: 1787231078487
+[debug] [2026-08-20T12:04:40.316Z] >>> [apiv2][query] POST https://iam.googleapis.com/v1/projects/techpack-yanko-f37b8/serviceAccounts/techpack-yanko-f37b8@appspot.gserviceaccount.com:testIamPermissions [none]
+[debug] [2026-08-20T12:04:40.317Z] >>> [apiv2][body] POST https://iam.googleapis.com/v1/projects/techpack-yanko-f37b8/serviceAccounts/techpack-yanko-f37b8@appspot.gserviceaccount.com:testIamPermissions {"permissions":["iam.serviceAccounts.actAs"]}
+[debug] [2026-08-20T12:04:41.704Z] <<< [apiv2][status] POST https://iam.googleapis.com/v1/projects/techpack-yanko-f37b8/serviceAccounts/techpack-yanko-f37b8@appspot.gserviceaccount.com:testIamPermissions 200
+[debug] [2026-08-20T12:04:41.706Z] <<< [apiv2][body] POST https://iam.googleapis.com/v1/projects/techpack-yanko-f37b8/serviceAccounts/techpack-yanko-f37b8@appspot.gserviceaccount.com:testIamPermissions {"permissions":["iam.serviceAccounts.actAs"]}
+[info] 
+[info] === Deploying to 'techpack-yanko-f37b8'...
+[info] 
+[info] i  deploying functions 
+[debug] [2026-08-20T12:04:41.757Z] Checked if tokens are valid: true, expires at: 1787231078487
+[debug] [2026-08-20T12:04:41.759Z] Checked if tokens are valid: true, expires at: 1787231078487
+[debug] [2026-08-20T12:04:41.762Z] >>> [apiv2][query] GET https://cloudresourcemanager.googleapis.com/v1/projects/techpack-yanko-f37b8 [none]
+[debug] [2026-08-20T12:04:41.950Z] <<< [apiv2][status] GET https://cloudresourcemanager.googleapis.com/v1/projects/techpack-yanko-f37b8 200
+[debug] [2026-08-20T12:04:41.950Z] <<< [apiv2][body] GET https://cloudresourcemanager.googleapis.com/v1/projects/techpack-yanko-f37b8 {"projectNumber":"700796768091","projectId":"techpack-yanko-f37b8","lifecycleState":"ACTIVE","name":" Techpack-yanko","labels":{"firebase":"enabled","firebase-core":"disabled"},"createTime":"2026-06-26T11:10:03.319Z"}
+[info] i  functions: preparing codebase default for deployment 
+[info] i  functions: ensuring required API cloudfunctions.googleapis.com is enabled... 
+[info] i  functions: ensuring required API cloudbuild.googleapis.com is enabled... 
+[info] i  artifactregistry: ensuring required API artifactregistry.googleapis.com is enabled... 
+[debug] [2026-08-20T12:04:41.971Z] Checked if tokens are valid: true, expires at: 1787231078487
+[debug] [2026-08-20T12:04:41.972Z] Checked if tokens are valid: true, expires at: 1787231078487
+[debug] [2026-08-20T12:04:41.972Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/techpack-yanko-f37b8/adminSdkConfig [none]
+[debug] [2026-08-20T12:04:42.642Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/techpack-yanko-f37b8/adminSdkConfig 200
+[debug] [2026-08-20T12:04:42.642Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/techpack-yanko-f37b8/adminSdkConfig {"projectId":"techpack-yanko-f37b8","storageBucket":"techpack-yanko-f37b8.firebasestorage.app"}
+[debug] [2026-08-20T12:04:42.644Z] Checked if tokens are valid: true, expires at: 1787231078487
+[debug] [2026-08-20T12:04:42.644Z] Checked if tokens are valid: true, expires at: 1787231078487
+[debug] [2026-08-20T12:04:42.646Z] >>> [apiv2][query] GET https://runtimeconfig.googleapis.com/v1beta1/projects/techpack-yanko-f37b8/configs [none]
+[debug] [2026-08-20T12:04:43.370Z] <<< [apiv2][status] GET https://runtimeconfig.googleapis.com/v1beta1/projects/techpack-yanko-f37b8/configs 200
+[debug] [2026-08-20T12:04:43.370Z] <<< [apiv2][body] GET https://runtimeconfig.googleapis.com/v1beta1/projects/techpack-yanko-f37b8/configs {}
