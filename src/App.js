@@ -7078,6 +7078,8 @@ function BusintCatalogoTestView() {
   const [validacionFacturas, setValidacionFacturas] = useState(null);
   const [cargandoValidacionFecha, setCargandoValidacionFecha] = useState(false);
   const [validacionFecha, setValidacionFecha] = useState(null);
+  const [cargandoValidacionPPEsp, setCargandoValidacionPPEsp] = useState(false);
+  const [validacionPPEsp, setValidacionPPEsp] = useState(null);
   async function consultar() {
     const nombre = endpoint.trim();
     if (!nombre) return;
@@ -7160,6 +7162,20 @@ function BusintCatalogoTestView() {
       setError(err?.message || "No se pudo validar la fecha de entrega.");
     } finally {
       setCargandoValidacionFecha(false);
+    }
+  }
+  async function verValidacionPPEsp() {
+    setCargandoValidacionPPEsp(true);
+    setError("");
+    setValidacionPPEsp(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getValidacionPedidosPendientesEspacioBusintBD");
+      const resp = await llamar();
+      setValidacionPPEsp(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo validar 'pedidos pendientes'.");
+    } finally {
+      setCargandoValidacionPPEsp(false);
     }
   }
   return (
@@ -7284,6 +7300,31 @@ function BusintCatalogoTestView() {
           <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Muestra (últimos 20 lotes reales)</div>
           <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 320, border: `1px solid ${T.border}` }}>
             {JSON.stringify(validacionFecha.muestra, null, 2)}
+          </pre>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Validar "pedidos pendientes" (con espacio) buscando por NumPed directo (exploratorio)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Distinta de <code>pedidos_pendientes</code> (guion bajo, ya congelada). Esta tabla está ordenada por Ref, no por fecha, así que busca directo los <code>NumPed</code> de los pedidos más recientes de <code>orden produccion</code> y revisa si ya tienen <code>FechaDespacho1</code>.
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <Btn onClick={verValidacionPPEsp} disabled={cargandoValidacionPPEsp}>{cargandoValidacionPPEsp ? "Cruzando tablas... (puede tardar)" : "📦 Validar pedidos pendientes (espacio)"}</Btn>
+      </div>
+      {validacionPPEsp && (
+        <div style={{ padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: T.slate, flexWrap: "wrap" }}>
+            <span>orden produccion: <strong style={{ color: T.ink }}>{validacionPPEsp.totalOrdenProduccion}</strong></span>
+            <span>pedidos pendientes (espacio): <strong style={{ color: T.ink }}>{validacionPPEsp.totalPedidosPendientesEspacio}</strong></span>
+            <span>Npeds recientes revisados: <strong style={{ color: T.ink }}>{validacionPPEsp.totalNpedsRecientesRevisados}</strong></span>
+          </div>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 14, fontWeight: 700 }}>
+            <span style={{ color: T.denim }}>Con alguna fila: {validacionPPEsp.coberturaConAlgunaFila}</span>
+            <span style={{ color: T.jade }}>Con FechaDespacho1: {validacionPPEsp.coberturaConFechaDespacho}</span>
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Muestra (20 pedidos más recientes)</div>
+          <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 320, border: `1px solid ${T.border}` }}>
+            {JSON.stringify(validacionPPEsp.muestra, null, 2)}
           </pre>
         </div>
       )}

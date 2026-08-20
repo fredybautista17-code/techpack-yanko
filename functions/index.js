@@ -962,6 +962,79 @@ exports.getValidacionFechaEntregaBusintBD = onCall(
     };
   }
 );
+// (2026-08-19) EXPLORATORIO — valida `pedidos pendientes` (CON espacio,
+// distinta de `pedidos_pendientes` con guion bajo, que ya sabemos congelada
+// desde feb-2026). Esta tabla está organizada por Ref+Color+NumPed (no por
+// fecha de inserción), así que "últimas 5" no representa "más reciente" —
+// hay que buscar directo por los NumPed de pedidos actuales (los de
+// `orden produccion` más recientes) y ver si ya tienen `FechaDespacho1`.
+exports.getValidacionPedidosPendientesEspacioBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async () => {
+    let ordenProduccion, pedidosPendientesEsp;
+    try {
+      [ordenProduccion, pedidosPendientesEsp] = await Promise.all([
+        consultarTablaBusintBDCompleta("orden produccion"),
+        consultarTablaBusintBDCompleta("pedidos pendientes"),
+      ]);
+    } catch (err) {
+      logger.error("Error validando 'pedidos pendientes' (espacio) Busint BD", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+
+    // Npeds recientes reales, desde orden produccion (los mismos 100 que ya
+    // usamos para medir cobertura en los otros intentos)
+    const npedsRecientes = [...new Set(
+      ordenProduccion
+        .filter((r) => r.Mensaje !== "ELIMINADO" && Number(r.NumLote) > 0 && r.Nped != null)
+        .map((r) => Number(r.Nped))
+    )].sort((a, b) => b - a).slice(0, 100);
+
+    // NumPed -> filas de pedidos pendientes (puede haber varias por ref/color)
+    const filasPorNumPed = new Map();
+    pedidosPendientesEsp.forEach((f) => {
+      const nped = Number(f.NumPed);
+      if (!Number.isFinite(nped)) return;
+      if (!filasPorNumPed.has(nped)) filasPorNumPed.set(nped, []);
+      filasPorNumPed.get(nped).push(f);
+    });
+
+    let conAlgunaFila = 0;
+    let conFechaDespacho = 0;
+    const muestra = npedsRecientes.slice(0, 20).map((nped) => {
+      const filas = filasPorNumPed.get(nped) || [];
+      const conFecha = filas.filter((f) => f.FechaDespacho1 && f.FechaDespacho1.isValidDateTime);
+      if (filas.length > 0) conAlgunaFila++;
+      if (conFecha.length > 0) conFechaDespacho++;
+      return {
+        numPedido: nped,
+        filasEncontradas: filas.length,
+        filasConFechaDespacho: conFecha.length,
+        ejemploFechaDespachoISO: conFecha.length > 0 ? fechaBDaISO(conFecha[0].FechaDespacho1) : null,
+        ejemploObservacion: filas[0]?.Observacion || filas[0]?.ObsRped || null,
+      };
+    });
+    // Completar conteos sobre los 100, no solo los primeros 20 de la muestra
+    npedsRecientes.slice(20).forEach((nped) => {
+      const filas = filasPorNumPed.get(nped) || [];
+      if (filas.length > 0) conAlgunaFila++;
+      if (filas.some((f) => f.FechaDespacho1 && f.FechaDespacho1.isValidDateTime)) conFechaDespacho++;
+    });
+
+    return {
+      totalOrdenProduccion: ordenProduccion.length,
+      totalPedidosPendientesEspacio: pedidosPendientesEsp.length,
+      totalNpedsRecientesRevisados: npedsRecientes.length,
+      coberturaConAlgunaFila: `${conAlgunaFila}/${npedsRecientes.length}`,
+      coberturaConFechaDespacho: `${conFechaDespacho}/${npedsRecientes.length}`,
+      muestra,
+    };
+  }
+);
 // (2026-08-19) Refresca SOLO el inventario por lote (Planta/BMP/Corte/BPT/
 // Semiterminado) contra la tabla `ia_seguimientolotesv_data` de la API "BD"
 // de Busint — NO trae cliente ni fecha de entrega de pedido, esos siguen
