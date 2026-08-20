@@ -7080,6 +7080,8 @@ function BusintCatalogoTestView() {
   const [validacionFecha, setValidacionFecha] = useState(null);
   const [cargandoValidacionPPEsp, setCargandoValidacionPPEsp] = useState(false);
   const [validacionPPEsp, setValidacionPPEsp] = useState(null);
+  const [cargandoValidacionPC, setCargandoValidacionPC] = useState(false);
+  const [validacionPC, setValidacionPC] = useState(null);
   async function consultar() {
     const nombre = endpoint.trim();
     if (!nombre) return;
@@ -7176,6 +7178,20 @@ function BusintCatalogoTestView() {
       setError(err?.message || "No se pudo validar 'pedidos pendientes'.");
     } finally {
       setCargandoValidacionPPEsp(false);
+    }
+  }
+  async function verValidacionPC() {
+    setCargandoValidacionPC(true);
+    setError("");
+    setValidacionPC(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getValidacionPedidosClientesBusintBD");
+      const resp = await llamar();
+      setValidacionPC(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo validar 'pedidos clientes'.");
+    } finally {
+      setCargandoValidacionPC(false);
     }
   }
   return (
@@ -7325,6 +7341,32 @@ function BusintCatalogoTestView() {
           <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Muestra (20 pedidos más recientes)</div>
           <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 320, border: `1px solid ${T.border}` }}>
             {JSON.stringify(validacionPPEsp.muestra, null, 2)}
+          </pre>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Validar "pedidos clientes" + "maestro de clientes" (exploratorio)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Cruza <code>orden produccion</code> (NumLote→NumPed) con <code>pedidos clientes</code> (FechaDespacho1, Codigo) y <code>maestro de clientes</code> (Codigo→Nombre real). Marca si <code>FechaDespacho1</code> es distinta de <code>FechaPed</code> (señal de fecha real asignada, no solo el valor por defecto).
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <Btn onClick={verValidacionPC} disabled={cargandoValidacionPC}>{cargandoValidacionPC ? "Cruzando tablas... (puede tardar)" : "🏷️ Validar pedidos clientes"}</Btn>
+      </div>
+      {validacionPC && (
+        <div style={{ padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: T.slate, flexWrap: "wrap" }}>
+            <span>orden produccion: <strong style={{ color: T.ink }}>{validacionPC.totalOrdenProduccion}</strong></span>
+            <span>pedidos clientes: <strong style={{ color: T.ink }}>{validacionPC.totalPedidosClientes}</strong></span>
+            <span>maestro de clientes: <strong style={{ color: T.ink }}>{validacionPC.totalMaestroClientes}</strong></span>
+            <span>lotes recientes revisados: <strong style={{ color: T.ink }}>{validacionPC.totalLotesRecientesRevisados}</strong></span>
+          </div>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 14, fontWeight: 700 }}>
+            <span style={{ color: T.jade }}>Con pedido: {validacionPC.coberturaConPedido}</span>
+            <span style={{ color: T.denim }}>Con fecha distinta de creación: {validacionPC.coberturaConFechaDistintaDeCreacion}</span>
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Muestra (20 lotes más recientes)</div>
+          <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 320, border: `1px solid ${T.border}` }}>
+            {JSON.stringify(validacionPC.muestra, null, 2)}
           </pre>
         </div>
       )}

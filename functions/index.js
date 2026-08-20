@@ -1035,6 +1035,99 @@ exports.getValidacionPedidosPendientesEspacioBusintBD = onCall(
     };
   }
 );
+// (2026-08-19) EXPLORATORIO — el intento más prometedor hasta ahora.
+// `pedidos clientes` (tabla maestra de pedidos, distinta de `pedidos
+// detalles clientes` y de `pedidos_pendientes`/`pedidos pendientes`) trae
+// NumPed VIVO (llega a 1539+) con `FechaDespacho1` directo en el pedido y
+// `Codigo` de cliente, que se resuelve con `maestro de clientes` (confirmado:
+// Codigo 128 = "COMFANORTE", igual que en `facturas`). Cruza con
+// `orden produccion` (NumLote -> Nped confiable) para armar cliente + fecha
+// por lote, y marca si `FechaDespacho1` es distinto de `FechaPed` (señal de
+// que es una fecha real asignada, no solo el valor por defecto del día de
+// creación del pedido).
+exports.getValidacionPedidosClientesBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async () => {
+    let ordenProduccion, pedidosClientes, maestroClientes;
+    try {
+      [ordenProduccion, pedidosClientes, maestroClientes] = await Promise.all([
+        consultarTablaBusintBDCompleta("orden produccion"),
+        consultarTablaBusintBDCompleta("pedidos clientes"),
+        consultarTablaBusintBDCompleta("maestro de clientes"),
+      ]);
+    } catch (err) {
+      logger.error("Error validando 'pedidos clientes' Busint BD", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+
+    const nombrePorCodigo = new Map();
+    maestroClientes.forEach((c) => {
+      const cod = Number(c.Codigo);
+      if (Number.isFinite(cod)) nombrePorCodigo.set(cod, c.Nombre || c.NombreFact || null);
+    });
+
+    const pedidoPorNumPed = new Map();
+    pedidosClientes.forEach((p) => {
+      const nped = Number(p.NumPed);
+      if (!Number.isFinite(nped)) return;
+      pedidoPorNumPed.set(nped, {
+        fechaPedISO: fechaBDaISO(p.FechaPed),
+        fechaDespachoISO: fechaBDaISO(p.FechaDespacho1),
+        codigoCliente: Number(p.Codigo),
+        cliente: nombrePorCodigo.get(Number(p.Codigo)) || null,
+      });
+    });
+
+    // Lotes reales recientes (mismo criterio que los intentos anteriores)
+    const lotesReales = new Map();
+    ordenProduccion
+      .filter((r) => r.Mensaje !== "ELIMINADO" && Number(r.NumLote) > 0 && r.Nped != null)
+      .forEach((r) => lotesReales.set(Number(r.NumLote), Number(r.Nped)));
+    const lotesRecientes = [...lotesReales.keys()].sort((a, b) => b - a).slice(0, 100);
+
+    let conPedido = 0;
+    let conFechaDistinta = 0;
+    const muestra = lotesRecientes.slice(0, 20).map((lote) => {
+      const nped = lotesReales.get(lote);
+      const ped = pedidoPorNumPed.get(nped);
+      if (ped) {
+        conPedido++;
+        if (ped.fechaDespachoISO && ped.fechaDespachoISO !== ped.fechaPedISO) conFechaDistinta++;
+      }
+      return {
+        numLote: lote,
+        numPedido: nped,
+        cliente: ped?.cliente || "(Sin cliente)",
+        fechaPedISO: ped?.fechaPedISO || null,
+        fechaDespachoISO: ped?.fechaDespachoISO || null,
+        _fechaDistintaDeCreacion: !!(ped?.fechaDespachoISO && ped.fechaDespachoISO !== ped.fechaPedISO),
+        _tienePedido: !!ped,
+      };
+    });
+    lotesRecientes.slice(20).forEach((lote) => {
+      const nped = lotesReales.get(lote);
+      const ped = pedidoPorNumPed.get(nped);
+      if (ped) {
+        conPedido++;
+        if (ped.fechaDespachoISO && ped.fechaDespachoISO !== ped.fechaPedISO) conFechaDistinta++;
+      }
+    });
+
+    return {
+      totalOrdenProduccion: ordenProduccion.length,
+      totalPedidosClientes: pedidosClientes.length,
+      totalMaestroClientes: maestroClientes.length,
+      totalLotesRecientesRevisados: lotesRecientes.length,
+      coberturaConPedido: `${conPedido}/${lotesRecientes.length}`,
+      coberturaConFechaDistintaDeCreacion: `${conFechaDistinta}/${lotesRecientes.length}`,
+      muestra,
+    };
+  }
+);
 // (2026-08-19) Refresca SOLO el inventario por lote (Planta/BMP/Corte/BPT/
 // Semiterminado) contra la tabla `ia_seguimientolotesv_data` de la API "BD"
 // de Busint — NO trae cliente ni fecha de entrega de pedido, esos siguen
