@@ -789,6 +789,96 @@ exports.getLotesReconstruidosBusintBD = onCall(
     };
   }
 );
+// (2026-08-19) EXPLORATORIO — valida si `facturas` sirve como fuente VIVA de
+// cliente + fecha para reemplazar Hoja1. `pedidos_pendientes` y
+// `pedidos detalles clientes` resultaron congeladas (feb-2026 y oct-2023
+// respectivamente), pero `facturas` trae UFECHA/Fechaini de días recientes.
+// Estrategia: sacar el número de lote del texto libre `Comentarios` (ej.
+// "LOTE 7149", "LOTE 7161- FYAN1473") y comparar su `Numped` contra el
+// `Nped` que ya sabemos correcto en `orden produccion` para ese mismo
+// NumLote. Si coinciden casi siempre, `facturas` es una llave válida.
+function loteDesdeComentarios(comentarios) {
+  if (!comentarios) return null;
+  const m = String(comentarios).match(/LOTE\s*(\d+)/i);
+  return m ? Number(m[1]) : null;
+}
+exports.getValidacionFacturasBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async () => {
+    let ordenProduccion, facturas;
+    try {
+      [ordenProduccion, facturas] = await Promise.all([
+        consultarTablaBusintBDCompleta("orden produccion"),
+        consultarTablaBusintBDCompleta("facturas"),
+      ]);
+    } catch (err) {
+      logger.error("Error validando facturas Busint BD", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+
+    // NumLote -> Nped confiable (ya validado con orden produccion)
+    const npedPorLote = new Map();
+    ordenProduccion
+      .filter((r) => r.Mensaje !== "ELIMINADO" && Number(r.NumLote) > 0 && r.Nped != null)
+      .forEach((r) => npedPorLote.set(Number(r.NumLote), Number(r.Nped)));
+
+    // NumLote -> datos de factura (última factura que mencione ese lote)
+    const facturaPorLote = new Map();
+    let totalConLote = 0;
+    facturas.forEach((f) => {
+      const lote = loteDesdeComentarios(f.Comentarios);
+      if (!lote) return;
+      totalConLote++;
+      facturaPorLote.set(lote, {
+        nfact: f.Nfact,
+        numped: Number(f.Numped),
+        cliente: f.Observaciones || null,
+        fechaFacturaISO: fechaBDaISO(f.Fechaini),
+        ufechaISO: fechaBDaISO(f.UFECHA),
+      });
+    });
+
+    let coincidencias = 0;
+    let discrepancias = 0;
+    const muestraDiscrepancias = [];
+    const muestraCoincidencias = [];
+    facturaPorLote.forEach((fac, lote) => {
+      const npedReal = npedPorLote.get(lote);
+      if (npedReal == null) return;
+      if (npedReal === fac.numped) {
+        coincidencias++;
+        if (muestraCoincidencias.length < 10) {
+          muestraCoincidencias.push({ lote, npedOrden: npedReal, numpedFactura: fac.numped, cliente: fac.cliente, fechaFacturaISO: fac.fechaFacturaISO });
+        }
+      } else {
+        discrepancias++;
+        if (muestraDiscrepancias.length < 10) {
+          muestraDiscrepancias.push({ lote, npedOrden: npedReal, numpedFactura: fac.numped, cliente: fac.cliente, fechaFacturaISO: fac.fechaFacturaISO });
+        }
+      }
+    });
+
+    // Cobertura: de los últimos 100 lotes reales (con Nped), ¿cuántos tienen factura?
+    const lotesRecientes = [...npedPorLote.keys()].sort((a, b) => b - a).slice(0, 100);
+    const conFacturaEnRecientes = lotesRecientes.filter((l) => facturaPorLote.has(l)).length;
+
+    return {
+      totalOrdenProduccion: ordenProduccion.length,
+      totalFacturas: facturas.length,
+      totalFacturasConLoteParseado: totalConLote,
+      totalLotesConNpedConfiable: npedPorLote.size,
+      coincidencias,
+      discrepancias,
+      coberturaUltimos100Lotes: `${conFacturaEnRecientes}/100`,
+      muestraCoincidencias,
+      muestraDiscrepancias,
+    };
+  }
+);
 // (2026-08-19) Refresca SOLO el inventario por lote (Planta/BMP/Corte/BPT/
 // Semiterminado) contra la tabla `ia_seguimientolotesv_data` de la API "BD"
 // de Busint — NO trae cliente ni fecha de entrega de pedido, esos siguen

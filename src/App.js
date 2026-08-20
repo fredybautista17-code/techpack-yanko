@@ -7074,6 +7074,8 @@ function BusintCatalogoTestView() {
   const [resumen, setResumen] = useState(null);
   const [cargandoLotes, setCargandoLotes] = useState(false);
   const [lotesReconstruidos, setLotesReconstruidos] = useState(null);
+  const [cargandoValidacion, setCargandoValidacion] = useState(false);
+  const [validacionFacturas, setValidacionFacturas] = useState(null);
   async function consultar() {
     const nombre = endpoint.trim();
     if (!nombre) return;
@@ -7128,6 +7130,20 @@ function BusintCatalogoTestView() {
       setError(err?.message || "No se pudo reconstruir los lotes.");
     } finally {
       setCargandoLotes(false);
+    }
+  }
+  async function verValidacionFacturas() {
+    setCargandoValidacion(true);
+    setError("");
+    setValidacionFacturas(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getValidacionFacturasBusintBD");
+      const resp = await llamar();
+      setValidacionFacturas(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo validar facturas.");
+    } finally {
+      setCargandoValidacion(false);
     }
   }
   return (
@@ -7196,6 +7212,37 @@ function BusintCatalogoTestView() {
           <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Últimos 20 lotes reconstruidos</div>
           <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 420, border: `1px solid ${T.border}` }}>
             {JSON.stringify(lotesReconstruidos.muestra, null, 2)}
+          </pre>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Validar "facturas" como fuente viva de cliente + fecha (exploratorio)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Saca el número de lote del texto libre <code>Comentarios</code> de <code>facturas</code> (ej. "LOTE 7149") y compara su <code>Numped</code> contra el <code>Nped</code> ya confirmado en <code>orden produccion</code> para ese mismo lote. Si coinciden casi siempre, <code>facturas</code> sirve como llave para cliente + fecha.
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <Btn onClick={verValidacionFacturas} disabled={cargandoValidacion}>{cargandoValidacion ? "Cruzando tablas... (puede tardar)" : "🧾 Validar facturas"}</Btn>
+      </div>
+      {validacionFacturas && (
+        <div style={{ padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: T.slate, flexWrap: "wrap" }}>
+            <span>orden produccion: <strong style={{ color: T.ink }}>{validacionFacturas.totalOrdenProduccion}</strong></span>
+            <span>facturas: <strong style={{ color: T.ink }}>{validacionFacturas.totalFacturas}</strong></span>
+            <span>facturas con lote parseado: <strong style={{ color: T.ink }}>{validacionFacturas.totalFacturasConLoteParseado}</strong></span>
+            <span>lotes con Nped confiable: <strong style={{ color: T.ink }}>{validacionFacturas.totalLotesConNpedConfiable}</strong></span>
+          </div>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 14, fontWeight: 700 }}>
+            <span style={{ color: T.jade }}>Coincidencias: {validacionFacturas.coincidencias}</span>
+            <span style={{ color: T.coral }}>Discrepancias: {validacionFacturas.discrepancias}</span>
+            <span style={{ color: T.ink }}>Cobertura últimos 100 lotes: {validacionFacturas.coberturaUltimos100Lotes}</span>
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Muestra coincidencias</div>
+          <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 240, border: `1px solid ${T.border}`, marginBottom: 12 }}>
+            {JSON.stringify(validacionFacturas.muestraCoincidencias, null, 2)}
+          </pre>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Muestra discrepancias</div>
+          <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 240, border: `1px solid ${T.border}` }}>
+            {JSON.stringify(validacionFacturas.muestraDiscrepancias, null, 2)}
           </pre>
         </div>
       )}
