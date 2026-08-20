@@ -650,6 +650,39 @@ async function consultarTablaBusintBDCompleta(tableName, pageSize = 500, maxPagi
   }
   return todas;
 }
+// Trae una tabla COMPLETA de Busint BD (paginando sola) y devuelve solo un
+// resumen: total real de filas + las primeras 3 + las últimas 5 — para
+// saber de un vistazo qué tan grande es una tabla y si sus datos llegan
+// hasta hoy, sin tener que ir adivinando número de página a mano en la
+// pantalla de prueba. Se usa desde Administración → "🔌 Busint (prueba)"
+// con el botón "📊 Ver resumen completo".
+exports.getResumenTablaBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async (request) => {
+    const endpoint = String(request.data?.endpoint || "").trim();
+    if (!endpoint) {
+      throw new HttpsError("invalid-argument", "Debes indicar el nombre de la tabla a consultar.");
+    }
+    let filas;
+    try {
+      filas = await consultarTablaBusintBDCompleta(endpoint);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getResumenTablaBusintBD)", { endpoint, error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar "${endpoint}" en Busint: ${err?.message || String(err)}`);
+    }
+    return {
+      endpoint,
+      total: filas.length,
+      columnas: filas.length ? Object.keys(filas[0]) : [],
+      primeras: filas.slice(0, 3),
+      ultimas: filas.slice(-5),
+    };
+  }
+);
 // (2026-08-19) Refresca SOLO el inventario por lote (Planta/BMP/Corte/BPT/
 // Semiterminado) contra la tabla `ia_seguimientolotesv_data` de la API "BD"
 // de Busint — NO trae cliente ni fecha de entrega de pedido, esos siguen

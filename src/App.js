@@ -7070,6 +7070,8 @@ function BusintCatalogoTestView() {
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState("");
   const [resultado, setResultado] = useState(null);
+  const [cargandoResumen, setCargandoResumen] = useState(false);
+  const [resumen, setResumen] = useState(null);
   async function consultar() {
     const nombre = endpoint.trim();
     if (!nombre) return;
@@ -7084,6 +7086,26 @@ function BusintCatalogoTestView() {
       setError(err?.message || "No se pudo consultar Busint.");
     } finally {
       setCargando(false);
+    }
+  }
+  // Trae la tabla COMPLETA (paginando sola en el backend) y muestra solo
+  // el total real de filas + primeras/últimas — para saber de un vistazo
+  // qué tan grande es la tabla y si llega hasta hoy, sin ir adivinando
+  // número de página a mano.
+  async function verResumenCompleto() {
+    const nombre = endpoint.trim();
+    if (!nombre) return;
+    setCargandoResumen(true);
+    setError("");
+    setResumen(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getResumenTablaBusintBD");
+      const resp = await llamar({ endpoint: nombre });
+      setResumen(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo traer el resumen completo.");
+    } finally {
+      setCargandoResumen(false);
     }
   }
   return (
@@ -7105,8 +7127,34 @@ function BusintCatalogoTestView() {
         <div style={{ marginBottom: 14 }}>
           <Btn onClick={consultar} disabled={cargando || !endpoint.trim()}>{cargando ? "Consultando..." : "🔍 Consultar"}</Btn>
         </div>
+        <div style={{ marginBottom: 14 }}>
+          <Btn
+            variant="secondary"
+            onClick={verResumenCompleto}
+            disabled={cargandoResumen || !endpoint.trim()}
+            title="Trae la tabla completa (paginando sola) y dice el total real de filas más las primeras/últimas — sin ir probando página por página"
+          >
+            {cargandoResumen ? "Trayendo todo..." : "📊 Ver resumen completo"}
+          </Btn>
+        </div>
       </div>
       {error && <div style={{ padding: "10px 14px", background: T.coralBg, color: T.coral, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>⚠ {error}</div>}
+      {resumen && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: T.slate }}>
+            <span>Catálogo: <strong style={{ color: T.ink }}>{resumen.endpoint}</strong></span>
+            <span>Total REAL de filas: <strong style={{ color: T.ink }}>{resumen.total}</strong></span>
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Primeras 3</div>
+          <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 240, border: `1px solid ${T.border}`, marginBottom: 12 }}>
+            {JSON.stringify(resumen.primeras, null, 2)}
+          </pre>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Últimas 5 (las más recientes)</div>
+          <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 320, border: `1px solid ${T.border}` }}>
+            {JSON.stringify(resumen.ultimas, null, 2)}
+          </pre>
+        </div>
+      )}
       {resultado && (
         <div>
           <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: T.slate }}>
