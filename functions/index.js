@@ -1128,12 +1128,81 @@ exports.getValidacionPedidosClientesBusintBD = onCall(
     };
   }
 );
+// (2026-08-19) Refresca cliente + fecha de entrega por lote, cruzando
+// `orden produccion` (NumLote -> Nped confiable) + `pedidos clientes`
+// (NumPed -> FechaDespacho1, Codigo) + `maestro de clientes` (Codigo ->
+// Nombre). Validado contra los últimos 100 lotes reales: 100/100 con
+// pedido resuelto, 98/100 con fecha de despacho distinta de la fecha de
+// creación (ver getValidacionPedidosClientesBusintBD, la exploración que
+// encontró esta llave después de probar 5 tablas congeladas/sin cobertura:
+// pedidos_pendientes, pedidos detalles clientes, facturas, historia de
+// fechaent, pedidos pendientes). Se usa desde modulo-planeacion.jsx
+// (InformesView) para refrescar SOLO nombreCliente/fechaEntregaConfISO de
+// lotes ya cargados por "Subir Hoja1" — no reemplaza la carga inicial
+// todavía (falta resolver cantidades por talla).
+exports.getClienteFechaLotesBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async () => {
+    let ordenProduccion, pedidosClientes, maestroClientes;
+    try {
+      [ordenProduccion, pedidosClientes, maestroClientes] = await Promise.all([
+        consultarTablaBusintBDCompleta("orden produccion"),
+        consultarTablaBusintBDCompleta("pedidos clientes"),
+        consultarTablaBusintBDCompleta("maestro de clientes"),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando cliente/fecha por lote en Busint BD", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+
+    const nombrePorCodigo = new Map();
+    maestroClientes.forEach((c) => {
+      const cod = Number(c.Codigo);
+      if (Number.isFinite(cod)) nombrePorCodigo.set(cod, c.Nombre || c.NombreFact || null);
+    });
+
+    const pedidoPorNumPed = new Map();
+    pedidosClientes.forEach((p) => {
+      const nped = Number(p.NumPed);
+      if (!Number.isFinite(nped)) return;
+      pedidoPorNumPed.set(nped, {
+        fechaDespachoISO: fechaBDaISO(p.FechaDespacho1),
+        cliente: nombrePorCodigo.get(Number(p.Codigo)) || null,
+      });
+    });
+
+    const lotes = ordenProduccion
+      .filter((r) => r.Mensaje !== "ELIMINADO" && Number(r.NumLote) > 0 && r.Nped != null)
+      .map((r) => {
+        const numLote = Number(r.NumLote);
+        const nped = Number(r.Nped);
+        const ped = pedidoPorNumPed.get(nped);
+        return {
+          numLote,
+          numPedido: nped,
+          nombreCliente: ped?.cliente || clienteDesdeObservacion(r.Observacion) || null,
+          fechaEntregaConfISO: ped?.fechaDespachoISO || null,
+        };
+      })
+      .filter((l) => l.nombreCliente || l.fechaEntregaConfISO);
+
+    return { total: lotes.length, lotes };
+  }
+);
 // (2026-08-19) Refresca SOLO el inventario por lote (Planta/BMP/Corte/BPT/
 // Semiterminado) contra la tabla `ia_seguimientolotesv_data` de la API "BD"
-// de Busint — NO trae cliente ni fecha de entrega de pedido, esos siguen
-// viniendo de "Subir Hoja1": se investigó reemplazar Hoja1 por completo,
-// pero esta API no tiene una llave confiable para cruzar lote↔pedido (solo
-// por referencia, que puede repetirse en varios pedidos a la vez), así que
+// de Busint. OJO: esta tabla en particular se encontró CONGELADA desde
+// ~feb-2026 (ver historial de exploración), así que hoy no refresca nada de
+// lotes cortados después de esa fecha — queda pendiente confirmar con
+// Busint si la van a mantener viva. Cliente + fecha de entrega SÍ tienen
+// fuente viva ahora (ver getClienteFechaLotesBusintBD arriba), así que este
+// refresco de inventario sigue siendo el único que falta resolver. Se
+// decidió NO arriesgar los datos de "Subir Hoja1" reemplazándolos del todo
+// (cantidades por talla no tienen fuente confirmada aún), así que
 // se decidió NO arriesgar esos datos. El cruce por `Numero_de_Lote` (→
 // `numLote` en ATLAS) sí es una llave directa y sin ambigüedad, por eso
 // esto es seguro. Ver el merge/recalculo en modulo-planeacion.jsx
