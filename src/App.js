@@ -7072,6 +7072,8 @@ function BusintCatalogoTestView() {
   const [resultado, setResultado] = useState(null);
   const [cargandoResumen, setCargandoResumen] = useState(false);
   const [resumen, setResumen] = useState(null);
+  const [cargandoLotes, setCargandoLotes] = useState(false);
+  const [lotesReconstruidos, setLotesReconstruidos] = useState(null);
   async function consultar() {
     const nombre = endpoint.trim();
     if (!nombre) return;
@@ -7106,6 +7108,26 @@ function BusintCatalogoTestView() {
       setError(err?.message || "No se pudo traer el resumen completo.");
     } finally {
       setCargandoResumen(false);
+    }
+  }
+  // Botón exploratorio, aparte del catálogo — no usa el campo "Nombre del
+  // catálogo": cruza directo orden produccion + pedidos_pendientes +
+  // ia_seguimientolotesv_data (ver getLotesReconstruidosBusintBD) para
+  // reconstruir lotes al estilo Hoja1 y poder compararlos a mano contra la
+  // última Hoja1 subida, antes de decidir si esto reemplaza el botón
+  // "Subir Hoja1" de Planeación.
+  async function verLotesReconstruidos() {
+    setCargandoLotes(true);
+    setError("");
+    setLotesReconstruidos(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getLotesReconstruidosBusintBD");
+      const resp = await llamar();
+      setLotesReconstruidos(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo reconstruir los lotes.");
+    } finally {
+      setCargandoLotes(false);
     }
   }
   return (
@@ -7152,6 +7174,28 @@ function BusintCatalogoTestView() {
           <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Últimas 5 (las más recientes)</div>
           <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 320, border: `1px solid ${T.border}` }}>
             {JSON.stringify(resumen.ultimas, null, 2)}
+          </pre>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Reconstruir lotes cruzando 3 tablas (exploratorio)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Cruza <code>orden produccion</code> + <code>pedidos_pendientes</code> + <code>ia_seguimientolotesv_data</code> para armar lotes al estilo Hoja1 (cliente, fecha de entrega, inventario). Es solo para comparar a mano contra la última Hoja1 subida — todavía no reemplaza nada en Planeación.
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <Btn onClick={verLotesReconstruidos} disabled={cargandoLotes}>{cargandoLotes ? "Cruzando tablas... (puede tardar)" : "🧩 Reconstruir lotes"}</Btn>
+      </div>
+      {lotesReconstruidos && (
+        <div style={{ padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: T.slate, flexWrap: "wrap" }}>
+            <span>orden produccion: <strong style={{ color: T.ink }}>{lotesReconstruidos.totalOrdenProduccion}</strong></span>
+            <span>pedidos_pendientes: <strong style={{ color: T.ink }}>{lotesReconstruidos.totalPedidosPendientes}</strong></span>
+            <span>ia_seguimientolotesv_data: <strong style={{ color: T.ink }}>{lotesReconstruidos.totalInventarioLotes}</strong></span>
+            <span>Lotes reconstruidos: <strong style={{ color: T.ink }}>{lotesReconstruidos.totalLotesReconstruidos}</strong></span>
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Últimos 20 lotes reconstruidos</div>
+          <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 420, border: `1px solid ${T.border}` }}>
+            {JSON.stringify(lotesReconstruidos.muestra, null, 2)}
           </pre>
         </div>
       )}

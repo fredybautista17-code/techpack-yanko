@@ -683,6 +683,112 @@ exports.getResumenTablaBusintBD = onCall(
     };
   }
 );
+// Convierte el formato de fecha que usa la API BD de Busint ({isValidDateTime,
+// year, month, day, ...}) a texto ISO YYYY-MM-DD, o null si no es válida.
+function fechaBDaISO(obj) {
+  if (!obj || typeof obj !== "object" || !obj.isValidDateTime) return null;
+  const y = obj.year, m = obj.month, d = obj.day;
+  if (!y || !m || !d) return null;
+  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+// Saca el nombre de cliente embebido en el texto de Observacion de "orden
+// producción" (ej. "Pedido: 1528  OrdComp:   Cliente: KAMILA VENEZUELA -
+// KAMILA VENEZUELA   Obs: ...") — se usa de respaldo si el pedido ya no
+// aparece en pedidos_pendientes (ej. ya se despachó del todo y salió de
+// "pendientes").
+function clienteDesdeObservacion(obs) {
+  if (!obs) return null;
+  const m = String(obs).match(/Cliente:\s*(.+?)\s{2,}/);
+  return m ? m[1].trim() : null;
+}
+// (2026-08-19) EXPLORATORIO — reconstruye "lotes" al estilo Hoja1 cruzando
+// tres tablas de la API BD de Busint:
+//   - orden produccion: NumLote -> Nped (número de pedido), Ref, FechaCorte
+//   - pedidos_pendientes: Nped/order_id -> cliente + fecha de entrega
+//   - ia_seguimientolotesv_data: NumLote -> inventario por ubicación
+// Es SOLO para validar (comparar a mano contra la última Hoja1 subida)
+// antes de decidir si reemplaza "Subir Hoja1" — todavía NO se usa en Mi
+// Día ni en Informes. Se llama desde Administración → "🔌 Busint (prueba)".
+exports.getLotesReconstruidosBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async () => {
+    let ordenProduccion, pedidosPendientes, inventarioLotes;
+    try {
+      [ordenProduccion, pedidosPendientes, inventarioLotes] = await Promise.all([
+        consultarTablaBusintBDCompleta("orden produccion"),
+        consultarTablaBusintBDCompleta("pedidos_pendientes"),
+        consultarTablaBusintBDCompleta("ia_seguimientolotesv_data"),
+      ]);
+    } catch (err) {
+      logger.error("Error reconstruyendo lotes desde Busint BD", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+
+    const pedidosMap = new Map();
+    pedidosPendientes.forEach((p) => {
+      const nped = Number(p.order_id);
+      if (!Number.isFinite(nped)) return;
+      pedidosMap.set(nped, {
+        cliente: p.client_name || null,
+        fechaEntregaISO: fechaBDaISO(p.delivery_date),
+        pendingUnits: Number(p.pending_units) || 0,
+      });
+    });
+
+    const inventarioMap = new Map();
+    inventarioLotes.forEach((f) => {
+      const numLote = Number(f.Numero_de_Lote);
+      if (!Number.isFinite(numLote)) return;
+      inventarioMap.set(numLote, {
+        invCorte: Number(f.Inventario_corte) || 0,
+        invBMP: Number(f.Inventario_en_bodega_de_materia_prima) || 0,
+        invPlanta: Number(f.Inventario_en_planta) || 0,
+        invBPT: Number(f.Inventario_en_bodega_de_producto_terminado) || 0,
+        invSemiterminado: Number(f.Inventario_en_semiterminado) || 0,
+        categoria: f.Tipo_de_categoria || "",
+        nombrePlanta: f.Nombre_planta_de_confeccion || "",
+      });
+    });
+
+    const lotes = ordenProduccion
+      .filter((r) => r.Mensaje !== "ELIMINADO" && Number(r.NumLote) > 0 && r.Nped != null)
+      .map((r) => {
+        const numLote = Number(r.NumLote);
+        const nped = Number(r.Nped);
+        const ped = pedidosMap.get(nped);
+        const inv = inventarioMap.get(numLote);
+        return {
+          numLote,
+          numPedido: nped,
+          referencia: String(r.Ref || ""),
+          nombreCliente: ped?.cliente || clienteDesdeObservacion(r.Observacion) || "(Sin cliente)",
+          fechaEntregaConfISO: ped?.fechaEntregaISO || null,
+          fechaCorteISO: fechaBDaISO(r.FechaCorte),
+          categoria: inv?.categoria || "",
+          nombrePlanta: inv?.nombrePlanta || "",
+          invCorte: inv?.invCorte || 0,
+          invBMP: inv?.invBMP || 0,
+          invPlanta: inv?.invPlanta || 0,
+          invBPT: inv?.invBPT || 0,
+          invSemiterminado: inv?.invSemiterminado || 0,
+          _tieneInventario: !!inv,
+          _tienePedidoPendiente: !!ped,
+        };
+      });
+
+    return {
+      totalOrdenProduccion: ordenProduccion.length,
+      totalPedidosPendientes: pedidosPendientes.length,
+      totalInventarioLotes: inventarioLotes.length,
+      totalLotesReconstruidos: lotes.length,
+      muestra: lotes.slice(-20),
+    };
+  }
+);
 // (2026-08-19) Refresca SOLO el inventario por lote (Planta/BMP/Corte/BPT/
 // Semiterminado) contra la tabla `ia_seguimientolotesv_data` de la API "BD"
 // de Busint — NO trae cliente ni fecha de entrega de pedido, esos siguen
