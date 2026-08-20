@@ -623,7 +623,12 @@ function generarLotesRecibirHoy(lotes) {
 // planta/mesón desde corte_config/main (ahí se guardan por id).
 function generarMesonesHoy(programacionCorte, corteConfig) {
   const hoy = today();
-  const plantasMap = new Map((corteConfig?.plantas || []).map((p) => [p.id, p]));
+  // OJO: en Corte, `corte_programacion.planta` guarda el NOMBRE de la
+  // planta (no un id — ver el selector "Planta" en modulo-corte.jsx, que
+  // usa p.nombre como value), así que el cruce tiene que ser por nombre. El
+  // mesón sí es un id real (scoped dentro de cada planta), por eso ese
+  // cruce sigue siendo por `m.id === p.meson`.
+  const plantasMap = new Map((corteConfig?.plantas || []).map((p) => [p.nombre, p]));
   return (programacionCorte || [])
     .filter((p) => p.fechaProgramada === hoy)
     .map((p) => {
