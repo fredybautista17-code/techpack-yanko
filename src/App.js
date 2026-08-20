@@ -7066,6 +7066,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
 function BusintCatalogoTestView() {
   const [endpoint, setEndpoint] = useState("");
   const [limite, setLimite] = useState("10");
+  const [pagina, setPagina] = useState("1");
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState("");
   const [resultado, setResultado] = useState(null);
@@ -7077,7 +7078,7 @@ function BusintCatalogoTestView() {
     setResultado(null);
     try {
       const llamar = httpsCallable(functionsClient, "getCatalogoBusintCrudo");
-      const resp = await llamar({ endpoint: nombre, limite: parseInt(limite) || 10 });
+      const resp = await llamar({ endpoint: nombre, limite: parseInt(limite) || 10, pagina: parseInt(pagina) || 1 });
       setResultado(resp.data);
     } catch (err) {
       setError(err?.message || "No se pudo consultar Busint.");
@@ -7089,7 +7090,7 @@ function BusintCatalogoTestView() {
     <div>
       <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Probar catálogo crudo de Busint</div>
       <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
-        Escribe el nombre EXACTO del catálogo tal cual aparece en la lista de Busint (respeta mayúsculas, espacios y guiones — ej. <code>planeacion cargas</code>) y consulta una muestra chica para ver qué columnas trae.
+        Escribe el nombre EXACTO del catálogo tal cual aparece en la lista de Busint (respeta mayúsculas, espacios y guiones — ej. <code>planeacion cargas</code>) y consulta una muestra chica para ver qué columnas trae. Las tablas grandes vienen ordenadas de la más vieja a la más nueva — usa "Página" para saltar adelante y ver filas recientes (ej. página 500 con muestra 20 ≈ fila 10.000).
       </div>
       <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
         <Field label="Nombre del catálogo">
@@ -7097,6 +7098,9 @@ function BusintCatalogoTestView() {
         </Field>
         <div style={{ width: 90 }}>
           <Field label="Muestra"><FInput type="number" value={limite} onChange={setLimite} /></Field>
+        </div>
+        <div style={{ width: 90 }}>
+          <Field label="Página"><FInput type="number" value={pagina} onChange={setPagina} /></Field>
         </div>
         <div style={{ marginBottom: 14 }}>
           <Btn onClick={consultar} disabled={cargando || !endpoint.trim()}>{cargando ? "Consultando..." : "🔍 Consultar"}</Btn>
