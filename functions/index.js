@@ -879,6 +879,89 @@ exports.getValidacionFacturasBusintBD = onCall(
     };
   }
 );
+// (2026-08-19) EXPLORATORIO — valida si `historia de fechaent en
+// entproc-salplanta` sirve como fuente VIVA de fecha de entrega por lote.
+// A diferencia de `facturas`, esta trae `NumLote` DIRECTO (sin pasar por
+// Nped ni parsear texto libre) y parece ser un historial de reprogramación
+// (`FechaAnt` -> `FechaAct`, campo `Fecha` = cuándo se hizo el cambio). Se
+// toma la fila más reciente (mayor `ID`) de cada NumLote como la fecha de
+// entrega planeada vigente.
+exports.getValidacionFechaEntregaBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async () => {
+    let ordenProduccion, historiaFechas;
+    try {
+      [ordenProduccion, historiaFechas] = await Promise.all([
+        consultarTablaBusintBDCompleta("orden produccion"),
+        consultarTablaBusintBDCompleta("historia de fechaent en entproc-salplanta"),
+      ]);
+    } catch (err) {
+      logger.error("Error validando fecha de entrega Busint BD", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+
+    // NumLote -> {nped, referencia} confiable, desde orden produccion
+    const lotesReales = new Map();
+    ordenProduccion
+      .filter((r) => r.Mensaje !== "ELIMINADO" && Number(r.NumLote) > 0 && r.Nped != null)
+      .forEach((r) => {
+        lotesReales.set(Number(r.NumLote), {
+          nped: Number(r.Nped),
+          referencia: String(r.Ref || ""),
+          cliente: clienteDesdeObservacion(r.Observacion),
+        });
+      });
+
+    // NumLote -> fila más reciente (mayor ID) de la historia de fechas
+    const fechaPorLote = new Map();
+    historiaFechas.forEach((f) => {
+      const numLote = Number(f.NumLote);
+      if (!Number.isFinite(numLote) || numLote <= 0) return;
+      const actual = fechaPorLote.get(numLote);
+      if (!actual || Number(f.ID) > Number(actual.ID)) {
+        fechaPorLote.set(numLote, {
+          ID: Number(f.ID),
+          fechaEntregaISO: fechaBDaISO(f.FechaAct),
+          fechaAntISO: fechaBDaISO(f.FechaAnt),
+          ultimoCambioISO: fechaBDaISO(f.Fecha),
+          tipo: f.Tipo || null,
+        });
+      }
+    });
+
+    // Cobertura: de los últimos 100 lotes reales, ¿cuántos tienen fecha de entrega?
+    const lotesRecientes = [...lotesReales.keys()].sort((a, b) => b - a).slice(0, 100);
+    const conFechaEnRecientes = lotesRecientes.filter((l) => fechaPorLote.has(l)).length;
+
+    const muestra = lotesRecientes.slice(0, 20).map((lote) => {
+      const real = lotesReales.get(lote);
+      const fec = fechaPorLote.get(lote);
+      return {
+        numLote: lote,
+        numPedido: real.nped,
+        referencia: real.referencia,
+        cliente: real.cliente || "(Sin cliente)",
+        fechaEntregaISO: fec?.fechaEntregaISO || null,
+        ultimoCambioISO: fec?.ultimoCambioISO || null,
+        tipo: fec?.tipo || null,
+        _tieneFecha: !!fec,
+      };
+    });
+
+    return {
+      totalOrdenProduccion: ordenProduccion.length,
+      totalHistoriaFechas: historiaFechas.length,
+      totalLotesConNumLoteEnHistoria: fechaPorLote.size,
+      totalLotesRealesConfiables: lotesReales.size,
+      coberturaUltimos100Lotes: `${conFechaEnRecientes}/100`,
+      muestra,
+    };
+  }
+);
 // (2026-08-19) Refresca SOLO el inventario por lote (Planta/BMP/Corte/BPT/
 // Semiterminado) contra la tabla `ia_seguimientolotesv_data` de la API "BD"
 // de Busint — NO trae cliente ni fecha de entrega de pedido, esos siguen

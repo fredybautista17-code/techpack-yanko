@@ -7076,6 +7076,8 @@ function BusintCatalogoTestView() {
   const [lotesReconstruidos, setLotesReconstruidos] = useState(null);
   const [cargandoValidacion, setCargandoValidacion] = useState(false);
   const [validacionFacturas, setValidacionFacturas] = useState(null);
+  const [cargandoValidacionFecha, setCargandoValidacionFecha] = useState(false);
+  const [validacionFecha, setValidacionFecha] = useState(null);
   async function consultar() {
     const nombre = endpoint.trim();
     if (!nombre) return;
@@ -7144,6 +7146,20 @@ function BusintCatalogoTestView() {
       setError(err?.message || "No se pudo validar facturas.");
     } finally {
       setCargandoValidacion(false);
+    }
+  }
+  async function verValidacionFecha() {
+    setCargandoValidacionFecha(true);
+    setError("");
+    setValidacionFecha(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getValidacionFechaEntregaBusintBD");
+      const resp = await llamar();
+      setValidacionFecha(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo validar la fecha de entrega.");
+    } finally {
+      setCargandoValidacionFecha(false);
     }
   }
   return (
@@ -7243,6 +7259,31 @@ function BusintCatalogoTestView() {
           <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Muestra discrepancias</div>
           <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 240, border: `1px solid ${T.border}` }}>
             {JSON.stringify(validacionFacturas.muestraDiscrepancias, null, 2)}
+          </pre>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Validar "historia de fechaent" como fuente viva de fecha de entrega (exploratorio)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Cruza <code>orden produccion</code> (NumLote directo, sin pasar por Nped) con <code>historia de fechaent en entproc-salplanta</code>, tomando la fila más reciente de cada lote como su fecha de entrega vigente (<code>FechaAct</code>).
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <Btn onClick={verValidacionFecha} disabled={cargandoValidacionFecha}>{cargandoValidacionFecha ? "Cruzando tablas... (puede tardar)" : "📅 Validar fecha de entrega"}</Btn>
+      </div>
+      {validacionFecha && (
+        <div style={{ padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: T.slate, flexWrap: "wrap" }}>
+            <span>orden produccion: <strong style={{ color: T.ink }}>{validacionFecha.totalOrdenProduccion}</strong></span>
+            <span>historia fechas: <strong style={{ color: T.ink }}>{validacionFecha.totalHistoriaFechas}</strong></span>
+            <span>lotes en historia: <strong style={{ color: T.ink }}>{validacionFecha.totalLotesConNumLoteEnHistoria}</strong></span>
+            <span>lotes reales confiables: <strong style={{ color: T.ink }}>{validacionFecha.totalLotesRealesConfiables}</strong></span>
+          </div>
+          <div style={{ marginBottom: 12, fontSize: 14, fontWeight: 700, color: T.jade }}>
+            Cobertura últimos 100 lotes: {validacionFecha.coberturaUltimos100Lotes}
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Muestra (últimos 20 lotes reales)</div>
+          <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 320, border: `1px solid ${T.border}` }}>
+            {JSON.stringify(validacionFecha.muestra, null, 2)}
           </pre>
         </div>
       )}
