@@ -8692,13 +8692,21 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
       });
       setBloqueoForm({ meson: "", motivo: "", horaInicio: "", horaFin: "", metros: "" });
       setBloqueoAbierto(null);
+    } catch (err) {
+      console.error("Error guardando bloqueo de mesón", err);
+      alert(`No se pudo guardar el bloqueo: ${err?.message || err}\n\n(Si dice "permission-denied", falta habilitar la colección "corte_bloqueos_meson" en las reglas de Firestore.)`);
     } finally {
       setGuardandoBloqueo(false);
     }
   }
   async function eliminarBloqueoMeson(id) {
     if (!window.confirm("¿Eliminar este bloqueo de espacio?")) return;
-    await fsDelete("corte_bloqueos_meson", id);
+    try {
+      await fsDelete("corte_bloqueos_meson", id);
+    } catch (err) {
+      console.error("Error eliminando bloqueo de mesón", err);
+      alert(`No se pudo eliminar: ${err?.message || err}`);
+    }
   }
   // Tiempo teórico por tipo de tela: promedio real (minutos ÷ metros
   // tendidos) de todos los cortes ya registrados con ese tipo de tela — se
