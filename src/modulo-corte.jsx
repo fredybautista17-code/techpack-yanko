@@ -1843,27 +1843,31 @@ function MesonTimeline({ nombre, capacidad, compartido, ocupados, inicioActual, 
           return (
             <div
               key={it.id}
-              title={`${it.cliente} · #${it.numero} · ${it.ref} — ${it.horaInicioEstimada} a ${it.horaFinEstimada}`}
+              title={
+                it.esBloqueo
+                  ? `🔒 Bloqueo: ${it.motivo} — ${it.horaInicioEstimada} a ${it.horaFinEstimada}`
+                  : `${it.cliente} · #${it.numero} · ${it.ref} — ${it.horaInicioEstimada} a ${it.horaFinEstimada}`
+              }
               style={{
                 position: "absolute",
                 top: 0,
                 bottom: 0,
                 left: st.left,
                 width: st.width,
-                background: C.redBg,
+                background: it.esBloqueo ? C.border : C.redBg,
                 borderRight: `1px solid ${C.white}`,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 fontSize: 9,
                 fontWeight: 800,
-                color: C.red,
+                color: it.esBloqueo ? C.slate : C.red,
                 overflow: "hidden",
                 whiteSpace: "nowrap",
                 padding: "0 2px",
               }}
             >
-              {it.ref}
+              {it.esBloqueo ? `🔒 ${it.motivo}` : it.ref}
             </div>
           );
         })}
@@ -5238,6 +5242,12 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // usa al programar un corte puntual, pero para verlos todos juntos).
   const [dispPlanta, setDispPlanta] = useState("");
   const [dispFecha, setDispFecha] = useState(today());
+  // Bloquear espacio de un mesón sin que cuente como corte (ver
+  // corte_bloqueos_meson más abajo) — un form inline por mesón, se abre con
+  // el id del mesón que se esté bloqueando (null = cerrado).
+  const [bloqueoAbierto, setBloqueoAbierto] = useState(null);
+  const [bloqueoForm, setBloqueoForm] = useState({ motivo: "", horaInicio: "", horaFin: "", metros: "" });
+  const [guardandoBloqueo, setGuardandoBloqueo] = useState(false);
   // Modal de impresión del trabajo del día por cortador — se abre desde
   // Programación de Mesones, para la fecha que se esté viendo ahí.
   const [imprimiendoCortadores, setImprimiendoCortadores] = useState(false);
@@ -6871,8 +6881,49 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                         finActual={null}
                       />
                       {capacidad !== null && capacidad !== undefined && (
-                        <div style={{ fontSize: 11, color: C.slate, marginTop: -10, marginBottom: 16 }}>
-                          Usado hoy: {usados}m · Libre: <b style={{ color: libre > 0 ? C.green : C.red }}>{libre}m</b> · Capas teóricas: <b>{fmtNum(capasMeson)}</b>
+                        <div style={{ fontSize: 11, color: C.slate, marginTop: -10, marginBottom: 8, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                          <span>Usado hoy: {usados}m · Libre: <b style={{ color: libre > 0 ? C.green : C.red }}>{libre}m</b> · Capas teóricas: <b>{fmtNum(capasMeson)}</b></span>
+                          <button
+                            onClick={() => { setBloqueoAbierto(bloqueoAbierto === m.id ? null : m.id); setBloqueoForm({ motivo: "", horaInicio: "", horaFin: "", metros: "" }); }}
+                            style={{ padding: "3px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.white, color: C.slate, fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}
+                          >
+                            🔒 {bloqueoAbierto === m.id ? "Cancelar" : "Bloquear espacio"}
+                          </button>
+                        </div>
+                      )}
+                      {bloqueoAbierto === m.id && (
+                        <div style={{ display: "flex", gap: 8, alignItems: "end", flexWrap: "wrap", marginBottom: 14, padding: 10, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8 }}>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                            <label style={{ fontSize: 10, fontWeight: 700, color: C.slate }}>Motivo</label>
+                            <input value={bloqueoForm.motivo} onChange={(e) => setBloqueoForm((f) => ({ ...f, motivo: e.target.value }))} placeholder="Ej: Recuperación de telas" style={{ padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, minWidth: 180, fontFamily: "inherit" }} />
+                          </div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                            <label style={{ fontSize: 10, fontWeight: 700, color: C.slate }}>Hora inicio</label>
+                            <input type="time" value={bloqueoForm.horaInicio} onChange={(e) => setBloqueoForm((f) => ({ ...f, horaInicio: e.target.value }))} style={{ padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, fontFamily: "inherit" }} />
+                          </div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                            <label style={{ fontSize: 10, fontWeight: 700, color: C.slate }}>Hora fin</label>
+                            <input type="time" value={bloqueoForm.horaFin} onChange={(e) => setBloqueoForm((f) => ({ ...f, horaFin: e.target.value }))} style={{ padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, fontFamily: "inherit" }} />
+                          </div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                            <label style={{ fontSize: 10, fontWeight: 700, color: C.slate }}>Metros</label>
+                            <input type="number" value={bloqueoForm.metros} onChange={(e) => setBloqueoForm((f) => ({ ...f, metros: e.target.value }))} style={{ padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, width: 80, fontFamily: "inherit" }} />
+                          </div>
+                          <Btn small disabled={guardandoBloqueo} onClick={() => guardarBloqueoMeson(dispFecha, nombrePlantaActual, m.id, m.grupoId || null)}>
+                            {guardandoBloqueo ? "Guardando..." : "Guardar bloqueo"}
+                          </Btn>
+                        </div>
+                      )}
+                      {ocupados.filter((it) => it.esBloqueo).length > 0 && (
+                        <div style={{ fontSize: 10.5, color: C.slate, marginBottom: 14, display: "flex", flexDirection: "column", gap: 3 }}>
+                          {ocupados.filter((it) => it.esBloqueo).map((it) => (
+                            <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              🔒 {it.motivo} ({it.horaInicioEstimada}–{it.horaFinEstimada}, {it.largoTrazo}m)
+                              <button onClick={() => eliminarBloqueoMeson(it.bloqueoId)} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 10.5, fontWeight: 700 }}>
+                                Eliminar
+                              </button>
+                            </div>
+                          ))}
                         </div>
                       )}
                     </div>
@@ -8380,6 +8431,13 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
   // Programación de Corte: fecha comprometida por pedido, con cumplimiento
   // automático (ver useEffect más abajo).
   const [programacionCorte, setProgramacionCorte] = useState([]);
+  // (2026-08-20) Bloqueos de espacio en un mesón (ej. sobró tela y se
+  // necesita el mesón para acomodarla, recuperación de telas, etc.) — a
+  // propósito una colección APARTE de corte_programacion, para que NO
+  // cuenten como "corte programado" ni sumen en Capas teóricas (esos
+  // cálculos solo leen `programacion`/`programacionCorte`, nunca esto). Solo
+  // ocupan espacio visualmente en "Disponibilidad de Mesones".
+  const [bloqueosMeson, setBloqueosMeson] = useState([]);
   // Lotes de corte (uno por cada corte registrado desde ProgramarCorteModal)
   // — se usa para validar que el número de lote nunca se repita y para tener
   // un registro simple (cantidad, fecha, referencia, pedido) de cada corte
@@ -8429,6 +8487,10 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
           setLotesCorte(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
         });
         unsubs.push(unsubLotes);
+        const unsubBloqueos = onSnapshot(collection(db, "corte_bloqueos_meson"), (snap) => {
+          setBloqueosMeson(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        });
+        unsubs.push(unsubBloqueos);
         const cfgDocs = await fsGet("corte_config");
         if (cfgDocs.length)
           setCorteConfig((prev) => ({ ...prev, ...cfgDocs[0] }));
@@ -8523,6 +8585,16 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
       vistos.add(claveRef);
       total += pr.largoTrazo || 0;
     });
+    // Bloqueos de espacio (recuperación de telas, etc.) — ocupan metros del
+    // mesón igual que un corte real, pero viven en su propia colección
+    // (corte_bloqueos_meson) para no contar como corte ni sumar capas.
+    bloqueosMeson.forEach((b) => {
+      if (b.fecha !== fecha || b.planta !== plantaNombre) return;
+      const mismoMeson = b.meson === mesonId;
+      const mismoGrupo = grupoId && b.mesonGrupo === grupoId;
+      if (!(mismoMeson || mismoGrupo)) return;
+      total += b.metros || 0;
+    });
     return total;
   }
   // Igual que metrosUsadosMeson pero devuelve los ítems (no solo la suma) —
@@ -8556,7 +8628,58 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
         capas: pr.capas || 0,
       });
     });
+    bloqueosMeson.forEach((b) => {
+      if (b.fecha !== fecha || b.planta !== plantaNombre) return;
+      const mismoMeson = b.meson === mesonId;
+      const mismoGrupo = grupoId && b.mesonGrupo === grupoId;
+      if (!(mismoMeson || mismoGrupo)) return;
+      items.push({
+        id: `bloqueo-${b.id}`,
+        bloqueoId: b.id,
+        esBloqueo: true,
+        motivo: b.motivo || "Bloqueo",
+        horaInicioEstimada: b.horaInicioEstimada || "",
+        horaFinEstimada: b.horaFinEstimada || "",
+        largoTrazo: b.metros || 0,
+        capas: 0,
+      });
+    });
     return items;
+  }
+  async function guardarBloqueoMeson(fecha, plantaNombre, mesonId, grupoId) {
+    const metros = Number(bloqueoForm.metros) || 0;
+    if (!bloqueoForm.motivo.trim() || !bloqueoForm.horaInicio || !bloqueoForm.horaFin || metros <= 0) {
+      alert("Completa motivo, hora inicio, hora fin y metros (mayor a 0).");
+      return;
+    }
+    if (bloqueoForm.horaFin <= bloqueoForm.horaInicio) {
+      alert("La hora fin debe ser después de la hora inicio.");
+      return;
+    }
+    setGuardandoBloqueo(true);
+    try {
+      const id = uid();
+      await fsSave("corte_bloqueos_meson", id, {
+        fecha,
+        planta: plantaNombre,
+        meson: mesonId,
+        mesonGrupo: grupoId || null,
+        motivo: bloqueoForm.motivo.trim(),
+        horaInicioEstimada: bloqueoForm.horaInicio,
+        horaFinEstimada: bloqueoForm.horaFin,
+        metros,
+        creadoPor: currentUser?.name || currentUser?.username || "",
+        creadoEn: new Date().toISOString(),
+      });
+      setBloqueoForm({ motivo: "", horaInicio: "", horaFin: "", metros: "" });
+      setBloqueoAbierto(null);
+    } finally {
+      setGuardandoBloqueo(false);
+    }
+  }
+  async function eliminarBloqueoMeson(id) {
+    if (!window.confirm("¿Eliminar este bloqueo de espacio?")) return;
+    await fsDelete("corte_bloqueos_meson", id);
   }
   // Tiempo teórico por tipo de tela: promedio real (minutos ÷ metros
   // tendidos) de todos los cortes ya registrados con ese tipo de tela — se
