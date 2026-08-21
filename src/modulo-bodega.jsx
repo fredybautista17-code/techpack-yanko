@@ -1459,7 +1459,12 @@ function HistorialView({ despachos, currentUser, isAdmin, esContabilidad, esBode
     <div>
       <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center" }}>
         <div style={{ flex: 1, maxWidth: 320 }}>
-          <FInput value={filtro} onChange={setFiltro} placeholder="Buscar por N° despacho o referencia..." />
+          <div style={{ position: "relative" }}>
+            <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, pointerEvents: "none" }}>🔍</span>
+            <div style={{ paddingLeft: 26 }}>
+              <FInput value={filtro} onChange={setFiltro} placeholder="Buscar ref o N° despacho — se ordena de más reciente a más antiguo" />
+            </div>
+          </div>
         </div>
         <div style={{ fontSize: 12, color: C.slate }}>{visibles.length} despachos · {fmtMoney(totalGeneral)}</div>
         <Btn variant="secondary" onClick={() => exportarHistorialExcel(visibles)}>⬇ Exportar a Excel</Btn>
