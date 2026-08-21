@@ -1297,6 +1297,37 @@ exports.buscarReferenciaBusint = onCall(
   }
 );
 
+// (2026-08-21) EXPLORATORIO — la API "gen" (api-yanko-gen.busint.info) tiene
+// un catálogo nuevo "ApiGen_PanelControlFlujoOperacional" que no está
+// conectado a nada todavía. Por el nombre suena a que podría traer el
+// estado del lote por etapa (BMP/Semiterminado/Corte/Planta) — justo lo que
+// hoy trae la Hoja1 subida a mano en Planeación. Esta función solo trae una
+// muestra cruda (primeras + últimas filas) para ver la forma real de los
+// datos antes de decidir si sirve para reemplazar/complementar Hoja1. No
+// escribe nada ni reemplaza ningún flujo existente.
+exports.getMuestraPanelFlujoBusintGen = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
+  async () => {
+    let filas;
+    try {
+      filas = await consultarCatalogoBusint("ApiGen_PanelControlFlujoOperacional");
+    } catch (err) {
+      logger.error("Error consultando Busint (getMuestraPanelFlujoBusintGen)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar ApiGen_PanelControlFlujoOperacional: ${err?.message || String(err)}`);
+    }
+    return {
+      total: filas.length,
+      columnas: filas.length ? Object.keys(filas[0]) : [],
+      primeras: filas.slice(0, 10),
+      ultimas: filas.slice(-10),
+    };
+  }
+);
+
 // Consulta el maestro de referencias de Busint ("ApiGen_Referencias") — no
 // recibe filtro, siempre trae todo el catálogo tal como está hoy. Usado
 // desde "Nuevo Prototipo"/"Nueva Referencia" (Diseño) para verificar en vivo

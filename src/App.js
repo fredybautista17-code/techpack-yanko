@@ -7082,6 +7082,22 @@ function BusintCatalogoTestView() {
   const [validacionPPEsp, setValidacionPPEsp] = useState(null);
   const [cargandoValidacionPC, setCargandoValidacionPC] = useState(false);
   const [validacionPC, setValidacionPC] = useState(null);
+  const [cargandoPanelFlujo, setCargandoPanelFlujo] = useState(false);
+  const [panelFlujo, setPanelFlujo] = useState(null);
+  async function verPanelFlujoGen() {
+    setCargandoPanelFlujo(true);
+    setError("");
+    setPanelFlujo(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getMuestraPanelFlujoBusintGen");
+      const resp = await llamar();
+      setPanelFlujo(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar ApiGen_PanelControlFlujoOperacional.");
+    } finally {
+      setCargandoPanelFlujo(false);
+    }
+  }
   async function consultar() {
     const nombre = endpoint.trim();
     if (!nombre) return;
@@ -7196,6 +7212,30 @@ function BusintCatalogoTestView() {
   }
   return (
     <div>
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Probar "ApiGen_PanelControlFlujoOperacional" (API gen, exploratorio)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Catálogo nuevo de la API "gen" (api-yanko-gen.busint.info) que todavía no está conectado a nada. Por el nombre podría traer el estado del lote por etapa — lo que hoy trae Hoja1. Trae una muestra cruda para ver qué columnas tiene de verdad.
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <Btn onClick={verPanelFlujoGen} disabled={cargandoPanelFlujo}>{cargandoPanelFlujo ? "Consultando..." : "📋 Probar Panel Control Flujo Operacional"}</Btn>
+      </div>
+      {panelFlujo && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: T.slate, flexWrap: "wrap" }}>
+            <span>Total REAL de filas: <strong style={{ color: T.ink }}>{panelFlujo.total}</strong></span>
+            <span>Columnas: <strong style={{ color: T.ink }}>{(panelFlujo.columnas || []).join(", ") || "—"}</strong></span>
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Primeras 10</div>
+          <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 280, border: `1px solid ${T.border}`, marginBottom: 12 }}>
+            {JSON.stringify(panelFlujo.primeras, null, 2)}
+          </pre>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Últimas 10</div>
+          <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 280, border: `1px solid ${T.border}` }}>
+            {JSON.stringify(panelFlujo.ultimas, null, 2)}
+          </pre>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
       <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Probar catálogo crudo de Busint</div>
       <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
         Escribe el nombre EXACTO del catálogo tal cual aparece en la lista de Busint (respeta mayúsculas, espacios y guiones — ej. <code>planeacion cargas</code>) y consulta una muestra chica para ver qué columnas trae. Las tablas grandes vienen ordenadas de la más vieja a la más nueva — usa "Página" para saltar adelante y ver filas recientes (ej. página 500 con muestra 20 ≈ fila 10.000).
