@@ -7098,6 +7098,22 @@ function BusintCatalogoTestView() {
       setCargandoPanelFlujo(false);
     }
   }
+  const [cargandoInventarioGen, setCargandoInventarioGen] = useState(false);
+  const [inventarioGen, setInventarioGen] = useState(null);
+  async function verInventarioGen() {
+    setCargandoInventarioGen(true);
+    setError("");
+    setInventarioGen(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getMuestraInventarioBusintGen");
+      const resp = await llamar();
+      setInventarioGen(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar ApiGen_InventarioBusint.");
+    } finally {
+      setCargandoInventarioGen(false);
+    }
+  }
   async function consultar() {
     const nombre = endpoint.trim();
     if (!nombre) return;
@@ -7232,6 +7248,30 @@ function BusintCatalogoTestView() {
           <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Últimas 10</div>
           <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 280, border: `1px solid ${T.border}` }}>
             {JSON.stringify(panelFlujo.ultimas, null, 2)}
+          </pre>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Probar "ApiGen_InventarioBusint" (API gen, exploratorio)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        El otro catálogo nuevo de la API "gen" — podría ser inventario en vivo por lote.
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <Btn onClick={verInventarioGen} disabled={cargandoInventarioGen}>{cargandoInventarioGen ? "Consultando..." : "📦 Probar Inventario Busint"}</Btn>
+      </div>
+      {inventarioGen && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: T.slate, flexWrap: "wrap" }}>
+            <span>Total REAL de filas: <strong style={{ color: T.ink }}>{inventarioGen.total}</strong></span>
+            <span>Columnas: <strong style={{ color: T.ink }}>{(inventarioGen.columnas || []).join(", ") || "—"}</strong></span>
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Primeras 10</div>
+          <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 280, border: `1px solid ${T.border}`, marginBottom: 12 }}>
+            {JSON.stringify(inventarioGen.primeras, null, 2)}
+          </pre>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Últimas 10</div>
+          <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 280, border: `1px solid ${T.border}` }}>
+            {JSON.stringify(inventarioGen.ultimas, null, 2)}
           </pre>
         </div>
       )}

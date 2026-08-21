@@ -1328,6 +1328,32 @@ exports.getMuestraPanelFlujoBusintGen = onCall(
   }
 );
 
+// (2026-08-21) EXPLORATORIO — mismo caso que getMuestraPanelFlujoBusintGen
+// pero para "ApiGen_InventarioBusint", el otro catálogo nuevo de la API gen
+// que podría servir para Hoja1 (inventario en vivo).
+exports.getMuestraInventarioBusintGen = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
+  async () => {
+    let filas;
+    try {
+      filas = await consultarCatalogoBusint("ApiGen_InventarioBusint");
+    } catch (err) {
+      logger.error("Error consultando Busint (getMuestraInventarioBusintGen)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar ApiGen_InventarioBusint: ${err?.message || String(err)}`);
+    }
+    return {
+      total: filas.length,
+      columnas: filas.length ? Object.keys(filas[0]) : [],
+      primeras: filas.slice(0, 10),
+      ultimas: filas.slice(-10),
+    };
+  }
+);
+
 // Consulta el maestro de referencias de Busint ("ApiGen_Referencias") — no
 // recibe filtro, siempre trae todo el catálogo tal como está hoy. Usado
 // desde "Nuevo Prototipo"/"Nueva Referencia" (Diseño) para verificar en vivo
