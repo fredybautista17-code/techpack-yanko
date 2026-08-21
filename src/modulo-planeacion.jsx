@@ -571,10 +571,14 @@ function generarProgramacionYanko(lotes) {
 // reutilizarán para los "Mi Día" de Anny Beltrán (Terminación) y Sarai
 // Méndez (Termofijación) más adelante.
 function generarMiDiaPlaneadora(lotes, reporteBMP, programacionBMP) {
+  // Plantas: el vencimiento se mide contra la Fecha Entrega CONF (la fecha
+  // real comprometida, fechaEntregaConfISO) y no contra la Fecha Entrega
+  // Pedido — así lo pidió el usuario, porque la de Pedido es orientativa y
+  // la que de verdad se debe cumplir es la Conf.
   const plantasIncumpliendo = lotes
     .filter((l) => l.invPlanta > 0)
     .map((l) => {
-      const dias = diasEntre(l.fechaEntregaPedidoISO);
+      const dias = diasEntre(l.fechaEntregaConfISO);
       return {
         numLote: l.numLote,
         numPedido: l.numPedido,
@@ -583,12 +587,12 @@ function generarMiDiaPlaneadora(lotes, reporteBMP, programacionBMP) {
         cliente: l.nombreCliente,
         planta: l.nombrePlanta || "(Sin planta)",
         cantidad: l.invPlanta,
-        fechaEntregaPedido: l.fechaEntregaPedidoISO,
-        diasRestantesPedido: dias,
+        fechaEntregaConf: l.fechaEntregaConfISO,
+        diasRestantes: dias,
         estado: estadoDe(dias),
       };
     })
-    .sort((a, b) => (a.diasRestantesPedido ?? Infinity) - (b.diasRestantesPedido ?? Infinity));
+    .sort((a, b) => (a.diasRestantes ?? Infinity) - (b.diasRestantes ?? Infinity));
   // BMP pendiente de programar hacia planta: lotes de reporteBMP cuyo
   // numLote todavía no tiene una fila en planeacion_programacion_bmp.
   const numLotesProgramados = new Set(programacionBMP.map((p) => p.numLote));
@@ -2461,8 +2465,8 @@ function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionC
   const miDia = useMemo(() => generarMiDiaPlaneadora(lotes, reporteBMP, programacionBMP), [lotes, reporteBMP, programacionBMP]);
   const lotesRecibirHoy = useMemo(() => generarLotesRecibirHoy(lotes), [lotes]);
   const mesonesHoy = useMemo(() => generarMesonesHoy(programacionCorte, corteConfig, bloqueosMeson), [programacionCorte, corteConfig, bloqueosMeson]);
-  const plantasVencidas = miDia.plantasIncumpliendo.filter((f) => f.diasRestantesPedido < 0);
-  const plantasUrgentes = miDia.plantasIncumpliendo.filter((f) => f.diasRestantesPedido >= 0 && f.diasRestantesPedido <= 7);
+  const plantasVencidas = miDia.plantasIncumpliendo.filter((f) => f.diasRestantes < 0);
+  const plantasUrgentes = miDia.plantasIncumpliendo.filter((f) => f.diasRestantes >= 0 && f.diasRestantes <= 7);
   const bmpVencidos = miDia.bmpPendiente.filter((f) => f.diasRestantesPedido < 0);
   const bmpUrgentes = miDia.bmpPendiente.filter((f) => f.diasRestantesPedido >= 0 && f.diasRestantesPedido <= 7);
   // Detalle genérico: cualquier KPI que se haga clic abre este mismo modal,
@@ -2478,14 +2482,14 @@ function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionC
   const [mostrarBMPPendiente, setMostrarBMPPendiente] = useState(false);
   const columnasPlantas = [
     { key: "estado", label: "Estado", render: (f) => <EstadoBadge estado={f.estado} /> },
-    { key: "diasRestantesPedido", label: "Días", align: "right", render: (f) => (f.diasRestantesPedido ?? "—") },
+    { key: "diasRestantes", label: "Días", align: "right", render: (f) => (f.diasRestantes ?? "—") },
     { key: "numLote", label: "Lote" },
     { key: "referencia", label: "Referencia" },
     { key: "categoria", label: "Categoría" },
     { key: "cliente", label: "Cliente" },
     { key: "planta", label: "Planta" },
     { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
-    { key: "fechaEntregaPedido", label: "Fecha Entrega Pedido", render: (f) => fmtFechaISO(f.fechaEntregaPedido) },
+    { key: "fechaEntregaConf", label: "Fecha Entrega Conf.", render: (f) => fmtFechaISO(f.fechaEntregaConf) },
   ];
   const columnasBMP = [
     { key: "estado", label: "Estado", render: (f) => <EstadoBadge estado={f.estado} /> },
