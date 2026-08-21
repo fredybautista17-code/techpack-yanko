@@ -5143,7 +5143,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onPartirCorte, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, onRegistrarCorteManual, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onDevolverCorteReal, onEditarCantidadesCorte, onActualizarHorarioCorte, onEditarMesonCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onPartirCorte, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, onRegistrarCorteManual, plantasConfig, cortadoresConfig, telas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarBloqueoMeson, onEliminarBloqueoMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onDevolverCorteReal, onEditarCantidadesCorte, onActualizarHorarioCorte, onEditarMesonCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Cuántos cortes (tandas físicas) separados se van a programar de una vez
   // con la selección actual — por defecto 1 (comportamiento de siempre). Si
@@ -6921,7 +6921,19 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                             <label style={{ fontSize: 10, fontWeight: 700, color: C.slate }}>Metros</label>
                             <input type="number" value={bloqueoForm.metros} onChange={(e) => setBloqueoForm((f) => ({ ...f, metros: e.target.value }))} style={{ padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.border}`, fontSize: 12, width: 80, fontFamily: "inherit" }} />
                           </div>
-                          <Btn small disabled={guardandoBloqueo} onClick={() => guardarBloqueoMeson(dispFecha, nombrePlantaActual, mesonesDePlanta)}>
+                          <Btn
+                            small
+                            disabled={guardandoBloqueo}
+                            onClick={async () => {
+                              setGuardandoBloqueo(true);
+                              const ok = await onGuardarBloqueoMeson(dispFecha, nombrePlantaActual, mesonesDePlanta, bloqueoForm);
+                              setGuardandoBloqueo(false);
+                              if (ok) {
+                                setBloqueoForm({ meson: "", motivo: "", horaInicio: "", horaFin: "", metros: "" });
+                                setBloqueoAbierto(null);
+                              }
+                            }}
+                          >
                             {guardandoBloqueo ? "Guardando..." : "Guardar bloqueo"}
                           </Btn>
                         </div>
@@ -6931,7 +6943,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                           {ocupados.filter((it) => it.esBloqueo).map((it) => (
                             <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                               🔒 {it.motivo} ({it.horaInicioEstimada}–{it.horaFinEstimada}, {it.largoTrazo}m)
-                              <button onClick={() => eliminarBloqueoMeson(it.bloqueoId)} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 10.5, fontWeight: 700 }}>
+                              <button onClick={() => onEliminarBloqueoMeson(it.bloqueoId)} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 10.5, fontWeight: 700 }}>
                                 Eliminar
                               </button>
                             </div>
@@ -8658,24 +8670,29 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     });
     return items;
   }
-  async function guardarBloqueoMeson(fecha, plantaNombre, mesonesDePlanta) {
-    const mesonId = bloqueoForm.meson;
+  // Nota: esta función vive en ModuloCorte (junto con bloqueosMeson/fsSave)
+  // pero el formulario y los estados de UI (bloqueoForm, guardandoBloqueo,
+  // bloqueoAbierto) viven en ProgramacionCorteView — por eso recibe `form`
+  // como parámetro en vez de leerlo de un estado local, y devuelve
+  // true/false en vez de tocar setBloqueoForm/setBloqueoAbierto: el
+  // componente que la llama es quien decide qué hacer con el resultado.
+  async function guardarBloqueoMeson(fecha, plantaNombre, mesonesDePlanta, form) {
+    const mesonId = form.meson;
     if (!mesonId) {
       alert("Selecciona un mesón.");
-      return;
+      return false;
     }
     const mesonSel = (mesonesDePlanta || []).find((mm) => mm.id === mesonId);
     const grupoId = mesonSel?.grupoId || null;
-    const metros = Number(bloqueoForm.metros) || 0;
-    if (!bloqueoForm.motivo.trim() || !bloqueoForm.horaInicio || !bloqueoForm.horaFin || metros <= 0) {
+    const metros = Number(form.metros) || 0;
+    if (!form.motivo.trim() || !form.horaInicio || !form.horaFin || metros <= 0) {
       alert("Completa motivo, hora inicio, hora fin y metros (mayor a 0).");
-      return;
+      return false;
     }
-    if (bloqueoForm.horaFin <= bloqueoForm.horaInicio) {
+    if (form.horaFin <= form.horaInicio) {
       alert("La hora fin debe ser después de la hora inicio.");
-      return;
+      return false;
     }
-    setGuardandoBloqueo(true);
     try {
       const id = uid();
       await fsSave("corte_bloqueos_meson", id, {
@@ -8683,20 +8700,18 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
         planta: plantaNombre,
         meson: mesonId,
         mesonGrupo: grupoId,
-        motivo: bloqueoForm.motivo.trim(),
-        horaInicioEstimada: bloqueoForm.horaInicio,
-        horaFinEstimada: bloqueoForm.horaFin,
+        motivo: form.motivo.trim(),
+        horaInicioEstimada: form.horaInicio,
+        horaFinEstimada: form.horaFin,
         metros,
         creadoPor: currentUser?.name || currentUser?.username || "",
         creadoEn: new Date().toISOString(),
       });
-      setBloqueoForm({ meson: "", motivo: "", horaInicio: "", horaFin: "", metros: "" });
-      setBloqueoAbierto(null);
+      return true;
     } catch (err) {
       console.error("Error guardando bloqueo de mesón", err);
       alert(`No se pudo guardar el bloqueo: ${err?.message || err}\n\n(Si dice "permission-denied", falta habilitar la colección "corte_bloqueos_meson" en las reglas de Firestore.)`);
-    } finally {
-      setGuardandoBloqueo(false);
+      return false;
     }
   }
   async function eliminarBloqueoMeson(id) {
@@ -9452,6 +9467,8 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               estadisticasTela={estadisticasTela}
               metrosUsadosMeson={metrosUsadosMeson}
               itemsUsadosMeson={itemsUsadosMeson}
+              onGuardarBloqueoMeson={guardarBloqueoMeson}
+              onEliminarBloqueoMeson={eliminarBloqueoMeson}
               onGuardarProgramacionHecha={guardarProgramacionHecha}
               onAprobarProgramacionHecha={aprobarProgramacionHecha}
               puedeAprobarCorte={puedeAprobarCorte || isAdmin}
