@@ -703,6 +703,9 @@ function pctHora(hhmm) {
 // datos que ya guarda Corte al hacer la Programación de Mesones). Lo que
 // todavía no tiene horario puesto se lista aparte, no se dibuja a ciegas.
 function TableroMesonesDia({ items }) {
+  // Clic sobre un bloque del tablero abre el detalle de qué se va a cortar
+  // ahí, en vez de tener que buscarlo en la tabla de más abajo.
+  const [seleccionado, setSeleccionado] = useState(null);
   const conHorario = items.filter((it) => pctHora(it.horaInicioEstimada) !== null && pctHora(it.horaFinEstimada) !== null);
   const sinHorario = items.filter((it) => pctHora(it.horaInicioEstimada) === null || pctHora(it.horaFinEstimada) === null);
   const grupos = useMemo(() => {
@@ -750,11 +753,13 @@ function TableroMesonesDia({ items }) {
                   return (
                     <div
                       key={it.id}
-                      title={it.esBloqueo ? `🔒 Bloqueo: ${it.referencia} · ${it.horaInicioEstimada}–${it.horaFinEstimada}` : `${it.cortador} · ${it.referencia} · ${it.horaInicioEstimada}–${it.horaFinEstimada}`}
+                      onClick={() => setSeleccionado(it)}
+                      title={it.esBloqueo ? `🔒 Bloqueo: ${it.referencia} · ${it.horaInicioEstimada}–${it.horaFinEstimada} (clic para ver detalle)` : `${it.cortador} · ${it.referencia} · ${it.horaInicioEstimada}–${it.horaFinEstimada} (clic para ver detalle)`}
                       style={{
                         position: "absolute", left: `${left}%`, width: `${width}%`, top: 3, bottom: 3,
                         background: color, color: C.white, borderRadius: 6, fontSize: 10, fontWeight: 700,
                         display: "flex", alignItems: "center", padding: "0 6px", overflow: "hidden", whiteSpace: "nowrap",
+                        cursor: "pointer",
                       }}
                     >
                       {it.esBloqueo ? `🔒 ${it.referencia}` : `${it.cortador} · ${it.referencia}`}
@@ -772,6 +777,37 @@ function TableroMesonesDia({ items }) {
           {sinHorario.map((it) => `${it.referencia} (${it.planta} · ${it.meson})`).join(", ")}
         </div>
       )}
+      {seleccionado && (
+        <Modal title={seleccionado.esBloqueo ? "🔒 Bloqueo de espacio" : "✂️ Qué se va a cortar"} onClose={() => setSeleccionado(null)} width={440}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
+            {seleccionado.esBloqueo ? (
+              <>
+                <DetalleFila label="Motivo" valor={seleccionado.referencia} />
+              </>
+            ) : (
+              <>
+                <DetalleFila label="Referencia" valor={seleccionado.referencia} />
+                <DetalleFila label="Pedido" valor={seleccionado.numPedido} />
+                <DetalleFila label="Cliente" valor={seleccionado.cliente} />
+                <DetalleFila label="Cantidad" valor={fmtNum(seleccionado.cantidad)} />
+                <DetalleFila label="Cortador" valor={seleccionado.cortador} />
+                <DetalleFila label="Estado" valor={seleccionado.estado} />
+              </>
+            )}
+            <DetalleFila label="Planta" valor={seleccionado.planta} />
+            <DetalleFila label="Mesón" valor={seleccionado.meson} />
+            <DetalleFila label="Horario" valor={`${seleccionado.horaInicioEstimada} – ${seleccionado.horaFinEstimada}`} />
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+function DetalleFila({ label, valor }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, paddingBottom: 8, borderBottom: `1px solid ${C.border}` }}>
+      <span style={{ color: C.slate, fontWeight: 700 }}>{label}</span>
+      <span style={{ color: C.ink, fontWeight: 700, textAlign: "right" }}>{valor || "—"}</span>
     </div>
   );
 }
