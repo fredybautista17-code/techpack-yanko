@@ -1334,8 +1334,13 @@ exports.getMuestraPanelFlujoBusintGen = onCall(
 exports.getMuestraInventarioBusintGen = onCall(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
-    timeoutSeconds: 120,
-    memory: "512MiB",
+    // "internal" genérico (sin mensaje) en el cliente suele ser timeout u
+    // OOM en la función, no un error de Busint — este catálogo no tiene
+    // paginación (solo recibe Token), así que si trae TODO el inventario de
+    // la empresa de una sola vez puede ser bastante más pesado que
+    // ApiGen_Referencias. Se sube el techo por si acaso.
+    timeoutSeconds: 300,
+    memory: "1GiB",
   },
   async () => {
     let filas;
