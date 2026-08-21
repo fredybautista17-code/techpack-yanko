@@ -621,21 +621,24 @@ function generarLotesRecibirHoy(lotes) {
 // Programación de mesones de HOY, leída de Corte (corte_programacion) sin
 // escribir nada — Planeación solo la muestra. Resuelve nombres de
 // planta/mesón desde corte_config/main (ahí se guardan por id).
-function generarMesonesHoy(programacionCorte, corteConfig) {
+function generarMesonesHoy(programacionCorte, corteConfig, bloqueosMeson) {
   const hoy = today();
   // OJO: en Corte, `corte_programacion.planta` guarda el NOMBRE de la
   // planta (no un id — ver el selector "Planta" en modulo-corte.jsx, que
   // usa p.nombre como value), así que el cruce tiene que ser por nombre. El
   // mesón sí es un id real (scoped dentro de cada planta), por eso ese
-  // cruce sigue siendo por `m.id === p.meson`.
+  // cruce sigue siendo por `m.id === p.meson`. Lo mismo aplica a
+  // `corte_bloqueos_meson.planta` (también guarda nombre, ver
+  // guardarBloqueoMeson en modulo-corte.jsx).
   const plantasMap = new Map((corteConfig?.plantas || []).map((p) => [p.nombre, p]));
-  return (programacionCorte || [])
+  const cortes = (programacionCorte || [])
     .filter((p) => p.fechaProgramada === hoy)
     .map((p) => {
       const planta = plantasMap.get(p.planta);
       const meson = planta?.mesones?.find((m) => m.id === p.meson);
       return {
         id: p.id,
+        esBloqueo: false,
         referencia: p.ref,
         numPedido: p.numero,
         cliente: p.cliente,
@@ -647,8 +650,35 @@ function generarMesonesHoy(programacionCorte, corteConfig) {
         horaFinEstimada: p.horaFinEstimada || "",
         estado: p.aprobado ? "Aprobado" : p.etapa === "programacion_hecha" ? "Programado" : "Por programar mesón",
       };
-    })
-    .sort((a, b) => (a.planta || "").localeCompare(b.planta || "") || (a.referencia || "").localeCompare(b.referencia || ""));
+    });
+  // Bloqueos de espacio (recuperación de telas, etc.) reservados desde
+  // Corte → Disponibilidad de Mesones — se muestran aquí igual que un corte
+  // más para que la Planeadora vea el mesón ocupado, pero no cuentan como
+  // corte programado (no suman a "cortes programados" en ningún KPI de acá,
+  // solo aparecen en este tablero/tabla de solo lectura).
+  const bloqueos = (bloqueosMeson || [])
+    .filter((b) => b.fecha === hoy)
+    .map((b) => {
+      const planta = plantasMap.get(b.planta);
+      const meson = planta?.mesones?.find((m) => m.id === b.meson);
+      return {
+        id: `bloqueo-${b.id}`,
+        esBloqueo: true,
+        referencia: b.motivo || "Bloqueo de espacio",
+        numPedido: "—",
+        cliente: "—",
+        cantidad: null,
+        planta: planta?.nombre || (b.planta ? "(sin nombre)" : "Sin asignar"),
+        meson: meson?.nombre || (b.meson ? "(sin nombre)" : "Sin asignar"),
+        cortador: "—",
+        horaInicioEstimada: b.horaInicioEstimada || "",
+        horaFinEstimada: b.horaFinEstimada || "",
+        estado: "Bloqueo",
+      };
+    });
+  return [...cortes, ...bloqueos].sort(
+    (a, b) => (a.planta || "").localeCompare(b.planta || "") || (a.referencia || "").localeCompare(b.referencia || "")
+  );
 }
 // ─── TABLERO VISUAL DE MESONES (Mi Día) ────────────────────────────────────────
 // Ventana del día que se dibuja en el tablero — de 6:00 a.m. a 8:00 p.m., el
@@ -716,18 +746,18 @@ function TableroMesonesDia({ items }) {
                   const left = pctHora(it.horaInicioEstimada);
                   const right = pctHora(it.horaFinEstimada);
                   const width = Math.max(right - left, 3);
-                  const color = it.estado === "Aprobado" ? C.green : it.estado === "Programado" ? C.violet : C.amber;
+                  const color = it.esBloqueo ? C.slate : it.estado === "Aprobado" ? C.green : it.estado === "Programado" ? C.violet : C.amber;
                   return (
                     <div
                       key={it.id}
-                      title={`${it.cortador} · ${it.referencia} · ${it.horaInicioEstimada}–${it.horaFinEstimada}`}
+                      title={it.esBloqueo ? `🔒 Bloqueo: ${it.referencia} · ${it.horaInicioEstimada}–${it.horaFinEstimada}` : `${it.cortador} · ${it.referencia} · ${it.horaInicioEstimada}–${it.horaFinEstimada}`}
                       style={{
                         position: "absolute", left: `${left}%`, width: `${width}%`, top: 3, bottom: 3,
                         background: color, color: C.white, borderRadius: 6, fontSize: 10, fontWeight: 700,
                         display: "flex", alignItems: "center", padding: "0 6px", overflow: "hidden", whiteSpace: "nowrap",
                       }}
                     >
-                      {it.cortador} · {it.referencia}
+                      {it.esBloqueo ? `🔒 ${it.referencia}` : `${it.cortador} · ${it.referencia}`}
                     </div>
                   );
                 })}
@@ -2391,10 +2421,10 @@ function HomePlaneacion({ onGoInformes }) {
 // programar hacia planta), lotes que se reciben hoy, y programación de
 // mesones de hoy (leída de Corte, solo lectura). Cada KPI es clicable y
 // despliega el detalle correspondiente en una ventana emergente.
-function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionCorte, corteConfig }) {
+function MiDiaPlaneadoraView({ lotes, reporteBMP, programacionBMP, programacionCorte, corteConfig, bloqueosMeson }) {
   const miDia = useMemo(() => generarMiDiaPlaneadora(lotes, reporteBMP, programacionBMP), [lotes, reporteBMP, programacionBMP]);
   const lotesRecibirHoy = useMemo(() => generarLotesRecibirHoy(lotes), [lotes]);
-  const mesonesHoy = useMemo(() => generarMesonesHoy(programacionCorte, corteConfig), [programacionCorte, corteConfig]);
+  const mesonesHoy = useMemo(() => generarMesonesHoy(programacionCorte, corteConfig, bloqueosMeson), [programacionCorte, corteConfig, bloqueosMeson]);
   const plantasVencidas = miDia.plantasIncumpliendo.filter((f) => f.diasRestantesPedido < 0);
   const plantasUrgentes = miDia.plantasIncumpliendo.filter((f) => f.diasRestantesPedido >= 0 && f.diasRestantesPedido <= 7);
   const bmpVencidos = miDia.bmpPendiente.filter((f) => f.diasRestantesPedido < 0);
@@ -2539,6 +2569,7 @@ export function MiDiaStandalone({ currentUser, onVolver, onLogout }) {
   const [programacionBMP, setProgramacionBMP] = useState([]);
   const [programacionCorte, setProgramacionCorte] = useState([]);
   const [corteConfig, setCorteConfig] = useState(null);
+  const [bloqueosMeson, setBloqueosMeson] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "planeacion_cargas"), (snap) => {
@@ -2562,6 +2593,12 @@ export function MiDiaStandalone({ currentUser, onVolver, onLogout }) {
   useEffect(() => {
     const unsub = onSnapshot(doc(db, "corte_config", "main"), (snap) => {
       setCorteConfig(snap.exists() ? snap.data() : null);
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "corte_bloqueos_meson"), (snap) => {
+      setBloqueosMeson(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     });
     return () => unsub();
   }, []);
@@ -2607,6 +2644,7 @@ export function MiDiaStandalone({ currentUser, onVolver, onLogout }) {
             programacionBMP={programacionBMP}
             programacionCorte={programacionCorte}
             corteConfig={corteConfig}
+            bloqueosMeson={bloqueosMeson}
           />
         </div>
       </div>
