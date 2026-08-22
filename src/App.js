@@ -7149,6 +7149,38 @@ function BusintCatalogoTestView() {
       setCargandoInventarioGen(false);
     }
   }
+  const [cargandoBarridoTotal, setCargandoBarridoTotal] = useState(false);
+  const [barridoTotal, setBarridoTotal] = useState(null);
+  async function verBarridoTotal() {
+    setCargandoBarridoTotal(true);
+    setError("");
+    setBarridoTotal(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getBarridoTotalTablasBusintBD");
+      const resp = await llamar();
+      setBarridoTotal(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo hacer el barrido total.");
+    } finally {
+      setCargandoBarridoTotal(false);
+    }
+  }
+  const [cargandoBarrido, setCargandoBarrido] = useState(false);
+  const [barrido, setBarrido] = useState(null);
+  async function verBarrido() {
+    setCargandoBarrido(true);
+    setError("");
+    setBarrido(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getBarridoTablasBusintBD");
+      const resp = await llamar();
+      setBarrido(resp.data?.resultados || []);
+    } catch (err) {
+      setError(err?.message || "No se pudo hacer el barrido.");
+    } finally {
+      setCargandoBarrido(false);
+    }
+  }
   async function consultar() {
     const nombre = endpoint.trim();
     if (!nombre) return;
@@ -7366,6 +7398,60 @@ function BusintCatalogoTestView() {
           <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 280, border: `1px solid ${T.border}` }}>
             {JSON.stringify(inventarioGen.ultimas, null, 2)}
           </pre>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Barrido TOTAL — revisa las 972 tablas de la API BD (tarda 1-3 min)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Trae la lista completa de tablas del swagger de Busint BD, consulta cada una (1 fila, solo para ver columnas) y te muestra SOLO las que tengan alguna columna con "teorico", "costo", "concepto", "tarifa", "sam" u "operacion" en el nombre. Tarda porque revisa las 972 una por una en lotes — no cierres la pantalla mientras carga.
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <Btn onClick={verBarridoTotal} disabled={cargandoBarridoTotal}>{cargandoBarridoTotal ? "Revisando las 972 tablas... (puede tardar minutos)" : "🔎 Barrido TOTAL (972 tablas)"}</Btn>
+      </div>
+      {barridoTotal && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 13, color: T.slate, marginBottom: 12 }}>
+            Revisadas: <strong style={{ color: T.ink }}>{barridoTotal.totalTablasRevisadas}</strong> · Con error: <strong style={{ color: T.ink }}>{barridoTotal.totalErrores}</strong> · Coincidencias: <strong style={{ color: T.ink }}>{(barridoTotal.encontradas || []).length}</strong>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {(barridoTotal.encontradas || []).map((r) => (
+              <div key={r.tabla} style={{ padding: 14, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: T.ink, marginBottom: 6 }}>{r.tabla}</div>
+                <div style={{ fontSize: 12, color: T.jade, fontWeight: 700, marginBottom: 4 }}>Columnas que coinciden: {(r.matchCols || []).join(", ")}</div>
+                <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Todas las columnas: {(r.columnas || []).join(", ")}</div>
+                <pre style={{ background: T.white, borderRadius: 8, padding: 10, fontSize: 11, overflowX: "auto", maxHeight: 160, border: `1px solid ${T.border}` }}>
+                  {JSON.stringify(r.muestra, null, 2)}
+                </pre>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Barrido rápido — candidatas para costo teórico de Nómina (API BD)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Consulta de una sola vez 9 tablas candidatas (gv-0generales valorizados, bc-visor de rendimiento de corte, lotes cumplidos conceptos, historia de dado por cumplido-lotes, lotes cumplidos teorico vs real-modcr, maestro plantas procesos, tabla procesos, rutaprocesos, unir procesos) y muestra solo columnas + 2 filas de muestra de cada una — para no gastar un clic por tabla.
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <Btn onClick={verBarrido} disabled={cargandoBarrido}>{cargandoBarrido ? "Consultando 9 tablas..." : "⚡ Barrido rápido"}</Btn>
+      </div>
+      {barrido && (
+        <div style={{ marginBottom: 24, display: "flex", flexDirection: "column", gap: 12 }}>
+          {barrido.map((r) => (
+            <div key={r.tabla} style={{ padding: 14, background: r.ok ? T.canvas : T.coralBg, borderRadius: 10, border: `1px solid ${r.ok ? T.border : T.coral}` }}>
+              <div style={{ fontWeight: 700, fontSize: 13, color: T.ink, marginBottom: 6 }}>{r.tabla}</div>
+              {r.ok ? (
+                <>
+                  <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>Columnas: {(r.columnas || []).join(", ") || "(sin filas)"}</div>
+                  <pre style={{ background: T.white, borderRadius: 8, padding: 10, fontSize: 11, overflowX: "auto", maxHeight: 180, border: `1px solid ${T.border}` }}>
+                    {JSON.stringify(r.muestra, null, 2)}
+                  </pre>
+                </>
+              ) : (
+                <div style={{ fontSize: 12, color: T.coral, fontWeight: 600 }}>⚠ {r.error}</div>
+              )}
+            </div>
+          ))}
         </div>
       )}
       <div style={{ height: 1, background: T.border, margin: "24px 0" }} />

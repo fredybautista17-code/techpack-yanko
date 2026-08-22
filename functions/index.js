@@ -634,6 +634,113 @@ exports.getCatalogoBusintCrudo = onCall(
   }
 );
 
+// (2026-08-21) EXPLORATORIO — en vez de probar tabla por tabla (una consulta
+// por clic), esto consulta VARIAS a la vez (page=1, pageSize chico, sin
+// contar el total — eso es lo lento) y devuelve solo columnas + 2 filas de
+// muestra por tabla, para escanear rápido un lote de candidatas de la lista
+// de 972 tablas de Busint BD sin gastar un clic por cada una. Si no se manda
+// `tablas`, usa una lista por defecto de candidatas para costo teórico de
+// mano de obra por proceso (lo que se está buscando para Nómina).
+const TABLAS_CANDIDATAS_NOMINA_DEFAULT = [
+  "gv-0generales valorizados",
+  "bc-visor de rendimiento de corte",
+  "lotes cumplidos conceptos",
+  "historia de dado por cumplido-lotes",
+  "lotes cumplidos teorico vs real-modcr",
+  "maestro plantas procesos",
+  "tabla procesos",
+  "rutaprocesos",
+  "unir procesos",
+];
+exports.getBarridoTablasBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    const tablas =
+      Array.isArray(request.data?.tablas) && request.data.tablas.length
+        ? request.data.tablas.map((t) => String(t))
+        : TABLAS_CANDIDATAS_NOMINA_DEFAULT;
+    const resultados = [];
+    for (const tabla of tablas) {
+      try {
+        const data = await consultarTablaBusintBD(tabla, 1, 3);
+        const filas = extraerFilasBusintBD(data);
+        resultados.push({
+          tabla,
+          ok: true,
+          columnas: filas && filas.length ? Object.keys(filas[0]) : [],
+          muestra: filas ? filas.slice(0, 2) : [data],
+        });
+      } catch (err) {
+        resultados.push({ tabla, ok: false, error: err?.message || String(err) });
+      }
+    }
+    return { resultados };
+  }
+);
+
+// (2026-08-21) EXPLORATORIO — en vez de adivinar nombres de tabla uno por
+// uno, esto revisa las 972 tablas de Busint BD DE VERDAD: trae la lista
+// completa desde el swagger público de la API BD (no hace falta mantenerla
+// a mano acá), consulta cada una con page=1/pageSize=1 en lotes paralelos
+// (25 a la vez, para no tardar una eternidad ni tumbar la API de Busint a
+// fuerza de pedidos), y se queda solo con las que tengan alguna columna que
+// contenga alguna de las palabras clave — así se ve de un vistazo cuáles
+// tablas de las 972 podrían servir, sin gastar un clic por cada una.
+exports.getBarridoTotalTablasBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    const keywords = (
+      Array.isArray(request.data?.keywords) && request.data.keywords.length
+        ? request.data.keywords
+        : ["teorico", "costo", "concepto", "tarifa", "sam", "operacion"]
+    ).map((k) => String(k).toLowerCase());
+    let enumList;
+    try {
+      const swaggerResp = await fetch("https://api-yanko-bd.busint.info/swagger/v1/swagger.json");
+      const swagger = await swaggerResp.json();
+      enumList = swagger.paths["/api/Query"].post.parameters.find((p) => p.name === "tableName").schema.enum;
+    } catch (err) {
+      logger.error("Error trayendo la lista de tablas del swagger de Busint BD", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo traer la lista de tablas del swagger: ${err?.message || String(err)}`);
+    }
+    const TAM_LOTE = 25;
+    const encontradas = [];
+    let totalErrores = 0;
+    for (let i = 0; i < enumList.length; i += TAM_LOTE) {
+      const lote = enumList.slice(i, i + TAM_LOTE);
+      const resultados = await Promise.all(
+        lote.map(async (tabla) => {
+          try {
+            const data = await consultarTablaBusintBD(tabla, 1, 1);
+            const filas = extraerFilasBusintBD(data);
+            const columnas = filas && filas.length ? Object.keys(filas[0]) : [];
+            const matchCols = columnas.filter((c) => keywords.some((k) => c.toLowerCase().includes(k)));
+            return { tabla, columnas, matchCols, muestra: filas && filas.length ? filas[0] : null };
+          } catch (err) {
+            return { tabla, error: err?.message || String(err) };
+          }
+        })
+      );
+      resultados.forEach((r) => {
+        if (r.error) {
+          totalErrores++;
+          return;
+        }
+        if (r.matchCols && r.matchCols.length) encontradas.push(r);
+      });
+    }
+    return { totalTablasRevisadas: enumList.length, totalErrores, encontradas };
+  }
+);
+
 // Trae TODAS las filas de una tabla de Busint BD, paginando sola (la API
 // entrega de a `pageSize` filas por página) hasta que una página llega
 // vacía/incompleta o se alcanza `maxPaginas` — tope de seguridad para no
