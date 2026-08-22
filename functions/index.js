@@ -1404,9 +1404,14 @@ exports.getValidacionPanelFlujoBusintGen = onCall(
       const p = panelPorLote.get(Number(l.numLote));
       if (!p) return;
       lotesEnComun++;
+      // OJO: "sin fecha todavía" viene como null desde Hoja1 pero como ""
+      // (cadena vacía) desde Panel Flujo — sin normalizar los dos a null,
+      // se contaban como discrepancia miles de lotes que en realidad están
+      // igual de "sin fecha" en ambos lados.
+      const normFecha = (v) => (v ? soloFecha(v) || null : null);
       const clienteIgual = String(p.nombreCliente || "").trim().toUpperCase() === String(l.nombreCliente || "").trim().toUpperCase();
-      const fechaConfIgual = soloFecha(p.fechaEntregaConf) === (l.fechaEntregaConfISO || null);
-      const fechaPedidoIgual = soloFecha(p.fechaEntregaPedido) === (l.fechaEntregaPedidoISO || null);
+      const fechaConfIgual = normFecha(p.fechaEntregaConf) === normFecha(l.fechaEntregaConfISO);
+      const fechaPedidoIgual = normFecha(p.fechaEntregaPedido) === normFecha(l.fechaEntregaPedidoISO);
       const invIgual =
         Number(p.invPlanta || 0) === Number(l.invPlanta || 0) &&
         Number(p.invBmp || 0) === Number(l.invBMP || 0) &&
@@ -1419,7 +1424,7 @@ exports.getValidacionPanelFlujoBusintGen = onCall(
           invPlanta: l.invPlanta, invBMP: l.invBMP, invSemiterminado: l.invSemiterminado, invCorte: l.invCorte,
         },
         panelFlujo: {
-          cliente: p.nombreCliente, fechaEntregaConf: soloFecha(p.fechaEntregaConf), fechaEntregaPedido: soloFecha(p.fechaEntregaPedido),
+          cliente: p.nombreCliente, fechaEntregaConf: normFecha(p.fechaEntregaConf), fechaEntregaPedido: normFecha(p.fechaEntregaPedido),
           invPlanta: p.invPlanta, invBMP: p.invBmp, invSemiterminado: p.invSemiterminado, invCorte: p.invCorte,
         },
         clienteIgual, fechaConfIgual, fechaPedidoIgual, invIgual,
