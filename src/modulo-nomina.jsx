@@ -8,6 +8,7 @@ import {
   deleteDoc,
   onSnapshot,
 } from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -18,6 +19,7 @@ const firebaseConfig = {
 };
 const fbApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
+const functionsClient = getFunctions(fbApp);
 async function fsSave(col, id, data) {
   await setDoc(doc(db, col, id), data, { merge: true });
 }
@@ -379,10 +381,38 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, currentUse
   const [referencia, setReferencia] = useState("");
   const [cantidad, setCantidad] = useState("");
   const [guardando, setGuardando] = useState(false);
+  // Costo teórico de confección de la referencia (costoFT en Busint) — se
+  // usa como tope: el precio/unidad configurado para el proceso nunca puede
+  // superarlo. Se busca a mano con el botón (no automático al escribir) para
+  // no golpear la función de Busint en cada tecla.
+  const [costoTeorico, setCostoTeorico] = useState(null);
+  const [buscandoCosto, setBuscandoCosto] = useState(false);
+  async function buscarCostoTeorico() {
+    const ref = referencia.trim();
+    if (!ref) return;
+    setBuscandoCosto(true);
+    setCostoTeorico(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getCostoTeoricoReferenciaBusint");
+      const resp = await llamar({ ref });
+      setCostoTeorico({ ...resp.data, _ref: ref });
+    } catch (err) {
+      setCostoTeorico({ error: err?.message || String(err) });
+    } finally {
+      setBuscandoCosto(false);
+    }
+  }
   const trabajadoresActivos = trabajadores.filter((t) => t.activo);
   const precioSel = precios.find((p) => p.proceso === proceso);
   const total = (Number(cantidad) || 0) * (precioSel?.precioUnidad || 0);
-  const puedeGuardar = trabajadorId && proceso && Number(cantidad) > 0 && !guardando;
+  // El tope solo aplica si de verdad se buscó el costo teórico de ESTA
+  // referencia (evita bloquear con el resultado de una búsqueda anterior si
+  // el usuario cambia la referencia sin volver a buscar) y si Busint tiene
+  // un costo teórico real configurado (costoFT > 0 — en 0 significa que esa
+  // referencia no está costeada todavía, no que el tope sea $0).
+  const costoAplicaA = costoTeorico && !costoTeorico.error && costoTeorico.encontrada && costoTeorico.costoFT > 0 && costoTeorico._ref === referencia.trim() ? costoTeorico : null;
+  const excedeCostoTeorico = !!(costoAplicaA && precioSel && precioSel.precioUnidad > costoAplicaA.costoFT);
+  const puedeGuardar = trabajadorId && proceso && Number(cantidad) > 0 && !guardando && !excedeCostoTeorico;
   async function guardar() {
     if (!puedeGuardar) return;
     setGuardando(true);
@@ -403,6 +433,7 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, currentUse
       });
       setReferencia("");
       setCantidad("");
+      setCostoTeorico(null);
     } finally {
       setGuardando(false);
     }
@@ -421,8 +452,21 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, currentUse
           <Field label="Proceso">
             <FSel value={proceso} onChange={setProceso} options={precios.map((p) => ({ value: p.proceso, label: `${p.proceso} (${fmtMoney(p.precioUnidad)}/und)` }))} />
           </Field>
-          <Field label="Referencia (opcional)"><FInput value={referencia} onChange={setReferencia} placeholder="Ej: CK3000" /></Field>
+          <Field label="Referencia (opcional)">
+            <div style={{ display: "flex", gap: 6 }}>
+              <FInput value={referencia} onChange={(v) => { setReferencia(v); setCostoTeorico(null); }} placeholder="Ej: CK3000" />
+              <Btn small onClick={buscarCostoTeorico} disabled={!referencia.trim() || buscandoCosto}>{buscandoCosto ? "..." : "🔍 Costo"}</Btn>
+            </div>
+          </Field>
         </div>
+        {costoTeorico && !costoTeorico.error && costoTeorico._ref === referencia.trim() && (
+          costoTeorico.encontrada && costoTeorico.costoFT > 0 ? (
+            <div style={{ fontSize: 11, color: C.slate, fontWeight: 600, marginBottom: 10 }}>Costo teórico Busint para {costoTeorico._ref}: {fmtMoney(costoTeorico.costoFT)}</div>
+          ) : (
+            <div style={{ fontSize: 11, color: C.slate, fontWeight: 600, marginBottom: 10 }}>Esta referencia no tiene costo teórico configurado en Busint todavía — no aplica tope.</div>
+          )
+        )}
+        {costoTeorico?.error && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se pudo consultar el costo teórico: {costoTeorico.error}</div>}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "end" }}>
           <Field label="Cantidad"><FInput type="number" value={cantidad} onChange={setCantidad} /></Field>
           <div style={{ marginBottom: 14 }}>
@@ -431,6 +475,11 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, currentUse
           </div>
         </div>
         {!proceso && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>Selecciona un proceso con precio ya configurado en "Precios por Proceso".</div>}
+        {excedeCostoTeorico && (
+          <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginBottom: 10 }}>
+            El precio configurado para "{proceso}" ({fmtMoney(precioSel.precioUnidad)}) supera el costo teórico de {costoAplicaA._ref} ({fmtMoney(costoAplicaA.costoFT)}). No se puede registrar así.
+          </div>
+        )}
         <Btn onClick={guardar} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Registrar Producción"}</Btn>
       </div>
       <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>ÚLTIMOS REGISTROS</div>

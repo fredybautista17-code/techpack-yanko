@@ -1729,6 +1729,40 @@ exports.probarReferenciaBusint = onCall(
   }
 );
 
+// (2026-08-21) Usado por Nómina → Registrar Producción para topar el precio
+// pagado por proceso contra el costo teórico de confección de esa
+// referencia — "costoFT" en ApiGen_Referencias (validado en vivo, ojo que
+// viene en 0 para varias referencias que Busint no tiene costeadas todavía,
+// eso no es un error, solo significa que esa ref no tiene tope configurado).
+exports.getCostoTeoricoReferenciaBusint = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const { ref } = request.data || {};
+    const refBuscada = String(ref || "").trim();
+    if (!refBuscada) {
+      throw new HttpsError("invalid-argument", "ref es obligatorio.");
+    }
+    let filas;
+    try {
+      filas = await consultarCatalogoBusint("ApiGen_Referencias");
+    } catch (err) {
+      logger.error("Error consultando Busint (getCostoTeoricoReferenciaBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar el maestro de referencias de Busint. Intenta de nuevo en unos minutos.");
+    }
+    const normBuscada = normalizarRefComparacion(refBuscada);
+    const encontrada = filas.find((f) => normalizarRefComparacion(f.ref) === normBuscada);
+    return {
+      encontrada: !!encontrada,
+      costoFT: encontrada ? Number(encontrada.costoFT) || 0 : null,
+      descripcion: encontrada?.descripcionLarga || null,
+    };
+  }
+);
+
 // Usado por módulo Bodega → Despachos → Montar Despacho (destino Dubo): en
 // vez de digitar cada referencia una por una, trae de un tirón TODAS las
 // líneas de un Traslado de Busint a partir de su número (el que aparece
