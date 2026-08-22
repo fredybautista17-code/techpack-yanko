@@ -1793,10 +1793,6 @@ function InformesView({
   const [showUpload, setShowUpload] = useState(false);
   const [cargaId, setCargaId] = useState(null);
   const [tab, setTab] = useState("en_planta");
-  const [actualizandoInv, setActualizandoInv] = useState(false);
-  const [resultadoInv, setResultadoInv] = useState(null);
-  const [actualizandoCF, setActualizandoCF] = useState(false);
-  const [resultadoCF, setResultadoCF] = useState(null);
   const [actualizandoDesdeBusint, setActualizandoDesdeBusint] = useState(false);
   const [resultadoDesdeBusint, setResultadoDesdeBusint] = useState(null);
   // (2026-08-21) Genera una carga NUEVA completa desde
@@ -1822,116 +1818,6 @@ function InformesView({
       setResultadoDesdeBusint({ error: err?.message || String(err) });
     } finally {
       setActualizandoDesdeBusint(false);
-    }
-  }
-  // Refresca SOLO el inventario por lote (Planta/BMP/Corte/BPT/
-  // Semiterminado) contra la API "BD" de Busint — el cliente y la fecha de
-  // entrega del pedido siguen viniendo de Hoja1 y no se tocan acá, porque
-  // esta API no tiene una llave confiable para cruzar lote↔pedido (solo por
-  // referencia, que puede repetirse en varios pedidos). El cruce SÍ es
-  // confiable por número de lote (`Numero_de_Lote` en Busint = `numLote`
-  // acá), así que solo se actualizan los 5 campos de inventario + planta,
-  // y se recalculan `ubicacionActual`/`unidadesUbicacion`/`semanaEntregaISO`
-  // con la misma lógica que usa `agruparLotes` al subir Hoja1.
-  async function actualizarInventarioBusint() {
-    if (!cargaActiva) return;
-    setActualizandoInv(true);
-    setResultadoInv(null);
-    try {
-      const llamar = httpsCallable(functionsClient, "getInventarioLotesBusintBD");
-      const resp = await llamar();
-      const filasBusint = resp.data?.lotes || [];
-      const porNumLote = new Map(filasBusint.map((f) => [f.numLote, f]));
-      let actualizados = 0;
-      const nuevosLotes = (cargaActiva.lotes || []).map((l) => {
-        const upd = porNumLote.get(l.numLote);
-        if (!upd) return l;
-        const cambio =
-          upd.invCorte !== l.invCorte ||
-          upd.invBMP !== l.invBMP ||
-          upd.invPlanta !== l.invPlanta ||
-          upd.invBPT !== l.invBPT ||
-          upd.invSemiterminado !== l.invSemiterminado;
-        if (!cambio) return l;
-        actualizados++;
-        const merged = {
-          ...l,
-          invCorte: upd.invCorte,
-          invBMP: upd.invBMP,
-          invPlanta: upd.invPlanta,
-          invBPT: upd.invBPT,
-          invSemiterminado: upd.invSemiterminado,
-          nombrePlanta: upd.nombrePlanta || l.nombrePlanta,
-        };
-        let ubicacionActual = "Sin inventario";
-        let unidadesUbicacion = 0;
-        if (merged.invBPT > 0) { ubicacionActual = "BPT"; unidadesUbicacion = merged.invBPT; }
-        else if (merged.invSemiterminado > 0) { ubicacionActual = "Semiterminado"; unidadesUbicacion = merged.invSemiterminado; }
-        else if (merged.invPlanta > 0) { ubicacionActual = "Planta"; unidadesUbicacion = merged.invPlanta; }
-        else if (merged.invBMP > 0) { ubicacionActual = "BMP"; unidadesUbicacion = merged.invBMP; }
-        else if (merged.invCorte > 0) { ubicacionActual = "Corte"; unidadesUbicacion = merged.invCorte; }
-        merged.ubicacionActual = ubicacionActual;
-        merged.unidadesUbicacion = unidadesUbicacion;
-        merged.semanaEntregaISO = merged.invPlanta > 0 ? dateToISO(lunesDeSemana(isoToLocalDate(merged.fechaEntregaConfISO))) : null;
-        return merged;
-      });
-      if (actualizados > 0) {
-        await fsSave("planeacion_cargas", cargaActiva.id, {
-          lotes: nuevosLotes,
-          ultimaActualizacionInventarioISO: new Date().toISOString(),
-        });
-      }
-      setResultadoInv({ actualizados, totalBusint: filasBusint.length });
-    } catch (err) {
-      setResultadoInv({ error: err?.message || String(err) });
-    } finally {
-      setActualizandoInv(false);
-    }
-  }
-  // (2026-08-19) Refresca SOLO nombreCliente + fechaEntregaConfISO contra la
-  // API "BD" de Busint (cruce orden produccion -> pedidos clientes ->
-  // maestro de clientes, validado 100/100 pedido resuelto y 98/100 con
-  // fecha real distinta de la fecha de creación del pedido). NO toca
-  // referencia, categoría, ni inventario — "Subir Hoja1" sigue siendo la
-  // forma de cargar lotes nuevos, esto solo mantiene al día los que ya
-  // están cargados. Recalcula semanaEntregaISO igual que agruparLotes.
-  async function actualizarClienteFechaBusint() {
-    if (!cargaActiva) return;
-    setActualizandoCF(true);
-    setResultadoCF(null);
-    try {
-      const llamar = httpsCallable(functionsClient, "getClienteFechaLotesBusintBD");
-      const resp = await llamar();
-      const filasBusint = resp.data?.lotes || [];
-      const porNumLote = new Map(filasBusint.map((f) => [f.numLote, f]));
-      let actualizados = 0;
-      const nuevosLotes = (cargaActiva.lotes || []).map((l) => {
-        const upd = porNumLote.get(l.numLote);
-        if (!upd) return l;
-        const cambio =
-          (upd.nombreCliente && upd.nombreCliente !== l.nombreCliente) ||
-          (upd.fechaEntregaConfISO && upd.fechaEntregaConfISO !== l.fechaEntregaConfISO);
-        if (!cambio) return l;
-        actualizados++;
-        const merged = {
-          ...l,
-          nombreCliente: upd.nombreCliente || l.nombreCliente,
-          fechaEntregaConfISO: upd.fechaEntregaConfISO || l.fechaEntregaConfISO,
-        };
-        merged.semanaEntregaISO = merged.invPlanta > 0 ? dateToISO(lunesDeSemana(isoToLocalDate(merged.fechaEntregaConfISO))) : null;
-        return merged;
-      });
-      if (actualizados > 0) {
-        await fsSave("planeacion_cargas", cargaActiva.id, {
-          lotes: nuevosLotes,
-          ultimaActualizacionClienteFechaISO: new Date().toISOString(),
-        });
-      }
-      setResultadoCF({ actualizados, totalBusint: filasBusint.length });
-    } catch (err) {
-      setResultadoCF({ error: err?.message || String(err) });
-    } finally {
-      setActualizandoCF(false);
     }
   }
   // Ordena por `creadoEn` (timestamp completo con hora) cuando existe, para
@@ -2211,26 +2097,6 @@ function InformesView({
           {cargaActiva && (
             <Btn variant="secondary" onClick={exportarExcel}>📤 Exportar Excel</Btn>
           )}
-          {cargaActiva && (
-            <Btn
-              variant="secondary"
-              onClick={actualizarInventarioBusint}
-              disabled={actualizandoInv}
-              title="Refresca cuánto hay en Planta/BMP/Corte/BPT/Semiterminado de cada lote, cruzando por número de lote contra Busint — el cliente y la fecha de entrega siguen viniendo de Hoja1"
-            >
-              {actualizandoInv ? "Actualizando…" : "🔄 Actualizar inventario"}
-            </Btn>
-          )}
-          {cargaActiva && (
-            <Btn
-              variant="secondary"
-              onClick={actualizarClienteFechaBusint}
-              disabled={actualizandoCF}
-              title="Refresca cliente y fecha de entrega de cada lote, cruzando por número de pedido contra Busint — no toca inventario ni referencia"
-            >
-              {actualizandoCF ? "Actualizando…" : "🔄 Actualizar cliente y fecha"}
-            </Btn>
-          )}
           <Btn
             variant="secondary"
             onClick={actualizarDesdeBusintGen}
@@ -2251,25 +2117,6 @@ function InformesView({
           )}
         </div>
       </div>
-      {resultadoInv && (
-        <div
-          style={{
-            marginBottom: 16,
-            padding: "10px 14px",
-            borderRadius: 10,
-            background: resultadoInv.error ? C.redBg : resultadoInv.actualizados > 0 ? C.greenBg : C.canvas,
-            border: `1px solid ${resultadoInv.error ? C.red : resultadoInv.actualizados > 0 ? C.green : C.border}`,
-            fontSize: 12.5,
-            color: C.ink,
-          }}
-        >
-          {resultadoInv.error
-            ? `⚠ No se pudo actualizar: ${resultadoInv.error}`
-            : resultadoInv.actualizados > 0
-            ? `✓ Se actualizó el inventario de ${resultadoInv.actualizados} lote(s) contra Busint.`
-            : "El inventario ya estaba al día — nada que actualizar."}
-        </div>
-      )}
       {resultadoDesdeBusint && (
         <div
           style={{
@@ -2285,25 +2132,6 @@ function InformesView({
           {resultadoDesdeBusint.error
             ? `⚠ No se pudo traer la carga desde Busint: ${resultadoDesdeBusint.error}`
             : `✓ Se generó una carga nueva con ${resultadoDesdeBusint.total} lote(s) desde Busint.`}
-        </div>
-      )}
-      {resultadoCF && (
-        <div
-          style={{
-            marginBottom: 16,
-            padding: "10px 14px",
-            borderRadius: 10,
-            background: resultadoCF.error ? C.redBg : resultadoCF.actualizados > 0 ? C.greenBg : C.canvas,
-            border: `1px solid ${resultadoCF.error ? C.red : resultadoCF.actualizados > 0 ? C.green : C.border}`,
-            fontSize: 12.5,
-            color: C.ink,
-          }}
-        >
-          {resultadoCF.error
-            ? `⚠ No se pudo actualizar: ${resultadoCF.error}`
-            : resultadoCF.actualizados > 0
-            ? `✓ Se actualizó cliente/fecha de entrega de ${resultadoCF.actualizados} lote(s) contra Busint.`
-            : "Cliente y fecha de entrega ya estaban al día — nada que actualizar."}
         </div>
       )}
       {!cargaActiva ? (
