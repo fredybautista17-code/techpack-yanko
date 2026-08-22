@@ -422,6 +422,37 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, currentUse
   // no golpear la función de Busint en cada tecla.
   const [costoTeorico, setCostoTeorico] = useState(null);
   const [buscandoCosto, setBuscandoCosto] = useState(false);
+  // Búsqueda por N° de Lote (Busint → Panel de Flujo Operacional): en vez de
+  // escribir la referencia a mano, buscan el lote y les trae de una vez
+  // pedido, cliente, cantidad cortada, referencia y costo teórico — así lo
+  // pidió el usuario con el ejemplo del lote 7150.
+  const [numLote, setNumLote] = useState("");
+  const [loteInfo, setLoteInfo] = useState(null);
+  const [buscandoLote, setBuscandoLote] = useState(false);
+  async function buscarLote() {
+    const n = numLote.trim();
+    if (!n) return;
+    setBuscandoLote(true);
+    setLoteInfo(null);
+    setCostoTeorico(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getLoteBusintPorNumero");
+      const resp = await llamar({ numLote: n });
+      setLoteInfo(resp.data);
+      if (resp.data?.encontrada) {
+        setReferencia(resp.data.referencia || "");
+        setCostoTeorico({
+          encontrada: resp.data.costoFT != null,
+          costoFT: resp.data.costoFT,
+          _ref: resp.data.referencia || "",
+        });
+      }
+    } catch (err) {
+      setLoteInfo({ error: err?.message || String(err) });
+    } finally {
+      setBuscandoLote(false);
+    }
+  }
   async function buscarCostoTeorico() {
     const ref = referencia.trim();
     if (!ref) return;
@@ -460,6 +491,8 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, currentUse
         fecha,
         proceso,
         referencia: referencia.trim(),
+        numLote: loteInfo?.encontrada && loteInfo.referencia === referencia.trim() ? loteInfo.numLote : null,
+        numPedido: loteInfo?.encontrada && loteInfo.referencia === referencia.trim() ? loteInfo.numPedido : null,
         cantidad: Number(cantidad) || 0,
         precioUnidad: precioSel?.precioUnidad || 0,
         total,
@@ -469,6 +502,8 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, currentUse
       setReferencia("");
       setCantidad("");
       setCostoTeorico(null);
+      setNumLote("");
+      setLoteInfo(null);
     } finally {
       setGuardando(false);
     }
@@ -483,6 +518,22 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, currentUse
           </Field>
           <Field label="Fecha"><FInput type="date" value={fecha} onChange={setFecha} /></Field>
         </div>
+        <Field label="N° Lote (Busint)">
+          <div style={{ display: "flex", gap: 6 }}>
+            <FInput type="number" value={numLote} onChange={(v) => { setNumLote(v); setLoteInfo(null); }} placeholder="Ej: 7150" />
+            <Btn small onClick={buscarLote} disabled={!numLote.trim() || buscandoLote}>{buscandoLote ? "..." : "🔍 Buscar Lote"}</Btn>
+          </div>
+        </Field>
+        {loteInfo?.error && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se pudo buscar el lote: {loteInfo.error}</div>}
+        {loteInfo && !loteInfo.error && !loteInfo.encontrada && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se encontró ese lote en Busint.</div>}
+        {loteInfo?.encontrada && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, padding: "10px 12px", background: C.canvas, borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
+            <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>PEDIDO</div><div style={{ fontWeight: 700 }}>{loteInfo.numPedido || "—"}</div></div>
+            <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>CLIENTE</div><div style={{ fontWeight: 700 }}>{loteInfo.nombreCliente || "—"}</div></div>
+            <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>CANT. CORTADA</div><div style={{ fontWeight: 700 }}>{fmtNum(loteInfo.cantCortada)}</div></div>
+            <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>CATEGORÍA</div><div style={{ fontWeight: 700 }}>{loteInfo.categoria || "—"}</div></div>
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           <Field label="Proceso">
             <FSel value={proceso} onChange={setProceso} options={precios.map((p) => ({ value: p.proceso, label: `${p.proceso} (${fmtMoney(p.precioUnidad)}/und)` }))} />
@@ -524,6 +575,7 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, currentUse
           { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
           { key: "trabajadorNombre", label: "Trabajador" },
           { key: "proceso", label: "Proceso" },
+          { key: "numLote", label: "Lote", render: (f) => f.numLote || "—" },
           { key: "referencia", label: "Referencia", render: (f) => f.referencia || "—" },
           { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
           { key: "precioUnidad", label: "Precio/Und", align: "right", render: (f) => fmtMoney(f.precioUnidad) },

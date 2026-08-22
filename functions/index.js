@@ -1763,6 +1763,57 @@ exports.getCostoTeoricoReferenciaBusint = onCall(
   }
 );
 
+// (2026-08-22) Usado por Nómina → Registrar Producción → "Buscar Lote": Anny
+// y Sarai buscan por N° de lote en vez de escribir la referencia a mano —
+// trae de una vez cantidad cortada, pedido, cliente y el costo teórico
+// (costoFT) de esa referencia, para que no tengan que hacer dos búsquedas.
+exports.getLoteBusintPorNumero = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const { numLote } = request.data || {};
+    const loteBuscado = Number(numLote);
+    if (!Number.isFinite(loteBuscado) || loteBuscado <= 0) {
+      throw new HttpsError("invalid-argument", "numLote es obligatorio.");
+    }
+    let filasPanel;
+    try {
+      filasPanel = await consultarCatalogoBusint("ApiGen_PanelControlFlujoOperacional");
+    } catch (err) {
+      logger.error("Error consultando Busint (getLoteBusintPorNumero, panel flujo)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar Busint. Intenta de nuevo en unos minutos.");
+    }
+    const lote = filasPanel.find((f) => Number(f.numLote) === loteBuscado);
+    if (!lote) {
+      return { encontrada: false };
+    }
+    let costoFT = null;
+    try {
+      const filasRef = await consultarCatalogoBusint("ApiGen_Referencias");
+      const normBuscada = normalizarRefComparacion(lote.referencia);
+      const refEncontrada = filasRef.find((f) => normalizarRefComparacion(f.ref) === normBuscada);
+      costoFT = refEncontrada ? Number(refEncontrada.costoFT) || 0 : null;
+    } catch (err) {
+      logger.error("Error consultando Busint (getLoteBusintPorNumero, referencias)", { error: String(err) });
+      // No tumba la búsqueda del lote por esto — solo queda sin costo teórico.
+    }
+    return {
+      encontrada: true,
+      numLote: lote.numLote,
+      numPedido: lote.numPedido || null,
+      referencia: lote.referencia || "",
+      nombreCliente: lote.nombreCliente || "",
+      categoria: lote.categoria || "",
+      cantCortada: Number(lote.cantCortada) || 0,
+      fechaCorteISO: lote.fechaCorte || null,
+      costoFT,
+    };
+  }
+);
+
 // Usado por módulo Bodega → Despachos → Montar Despacho (destino Dubo): en
 // vez de digitar cada referencia una por una, trae de un tirón TODAS las
 // líneas de un Traslado de Busint a partir de su número (el que aparece
