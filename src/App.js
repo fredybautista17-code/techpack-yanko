@@ -5258,7 +5258,7 @@ function EditNombreModal({ item, tipo, config, onSave, onClose }) {
 function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState(null);
-  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "" });
+  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "", areaNomina: "" });
   const [changePwdId, setChangePwdId] = useState(null);
   const [newPwd, setNewPwd] = useState("");
   const [showPwd, setShowPwd] = useState(false);
@@ -5293,8 +5293,8 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
     }
     setMigrando(false);
   }
-  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "" }); setEditUser(null); setShowForm(true); setError(""); }
-  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", email: u.email || "" }); setEditUser(u); setShowForm(true); setError(""); }
+  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "", areaNomina: "" }); setEditUser(null); setShowForm(true); setError(""); }
+  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", email: u.email || "", areaNomina: u.areaNomina || "" }); setEditUser(u); setShowForm(true); setError(""); }
   // Crear usuario nuevo pasa por la Cloud Function `adminCrearUsuario` (Fase
   // B): a diferencia de editar, crear SÍ necesita generar una cuenta real de
   // Firebase Auth para que esa persona pueda entrar — eso no lo puede hacer
@@ -5311,7 +5311,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
       if (!form.name) { setError("El nombre es obligatorio."); return; }
       if (form.email && form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) { setError("El correo no parece válido."); return; }
       const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", email: form.email ? form.email.trim() : "", avatar } : u)));
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", avatar } : u)));
       setShowForm(false);
       return;
     }
@@ -5323,7 +5323,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
     setCreando(true);
     try {
       const llamar = httpsCallable(functionsClient, "adminCrearUsuario");
-      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado, email: form.email ? form.email.trim() : "" });
+      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado, email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "" });
       setShowForm(false);
     } catch (err) {
       setError(err?.message || "No se pudo crear el usuario.");
@@ -5453,6 +5453,15 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
                 {(config.clientes || []).map((c) => <option key={c.nombre} value={c.nombre}>{c.nombre}</option>)}
               </select>
               <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Si eliges un cliente, este usuario solo verá prototipos, cápsulas, pedidos y estadísticas de ese cliente.</div>
+            </div>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Área de Nómina (opcional)</label>
+              <select value={form.areaNomina} onChange={(e) => setForm((f) => ({ ...f, areaNomina: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
+                <option value="">— Ninguna (no es líder de área) —</option>
+                <option value="Terminación">Terminación</option>
+                <option value="Termofijación">Termofijación</option>
+              </select>
+              <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Si eliges un área, este usuario entra a Nómina con una pantalla simple para registrar solo la producción de su gente (ej. Anny Beltrán → Terminación, Sarai Méndez → Termofijación). Necesita también acceso al módulo "Nómina" en su rol.</div>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>

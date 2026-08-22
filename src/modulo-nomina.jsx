@@ -86,6 +86,33 @@ function isoDate(d) {
   return d.toISOString().slice(0, 10);
 }
 const MONTHS_SHORT = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+// Quincena colombiana: 1–15 y 16–fin de mes (el fin varía: 28, 29, 30 o 31
+// según el mes — "se deben incluir los 31 de cada mes si hay", pidió el
+// usuario). offset=0 es la quincena en la que cae hoy; offset negativo/
+// positivo mueve hacia atrás/adelante de a media quincena.
+function quincenaDe(offset) {
+  const hoy = new Date();
+  let year = hoy.getFullYear();
+  let month = hoy.getMonth();
+  let mitad = hoy.getDate() <= 15 ? 1 : 2;
+  let pasos = offset;
+  while (pasos > 0) {
+    if (mitad === 1) { mitad = 2; } else { mitad = 1; month += 1; if (month > 11) { month = 0; year += 1; } }
+    pasos--;
+  }
+  while (pasos < 0) {
+    if (mitad === 2) { mitad = 1; } else { mitad = 2; month -= 1; if (month < 0) { month = 11; year -= 1; } }
+    pasos++;
+  }
+  const ultimoDiaMes = new Date(year, month + 1, 0).getDate();
+  const diaInicio = mitad === 1 ? 1 : 16;
+  const diaFin = mitad === 1 ? 15 : ultimoDiaMes;
+  const pad = (n) => String(n).padStart(2, "0");
+  const desde = `${year}-${pad(month + 1)}-${pad(diaInicio)}`;
+  const hasta = `${year}-${pad(month + 1)}-${pad(diaFin)}`;
+  const label = `${diaInicio}–${diaFin} ${MONTHS_SHORT[month]} ${year}`;
+  return { desde, hasta, year, month, mitad, label };
+}
 // ─── UI ATOMS (mismas de los demás módulos) ───────────────────────────────────
 function Btn({ children, onClick, variant = "primary", small, disabled }) {
   const S = {
@@ -218,21 +245,28 @@ function Tabla({ columnas, filas, vacio, onRowClick }) {
 // Maestro simple: nombre + tarifa por hora (usada para calcular las "Horas
 // Sueltas") + activo/inactivo (un trabajador inactivo no aparece en los
 // selects de los formularios de registro, pero su historial queda intacto).
+// Áreas de Nómina: hoy solo hay dos líderes con equipo propio (Terminación →
+// Anny Beltrán, Termofijación → Sarai Méndez); "Sin asignar" cubre todo lo
+// demás mientras no se necesite otra área. Es la misma etiqueta que se usa
+// para filtrarle a cada líder únicamente su gente al iniciar sesión.
+const AREAS_NOMINA = ["Terminación", "Termofijación", "Sin asignar"];
 function TrabajadorModal({ trabajador, onSave, onClose }) {
   const [form, setForm] = useState({
     nombre: trabajador?.nombre || "",
     tarifaHora: trabajador?.tarifaHora ?? "",
     activo: trabajador?.activo ?? true,
+    area: trabajador?.area || "Sin asignar",
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function guardar() {
     if (!form.nombre.trim()) return;
-    onSave({ nombre: form.nombre.trim(), tarifaHora: Number(form.tarifaHora) || 0, activo: !!form.activo });
+    onSave({ nombre: form.nombre.trim(), tarifaHora: Number(form.tarifaHora) || 0, activo: !!form.activo, area: form.area || "Sin asignar" });
     onClose();
   }
   return (
     <Modal title={trabajador ? "Editar Trabajador" : "Nuevo Trabajador"} onClose={onClose} width={440}>
       <Field label="Nombre"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Carlos Javier González" /></Field>
+      <Field label="Área"><FSel value={form.area} onChange={set("area")} options={AREAS_NOMINA} placeholder="Sin asignar" /></Field>
       <Field label="Tarifa por hora (para tareas sueltas)"><FInput type="number" value={form.tarifaHora} onChange={set("tarifaHora")} /></Field>
       {trabajador && (
         <Field label="Estado">
@@ -281,6 +315,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete }) {
         vacio="Sin trabajadores registrados."
         columnas={[
           { key: "nombre", label: "Nombre" },
+          { key: "area", label: "Área", render: (f) => f.area || "Sin asignar" },
           { key: "tarifaHora", label: "Tarifa/Hora", align: "right", render: (f) => fmtMoney(f.tarifaHora) },
           { key: "activo", label: "Estado", render: (f) => (
             <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: f.activo ? C.greenBg : C.redBg, color: f.activo ? C.green : C.red }}>
@@ -575,25 +610,23 @@ function RegistrarHorasView({ trabajadores, horas, currentUser, onGuardar, onBor
 // Junta Producción + Horas Sueltas de la semana activa, agrupado por
 // trabajador, para armar el pago — clic en un trabajador abre el desglose
 // línea por línea (qué procesos/tareas componen su total).
-function ResumenSemanalView({ trabajadores, produccion, horas }) {
-  const [weekOffset, setWeekOffset] = useState(0);
+function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, cierres, onCerrar, onReabrir }) {
+  const [qOffset, setQOffset] = useState(0);
   const [trabajadorAbierto, setTrabajadorAbierto] = useState(null);
-  const monday = addDays(mondayOf(new Date()), weekOffset * 7);
-  const sunday = addDays(monday, 6);
-  const desde = isoDate(monday);
-  const hasta = isoDate(sunday);
-  const prodSemana = produccion.filter((p) => p.fecha >= desde && p.fecha <= hasta);
-  const horasSemana = horas.filter((h) => h.fecha >= desde && h.fecha <= hasta);
+  const { desde, hasta, label } = quincenaDe(qOffset);
+  const prodQuincena = produccion.filter((p) => p.fecha >= desde && p.fecha <= hasta);
+  const horasQuincena = horas.filter((h) => h.fecha >= desde && h.fecha <= hasta);
+  const cierre = (cierres || []).find((c) => c.desde === desde);
   const porTrabajador = useMemo(() => {
     const mapa = new Map();
     trabajadores.forEach((t) => mapa.set(t.id, { trabajadorId: t.id, nombre: t.nombre, totalProduccion: 0, totalHoras: 0, unidades: 0, horasCant: 0 }));
-    prodSemana.forEach((p) => {
+    prodQuincena.forEach((p) => {
       if (!mapa.has(p.trabajadorId)) mapa.set(p.trabajadorId, { trabajadorId: p.trabajadorId, nombre: p.trabajadorNombre, totalProduccion: 0, totalHoras: 0, unidades: 0, horasCant: 0 });
       const g = mapa.get(p.trabajadorId);
       g.totalProduccion += p.total || 0;
       g.unidades += p.cantidad || 0;
     });
-    horasSemana.forEach((h) => {
+    horasQuincena.forEach((h) => {
       if (!mapa.has(h.trabajadorId)) mapa.set(h.trabajadorId, { trabajadorId: h.trabajadorId, nombre: h.trabajadorNombre, totalProduccion: 0, totalHoras: 0, unidades: 0, horasCant: 0 });
       const g = mapa.get(h.trabajadorId);
       g.totalHoras += h.total || 0;
@@ -603,24 +636,24 @@ function ResumenSemanalView({ trabajadores, produccion, horas }) {
       .map((g) => ({ ...g, totalGeneral: g.totalProduccion + g.totalHoras }))
       .filter((g) => g.totalGeneral > 0 || g.unidades > 0 || g.horasCant > 0)
       .sort((a, b) => b.totalGeneral - a.totalGeneral);
-  }, [trabajadores, prodSemana, horasSemana]);
-  const totalSemana = porTrabajador.reduce((s, g) => s + g.totalGeneral, 0);
+  }, [trabajadores, prodQuincena, horasQuincena]);
+  const totalQuincena = porTrabajador.reduce((s, g) => s + g.totalGeneral, 0);
   const detalleAbierto = trabajadorAbierto
     ? {
-        produccion: prodSemana.filter((p) => p.trabajadorId === trabajadorAbierto.trabajadorId),
-        horas: horasSemana.filter((h) => h.trabajadorId === trabajadorAbierto.trabajadorId),
+        produccion: prodQuincena.filter((p) => p.trabajadorId === trabajadorAbierto.trabajadorId),
+        horas: horasQuincena.filter((h) => h.trabajadorId === trabajadorAbierto.trabajadorId),
       }
     : null;
   async function exportarExcel() {
     const XLSX = await import("xlsx");
     const wb = XLSX.utils.book_new();
     const filas = [
-      ["RESUMEN NÓMINA — SEMANA", `${fmtFechaISO(desde)} — ${fmtFechaISO(hasta)}`],
+      ["RESUMEN NÓMINA — QUINCENA", `${fmtFechaISO(desde)} — ${fmtFechaISO(hasta)}`],
       [],
       ["Trabajador", "Unidades", "Total Producción", "Horas", "Total Horas", "Total a Pagar"],
       ...porTrabajador.map((g) => [g.nombre, g.unidades, g.totalProduccion, g.horasCant, g.totalHoras, g.totalGeneral]),
       [],
-      ["TOTAL SEMANA", "", "", "", "", totalSemana],
+      ["TOTAL QUINCENA", "", "", "", "", totalQuincena],
     ];
     const ws = XLSX.utils.aoa_to_sheet(filas);
     XLSX.utils.book_append_sheet(wb, ws, "Resumen Nómina");
@@ -632,7 +665,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas }) {
         <Modal title={`Detalle de "${trabajadorAbierto.nombre}" — ${fmtFechaISO(desde)} al ${fmtFechaISO(hasta)}`} onClose={() => setTrabajadorAbierto(null)} width={720}>
           <div style={{ fontWeight: 800, fontSize: 12, color: C.ink, marginBottom: 8 }}>PRODUCCIÓN</div>
           <Tabla
-            vacio="Sin producción esta semana."
+            vacio="Sin producción esta quincena."
             columnas={[
               { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
               { key: "proceso", label: "Proceso" },
@@ -644,7 +677,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas }) {
           />
           <div style={{ fontWeight: 800, fontSize: 12, color: C.ink, margin: "18px 0 8px" }}>HORAS SUELTAS</div>
           <Tabla
-            vacio="Sin horas sueltas esta semana."
+            vacio="Sin horas sueltas esta quincena."
             columnas={[
               { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
               { key: "concepto", label: "Concepto" },
@@ -656,22 +689,29 @@ function ResumenSemanalView({ trabajadores, produccion, horas }) {
         </Modal>
       )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <button onClick={() => setWeekOffset((o) => o - 1)} style={{ padding: "6px 12px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: C.ink }}>← Anterior</button>
-        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>
-          {monday.getDate()} {MONTHS_SHORT[monday.getMonth()]} — {sunday.getDate()} {MONTHS_SHORT[sunday.getMonth()]} {sunday.getFullYear()}
+        <button onClick={() => setQOffset((o) => o - 1)} style={{ padding: "6px 12px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: C.ink }}>← Anterior</button>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{label}</div>
+        <button onClick={() => setQOffset((o) => o + 1)} style={{ padding: "6px 12px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: C.ink }}>Siguiente →</button>
+      </div>
+      {cierre && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 14px", background: C.violetBg, border: `1px solid ${C.violet}44`, borderRadius: 10, marginBottom: 16 }}>
+          <div style={{ fontSize: 12, color: C.violet, fontWeight: 700 }}>🔒 Quincena cerrada por {cierre.cerradoPor || "—"} el {fmtFechaHora(cierre.cerradoEn)} — total: {fmtMoney(cierre.totalQuincena)}</div>
+          {isAdmin && <Btn variant="secondary" small onClick={() => onReabrir(cierre.id)}>Reabrir</Btn>}
         </div>
-        <button onClick={() => setWeekOffset((o) => o + 1)} style={{ padding: "6px 12px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: C.ink }}>Siguiente →</button>
-      </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 20 }}>
-        <KPI icon="👷" label="Trabajadores con pago esta semana" value={fmtNum(porTrabajador.length)} color={C.ink} bg={C.canvas} />
-        <KPI icon="💰" label="Total a Pagar" value={fmtMoney(totalSemana)} color={C.green} bg={C.greenBg} />
+        <KPI icon="👷" label="Trabajadores con pago esta quincena" value={fmtNum(porTrabajador.length)} color={C.ink} bg={C.canvas} />
+        <KPI icon="💰" label="Total a Pagar" value={fmtMoney(totalQuincena)} color={C.green} bg={C.greenBg} />
       </div>
-      <div style={{ marginBottom: 14 }}>
+      <div style={{ marginBottom: 14, display: "flex", gap: 10 }}>
         <Btn variant="secondary" small onClick={exportarExcel} disabled={!porTrabajador.length}>⬇ Exportar a Excel</Btn>
+        {isAdmin && !cierre && (
+          <Btn small onClick={() => onCerrar({ desde, hasta, label, totalQuincena, porTrabajador })} disabled={!porTrabajador.length}>🔒 Cerrar Quincena</Btn>
+        )}
       </div>
-      <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Clic en un trabajador para ver el desglose de su semana.</div>
+      <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Clic en un trabajador para ver el desglose de su quincena.</div>
       <Tabla
-        vacio="Sin registros esta semana."
+        vacio="Sin registros esta quincena."
         onRowClick={(f) => setTrabajadorAbierto(f)}
         columnas={[
           { key: "nombre", label: "Trabajador" },
@@ -711,11 +751,18 @@ function DashboardNominaView({ trabajadores, precios, produccion, horas }) {
 }
 // ─── RAÍZ DEL MÓDULO ────────────────────────────────────────────────────────
 export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
-  const [subView, setSubView] = useState("dashboard");
+  // Líder de área (Anny Beltrán → Terminación, Sarai Méndez → Termofijación,
+  // etc.): entra con un panel reducido, ya filtrado a su propia gente, en vez
+  // del panel completo de admin (nada de Trabajadores/Precios ni ver otras
+  // áreas). Se define con el campo "Área de Nómina" del usuario, puesto por
+  // un admin en Administrador General → Usuarios.
+  const areaLider = !currentUser?.isAdmin && currentUser?.areaNomina ? currentUser.areaNomina : null;
+  const [subView, setSubView] = useState(() => (areaLider ? "produccion" : "dashboard"));
   const [trabajadores, setTrabajadores] = useState([]);
   const [precios, setPrecios] = useState([]);
   const [produccion, setProduccion] = useState([]);
   const [horas, setHoras] = useState([]);
+  const [cierres, setCierres] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     const unsubs = [
@@ -723,18 +770,30 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
       onSnapshot(collection(db, "nomina_precios_proceso"), (snap) => setPrecios(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_produccion"), (snap) => setProduccion(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_horas"), (snap) => setHoras(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_cierres"), (snap) => setCierres(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
     ];
     return () => unsubs.forEach((u) => u());
   }, []);
   const isAdmin = !!currentUser?.isAdmin;
-  const NAV = [
-    { id: "dashboard", icon: "◉", label: "Inicio" },
-    { id: "produccion", icon: "🧵", label: "Registrar Producción" },
-    { id: "horas", icon: "🕐", label: "Registrar Horas" },
-    { id: "resumen", icon: "💰", label: "Resumen Semanal" },
-    { id: "trabajadores", icon: "👷", label: "Trabajadores" },
-    { id: "precios", icon: "⚙️", label: "Precios por Proceso" },
-  ];
+  const NAV = areaLider
+    ? [
+        { id: "produccion", icon: "🧵", label: "Registrar Producción" },
+        { id: "horas", icon: "🕐", label: "Registrar Horas" },
+        { id: "resumen", icon: "💰", label: "Resumen" },
+      ]
+    : [
+        { id: "dashboard", icon: "◉", label: "Inicio" },
+        { id: "produccion", icon: "🧵", label: "Registrar Producción" },
+        { id: "horas", icon: "🕐", label: "Registrar Horas" },
+        { id: "resumen", icon: "💰", label: "Cierre de Quincena" },
+        { id: "trabajadores", icon: "👷", label: "Trabajadores" },
+        { id: "precios", icon: "⚙️", label: "Precios por Proceso" },
+      ];
+  // Con líder de área, todo lo que ve/registra queda limitado a su propia
+  // gente — así Anny no ve ni toca la producción de Sarai y viceversa.
+  const trabajadoresVisibles = areaLider ? trabajadores.filter((t) => (t.area || "Sin asignar") === areaLider) : trabajadores;
+  const produccionVisible = areaLider ? produccion.filter((p) => trabajadoresVisibles.some((t) => t.id === p.trabajadorId)) : produccion;
+  const horasVisibles = areaLider ? horas.filter((h) => trabajadoresVisibles.some((t) => t.id === h.trabajadorId)) : horas;
   async function guardarTrabajador(t) { await fsSave("nomina_trabajadores", t.id, t); }
   async function borrarTrabajador(id) { await fsDelete("nomina_trabajadores", id); }
   async function guardarProceso(p) { await fsSave("nomina_precios_proceso", p.id, p); }
@@ -743,6 +802,20 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   async function borrarProduccion(id) { await fsDelete("nomina_produccion", id); }
   async function guardarHoras(h) { await fsSave("nomina_horas", h.id, h); }
   async function borrarHoras(id) { await fsDelete("nomina_horas", id); }
+  // "Cerrar Quincena" guarda una foto (snapshot) de los totales por
+  // trabajador al momento del cierre — eso es lo que consulta Talento
+  // Humano, sin depender de que nadie transcriba nada a mano. El id del
+  // documento es la fecha "desde" (única por quincena), así que cerrar dos
+  // veces la misma simplemente sobreescribe el mismo cierre.
+  async function guardarCierre({ desde, hasta, label, totalQuincena, porTrabajador }) {
+    await fsSave("nomina_cierres", desde, {
+      desde, hasta, label, totalQuincena,
+      porTrabajador,
+      cerradoPor: currentUser?.name || currentUser?.username || "",
+      cerradoEn: new Date().toISOString(),
+    });
+  }
+  async function reabrirCierre(id) { await fsDelete("nomina_cierres", id); }
   if (loading) {
     return (
       <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.canvas }}>
@@ -759,7 +832,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
       <div style={{ width: 220, background: C.ink, padding: "24px 14px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
         <div style={{ marginBottom: 20 }}>
           <div style={{ fontSize: 15, fontWeight: 900, color: C.white }}>👷 Nómina</div>
-          <div style={{ fontSize: 10, color: C.seam, marginTop: 2, letterSpacing: "0.1em", textTransform: "uppercase" }}>Semiterminados</div>
+          <div style={{ fontSize: 10, color: C.seam, marginTop: 2, letterSpacing: "0.1em", textTransform: "uppercase" }}>{areaLider || "Semiterminados"}</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "#2A2A45", borderRadius: 10, marginBottom: 16 }}>
           <div style={{ width: 32, height: 32, borderRadius: "50%", background: `linear-gradient(135deg,${C.seam},#9E8870)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, color: C.ink, flexShrink: 0 }}>
@@ -807,12 +880,12 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           <h1 style={{ margin: "0 0 20px", fontSize: 20, fontWeight: 900, color: C.ink }}>
             {NAV.find((n) => n.id === subView)?.label || ""}
           </h1>
-          {subView === "dashboard" && <DashboardNominaView trabajadores={trabajadores} precios={precios} produccion={produccion} horas={horas} />}
-          {subView === "produccion" && <RegistrarProduccionView trabajadores={trabajadores} precios={precios} produccion={produccion} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
-          {subView === "horas" && <RegistrarHorasView trabajadores={trabajadores} horas={horas} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
-          {subView === "resumen" && <ResumenSemanalView trabajadores={trabajadores} produccion={produccion} horas={horas} />}
-          {subView === "trabajadores" && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} />}
-          {subView === "precios" && <PreciosProcesoView precios={precios} isAdmin={isAdmin} onSave={guardarProceso} onDelete={borrarProceso} />}
+          {subView === "dashboard" && !areaLider && <DashboardNominaView trabajadores={trabajadores} precios={precios} produccion={produccion} horas={horas} />}
+          {subView === "produccion" && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
+          {subView === "horas" && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
+          {subView === "resumen" && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} />}
+          {subView === "trabajadores" && !areaLider && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} />}
+          {subView === "precios" && !areaLider && <PreciosProcesoView precios={precios} isAdmin={isAdmin} onSave={guardarProceso} onDelete={borrarProceso} />}
         </div>
       </div>
     </div>
