@@ -1452,6 +1452,68 @@ exports.getValidacionPanelFlujoBusintGen = onCall(
   }
 );
 
+// (2026-08-21) Trae "ApiGen_PanelControlFlujoOperacional" ya normalizado a
+// las mismas columnas que arma agruparLotes() en modulo-planeacion.jsx al
+// leer una Hoja1 subida a mano — validado 135/135 en cliente, fecha conf y
+// fecha pedido, y 131/135 en inventario (las 4 diferencias son lotes que
+// avanzaron de etapa DESPUÉS de la última Hoja1 subida, o sea, a favor de
+// Busint por estar más al día). Devuelve datos crudos normalizados; el
+// cálculo de ubicacionActual/semanaEntregaISO/procesoDondeQuedo/
+// clienteAgrupado (igual que agruparLotes) se hace en el frontend, para
+// reusar exactamente la misma lógica que ya usa la subida manual de Hoja1
+// en vez de duplicarla acá.
+exports.getCargaPlaneacionDesdeBusintGen = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async () => {
+    let filas;
+    try {
+      filas = await consultarCatalogoBusint("ApiGen_PanelControlFlujoOperacional");
+    } catch (err) {
+      logger.error("Error consultando Busint (getCargaPlaneacionDesdeBusintGen)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar ApiGen_PanelControlFlujoOperacional: ${err?.message || String(err)}`);
+    }
+    const normFecha = (v) => (v ? soloFecha(v) || null : null);
+    const lotes = filas
+      .filter((f) => Number(f.numLote) > 0)
+      .map((f) => {
+        const procesos = [];
+        for (let i = 1; i <= 15; i++) {
+          procesos.push({
+            nombre: f[`proceso${i}`] || "",
+            planta: f[`plantaProceso${i}`] || "",
+            fechaSalida: normFecha(f[`fechaSalProceso${i}`]),
+            fechaEntrada: normFecha(f[`fechaEntProceso${i}`]),
+            inventario: Number(f[`inventarioProc${i}`]) || 0,
+          });
+        }
+        return {
+          numLote: Number(f.numLote),
+          numPedido: Number(f.numPedido) || 0,
+          referencia: String(f.referencia || ""),
+          categoria: String(f.categoria || ""),
+          nombreCliente: String(f.nombreCliente || "(Sin cliente)"),
+          nombrePlanta: String(f.nombrePlanta || ""),
+          fechaCorteISO: normFecha(f.fechaCorte),
+          cantCortada: Number(f.cantCortada) || 0,
+          invCorte: Number(f.invCorte) || 0,
+          invBMP: Number(f.invBmp) || 0,
+          invPlanta: Number(f.invPlanta) || 0,
+          invBPT: Number(f.invBpt) || 0,
+          invSemiterminado: Number(f.invSemiterminado) || 0,
+          fechaEntregaConfISO: normFecha(f.fechaEntregaConf),
+          fechaEntBPTISO: normFecha(f.fechaEntBpt),
+          fechaEntregaPedidoISO: normFecha(f.fechaEntregaPedido),
+          procesos,
+        };
+      });
+    return { total: lotes.length, lotes };
+  }
+);
+
 // Consulta el maestro de referencias de Busint ("ApiGen_Referencias") — no
 // recibe filtro, siempre trae todo el catálogo tal como está hoy. Usado
 // desde "Nuevo Prototipo"/"Nueva Referencia" (Diseño) para verificar en vivo

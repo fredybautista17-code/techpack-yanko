@@ -371,6 +371,60 @@ function agruparLotes(rows) {
   });
   return lotes;
 }
+// Toma los lotes ya normalizados que devuelve getCargaPlaneacionDesdeBusintGen
+// (campos crudos + `procesos` con fechas en texto ISO) y les aplica EXACTAMENTE
+// el mismo cálculo de campos derivados que agruparLotes() aplica a una Hoja1
+// subida a mano (clienteAgrupado, ubicacionActual, unidadesUbicacion,
+// semanaEntregaISO, procesoDondeQuedo, ultimaSalidaTexto) — así el resto de
+// Planeación (Mi Día, Informes, etc.) no necesita saber si el lote vino de un
+// Excel o de Busint, ve la misma forma de objeto en los dos casos.
+function construirLotesDesdeBusintGen(filasBusint) {
+  return (filasBusint || []).map((f) => {
+    const procesos = (f.procesos || []).map((p) => ({
+      nombre: p.nombre || "",
+      salida: isoToLocalDate(p.fechaSalida),
+      entrega: isoToLocalDate(p.fechaEntrada),
+    }));
+    const { proceso: procesoDondeQuedo, ultimaSalida, sinSalida } = calcularProcesoDondeQuedo(procesos, f.invSemiterminado);
+    let ultimaSalidaTexto = "";
+    if (f.invSemiterminado > 0) ultimaSalidaTexto = sinSalida ? "Sin salida" : fmtFecha(ultimaSalida);
+    const clienteAgrupado =
+      f.nombreCliente === "KAMILA GROUP SAS-KAMILA COLOMBIA" || f.nombreCliente === "KAMILA VENEZUELA-KAMILA VENEZUELA"
+        ? "KAMILA (COLOMBIA + VENEZUELA)"
+        : f.nombreCliente;
+    let ubicacionActual = "Sin inventario", unidadesUbicacion = 0;
+    if (f.invBPT > 0) { ubicacionActual = "BPT"; unidadesUbicacion = f.invBPT; }
+    else if (f.invSemiterminado > 0) { ubicacionActual = "Semiterminado"; unidadesUbicacion = f.invSemiterminado; }
+    else if (f.invPlanta > 0) { ubicacionActual = "Planta"; unidadesUbicacion = f.invPlanta; }
+    else if (f.invBMP > 0) { ubicacionActual = "BMP"; unidadesUbicacion = f.invBMP; }
+    else if (f.invCorte > 0) { ubicacionActual = "Corte"; unidadesUbicacion = f.invCorte; }
+    const semanaEntregaISO = f.invPlanta > 0 ? dateToISO(lunesDeSemana(isoToLocalDate(f.fechaEntregaConfISO))) : null;
+    return {
+      numLote: f.numLote,
+      numPedido: f.numPedido,
+      referencia: f.referencia,
+      categoria: f.categoria,
+      nombreCliente: f.nombreCliente,
+      clienteAgrupado,
+      nombrePlanta: f.nombrePlanta,
+      fechaCorteISO: f.fechaCorteISO,
+      cantCortada: f.cantCortada,
+      invCorte: f.invCorte,
+      invBMP: f.invBMP,
+      invPlanta: f.invPlanta,
+      invBPT: f.invBPT,
+      invSemiterminado: f.invSemiterminado,
+      fechaEntregaConfISO: f.fechaEntregaConfISO,
+      fechaEntBPTISO: f.fechaEntBPTISO,
+      fechaEntregaPedidoISO: f.fechaEntregaPedidoISO,
+      procesoDondeQuedo,
+      ultimaSalidaTexto,
+      semanaEntregaISO,
+      ubicacionActual,
+      unidadesUbicacion,
+    };
+  });
+}
 async function parsePlantaInformes(file) {
   const XLSX = await import("xlsx");
   const buffer = await file.arrayBuffer();
@@ -1743,6 +1797,33 @@ function InformesView({
   const [resultadoInv, setResultadoInv] = useState(null);
   const [actualizandoCF, setActualizandoCF] = useState(false);
   const [resultadoCF, setResultadoCF] = useState(null);
+  const [actualizandoDesdeBusint, setActualizandoDesdeBusint] = useState(false);
+  const [resultadoDesdeBusint, setResultadoDesdeBusint] = useState(null);
+  // (2026-08-21) Genera una carga NUEVA completa desde
+  // ApiGen_PanelControlFlujoOperacional (API gen de Busint) — validado
+  // lote por lote contra la última Hoja1 subida (135/135 cliente, 135/135
+  // fecha conf, 135/135 fecha pedido, 131/135 inventario, las 4
+  // diferencias eran lotes ya más actualizados en Busint). No reemplaza
+  // "Subir Hoja1": crea una carga aparte, seleccionable como cualquier
+  // otra, para no perder la opción manual si algún día Busint falla.
+  async function actualizarDesdeBusintGen() {
+    setActualizandoDesdeBusint(true);
+    setResultadoDesdeBusint(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getCargaPlaneacionDesdeBusintGen");
+      const resp = await llamar();
+      const filasBusint = resp.data?.lotes || [];
+      const lotesNuevos = construirLotesDesdeBusintGen(filasBusint);
+      const nuevaCarga = { id: uid(), fecha: today(), lotes: lotesNuevos, creadoEn: new Date().toISOString(), origen: "busint_gen" };
+      onAddCarga(nuevaCarga);
+      setCargaId(nuevaCarga.id);
+      setResultadoDesdeBusint({ total: lotesNuevos.length });
+    } catch (err) {
+      setResultadoDesdeBusint({ error: err?.message || String(err) });
+    } finally {
+      setActualizandoDesdeBusint(false);
+    }
+  }
   // Refresca SOLO el inventario por lote (Planta/BMP/Corte/BPT/
   // Semiterminado) contra la API "BD" de Busint — el cliente y la fecha de
   // entrega del pedido siguen viniendo de Hoja1 y no se tocan acá, porque
@@ -2150,6 +2231,14 @@ function InformesView({
               {actualizandoCF ? "Actualizando…" : "🔄 Actualizar cliente y fecha"}
             </Btn>
           )}
+          <Btn
+            variant="secondary"
+            onClick={actualizarDesdeBusintGen}
+            disabled={actualizandoDesdeBusint}
+            title="Genera una carga nueva completa (cliente, fechas, inventario por etapa) en vivo desde Busint, sin subir Excel — validado contra la última Hoja1 subida"
+          >
+            {actualizandoDesdeBusint ? "Consultando Busint…" : "🔄 Actualizar desde Busint"}
+          </Btn>
           <Btn variant="danger" onClick={() => setShowUpload(true)}>📥 Subir Hoja1</Btn>
           {isAdmin && cargaActiva && (
             <button
@@ -2179,6 +2268,23 @@ function InformesView({
             : resultadoInv.actualizados > 0
             ? `✓ Se actualizó el inventario de ${resultadoInv.actualizados} lote(s) contra Busint.`
             : "El inventario ya estaba al día — nada que actualizar."}
+        </div>
+      )}
+      {resultadoDesdeBusint && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: "10px 14px",
+            borderRadius: 10,
+            background: resultadoDesdeBusint.error ? C.redBg : C.greenBg,
+            border: `1px solid ${resultadoDesdeBusint.error ? C.red : C.green}`,
+            fontSize: 12.5,
+            color: C.ink,
+          }}
+        >
+          {resultadoDesdeBusint.error
+            ? `⚠ No se pudo traer la carga desde Busint: ${resultadoDesdeBusint.error}`
+            : `✓ Se generó una carga nueva con ${resultadoDesdeBusint.total} lote(s) desde Busint.`}
         </div>
       )}
       {resultadoCF && (
