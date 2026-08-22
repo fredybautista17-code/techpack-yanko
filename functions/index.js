@@ -1359,6 +1359,94 @@ exports.getMuestraInventarioBusintGen = onCall(
   }
 );
 
+// (2026-08-21) EXPLORATORIO — "ApiGen_PanelControlFlujoOperacional" trae
+// columnas casi idénticas a lo que hoy arma agruparLotes() a mano desde la
+// Hoja1 subida (numLote, numPedido, nombreCliente, referencia, categoria,
+// invPlanta/invBmp/invSemiterminado/invCorte, fechaEntregaConf,
+// fechaEntregaPedido, nombrePlanta...) — esta función cruza ese catálogo,
+// lote por lote, contra la última carga de Hoja1 subida a mano en
+// Planeación (planeacion_cargas), para confirmar que los datos SÍ cuadran
+// antes de siquiera considerar reemplazar el botón "Subir Hoja1". No
+// escribe nada.
+exports.getValidacionPanelFlujoBusintGen = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async () => {
+    let filasPanel;
+    try {
+      filasPanel = await consultarCatalogoBusint("ApiGen_PanelControlFlujoOperacional");
+    } catch (err) {
+      logger.error("Error consultando Busint (getValidacionPanelFlujoBusintGen)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar ApiGen_PanelControlFlujoOperacional: ${err?.message || String(err)}`);
+    }
+    const panelPorLote = new Map();
+    filasPanel.forEach((f) => {
+      const numLote = Number(f.numLote);
+      if (!Number.isFinite(numLote) || numLote <= 0) return;
+      panelPorLote.set(numLote, f);
+    });
+
+    const cargasSnap = await db.collection("planeacion_cargas").get();
+    const cargas = cargasSnap.docs.map((d) => d.data());
+    cargas.sort((a, b) => String(b.creadoEn || b.fecha || "").localeCompare(String(a.creadoEn || a.fecha || "")));
+    const cargaActiva = cargas[0] || null;
+    const lotesHoja1 = cargaActiva?.lotes || [];
+
+    let lotesEnComun = 0;
+    let coincideCliente = 0, coincideFechaConf = 0, coincideFechaPedido = 0, coincideInventario = 0;
+    const muestraCoincidencias = [];
+    const muestraDiscrepancias = [];
+
+    lotesHoja1.forEach((l) => {
+      const p = panelPorLote.get(Number(l.numLote));
+      if (!p) return;
+      lotesEnComun++;
+      const clienteIgual = String(p.nombreCliente || "").trim().toUpperCase() === String(l.nombreCliente || "").trim().toUpperCase();
+      const fechaConfIgual = soloFecha(p.fechaEntregaConf) === (l.fechaEntregaConfISO || null);
+      const fechaPedidoIgual = soloFecha(p.fechaEntregaPedido) === (l.fechaEntregaPedidoISO || null);
+      const invIgual =
+        Number(p.invPlanta || 0) === Number(l.invPlanta || 0) &&
+        Number(p.invBmp || 0) === Number(l.invBMP || 0) &&
+        Number(p.invSemiterminado || 0) === Number(l.invSemiterminado || 0) &&
+        Number(p.invCorte || 0) === Number(l.invCorte || 0);
+      const fila = {
+        numLote: l.numLote,
+        hoja1: {
+          cliente: l.nombreCliente, fechaEntregaConf: l.fechaEntregaConfISO, fechaEntregaPedido: l.fechaEntregaPedidoISO,
+          invPlanta: l.invPlanta, invBMP: l.invBMP, invSemiterminado: l.invSemiterminado, invCorte: l.invCorte,
+        },
+        panelFlujo: {
+          cliente: p.nombreCliente, fechaEntregaConf: soloFecha(p.fechaEntregaConf), fechaEntregaPedido: soloFecha(p.fechaEntregaPedido),
+          invPlanta: p.invPlanta, invBMP: p.invBmp, invSemiterminado: p.invSemiterminado, invCorte: p.invCorte,
+        },
+        clienteIgual, fechaConfIgual, fechaPedidoIgual, invIgual,
+      };
+      if (clienteIgual) coincideCliente++;
+      if (fechaConfIgual) coincideFechaConf++;
+      if (fechaPedidoIgual) coincideFechaPedido++;
+      if (invIgual) coincideInventario++;
+      if (clienteIgual && fechaConfIgual && fechaPedidoIgual && invIgual) {
+        if (muestraCoincidencias.length < 15) muestraCoincidencias.push(fila);
+      } else if (muestraDiscrepancias.length < 15) {
+        muestraDiscrepancias.push(fila);
+      }
+    });
+
+    return {
+      totalPanelFlujo: filasPanel.length,
+      totalHoja1: lotesHoja1.length,
+      cargaHoja1UsadaEn: cargaActiva?.creadoEn || cargaActiva?.fecha || null,
+      lotesEnComun,
+      coincideCliente, coincideFechaConf, coincideFechaPedido, coincideInventario,
+      muestraCoincidencias,
+      muestraDiscrepancias,
+    };
+  }
+);
+
 // Consulta el maestro de referencias de Busint ("ApiGen_Referencias") — no
 // recibe filtro, siempre trae todo el catálogo tal como está hoy. Usado
 // desde "Nuevo Prototipo"/"Nueva Referencia" (Diseño) para verificar en vivo

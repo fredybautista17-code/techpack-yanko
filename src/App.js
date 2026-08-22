@@ -7098,6 +7098,22 @@ function BusintCatalogoTestView() {
       setCargandoPanelFlujo(false);
     }
   }
+  const [cargandoValidacionPanelFlujo, setCargandoValidacionPanelFlujo] = useState(false);
+  const [validacionPanelFlujo, setValidacionPanelFlujo] = useState(null);
+  async function verValidacionPanelFlujo() {
+    setCargandoValidacionPanelFlujo(true);
+    setError("");
+    setValidacionPanelFlujo(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getValidacionPanelFlujoBusintGen");
+      const resp = await llamar();
+      setValidacionPanelFlujo(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo validar Panel Control Flujo Operacional.");
+    } finally {
+      setCargandoValidacionPanelFlujo(false);
+    }
+  }
   const [cargandoInventarioGen, setCargandoInventarioGen] = useState(false);
   const [inventarioGen, setInventarioGen] = useState(null);
   async function verInventarioGen() {
@@ -7248,6 +7264,34 @@ function BusintCatalogoTestView() {
           <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Últimas 10</div>
           <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 280, border: `1px solid ${T.border}` }}>
             {JSON.stringify(panelFlujo.ultimas, null, 2)}
+          </pre>
+        </div>
+      )}
+      <div style={{ marginBottom: 16 }}>
+        <Btn variant="secondary" onClick={verValidacionPanelFlujo} disabled={cargandoValidacionPanelFlujo}>
+          {cargandoValidacionPanelFlujo ? "Cruzando contra la última Hoja1..." : "🧪 Validar Panel Flujo contra la última Hoja1"}
+        </Btn>
+      </div>
+      {validacionPanelFlujo && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: T.slate, flexWrap: "wrap" }}>
+            <span>Panel Flujo (total): <strong style={{ color: T.ink }}>{validacionPanelFlujo.totalPanelFlujo}</strong></span>
+            <span>Hoja1 (última carga): <strong style={{ color: T.ink }}>{validacionPanelFlujo.totalHoja1}</strong></span>
+            <span>Lotes en común: <strong style={{ color: T.ink }}>{validacionPanelFlujo.lotesEnComun}</strong></span>
+          </div>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 14, fontWeight: 700, flexWrap: "wrap" }}>
+            <span style={{ color: T.ink }}>Cliente igual: {validacionPanelFlujo.coincideCliente}/{validacionPanelFlujo.lotesEnComun}</span>
+            <span style={{ color: T.ink }}>Fecha Conf igual: {validacionPanelFlujo.coincideFechaConf}/{validacionPanelFlujo.lotesEnComun}</span>
+            <span style={{ color: T.ink }}>Fecha Pedido igual: {validacionPanelFlujo.coincideFechaPedido}/{validacionPanelFlujo.lotesEnComun}</span>
+            <span style={{ color: T.ink }}>Inventario igual: {validacionPanelFlujo.coincideInventario}/{validacionPanelFlujo.lotesEnComun}</span>
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Muestra coincidencias</div>
+          <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 280, border: `1px solid ${T.border}`, marginBottom: 12 }}>
+            {JSON.stringify(validacionPanelFlujo.muestraCoincidencias, null, 2)}
+          </pre>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Muestra discrepancias</div>
+          <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 280, border: `1px solid ${T.border}` }}>
+            {JSON.stringify(validacionPanelFlujo.muestraDiscrepancias, null, 2)}
           </pre>
         </div>
       )}
