@@ -1514,6 +1514,42 @@ exports.getCargaPlaneacionDesdeBusintGen = onCall(
   }
 );
 
+// (2026-08-21) EXPLORATORIO — versión genérica de getMuestraPanelFlujoBusintGen
+// / getMuestraInventarioBusintGen: en vez de una función por endpoint,
+// recibe el nombre exacto del catálogo de la API "gen" (tal cual aparece en
+// /consultas/X del swagger, ej. "ApiGen_MovimientosPosint") y trae una
+// muestra cruda. Para seguir explorando los endpoints nuevos que aparecieron
+// (ApiGen_MovimientosPosint, ApiGen_CarteraFacturacionBusint,
+// ApiGen_FacturadoPosint, ApiGen_InventarioPosint...) sin tener que escribir
+// una función nueva por cada uno.
+exports.getMuestraCatalogoBusintGen = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    const endpoint = String(request.data?.endpoint || "").trim();
+    if (!endpoint) {
+      throw new HttpsError("invalid-argument", "Debes indicar el nombre exacto del endpoint (ej. ApiGen_MovimientosPosint).");
+    }
+    let filas;
+    try {
+      filas = await consultarCatalogoBusint(endpoint);
+    } catch (err) {
+      logger.error("Error consultando Busint (getMuestraCatalogoBusintGen)", { endpoint, error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar "${endpoint}": ${err?.message || String(err)}`);
+    }
+    return {
+      endpoint,
+      total: filas.length,
+      columnas: filas.length ? Object.keys(filas[0]) : [],
+      primeras: filas.slice(0, 10),
+      ultimas: filas.slice(-10),
+    };
+  }
+);
+
 // Consulta el maestro de referencias de Busint ("ApiGen_Referencias") — no
 // recibe filtro, siempre trae todo el catálogo tal como está hoy. Usado
 // desde "Nuevo Prototipo"/"Nueva Referencia" (Diseño) para verificar en vivo

@@ -7082,6 +7082,25 @@ function BusintCatalogoTestView() {
   const [validacionPPEsp, setValidacionPPEsp] = useState(null);
   const [cargandoValidacionPC, setCargandoValidacionPC] = useState(false);
   const [validacionPC, setValidacionPC] = useState(null);
+  const [endpointGen, setEndpointGen] = useState("");
+  const [cargandoGen, setCargandoGen] = useState(false);
+  const [resultadoGen, setResultadoGen] = useState(null);
+  async function consultarGen() {
+    const nombre = endpointGen.trim();
+    if (!nombre) return;
+    setCargandoGen(true);
+    setError("");
+    setResultadoGen(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getMuestraCatalogoBusintGen");
+      const resp = await llamar({ endpoint: nombre });
+      setResultadoGen(resp.data);
+    } catch (err) {
+      setError(err?.message || `No se pudo consultar "${nombre}".`);
+    } finally {
+      setCargandoGen(false);
+    }
+  }
   const [cargandoPanelFlujo, setCargandoPanelFlujo] = useState(false);
   const [panelFlujo, setPanelFlujo] = useState(null);
   async function verPanelFlujoGen() {
@@ -7244,6 +7263,36 @@ function BusintCatalogoTestView() {
   }
   return (
     <div>
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Probar cualquier catálogo de la API gen (exploratorio)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Escribe el nombre EXACTO del endpoint tal cual aparece en <code>/consultas/X</code> del swagger de la API gen (ej. <code>ApiGen_MovimientosPosint</code>, <code>ApiGen_CarteraFacturacionBusint</code>, <code>ApiGen_FacturadoPosint</code>, <code>ApiGen_InventarioPosint</code>).
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Nombre del endpoint (API gen)">
+          <FInput value={endpointGen} onChange={setEndpointGen} placeholder="Ej: ApiGen_MovimientosPosint" />
+        </Field>
+        <div style={{ marginBottom: 14 }}>
+          <Btn onClick={consultarGen} disabled={cargandoGen || !endpointGen.trim()}>{cargandoGen ? "Consultando..." : "🔍 Consultar"}</Btn>
+        </div>
+      </div>
+      {resultadoGen && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: T.slate, flexWrap: "wrap" }}>
+            <span>Endpoint: <strong style={{ color: T.ink }}>{resultadoGen.endpoint}</strong></span>
+            <span>Total REAL de filas: <strong style={{ color: T.ink }}>{resultadoGen.total}</strong></span>
+            <span>Columnas: <strong style={{ color: T.ink }}>{(resultadoGen.columnas || []).join(", ") || "—"}</strong></span>
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Primeras 10</div>
+          <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 280, border: `1px solid ${T.border}`, marginBottom: 12 }}>
+            {JSON.stringify(resultadoGen.primeras, null, 2)}
+          </pre>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Últimas 10</div>
+          <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 280, border: `1px solid ${T.border}` }}>
+            {JSON.stringify(resultadoGen.ultimas, null, 2)}
+          </pre>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
       <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Probar "ApiGen_PanelControlFlujoOperacional" (API gen, exploratorio)</div>
       <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
         Catálogo nuevo de la API "gen" (api-yanko-gen.busint.info) que todavía no está conectado a nada. Por el nombre podría traer el estado del lote por etapa — lo que hoy trae Hoja1. Trae una muestra cruda para ver qué columnas tiene de verdad.
