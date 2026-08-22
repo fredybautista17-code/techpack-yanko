@@ -409,7 +409,7 @@ function PreciosProcesoView({ precios, isAdmin, onSave, onDelete }) {
   );
 }
 // ─── REGISTRAR PRODUCCIÓN (pago por pieza / proceso) ───────────────────────
-function RegistrarProduccionView({ trabajadores, precios, produccion, currentUser, onGuardar, onBorrar, isAdmin }) {
+function RegistrarProduccionView({ trabajadores, precios, produccion, produccionCompleta, currentUser, onGuardar, onBorrar, isAdmin }) {
   const [trabajadorId, setTrabajadorId] = useState("");
   const [fecha, setFecha] = useState(today());
   const [proceso, setProceso] = useState("");
@@ -478,7 +478,16 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, currentUse
   // referencia no está costeada todavía, no que el tope sea $0).
   const costoAplicaA = costoTeorico && !costoTeorico.error && costoTeorico.encontrada && costoTeorico.costoFT > 0 && costoTeorico._ref === referencia.trim() ? costoTeorico : null;
   const excedeCostoTeorico = !!(costoAplicaA && precioSel && precioSel.precioUnidad > costoAplicaA.costoFT);
-  const puedeGuardar = trabajadorId && proceso && Number(cantidad) > 0 && !guardando && !excedeCostoTeorico;
+  // El lote encontrado solo cuenta si sigue siendo el de la referencia
+  // actual (mismo resguardo que costoAplicaA, por si cambian la referencia a
+  // mano después de buscar). "Vigente" = no está ya en BPT (terminado). Y
+  // nunca se deja pagar dos veces el mismo lote+proceso, sin importar quién
+  // lo registró — pidió el usuario "nunca puede repetir doble vez el pago en
+  // un mismo lote".
+  const loteAsociado = loteInfo?.encontrada && loteInfo.referencia === referencia.trim() ? loteInfo : null;
+  const loteBloqueado = !!(loteAsociado && !loteAsociado.vigente);
+  const registroPrevio = loteAsociado && proceso ? (produccionCompleta || []).find((p) => p.numLote === loteAsociado.numLote && p.proceso === proceso) : null;
+  const puedeGuardar = trabajadorId && proceso && Number(cantidad) > 0 && !guardando && !excedeCostoTeorico && !loteBloqueado && !registroPrevio;
   async function guardar() {
     if (!puedeGuardar) return;
     setGuardando(true);
@@ -527,11 +536,17 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, currentUse
         {loteInfo?.error && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se pudo buscar el lote: {loteInfo.error}</div>}
         {loteInfo && !loteInfo.error && !loteInfo.encontrada && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se encontró ese lote en Busint.</div>}
         {loteInfo?.encontrada && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, padding: "10px 12px", background: C.canvas, borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 10, padding: "10px 12px", background: C.canvas, borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
             <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>PEDIDO</div><div style={{ fontWeight: 700 }}>{loteInfo.numPedido || "—"}</div></div>
             <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>CLIENTE</div><div style={{ fontWeight: 700 }}>{loteInfo.nombreCliente || "—"}</div></div>
             <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>CANT. CORTADA</div><div style={{ fontWeight: 700 }}>{fmtNum(loteInfo.cantCortada)}</div></div>
             <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>CATEGORÍA</div><div style={{ fontWeight: 700 }}>{loteInfo.categoria || "—"}</div></div>
+            <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>UBICACIÓN</div><div style={{ fontWeight: 700, color: loteInfo.vigente ? C.green : C.red }}>{loteInfo.ubicacionActual || "—"}</div></div>
+          </div>
+        )}
+        {loteBloqueado && (
+          <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginBottom: 12 }}>
+            El lote {loteAsociado.numLote} ya está en BPT (terminado) — no se puede registrar nómina sobre un lote que ya salió.
           </div>
         )}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -553,6 +568,11 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, currentUse
           )
         )}
         {costoTeorico?.error && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se pudo consultar el costo teórico: {costoTeorico.error}</div>}
+        {registroPrevio && (
+          <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginBottom: 10 }}>
+            El proceso "{proceso}" del lote {loteAsociado.numLote} ya fue pagado ({registroPrevio.trabajadorNombre}, {fmtFechaISO(registroPrevio.fecha)}) — no se puede pagar dos veces.
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "end" }}>
           <Field label="Cantidad"><FInput type="number" value={cantidad} onChange={setCantidad} /></Field>
           <div style={{ marginBottom: 14 }}>
@@ -933,7 +953,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
             {NAV.find((n) => n.id === subView)?.label || ""}
           </h1>
           {subView === "dashboard" && !areaLider && <DashboardNominaView trabajadores={trabajadores} precios={precios} produccion={produccion} horas={horas} />}
-          {subView === "produccion" && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
+          {subView === "produccion" && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
           {subView === "horas" && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
           {subView === "resumen" && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} />}
           {subView === "trabajadores" && !areaLider && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} />}

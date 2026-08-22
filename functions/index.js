@@ -1790,6 +1790,23 @@ exports.getLoteBusintPorNumero = onCall(
     if (!lote) {
       return { encontrada: false };
     }
+    // Vigente = el lote todavía se está trabajando (Corte, BMP, Planta o en
+    // algún proceso/Semiterminado). Si ya tiene inventario en BPT (Bodega de
+    // Producto Terminado) se considera terminado — ya no se le debe poder
+    // registrar nómina encima, según pidió el usuario ("menos en BPT debe
+    // aparecer no lo tienes").
+    const invBPT = Number(lote.invBpt) || 0;
+    const invCorte = Number(lote.invCorte) || 0;
+    const invBMP = Number(lote.invBmp) || 0;
+    const invPlanta = Number(lote.invPlanta) || 0;
+    const invSemiterminado = Number(lote.invSemiterminado) || 0;
+    const vigente = invBPT <= 0;
+    let ubicacionActual = "Sin inventario";
+    if (invBPT > 0) ubicacionActual = "BPT";
+    else if (invSemiterminado > 0) ubicacionActual = "Semiterminado";
+    else if (invPlanta > 0) ubicacionActual = "Planta";
+    else if (invBMP > 0) ubicacionActual = "BMP";
+    else if (invCorte > 0) ubicacionActual = "Corte";
     let costoFT = null;
     try {
       const filasRef = await consultarCatalogoBusint("ApiGen_Referencias");
@@ -1810,6 +1827,8 @@ exports.getLoteBusintPorNumero = onCall(
       cantCortada: Number(lote.cantCortada) || 0,
       fechaCorteISO: lote.fechaCorte || null,
       costoFT,
+      vigente,
+      ubicacionActual,
     };
   }
 );
