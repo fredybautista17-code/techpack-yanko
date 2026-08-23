@@ -1833,6 +1833,43 @@ exports.getLoteBusintPorNumero = onCall(
   }
 );
 
+// (2026-08-22) Usado por Nómina → Procesos → "Cargar desde Busint": Busint no
+// tiene una tabla de "catálogo de procesos" como tal — los nombres reales
+// (Terminación, Bajada de Vinilo, etc.) están sueltos en los campos
+// proceso1..proceso15 de cada lote del Panel de Flujo Operacional. Esta
+// función recorre todos los lotes, saca los nombres distintos que aparecen
+// ahí y cuenta en cuántos lotes aparece cada uno, para que el admin pueda
+// elegir de una lista real en vez de escribir a mano y arriesgarse a que no
+// coincida con lo que trae Busint.
+exports.getProcesosDistintosBusint = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
+  async () => {
+    let filas;
+    try {
+      filas = await consultarCatalogoBusint("ApiGen_PanelControlFlujoOperacional");
+    } catch (err) {
+      logger.error("Error consultando Busint (getProcesosDistintosBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar Busint. Intenta de nuevo en unos minutos.");
+    }
+    const conteo = new Map(); // nombre normalizado -> { nombre original, cantidad }
+    filas.forEach((f) => {
+      for (let i = 1; i <= 15; i++) {
+        const nombre = String(f[`proceso${i}`] || "").trim();
+        if (!nombre) continue;
+        const clave = nombre.toUpperCase();
+        if (!conteo.has(clave)) conteo.set(clave, { nombre, cantidad: 0 });
+        conteo.get(clave).cantidad += 1;
+      }
+    });
+    const procesos = [...conteo.values()].sort((a, b) => b.cantidad - a.cantidad);
+    return { procesos };
+  }
+);
+
 // Usado por módulo Bodega → Despachos → Montar Despacho (destino Dubo): en
 // vez de digitar cada referencia una por una, trae de un tirón TODAS las
 // líneas de un Traslado de Busint a partir de su número (el que aparece

@@ -364,9 +364,87 @@ function ProcesoModal({ proceso, onSave, onClose }) {
     </Modal>
   );
 }
+// Trae de Busint los nombres de proceso reales (proceso1..15 de cada lote,
+// no hay una tabla de catálogo como tal) para que el admin elija de una
+// lista en vez de escribir a mano y arriesgarse a que no coincida con lo que
+// trae Busint. Ya vienen pre-marcados los que todavía no están en el
+// catálogo de Nómina (comparando sin importar mayúsculas/tildes).
+function CargarProcesosBusintModal({ existentes, onAgregar, onClose }) {
+  const [cargando, setCargando] = useState(true);
+  const [procesos, setProcesos] = useState([]);
+  const [error, setError] = useState("");
+  const [seleccion, setSeleccion] = useState(() => new Set());
+  const [guardando, setGuardando] = useState(false);
+  const existentesNorm = new Set(existentes.map((p) => p.proceso.trim().toUpperCase()));
+  useEffect(() => {
+    (async () => {
+      try {
+        const llamar = httpsCallable(functionsClient, "getProcesosDistintosBusint");
+        const resp = await llamar({});
+        const lista = resp.data?.procesos || [];
+        setProcesos(lista);
+        setSeleccion(new Set(lista.filter((p) => !existentesNorm.has(p.nombre.trim().toUpperCase())).map((p) => p.nombre)));
+      } catch (err) {
+        setError(err?.message || String(err));
+      } finally {
+        setCargando(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  function toggle(nombre) {
+    setSeleccion((s) => {
+      const next = new Set(s);
+      if (next.has(nombre)) next.delete(nombre); else next.add(nombre);
+      return next;
+    });
+  }
+  async function agregar() {
+    setGuardando(true);
+    try {
+      const nuevos = [...seleccion].filter((n) => !existentesNorm.has(n.trim().toUpperCase()));
+      for (const nombre of nuevos) {
+        await onAgregar({ id: uid(), proceso: nombre.trim() });
+      }
+      onClose();
+    } finally {
+      setGuardando(false);
+    }
+  }
+  return (
+    <Modal title="Cargar procesos desde Busint" onClose={onClose} width={520}>
+      {cargando && <div style={{ fontSize: 13, color: C.slate }}>Consultando Busint...</div>}
+      {error && <div style={{ fontSize: 12, color: C.amber, fontWeight: 600 }}>No se pudo consultar: {error}</div>}
+      {!cargando && !error && (
+        <>
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 12 }}>
+            {procesos.length} nombres distintos encontrados en los lotes de Busint. Ya vienen marcados los que no tienes todavía — desmarca los que no quieras agregar.
+          </div>
+          <div style={{ maxHeight: 320, overflowY: "auto", border: `1px solid ${C.border}`, borderRadius: 8 }}>
+            {procesos.map((p) => {
+              const yaExiste = existentesNorm.has(p.nombre.trim().toUpperCase());
+              return (
+                <label key={p.nombre} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderBottom: `1px solid ${C.border}`, fontSize: 13, cursor: yaExiste ? "default" : "pointer", opacity: yaExiste ? 0.5 : 1 }}>
+                  <input type="checkbox" checked={seleccion.has(p.nombre)} disabled={yaExiste} onChange={() => toggle(p.nombre)} />
+                  <span style={{ flex: 1 }}>{p.nombre}{yaExiste && <span style={{ color: C.green, fontWeight: 700 }}> (ya está)</span>}</span>
+                  <span style={{ color: C.slate, fontSize: 11 }}>{fmtNum(p.cantidad)} lotes</span>
+                </label>
+              );
+            })}
+          </div>
+        </>
+      )}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={agregar} disabled={cargando || guardando || seleccion.size === 0}>{guardando ? "Agregando..." : `Agregar seleccionados (${seleccion.size})`}</Btn>
+      </div>
+    </Modal>
+  );
+}
 function PreciosProcesoView({ precios, isAdmin, onSave, onDelete }) {
   const [modal, setModal] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
+  const [modalBusint, setModalBusint] = useState(false);
   const ordenados = [...precios].sort((a, b) => a.proceso.localeCompare(b.proceso));
   return (
     <div>
@@ -376,6 +454,9 @@ function PreciosProcesoView({ precios, isAdmin, onSave, onDelete }) {
           onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
           onClose={() => setModal(null)}
         />
+      )}
+      {modalBusint && (
+        <CargarProcesosBusintModal existentes={precios} onAgregar={onSave} onClose={() => setModalBusint(false)} />
       )}
       {confirmDel && (
         <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
@@ -387,8 +468,9 @@ function PreciosProcesoView({ precios, isAdmin, onSave, onDelete }) {
         </Modal>
       )}
       {isAdmin && (
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 16, display: "flex", gap: 10 }}>
           <Btn onClick={() => setModal("nuevo")}>+ Nuevo Proceso</Btn>
+          <Btn variant="secondary" onClick={() => setModalBusint(true)}>🔄 Cargar desde Busint</Btn>
         </div>
       )}
       <Tabla
