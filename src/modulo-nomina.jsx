@@ -390,7 +390,6 @@ function CargarProcesosBusintModal({ existentes, onAgregar, onClose }) {
         setCargando(false);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   function toggle(nombre) {
     setSeleccion((s) => {
