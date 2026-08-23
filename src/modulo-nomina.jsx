@@ -625,12 +625,16 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
         {loteInfo?.error && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se pudo buscar el lote: {loteInfo.error}</div>}
         {loteInfo && !loteInfo.error && !loteInfo.encontrada && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se encontró ese lote en Busint.</div>}
         {loteInfo?.encontrada && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 10, padding: "10px 12px", background: C.canvas, borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, padding: "10px 12px", background: C.canvas, borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
             <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>PEDIDO</div><div style={{ fontWeight: 700 }}>{loteInfo.numPedido || "—"}</div></div>
             <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>CLIENTE</div><div style={{ fontWeight: 700 }}>{loteInfo.nombreCliente || "—"}</div></div>
             <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>CANT. CORTADA</div><div style={{ fontWeight: 700 }}>{fmtNum(loteInfo.cantCortada)}</div></div>
             <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>CATEGORÍA</div><div style={{ fontWeight: 700 }}>{loteInfo.categoria || "—"}</div></div>
             <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>UBICACIÓN</div><div style={{ fontWeight: 700, color: loteInfo.vigente ? C.green : C.red }}>{loteInfo.ubicacionActual || "—"}</div></div>
+            <div>
+              <div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>COSTO TEÓRICO/UND</div>
+              <div style={{ fontWeight: 700 }}>{loteInfo.costoFT > 0 ? fmtMoney(loteInfo.costoFT) : "Sin costear"}</div>
+            </div>
           </div>
         )}
         {loteBloqueado && (
