@@ -337,23 +337,26 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete }) {
     </div>
   );
 }
-// ─── PRECIOS POR PROCESO ────────────────────────────────────────────────────
-// Lista abierta (no un catálogo fijo): los nombres de proceso (Terminación,
-// Bajada de Vinilo, etc.) son texto libre que viene del ERP en Planeación —
-// acá el admin va agregando cada uno con su precio por unidad a medida que
-// aparecen, en vez de un enum cerrado que se quede corto.
+// ─── PROCESOS (maestro de nombres, sin precio) ─────────────────────────────
+// (2026-08-22) Antes esto tenía un "Precio por Unidad" fijo por proceso —
+// pidió el usuario quitarlo: el precio ya no lo fija un admin de antemano,
+// lo escribe la líder (Anny/Sarai) como "precio real" en cada registro de
+// Registrar Producción, topado siempre contra el costo teórico (costoFT) de
+// Busint. Esto queda solo como el maestro de NOMBRES de proceso — sigue
+// siendo lista abierta que mantiene un admin (no hay catálogo de procesos en
+// Busint del que traerlo automático), para que Anny/Sarai elijan de una
+// lista y no queden nombres distintos escritos de mil formas.
 function ProcesoModal({ proceso, onSave, onClose }) {
-  const [form, setForm] = useState({ proceso: proceso?.proceso || "", precioUnidad: proceso?.precioUnidad ?? "" });
+  const [form, setForm] = useState({ proceso: proceso?.proceso || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function guardar() {
     if (!form.proceso.trim()) return;
-    onSave({ proceso: form.proceso.trim(), precioUnidad: Number(form.precioUnidad) || 0 });
+    onSave({ proceso: form.proceso.trim() });
     onClose();
   }
   return (
     <Modal title={proceso ? "Editar Proceso" : "Nuevo Proceso"} onClose={onClose} width={420}>
       <Field label="Nombre del Proceso"><FInput value={form.proceso} onChange={set("proceso")} placeholder="Ej: TERMINACION, BAJADA DE VINILO" /></Field>
-      <Field label="Precio por Unidad"><FInput type="number" value={form.precioUnidad} onChange={set("precioUnidad")} /></Field>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn onClick={guardar} disabled={!form.proceso.trim()}>Guardar</Btn>
@@ -389,10 +392,9 @@ function PreciosProcesoView({ precios, isAdmin, onSave, onDelete }) {
         </div>
       )}
       <Tabla
-        vacio="Sin procesos con precio registrado."
+        vacio="Sin procesos registrados."
         columnas={[
           { key: "proceso", label: "Proceso" },
-          { key: "precioUnidad", label: "Precio/Unidad", align: "right", render: (f) => fmtMoney(f.precioUnidad) },
           ...(isAdmin ? [{
             key: "acciones", label: "", align: "right",
             render: (f) => (
@@ -415,6 +417,12 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   const [proceso, setProceso] = useState("");
   const [referencia, setReferencia] = useState("");
   const [cantidad, setCantidad] = useState("");
+  // (2026-08-22) Ya no hay un precio fijo por proceso configurado por un
+  // admin — la líder (Anny/Sarai) escribe el precio real que se está
+  // pagando en ESTE registro puntual, y el sistema solo valida que no
+  // supere el costo teórico de Busint. Pidió el usuario quitar la tabla fija
+  // de precios porque no refleja lo que de verdad se negocia caso a caso.
+  const [precioReal, setPrecioReal] = useState("");
   const [guardando, setGuardando] = useState(false);
   // Costo teórico de confección de la referencia (costoFT en Busint) — se
   // usa como tope: el precio/unidad configurado para el proceso nunca puede
@@ -469,15 +477,14 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
     }
   }
   const trabajadoresActivos = trabajadores.filter((t) => t.activo);
-  const precioSel = precios.find((p) => p.proceso === proceso);
-  const total = (Number(cantidad) || 0) * (precioSel?.precioUnidad || 0);
+  const total = (Number(cantidad) || 0) * (Number(precioReal) || 0);
   // El tope solo aplica si de verdad se buscó el costo teórico de ESTA
   // referencia (evita bloquear con el resultado de una búsqueda anterior si
   // el usuario cambia la referencia sin volver a buscar) y si Busint tiene
   // un costo teórico real configurado (costoFT > 0 — en 0 significa que esa
   // referencia no está costeada todavía, no que el tope sea $0).
   const costoAplicaA = costoTeorico && !costoTeorico.error && costoTeorico.encontrada && costoTeorico.costoFT > 0 && costoTeorico._ref === referencia.trim() ? costoTeorico : null;
-  const excedeCostoTeorico = !!(costoAplicaA && precioSel && precioSel.precioUnidad > costoAplicaA.costoFT);
+  const excedeCostoTeorico = !!(costoAplicaA && Number(precioReal) > costoAplicaA.costoFT);
   // El lote encontrado solo cuenta si sigue siendo el de la referencia
   // actual (mismo resguardo que costoAplicaA, por si cambian la referencia a
   // mano después de buscar). "Vigente" = no está ya en BPT (terminado). Y
@@ -487,7 +494,7 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   const loteAsociado = loteInfo?.encontrada && loteInfo.referencia === referencia.trim() ? loteInfo : null;
   const loteBloqueado = !!(loteAsociado && !loteAsociado.vigente);
   const registroPrevio = loteAsociado && proceso ? (produccionCompleta || []).find((p) => p.numLote === loteAsociado.numLote && p.proceso === proceso) : null;
-  const puedeGuardar = trabajadorId && proceso && Number(cantidad) > 0 && !guardando && !excedeCostoTeorico && !loteBloqueado && !registroPrevio;
+  const puedeGuardar = trabajadorId && proceso && Number(cantidad) > 0 && Number(precioReal) > 0 && !guardando && !excedeCostoTeorico && !loteBloqueado && !registroPrevio;
   async function guardar() {
     if (!puedeGuardar) return;
     setGuardando(true);
@@ -503,13 +510,14 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
         numLote: loteInfo?.encontrada && loteInfo.referencia === referencia.trim() ? loteInfo.numLote : null,
         numPedido: loteInfo?.encontrada && loteInfo.referencia === referencia.trim() ? loteInfo.numPedido : null,
         cantidad: Number(cantidad) || 0,
-        precioUnidad: precioSel?.precioUnidad || 0,
+        precioUnidad: Number(precioReal) || 0,
         total,
         creadoPor: currentUser?.name || currentUser?.username || "",
         creadoEn: new Date().toISOString(),
       });
       setReferencia("");
       setCantidad("");
+      setPrecioReal("");
       setCostoTeorico(null);
       setNumLote("");
       setLoteInfo(null);
@@ -551,7 +559,7 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
         )}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           <Field label="Proceso">
-            <FSel value={proceso} onChange={setProceso} options={precios.map((p) => ({ value: p.proceso, label: `${p.proceso} (${fmtMoney(p.precioUnidad)}/und)` }))} />
+            <FSel value={proceso} onChange={setProceso} options={precios.map((p) => ({ value: p.proceso, label: p.proceso }))} />
           </Field>
           <Field label="Referencia (opcional)">
             <div style={{ display: "flex", gap: 6 }}>
@@ -573,17 +581,18 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
             El proceso "{proceso}" del lote {loteAsociado.numLote} ya fue pagado ({registroPrevio.trabajadorNombre}, {fmtFechaISO(registroPrevio.fecha)}) — no se puede pagar dos veces.
           </div>
         )}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "end" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, alignItems: "end" }}>
           <Field label="Cantidad"><FInput type="number" value={cantidad} onChange={setCantidad} /></Field>
+          <Field label="Precio real (por unidad)"><FInput type="number" value={precioReal} onChange={setPrecioReal} placeholder="Lo que se le paga" /></Field>
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>Total</div>
             <div style={{ padding: "9px 12px", background: C.canvas, borderRadius: 8, fontWeight: 800, color: C.ink, fontSize: 14 }}>{fmtMoney(total)}</div>
           </div>
         </div>
-        {!proceso && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>Selecciona un proceso con precio ya configurado en "Precios por Proceso".</div>}
+        {!proceso && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>Selecciona un proceso (Administración → Procesos).</div>}
         {excedeCostoTeorico && (
           <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginBottom: 10 }}>
-            El precio configurado para "{proceso}" ({fmtMoney(precioSel.precioUnidad)}) supera el costo teórico de {costoAplicaA._ref} ({fmtMoney(costoAplicaA.costoFT)}). No se puede registrar así.
+            El precio real ({fmtMoney(Number(precioReal))}) supera el costo teórico de {costoAplicaA._ref} ({fmtMoney(costoAplicaA.costoFT)}). No se puede registrar así.
           </div>
         )}
         <Btn onClick={guardar} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Registrar Producción"}</Btn>
@@ -859,7 +868,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
         { id: "horas", icon: "🕐", label: "Registrar Horas" },
         { id: "resumen", icon: "💰", label: "Cierre de Quincena" },
         { id: "trabajadores", icon: "👷", label: "Trabajadores" },
-        { id: "precios", icon: "⚙️", label: "Precios por Proceso" },
+        { id: "precios", icon: "⚙️", label: "Procesos" },
       ];
   // Con líder de área, todo lo que ve/registra queda limitado a su propia
   // gente — así Anny no ve ni toca la producción de Sarai y viceversa.
