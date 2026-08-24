@@ -255,6 +255,183 @@ async function exportHojaDeVidaXLSX(item, kind, capsulaName) {
   XLSX.writeFile(wb, `HojaDeVida_${titulo}_${fecha}.xlsx`);
 }
 
+// Exporta la pestaña "Especificaciones" de una referencia (prototipo o
+// cápsula-referencia) como un .xlsx con el mismo formato del papel "RUTA:
+// <nombre>" que se llenaba a mano: N° a la izquierda junto al dibujo/foto de
+// la referencia, y a la derecha "ESPECIFICACIONES GENERALES" + cada línea +
+// "OBSERVACIONES" en negrita al final. Se arma con "xlsx-js-style" (igual
+// que exportBitacoraEnvioToExcel) para que los bordes/relleno/negrita se
+// vean de verdad; incrustar la imagen real no lo soporta ninguna de las dos
+// librerías de Excel de la app (ver nota en exportBitacoraEnvioToExcel), así
+// que después de armar la hoja se abre el .xlsx ya generado con JSZip y se
+// le agrega la imagen a mano, siguiendo la MISMA cadena de archivos
+// (hoja → drawing → rels → media) que ya usa extraerImagenesDeHoja más abajo
+// para LEER fotos incrustadas — solo que en sentido inverso.
+async function exportEspecificacionesXLSX(item, kind, capsulaName) {
+  const XLSX = await import("xlsx-js-style");
+  const fecha = new Date().toISOString().slice(0, 10);
+  const especs = item.especificaciones || { lineas: [], observaciones: "" };
+  const lineas = especs.lineas?.length ? especs.lineas : [{ id: "x", text: "Sin especificaciones registradas." }];
+  const numero = item.numPrototipo || item.reference || "";
+  const titulo = `RUTA: ${(item.name || item.reference || "").toUpperCase()}`;
+  const HEADER_ROW = 1; // fila 0-based de "ESPECIFICACIONES GENERALES"
+  const FIRST_LINEA_ROW = 2;
+  const OBS_ROW = FIRST_LINEA_ROW + lineas.length; // fila de OBSERVACIONES
+  const LAST_ROW = OBS_ROW; // última fila del bloque (para los merges verticales)
+  const wsData = [
+    [titulo, "", "", "", ""],
+    [`N° ${numero}`, "", "", "", "ESPECIFICACIONES GENERALES"],
+    ...lineas.map((l) => ["", "", "", "", l.text || ""]),
+    ["", "", "", "", `OBSERVACIONES: ${especs.observaciones?.trim() || "—"}`],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  ws["!merges"] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 4 } },
+    { s: { r: HEADER_ROW, c: 0 }, e: { r: LAST_ROW, c: 0 } },
+    { s: { r: HEADER_ROW, c: 1 }, e: { r: LAST_ROW, c: 3 } },
+  ];
+  ws["!cols"] = [{ wch: 14 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 72 }];
+  ws["!rows"] = wsData.map((_, i) => {
+    if (i === 0) return { hpt: 26 };
+    if (i === HEADER_ROW) return { hpt: 22 };
+    if (i === OBS_ROW) return { hpt: 40 };
+    return { hpt: 32 };
+  });
+  const COLOR_INK = "1A1A2E";
+  const COLOR_SEAM = "C8B8A2";
+  const COLOR_CANVAS = "F7F4F0";
+  const COLOR_BORDER = "E8E2DB";
+  const THIN = { style: "thin", color: { rgb: COLOR_BORDER } };
+  const BOX = { top: THIN, bottom: THIN, left: THIN, right: THIN };
+  for (let r = 0; r < wsData.length; r++) {
+    for (let c = 0; c < 5; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (!ws[addr]) ws[addr] = { t: "s", v: "" };
+      let style = { border: BOX, alignment: { vertical: "center", horizontal: "left", wrapText: true } };
+      if (r === 0) {
+        style.font = { bold: true, sz: 14, color: { rgb: COLOR_SEAM } };
+        style.fill = { patternType: "solid", fgColor: { rgb: COLOR_INK } };
+        style.alignment.horizontal = "center";
+      } else if (c === 0) {
+        style.font = { bold: true, sz: 16, color: { rgb: COLOR_SEAM } };
+        style.fill = { patternType: "solid", fgColor: { rgb: COLOR_INK } };
+        style.alignment = { vertical: "center", horizontal: "center", wrapText: true };
+      } else if (c >= 1 && c <= 3) {
+        style.fill = { patternType: "solid", fgColor: { rgb: "FFFFFF" } };
+      } else if (r === HEADER_ROW) {
+        style.font = { bold: true, sz: 11, color: { rgb: COLOR_INK } };
+        style.fill = { patternType: "solid", fgColor: { rgb: COLOR_CANVAS } };
+        style.alignment.horizontal = "center";
+      } else if (r === OBS_ROW) {
+        style.font = { bold: true, sz: 11, color: { rgb: COLOR_INK } };
+        style.fill = { patternType: "solid", fgColor: { rgb: COLOR_CANVAS } };
+      } else {
+        style.font = { bold: false, sz: 11, color: { rgb: COLOR_INK } };
+        style.fill = { patternType: "solid", fgColor: { rgb: "FFFFFF" } };
+      }
+      ws[addr].s = style;
+    }
+  }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "RUTA");
+  const nombreArchivo = `RUTA_${item.reference || item.name || "referencia"}_${fecha}.xlsx`.replace(/[^a-zA-Z0-9._-]+/g, "_");
+  function descargarBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  const m = typeof item.image === "string" ? /^data:(image\/\w+);base64,(.+)$/.exec(item.image) : null;
+  if (m) {
+    try {
+      const mimeImg = m[1];
+      const bin = atob(m[2]);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const ext = mimeImg === "image/jpeg" ? "jpeg" : mimeImg === "image/gif" ? "gif" : "png";
+      const wbArrayBuffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+      const JSZip = (await import("jszip")).default;
+      const zip = await JSZip.loadAsync(wbArrayBuffer);
+      const parser = new DOMParser();
+      const sheetPaths = await mapaHojasARutaXlsx(zip, parser);
+      const sheetPath = sheetPaths[0] || "xl/worksheets/sheet1.xml";
+      const sheetDir = sheetPath.slice(0, sheetPath.lastIndexOf("/"));
+      const sheetFile = sheetPath.slice(sheetPath.lastIndexOf("/") + 1);
+      zip.file(`xl/media/image1.${ext}`, bytes);
+      const drawingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <xdr:twoCellAnchor editAs="oneCell">
+    <xdr:from><xdr:col>1</xdr:col><xdr:colOff>19050</xdr:colOff><xdr:row>${HEADER_ROW}</xdr:row><xdr:rowOff>19050</xdr:rowOff></xdr:from>
+    <xdr:to><xdr:col>4</xdr:col><xdr:colOff>-19050</xdr:colOff><xdr:row>${LAST_ROW + 1}</xdr:row><xdr:rowOff>-19050</xdr:rowOff></xdr:to>
+    <xdr:pic>
+      <xdr:nvPicPr>
+        <xdr:cNvPr id="2" name="Referencia"/>
+        <xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr>
+      </xdr:nvPicPr>
+      <xdr:blipFill>
+        <a:blip r:embed="rIdImg1"/>
+        <a:stretch><a:fillRect/></a:stretch>
+      </xdr:blipFill>
+      <xdr:spPr>
+        <a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></a:xfrm>
+        <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+      </xdr:spPr>
+    </xdr:pic>
+    <xdr:clientData/>
+  </xdr:twoCellAnchor>
+</xdr:wsDr>`;
+      zip.file("xl/drawings/drawing1.xml", drawingXml);
+      const drawingRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdImg1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.${ext}"/>
+</Relationships>`;
+      zip.file("xl/drawings/_rels/drawing1.xml.rels", drawingRels);
+      const sheetRelsPath = `${sheetDir}/_rels/${sheetFile}.rels`;
+      let sheetRelsXml = await zip.file(sheetRelsPath)?.async("text");
+      const rIdDrawing = "rIdDrawing1";
+      if (sheetRelsXml) {
+        sheetRelsXml = sheetRelsXml.replace(
+          "</Relationships>",
+          `<Relationship Id="${rIdDrawing}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>`
+        );
+      } else {
+        sheetRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="${rIdDrawing}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>
+</Relationships>`;
+      }
+      zip.file(sheetRelsPath, sheetRelsXml);
+      let sheetXml = await zip.file(sheetPath).async("text");
+      const drawingTag = `<drawing r:id="${rIdDrawing}"/>`;
+      sheetXml = sheetXml.includes("<extLst")
+        ? sheetXml.replace("<extLst", `${drawingTag}<extLst`)
+        : sheetXml.replace("</worksheet>", `${drawingTag}</worksheet>`);
+      zip.file(sheetPath, sheetXml);
+      let contentTypesXml = await zip.file("[Content_Types].xml").async("text");
+      if (!contentTypesXml.includes(`Extension="${ext}"`)) {
+        const mimeCT = ext === "jpeg" ? "image/jpeg" : ext === "gif" ? "image/gif" : "image/png";
+        contentTypesXml = contentTypesXml.replace("</Types>", `<Default Extension="${ext}" ContentType="${mimeCT}"/></Types>`);
+      }
+      if (!contentTypesXml.includes("/xl/drawings/drawing1.xml")) {
+        contentTypesXml = contentTypesXml.replace(
+          "</Types>",
+          `<Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>`
+        );
+      }
+      zip.file("[Content_Types].xml", contentTypesXml);
+      const outBlob = await zip.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      descargarBlob(outBlob, nombreArchivo);
+      return;
+    } catch (e) {
+      // Si algo falla armando la imagen, se sigue abajo con la descarga sin
+      // imagen — mejor un Excel completo sin dibujo que ninguno.
+    }
+  }
+  XLSX.writeFile(wb, nombreArchivo);
+}
+
 function exportHojaDeVidaHTML(item, kind, capsulaName) {
   const fecha = new Date().toISOString().slice(0, 10);
   const cliente = item.cliente || item.colores?.[0] || "—";
@@ -1276,7 +1453,7 @@ function PomTable({ pom, tallas }) {
 // papel "RUTA: <nombre>" que se llenaba a mano. Vive junto a BOM/POM como
 // una pestaña más del detalle, y se copia entera al promover un prototipo
 // a referencia de cápsula (ver PromoteModal.save).
-function EspecificacionesPanel({ item, canEdit, onPatch }) {
+function EspecificacionesPanel({ item, canEdit, onPatch, kind, capsulaName }) {
   const especs = item.especificaciones || { lineas: [], observaciones: "" };
   const [nuevaLinea, setNuevaLinea] = useState("");
   const [notaLocal, setNotaLocal] = useState(especs.observaciones || "");
@@ -1298,7 +1475,10 @@ function EspecificacionesPanel({ item, canEdit, onPatch }) {
   }
   return (
     <div>
-      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 4 }}>Especificaciones Generales</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+        <div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>Especificaciones Generales</div>
+        <Btn variant="ghost" small onClick={() => exportEspecificacionesXLSX(item, kind, capsulaName)}>📊 Exportar Excel (RUTA)</Btn>
+      </div>
       <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>Instrucciones de construcción/confección de esta referencia.</div>
       {!especs.lineas?.length && !canEdit && (
         <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 24 }}>Sin especificaciones registradas.</div>
@@ -2406,7 +2586,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
             )}
           </div>
         )}
-        {tab === "especificaciones" && <EspecificacionesPanel item={item} canEdit={canEdit} onPatch={patch} />}
+        {tab === "especificaciones" && <EspecificacionesPanel item={item} canEdit={canEdit} onPatch={patch} kind={kind} capsulaName={capsula?.name} />}
         {tab === "chat" && <ChatPanel observations={item.observations.filter((o) => o.type !== "update" && o.user !== "Sistema")} currentUser={currentUser} role={role} onSend={sendObs} onMarkDone={markDone} />}
       </div>
     </div>
