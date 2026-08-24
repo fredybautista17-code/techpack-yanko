@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import {
   getFirestore,
@@ -7,6 +7,7 @@ import {
   setDoc,
   deleteDoc,
   onSnapshot,
+  writeBatch,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 const firebaseConfig = {
@@ -61,6 +62,12 @@ function fmtFechaISO(iso) {
   if (!iso) return "";
   const [y, m, d] = iso.split("-");
   return `${d}/${m}/${y}`;
+}
+// Normaliza el nombre de un proceso para comparar (mismo criterio en todas
+// partes: la búsqueda del costo teórico por proceso, el catálogo cargado
+// desde Busint, etc.) — sin importar mayúsculas ni espacios de más.
+function normalizarProceso(s) {
+  return (s || "").toString().trim().toUpperCase().replace(/\s+/g, " ");
 }
 function fmtFechaHora(iso) {
   if (!iso) return "";
@@ -494,8 +501,167 @@ function PreciosProcesoView({ precios, isAdmin, onSave, onDelete }) {
     </div>
   );
 }
+// ─── COSTOS TEÓRICOS POR PROCESO (cargados desde Excel de Busint) ─────────
+// El costoFT de la ficha técnica (Busint) es UN solo valor por referencia —
+// no distingue procesos. El usuario encontró que Busint sí tiene, por
+// LOTE+PROCESO, un costo teórico real (columna "CostoFT" del reporte de
+// movimientos/entradas de planta), distinto del costo pagado ("Costo") en
+// algunos casos. No hay una API en vivo para esto (ya se revisó a fondo),
+// así que se sube el Excel del reporte a mano cada tanto — cada fila se
+// guarda con id "{numLote}_{PROCESO}" (upsert), así volver a subir el mismo
+// archivo (o uno más reciente que repita lotes) simplemente actualiza el
+// valor en vez de duplicar. En Registrar Producción, si existe un match
+// exacto lote+proceso acá, ese costo teórico manda sobre el costoFT de la
+// referencia (es más específico).
+function parseExcelCostosTeoricoProceso(rows) {
+  // Los encabezados del archivo son "Entrada, fecha, Codplanta, Nombre,
+  // NumLote, Ref, RefExt, Costo, Total, Valortotal, CostoFT, CostoFt Total,
+  // Proceso, nfact" — se busca por nombre normalizado (sin espacios,
+  // minúsculas) para no depender del orden ni de mayúsculas exactas.
+  function col(row, ...nombres) {
+    const keys = Object.keys(row);
+    for (const nombre of nombres) {
+      const norm = nombre.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const k = keys.find((kk) => kk.toLowerCase().replace(/[^a-z0-9]/g, "") === norm);
+      if (k !== undefined) return row[k];
+    }
+    return undefined;
+  }
+  const out = [];
+  for (const r of rows) {
+    const numLote = Number(col(r, "NumLote"));
+    const proceso = String(col(r, "Proceso") || "").trim();
+    if (!numLote || !proceso) continue;
+    const costoFT = Number(col(r, "CostoFT")) || 0;
+    out.push({
+      numLote,
+      proceso,
+      costoFT,
+      costo: Number(col(r, "Costo")) || 0,
+      total: Number(col(r, "Total")) || 0,
+      valorTotal: Number(col(r, "Valortotal", "Valor Total")) || 0,
+      costoFtTotal: Number(col(r, "CostoFt Total", "CostoFTTotal")) || 0,
+      planta: String(col(r, "Nombre") || "").trim(),
+      fecha: (() => {
+        const f = col(r, "fecha");
+        if (!f) return "";
+        if (f instanceof Date) return f.toISOString().slice(0, 10);
+        return String(f).slice(0, 10);
+      })(),
+      nfact: String(col(r, "nfact") || "").trim(),
+      ref: String(col(r, "Ref") || "").trim(),
+    });
+  }
+  return out;
+}
+function CargarCostosTeoricoProcesoModal({ onGuardar, onClose }) {
+  const fileRef = useRef(null);
+  const [filas, setFilas] = useState(null);
+  const [nombreArchivo, setNombreArchivo] = useState("");
+  const [error, setError] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  async function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError("");
+    setFilas(null);
+    setNombreArchivo(file.name);
+    try {
+      const XLSX = await import("xlsx");
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      const parsed = parseExcelCostosTeoricoProceso(rows);
+      if (!parsed.length) { setError("No se encontraron filas válidas (revisa que tenga las columnas NumLote y Proceso)."); return; }
+      setFilas(parsed);
+    } catch (err) {
+      setError(err?.message || String(err));
+    }
+  }
+  async function confirmar() {
+    if (!filas?.length) return;
+    setGuardando(true);
+    try {
+      await onGuardar(filas, nombreArchivo);
+      onClose();
+    } finally {
+      setGuardando(false);
+    }
+  }
+  const lotesDistintos = filas ? new Set(filas.map((f) => f.numLote)).size : 0;
+  const procesosDistintos = filas ? new Set(filas.map((f) => normalizarProceso(f.proceso))).size : 0;
+  return (
+    <Modal title="Cargar Costos Teóricos por Proceso (Excel)" onClose={onClose} width={560}>
+      <div onClick={() => fileRef.current.click()} style={{ border: `2px dashed ${C.blue}`, borderRadius: 12, padding: 28, textAlign: "center", cursor: "pointer", background: C.blueBg, marginBottom: 16 }}>
+        <div style={{ fontSize: 30, marginBottom: 6 }}>📂</div>
+        <div style={{ fontWeight: 700, color: C.ink }}>{nombreArchivo || "Subir Excel (.xlsx)"}</div>
+        <div style={{ fontSize: 12, color: C.slate, marginTop: 4 }}>Columnas esperadas: NumLote, Proceso, Costo, CostoFT...</div>
+        <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={handleFile} />
+      </div>
+      {error && <div style={{ padding: "10px 14px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>⚠ {error}</div>}
+      {filas && !error && (
+        <div style={{ padding: "12px 16px", background: C.greenBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: C.green, fontWeight: 600 }}>
+          ✓ {filas.length} filas encontradas — {lotesDistintos} lotes distintos, {procesosDistintos} procesos distintos. Se van a guardar (o actualizar si ya existían) por lote+proceso.
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={confirmar} disabled={!filas?.length || guardando}>{guardando ? "Guardando..." : `Guardar ${filas?.length || ""} filas`}</Btn>
+      </div>
+    </Modal>
+  );
+}
+function CostosTeoricoProcesoView({ costos, isAdmin, onGuardarLote, onBorrarTodo }) {
+  const [modal, setModal] = useState(false);
+  const [busqueda, setBusqueda] = useState("");
+  const [confirmVaciar, setConfirmVaciar] = useState(false);
+  const filtrados = busqueda.trim()
+    ? costos.filter((c) => String(c.numLote).includes(busqueda.trim()) || normalizarProceso(c.proceso).includes(normalizarProceso(busqueda)))
+    : costos;
+  const ordenados = [...filtrados].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "") || b.numLote - a.numLote);
+  return (
+    <div>
+      {modal && <CargarCostosTeoricoProcesoModal onGuardar={onGuardarLote} onClose={() => setModal(false)} />}
+      {confirmVaciar && (
+        <Modal title="Vaciar Costos Teóricos por Proceso" onClose={() => setConfirmVaciar(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>¿Borrar TODOS los {costos.length} registros cargados? Los registros de producción ya guardados no se ven afectados — esto solo borra la tabla de referencia usada para el tope de precio.</div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmVaciar(false)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={() => { onBorrarTodo(); setConfirmVaciar(false); }}>Sí, vaciar todo</Btn>
+          </div>
+        </Modal>
+      )}
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 720 }}>
+        Costo teórico por LOTE + PROCESO, cargado desde el reporte de Busint (no hay una API en vivo para esto todavía). En "Registrar Producción", si el lote+proceso está acá, este costo manda sobre el costo teórico general de la referencia.
+      </div>
+      {isAdmin && (
+        <div style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center" }}>
+          <Btn onClick={() => setModal(true)}>📥 Cargar Excel</Btn>
+          {costos.length > 0 && <Btn variant="danger" onClick={() => setConfirmVaciar(true)}>Vaciar todo</Btn>}
+          <div style={{ marginLeft: "auto", width: 220 }}>
+            <FInput value={busqueda} onChange={setBusqueda} placeholder="Buscar por lote o proceso..." />
+          </div>
+        </div>
+      )}
+      <Tabla
+        vacio="Sin costos teóricos por proceso cargados todavía."
+        columnas={[
+          { key: "numLote", label: "Lote" },
+          { key: "proceso", label: "Proceso" },
+          { key: "costo", label: "Costo Real/Und", align: "right", render: (f) => fmtMoney(f.costo) },
+          { key: "costoFT", label: "Costo Teórico/Und", align: "right", render: (f) => fmtMoney(f.costoFT) },
+          { key: "diferencia", label: "Diferencia", align: "right", render: (f) => { const d = (f.costo || 0) - (f.costoFT || 0); return <span style={{ color: d > 0 ? C.red : d < 0 ? C.green : C.slate, fontWeight: 700 }}>{fmtMoney(d)}</span>; } },
+          { key: "planta", label: "Planta" },
+          { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+        ]}
+        filas={ordenados}
+      />
+    </div>
+  );
+}
 // ─── REGISTRAR PRODUCCIÓN (pago por pieza / proceso) ───────────────────────
-function RegistrarProduccionView({ trabajadores, precios, produccion, produccionCompleta, currentUser, onGuardar, onBorrar, isAdmin }) {
+function RegistrarProduccionView({ trabajadores, precios, produccion, produccionCompleta, costosTeoricoProceso, currentUser, onGuardar, onBorrar, isAdmin }) {
   const [trabajadorId, setTrabajadorId] = useState("");
   const [fecha, setFecha] = useState(today());
   const [proceso, setProceso] = useState("");
@@ -562,13 +728,6 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   }
   const trabajadoresActivos = trabajadores.filter((t) => t.activo);
   const total = (Number(cantidad) || 0) * (Number(precioReal) || 0);
-  // El tope solo aplica si de verdad se buscó el costo teórico de ESTA
-  // referencia (evita bloquear con el resultado de una búsqueda anterior si
-  // el usuario cambia la referencia sin volver a buscar) y si Busint tiene
-  // un costo teórico real configurado (costoFT > 0 — en 0 significa que esa
-  // referencia no está costeada todavía, no que el tope sea $0).
-  const costoAplicaA = costoTeorico && !costoTeorico.error && costoTeorico.encontrada && costoTeorico.costoFT > 0 && costoTeorico._ref === referencia.trim() ? costoTeorico : null;
-  const excedeCostoTeorico = !!(costoAplicaA && Number(precioReal) > costoAplicaA.costoFT);
   // El lote encontrado solo cuenta si sigue siendo el de la referencia
   // actual (mismo resguardo que costoAplicaA, por si cambian la referencia a
   // mano después de buscar). "Vigente" = no está ya en BPT (terminado). Y
@@ -576,6 +735,25 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   // lo registró — pidió el usuario "nunca puede repetir doble vez el pago en
   // un mismo lote".
   const loteAsociado = loteInfo?.encontrada && loteInfo.referencia === referencia.trim() ? loteInfo : null;
+  // Si este lote+proceso exacto está en la tabla de Costos Teóricos por
+  // Proceso (cargada a mano desde el Excel de Busint), ese valor es más
+  // específico que el costoFT de la referencia (que es un solo número, sin
+  // distinguir procesos) — así que manda sobre él si existe.
+  const costoProcesoEspecifico =
+    loteAsociado && proceso
+      ? (costosTeoricoProceso || []).find((c) => c.numLote === loteAsociado.numLote && normalizarProceso(c.proceso) === normalizarProceso(proceso) && c.costoFT > 0)
+      : null;
+  // El tope solo aplica si de verdad se buscó el costo teórico de ESTA
+  // referencia (evita bloquear con el resultado de una búsqueda anterior si
+  // el usuario cambia la referencia sin volver a buscar) y si Busint tiene
+  // un costo teórico real configurado (costoFT > 0 — en 0 significa que esa
+  // referencia no está costeada todavía, no que el tope sea $0).
+  const costoAplicaA = costoProcesoEspecifico
+    ? { costoFT: costoProcesoEspecifico.costoFT, _ref: referencia.trim(), _porProceso: true }
+    : costoTeorico && !costoTeorico.error && costoTeorico.encontrada && costoTeorico.costoFT > 0 && costoTeorico._ref === referencia.trim()
+    ? costoTeorico
+    : null;
+  const excedeCostoTeorico = !!(costoAplicaA && Number(precioReal) > costoAplicaA.costoFT);
   const loteBloqueado = !!(loteAsociado && !loteAsociado.vigente);
   const registroPrevio = loteAsociado && proceso ? (produccionCompleta || []).find((p) => p.numLote === loteAsociado.numLote && p.proceso === proceso) : null;
   const puedeGuardar = trabajadorId && proceso && Number(cantidad) > 0 && Number(precioReal) > 0 && !guardando && !excedeCostoTeorico && !loteBloqueado && !registroPrevio;
@@ -656,11 +834,17 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
             </div>
           </Field>
         </div>
-        {costoTeorico && !costoTeorico.error && costoTeorico._ref === referencia.trim() && (
-          costoTeorico.encontrada && costoTeorico.costoFT > 0 ? (
-            <div style={{ fontSize: 11, color: C.slate, fontWeight: 600, marginBottom: 10 }}>Costo teórico Busint para {costoTeorico._ref}: {fmtMoney(costoTeorico.costoFT)}</div>
-          ) : (
-            <div style={{ fontSize: 11, color: C.slate, fontWeight: 600, marginBottom: 10 }}>Esta referencia no tiene costo teórico configurado en Busint todavía — no aplica tope.</div>
+        {costoProcesoEspecifico ? (
+          <div style={{ fontSize: 11, color: C.blue, fontWeight: 700, marginBottom: 10 }}>
+            📐 Costo teórico del proceso "{costoProcesoEspecifico.proceso}" para el lote {loteAsociado.numLote}: {fmtMoney(costoProcesoEspecifico.costoFT)} (cargado en Administración → Costos Teóricos — este manda sobre el de la referencia).
+          </div>
+        ) : (
+          costoTeorico && !costoTeorico.error && costoTeorico._ref === referencia.trim() && (
+            costoTeorico.encontrada && costoTeorico.costoFT > 0 ? (
+              <div style={{ fontSize: 11, color: C.slate, fontWeight: 600, marginBottom: 10 }}>Costo teórico Busint para {costoTeorico._ref}: {fmtMoney(costoTeorico.costoFT)}</div>
+            ) : (
+              <div style={{ fontSize: 11, color: C.slate, fontWeight: 600, marginBottom: 10 }}>Esta referencia no tiene costo teórico configurado en Busint todavía — no aplica tope.</div>
+            )
           )
         )}
         {costoTeorico?.error && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se pudo consultar el costo teórico: {costoTeorico.error}</div>}
@@ -680,7 +864,7 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
         {!proceso && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>Selecciona un proceso (Administración → Procesos).</div>}
         {excedeCostoTeorico && (
           <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginBottom: 10 }}>
-            El precio real ({fmtMoney(Number(precioReal))}) supera el costo teórico de {costoAplicaA._ref} ({fmtMoney(costoAplicaA.costoFT)}). No se puede registrar así.
+            El precio real ({fmtMoney(Number(precioReal))}) supera el costo teórico {costoAplicaA._porProceso ? `del proceso "${proceso}" para este lote` : `de ${costoAplicaA._ref}`} ({fmtMoney(costoAplicaA.costoFT)}). No se puede registrar así.
           </div>
         )}
         <Btn onClick={guardar} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Registrar Producción"}</Btn>
@@ -932,6 +1116,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   const [produccion, setProduccion] = useState([]);
   const [horas, setHoras] = useState([]);
   const [cierres, setCierres] = useState([]);
+  const [costosTeoricoProceso, setCostosTeoricoProceso] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     const unsubs = [
@@ -940,6 +1125,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
       onSnapshot(collection(db, "nomina_produccion"), (snap) => setProduccion(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_horas"), (snap) => setHoras(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_cierres"), (snap) => setCierres(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_costos_teorico_proceso"), (snap) => setCostosTeoricoProceso(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
     ];
     return () => unsubs.forEach((u) => u());
   }, []);
@@ -957,6 +1143,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
         { id: "resumen", icon: "💰", label: "Cierre de Quincena" },
         { id: "trabajadores", icon: "👷", label: "Trabajadores" },
         { id: "precios", icon: "⚙️", label: "Procesos" },
+        { id: "costos_teorico", icon: "📐", label: "Costos Teóricos" },
       ];
   // Con líder de área, todo lo que ve/registra queda limitado a su propia
   // gente — así Anny no ve ni toca la producción de Sarai y viceversa.
@@ -971,6 +1158,34 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   async function borrarProduccion(id) { await fsDelete("nomina_produccion", id); }
   async function guardarHoras(h) { await fsSave("nomina_horas", h.id, h); }
   async function borrarHoras(id) { await fsDelete("nomina_horas", id); }
+  // Sube en lote (upsert por "{numLote}_{PROCESO}") las filas del Excel de
+  // Costos Teóricos por Proceso — se hace con writeBatch (no una por una)
+  // para que un archivo de varios cientos de filas se guarde de un solo
+  // golpe. 450 por tanda, por debajo del límite de 500 operaciones que
+  // permite un batch de Firestore.
+  async function guardarCostosTeoricoProcesoLote(filas, nombreArchivo) {
+    const cargadoEn = new Date().toISOString();
+    const cargadoPor = currentUser?.name || currentUser?.username || "";
+    const TAM_TANDA = 450;
+    for (let i = 0; i < filas.length; i += TAM_TANDA) {
+      const tanda = filas.slice(i, i + TAM_TANDA);
+      const batch = writeBatch(db);
+      tanda.forEach((f) => {
+        const id = `${f.numLote}_${normalizarProceso(f.proceso)}`;
+        batch.set(doc(db, "nomina_costos_teorico_proceso", id), { ...f, id, cargadoEn, cargadoPor, archivoOrigen: nombreArchivo || "" }, { merge: true });
+      });
+      await batch.commit();
+    }
+  }
+  async function vaciarCostosTeoricoProceso() {
+    const TAM_TANDA = 450;
+    for (let i = 0; i < costosTeoricoProceso.length; i += TAM_TANDA) {
+      const tanda = costosTeoricoProceso.slice(i, i + TAM_TANDA);
+      const batch = writeBatch(db);
+      tanda.forEach((c) => batch.delete(doc(db, "nomina_costos_teorico_proceso", c.id)));
+      await batch.commit();
+    }
+  }
   // "Cerrar Quincena" guarda una foto (snapshot) de los totales por
   // trabajador al momento del cierre — eso es lo que consulta Talento
   // Humano, sin depender de que nadie transcriba nada a mano. El id del
@@ -1050,11 +1265,12 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
             {NAV.find((n) => n.id === subView)?.label || ""}
           </h1>
           {subView === "dashboard" && !areaLider && <DashboardNominaView trabajadores={trabajadores} precios={precios} produccion={produccion} horas={horas} />}
-          {subView === "produccion" && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
+          {subView === "produccion" && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} costosTeoricoProceso={costosTeoricoProceso} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
           {subView === "horas" && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
           {subView === "resumen" && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} />}
           {subView === "trabajadores" && !areaLider && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} />}
           {subView === "precios" && !areaLider && <PreciosProcesoView precios={precios} isAdmin={isAdmin} onSave={guardarProceso} onDelete={borrarProceso} />}
+          {subView === "costos_teorico" && !areaLider && <CostosTeoricoProcesoView costos={costosTeoricoProceso} isAdmin={isAdmin} onGuardarLote={guardarCostosTeoricoProcesoLote} onBorrarTodo={vaciarCostosTeoricoProceso} />}
         </div>
       </div>
     </div>
