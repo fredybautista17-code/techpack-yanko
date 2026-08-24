@@ -1271,6 +1271,78 @@ function PomTable({ pom, tallas }) {
   );
 }
 
+// Especificaciones Generales + Observación de Confección, digitizadas por
+// referencia (prototipo o cápsula-referencia) — reemplaza el formato en
+// papel "RUTA: <nombre>" que se llenaba a mano. Vive junto a BOM/POM como
+// una pestaña más del detalle, y se copia entera al promover un prototipo
+// a referencia de cápsula (ver PromoteModal.save).
+function EspecificacionesPanel({ item, canEdit, onPatch }) {
+  const especs = item.especificaciones || { lineas: [], observaciones: "" };
+  const [nuevaLinea, setNuevaLinea] = useState("");
+  const [notaLocal, setNotaLocal] = useState(especs.observaciones || "");
+  useEffect(() => { setNotaLocal(especs.observaciones || ""); }, [item.id]);
+  function guardar(next) {
+    onPatch({ especificaciones: { ...especs, ...next } });
+  }
+  function agregarLinea() {
+    const t = nuevaLinea.trim();
+    if (!t) return;
+    guardar({ lineas: [...(especs.lineas || []), { id: uid(), text: t }] });
+    setNuevaLinea("");
+  }
+  function quitarLinea(id) {
+    guardar({ lineas: (especs.lineas || []).filter((l) => l.id !== id) });
+  }
+  function editarLinea(id, text) {
+    guardar({ lineas: (especs.lineas || []).map((l) => (l.id === id ? { ...l, text } : l)) });
+  }
+  return (
+    <div>
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 4 }}>Especificaciones Generales</div>
+      <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>Instrucciones de construcción/confección de esta referencia.</div>
+      {!especs.lineas?.length && !canEdit && (
+        <div style={{ color: T.slate, fontSize: 13, textAlign: "center", padding: 24 }}>Sin especificaciones registradas.</div>
+      )}
+      {especs.lineas?.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+          {especs.lineas.map((l) => (
+            <div key={l.id} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+              <span style={{ color: T.slate, marginTop: 9 }}>•</span>
+              {canEdit ? (
+                <textarea value={l.text} onChange={(e) => editarLinea(l.id, e.target.value)} rows={1}
+                  style={{ flex: 1, padding: "8px 10px", border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 13, color: T.ink, resize: "vertical", fontFamily: "inherit" }} />
+              ) : (
+                <div style={{ flex: 1, padding: "8px 0", fontSize: 13, color: T.ink }}>{l.text}</div>
+              )}
+              {canEdit && <button onClick={() => quitarLinea(l.id)} style={{ background: "none", border: "none", color: T.coral, cursor: "pointer", fontSize: 16, padding: "4px 8px" }} title="Quitar">✕</button>}
+            </div>
+          ))}
+        </div>
+      )}
+      {canEdit && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+          <input value={nuevaLinea} onChange={(e) => setNuevaLinea(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") agregarLinea(); }}
+            placeholder="Nueva especificación..." style={{ flex: 1, padding: "9px 12px", border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 13 }} />
+          <Btn variant="secondary" small onClick={agregarLinea}>+ Agregar</Btn>
+        </div>
+      )}
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 4 }}>Observación de Confección</div>
+      <div style={{ fontSize: 12, color: T.slate, marginBottom: 10 }}>Nota final de la ruta (distinta al historial de Observaciones de la otra pestaña).</div>
+      {canEdit ? (
+        <div>
+          <textarea value={notaLocal} onChange={(e) => setNotaLocal(e.target.value)} rows={4}
+            style={{ width: "100%", padding: "10px 12px", border: `1px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, fontFamily: "inherit", boxSizing: "border-box" }} />
+          <div style={{ marginTop: 8 }}>
+            <Btn small onClick={() => guardar({ observaciones: notaLocal })}>Guardar Observación</Btn>
+          </div>
+        </div>
+      ) : (
+        <div style={{ padding: "12px 14px", background: T.canvas, borderRadius: 8, fontSize: 13, color: T.ink, minHeight: 40 }}>{especs.observaciones || "—"}</div>
+      )}
+    </div>
+  );
+}
+
 // Lee la bitácora local de referencias de Busint (colección Firestore
 // "busint_referencias", que se llena sola cada madrugada vía la función
 // programada syncReferenciasBusint, o al toque con el botón "Sincronizar
@@ -1708,14 +1780,14 @@ function PromoteModal({ proto, capsulas, onSave, onClose, config }) {
   function save() {
     if (!capId || !refName || !refCode) return;
     onSave(capId, {
-      id: uid(), name: refName, reference: refCode, categoria: proto.categoria, silueta: proto.silueta, rango: proto.rango, fromProtoId: proto.id, numPrototipo: proto.numPrototipo || "", status: "en_proceso", currentStage: proto.currentStage, stageStartedAt: today(), assignedTo: proto.assignedTo, createdAt: today(), image: proto.image, colores: cliente ? [cliente] : [], tallas: rangoTallas ? [rangoTallas] : [], bom: [...proto.bom], pom: [...proto.pom], approvals: [],
+      id: uid(), name: refName, reference: refCode, categoria: proto.categoria, silueta: proto.silueta, rango: proto.rango, fromProtoId: proto.id, numPrototipo: proto.numPrototipo || "", status: "en_proceso", currentStage: proto.currentStage, stageStartedAt: today(), assignedTo: proto.assignedTo, createdAt: today(), image: proto.image, colores: cliente ? [cliente] : [], tallas: rangoTallas ? [rangoTallas] : [], bom: [...proto.bom], pom: [...proto.pom], approvals: [], especificaciones: proto.especificaciones || null,
       observations: [{ id: uid(), user: "Sistema", role: "Sistema", text: `Promovida desde ${proto.reference}.`, date: nowISO(), type: "info", done: false }],
     }, proto.id);
     onClose();
   }
   return (
     <Modal title={`Promover "${proto.name}" → Referencia`} onClose={onClose} width={520}>
-      <div style={{ padding: "10px 14px", background: T.jadeBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.jade, fontWeight: 600 }}>✓ BOM, POM, Categoría y Silueta se copiarán automáticamente</div>
+      <div style={{ padding: "10px 14px", background: T.jadeBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.jade, fontWeight: 600 }}>✓ BOM, POM, Especificaciones, Categoría y Silueta se copiarán automáticamente</div>
       {!capsulasDisponibles.length ? (
         <div style={{ padding: "10px 14px", background: T.coralBg, borderRadius: 8, marginBottom: 20, fontSize: 13, color: T.coral, fontWeight: 600 }}>⚠ No hay cápsulas con ilustración aprobada todavía. Pide a la Dirección Creativa que apruebe una cápsula antes de promover.</div>
       ) : (
@@ -2058,6 +2130,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
     { id: "bom", label: `BOM (${item.bom.length})` },
     { id: "pom", label: `POM (${item.pom.length})` },
     ...(kind === "ref" ? [{ id: "aprobaciones", label: `Aprobaciones (${item.approvals?.length || 0})` }] : []),
+    { id: "especificaciones", label: "📐 Especificaciones" },
     { id: "chat", label: `Observaciones (${item.observations.length})` },
   ];
   const st = item.status;
@@ -2333,6 +2406,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
             )}
           </div>
         )}
+        {tab === "especificaciones" && <EspecificacionesPanel item={item} canEdit={canEdit} onPatch={patch} />}
         {tab === "chat" && <ChatPanel observations={item.observations.filter((o) => o.type !== "update" && o.user !== "Sistema")} currentUser={currentUser} role={role} onSend={sendObs} onMarkDone={markDone} />}
       </div>
     </div>
