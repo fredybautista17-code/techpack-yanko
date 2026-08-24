@@ -253,6 +253,7 @@ const AREAS_NOMINA = ["Terminación", "Termofijación", "Sin asignar"];
 function TrabajadorModal({ trabajador, onSave, onClose }) {
   const [form, setForm] = useState({
     nombre: trabajador?.nombre || "",
+    cedula: trabajador?.cedula || "",
     tarifaHora: trabajador?.tarifaHora ?? "",
     activo: trabajador?.activo ?? true,
     area: trabajador?.area || "Sin asignar",
@@ -260,12 +261,13 @@ function TrabajadorModal({ trabajador, onSave, onClose }) {
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function guardar() {
     if (!form.nombre.trim()) return;
-    onSave({ nombre: form.nombre.trim(), tarifaHora: Number(form.tarifaHora) || 0, activo: !!form.activo, area: form.area || "Sin asignar" });
+    onSave({ nombre: form.nombre.trim(), cedula: form.cedula.trim(), tarifaHora: Number(form.tarifaHora) || 0, activo: !!form.activo, area: form.area || "Sin asignar" });
     onClose();
   }
   return (
     <Modal title={trabajador ? "Editar Trabajador" : "Nuevo Trabajador"} onClose={onClose} width={440}>
       <Field label="Nombre"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Carlos Javier González" /></Field>
+      <Field label="Cédula"><FInput value={form.cedula} onChange={set("cedula")} placeholder="Ej: 1004802413" /></Field>
       <Field label="Área"><FSel value={form.area} onChange={set("area")} options={AREAS_NOMINA} placeholder="Sin asignar" /></Field>
       <Field label="Tarifa por hora (para tareas sueltas)"><FInput type="number" value={form.tarifaHora} onChange={set("tarifaHora")} /></Field>
       {trabajador && (
@@ -315,6 +317,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete }) {
         vacio="Sin trabajadores registrados."
         columnas={[
           { key: "nombre", label: "Nombre" },
+          { key: "cedula", label: "Cédula", render: (f) => f.cedula || "—" },
           { key: "area", label: "Área", render: (f) => f.area || "Sin asignar" },
           { key: "tarifaHora", label: "Tarifa/Hora", align: "right", render: (f) => fmtMoney(f.tarifaHora) },
           { key: "activo", label: "Estado", render: (f) => (
