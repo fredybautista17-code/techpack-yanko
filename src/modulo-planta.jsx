@@ -297,8 +297,19 @@ function ProgramacionDiariaView({ cargaActiva, programacion, onProgramar, onCanc
   const [programando, setProgramando] = useState(null);
   const [editando, setEditando] = useState(null);
   const [subTab, setSubTab] = useState("pendientes");
+  // (2026-08-24) Antes se usaba "l.invPlanta > 0" directo — pero Busint no
+  // deja siempre en 0 el inventario de Planta apenas el lote avanza a
+  // Semiterminado/BPT (quedan unidades "fantasma" en esa columna aunque el
+  // lote ya se movió), así que un lote como el 7120 seguía contando como "en
+  // Planta Yanko" y nunca se limpiaba de Vencidos en Programación Diaria, aun
+  // con la carga recién actualizada mostrándolo en Semiterminado en el
+  // buscador de lote. "ubicacionActual" (armado en construirLotesDesdeBusintGen
+  // / agruparLotes con la MISMA prioridad BPT > Semiterminado > Planta > BMP >
+  // Corte que usa el buscador) es la fuente de verdad real de dónde está HOY
+  // el lote — se usa ese campo en vez del invPlanta crudo, aquí y en el
+  // reconciliador automático de más abajo.
   const lotesEnPlantaYanko = useMemo(
-    () => (cargaActiva?.lotes || []).filter((l) => l.nombrePlanta === PLANTA_YANKO && l.invPlanta > 0),
+    () => (cargaActiva?.lotes || []).filter((l) => l.nombrePlanta === PLANTA_YANKO && (l.ubicacionActual ? l.ubicacionActual === "Planta" : l.invPlanta > 0)),
     [cargaActiva]
   );
   const pendientes = useMemo(() => programacion.filter((p) => p.estado !== "cumplido"), [programacion]);
@@ -1202,10 +1213,18 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
   // (nueva Hoja1 subida en Planeación) o la lista de programados, si un lote
   // programado como "pendiente" ya no aparece en Planta Industrias Yanko en
   // la carga más reciente, se marca "cumplido" con la fecha de esa carga.
+  // Mismo ajuste que en lotesEnPlantaYanko más arriba: se usa "ubicacionActual"
+  // en vez de "invPlanta > 0" a secas, porque Busint puede dejar unidades sin
+  // limpiar en la columna de Planta aunque el lote ya esté en Semiterminado o
+  // BPT — con el chequeo viejo, esos lotes nunca se marcaban "cumplido" y se
+  // quedaban VENCIDOS para siempre en Programación Diaria aunque ya hubieran
+  // salido de Planta hacía días (caso real: lote 7120, confirmado con el
+  // buscador de lote de Planeación mostrando "Semiterminado" con la carga ya
+  // actualizada).
   useEffect(() => {
     if (!cargaActiva) return;
     const enPlantaSet = new Set(
-      (cargaActiva.lotes || []).filter((l) => l.nombrePlanta === PLANTA_YANKO && l.invPlanta > 0).map((l) => l.numLote)
+      (cargaActiva.lotes || []).filter((l) => l.nombrePlanta === PLANTA_YANKO && (l.ubicacionActual ? l.ubicacionActual === "Planta" : l.invPlanta > 0)).map((l) => l.numLote)
     );
     const aCumplir = programacion.filter((p) => p.estado !== "cumplido" && !enPlantaSet.has(p.numLote));
     if (!aCumplir.length) return;
