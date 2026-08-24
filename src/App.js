@@ -4683,7 +4683,7 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
       permiso: canAccessBodega,
     },
     {
-      id: "nomina_area", icon: "👷", label: "Nómina", desc: "Producción por proceso, horas sueltas y resumen semanal de pago", color: T.amber, bg: T.amberBg,
+      id: "nomina_area", icon: "👷", label: "Talento Humano", desc: "Nómina — producción por proceso, horas sueltas y cierre de quincena", color: T.amber, bg: T.amberBg,
       stats: [],
       permiso: canAccessNomina,
     },
@@ -10046,8 +10046,13 @@ function AppInner() {
     ...(canAccessBodega
       ? [{ id: "bodega_area", icon: "📦", label: "Bodega", items: [{ id: "bodega_area", icon: "📦", label: "Módulo Bodega" }] }]
       : []),
+    // "Talento Humano" — antes era "Nómina" directo; ahora queda como área
+    // con submenú (igual que Diseño), y Nómina es el primer módulo adentro,
+    // dejando espacio para futuros módulos de Talento Humano (contratos,
+    // novedades TNS, etc.) sin tocar el ruteo — el id interno sigue siendo
+    // "nomina_area" porque isViewActive/navClick ya lo reconocen.
     ...(canAccessNomina
-      ? [{ id: "nomina_area", icon: "👷", label: "Nómina", items: [{ id: "nomina_area", icon: "👷", label: "Módulo Nómina" }] }]
+      ? [{ id: "nomina_area", icon: "👷", label: "Talento Humano", items: [{ id: "nomina_area", icon: "👷", label: "Nómina" }] }]
       : []),
     // KPIs es su propia área de nivel superior (cubre toda la compañía).
     // A diferencia de Contabilidad/Planeación, no es un módulo externo aparte
