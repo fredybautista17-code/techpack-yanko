@@ -3359,16 +3359,118 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
 // por cliente. Además marca (🚫 Sin pedido) las piezas Aprobadas cuyo código
 // de referencia nunca apareció en ningún Pedido cargado — para detectar
 // diseño aprobado que nunca se llegó a producir.
+// Incrusta varias fotos en un .xlsx ya armado (wbArrayBuffer, salido de
+// XLSX.write(wb,{bookType:"xlsx",type:"array"})), cada una anclada sobre una
+// celda puntual (fotos: [{dataUrl,col,row}], 0-based). Mismo mecanismo manual
+// con JSZip que exportEspecificacionesXLSX (hoja→drawing→rels→media, ver el
+// comentario largo de esa función para la explicación completa) pero
+// generalizado para VARIAS imágenes en un solo drawing1.xml en vez de una
+// sola. Devuelve el Blob final listo para descargar, o null si ninguna de
+// las fotos recibidas era una data URL válida.
+async function incrustarFotosEnXlsx(wbArrayBuffer, fotos) {
+  const validas = (fotos || []).filter((f) => typeof f.dataUrl === "string" && /^data:image\/\w+;base64,/.test(f.dataUrl));
+  if (!validas.length) return null;
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(wbArrayBuffer);
+  const parser = new DOMParser();
+  const sheetPaths = await mapaHojasARutaXlsx(zip, parser);
+  const sheetPath = sheetPaths[0] || "xl/worksheets/sheet1.xml";
+  const sheetDir = sheetPath.slice(0, sheetPath.lastIndexOf("/"));
+  const sheetFile = sheetPath.slice(sheetPath.lastIndexOf("/") + 1);
+  const anchors = [];
+  const rels = [];
+  const extsUsadas = new Set();
+  validas.forEach((foto, idx) => {
+    const n = idx + 1;
+    const m = /^data:(image\/\w+);base64,(.+)$/.exec(foto.dataUrl);
+    const mimeImg = m[1];
+    const bin = atob(m[2]);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const ext = mimeImg === "image/jpeg" ? "jpeg" : mimeImg === "image/gif" ? "gif" : "png";
+    extsUsadas.add(ext);
+    zip.file(`xl/media/image${n}.${ext}`, bytes);
+    const rId = `rIdImg${n}`;
+    anchors.push(`
+  <xdr:twoCellAnchor editAs="oneCell">
+    <xdr:from><xdr:col>${foto.col}</xdr:col><xdr:colOff>19050</xdr:colOff><xdr:row>${foto.row}</xdr:row><xdr:rowOff>19050</xdr:rowOff></xdr:from>
+    <xdr:to><xdr:col>${foto.col + 1}</xdr:col><xdr:colOff>-19050</xdr:colOff><xdr:row>${foto.row + 1}</xdr:row><xdr:rowOff>-19050</xdr:rowOff></xdr:to>
+    <xdr:pic>
+      <xdr:nvPicPr>
+        <xdr:cNvPr id="${n + 1}" name="Foto${n}"/>
+        <xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr>
+      </xdr:nvPicPr>
+      <xdr:blipFill>
+        <a:blip r:embed="${rId}"/>
+        <a:stretch><a:fillRect/></a:stretch>
+      </xdr:blipFill>
+      <xdr:spPr>
+        <a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></a:xfrm>
+        <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+      </xdr:spPr>
+    </xdr:pic>
+    <xdr:clientData/>
+  </xdr:twoCellAnchor>`);
+    rels.push(`<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${n}.${ext}"/>`);
+  });
+  const drawingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${anchors.join("")}
+</xdr:wsDr>`;
+  zip.file("xl/drawings/drawing1.xml", drawingXml);
+  const drawingRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${rels.join("\n  ")}
+</Relationships>`;
+  zip.file("xl/drawings/_rels/drawing1.xml.rels", drawingRels);
+  const sheetRelsPath = `${sheetDir}/_rels/${sheetFile}.rels`;
+  let sheetRelsXml = await zip.file(sheetRelsPath)?.async("text");
+  const rIdDrawing = "rIdDrawing1";
+  if (sheetRelsXml) {
+    sheetRelsXml = sheetRelsXml.replace(
+      "</Relationships>",
+      `<Relationship Id="${rIdDrawing}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>`
+    );
+  } else {
+    sheetRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="${rIdDrawing}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>
+</Relationships>`;
+  }
+  zip.file(sheetRelsPath, sheetRelsXml);
+  let sheetXml = await zip.file(sheetPath).async("text");
+  const drawingTag = `<drawing r:id="${rIdDrawing}"/>`;
+  sheetXml = sheetXml.includes("<extLst")
+    ? sheetXml.replace("<extLst", `${drawingTag}<extLst`)
+    : sheetXml.replace("</worksheet>", `${drawingTag}</worksheet>`);
+  zip.file(sheetPath, sheetXml);
+  let contentTypesXml = await zip.file("[Content_Types].xml").async("text");
+  extsUsadas.forEach((ext) => {
+    if (!contentTypesXml.includes(`Extension="${ext}"`)) {
+      const mimeCT = ext === "jpeg" ? "image/jpeg" : ext === "gif" ? "image/gif" : "image/png";
+      contentTypesXml = contentTypesXml.replace("</Types>", `<Default Extension="${ext}" ContentType="${mimeCT}"/></Types>`);
+    }
+  });
+  if (!contentTypesXml.includes("/xl/drawings/drawing1.xml")) {
+    contentTypesXml = contentTypesXml.replace(
+      "</Types>",
+      `<Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>`
+    );
+  }
+  zip.file("[Content_Types].xml", contentTypesXml);
+  return zip.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+}
 // Exporta un envío de la Bitácora a Excel reproduciendo EXACTAMENTE el
 // layout del ANEXO que el cliente ya conoce (el archivo de ejemplo que
 // subieron: "COLECCIÓN KAMILA GIRLS N°2..."): 4 filas de encabezado (nombre
 // de colección; fecha enviado/recibido y marca/n° pedido; encabezados de
 // columna; sub-encabezados CURVA/CANTIDAD bajo COLOMBIA y VENEZUELA) y luego
 // una fila por referencia, en las mismas 17 columnas (A-Q) y en el mismo
-// orden que ese archivo. La librería "xlsx" (SheetJS, edición community) que
-// ya usa el resto de la app no soporta incrustar imágenes, así que
-// Foto/Carta de Colores quedan como nota de texto en vez de la imagen real
-// (que sí se ve dentro de la app, en la Bitácora).
+// orden que ese archivo. (2026-08-25) La foto SÍ se incrusta ahora como
+// imagen real en la columna FOTO (ver incrustarFotosEnXlsx arriba) — antes
+// quedaba como nota de texto "(ver en la app)" porque ninguna de las dos
+// librerías de Excel de la app soporta escribir imágenes de fábrica; se
+// arma con JSZip después, igual que Especificaciones. Carta de Colores sigue
+// como nota de texto (es una sola imagen para todo el envío, no por fila).
 async function exportBitacoraEnvioToExcel(envio) {
   // "xlsx-js-style" es un fork de SheetJS (mismo núcleo 0.18.5 que ya usa el
   // resto de la app, mismo API) que además soporta escribir estilos de
@@ -3391,7 +3493,7 @@ async function exportBitacoraEnvioToExcel(envio) {
     ["FOTO", "REF", "ESTADO", "CONSUMO", "TIPO", "CATEGORIA", "SILUETA", "RANGO (TALLA)", "TELA", "COLOMBIA", "", "VENEZUELA", "", "PRECIO $", "OBSERVACIONES CLIENTE", "", "CARTA DE COLORES"],
     ["", "", "", "", "", "", "", "", "", "CURVA ", "CANTIDAD", "CURVA", "CANTIDAD", "", "", "", ""],
     ...envio.items.map((it) => [
-      it.foto ? "(ver en la app)" : "",
+      "",
       it.referencia || "",
       it.estado || "",
       it.consumo || "",
@@ -3442,11 +3544,15 @@ async function exportBitacoraEnvioToExcel(envio) {
     { s: { r: 2, c: 16 }, e: { r: 3, c: 16 } },
     ...envio.items.map((_, i) => ({ s: { r: 4 + i, c: 14 }, e: { r: 4 + i, c: 15 } })),
   ];
+  // Con fotos incrustadas, la columna FOTO y el alto de cada fila de dato
+  // necesitan más espacio que el que bastaba para el texto "(ver en la
+  // app)" — si el envío no tiene ninguna foto, queda igual que antes.
+  const hayFotos = envio.items.some((it) => it.foto);
   ws["!cols"] = [
-    { wch: 10 }, { wch: 12 }, { wch: 14 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 11 }, { wch: 13 },
+    { wch: hayFotos ? 14 : 10 }, { wch: 12 }, { wch: 14 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 11 }, { wch: 13 },
     { wch: 10 }, { wch: 10 }, { wch: 11 }, { wch: 10 }, { wch: 11 }, { wch: 10 }, { wch: 24 }, { wch: 4 }, { wch: 14 },
   ];
-  ws["!rows"] = [{ hpt: 24 }, { hpt: 20 }, { hpt: 24 }, { hpt: 20 }, ...envio.items.map(() => ({ hpt: 36 }))];
+  ws["!rows"] = [{ hpt: 24 }, { hpt: 20 }, { hpt: 24 }, { hpt: 20 }, ...envio.items.map(() => ({ hpt: hayFotos ? 60 : 36 }))];
   // Colores de marca de ATLAS (mismos tokens T.* que usa el resto de la
   // app): fondo oscuro + texto beige en los encabezados, filas de datos
   // alternadas para que sea más fácil seguir cada referencia, y un borde
@@ -3494,6 +3600,25 @@ async function exportBitacoraEnvioToExcel(envio) {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "ANEXO");
   const nombreArchivo = `Envio_${(envio.coleccion || envio.cliente || "bitacora").replace(/[^a-zA-Z0-9]+/g, "_")}_${envio.fechaEnviado || today()}.xlsx`;
+  const fotos = envio.items.map((it, i) => ({ dataUrl: it.foto, col: 0, row: 4 + i })).filter((f) => f.dataUrl);
+  if (fotos.length) {
+    try {
+      const wbArrayBuffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+      const blob = await incrustarFotosEnXlsx(wbArrayBuffer, fotos);
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = nombreArchivo;
+        a.click();
+        URL.revokeObjectURL(url);
+        return;
+      }
+    } catch (e) {
+      // Si algo falla armando las fotos, se sigue abajo con la descarga sin
+      // imágenes — mejor un Excel completo sin fotos que ninguno.
+    }
+  }
   XLSX.writeFile(wb, nombreArchivo);
 }
 // Envuelve las dos bitácoras (Envíos / Aprobados sin Pedido) en pestañas
