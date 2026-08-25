@@ -1040,6 +1040,138 @@ function RegistrarHorasView({ trabajadores, horas, currentUser, onGuardar, onBor
 // Junta Producción + Horas Sueltas de la semana activa, agrupado por
 // trabajador, para armar el pago — clic en un trabajador abre el desglose
 // línea por línea (qué procesos/tareas componen su total).
+// Desprendible de pago individual — mismo patrón que exportHojaDeVidaHTML en
+// App.js: arma un HTML con estilo (encabezado degradado, tarjetas de datos,
+// tablas) y lo descarga como .html; adentro trae un botón "Imprimir / PDF"
+// que llama a window.print() — así el trabajador o el admin lo abre en el
+// navegador y ahí mismo lo guarda como PDF, sin depender de ninguna librería
+// nueva (jsPDF, etc.) que hubiera que instalar aparte.
+function exportDesprendiblePagoHTML({ trabajador, desde, hasta, label, produccionItems, horasItems, totalProduccion, totalHoras, totalGeneral }) {
+  const fechaGen = new Date().toISOString().slice(0, 10);
+  const filasProd = (produccionItems || [])
+    .map(
+      (p, i) => `
+    <tr style="background:${i % 2 === 0 ? "#F7F4F0" : "#fff"}">
+      <td style="padding:8px 10px;color:#5A5A7A;font-size:12px">${fmtFechaISO(p.fecha)}</td>
+      <td style="padding:8px 10px;font-weight:600">${p.proceso || ""}</td>
+      <td style="padding:8px 10px;color:#5A5A7A">${p.numLote || "—"}</td>
+      <td style="padding:8px 10px;color:#5A5A7A">${p.referencia || "—"}</td>
+      <td style="padding:8px 10px;text-align:right">${fmtNum(p.cantidad)}</td>
+      <td style="padding:8px 10px;text-align:right">${fmtMoney(p.precioUnidad)}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:700">${fmtMoney(p.total)}</td>
+    </tr>`
+    )
+    .join("");
+  const filasHoras = (horasItems || [])
+    .map(
+      (h, i) => `
+    <tr style="background:${i % 2 === 0 ? "#F7F4F0" : "#fff"}">
+      <td style="padding:8px 10px;color:#5A5A7A;font-size:12px">${fmtFechaISO(h.fecha)}</td>
+      <td style="padding:8px 10px;font-weight:600">${h.concepto || ""}</td>
+      <td style="padding:8px 10px;text-align:right">${fmtNum(h.horas)}</td>
+      <td style="padding:8px 10px;text-align:right">${fmtMoney(h.tarifaHora)}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:700">${fmtMoney(h.total)}</td>
+    </tr>`
+    )
+    .join("");
+  const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<title>Desprendible de Pago — ${trabajador.nombre || ""}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',Arial,sans-serif;background:#F7F4F0;color:#1A1A2E;padding:32px}
+  @media print{body{padding:0;background:#fff}}
+  .page{max-width:820px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 4px 32px rgba(26,26,46,0.1)}
+  .header{background:linear-gradient(135deg,#1A1A2E 0%,#2D1B69 100%);padding:28px 32px;display:flex;justify-content:space-between;align-items:center}
+  .header-left h1{color:#fff;font-size:20px;font-weight:800;letter-spacing:-0.3px}
+  .header-left p{color:#C8B8A2;font-size:12px;margin-top:4px}
+  .header-right{text-align:right}
+  .header-right .badge{background:rgba(200,184,162,0.2);border:1px solid #C8B8A2;border-radius:8px;padding:8px 16px;color:#C8B8A2;font-size:13px;font-weight:700}
+  .body{padding:28px 32px}
+  .info-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px}
+  .info-card{background:#F7F4F0;border-radius:8px;padding:12px 14px;border:1px solid #E8E2DB}
+  .info-card label{display:block;font-size:10px;font-weight:700;color:#5A5A7A;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px}
+  .info-card span{font-size:14px;font-weight:700;color:#1A1A2E}
+  .section-title{font-size:14px;font-weight:800;color:#1A1A2E;margin:22px 0 10px;padding-bottom:8px;border-bottom:2px solid #E8E2DB}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{background:#1A1A2E;color:#C8B8A2;padding:9px 10px;text-align:left;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em}
+  .no-rows{text-align:center;padding:20px;color:#5A5A7A;font-size:12.5px}
+  .totales{margin-top:22px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  .total-card{border-radius:10px;padding:14px 16px;text-align:center}
+  .total-card label{display:block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;opacity:0.85}
+  .total-card .val{font-size:19px;font-weight:900}
+  .firma{margin-top:44px;display:grid;grid-template-columns:1fr 1fr;gap:40px}
+  .firma div{border-top:1px solid #1A1A2E;padding-top:8px;text-align:center;font-size:11px;color:#5A5A7A}
+  .footer{background:#F7F4F0;padding:16px 32px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid #E8E2DB;font-size:12px;color:#5A5A7A}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <div class="header-left">
+      <h1>👷 Desprendible de Pago</h1>
+      <p>Industrias Yanko · Nómina por producción (pago por pieza)</p>
+    </div>
+    <div class="header-right">
+      <div class="badge">${label}</div>
+      <div style="color:#C8B8A2;font-size:11px;margin-top:8px">${fechaGen}</div>
+    </div>
+  </div>
+  <div class="body">
+    <div class="info-row">
+      <div class="info-card"><label>Trabajador</label><span>${trabajador.nombre || "—"}</span></div>
+      <div class="info-card"><label>Cédula</label><span>${trabajador.cedula || "—"}</span></div>
+      <div class="info-card"><label>Área</label><span>${trabajador.area || "—"}</span></div>
+    </div>
+    <div class="section-title">🧵 Producción por Proceso</div>
+    ${
+      filasProd
+        ? `<table>
+          <thead><tr>
+            <th>Fecha</th><th>Proceso</th><th>Lote</th><th>Referencia</th>
+            <th style="text-align:right">Cant.</th><th style="text-align:right">Precio/Und</th><th style="text-align:right">Total</th>
+          </tr></thead>
+          <tbody>${filasProd}</tbody>
+        </table>`
+        : `<div class="no-rows">Sin producción registrada en esta quincena.</div>`
+    }
+    <div class="section-title">🕐 Horas Sueltas</div>
+    ${
+      filasHoras
+        ? `<table>
+          <thead><tr><th>Fecha</th><th>Concepto</th><th style="text-align:right">Horas</th><th style="text-align:right">Tarifa/Hora</th><th style="text-align:right">Total</th></tr></thead>
+          <tbody>${filasHoras}</tbody>
+        </table>`
+        : `<div class="no-rows">Sin horas sueltas registradas en esta quincena.</div>`
+    }
+    <div class="totales">
+      <div class="total-card" style="background:#EBF1F7;color:#3D6B9E"><label>Total Producción</label><div class="val">${fmtMoney(totalProduccion)}</div></div>
+      <div class="total-card" style="background:#F3EEF9;color:#7B5EA7"><label>Total Horas</label><div class="val">${fmtMoney(totalHoras)}</div></div>
+      <div class="total-card" style="background:#EBF7F2;color:#2D9E6B"><label>Total a Pagar</label><div class="val">${fmtMoney(totalGeneral)}</div></div>
+    </div>
+    <div class="firma">
+      <div>Firma del Trabajador</div>
+      <div>Firma quien Autoriza</div>
+    </div>
+  </div>
+  <div class="footer">
+    <span>ATLAS · Industrias Yanko</span>
+    <span>Período: ${fmtFechaISO(desde)} — ${fmtFechaISO(hasta)} · Generado el ${new Date().toLocaleDateString("es-CO", { dateStyle: "long" })}</span>
+    <button onclick="window.print()" style="background:#1A1A2E;color:#C8B8A2;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:700">🖨 Imprimir / PDF</button>
+  </div>
+</div>
+</body>
+</html>`;
+  const blob = new Blob([html], { type: "text/html;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `Desprendible_${(trabajador.nombre || "trabajador").replace(/\s+/g, "_")}_${desde}_a_${hasta}.html`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, cierres, onCerrar, onReabrir }) {
   const [qOffset, setQOffset] = useState(0);
   const [trabajadorAbierto, setTrabajadorAbierto] = useState(null);
@@ -1089,10 +1221,31 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, cierres,
     XLSX.utils.book_append_sheet(wb, ws, "Resumen Nómina");
     XLSX.writeFile(wb, `Nomina_${desde}_a_${hasta}.xlsx`);
   }
+  // Arma y descarga el desprendible de UN trabajador puntual de la quincena
+  // activa — se usa tanto desde el botón dentro del detalle como desde el
+  // ícono de la fila en la tabla general, sin tener que abrir el detalle
+  // primero.
+  function descargarDesprendible(g) {
+    const trabajador = trabajadores.find((t) => t.id === g.trabajadorId) || { nombre: g.nombre };
+    exportDesprendiblePagoHTML({
+      trabajador,
+      desde,
+      hasta,
+      label,
+      produccionItems: prodQuincena.filter((p) => p.trabajadorId === g.trabajadorId),
+      horasItems: horasQuincena.filter((h) => h.trabajadorId === g.trabajadorId),
+      totalProduccion: g.totalProduccion,
+      totalHoras: g.totalHoras,
+      totalGeneral: g.totalGeneral,
+    });
+  }
   return (
     <div>
       {trabajadorAbierto && (
         <Modal title={`Detalle de "${trabajadorAbierto.nombre}" — ${fmtFechaISO(desde)} al ${fmtFechaISO(hasta)}`} onClose={() => setTrabajadorAbierto(null)} width={720}>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+            <Btn small onClick={() => descargarDesprendible(trabajadorAbierto)}>🖨 Descargar Desprendible</Btn>
+          </div>
           <div style={{ fontWeight: 800, fontSize: 12, color: C.ink, marginBottom: 8 }}>PRODUCCIÓN</div>
           <Tabla
             vacio="Sin producción esta quincena."
@@ -1150,6 +1303,12 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, cierres,
           { key: "horasCant", label: "Horas", align: "right", render: (f) => fmtNum(f.horasCant) },
           { key: "totalHoras", label: "Total Horas", align: "right", render: (f) => fmtMoney(f.totalHoras) },
           { key: "totalGeneral", label: "Total a Pagar", align: "right", render: (f) => <strong>{fmtMoney(f.totalGeneral)}</strong> },
+          {
+            key: "acciones", label: "", align: "right",
+            render: (f) => (
+              <span onClick={(e) => { e.stopPropagation(); descargarDesprendible(f); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }} title="Descargar desprendible de pago">🖨</span>
+            ),
+          },
         ]}
         filas={porTrabajador}
       />
