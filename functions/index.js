@@ -2488,6 +2488,92 @@ async function revisarYAvisarVencidos() {
   return { avisosEnviados };
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// FELICITACIONES cuando una diseñadora se pone AL DÍA (nada atrasado)
+// (2026-08-25) Pedido por el usuario junto con Dayana, Karen Michel Chacón y
+// Yuliana Andrea Beltrán (directora creativa): así como se avisa cuando algo
+// se atrasa, también avisar — a la diseñadora y al mismo equipo de apoyo
+// (RECIPIENTES_APOYO) — cuando NO tiene absolutamente nada vencido. Para no
+// mandar el mismo "¡vas bien!" todos los días mientras se mantenga al día,
+// se guarda el último estado conocido de cada diseñadora en la colección
+// `diseno_estado_felicitaciones` (doc id = su nombre en minúsculas): solo se
+// manda el correo la PRIMERA vez que pasa de "tenía algo atrasado" (o nunca
+// se había revisado) a "cero atrasos". Si luego se le vuelve a vencer algo,
+// el estado se resetea, así que si más adelante se vuelve a poner al día,
+// se le felicita de nuevo (no es un aviso de una sola vez en la vida).
+// Solo se evalúan diseñadoras con AL MENOS un ítem activo asignado (etapa no
+// terminal) — no tiene sentido "felicitar" a alguien sin nada asignado.
+function normalizarNombreDisenadora(s) {
+  return String(s || "").trim().toLowerCase();
+}
+
+async function revisarYFelicitarAlDia() {
+  const [configSnap, usersSnap, protosSnap, capsulasSnap] = await Promise.all([
+    db.collection("config").doc("main").get(),
+    db.collection("users").get(),
+    db.collection("prototipos").get(),
+    db.collection("capsulas").get(),
+  ]);
+
+  const stages = configSnap.exists ? (configSnap.data().stages || []) : [];
+  const stagesMap = new Map(stages.map((s) => [s.id, s.days]));
+  const usuarios = usersSnap.docs.map((d) => d.data());
+  const correosApoyo = RECIPIENTES_APOYO.map((n) => buscarCorreoPorNombre(n, usuarios)).filter(Boolean);
+  const transporte = crearTransporte();
+
+  // Por diseñadora: ¿tiene al menos un ítem activo?, ¿alguno de esos activos
+  // está vencido ahora mismo?
+  const porDisenadora = new Map();
+  function registrar(nombre, item) {
+    if (!nombre || !String(nombre).trim()) return;
+    if (STAGES_TERMINALES.has(item.status)) return; // lo ya cerrado no cuenta para esto
+    const key = normalizarNombreDisenadora(nombre);
+    if (!porDisenadora.has(key)) porDisenadora.set(key, { nombre: String(nombre).trim(), tieneActivos: false, tieneAtraso: false });
+    const g = porDisenadora.get(key);
+    g.tieneActivos = true;
+    if (estaVencido(item, stagesMap)) g.tieneAtraso = true;
+  }
+  for (const doc of protosSnap.docs) registrar(doc.data().assignedTo, doc.data());
+  for (const doc of capsulasSnap.docs) {
+    const cap = doc.data();
+    for (const refItem of cap.referencias || []) registrar(refItem.assignedTo || cap.assignedTo, refItem);
+  }
+
+  let felicitacionesEnviadas = 0;
+  for (const [key, g] of porDisenadora) {
+    if (!g.tieneActivos) continue;
+    const estadoRef = db.collection("diseno_estado_felicitaciones").doc(key);
+    const estadoSnap = await estadoRef.get();
+    const yaFelicitada = estadoSnap.exists && estadoSnap.data().sinAtrasos === true;
+    if (g.tieneAtraso) {
+      // Se le volvió a vencer algo — si antes estaba "felicitada", se
+      // resetea para que, si vuelve a ponerse al día más adelante, se le
+      // pueda felicitar de nuevo.
+      if (yaFelicitada) await estadoRef.set({ sinAtrasos: false, nombre: g.nombre, actualizadoEn: new Date().toISOString() }, { merge: true });
+      continue;
+    }
+    if (yaFelicitada) continue; // ya se le felicitó la última vez que se puso al día — no repetir a diario
+    const correoDisenadora = buscarCorreoPorNombre(g.nombre, usuarios);
+    await mandarCorreo(
+      transporte,
+      [correoDisenadora],
+      `🎉 ${g.nombre} — ¡todo al día!`,
+      `<p>Hola ${g.nombre},</p><p>¡Felicitaciones! En este momento no tienes ningún prototipo ni referencia atrasado. Sigue así 🙌</p>`
+    );
+    await mandarCorreo(
+      transporte,
+      correosApoyo,
+      `🎉 ${g.nombre} está al día con todo`,
+      `<p>Hola,</p><p><strong>${g.nombre}</strong> no tiene nada atrasado en este momento — todo su trabajo va al día. 🎉</p>`
+    );
+    await estadoRef.set({ sinAtrasos: true, nombre: g.nombre, actualizadoEn: new Date().toISOString() }, { merge: true });
+    felicitacionesEnviadas++;
+  }
+
+  logger.info(`Felicitaciones al día: ${felicitacionesEnviadas} enviada(s).`);
+  return { felicitacionesEnviadas };
+}
+
 // Corre una vez al día a las 8am (hora Bogotá). Para probar más seguido
 // mientras confirmas que funciona, cambia el schedule temporalmente (ej.
 // "every 10 minutes") y vuelve a desplegar — después vuelve a dejarlo en
@@ -2502,5 +2588,6 @@ exports.avisarVencidos = onSchedule(
   },
   async () => {
     await revisarYAvisarVencidos();
+    await revisarYFelicitarAlDia();
   }
 );
