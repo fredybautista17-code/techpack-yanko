@@ -357,16 +357,22 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete }) {
 // Busint del que traerlo automático), para que Anny/Sarai elijan de una
 // lista y no queden nombres distintos escritos de mil formas.
 function ProcesoModal({ proceso, onSave, onClose }) {
-  const [form, setForm] = useState({ proceso: proceso?.proceso || "" });
+  const [form, setForm] = useState({ proceso: proceso?.proceso || "", costoTeorico: proceso?.costoTeorico ?? "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function guardar() {
     if (!form.proceso.trim()) return;
-    onSave({ proceso: form.proceso.trim() });
+    onSave({ proceso: form.proceso.trim(), costoTeorico: Number(form.costoTeorico) || 0 });
     onClose();
   }
   return (
     <Modal title={proceso ? "Editar Proceso" : "Nuevo Proceso"} onClose={onClose} width={420}>
       <Field label="Nombre del Proceso"><FInput value={form.proceso} onChange={set("proceso")} placeholder="Ej: TERMINACION, BAJADA DE VINILO" /></Field>
+      <Field label="Costo Teórico/Und (opcional)">
+        <FInput type="number" value={form.costoTeorico} onChange={set("costoTeorico")} placeholder="Tope general para este proceso" />
+      </Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        Se usa como tope solo cuando no hay un costo más específico (por Lote+Proceso o por la Referencia de Busint) para ese registro.
+      </div>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn onClick={guardar} disabled={!form.proceso.trim()}>Guardar</Btn>
@@ -486,6 +492,7 @@ function PreciosProcesoView({ precios, isAdmin, onSave, onDelete }) {
         vacio="Sin procesos registrados."
         columnas={[
           { key: "proceso", label: "Proceso" },
+          { key: "costoTeorico", label: "Costo Teórico/Und", align: "right", render: (f) => (Number(f.costoTeorico) > 0 ? fmtMoney(f.costoTeorico) : "—") },
           ...(isAdmin ? [{
             key: "acciones", label: "", align: "right",
             render: (f) => (
@@ -726,6 +733,19 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
       setBuscandoCosto(false);
     }
   }
+  // (2026-08-25) Apenas quede cargada la referencia (a mano o por búsqueda de
+  // lote), se busca el costo teórico solo — ya no hay que darle clic aparte
+  // al botón "🔍 Costo". Sigue sin ser INMEDIATO tecla por tecla (para no
+  // golpear la función de Busint mientras se escribe): espera un momento
+  // corto sin cambios antes de consultar. Si la búsqueda de lote ya trajo el
+  // costo (mismo _ref), no vuelve a consultar de una.
+  useEffect(() => {
+    const ref = referencia.trim();
+    if (!ref) return;
+    if (costoTeorico && !costoTeorico.error && costoTeorico._ref === ref) return;
+    const t = setTimeout(() => { buscarCostoTeorico(); }, 700);
+    return () => clearTimeout(t);
+  }, [referencia]);
   const trabajadoresActivos = trabajadores.filter((t) => t.activo);
   const total = (Number(cantidad) || 0) * (Number(precioReal) || 0);
   // El lote encontrado solo cuenta si sigue siendo el de la referencia
@@ -743,15 +763,26 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
     loteAsociado && proceso
       ? (costosTeoricoProceso || []).find((c) => c.numLote === loteAsociado.numLote && normalizarProceso(c.proceso) === normalizarProceso(proceso) && c.costoFT > 0)
       : null;
+  // Tercera opción (la menos específica): el "Costo Teórico" que el admin
+  // configuró a mano para este Proceso en el catálogo (Administración →
+  // Procesos) — solo se usa si no hay nada más puntual (ni por Lote+Proceso
+  // ni por la Referencia de Busint).
+  const costoProcesoGenerico = proceso
+    ? precios.find((p) => normalizarProceso(p.proceso) === normalizarProceso(proceso) && Number(p.costoTeorico) > 0)
+    : null;
   // El tope solo aplica si de verdad se buscó el costo teórico de ESTA
   // referencia (evita bloquear con el resultado de una búsqueda anterior si
   // el usuario cambia la referencia sin volver a buscar) y si Busint tiene
   // un costo teórico real configurado (costoFT > 0 — en 0 significa que esa
-  // referencia no está costeada todavía, no que el tope sea $0).
+  // referencia no está costeada todavía, no que el tope sea $0). Prioridad:
+  // Lote+Proceso > Referencia (Busint) > Proceso (catálogo) — el más
+  // específico manda.
   const costoAplicaA = costoProcesoEspecifico
-    ? { costoFT: costoProcesoEspecifico.costoFT, _ref: referencia.trim(), _porProceso: true }
+    ? { costoFT: costoProcesoEspecifico.costoFT, _ref: referencia.trim(), _origen: "lote_proceso" }
     : costoTeorico && !costoTeorico.error && costoTeorico.encontrada && costoTeorico.costoFT > 0 && costoTeorico._ref === referencia.trim()
-    ? costoTeorico
+    ? { ...costoTeorico, _origen: "referencia" }
+    : costoProcesoGenerico
+    ? { costoFT: Number(costoProcesoGenerico.costoTeorico), _ref: referencia.trim(), _origen: "proceso" }
     : null;
   const excedeCostoTeorico = !!(costoAplicaA && Number(precioReal) > costoAplicaA.costoFT);
   const loteBloqueado = !!(loteAsociado && !loteAsociado.vigente);
@@ -834,17 +865,24 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
             </div>
           </Field>
         </div>
+        {/* Costo teórico aplicable — se busca solo apenas hay referencia, sin
+            necesidad de darle clic al botón. Prioridad: Lote+Proceso >
+            Referencia (Busint) > Proceso (catálogo). */}
         {costoProcesoEspecifico ? (
           <div style={{ fontSize: 11, color: C.blue, fontWeight: 700, marginBottom: 10 }}>
             📐 Costo teórico del proceso "{costoProcesoEspecifico.proceso}" para el lote {loteAsociado.numLote}: {fmtMoney(costoProcesoEspecifico.costoFT)} (cargado en Administración → Costos Teóricos — este manda sobre el de la referencia).
           </div>
+        ) : costoTeorico && !costoTeorico.error && costoTeorico._ref === referencia.trim() && costoTeorico.encontrada && costoTeorico.costoFT > 0 ? (
+          <div style={{ fontSize: 11, color: C.slate, fontWeight: 600, marginBottom: 10 }}>Costo teórico Busint para {costoTeorico._ref}: {fmtMoney(costoTeorico.costoFT)}</div>
+        ) : costoProcesoGenerico ? (
+          <div style={{ fontSize: 11, color: C.violet, fontWeight: 700, marginBottom: 10 }}>
+            ⚙️ Sin costo teórico específico para esta referencia — se usa el configurado para el proceso "{costoProcesoGenerico.proceso}" en Administración → Procesos: {fmtMoney(costoProcesoGenerico.costoTeorico)}.
+          </div>
+        ) : buscandoCosto ? (
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Buscando costo teórico...</div>
         ) : (
           costoTeorico && !costoTeorico.error && costoTeorico._ref === referencia.trim() && (
-            costoTeorico.encontrada && costoTeorico.costoFT > 0 ? (
-              <div style={{ fontSize: 11, color: C.slate, fontWeight: 600, marginBottom: 10 }}>Costo teórico Busint para {costoTeorico._ref}: {fmtMoney(costoTeorico.costoFT)}</div>
-            ) : (
-              <div style={{ fontSize: 11, color: C.slate, fontWeight: 600, marginBottom: 10 }}>Esta referencia no tiene costo teórico configurado en Busint todavía — no aplica tope.</div>
-            )
+            <div style={{ fontSize: 11, color: C.slate, fontWeight: 600, marginBottom: 10 }}>Esta referencia no tiene costo teórico configurado en Busint, ni el proceso tiene uno general — no aplica tope.</div>
           )
         )}
         {costoTeorico?.error && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se pudo consultar el costo teórico: {costoTeorico.error}</div>}
@@ -864,7 +902,7 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
         {!proceso && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>Selecciona un proceso (Administración → Procesos).</div>}
         {excedeCostoTeorico && (
           <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginBottom: 10 }}>
-            El precio real ({fmtMoney(Number(precioReal))}) supera el costo teórico {costoAplicaA._porProceso ? `del proceso "${proceso}" para este lote` : `de ${costoAplicaA._ref}`} ({fmtMoney(costoAplicaA.costoFT)}). No se puede registrar así.
+            El precio real ({fmtMoney(Number(precioReal))}) supera el costo teórico {costoAplicaA._origen === "lote_proceso" ? `del proceso "${proceso}" para este lote` : costoAplicaA._origen === "proceso" ? `configurado para el proceso "${proceso}"` : `de ${costoAplicaA._ref}`} ({fmtMoney(costoAplicaA.costoFT)}). No se puede registrar así.
           </div>
         )}
         <Btn onClick={guardar} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Registrar Producción"}</Btn>
