@@ -1668,6 +1668,67 @@ function NominaFiscalDestajoView({ trabajadores, faltas, liquidaciones, onGuarda
     </div>
   );
 }
+// ─── HISTORIAL FISCAL DESTAJO (quincenas ya confirmadas) ──────────────────
+function HistorialFiscalDestajoView({ liquidaciones }) {
+  const periodos = [...new Set(liquidaciones.map((l) => l.periodoId))].sort().reverse();
+  const [periodoFiltro, setPeriodoFiltro] = useState("");
+  const filas = [...liquidaciones]
+    .filter((l) => !periodoFiltro || l.periodoId === periodoFiltro)
+    .sort((a, b) => (b.periodoId || "").localeCompare(a.periodoId || "") || (a.nombre || "").localeCompare(b.nombre || ""));
+  const totales = filas.reduce((s, l) => ({
+    neto: s.neto + (l.netoAPagar || 0),
+    cesantias: s.cesantias + (l.cesantiasPeriodo || 0),
+    intereses: s.intereses + (l.interesesPeriodo || 0),
+    prima: s.prima + (l.primaPeriodo || 0),
+    vacaciones: s.vacaciones + (l.vacacionesPeriodo || 0),
+  }), { neto: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 });
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Todas las quincenas de Nómina Fiscal Destajo ya confirmadas y guardadas — para consultar o comparar períodos pasados.
+      </div>
+      {liquidaciones.length === 0 ? (
+        <div style={{ padding: "12px 16px", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, color: C.slate, fontSize: 13, maxWidth: 480 }}>
+          Todavía no hay ninguna quincena confirmada. Ve a "Nómina Fiscal Destajo", calcula una y dale "Confirmar y guardar".
+        </div>
+      ) : (
+        <>
+          <div style={{ marginBottom: 16, maxWidth: 260 }}>
+            <Field label="Filtrar por período">
+              <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
+            </Field>
+          </div>
+          <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+            <KPI icon="💵" label="Neto pagado (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
+            <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="📈" label="Intereses cesantías" value={fmtMoney(totales.intereses)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="🏖️" label="Vacaciones (provisión)" value={fmtMoney(totales.vacaciones)} color={C.amber} bg={C.amberBg} />
+          </div>
+          <Tabla
+            vacio="Sin resultados para este período."
+            columnas={[
+              { key: "periodoId", label: "Período" },
+              { key: "nombre", label: "Nombre" },
+              { key: "diasInasistencia", label: "Días sin justificar", align: "right", render: (f) => (
+                <span style={{ fontWeight: 700, color: f.diasInasistencia > 0 ? C.red : C.green }}>{f.diasInasistencia || 0}</span>
+              ) },
+              { key: "sueldoQuincena", label: "Sueldo quincena", align: "right", render: (f) => fmtMoney(f.sueldoQuincena) },
+              { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.auxilioQuincena) },
+              { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.netoAPagar)}</strong> },
+              { key: "cesantiasPeriodo", label: "Cesantías (prov.)", align: "right", render: (f) => fmtMoney(f.cesantiasPeriodo) },
+              { key: "interesesPeriodo", label: "Intereses cesantías", align: "right", render: (f) => fmtMoney(f.interesesPeriodo) },
+              { key: "primaPeriodo", label: "Prima (prov.)", align: "right", render: (f) => fmtMoney(f.primaPeriodo) },
+              { key: "vacacionesPeriodo", label: "Vacaciones (prov.)", align: "right", render: (f) => fmtMoney(f.vacacionesPeriodo) },
+              { key: "confirmadaEn", label: "Confirmada", render: (f) => f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : "—" },
+            ]}
+            filas={filas}
+          />
+        </>
+      )}
+    </div>
+  );
+}
 // ─── REGISTRAR PRODUCCIÓN (pago por pieza / proceso) ───────────────────────
 function RegistrarProduccionView({ trabajadores, precios, produccion, produccionCompleta, costosTeoricoProceso, currentUser, onGuardar, onBorrar, isAdmin }) {
   const [trabajadorId, setTrabajadorId] = useState("");
@@ -2398,6 +2459,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
         { group: "Reporte de Nómina", icon: "📊", items: [
             { id: "resumen", icon: "💰", label: "Cierre de Quincena" },
             { id: "fiscal_destajo", icon: "💼", label: "Nómina Fiscal Destajo" },
+            { id: "historial_fiscal_destajo", icon: "🗂️", label: "Historial Fiscal Destajo" },
           ] },
       ];
   // Versión "aplanada" del menú (sin grupos) — sirve para buscar el label
@@ -2566,6 +2628,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} isAdmin={isAdmin} currentUser={currentUser} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} />}
           {subView === "fiscal_destajo" && !areaLider && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} />}
+          {subView === "historial_fiscal_destajo" && !areaLider && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} />}
         </div>
       </div>
     </div>
