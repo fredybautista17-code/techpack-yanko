@@ -7562,6 +7562,31 @@ function BusintCatalogoTestView() {
       setCargandoColoresTela(false);
     }
   }
+  // (2026-08-26) Mismo diagnóstico pero del lado de la REFERENCIA: buscar en
+  // "telas" (nombre de tela por Referencia) y "telas - detalle" (código de
+  // color por Referencia+Pinta) todo lo que haya para una Referencia puntual
+  // (ej. "C-408") — para confirmar si de verdad está registrada ahí, y con
+  // qué nombre de tela y qué Pintas exactas.
+  const [buscarRefTela, setBuscarRefTela] = useState("");
+  const [cargandoRefTela, setCargandoRefTela] = useState(false);
+  const [refTelaResultado, setRefTelaResultado] = useState(null);
+  async function buscarComposicionReferencia() {
+    const ref = buscarRefTela.trim();
+    if (!ref) return;
+    setCargandoRefTela(true);
+    setRefTelaResultado(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getComposicionTelasBusintBD");
+      const resp = await llamar();
+      const porReferencia = (resp.data?.porReferencia || []).filter((r) => r.ref === ref);
+      const detallePorColor = (resp.data?.detallePorColor || []).filter((d) => d.ref === ref);
+      setRefTelaResultado({ porReferencia, detallePorColor });
+    } catch (err) {
+      setRefTelaResultado({ error: err?.message || "No se pudo consultar la composición de telas." });
+    } finally {
+      setCargandoRefTela(false);
+    }
+  }
   const [cargandoBarridoTotal, setCargandoBarridoTotal] = useState(false);
   const [barridoTotal, setBarridoTotal] = useState(null);
   // (2026-08-26) Antes el barrido de las 972 tablas de Busint BD solo se
@@ -7855,6 +7880,37 @@ function BusintCatalogoTestView() {
                 ))}
               </tbody>
             </table>
+          )}
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Buscar composición de tela de una Referencia ("telas" + "telas - detalle")</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Escribe el número de Referencia EXACTO tal como está en Busint (ej. C-408, o sin el guion si así está allá) para ver si tiene tela registrada, con qué nombre, y qué Pintas/colores trae.
+      </div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, maxWidth: 520 }}>
+        <FInput value={buscarRefTela} onChange={setBuscarRefTela} placeholder="Ej: C-408" />
+        <Btn onClick={buscarComposicionReferencia} disabled={cargandoRefTela || !buscarRefTela.trim()}>{cargandoRefTela ? "Buscando... (trae 2 tablas completas)" : "🔍 Buscar referencia"}</Btn>
+      </div>
+      {refTelaResultado && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          {refTelaResultado.error ? (
+            <div style={{ color: T.coral, fontSize: 13, fontWeight: 600 }}>⚠ {refTelaResultado.error}</div>
+          ) : (
+            <>
+              <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>
+                Tabla "telas" (nombre de tela por Referencia) — {refTelaResultado.porReferencia.length} coincidencia(s)
+              </div>
+              <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 240, border: `1px solid ${T.border}`, marginBottom: 16 }}>
+                {refTelaResultado.porReferencia.length ? JSON.stringify(refTelaResultado.porReferencia, null, 2) : "No se encontró esa Referencia en la tabla \"telas\"."}
+              </pre>
+              <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>
+                Tabla "telas - detalle" (color por Referencia+Pinta) — {refTelaResultado.detallePorColor.length} coincidencia(s)
+              </div>
+              <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 240, border: `1px solid ${T.border}` }}>
+                {refTelaResultado.detallePorColor.length ? JSON.stringify(refTelaResultado.detallePorColor, null, 2) : "No se encontró esa Referencia en la tabla \"telas - detalle\"."}
+              </pre>
+            </>
           )}
         </div>
       )}
