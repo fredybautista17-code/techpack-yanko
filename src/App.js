@@ -7539,13 +7539,19 @@ function BusintCatalogoTestView() {
   }
   const [cargandoBarridoTotal, setCargandoBarridoTotal] = useState(false);
   const [barridoTotal, setBarridoTotal] = useState(null);
+  // (2026-08-26) Antes el barrido de las 972 tablas de Busint BD solo se
+  // podía correr con las palabras clave de Nómina (fijas en el backend) —
+  // se agrega este campo para poder buscar cualquier cosa (ej. "tela",
+  // "materiaprima", "rollo") sin tener que tocar código cada vez.
+  const [keywordsBarrido, setKeywordsBarrido] = useState("tela, fabric, insumo, materiaprima, materia_prima, rollo, tejido");
   async function verBarridoTotal() {
     setCargandoBarridoTotal(true);
     setError("");
     setBarridoTotal(null);
     try {
+      const keywords = keywordsBarrido.split(",").map((k) => k.trim()).filter(Boolean);
       const llamar = httpsCallable(functionsClient, "getBarridoTotalTablasBusintBD");
-      const resp = await llamar();
+      const resp = await llamar(keywords.length ? { keywords } : {});
       setBarridoTotal(resp.data);
     } catch (err) {
       setError(err?.message || "No se pudo hacer el barrido total.");
@@ -7791,7 +7797,11 @@ function BusintCatalogoTestView() {
       <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
       <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Barrido TOTAL — revisa las 972 tablas de la API BD (tarda 1-3 min)</div>
       <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
-        Trae la lista completa de tablas del swagger de Busint BD, consulta cada una (1 fila, solo para ver columnas) y te muestra SOLO las que tengan alguna columna con "teorico", "costo", "concepto", "tarifa", "sam" u "operacion" en el nombre. Tarda porque revisa las 972 una por una en lotes — no cierres la pantalla mientras carga.
+        Trae la lista completa de tablas del swagger de Busint BD, consulta cada una (1 fila, solo para ver columnas) y te muestra SOLO las que tengan alguna columna con alguna de las palabras clave de abajo en el nombre. Tarda porque revisa las 972 una por una en lotes — no cierres la pantalla mientras carga.
+      </div>
+      <div style={{ marginBottom: 10, maxWidth: 520 }}>
+        <FInput value={keywordsBarrido} onChange={setKeywordsBarrido} placeholder="Ej: tela, materiaprima, rollo" />
+        <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Palabras clave separadas por coma — se busca en el nombre de cada columna.</div>
       </div>
       <div style={{ marginBottom: 16 }}>
         <Btn onClick={verBarridoTotal} disabled={cargandoBarridoTotal}>{cargandoBarridoTotal ? "Revisando las 972 tablas... (puede tardar minutos)" : "🔎 Barrido TOTAL (972 tablas)"}</Btn>
