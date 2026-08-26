@@ -2609,33 +2609,66 @@ exports.avisarVencidos = onSchedule(
 //   firebase functions:secrets:set TNS_CONTRASENIA
 // y luego:
 //   firebase deploy --only functions
+//
+// (2026-08-26) Industrias Yanko e Indutex son DOS empresas separadas en
+// TNS (cada una con su propio login) — se agregó un segundo juego de
+// secretos para Indutex, configurado igual desde la terminal:
+//   firebase functions:secrets:set TNS_INDUTEX_CODIGO_EMPRESA
+//   firebase functions:secrets:set TNS_INDUTEX_USUARIO
+//   firebase functions:secrets:set TNS_INDUTEX_CONTRASENIA
+// Cada función de TNS recibe un parámetro "empresa" ("yanko" | "indutex",
+// por defecto "yanko") para saber con cuál juego de credenciales loguearse.
 const TNS_CODIGO_EMPRESA = defineSecret("TNS_CODIGO_EMPRESA");
 const TNS_USUARIO = defineSecret("TNS_USUARIO");
 const TNS_CONTRASENIA = defineSecret("TNS_CONTRASENIA");
+const TNS_INDUTEX_CODIGO_EMPRESA = defineSecret("TNS_INDUTEX_CODIGO_EMPRESA");
+const TNS_INDUTEX_USUARIO = defineSecret("TNS_INDUTEX_USUARIO");
+const TNS_INDUTEX_CONTRASENIA = defineSecret("TNS_INDUTEX_CONTRASENIA");
 const TNS_BASE_URL = "https://api.tns.co";
 
-// El token se guarda en memoria del proceso (no en Firestore): mientras la
-// instancia de la función siga "caliente" se reutiliza; si Cloud Functions
-// arranca una instancia nueva, simplemente se vuelve a loguear. Así se evita
-// loguearse en cada llamada sin tener que guardar credenciales/tokens en la
-// base de datos.
-let _tnsTokenCache = { token: null, obtenidoEn: 0 };
+// Cloud Functions exige que cada función declare, en su lista "secrets",
+// TODOS los secretos que vaya a leer — como una misma función (ej.
+// probarConexionTNS) puede atender a cualquiera de las dos empresas según
+// el parámetro que le manden, declara los 6 de una vez.
+const TNS_SECRETS_TODAS = [
+  TNS_CODIGO_EMPRESA, TNS_USUARIO, TNS_CONTRASENIA,
+  TNS_INDUTEX_CODIGO_EMPRESA, TNS_INDUTEX_USUARIO, TNS_INDUTEX_CONTRASENIA,
+];
+
+function credencialesTNS(empresa) {
+  if (empresa === "indutex") {
+    return {
+      codigoEmpresa: TNS_INDUTEX_CODIGO_EMPRESA.value(),
+      nombreUsuario: TNS_INDUTEX_USUARIO.value(),
+      contrasenia: TNS_INDUTEX_CONTRASENIA.value(),
+    };
+  }
+  return {
+    codigoEmpresa: TNS_CODIGO_EMPRESA.value(),
+    nombreUsuario: TNS_USUARIO.value(),
+    contrasenia: TNS_CONTRASENIA.value(),
+  };
+}
+
+// El token se guarda en memoria del proceso (no en Firestore), UNO POR
+// EMPRESA — mientras la instancia de la función siga "caliente" se
+// reutiliza; si Cloud Functions arranca una instancia nueva, simplemente se
+// vuelve a loguear. Así se evita loguearse en cada llamada sin tener que
+// guardar credenciales/tokens en la base de datos.
+const _tnsTokenCachePorEmpresa = { yanko: { token: null, obtenidoEn: 0 }, indutex: { token: null, obtenidoEn: 0 } };
 const TNS_TOKEN_VIGENCIA_MS = 25 * 60 * 1000; // 25 min, conservador
 
-async function obtenerTokenTNS() {
+async function obtenerTokenTNS(empresa = "yanko") {
+  const cache = _tnsTokenCachePorEmpresa[empresa] || (_tnsTokenCachePorEmpresa[empresa] = { token: null, obtenidoEn: 0 });
   const ahora = Date.now();
-  if (_tnsTokenCache.token && ahora - _tnsTokenCache.obtenidoEn < TNS_TOKEN_VIGENCIA_MS) {
-    return _tnsTokenCache.token;
+  if (cache.token && ahora - cache.obtenidoEn < TNS_TOKEN_VIGENCIA_MS) {
+    return cache.token;
   }
 
   const resp = await fetch(`${TNS_BASE_URL}/v2/Acceso/Login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      codigoEmpresa: TNS_CODIGO_EMPRESA.value(),
-      nombreUsuario: TNS_USUARIO.value(),
-      contrasenia: TNS_CONTRASENIA.value(),
-    }),
+    body: JSON.stringify(credencialesTNS(empresa)),
   });
 
   if (!resp.ok) {
@@ -2654,8 +2687,9 @@ async function obtenerTokenTNS() {
 
   // Si TNS devuelve el token como texto plano (sin JSON), se usa tal cual.
   if (!data && textoResp && textoResp.trim()) {
-    _tnsTokenCache = { token: textoResp.trim().replace(/^"|"$/g, ""), obtenidoEn: ahora };
-    return _tnsTokenCache.token;
+    cache.token = textoResp.trim().replace(/^"|"$/g, "");
+    cache.obtenidoEn = ahora;
+    return cache.token;
   }
 
   // Forma real confirmada en vivo (25/08/2026):
@@ -2668,8 +2702,9 @@ async function obtenerTokenTNS() {
       throw new Error(`TNS rechazó el login: ${data.message || "sin mensaje del servidor"}`);
     }
     if (data.status === true && typeof data.data === "string" && data.data.length > 10) {
-      _tnsTokenCache = { token: data.data, obtenidoEn: ahora };
-      return _tnsTokenCache.token;
+      cache.token = data.data;
+      cache.obtenidoEn = ahora;
+      return cache.token;
     }
   }
 
@@ -2700,14 +2735,15 @@ async function obtenerTokenTNS() {
     );
   }
 
-  _tnsTokenCache = { token, obtenidoEn: ahora };
+  cache.token = token;
+  cache.obtenidoEn = ahora;
   return token;
 }
 
 // Llamada genérica autenticada contra la API de TNS — pensada para
 // reutilizarse cuando conectemos Contratos/Insertar, Novedades/Insertar, etc.
-async function llamarTNS(path, { method = "GET", body } = {}) {
-  const token = await obtenerTokenTNS();
+async function llamarTNS(path, { method = "GET", body, empresa = "yanko" } = {}) {
+  const token = await obtenerTokenTNS(empresa);
   const resp = await fetch(`${TNS_BASE_URL}${path}`, {
     method,
     headers: {
@@ -2738,17 +2774,82 @@ async function llamarTNS(path, { method = "GET", body } = {}) {
 // el frontend.
 exports.listarCentroCostoTNS = onCall(
   {
-    secrets: [TNS_CODIGO_EMPRESA, TNS_USUARIO, TNS_CONTRASENIA],
+    secrets: TNS_SECRETS_TODAS,
     timeoutSeconds: 30,
     memory: "256MiB",
   },
-  async () => {
+  async (request) => {
+    const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
     try {
-      const data = await llamarTNS("/v2/tablas/CentroCosto/Listar", { method: "GET" });
+      const data = await llamarTNS("/v2/tablas/CentroCosto/Listar", { method: "GET", empresa });
       return { ok: true, data };
     } catch (err) {
-      logger.error("listarCentroCostoTNS falló", { mensaje: err?.message, stack: err?.stack });
+      logger.error("listarCentroCostoTNS falló", { mensaje: err?.message, stack: err?.stack, empresa });
       throw new HttpsError("internal", err?.message || "Error desconocido al consultar Centro de Costo en TNS.");
+    }
+  }
+);
+
+// La API de TNS no tiene un endpoint para listar Contratos/Nómina ya
+// creados (solo Insertar/Actualizar) — se revisó a fondo el swagger. Lo más
+// cercano es GET /v2/tablas/Tercero/Listar: según el manual de TNS, un
+// empleado con contrato queda registrado también como "tercero" (así se
+// selecciona el trabajador al crear el contrato). No se sabe todavía si
+// trae datos útiles de nómina (cargo, sueldo, etc.) o solo lo básico del
+// tercero — se deja crudo para revisar la forma real de la respuesta.
+exports.listarTercerosTNS = onCall(
+  {
+    secrets: TNS_SECRETS_TODAS,
+    timeoutSeconds: 30,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
+    try {
+      const data = await llamarTNS("/v2/tablas/Tercero/Listar", { method: "GET", empresa });
+      return { ok: true, data };
+    } catch (err) {
+      logger.error("listarTercerosTNS falló", { mensaje: err?.message, stack: err?.stack, empresa });
+      throw new HttpsError("internal", err?.message || "Error desconocido al consultar Terceros en TNS.");
+    }
+  }
+);
+
+// Registra una Novedad de contrato (destajo, deducible, devengado, etc.) en
+// TNS — POST /v2/nomina/Contratos/Novedades/Insertar. Campos obligatorios
+// según InsertarNovedadContratoRequest (confirmado en vivo el 25/08/2026):
+// tiponov, codcontrato, codconcepto. El resto son opcionales según el tipo
+// de novedad. No se valida de más acá adentro — TNS es quien decide si el
+// codconcepto/codcontrato son válidos, y su respuesta de error (si la hay)
+// se propaga tal cual al frontend para que se vea el motivo real.
+exports.insertarNovedadTNS = onCall(
+  {
+    secrets: TNS_SECRETS_TODAS,
+    timeoutSeconds: 30,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const { tiponov, fecha, codcontrato, codconcepto, observaciones, novsaldo, descdestajo } = request.data || {};
+    const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
+    if (!tiponov || !codcontrato || !codconcepto) {
+      throw new HttpsError("invalid-argument", "tiponov, codcontrato y codconcepto son obligatorios.");
+    }
+    const body = {
+      tiponov: Number(tiponov),
+      codcontrato: String(codcontrato),
+      codconcepto: String(codconcepto),
+    };
+    if (fecha) body.fecha = fecha;
+    if (observaciones) body.observaciones = String(observaciones);
+    if (novsaldo !== undefined && novsaldo !== null && novsaldo !== "") body.novsaldo = Number(novsaldo);
+    if (descdestajo) body.descdestajo = String(descdestajo);
+    try {
+      const data = await llamarTNS("/v2/nomina/Contratos/Novedades/Insertar", { method: "POST", body, empresa });
+      logger.info("insertarNovedadTNS OK", { codcontrato, tiponov, codconcepto, empresa });
+      return { ok: true, data };
+    } catch (err) {
+      logger.error("insertarNovedadTNS falló", { mensaje: err?.message, stack: err?.stack, body, empresa });
+      throw new HttpsError("internal", err?.message || "Error desconocido al insertar la novedad en TNS.");
     }
   }
 );
@@ -2761,21 +2862,22 @@ exports.listarCentroCostoTNS = onCall(
 // `httpsCallable(functions, "probarConexionTNS")()`.
 exports.probarConexionTNS = onCall(
   {
-    secrets: [TNS_CODIGO_EMPRESA, TNS_USUARIO, TNS_CONTRASENIA],
+    secrets: TNS_SECRETS_TODAS,
     timeoutSeconds: 30,
     memory: "256MiB",
   },
-  async () => {
+  async (request) => {
     // onCall solo deja pasar al navegador el mensaje real cuando se lanza un
     // HttpsError — un Error normal llega al frontend como "INTERNAL" a
     // secas (por seguridad), y el detalle solo queda en los logs del
     // servidor. Se envuelve acá para que el botón de la app muestre el
     // motivo real sin tener que ir a revisar los logs de Firebase.
+    const empresa = request.data?.empresa === "indutex" ? "indutex" : "yanko";
     try {
-      await obtenerTokenTNS();
-      return { conectado: true };
+      await obtenerTokenTNS(empresa);
+      return { conectado: true, empresa };
     } catch (err) {
-      logger.error("probarConexionTNS falló", { mensaje: err?.message, stack: err?.stack });
+      logger.error("probarConexionTNS falló", { mensaje: err?.message, stack: err?.stack, empresa });
       throw new HttpsError("internal", err?.message || "Error desconocido al conectar con TNS.");
     }
   }

@@ -263,6 +263,31 @@ function Tabla({ columnas, filas, vacio, onRowClick }) {
 // demás mientras no se necesite otra área. Es la misma etiqueta que se usa
 // para filtrarle a cada líder únicamente su gente al iniciar sesión.
 const AREAS_NOMINA = ["Terminación", "Termofijación", "Sin asignar"];
+// Códigos TNS ya confirmados a mano (Nómina → Reportes → Listado de Personal
+// de TNS, Industrias Yanko BC SAS, Jul/2026) — en esta empresa TNS usa la
+// misma cédula como "codigo"/"codigotercero" del contrato. Solo cubre las 13
+// personas que ya tienen contrato creado allá; el botón "Autocompletar" de
+// abajo cruza esto por cédula contra los Trabajadores de Atlas. A medida que
+// se creen más contratos en TNS, se agregan acá o se llenan a mano en el
+// campo "Código TNS" de cada trabajador.
+const TNS_CODIGOS_CONOCIDOS = [
+  { cedula: "1004866225", codigo: "1004866225", nombre: "JESUS ALIRIO BOTELLO BECERRA" },
+  { cedula: "1090460800", codigo: "1090460800", nombre: "YULEISI VIRGINIA MORENO CRUZ" },
+  { cedula: "1090507395", codigo: "1090507395", nombre: "KEVIN RONALDO CONTRERAS CASTELLANOS" },
+  { cedula: "1093792909", codigo: "1093792909", nombre: "DANIEL LEONARDO MEJIA CADENA" },
+  { cedula: "1093801939", codigo: "1093801939", nombre: "KAREN MICHELL CHACON CABALLERO" },
+  { cedula: "1094277949", codigo: "1094277949", nombre: "KAREN DAYANA DELGADO VILLAMIZAR" },
+  { cedula: "1096949415", codigo: "1096949415", nombre: "YESICA TATIANA CORREA PEÑARANDA" },
+  { cedula: "1127349945", codigo: "1127349945", nombre: "JENNY SARAI MENDEZ SUAREZ" },
+  { cedula: "30050414", codigo: "30050414", nombre: "MARY NELCI BAUTISTA CONTRERAS" },
+  { cedula: "37279174", codigo: "37279174", nombre: "ANNY CLARISA BELTRAN JAIMES" },
+  { cedula: "37390386", codigo: "37390386-4", nombre: "YULIANA ANDREA BELTRAN JAIMES" },
+  { cedula: "88225906", codigo: "88225906", nombre: "LUIS ALFREDO MEDINA FUENTES" },
+  { cedula: "88260792", codigo: "88260792", nombre: "FREDY ALEXANDER BAUTISTA CONTRERAS" },
+];
+function normalizarCedula(v) {
+  return String(v || "").trim().split("-")[0].replace(/\D/g, "").replace(/^0+/, "") || "";
+}
 function TrabajadorModal({ trabajador, onSave, onClose }) {
   const [form, setForm] = useState({
     nombre: trabajador?.nombre || "",
@@ -270,11 +295,12 @@ function TrabajadorModal({ trabajador, onSave, onClose }) {
     tarifaHora: trabajador?.tarifaHora ?? "",
     activo: trabajador?.activo ?? true,
     area: trabajador?.area || "Sin asignar",
+    tnsCodigo: trabajador?.tnsCodigo || "",
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function guardar() {
     if (!form.nombre.trim()) return;
-    onSave({ nombre: form.nombre.trim(), cedula: form.cedula.trim(), tarifaHora: Number(form.tarifaHora) || 0, activo: !!form.activo, area: form.area || "Sin asignar" });
+    onSave({ nombre: form.nombre.trim(), cedula: form.cedula.trim(), tarifaHora: Number(form.tarifaHora) || 0, activo: !!form.activo, area: form.area || "Sin asignar", tnsCodigo: form.tnsCodigo.trim() });
     onClose();
   }
   return (
@@ -283,6 +309,12 @@ function TrabajadorModal({ trabajador, onSave, onClose }) {
       <Field label="Cédula"><FInput value={form.cedula} onChange={set("cedula")} placeholder="Ej: 1004802413" /></Field>
       <Field label="Área"><FSel value={form.area} onChange={set("area")} options={AREAS_NOMINA} placeholder="Sin asignar" /></Field>
       <Field label="Tarifa por hora (para tareas sueltas)"><FInput type="number" value={form.tarifaHora} onChange={set("tarifaHora")} /></Field>
+      <Field label="Código TNS (si ya tiene contrato creado en TNS)">
+        <FInput value={form.tnsCodigo} onChange={set("tnsCodigo")} placeholder="Ej: 1004866225" />
+      </Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        Es el código/código de tercero con el que esta persona ya existe en TNS — se necesita para poder registrarle Novedades desde Atlas.
+      </div>
       {trabajador && (
         <Field label="Estado">
           <div style={{ display: "flex", gap: 6 }}>
@@ -302,7 +334,25 @@ function TrabajadorModal({ trabajador, onSave, onClose }) {
 function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | trabajador
   const [confirmDel, setConfirmDel] = useState(null);
+  const [autoResultado, setAutoResultado] = useState(null);
   const ordenados = [...trabajadores].sort((a, b) => a.nombre.localeCompare(b.nombre));
+  // Cruza por cédula los 13 códigos TNS ya conocidos contra los Trabajadores
+  // de Atlas, y les llena "tnsCodigo" a los que hagan match y todavía no lo
+  // tengan puesto — así no hay que escribirlos a mano uno por uno.
+  async function autocompletarCodigosTNS() {
+    let actualizados = 0;
+    for (const t of trabajadores) {
+      if (t.tnsCodigo) continue;
+      const ced = normalizarCedula(t.cedula);
+      if (!ced) continue;
+      const match = TNS_CODIGOS_CONOCIDOS.find((c) => normalizarCedula(c.cedula) === ced);
+      if (match) {
+        await onSave({ ...t, tnsCodigo: match.codigo });
+        actualizados++;
+      }
+    }
+    setAutoResultado(actualizados);
+  }
   return (
     <div>
       {modal && (
@@ -322,8 +372,10 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete }) {
         </Modal>
       )}
       {isAdmin && (
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center" }}>
           <Btn onClick={() => setModal("nuevo")}>+ Nuevo Trabajador</Btn>
+          <Btn variant="secondary" onClick={autocompletarCodigosTNS}>🔄 Autocompletar Código TNS (13 conocidos)</Btn>
+          {autoResultado !== null && <span style={{ fontSize: 12, color: C.slate }}>{autoResultado} trabajador(es) actualizado(s).</span>}
         </div>
       )}
       <Tabla
@@ -333,6 +385,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete }) {
           { key: "cedula", label: "Cédula", render: (f) => f.cedula || "—" },
           { key: "area", label: "Área", render: (f) => f.area || "Sin asignar" },
           { key: "tarifaHora", label: "Tarifa/Hora", align: "right", render: (f) => fmtMoney(f.tarifaHora) },
+          { key: "tnsCodigo", label: "Código TNS", render: (f) => f.tnsCodigo ? <span style={{ color: C.green, fontWeight: 700 }}>{f.tnsCodigo}</span> : <span style={{ color: C.slate }}>—</span> },
           { key: "activo", label: "Estado", render: (f) => (
             <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: f.activo ? C.greenBg : C.redBg, color: f.activo ? C.green : C.red }}>
               {f.activo ? "ACTIVO" : "INACTIVO"}
@@ -681,13 +734,30 @@ function CostosTeoricoProcesoView({ costos, isAdmin, onGuardarLote, onBorrarTodo
 // (TNS_CODIGO_EMPRESA, TNS_USUARIO, TNS_CONTRASENIA) sirven para loguearse en
 // TNS — no trae ni envía todavía ningún dato de nómina, es el primer paso
 // antes de construir el envío real de Contratos/Novedades.
+// Industrias Yanko e Indutex son dos empresas separadas en TNS, cada una con
+// su propio login (ver credencialesTNS en functions/index.js). Este selector
+// decide con cuál juego de credenciales se loguea cada llamada — por defecto
+// "yanko".
+const EMPRESAS_TNS = [
+  { value: "yanko", label: "Industrias Yanko BC SAS" },
+  { value: "indutex", label: "Indutex" },
+];
+function SelectorEmpresaTNS({ empresa, onChange }) {
+  return (
+    <Field label="Empresa TNS">
+      <FSel value={empresa} onChange={onChange} options={EMPRESAS_TNS} />
+    </Field>
+  );
+}
+
 function TNSConexionView() {
+  const [empresa, setEmpresa] = useState("yanko");
   const [estado, setEstado] = useState(null); // null | "cargando" | "ok" | { error }
   async function probar() {
     setEstado("cargando");
     try {
       const llamar = httpsCallable(functionsClient, "probarConexionTNS");
-      await llamar({});
+      await llamar({ empresa });
       setEstado("ok");
     } catch (err) {
       setEstado({ error: err?.message || "No se pudo conectar." });
@@ -704,7 +774,7 @@ function TNSConexionView() {
     setCentroCosto("cargando");
     try {
       const llamar = httpsCallable(functionsClient, "listarCentroCostoTNS");
-      const resp = await llamar({});
+      const resp = await llamar({ empresa });
       const data = resp.data?.data;
       const filas = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : null;
       setCentroCosto({ filas, crudo: data });
@@ -713,10 +783,27 @@ function TNSConexionView() {
     }
   }
 
+  const [terceros, setTerceros] = useState(null); // null | "cargando" | { filas } | { error }
+  async function consultarTerceros() {
+    setTerceros("cargando");
+    try {
+      const llamar = httpsCallable(functionsClient, "listarTercerosTNS");
+      const resp = await llamar({ empresa });
+      const data = resp.data?.data;
+      const filas = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : null;
+      setTerceros({ filas, crudo: data });
+    } catch (err) {
+      setTerceros({ error: err?.message || "No se pudo consultar." });
+    }
+  }
+
   return (
     <div style={{ maxWidth: 900 }}>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
         Confirma que TNS acepta las credenciales configuradas en el servidor (Firebase → Secret Manager). Esto no trae ni envía datos de nómina todavía — es solo la prueba de conexión.
+      </div>
+      <div style={{ maxWidth: 320, marginBottom: 16 }}>
+        <SelectorEmpresaTNS empresa={empresa} onChange={setEmpresa} />
       </div>
       <Btn onClick={probar} disabled={estado === "cargando"}>
         {estado === "cargando" ? "Probando..." : "🔌 Probar conexión TNS"}
@@ -764,6 +851,518 @@ function TNSConexionView() {
           </div>
         )}
       </div>
+
+      <div style={{ marginTop: 32, paddingTop: 24, borderTop: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: C.ink, marginBottom: 8 }}>Catálogo: Terceros</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
+          TNS no tiene un "Listado de Contratos" por API — lo más cercano es esto: según el manual, un empleado con contrato queda registrado también como "tercero". No sabemos todavía si trae cargo/sueldo o solo lo básico; lo consultamos para revisar la forma real.
+        </div>
+        <Btn onClick={consultarTerceros} disabled={terceros === "cargando"}>
+          {terceros === "cargando" ? "Consultando..." : "👤 Consultar Terceros"}
+        </Btn>
+        {terceros && typeof terceros === "object" && terceros.error && (
+          <div style={{ marginTop: 16, padding: "12px 16px", background: C.redBg, borderRadius: 8, color: C.red, fontWeight: 700, fontSize: 13 }}>
+            ❌ {terceros.error}
+          </div>
+        )}
+        {terceros && typeof terceros === "object" && !terceros.error && (
+          <div style={{ marginTop: 16 }}>
+            {Array.isArray(terceros.filas) && terceros.filas.length > 0 ? (
+              <Tabla
+                vacio="Sin terceros."
+                columnas={Object.keys(terceros.filas[0]).map((k) => ({ key: k, label: k }))}
+                filas={terceros.filas}
+              />
+            ) : (
+              <pre style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: 14, fontSize: 11, maxHeight: 400, overflow: "auto", whiteSpace: "pre-wrap" }}>
+                {JSON.stringify(terceros.crudo, null, 2)}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+// ─── NOVEDADES TNS (escribir novedades de nómina directo en TNS) ──────────
+const TIPONOV_OPTIONS = [
+  { value: "1", label: "1 — Deducible" },
+  { value: "2", label: "2 — Libranza" },
+  { value: "3", label: "3 — Devengado" },
+  { value: "4", label: "4 — Devengados Adicionales" },
+  { value: "5", label: "5 — Destajo" },
+  { value: "6", label: "6 — Ausentismo" },
+];
+// Códigos de concepto de TNS ya confirmados a mano dentro del programa
+// (Conceptos de la Nómina / Licencias de Ausentismo), 25/08/2026 — cada uno
+// trae de una vez el tiponov que le corresponde para no tener que
+// recordarlo. "2081 - Ausencia No Justificada" es el que usa el flujo de
+// huellero (inasistencia sin novedad que la justifique).
+const CONCEPTOS_TNS_CONOCIDOS = [
+  { codigo: "2081", descripcion: "Ausencia No Justificada", tiponov: "6" },
+  { codigo: "1120", descripcion: "Licencia No Remunerada", tiponov: "6" },
+  { codigo: "1121", descripcion: "Licencia Remunerada", tiponov: "6" },
+  { codigo: "1170", descripcion: "Licencia Maternidad/Paternidad", tiponov: "6" },
+  { codigo: "1200", descripcion: "Licencia por Luto", tiponov: "6" },
+  { codigo: "2080", descripcion: "Suspensión de Contrato", tiponov: "6" },
+  { codigo: "1006", descripcion: "Sueldo - Empleado Tiempo Parcial", tiponov: "3" },
+  { codigo: "1060", descripcion: "Bonificación FP", tiponov: "3" },
+  { codigo: "1061", descripcion: "Bonificación No FP", tiponov: "3" },
+  { codigo: "1110", descripcion: "Devengados Adicionales", tiponov: "4" },
+  { codigo: "1115", descripcion: "Comisión por Ventas FP", tiponov: "3" },
+];
+// Solo se puede mandar una novedad a TNS para un trabajador que YA tenga
+// contrato allá (campo "Código TNS" en Trabajadores) — sin eso no hay
+// "codcontrato" que mandarle a TNS. Por seguridad (esto escribe en la
+// nómina real), nunca se envía directo: primero se arma un resumen y solo
+// se manda cuando el usuario confirma.
+function NovedadesTNSView({ trabajadores }) {
+  const [empresa, setEmpresa] = useState("yanko");
+  const conCodigoTNS = trabajadores.filter((t) => t.tnsCodigo);
+  const [trabajadorId, setTrabajadorId] = useState("");
+  const [tiponov, setTiponov] = useState("");
+  const [codconcepto, setCodconcepto] = useState("");
+  const [fecha, setFecha] = useState(today());
+  const [novsaldo, setNovsaldo] = useState("");
+  const [observaciones, setObservaciones] = useState("");
+  const [paso, setPaso] = useState("form"); // "form" | "confirmar" | "enviando" | "ok" | { error }
+
+  const trabajador = conCodigoTNS.find((t) => t.id === trabajadorId);
+  const listoParaResumen = !!(trabajador && tiponov && codconcepto.trim());
+
+  function limpiar() {
+    setTrabajadorId(""); setTiponov(""); setCodconcepto(""); setFecha(today()); setNovsaldo(""); setObservaciones(""); setPaso("form");
+  }
+
+  async function enviar() {
+    setPaso("enviando");
+    try {
+      const llamar = httpsCallable(functionsClient, "insertarNovedadTNS");
+      await llamar({
+        empresa,
+        tiponov: Number(tiponov),
+        codcontrato: trabajador.tnsCodigo,
+        codconcepto: codconcepto.trim(),
+        fecha,
+        novsaldo: novsaldo === "" ? undefined : Number(novsaldo),
+        observaciones: observaciones.trim() || undefined,
+        descdestajo: tiponov === "5" ? "Producción por destajo (registrada desde Atlas)" : undefined,
+      });
+      setPaso("ok");
+    } catch (err) {
+      setPaso({ error: err?.message || "No se pudo enviar la novedad." });
+    }
+  }
+
+  return (
+    <div style={{ maxWidth: 640 }}>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
+        Registra una novedad (destajo, deducible, devengado, etc.) directo en el contrato de TNS. Solo aparecen los trabajadores que ya tienen "Código TNS" puesto en la pestaña Trabajadores.
+      </div>
+
+      {conCodigoTNS.length === 0 && (
+        <div style={{ padding: "12px 16px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          Ningún trabajador tiene "Código TNS" configurado todavía. Ve a Trabajadores → "🔄 Autocompletar Código TNS" o ponlo a mano en cada uno.
+        </div>
+      )}
+
+      {paso === "ok" && (
+        <div style={{ padding: "14px 16px", background: C.greenBg, borderRadius: 8, color: C.green, fontWeight: 700, fontSize: 13, marginBottom: 16 }}>
+          ✅ Novedad enviada a TNS correctamente.
+          <div style={{ marginTop: 10 }}><Btn variant="secondary" onClick={limpiar}>Registrar otra</Btn></div>
+        </div>
+      )}
+
+      {paso && typeof paso === "object" && paso.error && (
+        <div style={{ padding: "14px 16px", background: C.redBg, borderRadius: 8, color: C.red, fontWeight: 700, fontSize: 13, marginBottom: 16 }}>
+          ❌ {paso.error}
+          <div style={{ marginTop: 10 }}><Btn variant="secondary" onClick={() => setPaso("confirmar")}>Volver</Btn></div>
+        </div>
+      )}
+
+      {(paso === "form") && conCodigoTNS.length > 0 && (
+        <>
+          <SelectorEmpresaTNS empresa={empresa} onChange={setEmpresa} />
+          <Field label="Trabajador (con contrato en TNS)">
+            <FSel value={trabajadorId} onChange={setTrabajadorId} options={conCodigoTNS.map((t) => ({ value: t.id, label: `${t.nombre} — código ${t.tnsCodigo}` }))} placeholder="Selecciona..." />
+          </Field>
+          <Field label="Concepto conocido (atajo — llena Tipo de Novedad y Código solos)">
+            <FSel
+              value=""
+              onChange={(v) => {
+                const c = CONCEPTOS_TNS_CONOCIDOS.find((x) => x.codigo === v);
+                if (!c) return;
+                setCodconcepto(c.codigo);
+                setTiponov(c.tiponov);
+              }}
+              options={CONCEPTOS_TNS_CONOCIDOS.map((c) => ({ value: c.codigo, label: `${c.codigo} — ${c.descripcion}` }))}
+              placeholder="O escoge uno ya conocido..."
+            />
+          </Field>
+          <Field label="Tipo de Novedad (tiponov)">
+            <FSel value={tiponov} onChange={setTiponov} options={TIPONOV_OPTIONS} placeholder="Selecciona..." />
+          </Field>
+          <Field label="Código de Concepto (codconcepto)">
+            <FInput value={codconcepto} onChange={setCodconcepto} placeholder="Se llena solo si usas el atajo de arriba, o escríbelo a mano" />
+          </Field>
+          <Field label="Fecha"><FInput type="date" value={fecha} onChange={setFecha} /></Field>
+          <Field label="Valor (novsaldo, opcional según el tipo)"><FInput type="number" value={novsaldo} onChange={setNovsaldo} placeholder="Ej: 45000" /></Field>
+          <Field label="Observaciones (opcional)"><FInput value={observaciones} onChange={setObservaciones} /></Field>
+          <Btn onClick={() => setPaso("confirmar")} disabled={!listoParaResumen}>Ver resumen</Btn>
+        </>
+      )}
+
+      {(paso === "confirmar" || paso === "enviando") && (
+        <div>
+          <div style={{ border: `1.5px solid ${C.border}`, borderRadius: 10, padding: 16, marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: C.ink, marginBottom: 10 }}>Se va a enviar a TNS:</div>
+            {[
+              ["Empresa TNS", EMPRESAS_TNS.find((e) => e.value === empresa)?.label],
+              ["Trabajador", `${trabajador?.nombre} (código ${trabajador?.tnsCodigo})`],
+              ["Tipo de Novedad", TIPONOV_OPTIONS.find((o) => o.value === tiponov)?.label],
+              ["Código de Concepto", codconcepto],
+              ["Fecha", fecha],
+              ["Valor", novsaldo !== "" ? fmtMoney(Number(novsaldo)) : "—"],
+              ["Observaciones", observaciones || "—"],
+            ].map(([k, v]) => (
+              <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${C.canvas}`, fontSize: 13 }}>
+                <span style={{ color: C.slate }}>{k}</span>
+                <span style={{ fontWeight: 700, color: C.ink }}>{v}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Btn variant="secondary" onClick={() => setPaso("form")}>Volver a editar</Btn>
+            <Btn onClick={enviar} disabled={paso === "enviando"}>{paso === "enviando" ? "Enviando..." : "✅ Confirmar y enviar a TNS"}</Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+// ─── MOTIVOS DE AUSENCIA (vacaciones, incapacidad, permiso, etc.) ─────────
+// Talento Humano registra acá el motivo de cada ausencia (con su rango de
+// fechas) — el Reporte de Asistencia cruza esto contra el huellero para
+// saber si un día sin marca está justificado o no.
+const MOTIVOS_AUSENCIA = [
+  "Vacaciones", "Incapacidad", "Licencia Remunerada", "Licencia No Remunerada",
+  "Licencia Maternidad/Paternidad", "Permiso", "Luto", "Suspensión de Contrato", "Otro",
+];
+function AusenciaModal({ ausencia, trabajadores, onSave, onClose }) {
+  const [form, setForm] = useState({
+    trabajadorId: ausencia?.trabajadorId || "",
+    nombreLibre: ausencia?.nombreLibre || "",
+    motivo: ausencia?.motivo || "",
+    fechaInicio: ausencia?.fechaInicio || today(),
+    fechaFin: ausencia?.fechaFin || today(),
+    observaciones: ausencia?.observaciones || "",
+  });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  const trabajadorSeleccionado = trabajadores.find((t) => t.id === form.trabajadorId);
+  function guardar() {
+    if (!form.motivo || (!form.trabajadorId && !form.nombreLibre.trim())) return;
+    onSave({
+      trabajadorId: form.trabajadorId || null,
+      nombreLibre: form.trabajadorId ? "" : form.nombreLibre.trim(),
+      nombre: form.trabajadorId ? trabajadorSeleccionado?.nombre : form.nombreLibre.trim(),
+      motivo: form.motivo,
+      fechaInicio: form.fechaInicio,
+      fechaFin: form.fechaFin,
+      observaciones: form.observaciones.trim(),
+    });
+    onClose();
+  }
+  return (
+    <Modal title={ausencia ? "Editar Ausencia" : "Nueva Ausencia"} onClose={onClose} width={460}>
+      <Field label="Trabajador (de la lista de Atlas)">
+        <FSel value={form.trabajadorId} onChange={set("trabajadorId")} options={trabajadores.map((t) => ({ value: t.id, label: t.nombre }))} placeholder="Selecciona (o escribe el nombre abajo)..." />
+      </Field>
+      {!form.trabajadorId && (
+        <Field label="O nombre (si no está en Trabajadores todavía, ej. gente del huellero de otra área)">
+          <FInput value={form.nombreLibre} onChange={set("nombreLibre")} placeholder="Nombre completo tal como aparece en el huellero" />
+        </Field>
+      )}
+      <Field label="Motivo">
+        <FSel value={form.motivo} onChange={set("motivo")} options={MOTIVOS_AUSENCIA} placeholder="Selecciona..." />
+      </Field>
+      <Field label="Fecha Inicio"><FInput type="date" value={form.fechaInicio} onChange={set("fechaInicio")} /></Field>
+      <Field label="Fecha Fin"><FInput type="date" value={form.fechaFin} onChange={set("fechaFin")} /></Field>
+      <Field label="Observaciones (opcional)"><FInput value={form.observaciones} onChange={set("observaciones")} /></Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar} disabled={!form.motivo || (!form.trabajadorId && !form.nombreLibre.trim())}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+function AusenciasView({ ausencias, trabajadores, isAdmin, currentUser, onSave, onDelete }) {
+  const [modal, setModal] = useState(null); // null | "nuevo" | ausencia
+  const [confirmDel, setConfirmDel] = useState(null);
+  const ordenadas = [...ausencias].sort((a, b) => (b.fechaInicio || "").localeCompare(a.fechaInicio || ""));
+  return (
+    <div>
+      {modal && (
+        <AusenciaModal
+          ausencia={modal === "nuevo" ? null : modal}
+          trabajadores={trabajadores}
+          onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data, registradoPor: currentUser?.name || currentUser?.username || "", registradoEn: new Date().toISOString() } : { id: modal.id, ...data })}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {confirmDel && (
+        <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>¿Eliminar esta ausencia de <strong>{confirmDel.nombre}</strong>?</div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={() => { onDelete(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+          </div>
+        </Modal>
+      )}
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 720 }}>
+        Registra acá vacaciones, incapacidades, licencias, permisos, etc. — el Reporte de Asistencia cruza esto contra el huellero para saber si un día sin marca está justificado.
+      </div>
+      {isAdmin && (
+        <div style={{ marginBottom: 16 }}>
+          <Btn onClick={() => setModal("nuevo")}>+ Nueva Ausencia</Btn>
+        </div>
+      )}
+      <Tabla
+        vacio="Sin ausencias registradas."
+        columnas={[
+          { key: "nombre", label: "Nombre" },
+          { key: "motivo", label: "Motivo" },
+          { key: "fechaInicio", label: "Desde", render: (f) => fmtFechaISO(f.fechaInicio) },
+          { key: "fechaFin", label: "Hasta", render: (f) => fmtFechaISO(f.fechaFin) },
+          { key: "observaciones", label: "Observaciones", render: (f) => f.observaciones || "—" },
+          ...(isAdmin ? [{
+            key: "acciones", label: "", align: "right",
+            render: (f) => (
+              <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <span onClick={(e) => { e.stopPropagation(); setModal(f); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>Editar</span>
+                <span onClick={(e) => { e.stopPropagation(); setConfirmDel(f); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>
+              </span>
+            ),
+          }] : []),
+        ]}
+        filas={ordenadas}
+      />
+    </div>
+  );
+}
+// ─── REPORTE DE ASISTENCIA (cruza el huellero contra los Motivos de Ausencia) ─
+// El reporte del huellero ("Reporte de Entradas y Salidas Horizontal") viene
+// en un formato ancho/raro: bloques por persona (ID/Nombre/Departamento) y
+// luego filas con 2 días cada una, cada día con un par de marcas
+// (fecha+hora, "Entrada"/"Salida") repartidas en columnas sueltas — no es
+// una tabla normal de una fila por marca. Este parser reconstruye, por
+// persona, la lista de marcas (fecha+hora, tipo) recorriendo cada fila y
+// buscando el patrón "fecha/hora" seguido del próximo texto no vacío.
+function normalizarNombreHuellero(s) {
+  return String(s || "").trim().toUpperCase().replace(/\s+/g, " ");
+}
+function parseHuelleroXLS(aoa) {
+  const DT_RE = /^\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}$/;
+  function celda(v) {
+    if (v instanceof Date) {
+      const p = (n) => String(n).padStart(2, "0");
+      return `${p(v.getDate())}/${p(v.getMonth() + 1)}/${v.getFullYear()} ${p(v.getHours())}:${p(v.getMinutes())}`;
+    }
+    return String(v ?? "").trim();
+  }
+  function buscarDespuesDe(vals, label) {
+    const norm = label.trim().toLowerCase();
+    for (let i = 0; i < vals.length; i++) {
+      if (vals[i].trim().toLowerCase() === norm) {
+        for (let j = i + 1; j < vals.length; j++) {
+          if (vals[j] !== "") return vals[j];
+        }
+      }
+    }
+    return null;
+  }
+  let desde = null;
+  let hasta = null;
+  const empleados = [];
+  let cur = null;
+  for (const rawRow of aoa) {
+    const vals = (rawRow || []).map(celda);
+    if (!vals.some((v) => v !== "")) continue;
+    if (!desde) { const d = buscarDespuesDe(vals, "Desde"); if (d) desde = d; }
+    if (!hasta) { const h = buscarDespuesDe(vals, "Hasta"); if (h) hasta = h; }
+    if (vals.includes("ID") && vals.some((v) => v.toLowerCase().startsWith("nombre"))) {
+      const id = buscarDespuesDe(vals, "ID");
+      const nombre = buscarDespuesDe(vals, "Nombre");
+      const depto = buscarDespuesDe(vals, "Departamento");
+      cur = { id, nombre: nombre || "", depto: depto || "", marcas: [] };
+      empleados.push(cur);
+      continue;
+    }
+    if (!cur) continue;
+    let i = 0;
+    while (i < vals.length) {
+      if (DT_RE.test(vals[i])) {
+        let j = i + 1;
+        while (j < vals.length && vals[j] === "") j++;
+        const tipo = j < vals.length && (vals[j] === "Entrada" || vals[j] === "Salida") ? vals[j] : "?";
+        cur.marcas.push({ fechaHora: vals[i], tipo });
+        i = tipo !== "?" ? j + 1 : i + 1;
+      } else {
+        i++;
+      }
+    }
+  }
+  return { desde, hasta, empleados };
+}
+// dd/mm/aaaa -> aaaa-mm-dd, para comparar contra fechaInicio/fechaFin (que
+// ya están en ese formato porque salen de un <input type="date">).
+function fechaHuelleroAISO(f) {
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})/.exec(f || "");
+  if (!m) return "";
+  return `${m[3]}-${m[2]}-${m[1]}`;
+}
+function listaDeDiasISO(desdeISO, hastaISO) {
+  const out = [];
+  if (!desdeISO || !hastaISO) return out;
+  const d0 = new Date(desdeISO + "T00:00:00");
+  const d1 = new Date(hastaISO + "T00:00:00");
+  for (let d = d0; d <= d1; d.setDate(d.getDate() + 1)) {
+    out.push(d.toISOString().slice(0, 10));
+  }
+  return out;
+}
+function ReporteAsistenciaView({ ausencias, trabajadores }) {
+  const fileRef = useRef(null);
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState("");
+  const [reporte, setReporte] = useState(null); // { desde, hasta, filas }
+  const [excluirDomingos, setExcluirDomingos] = useState(true);
+  const [soloConFaltas, setSoloConFaltas] = useState(true);
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError("");
+    setReporte(null);
+    setCargando(true);
+    try {
+      const XLSX = await import("xlsx");
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array", cellDates: true });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
+      const { desde, hasta, empleados } = parseHuelleroXLS(aoa);
+      if (!empleados.length) {
+        setError("No se encontraron bloques de empleados (ID/Nombre/Departamento) en el archivo — ¿es el reporte horizontal del huellero?");
+        return;
+      }
+      const desdeISO = fechaHuelleroAISO(desde);
+      const hastaISO = fechaHuelleroAISO(hasta);
+      const diasPeriodo = listaDeDiasISO(desdeISO, hastaISO);
+
+      const filas = empleados.map((emp) => {
+        const diasConMarca = new Set(emp.marcas.map((m) => m.fechaHora.split(" ")[0]).map((f) => fechaHuelleroAISO(f)));
+        const nombreNorm = normalizarNombreHuellero(emp.nombre);
+        const ausenciasPersona = ausencias.filter((a) => normalizarNombreHuellero(a.nombre) === nombreNorm);
+        const diasSinMarca = diasPeriodo.filter((iso) => {
+          if (diasConMarca.has(iso)) return false;
+          if (excluirDomingos && new Date(iso + "T00:00:00").getDay() === 0) return false;
+          return true;
+        });
+        const detalle = diasSinMarca.map((iso) => {
+          const motivo = ausenciasPersona.find((a) => a.fechaInicio <= iso && iso <= a.fechaFin);
+          return { fecha: iso, motivo: motivo ? motivo.motivo : null };
+        });
+        const sinJustificar = detalle.filter((d) => !d.motivo);
+        return {
+          id: emp.id,
+          nombre: emp.nombre,
+          depto: emp.depto,
+          totalDias: diasPeriodo.length,
+          diasConMarca: diasConMarca.size,
+          diasSinMarca: detalle.length,
+          sinJustificar: sinJustificar.length,
+          detalle,
+        };
+      });
+
+      setReporte({ desde, hasta, filas });
+    } catch (err) {
+      setError(err?.message || String(err));
+    } finally {
+      setCargando(false);
+    }
+  }
+
+  const filasMostradas = reporte ? reporte.filas.filter((f) => !soloConFaltas || f.sinJustificar > 0).sort((a, b) => b.sinJustificar - a.sinJustificar) : [];
+  const totalSinJustificar = reporte ? reporte.filas.reduce((s, f) => s + f.sinJustificar, 0) : 0;
+  const personasConFaltas = reporte ? reporte.filas.filter((f) => f.sinJustificar > 0).length : 0;
+  const motivosCount = {};
+  if (reporte) {
+    for (const f of reporte.filas) {
+      for (const d of f.detalle) {
+        const k = d.motivo || "SIN JUSTIFICAR";
+        motivosCount[k] = (motivosCount[k] || 0) + 1;
+      }
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 760 }}>
+        Sube el reporte del huellero ("Reporte de Entradas y Salidas Horizontal", .xls o .xlsx) y Atlas calcula, persona por persona, los días sin marcación dentro del período — cruzados contra los Motivos de Ausencia ya registrados, para saber cuáles quedan sin justificar.
+      </div>
+      <div onClick={() => fileRef.current.click()} style={{ border: `2px dashed ${C.blue}`, borderRadius: 12, padding: 24, textAlign: "center", cursor: "pointer", background: C.blueBg, marginBottom: 16, maxWidth: 480 }}>
+        <div style={{ fontSize: 26, marginBottom: 6 }}>📂</div>
+        <div style={{ fontWeight: 700, color: C.ink }}>{cargando ? "Procesando..." : "Subir reporte del huellero (.xls/.xlsx)"}</div>
+        <input ref={fileRef} type="file" accept=".xls,.xlsx" style={{ display: "none" }} onChange={handleFile} />
+      </div>
+      {error && <div style={{ padding: "10px 14px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16, maxWidth: 760 }}>⚠ {error}</div>}
+
+      {reporte && (
+        <>
+          <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+            <KPI icon="📅" label="Período" value={`${reporte.desde || "?"} — ${reporte.hasta || "?"}`} color={C.blue} bg={C.blueBg} />
+            <KPI icon="🚫" label="Días sin justificar" value={fmtNum(totalSinJustificar)} color={C.red} bg={C.redBg} />
+            <KPI icon="🧑" label="Personas con alguna falta" value={fmtNum(personasConFaltas)} color={C.amber} bg={C.amberBg || C.canvas} />
+          </div>
+
+          <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
+            {Object.entries(motivosCount).sort((a, b) => b[1] - a[1]).map(([motivo, n]) => (
+              <div key={motivo} style={{ padding: "8px 14px", borderRadius: 8, background: motivo === "SIN JUSTIFICAR" ? C.redBg : C.canvas, border: `1px solid ${C.border}`, fontSize: 12 }}>
+                <span style={{ fontWeight: 700, color: motivo === "SIN JUSTIFICAR" ? C.red : C.ink }}>{motivo}</span>: {n} día(s)
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.slate, cursor: "pointer" }}>
+              <input type="checkbox" checked={excluirDomingos} onChange={(e) => setExcluirDomingos(e.target.checked)} /> No contar domingos como falta
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.slate, cursor: "pointer" }}>
+              <input type="checkbox" checked={soloConFaltas} onChange={(e) => setSoloConFaltas(e.target.checked)} /> Mostrar solo quienes tienen faltas sin justificar
+            </label>
+          </div>
+
+          <Tabla
+            vacio="Nadie con faltas sin justificar en este período 🎉"
+            columnas={[
+              { key: "nombre", label: "Nombre" },
+              { key: "depto", label: "Departamento" },
+              { key: "diasConMarca", label: "Días con marca", align: "right" },
+              { key: "diasSinMarca", label: "Días sin marca", align: "right" },
+              { key: "sinJustificar", label: "Sin justificar", align: "right", render: (f) => (
+                <span style={{ fontWeight: 800, color: f.sinJustificar > 0 ? C.red : C.green }}>{f.sinJustificar}</span>
+              ) },
+              { key: "detalle", label: "Fechas sin justificar", render: (f) => {
+                const pend = f.detalle.filter((d) => !d.motivo);
+                if (!pend.length) return "—";
+                return pend.map((d) => fmtFechaISO(d.fecha)).join(", ");
+              } },
+            ]}
+            filas={filasMostradas}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -1444,6 +2043,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   const [horas, setHoras] = useState([]);
   const [cierres, setCierres] = useState([]);
   const [costosTeoricoProceso, setCostosTeoricoProceso] = useState([]);
+  const [ausencias, setAusencias] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     const unsubs = [
@@ -1453,6 +2053,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
       onSnapshot(collection(db, "nomina_horas"), (snap) => setHoras(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_cierres"), (snap) => setCierres(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_costos_teorico_proceso"), (snap) => setCostosTeoricoProceso(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_ausencias"), (snap) => setAusencias(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
     ];
     return () => unsubs.forEach((u) => u());
   }, []);
@@ -1472,6 +2073,9 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
         { id: "precios", icon: "⚙️", label: "Procesos" },
         { id: "costos_teorico", icon: "📐", label: "Costos Teóricos" },
         { id: "tns", icon: "🔌", label: "Conexión TNS" },
+        { id: "novedades_tns", icon: "🧾", label: "Novedades TNS" },
+        { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
+        { id: "asistencia", icon: "📊", label: "Reporte de Asistencia" },
       ];
   // Con líder de área, todo lo que ve/registra queda limitado a su propia
   // gente — así Anny no ve ni toca la producción de Sarai y viceversa.
@@ -1486,6 +2090,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   async function borrarProduccion(id) { await fsDelete("nomina_produccion", id); }
   async function guardarHoras(h) { await fsSave("nomina_horas", h.id, h); }
   async function borrarHoras(id) { await fsDelete("nomina_horas", id); }
+  async function guardarAusencia(a) { await fsSave("nomina_ausencias", a.id, a); }
+  async function borrarAusencia(id) { await fsDelete("nomina_ausencias", id); }
   // Sube en lote (upsert por "{numLote}_{PROCESO}") las filas del Excel de
   // Costos Teóricos por Proceso — se hace con writeBatch (no una por una)
   // para que un archivo de varios cientos de filas se guarde de un solo
@@ -1600,6 +2206,9 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           {subView === "precios" && !areaLider && <PreciosProcesoView precios={precios} isAdmin={isAdmin} onSave={guardarProceso} onDelete={borrarProceso} />}
           {subView === "costos_teorico" && !areaLider && <CostosTeoricoProcesoView costos={costosTeoricoProceso} isAdmin={isAdmin} onGuardarLote={guardarCostosTeoricoProcesoLote} onBorrarTodo={vaciarCostosTeoricoProceso} />}
           {subView === "tns" && !areaLider && <TNSConexionView />}
+          {subView === "novedades_tns" && !areaLider && <NovedadesTNSView trabajadores={trabajadores} />}
+          {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} isAdmin={isAdmin} currentUser={currentUser} onSave={guardarAusencia} onDelete={borrarAusencia} />}
+          {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} />}
         </div>
       </div>
     </div>
