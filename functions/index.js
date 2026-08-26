@@ -827,6 +827,88 @@ exports.getTelasStockBusintBD = onCall(
     return { total: telas.length, telas };
   }
 );
+// Busca un valor entre varias posibles formas de escribir la misma columna
+// — la API BD de Busint tiene columnas con mayúscula/minúscula inconsistente
+// entre "slots" (ej. "Tela1-Cons" pero "Tela6-cons"; "Tela1-col" pero
+// "Tela5-Col") — probablemente por haberse ido agregando a mano con los años.
+function valorFlexible(obj, candidatos) {
+  for (const k of candidatos) {
+    if (obj[k] !== undefined && obj[k] !== null && obj[k] !== "") return obj[k];
+  }
+  return undefined;
+}
+// (2026-08-26) Para el aviso de tela POR COLOR exacto (no solo el total de
+// la tela) hacen falta dos tablas más de Busint BD, confirmadas con el
+// usuario vía el barrido de las 972 tablas:
+//   - "telas": por Referencia, dice el NOMBRE de cada tela que usa esa
+//     prenda (hasta 10 "slots": Tela1..Tela10) y su consumo base.
+//   - "telas - detalle": por Referencia+Pinta+Pcolor, dice el CÓDIGO DE
+//     COLOR exacto de cada slot de tela (TelaN-col) y el consumo con sesgo
+//     ya incluido (TelaN-con-ses).
+// Cruzando las dos se sabe, para una Referencia+Pinta dada, el nombre Y
+// color exactos de la tela — que es justo lo que hace falta para buscar la
+// fila correcta en "estandar componentes prod" (Componente+Color) en vez de
+// sumar el stock de todos los colores de esa tela.
+const NUM_SLOTS_TELA = 10;
+exports.getComposicionTelasBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async () => {
+    let filasTelas, filasDetalle;
+    try {
+      [filasTelas, filasDetalle] = await Promise.all([
+        consultarTablaBusintBDCompleta("telas"),
+        consultarTablaBusintBDCompleta("telas - detalle"),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getComposicionTelasBusintBD)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar la composición de telas en Busint: ${err?.message || String(err)}`);
+    }
+    const porReferencia = filasTelas
+      .map((f) => {
+        const ref = String(f.Ref || "").trim();
+        const slots = [];
+        for (let i = 1; i <= NUM_SLOTS_TELA; i++) {
+          const nombre = String(valorFlexible(f, [`Tela${i}`]) || "").trim();
+          if (!nombre) continue;
+          slots.push({
+            slot: i,
+            nombre,
+            consumo: Number(valorFlexible(f, [`Tela${i}-Cons`, `Tela${i}-cons`])) || 0,
+            unidad: valorFlexible(f, [`Unid${i}`]) || "",
+          });
+        }
+        return { ref, slots };
+      })
+      .filter((r) => r.ref && r.slots.length);
+    const detallePorColor = filasDetalle
+      .map((f) => {
+        const ref = String(f.Ref || "").trim();
+        const pinta = String(f.Pinta || "").trim();
+        const pcolor = String(f.Pcolor || "").trim();
+        const colores = {};
+        for (let i = 1; i <= NUM_SLOTS_TELA; i++) {
+          const color = valorFlexible(f, [`Tela${i}-col`, `Tela${i}-Col`]);
+          if (color === undefined) continue;
+          colores[i] = {
+            color: String(color).trim(),
+            consumoConSesgo: Number(valorFlexible(f, [`Tela${i}-con-ses`, `Tela${i}-Con-Ses`])) || 0,
+          };
+        }
+        return { ref, pinta, pcolor, colores };
+      })
+      .filter((r) => r.ref);
+    return {
+      totalReferencias: porReferencia.length,
+      totalDetalle: detallePorColor.length,
+      porReferencia,
+      detallePorColor,
+    };
+  }
+);
 // Convierte el formato de fecha que usa la API BD de Busint ({isValidDateTime,
 // year, month, day, ...}) a texto ISO YYYY-MM-DD, o null si no es válida.
 function fechaBDaISO(obj) {

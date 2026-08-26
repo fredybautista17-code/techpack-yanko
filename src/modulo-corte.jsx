@@ -127,6 +127,35 @@ function stockTelaBusint(telasBusint, nombreTela) {
   if (!filas.length) return null;
   return filas.reduce((s, f) => s + (Number(f.cantidad) || 0), 0);
 }
+// (2026-08-26) Versión exacta POR COLOR — cruza "telas" (nombre de tela por
+// slot, por Referencia) + "telas - detalle" (código de color exacto de cada
+// slot, por Referencia+Pinta) para encontrar la fila puntual de "estandar
+// componentes prod" (Componente+Color), en vez de sumar el stock de todos
+// los colores de esa tela. Se asume (confirmado con el usuario) que
+// Referencia+Pinta identifica sin ambigüedad la tela+color — si hubiera más
+// de una fila de detalle para esa Referencia y no calza ninguna Pinta, se
+// usa la primera como mejor esfuerzo. Devuelve null si no se puede
+// determinar (referencia sin datos en Busint, tela no encontrada en los
+// slots, etc.) — nunca bloquea, solo informa.
+function disponibilidadTelaPorColor(composicionTelas, telasBusint, ref, pinta, nombreTela) {
+  const refNorm = String(ref || "").trim();
+  const nombreNorm = normalizarTela(nombreTela);
+  if (!refNorm || !nombreNorm) return null;
+  const refInfo = (composicionTelas?.porReferencia || []).find((r) => r.ref === refNorm);
+  if (!refInfo) return null;
+  const slotInfo = refInfo.slots.find((s) => normalizarTela(s.nombre) === nombreNorm);
+  if (!slotInfo) return null;
+  const detalles = (composicionTelas?.detallePorColor || []).filter((d) => d.ref === refNorm);
+  if (!detalles.length) return null;
+  const pintaNorm = String(pinta || "").trim().toUpperCase();
+  const detalle = detalles.find((d) => d.pinta.toUpperCase() === pintaNorm) || detalles[0];
+  const colorInfo = detalle.colores[slotInfo.slot];
+  if (!colorInfo || !colorInfo.color) return null;
+  const filaStock = (telasBusint || []).find(
+    (t) => normalizarTela(t.componente) === nombreNorm && String(t.color || "").trim() === colorInfo.color
+  );
+  return { color: colorInfo.color, cantidad: filaStock ? Number(filaStock.cantidad) || 0 : null };
+}
 // Recuerda, en el navegador de quien esté usando el equipo (localStorage,
 // no queda en el pedido ni se sincroniza entre equipos), el último cortador
 // usado y el último mesón usado por planta — así al abrir un corte nuevo ya
@@ -2017,7 +2046,7 @@ function ImprimirTrabajoCortadoresModal({ fecha, grupos, nombreMeson, capasTotal
 // analista con el permiso "aprobar_corte" revisa y aprueba antes de que
 // cuente como confirmado. `onClose` ahora es "volver a la lista" (deseleccionar),
 // no cerrar una ventana emergente.
-function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint, cargandoTelasBusint, onActualizarTelasBusint, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onSave, onClose, onGuardado, puedeAprobar, onAprobar, usuarioActual, candidatosVinculo }) {
+function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint, cargandoTelasBusint, onActualizarTelasBusint, composicionTelas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onSave, onClose, onGuardado, puedeAprobar, onAprobar, usuarioActual, candidatosVinculo }) {
   const aprobado = grupo.colores.every((c) => c.etapa === "programacion_hecha" && c.aprobado === true);
   const pendienteAprobacion = grupo.colores.every((c) => c.etapa === "programacion_hecha") && !aprobado;
   const aprobadoPorTxt = grupo.colores.find((c) => c.aprobadoPor)?.aprobadoPor;
@@ -2736,6 +2765,13 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                 const coincide = marcadas > 0 && calc.capasColor > 0 && calc.diff === 0;
                 const hayDatos = marcadas > 0 && calc.capasColor > 0;
                 const abierto = colorAbierto === c.id;
+                // Pinta = primer token de la descripción ("PINTA · COLOR",
+                // ej. "G · AZUL CLARO") — es el código estable de Busint.
+                const pintaColor = String(c.descripcion || "").split(" · ")[0]?.trim() || "";
+                const dispColor = form.tipoTela.trim()
+                  ? disponibilidadTelaPorColor(composicionTelas, telasBusint, grupo.ref, pintaColor, form.tipoTela)
+                  : null;
+                const faltaColor = dispColor && dispColor.cantidad !== null && calc.metrosColor > dispColor.cantidad;
                 return (
                   <div
                     key={c.id}
@@ -2776,8 +2812,16 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                           placeholder="Capas"
                         />
                       </div>
-                      <div style={{ fontSize: 12, color: C.slate }}>
+                      <div style={{ fontSize: 12, color: C.slate, display: "flex", alignItems: "center", gap: 5 }}>
                         {calc.metrosColor > 0 ? `${calc.metrosColor.toLocaleString("es-CO")} m` : "—"}
+                        {dispColor && dispColor.cantidad !== null && (
+                          <span
+                            title={`Tela color ${dispColor.color}: ${dispColor.cantidad.toLocaleString("es-CO")} m disponibles en Busint`}
+                            style={{ color: faltaColor ? C.red : C.green, fontSize: 13 }}
+                          >
+                            {faltaColor ? "⚠" : "✓"}
+                          </span>
+                        )}
                       </div>
                       <div style={{ fontSize: 12, color: C.slate }}>
                         Calc: <b style={{ color: C.ink }}>{hayDatos ? fmtNum(calc.prendasCalculadas) : "—"}</b> / Real: <b style={{ color: C.ink }}>{fmtNum(calc.cantidadReal)}</b>
@@ -2789,6 +2833,24 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                     </div>
                     {abierto && (
                       <div style={{ padding: "10px 12px", borderTop: `1px solid ${C.border}`, background: C.white }}>
+                        {form.tipoTela.trim() && (
+                          <div style={{ marginBottom: 10, fontSize: 12 }}>
+                            {!dispColor ? (
+                              <span style={{ color: C.slate }}>
+                                No se pudo determinar el color exacto de "{form.tipoTela}" para {pintaColor ? `la pinta "${pintaColor}"` : "esta pinta"} en Busint (referencia sin datos de composición, o esa tela no aparece en sus telas registradas).
+                              </span>
+                            ) : dispColor.cantidad === null ? (
+                              <span style={{ color: C.slate }}>
+                                Color de tela: <b>{dispColor.color}</b> — no se encontró esa tela+color en el inventario de Busint.
+                              </span>
+                            ) : (
+                              <span style={{ fontWeight: 700, color: faltaColor ? C.red : C.green }}>
+                                {faltaColor ? "⚠" : "✅"} Color <b>{dispColor.color}</b>: hay {dispColor.cantidad.toLocaleString("es-CO")} m disponibles en Busint
+                                {calc.metrosColor > 0 ? ` (este color necesita ${calc.metrosColor.toLocaleString("es-CO")} m)` : ""}.
+                              </span>
+                            )}
+                          </div>
+                        )}
                         {!tallasGrupo.length ? (
                           <div style={{ fontSize: 12, color: C.slate }}>Todavía no hay tallas en la curva.</div>
                         ) : (
@@ -5209,7 +5271,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onPartirCorte, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, onRegistrarCorteManual, plantasConfig, cortadoresConfig, telas, telasBusint, cargandoTelasBusint, onActualizarTelasBusint, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarBloqueoMeson, onEliminarBloqueoMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onDevolverCorteReal, onEditarCantidadesCorte, onActualizarHorarioCorte, onEditarMesonCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onPartirCorte, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, onRegistrarCorteManual, plantasConfig, cortadoresConfig, telas, telasBusint, cargandoTelasBusint, onActualizarTelasBusint, composicionTelas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarBloqueoMeson, onEliminarBloqueoMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onDevolverCorteReal, onEditarCantidadesCorte, onActualizarHorarioCorte, onEditarMesonCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Cuántos cortes (tandas físicas) separados se van a programar de una vez
   // con la selección actual — por defecto 1 (comportamiento de siempre). Si
@@ -6856,6 +6918,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     telasBusint={telasBusint || []}
                     cargandoTelasBusint={cargandoTelasBusint}
                     onActualizarTelasBusint={onActualizarTelasBusint}
+                    composicionTelas={composicionTelas}
                     estadisticasTela={estadisticasTela || {}}
                     metrosUsadosMeson={metrosUsadosMeson}
                     itemsUsadosMeson={itemsUsadosMeson}
@@ -8568,6 +8631,25 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     }
   }
   useEffect(() => { cargarTelasBusint(); }, []);
+  // Composición de telas por Referencia+Pinta ("telas" + "telas - detalle"
+  // de Busint) — deja saber, para una Referencia y Pinta puntual, el código
+  // de color EXACTO de la tela (no solo el nombre), para poder revisar
+  // disponibilidad por color y no sumar entre todos los colores de esa tela.
+  const [composicionTelas, setComposicionTelas] = useState({ porReferencia: [], detallePorColor: [] });
+  const [cargandoComposicionTelas, setCargandoComposicionTelas] = useState(false);
+  async function cargarComposicionTelas() {
+    setCargandoComposicionTelas(true);
+    try {
+      const llamar = httpsCallable(functionsClient, "getComposicionTelasBusintBD");
+      const resp = await llamar();
+      setComposicionTelas({ porReferencia: resp.data?.porReferencia || [], detallePorColor: resp.data?.detallePorColor || [] });
+    } catch (err) {
+      console.error("No se pudo cargar la composición de telas de Busint", err);
+    } finally {
+      setCargandoComposicionTelas(false);
+    }
+  }
+  useEffect(() => { cargarComposicionTelas(); }, []);
   useEffect(() => {
     const unsubs = [];
     async function init() {
@@ -9537,6 +9619,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               telasBusint={telasBusint}
               cargandoTelasBusint={cargandoTelasBusint}
               onActualizarTelasBusint={cargarTelasBusint}
+              composicionTelas={composicionTelas}
               trabajadores={corteConfig.nomina?.trabajadores || []}
               programacion={programacionCorte}
               onProgramar={programarCorte}
