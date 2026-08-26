@@ -7537,6 +7537,31 @@ function BusintCatalogoTestView() {
       setCargandoInventarioGen(false);
     }
   }
+  // (2026-08-26) Diagnóstico rápido para el aviso de tela por color en
+  // Corte: buscar, dentro de "estandar componentes prod", todas las filas
+  // de un nombre de tela puntual (ej. "MARLY") y ver de un vistazo qué pinta
+  // tiene el campo "Color" ahí — sin tener que hacer Ctrl+F en un JSON de
+  // miles de filas.
+  const [buscarTelaNombre, setBuscarTelaNombre] = useState("");
+  const [cargandoColoresTela, setCargandoColoresTela] = useState(false);
+  const [coloresTela, setColoresTela] = useState(null);
+  async function buscarColoresTela() {
+    const nombre = buscarTelaNombre.trim().toUpperCase();
+    if (!nombre) return;
+    setCargandoColoresTela(true);
+    setColoresTela(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getTelasStockBusintBD");
+      const resp = await llamar();
+      const todas = resp.data?.telas || [];
+      const filas = todas.filter((t) => String(t.componente || "").toUpperCase().includes(nombre));
+      setColoresTela({ filas });
+    } catch (err) {
+      setColoresTela({ error: err?.message || "No se pudo consultar el inventario de telas.", filas: [] });
+    } finally {
+      setCargandoColoresTela(false);
+    }
+  }
   const [cargandoBarridoTotal, setCargandoBarridoTotal] = useState(false);
   const [barridoTotal, setBarridoTotal] = useState(null);
   // (2026-08-26) Antes el barrido de las 972 tablas de Busint BD solo se
@@ -7792,6 +7817,45 @@ function BusintCatalogoTestView() {
           <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 280, border: `1px solid ${T.border}` }}>
             {JSON.stringify(inventarioGen.ultimas, null, 2)}
           </pre>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Buscar colores de una tela ("estandar componentes prod", filtrado)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Trae toda la tabla "estandar componentes prod" (solo filas de tela, Telas="T") y la filtra por el nombre que escribas — así no hay que buscar a mano en un JSON gigante para ver qué "Color" tiene cada variante.
+      </div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, maxWidth: 520 }}>
+        <FInput value={buscarTelaNombre} onChange={setBuscarTelaNombre} placeholder="Ej: MARLY" />
+        <Btn onClick={buscarColoresTela} disabled={cargandoColoresTela || !buscarTelaNombre.trim()}>{cargandoColoresTela ? "Buscando..." : "🔍 Buscar"}</Btn>
+      </div>
+      {coloresTela && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          {coloresTela.error ? (
+            <div style={{ color: T.coral, fontSize: 13, fontWeight: 600 }}>⚠ {coloresTela.error}</div>
+          ) : coloresTela.filas.length === 0 ? (
+            <div style={{ fontSize: 13, color: T.slate }}>No se encontró ninguna tela con ese nombre (revisa mayúsculas/espacios exactos, o puede que no esté como tela — Telas="T" — sino como insumo).</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${T.border}` }}>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Componente</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Color</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px" }}>Cantidad (ICant)</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px" }}>Costo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {coloresTela.filas.map((f, i) => (
+                  <tr key={i} style={{ borderBottom: `1px solid ${T.border}` }}>
+                    <td style={{ padding: "6px 8px" }}>{f.componente}</td>
+                    <td style={{ padding: "6px 8px", fontWeight: 700 }}>{f.color || "—"}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.cantidad}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.costo}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       )}
       <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
