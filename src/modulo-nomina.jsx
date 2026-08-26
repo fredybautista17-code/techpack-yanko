@@ -676,6 +676,47 @@ function CostosTeoricoProcesoView({ costos, isAdmin, onGuardarLote, onBorrarTodo
     </div>
   );
 }
+// ─── CONEXIÓN TNS (paquete contable) ───────────────────────────────────────
+// Solo confirma que los 3 secretos configurados en el servidor
+// (TNS_CODIGO_EMPRESA, TNS_USUARIO, TNS_CONTRASENIA) sirven para loguearse en
+// TNS — no trae ni envía todavía ningún dato de nómina, es el primer paso
+// antes de construir el envío real de Contratos/Novedades.
+function TNSConexionView() {
+  const [estado, setEstado] = useState(null); // null | "cargando" | "ok" | { error }
+  async function probar() {
+    setEstado("cargando");
+    try {
+      const llamar = httpsCallable(functionsClient, "probarConexionTNS");
+      await llamar({});
+      setEstado("ok");
+    } catch (err) {
+      setEstado({ error: err?.message || "No se pudo conectar." });
+    }
+  }
+  return (
+    <div style={{ maxWidth: 640 }}>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
+        Confirma que TNS acepta las credenciales configuradas en el servidor (Firebase → Secret Manager). Esto no trae ni envía datos de nómina todavía — es solo la prueba de conexión.
+      </div>
+      <Btn onClick={probar} disabled={estado === "cargando"}>
+        {estado === "cargando" ? "Probando..." : "🔌 Probar conexión TNS"}
+      </Btn>
+      {estado === "ok" && (
+        <div style={{ marginTop: 16, padding: "12px 16px", background: C.greenBg, borderRadius: 8, color: C.green, fontWeight: 700, fontSize: 13 }}>
+          ✅ Conectado — TNS aceptó las credenciales.
+        </div>
+      )}
+      {estado && typeof estado === "object" && estado.error && (
+        <div style={{ marginTop: 16, padding: "12px 16px", background: C.redBg, borderRadius: 8, color: C.red, fontWeight: 700, fontSize: 13 }}>
+          ❌ No se pudo conectar: {estado.error}
+          <div style={{ marginTop: 6, fontWeight: 500, fontSize: 12 }}>
+            Revisa que hayas corrido los 3 comandos "firebase functions:secrets:set" y vuelto a desplegar con "firebase deploy --only functions".
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 // ─── REGISTRAR PRODUCCIÓN (pago por pieza / proceso) ───────────────────────
 function RegistrarProduccionView({ trabajadores, precios, produccion, produccionCompleta, costosTeoricoProceso, currentUser, onGuardar, onBorrar, isAdmin }) {
   const [trabajadorId, setTrabajadorId] = useState("");
@@ -1380,6 +1421,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
         { id: "trabajadores", icon: "👷", label: "Trabajadores" },
         { id: "precios", icon: "⚙️", label: "Procesos" },
         { id: "costos_teorico", icon: "📐", label: "Costos Teóricos" },
+        { id: "tns", icon: "🔌", label: "Conexión TNS" },
       ];
   // Con líder de área, todo lo que ve/registra queda limitado a su propia
   // gente — así Anny no ve ni toca la producción de Sarai y viceversa.
@@ -1507,6 +1549,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           {subView === "trabajadores" && !areaLider && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} />}
           {subView === "precios" && !areaLider && <PreciosProcesoView precios={precios} isAdmin={isAdmin} onSave={guardarProceso} onDelete={borrarProceso} />}
           {subView === "costos_teorico" && !areaLider && <CostosTeoricoProcesoView costos={costosTeoricoProceso} isAdmin={isAdmin} onGuardarLote={guardarCostosTeoricoProcesoLote} onBorrarTodo={vaciarCostosTeoricoProceso} />}
+          {subView === "tns" && !areaLider && <TNSConexionView />}
         </div>
       </div>
     </div>

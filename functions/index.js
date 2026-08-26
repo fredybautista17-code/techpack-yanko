@@ -2591,3 +2591,114 @@ exports.avisarVencidos = onSchedule(
     await revisarYFelicitarAlDia();
   }
 );
+
+// ---------------------------------------------------------------------------
+// TNS (paquete contable) — integración de Nómina
+// ---------------------------------------------------------------------------
+// La API de TNS (https://api.tns.co) exige loguearse primero contra
+// POST /v2/Acceso/Login con { codigoEmpresa, nombreUsuario, contrasenia } —
+// eso devuelve un token que hay que mandar (Authorization: Bearer ...) en las
+// siguientes llamadas (Contratos/Insertar, Contratos/Actualizar,
+// Contratos/Novedades/Insertar, etc.). Confirmado contra el swagger en vivo
+// (https://api.tns.co/index.html) el 25/08/2026.
+//
+// Configura estos 3 secretos UNA VEZ desde tu propia terminal (nunca se
+// escriben acá, este archivo queda en un repo):
+//   firebase functions:secrets:set TNS_CODIGO_EMPRESA
+//   firebase functions:secrets:set TNS_USUARIO
+//   firebase functions:secrets:set TNS_CONTRASENIA
+// y luego:
+//   firebase deploy --only functions
+const TNS_CODIGO_EMPRESA = defineSecret("TNS_CODIGO_EMPRESA");
+const TNS_USUARIO = defineSecret("TNS_USUARIO");
+const TNS_CONTRASENIA = defineSecret("TNS_CONTRASENIA");
+const TNS_BASE_URL = "https://api.tns.co";
+
+// El token se guarda en memoria del proceso (no en Firestore): mientras la
+// instancia de la función siga "caliente" se reutiliza; si Cloud Functions
+// arranca una instancia nueva, simplemente se vuelve a loguear. Así se evita
+// loguearse en cada llamada sin tener que guardar credenciales/tokens en la
+// base de datos.
+let _tnsTokenCache = { token: null, obtenidoEn: 0 };
+const TNS_TOKEN_VIGENCIA_MS = 25 * 60 * 1000; // 25 min, conservador
+
+async function obtenerTokenTNS() {
+  const ahora = Date.now();
+  if (_tnsTokenCache.token && ahora - _tnsTokenCache.obtenidoEn < TNS_TOKEN_VIGENCIA_MS) {
+    return _tnsTokenCache.token;
+  }
+
+  const resp = await fetch(`${TNS_BASE_URL}/v2/Acceso/Login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      codigoEmpresa: TNS_CODIGO_EMPRESA.value(),
+      nombreUsuario: TNS_USUARIO.value(),
+      contrasenia: TNS_CONTRASENIA.value(),
+    }),
+  });
+
+  if (!resp.ok) {
+    const texto = await resp.text().catch(() => "");
+    logger.error("TNS Login respondió con error", { status: resp.status, texto });
+    throw new Error(`TNS Login respondió ${resp.status}`);
+  }
+
+  const data = await resp.json().catch(() => ({}));
+  // La forma exacta de la respuesta ("token"? "data.token"?) no queda clara
+  // solo con el swagger — se cubren las variantes más probables, y si
+  // ninguna calza, el log de abajo muestra las llaves reales que devolvió
+  // TNS para poder ajustar esta línea sin tener que adivinar a ciegas.
+  const token = data.token || data.Token || data.data?.token || data.accessToken || null;
+  if (!token) {
+    logger.error("TNS Login no devolvió token reconocible", { llavesRecibidas: Object.keys(data || {}) });
+    throw new Error("TNS Login no devolvió un token reconocible — revisa los logs para ver el formato real de la respuesta.");
+  }
+
+  _tnsTokenCache = { token, obtenidoEn: ahora };
+  return token;
+}
+
+// Llamada genérica autenticada contra la API de TNS — pensada para
+// reutilizarse cuando conectemos Contratos/Insertar, Novedades/Insertar, etc.
+async function llamarTNS(path, { method = "GET", body } = {}) {
+  const token = await obtenerTokenTNS();
+  const resp = await fetch(`${TNS_BASE_URL}${path}`, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const texto = await resp.text().catch(() => "");
+  let data;
+  try {
+    data = texto ? JSON.parse(texto) : null;
+  } catch {
+    data = texto;
+  }
+  if (!resp.ok) {
+    logger.error("TNS respondió con error", { path, status: resp.status, data });
+    throw new Error(`TNS respondió ${resp.status} en ${path}`);
+  }
+  return data;
+}
+
+// Botón de prueba desde el aplicativo: confirma que los 3 secretos quedaron
+// bien configurados SIN exponer el token al navegador — solo devuelve
+// { conectado: true } o el motivo del error. Pensado para probar la conexión
+// apenas se configuren los secretos, antes de construir el envío real de
+// Contratos/Novedades. Se puede llamar desde el navegador con
+// `httpsCallable(functions, "probarConexionTNS")()`.
+exports.probarConexionTNS = onCall(
+  {
+    secrets: [TNS_CODIGO_EMPRESA, TNS_USUARIO, TNS_CONTRASENIA],
+    timeoutSeconds: 30,
+    memory: "256MiB",
+  },
+  async () => {
+    await obtenerTokenTNS();
+    return { conectado: true };
+  }
+);
