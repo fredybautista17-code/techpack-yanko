@@ -144,7 +144,10 @@ function nombreColorPorCodigo(tablaColores, codigo) {
 function stockTelaBusint(telasBusint, nombreTela) {
   const nombreNorm = normalizarTela(nombreTela);
   if (!nombreNorm || !Array.isArray(telasBusint) || !telasBusint.length) return null;
-  const filas = telasBusint.filter((t) => normalizarTela(t.componente) === nombreNorm);
+  // (2026-08-26) Solo se suman filas ACTIVAS — Busint marca como inactivos
+  // los colores descontinuados de una tela, y esos no deberían contar como
+  // "disponibles" aunque todavía tengan un ICant residual en el sistema.
+  const filas = telasBusint.filter((t) => normalizarTela(t.componente) === nombreNorm && t.activo !== false);
   if (!filas.length) return null;
   // (2026-08-26) "cantidad" ya viene convertida a metros lineales desde el
   // backend (ML = M2 / Ancho) — si para una fila puntual no hay ancho
@@ -183,7 +186,7 @@ function resolverTelaPorEstructura(composicionTelas, telasBusint, refNorm, pinta
   const colorInfo = detalle.colores[slotInfo.slot];
   if (!colorInfo || !colorInfo.color) return { motivo: "slot_sin_color", refNorm };
   const filaStock = (telasBusint || []).find(
-    (t) => normalizarTela(t.componente) === nombreNorm && String(t.color || "").trim() === colorInfo.color
+    (t) => normalizarTela(t.componente) === nombreNorm && String(t.color || "").trim() === colorInfo.color && t.activo !== false
   );
   if (!filaStock) {
     return { motivo: "color_no_en_inventario", color: colorInfo.color };
@@ -211,7 +214,7 @@ function resolverTelaPorEstructura(composicionTelas, telasBusint, refNorm, pinta
 function resolverTelaPorNombreColor(telasBusint, tablaColores, nombreNorm, nombreColorAtlas) {
   const nombreColorNorm = normalizarNombreColor(nombreColorAtlas);
   if (!nombreColorNorm || !Array.isArray(telasBusint) || !Array.isArray(tablaColores) || !tablaColores.length) return null;
-  const filasTela = telasBusint.filter((t) => normalizarTela(t.componente) === nombreNorm);
+  const filasTela = telasBusint.filter((t) => normalizarTela(t.componente) === nombreNorm && t.activo !== false);
   if (!filasTela.length) return null;
   const candidatas = filasTela.filter((f) => {
     const nombreReal = nombreColorPorCodigo(tablaColores, f.color);
@@ -2870,7 +2873,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                 // la persona puede identificarlo a ojo comparando cantidades.
                 const coloresTelaBusint = dispColorFallback
                   ? (telasBusint || [])
-                      .filter((t) => normalizarTela(t.componente) === normalizarTela(form.tipoTela))
+                      .filter((t) => normalizarTela(t.componente) === normalizarTela(form.tipoTela) && t.activo !== false)
                       .slice()
                       .sort((a, b) => (Number(b.cantidad) || 0) - (Number(a.cantidad) || 0))
                   : [];
