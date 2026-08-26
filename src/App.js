@@ -7587,6 +7587,30 @@ function BusintCatalogoTestView() {
       setCargandoRefTela(false);
     }
   }
+  // (2026-08-26) Diagnóstico para el cruce de "inventario ya existente" en
+  // Programación de Corte: buscar en ApiGen_InventarioBusint todo lo que
+  // haya de una Referencia puntual (ej. C-408), para comparar Pinta/Color
+  // exactos contra lo que espera Atlas.
+  const [buscarRefInv, setBuscarRefInv] = useState("");
+  const [cargandoRefInv, setCargandoRefInv] = useState(false);
+  const [refInvResultado, setRefInvResultado] = useState(null);
+  async function buscarInventarioReferencia() {
+    const ref = buscarRefInv.trim();
+    if (!ref) return;
+    setCargandoRefInv(true);
+    setRefInvResultado(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getInventarioProductoBusintGen");
+      const resp = await llamar();
+      const todas = resp.data?.inventario || [];
+      const filas = todas.filter((f) => f.ref === ref);
+      setRefInvResultado({ filas });
+    } catch (err) {
+      setRefInvResultado({ error: err?.message || "No se pudo consultar el inventario de producto.", filas: [] });
+    } finally {
+      setCargandoRefInv(false);
+    }
+  }
   const [cargandoBarridoTotal, setCargandoBarridoTotal] = useState(false);
   const [barridoTotal, setBarridoTotal] = useState(null);
   // (2026-08-26) Antes el barrido de las 972 tablas de Busint BD solo se
@@ -7911,6 +7935,49 @@ function BusintCatalogoTestView() {
                 {refTelaResultado.detallePorColor.length ? JSON.stringify(refTelaResultado.detallePorColor, null, 2) : "No se encontró esa Referencia en la tabla \"telas - detalle\"."}
               </pre>
             </>
+          )}
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Buscar inventario de producto de una Referencia (ApiGen_InventarioBusint)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Escribe la Referencia EXACTA (ej. C-408) para ver todas sus filas de inventario — Pinta, Color, Talla, Cantidad y Bodega.
+      </div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, maxWidth: 520 }}>
+        <FInput value={buscarRefInv} onChange={setBuscarRefInv} placeholder="Ej: C-408" />
+        <Btn onClick={buscarInventarioReferencia} disabled={cargandoRefInv || !buscarRefInv.trim()}>{cargandoRefInv ? "Buscando..." : "🔍 Buscar inventario"}</Btn>
+      </div>
+      {refInvResultado && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          {refInvResultado.error ? (
+            <div style={{ color: T.coral, fontSize: 13, fontWeight: 600 }}>⚠ {refInvResultado.error}</div>
+          ) : refInvResultado.filas.length === 0 ? (
+            <div style={{ fontSize: 13, color: T.slate }}>No se encontró esa Referencia en ApiGen_InventarioBusint (revisa que esté escrita exactamente igual, con o sin guion).</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${T.border}` }}>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Ref</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Pinta</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Color</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Talla</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px" }}>Cantidad</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Bodega</th>
+                </tr>
+              </thead>
+              <tbody>
+                {refInvResultado.filas.map((f, i) => (
+                  <tr key={i} style={{ borderBottom: `1px solid ${T.border}` }}>
+                    <td style={{ padding: "6px 8px" }}>{f.ref}</td>
+                    <td style={{ padding: "6px 8px", fontWeight: 700 }}>{f.pinta || "—"}</td>
+                    <td style={{ padding: "6px 8px" }}>{f.color || "—"}</td>
+                    <td style={{ padding: "6px 8px" }}>{f.talla || "—"}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.cantidad}</td>
+                    <td style={{ padding: "6px 8px" }}>{f.bodega || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
       )}
