@@ -2644,15 +2644,45 @@ async function obtenerTokenTNS() {
     throw new Error(`TNS Login respondió ${resp.status}`);
   }
 
-  const data = await resp.json().catch(() => ({}));
-  // La forma exacta de la respuesta ("token"? "data.token"?) no queda clara
-  // solo con el swagger — se cubren las variantes más probables, y si
-  // ninguna calza, el log de abajo muestra las llaves reales que devolvió
-  // TNS para poder ajustar esta línea sin tener que adivinar a ciegas.
-  const token = data.token || data.Token || data.data?.token || data.accessToken || null;
+  const textoResp = await resp.text().catch(() => "");
+  let data;
+  try {
+    data = textoResp ? JSON.parse(textoResp) : null;
+  } catch {
+    data = null;
+  }
+
+  // Si TNS devuelve el token como texto plano (sin JSON), se usa tal cual.
+  if (!data && textoResp && textoResp.trim()) {
+    _tnsTokenCache = { token: textoResp.trim().replace(/^"|"$/g, ""), obtenidoEn: ahora };
+    return _tnsTokenCache.token;
+  }
+
+  // La forma exacta de la respuesta no queda clara solo con el swagger —
+  // se busca cualquier campo cuyo nombre contenga "token" hasta 2 niveles
+  // de profundidad (data.token, data.Token, data.data.token,
+  // data.result.accessToken, etc.) en vez de adivinar una sola variante.
+  function buscarToken(obj, profundidad) {
+    if (!obj || typeof obj !== "object" || profundidad > 2) return null;
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v === "string" && v.length > 10 && /token/i.test(k)) return v;
+    }
+    for (const v of Object.values(obj)) {
+      if (v && typeof v === "object") {
+        const encontrado = buscarToken(v, profundidad + 1);
+        if (encontrado) return encontrado;
+      }
+    }
+    return null;
+  }
+
+  const token = buscarToken(data, 0);
   if (!token) {
-    logger.error("TNS Login no devolvió token reconocible", { llavesRecibidas: Object.keys(data || {}) });
-    throw new Error("TNS Login no devolvió un token reconocible — revisa los logs para ver el formato real de la respuesta.");
+    logger.error("TNS Login no devolvió token reconocible", { llavesRecibidas: Object.keys(data || {}), respuesta: textoResp.slice(0, 500) });
+    throw new Error(
+      `TNS respondió pero no se encontró un campo de token reconocible. Llaves recibidas: ${JSON.stringify(Object.keys(data || {}))}. ` +
+      `Respuesta (recortada): ${textoResp.slice(0, 300)}`
+    );
   }
 
   _tnsTokenCache = { token, obtenidoEn: ahora };
@@ -2698,7 +2728,17 @@ exports.probarConexionTNS = onCall(
     memory: "256MiB",
   },
   async () => {
-    await obtenerTokenTNS();
-    return { conectado: true };
+    // onCall solo deja pasar al navegador el mensaje real cuando se lanza un
+    // HttpsError — un Error normal llega al frontend como "INTERNAL" a
+    // secas (por seguridad), y el detalle solo queda en los logs del
+    // servidor. Se envuelve acá para que el botón de la app muestre el
+    // motivo real sin tener que ir a revisar los logs de Firebase.
+    try {
+      await obtenerTokenTNS();
+      return { conectado: true };
+    } catch (err) {
+      logger.error("probarConexionTNS falló", { mensaje: err?.message, stack: err?.stack });
+      throw new HttpsError("internal", err?.message || "Error desconocido al conectar con TNS.");
+    }
   }
 );
