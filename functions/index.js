@@ -1585,6 +1585,44 @@ exports.getMuestraInventarioBusintGen = onCall(
   }
 );
 
+// (2026-08-26) Diseño propuso esto: en vez de (o además de) cruzar contra
+// tela por color — que depende de que Busint tenga bien llenas las tablas
+// de composición ("telas"/"telas - detalle", que no siempre están) — cruzar
+// directo contra "ApiGen_InventarioBusint" (prendas YA producidas/en
+// bodega), que usa exactamente los mismos identificadores que ya tiene
+// Atlas: ref, pinta, color (nombre libre, ej. "VERDE SECO") — sin
+// intermediarios. Es la misma tabla que "getMuestraInventarioBusintGen"
+// exploró (492 filas en la prueba, cabe completa sin paginar). Se usa en
+// Programación de Corte para comparar, por Referencia+Pinta+Color, cuánto
+// ya existe en inventario contra las Capas que se están por programar.
+exports.getInventarioProductoBusintGen = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async () => {
+    let filas;
+    try {
+      filas = await consultarCatalogoBusint("ApiGen_InventarioBusint");
+    } catch (err) {
+      logger.error("Error consultando Busint (getInventarioProductoBusintGen)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar el inventario de producto en Busint: ${err?.message || String(err)}`);
+    }
+    const inventario = filas
+      .map((f) => ({
+        ref: String(f.ref || "").trim(),
+        pinta: String(f.pinta || "").trim(),
+        color: String(f.color || "").trim(),
+        talla: String(f.talla || "").trim(),
+        cantidad: Number(f.cant) || 0,
+        bodega: f.nombreBodega || "",
+      }))
+      .filter((r) => r.ref);
+    return { total: inventario.length, inventario };
+  }
+);
+
 // (2026-08-21) EXPLORATORIO — "ApiGen_PanelControlFlujoOperacional" trae
 // columnas casi idénticas a lo que hoy arma agruparLotes() a mano desde la
 // Hoja1 subida (numLote, numPedido, nombreCliente, referencia, categoria,
