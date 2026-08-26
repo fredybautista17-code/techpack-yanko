@@ -2616,7 +2616,7 @@ async function exportarEstadoCuentaKamilaExcel(movimientos, desglose) {
     const estiloFila = m.tipo === "despacho" ? ESTILO_DATO : ESTILO_ABONO;
     grid.push([
       celda(fmtFechaISO(m.fecha), estiloFila),
-      celda(m.destino, estiloFila),
+      celda(etiquetaDestino(m.destino), estiloFila),
       celda(m.tipo === "despacho" ? `Despacho ${m.detalle}` : m.detalle, estiloFila),
       celda(m.tipo === "despacho" ? m.monto : "", estiloFila, FORMATO_MONEDA),
       celda(m.tipo === "abono" ? m.monto : "", estiloFila, FORMATO_MONEDA),
@@ -2630,8 +2630,8 @@ async function exportarEstadoCuentaKamilaExcel(movimientos, desglose) {
     fila[5] = celda(valor, estilo, FORMATO_MONEDA);
     return fila;
   }
-  grid.push(filaResumen("SALDO VENEZUELA", desglose.saldoVenezuela, ESTILO_SUBTOTAL));
-  grid.push(filaResumen("SALDO DUBO", desglose.saldoDubo, ESTILO_SUBTOTAL));
+  grid.push(filaResumen(`SALDO ${etiquetaDestino("Venezuela").toUpperCase()}`, desglose.saldoVenezuela, ESTILO_SUBTOTAL));
+  grid.push(filaResumen(`SALDO ${etiquetaDestino("Dubo").toUpperCase()}`, desglose.saldoDubo, ESTILO_SUBTOTAL));
   grid.push(filaResumen("SALDO TOTAL — KAMILA GROUP", desglose.saldoTotal, desglose.saldoTotal > 0 ? ESTILO_SALDO_ROJO : ESTILO_SALDO_VERDE));
 
   const ws = XLSX.utils.aoa_to_sheet(grid);
@@ -2722,18 +2722,18 @@ function EstadoCuentaKamilaView({ data }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 20, flexWrap: "wrap", gap: 10 }}>
         <div>
           <div style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>🧾 Estado de Cuenta — KAMILA GROUP</div>
-          <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>Consolidado Venezuela + Dubo (Colombia no se incluye)</div>
+          <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>Consolidado {etiquetaDestino("Venezuela")} + {etiquetaDestino("Dubo")} (Colombia no se incluye)</div>
         </div>
         <Btn onClick={() => exportarEstadoCuentaKamilaExcel(movimientos, { saldoVenezuela: ve.saldo, saldoDubo: du.saldo, saldoTotal: saldo })}>⬇ Descargar Excel</Btn>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 12 }}>
-        <KPI icon="🚚" label="Total Despachado" value={fmtMoney(totalDespachado)} color={C.blue} bg={C.blueBg} sub="Venezuela + Dubo" />
-        <KPI icon="💵" label="Total Abonado" value={fmtMoney(totalAbonado)} color={C.green} bg={C.greenBg} sub="Abonos Venezuela + Yuliana" />
+        <KPI icon="🚚" label="Total Despachado" value={fmtMoney(totalDespachado)} color={C.blue} bg={C.blueBg} sub={`${etiquetaDestino("Venezuela")} + ${etiquetaDestino("Dubo")}`} />
+        <KPI icon="💵" label="Total Abonado" value={fmtMoney(totalAbonado)} color={C.green} bg={C.greenBg} sub={`Abonos ${etiquetaDestino("Venezuela")} + Yuliana`} />
         <KPI icon="⚖️" label="Saldo Total" value={fmtMoney(saldo)} color={saldo > 0 ? C.red : C.green} bg={saldo > 0 ? C.redBg : C.greenBg} />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 24 }}>
-        <KPI icon="🇻🇪" label="Saldo Venezuela" value={fmtMoney(ve.saldo)} color={ve.saldo > 0 ? C.red : C.green} bg={ve.saldo > 0 ? C.redBg : C.greenBg} sub={`Despachado ${fmtMoney(ve.despachado)} · Abonado ${fmtMoney(ve.abonado)}`} />
-        <KPI icon="📦" label="Saldo Dubo" value={fmtMoney(du.saldo)} color={du.saldo > 0 ? C.red : C.green} bg={du.saldo > 0 ? C.redBg : C.greenBg} sub={`Despachado ${fmtMoney(du.despachado)} · Yuliana ${fmtMoney(du.abonado)}`} />
+        <KPI icon="📈" label={`Saldo ${etiquetaDestino("Venezuela")}`} value={fmtMoney(ve.saldo)} color={ve.saldo > 0 ? C.red : C.green} bg={ve.saldo > 0 ? C.redBg : C.greenBg} sub={`Despachado ${fmtMoney(ve.despachado)} · Abonado ${fmtMoney(ve.abonado)}`} />
+        <KPI icon="📦" label={`Saldo ${etiquetaDestino("Dubo")}`} value={fmtMoney(du.saldo)} color={du.saldo > 0 ? C.red : C.green} bg={du.saldo > 0 ? C.redBg : C.greenBg} sub={`Despachado ${fmtMoney(du.despachado)} · Yuliana ${fmtMoney(du.abonado)}`} />
       </div>
       <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
         <div style={{ display: "grid", gridTemplateColumns: "100px 90px 1fr 130px 130px 140px", gap: 8, padding: "10px 16px", background: C.canvas, fontSize: 11, fontWeight: 800, color: C.slate, textTransform: "uppercase", letterSpacing: "0.04em" }}>
@@ -2764,7 +2764,7 @@ function EstadoCuentaKamilaView({ data }) {
                   color: m.destino === "Venezuela" ? C.violet : C.amber,
                 }}
               >
-                {m.destino}
+                {etiquetaDestino(m.destino)}
               </span>
             </div>
             <div>{m.tipo === "despacho" ? `Despacho ${m.detalle}` : m.detalle}</div>
@@ -2791,6 +2791,19 @@ function slugDestino(destino) {
   return String(destino || "Venezuela")
     .normalize("NFD")
     .replace(new RegExp("[\\u0300-\\u036f]", "g"), "");
+}
+// (2026-08-26) El VALOR interno de cada destino sigue siendo "Venezuela" /
+// "Dubo" (así se llaman las colecciones en Firestore y así vive todo el
+// histórico ya guardado — no se puede cambiar sin migrar datos) pero el
+// usuario pidió que la ETIQUETA que se ve en pantalla cambie: "Venezuela"
+// ahora se muestra como "Proyección Reprogramación" y "Dubo" como "Segundas
+// Reprogramación". Esta función centraliza esa traducción para no repetirla
+// por todo el archivo — se usa solo al MOSTRAR texto, nunca para comparar
+// ni para armar nombres de colección.
+function etiquetaDestino(destino) {
+  if (destino === "Venezuela") return "Proyección Reprogramación";
+  if (destino === "Dubo") return "Segundas Reprogramación";
+  return destino;
 }
 export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAccessContabilidad, soloLecturaBodega, onVolver, onLogout }) {
   const [subView, setSubView] = useState("dashboard");
@@ -2936,7 +2949,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
             style={{ marginTop: 8, width: "100%", padding: "7px 10px", borderRadius: 8, border: "1px solid rgba(200,184,162,0.35)", background: "#2A2A45", color: C.white, fontSize: 12, fontWeight: 700, fontFamily: "inherit", outline: "none", cursor: "pointer" }}
           >
             {DESTINOS_BODEGA.map((d) => (
-              <option key={d} value={d} style={{ color: C.ink }}>{d}</option>
+              <option key={d} value={d} style={{ color: C.ink }}>{etiquetaDestino(d)}</option>
             ))}
           </select>
         </div>
@@ -2988,7 +3001,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
           <h1 style={{ margin: "0 0 20px", fontSize: 20, fontWeight: 900, color: C.ink }}>
             {NAV.find((n) => n.id === subView)?.label || ""}
-            {subView !== "estadoCuentaKamila" && <span style={{ fontSize: 13, fontWeight: 700, color: C.slate, marginLeft: 10 }}>· {destino}</span>}
+            {subView !== "estadoCuentaKamila" && <span style={{ fontSize: 13, fontWeight: 700, color: C.slate, marginLeft: 10 }}>· {etiquetaDestino(destino)}</span>}
           </h1>
           {subView === "dashboard" && <DashboardBodegaView despachos={despachos} abonos={abonos} />}
           {subView === "montar" && <MontarDespachoView despachos={despachos} currentUser={currentUser} coleccionDespachos={coleccionDespachos} destino={destino} onGuardado={() => setSubView("dashboard")} />}
