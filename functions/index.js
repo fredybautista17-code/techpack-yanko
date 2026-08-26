@@ -813,24 +813,37 @@ exports.getTelasStockBusintBD = onCall(
       logger.error("Error consultando Busint BD (getTelasStockBusintBD)", { error: String(err) });
       throw new HttpsError("unavailable", `No se pudo consultar el inventario de telas en Busint: ${err?.message || String(err)}`);
     }
+    // (2026-08-26) Confirmado con el usuario, cruzando contra un reporte
+    // propio de Busint para "MARLY" (Ancho 1.6 constante, con Ml y M2 dados
+    // por color): "ICant" en esta tabla viene en M2 (metros cuadrados), NO
+    // en ML (metros lineales) como se había asumido antes. El Ancho de la
+    // tela vive en la columna "Unidad" (a veces repetida en "UnidadT"; ej.
+    // "1,6" o "1.6") — "Dimension" resultó ser un código fijo ("1"), no el
+    // ancho. La conversión correcta es ML = M2 / Ancho.
     const telas = filas
       .filter((f) => String(f.Telas || "").toUpperCase() === "T")
-      .map((f) => ({
-        componente: String(f.Componente || "").trim(),
-        color: String(f.Color || "").trim(),
-        cantidad: Number(f.ICant) || 0,
-        unidad: f.Unidad || "",
-        // (2026-08-26) Campos crudos extra, solo para diagnóstico: el
-        // usuario reportó que "ICant" podría venir en M2 (metros cuadrados)
-        // y no en ML (metros lineales) como se había asumido — se necesita
-        // encontrar qué columna trae el Ancho de la tela para poder
-        // convertir M2 -> ML (ML = M2 / Ancho). "Dimension" y "UnidadT" son
-        // las candidatas más probables según el esquema de la tabla.
-        dimension: f.Dimension ?? "",
-        unidadT: f.UnidadT ?? "",
-        costo: Number(f.Costo) || 0,
-        activo: f.Activo !== false,
-      }))
+      .map((f) => {
+        const anchoTxt = String(f.Unidad ?? f.UnidadT ?? "").trim();
+        const ancho = parseFloat(anchoTxt.replace(",", ".")) || 0;
+        const cantidadM2 = Number(f.ICant) || 0;
+        return {
+          componente: String(f.Componente || "").trim(),
+          color: String(f.Color || "").trim(),
+          // "cantidad" es la que usa el resto de la app para comparar
+          // contra metros lineales (largoTrazo × capas) — ya convertida.
+          // Si no hay ancho registrado para esa fila, queda en null (mejor
+          // no mostrar un número que no se puede convertir, a mostrarlo
+          // en la unidad equivocada).
+          cantidad: ancho > 0 ? cantidadM2 / ancho : null,
+          cantidadM2,
+          ancho,
+          unidad: f.Unidad || "",
+          dimension: f.Dimension ?? "",
+          unidadT: f.UnidadT ?? "",
+          costo: Number(f.Costo) || 0,
+          activo: f.Activo !== false,
+        };
+      })
       .filter((t) => t.componente);
     return { total: telas.length, telas };
   }

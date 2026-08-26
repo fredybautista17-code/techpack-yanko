@@ -125,7 +125,14 @@ function stockTelaBusint(telasBusint, nombreTela) {
   if (!nombreNorm || !Array.isArray(telasBusint) || !telasBusint.length) return null;
   const filas = telasBusint.filter((t) => normalizarTela(t.componente) === nombreNorm);
   if (!filas.length) return null;
-  return filas.reduce((s, f) => s + (Number(f.cantidad) || 0), 0);
+  // (2026-08-26) "cantidad" ya viene convertida a metros lineales desde el
+  // backend (ML = M2 / Ancho) — si para una fila puntual no hay ancho
+  // registrado, "cantidad" queda en null y se excluye de la suma (mejor
+  // subestimar el total real a inventar metros que no se sabe si son
+  // correctos). Si NINGUNA fila se pudo convertir, se devuelve null.
+  const convertibles = filas.filter((f) => f.cantidad !== null && f.cantidad !== undefined);
+  if (!convertibles.length) return null;
+  return convertibles.reduce((s, f) => s + (Number(f.cantidad) || 0), 0);
 }
 // (2026-08-26) Versión exacta POR COLOR — cruza "telas" (nombre de tela por
 // slot, por Referencia) + "telas - detalle" (código de color exacto de cada
@@ -160,10 +167,20 @@ function disponibilidadTelaPorColor(composicionTelas, telasBusint, ref, pinta, n
   const filaStock = (telasBusint || []).find(
     (t) => normalizarTela(t.componente) === nombreNorm && String(t.color || "").trim() === colorInfo.color
   );
+  if (!filaStock) {
+    return { motivo: "color_no_en_inventario", color: colorInfo.color };
+  }
+  // (2026-08-26) "cantidad" ya viene en metros lineales (convertida desde
+  // M2 con el Ancho de la tela). Si esa fila puntual no tenía ancho
+  // registrado en Busint, "cantidad" queda en null — se reporta aparte
+  // (no es que falte el color, es que no se pudo convertir la unidad).
+  if (filaStock.cantidad === null || filaStock.cantidad === undefined) {
+    return { motivo: "sin_ancho", color: colorInfo.color, cantidadM2: filaStock.cantidadM2 };
+  }
   return {
     motivo: "ok",
     color: colorInfo.color,
-    cantidad: filaStock ? Number(filaStock.cantidad) || 0 : null,
+    cantidad: Number(filaStock.cantidad) || 0,
   };
 }
 // Recuerda, en el navegador de quien esté usando el equipo (localStorage,
@@ -2926,9 +2943,13 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                                   </div>
                                 )}
                               </>
-                            ) : dispColor.cantidad === null ? (
+                            ) : dispColor.motivo === "color_no_en_inventario" ? (
                               <span style={{ color: C.slate }}>
                                 Color de tela: <b>{dispColor.color}</b> — no se encontró esa tela+color en el inventario de Busint.
+                              </span>
+                            ) : dispColor.motivo === "sin_ancho" ? (
+                              <span style={{ color: C.slate }}>
+                                Color de tela: <b>{dispColor.color}</b> — hay {dispColor.cantidadM2 != null ? `${dispColor.cantidadM2.toLocaleString("es-CO")} m²` : "existencia"} registrada en Busint, pero esa fila no tiene el Ancho de la tela cargado, así que no se puede convertir a metros lineales.
                               </span>
                             ) : (
                               <span style={{ fontWeight: 700, color: faltaColor ? C.red : C.green }}>
