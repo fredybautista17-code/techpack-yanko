@@ -790,6 +790,43 @@ exports.getResumenTablaBusintBD = onCall(
     };
   }
 );
+// (2026-08-26) Diseño pidió esto: cuando programan un corte no saben si hay
+// tela disponible en bodega — esto trae el inventario REAL de tela desde
+// Busint BD, tabla "estandar componentes prod" (confirmado a mano con el
+// usuario: cada fila es un componente+color, con "Telas"="T" para tela vs
+// "I" para insumo, y "ICant" es la cantidad que hay hoy en bodega — se
+// verificó con un ejemplo real: ICant=24 en un cordón cuadraba con
+// Itotal=2569.92 a Iprom=107.08 costo/unidad). Se usa desde "Programación
+// de Corte" para sugerir el nombre real de la tela (antes era texto libre)
+// y mostrar cuánta hay disponible frente a lo que el trazo va a consumir.
+exports.getTelasStockBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async () => {
+    let filas;
+    try {
+      filas = await consultarTablaBusintBDCompleta("estandar componentes prod");
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getTelasStockBusintBD)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar el inventario de telas en Busint: ${err?.message || String(err)}`);
+    }
+    const telas = filas
+      .filter((f) => String(f.Telas || "").toUpperCase() === "T")
+      .map((f) => ({
+        componente: String(f.Componente || "").trim(),
+        color: String(f.Color || "").trim(),
+        cantidad: Number(f.ICant) || 0,
+        unidad: f.Unidad || "",
+        costo: Number(f.Costo) || 0,
+        activo: f.Activo !== false,
+      }))
+      .filter((t) => t.componente);
+    return { total: telas.length, telas };
+  }
+);
 // Convierte el formato de fecha que usa la API BD de Busint ({isValidDateTime,
 // year, month, day, ...}) a texto ISO YYYY-MM-DD, o null si no es válida.
 function fechaBDaISO(obj) {
