@@ -2658,6 +2658,21 @@ async function obtenerTokenTNS() {
     return _tnsTokenCache.token;
   }
 
+  // Forma real confirmada en vivo (25/08/2026):
+  // { status: true, message: "", data: "<JWT como texto plano>" } — el
+  // swagger no lo documentaba, el token viene en "data", no en un campo
+  // llamado "token". Si status viene en false, TNS ya manda el motivo
+  // (usuario/clave/código de empresa incorrectos, etc.) en "message".
+  if (data && typeof data === "object" && "status" in data) {
+    if (data.status === false) {
+      throw new Error(`TNS rechazó el login: ${data.message || "sin mensaje del servidor"}`);
+    }
+    if (data.status === true && typeof data.data === "string" && data.data.length > 10) {
+      _tnsTokenCache = { token: data.data, obtenidoEn: ahora };
+      return _tnsTokenCache.token;
+    }
+  }
+
   // La forma exacta de la respuesta no queda clara solo con el swagger —
   // se busca cualquier campo cuyo nombre contenga "token" hasta 2 niveles
   // de profundidad (data.token, data.Token, data.data.token,
