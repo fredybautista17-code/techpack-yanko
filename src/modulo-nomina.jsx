@@ -2339,6 +2339,10 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   // un admin en Administrador General → Usuarios.
   const areaLider = !currentUser?.isAdmin && currentUser?.areaNomina ? currentUser.areaNomina : null;
   const [subView, setSubView] = useState(() => (areaLider ? "produccion" : "dashboard"));
+  // Qué grupos del menú están desplegados — si un grupo todavía no se ha
+  // tocado (no está en este objeto), se abre solo si contiene el subView
+  // activo; una vez el usuario le da clic, queda como él lo dejó.
+  const [gruposAbiertos, setGruposAbiertos] = useState({});
   const [trabajadores, setTrabajadores] = useState([]);
   const [precios, setPrecios] = useState([]);
   const [produccion, setProduccion] = useState([]);
@@ -2364,6 +2368,10 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
     return () => unsubs.forEach((u) => u());
   }, []);
   const isAdmin = !!currentUser?.isAdmin;
+  // Menú del admin reacomodado en grupos desplegables (25/08/2026, a pedido
+  // del usuario) — pensado para que más adelante, cuando se manejen roles,
+  // sea fácil darle a alguien acceso a un grupo completo en vez de ítem por
+  // ítem. El de área líder (Anny/Sarai) queda igual, plano, sin grupos.
   const NAV = areaLider
     ? [
         { id: "produccion", icon: "🧵", label: "Registrar Producción" },
@@ -2372,18 +2380,30 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
       ]
     : [
         { id: "dashboard", icon: "◉", label: "Inicio" },
-        { id: "produccion", icon: "🧵", label: "Registrar Producción" },
-        { id: "horas", icon: "🕐", label: "Registrar Horas" },
-        { id: "resumen", icon: "💰", label: "Cierre de Quincena" },
-        { id: "trabajadores", icon: "👷", label: "Trabajadores" },
-        { id: "precios", icon: "⚙️", label: "Procesos" },
-        { id: "costos_teorico", icon: "📐", label: "Costos Teóricos" },
-        { id: "tns", icon: "🔌", label: "Conexión TNS" },
-        { id: "novedades_tns", icon: "🧾", label: "Novedades TNS" },
-        { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
-        { id: "asistencia", icon: "📊", label: "Reporte de Asistencia" },
-        { id: "fiscal_destajo", icon: "💼", label: "Nómina Fiscal Destajo" },
+        { group: "Nómina Producción", icon: "🧵", items: [
+            { id: "produccion", icon: "🧵", label: "Registrar Producción" },
+            { id: "horas", icon: "🕐", label: "Registrar Horas" },
+          ] },
+        { group: "Administrativo", icon: "🗂️", items: [
+            { id: "costos_teorico", icon: "📐", label: "Costos Teóricos" },
+            { id: "tns", icon: "🔌", label: "Conexión TNS" },
+            { id: "novedades_tns", icon: "🧾", label: "Novedades TNS" },
+            { id: "precios", icon: "⚙️", label: "Procesos" },
+            { id: "trabajadores", icon: "👷", label: "Trabajadores" },
+          ] },
+        { group: "Novedades", icon: "📣", items: [
+            { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
+            { id: "asistencia", icon: "📊", label: "Reporte de Asistencia" },
+          ] },
+        { group: "Reporte de Nómina", icon: "📊", items: [
+            { id: "resumen", icon: "💰", label: "Cierre de Quincena" },
+            { id: "fiscal_destajo", icon: "💼", label: "Nómina Fiscal Destajo" },
+          ] },
       ];
+  // Versión "aplanada" del menú (sin grupos) — sirve para buscar el label
+  // del subView activo para el título de la página, sin importar si ese
+  // ítem está suelto o adentro de un grupo.
+  const NAV_PLANO = NAV.flatMap((item) => (item.items ? item.items : [item]));
   // Con líder de área, todo lo que ve/registra queda limitado a su propia
   // gente — así Anny no ve ni toca la producción de Sarai y viceversa.
   const trabajadoresVisibles = areaLider ? trabajadores.filter((t) => (t.area || "Sin asignar") === areaLider) : trabajadores;
@@ -2471,6 +2491,34 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
         </div>
         <nav style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
           {NAV.map((item) => {
+            if (item.items) {
+              const abierto = gruposAbiertos[item.group] ?? item.items.some((sub) => sub.id === subView);
+              return (
+                <div key={item.group}>
+                  <button
+                    onClick={() => setGruposAbiertos((g) => ({ ...g, [item.group]: !abierto }))}
+                    style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: "transparent", color: "#8888AA", fontWeight: 700, fontSize: 13, textAlign: "left" }}
+                  >
+                    <span style={{ fontSize: 14 }}>{item.icon}</span>
+                    <span style={{ flex: 1 }}>{item.group}</span>
+                    <span style={{ fontSize: 11 }}>{abierto ? "▾" : "▸"}</span>
+                  </button>
+                  {abierto && item.items.map((sub) => {
+                    const active = subView === sub.id;
+                    return (
+                      <button
+                        key={sub.id}
+                        onClick={() => setSubView(sub.id)}
+                        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px 9px 26px", border: "none", borderRadius: 8, cursor: "pointer", background: active ? "#C8B8A2" : "transparent", color: active ? C.ink : "#8888AA", fontWeight: active ? 800 : 500, fontSize: 13, textAlign: "left" }}
+                      >
+                        <span style={{ fontSize: 14 }}>{sub.icon}</span>
+                        <span style={{ flex: 1 }}>{sub.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            }
             const active = subView === item.id;
             return (
               <button
@@ -2504,7 +2552,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
       <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
           <h1 style={{ margin: "0 0 20px", fontSize: 20, fontWeight: 900, color: C.ink }}>
-            {NAV.find((n) => n.id === subView)?.label || ""}
+            {NAV_PLANO.find((n) => n.id === subView)?.label || ""}
           </h1>
           {subView === "dashboard" && !areaLider && <DashboardNominaView trabajadores={trabajadores} precios={precios} produccion={produccion} horas={horas} />}
           {subView === "produccion" && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} costosTeoricoProceso={costosTeoricoProceso} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
