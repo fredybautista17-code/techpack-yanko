@@ -2730,6 +2730,29 @@ async function llamarTNS(path, { method = "GET", body } = {}) {
   return data;
 }
 
+// Trae el catálogo de Centro de Costo de TNS — primer catálogo que se
+// consulta en vivo para empezar a cruzar los códigos reales contra las
+// ÁREAS de BASE DE DATOS PERSONAL. No se conoce de antemano la forma exacta
+// de la respuesta (el swagger no la documenta bien para este endpoint en
+// particular), así que se devuelve tal cual TNS la mande y se interpreta en
+// el frontend.
+exports.listarCentroCostoTNS = onCall(
+  {
+    secrets: [TNS_CODIGO_EMPRESA, TNS_USUARIO, TNS_CONTRASENIA],
+    timeoutSeconds: 30,
+    memory: "256MiB",
+  },
+  async () => {
+    try {
+      const data = await llamarTNS("/v2/tablas/CentroCosto/Listar", { method: "GET" });
+      return { ok: true, data };
+    } catch (err) {
+      logger.error("listarCentroCostoTNS falló", { mensaje: err?.message, stack: err?.stack });
+      throw new HttpsError("internal", err?.message || "Error desconocido al consultar Centro de Costo en TNS.");
+    }
+  }
+);
+
 // Botón de prueba desde el aplicativo: confirma que los 3 secretos quedaron
 // bien configurados SIN exponer el token al navegador — solo devuelve
 // { conectado: true } o el motivo del error. Pensado para probar la conexión

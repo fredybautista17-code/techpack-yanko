@@ -693,8 +693,28 @@ function TNSConexionView() {
       setEstado({ error: err?.message || "No se pudo conectar." });
     }
   }
+
+  // Consulta de catálogos de TNS — se arranca con Centro de Costo (hay un
+  // GET /v2/tablas/CentroCosto/Listar) para ir cruzando los códigos reales
+  // contra las ÁREAS del archivo BASE DE DATOS PERSONAL. No se conoce de
+  // antemano la forma exacta de la respuesta, así que se muestra como tabla
+  // si es una lista de objetos, o como JSON crudo si no calza con eso.
+  const [centroCosto, setCentroCosto] = useState(null); // null | "cargando" | { filas } | { error }
+  async function consultarCentroCosto() {
+    setCentroCosto("cargando");
+    try {
+      const llamar = httpsCallable(functionsClient, "listarCentroCostoTNS");
+      const resp = await llamar({});
+      const data = resp.data?.data;
+      const filas = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : null;
+      setCentroCosto({ filas, crudo: data });
+    } catch (err) {
+      setCentroCosto({ error: err?.message || "No se pudo consultar." });
+    }
+  }
+
   return (
-    <div style={{ maxWidth: 640 }}>
+    <div style={{ maxWidth: 900 }}>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
         Confirma que TNS acepta las credenciales configuradas en el servidor (Firebase → Secret Manager). Esto no trae ni envía datos de nómina todavía — es solo la prueba de conexión.
       </div>
@@ -714,6 +734,36 @@ function TNSConexionView() {
           </div>
         </div>
       )}
+
+      <div style={{ marginTop: 32, paddingTop: 24, borderTop: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: C.ink, marginBottom: 8 }}>Catálogo: Centro de Costo</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
+          Trae en vivo los centros de costo que ya existen en TNS, para cruzarlos contra las ÁREAS de tu archivo de personal.
+        </div>
+        <Btn onClick={consultarCentroCosto} disabled={centroCosto === "cargando"}>
+          {centroCosto === "cargando" ? "Consultando..." : "📋 Consultar Centro de Costo"}
+        </Btn>
+        {centroCosto && typeof centroCosto === "object" && centroCosto.error && (
+          <div style={{ marginTop: 16, padding: "12px 16px", background: C.redBg, borderRadius: 8, color: C.red, fontWeight: 700, fontSize: 13 }}>
+            ❌ {centroCosto.error}
+          </div>
+        )}
+        {centroCosto && typeof centroCosto === "object" && !centroCosto.error && (
+          <div style={{ marginTop: 16 }}>
+            {Array.isArray(centroCosto.filas) && centroCosto.filas.length > 0 ? (
+              <Tabla
+                vacio="Sin centros de costo."
+                columnas={Object.keys(centroCosto.filas[0]).map((k) => ({ key: k, label: k }))}
+                filas={centroCosto.filas}
+              />
+            ) : (
+              <pre style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: 14, fontSize: 11, maxHeight: 400, overflow: "auto", whiteSpace: "pre-wrap" }}>
+                {JSON.stringify(centroCosto.crudo, null, 2)}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
