@@ -2784,6 +2784,13 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                   : null;
                 const dispColorOk = dispColor && dispColor.motivo === "ok" && dispColor.cantidad !== null;
                 const faltaColor = dispColorOk && calc.metrosColor > dispColor.cantidad;
+                // Cuando no se puede saber el color exacto (falta detalle en
+                // Busint), caemos de respaldo al total de la tela por
+                // nombre (todos los colores juntos, ya calculado arriba
+                // como "stockTela") — no es tan preciso, pero al menos da
+                // un número real en vez de dejar la pregunta sin responder.
+                const dispColorFallback = form.tipoTela.trim() && dispColor && dispColor.motivo !== "ok" && dispColor.motivo !== "sin_tela_escrita" && stockTela !== null;
+                const faltaColorFallback = dispColorFallback && calc.metrosColor > 0 && calc.metrosColor > stockTela;
                 return (
                   <div
                     key={c.id}
@@ -2826,14 +2833,21 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                       </div>
                       <div style={{ fontSize: 12, color: C.slate, display: "flex", alignItems: "center", gap: 5 }}>
                         {calc.metrosColor > 0 ? `${calc.metrosColor.toLocaleString("es-CO")} m` : "—"}
-                        {dispColorOk && (
+                        {dispColorOk ? (
                           <span
                             title={`Tela color ${dispColor.color}: ${dispColor.cantidad.toLocaleString("es-CO")} m disponibles en Busint`}
                             style={{ color: faltaColor ? C.red : C.green, fontSize: 13 }}
                           >
                             {faltaColor ? "⚠" : "✓"}
                           </span>
-                        )}
+                        ) : dispColorFallback ? (
+                          <span
+                            title={`No se pudo confirmar el color exacto. Total de "${form.tipoTela}" (todos los colores) en Busint: ${stockTela.toLocaleString("es-CO")} m`}
+                            style={{ color: faltaColorFallback ? C.red : C.amber, fontSize: 13 }}
+                          >
+                            {faltaColorFallback ? "⚠" : "~"}
+                          </span>
+                        ) : null}
                       </div>
                       <div style={{ fontSize: 12, color: C.slate }}>
                         Calc: <b style={{ color: C.ink }}>{hayDatos ? fmtNum(calc.prendasCalculadas) : "—"}</b> / Real: <b style={{ color: C.ink }}>{fmtNum(calc.cantidadReal)}</b>
@@ -2856,13 +2870,29 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                                 "{form.tipoTela}" no coincide con la tela que Busint tiene para {grupo.ref}: {dispColor.telasDeEstaReferencia.join(", ") || "(ninguna)"}. Revisa que el nombre esté escrito igual.
                               </span>
                             ) : dispColor.motivo === "sin_detalle_color" ? (
-                              <span style={{ color: C.slate }}>
-                                {grupo.ref} tiene "{form.tipoTela}" registrada, pero Busint no tiene el detalle de color por pinta para esta referencia (tabla "telas - detalle" vacía) — no es un error, falta ese dato allá.
-                              </span>
+                              <>
+                                <span style={{ color: C.slate }}>
+                                  {grupo.ref} tiene "{form.tipoTela}" registrada, pero Busint no tiene el detalle de color por pinta para esta referencia (tabla "telas - detalle" vacía) — no es un error, falta ese dato allá.
+                                </span>
+                                {dispColorFallback && (
+                                  <div style={{ marginTop: 6, fontWeight: 700, color: faltaColorFallback ? C.red : C.amber }}>
+                                    {faltaColorFallback ? "⚠" : "~"} Sin poder confirmar el color exacto: en total hay {stockTela.toLocaleString("es-CO")} m de "{form.tipoTela}" en Busint (todos los colores juntos)
+                                    {calc.metrosColor > 0 ? `, y este color necesita ${calc.metrosColor.toLocaleString("es-CO")} m` : ""}.
+                                  </div>
+                                )}
+                              </>
                             ) : dispColor.motivo === "slot_sin_color" ? (
-                              <span style={{ color: C.slate }}>
-                                {grupo.ref} tiene detalle de color registrado, pero no para {pintaColor ? `la pinta "${pintaColor}"` : "esta pinta"} específicamente.
-                              </span>
+                              <>
+                                <span style={{ color: C.slate }}>
+                                  {grupo.ref} tiene detalle de color registrado, pero no para {pintaColor ? `la pinta "${pintaColor}"` : "esta pinta"} específicamente.
+                                </span>
+                                {dispColorFallback && (
+                                  <div style={{ marginTop: 6, fontWeight: 700, color: faltaColorFallback ? C.red : C.amber }}>
+                                    {faltaColorFallback ? "⚠" : "~"} Sin poder confirmar el color exacto: en total hay {stockTela.toLocaleString("es-CO")} m de "{form.tipoTela}" en Busint (todos los colores juntos)
+                                    {calc.metrosColor > 0 ? `, y este color necesita ${calc.metrosColor.toLocaleString("es-CO")} m` : ""}.
+                                  </div>
+                                )}
+                              </>
                             ) : dispColor.cantidad === null ? (
                               <span style={{ color: C.slate }}>
                                 Color de tela: <b>{dispColor.color}</b> — no se encontró esa tela+color en el inventario de Busint.
