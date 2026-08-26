@@ -930,6 +930,38 @@ exports.getComposicionTelasBusintBD = onCall(
     };
   }
 );
+// (2026-08-26) Tabla "tabla colores": traduce el código corto de color (ej.
+// "004") que usan "estandar componentes prod" y "telas - detalle" al nombre
+// real (ej. "BLANCO") — encontrada con un Barrido Total pedido por el
+// usuario para poder responder "¿de qué color es el código 004?". Se usa
+// para mostrar el nombre junto al código en vez de solo el número, y para
+// intentar identificar el color exacto por NOMBRE cuando no hay detalle de
+// color por Referencia+Pinta (ver disponibilidadTelaPorColor en el
+// frontend).
+exports.getTablaColoresBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 120,
+    memory: "256MiB",
+  },
+  async () => {
+    let filas;
+    try {
+      filas = await consultarTablaBusintBDCompleta("tabla colores");
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getTablaColoresBusintBD)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar la tabla de colores en Busint: ${err?.message || String(err)}`);
+    }
+    const colores = filas
+      .map((f) => ({
+        codigo: String(f.Codcolor || "").trim(),
+        nombre: String(f.Colores || "").trim(),
+        activo: f.Activo !== false,
+      }))
+      .filter((c) => c.codigo);
+    return { total: colores.length, colores };
+  }
+);
 // Convierte el formato de fecha que usa la API BD de Busint ({isValidDateTime,
 // year, month, day, ...}) a texto ISO YYYY-MM-DD, o null si no es válida.
 function fechaBDaISO(obj) {
