@@ -288,6 +288,23 @@ const TNS_CODIGOS_CONOCIDOS = [
 function normalizarCedula(v) {
   return String(v || "").trim().split("-")[0].replace(/\D/g, "").replace(/^0+/, "") || "";
 }
+// Clasificación de nómina (BASE DE DATOS PERSONAL COPIA FINAL, 25/08/2026):
+// Fiscal = nómina completa en TNS (seg. social + parafiscales). Fiscal
+// Destajo = sueldo fijo como Fiscal pero SIN seguridad social, SÍ
+// parafiscales — se hospeda en Atlas, no en TNS. Destajo = pago por
+// proceso/producción (ya existe en Registrar Producción). Prestación de
+// Servicios = fuera de nómina.
+const TIPOS_NOMINA = ["Fiscal", "Fiscal Destajo", "Destajo", "Prestación de Servicios"];
+// Los 5 de "Fiscal Destajo" identificados en BASE DE DATOS PERSONAL COPIA
+// FINAL (todos EMPRESA=YANKO) — botón de abajo los crea/actualiza en
+// Trabajadores de un solo clic, con su sueldo y auxilio real del archivo.
+const FISCAL_DESTAJO_CONOCIDOS = [
+  { cedula: "1090412868", nombre: "ERIKA JOHANNA MEZA MELO", area: "ADMINISTRATIVO", sueldo: 2000000, auxilioTransporte: 249095 },
+  { cedula: "1094350122", nombre: "MARIA FERNANDA PAEZ MOJICA", area: "ADMINISTRATIVO", sueldo: 2200000, auxilioTransporte: 249095 },
+  { cedula: "1005029795", nombre: "JAIRO RUBEN CAPACHO RUEDAS", area: "CORTE", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1090514287", nombre: "ANDRES FELIPE BECERRA RINCON", area: "CORTE", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "PPT 5021799", nombre: "JAIRO DAVID ANDRADE ANDUEZA", area: "CORTE", sueldo: 1750905, auxilioTransporte: 249095 },
+];
 function TrabajadorModal({ trabajador, onSave, onClose }) {
   const [form, setForm] = useState({
     nombre: trabajador?.nombre || "",
@@ -296,11 +313,28 @@ function TrabajadorModal({ trabajador, onSave, onClose }) {
     activo: trabajador?.activo ?? true,
     area: trabajador?.area || "Sin asignar",
     tnsCodigo: trabajador?.tnsCodigo || "",
+    tipoNomina: trabajador?.tipoNomina || "",
+    sueldo: trabajador?.sueldo ?? "",
+    auxilioTransporte: trabajador?.auxilioTransporte ?? "",
+    fechaIngreso: trabajador?.fechaIngreso || "",
+    cesantiasAcumuladas: trabajador?.cesantiasAcumuladas ?? "",
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function guardar() {
     if (!form.nombre.trim()) return;
-    onSave({ nombre: form.nombre.trim(), cedula: form.cedula.trim(), tarifaHora: Number(form.tarifaHora) || 0, activo: !!form.activo, area: form.area || "Sin asignar", tnsCodigo: form.tnsCodigo.trim() });
+    onSave({
+      nombre: form.nombre.trim(),
+      cedula: form.cedula.trim(),
+      tarifaHora: Number(form.tarifaHora) || 0,
+      activo: !!form.activo,
+      area: form.area || "Sin asignar",
+      tnsCodigo: form.tnsCodigo.trim(),
+      tipoNomina: form.tipoNomina || "",
+      sueldo: Number(form.sueldo) || 0,
+      auxilioTransporte: Number(form.auxilioTransporte) || 0,
+      fechaIngreso: form.fechaIngreso || "",
+      cesantiasAcumuladas: Number(form.cesantiasAcumuladas) || 0,
+    });
     onClose();
   }
   return (
@@ -308,6 +342,22 @@ function TrabajadorModal({ trabajador, onSave, onClose }) {
       <Field label="Nombre"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Carlos Javier González" /></Field>
       <Field label="Cédula"><FInput value={form.cedula} onChange={set("cedula")} placeholder="Ej: 1004802413" /></Field>
       <Field label="Área"><FSel value={form.area} onChange={set("area")} options={AREAS_NOMINA} placeholder="Sin asignar" /></Field>
+      <Field label="Tipo de Nómina">
+        <FSel value={form.tipoNomina} onChange={set("tipoNomina")} options={TIPOS_NOMINA} placeholder="Sin clasificar" />
+      </Field>
+      {form.tipoNomina === "Fiscal Destajo" && (
+        <>
+          <Field label="Sueldo mensual fijo"><FInput type="number" value={form.sueldo} onChange={set("sueldo")} placeholder="Ej: 1750905" /></Field>
+          <Field label="Auxilio de transporte mensual"><FInput type="number" value={form.auxilioTransporte} onChange={set("auxilioTransporte")} placeholder="Ej: 249095" /></Field>
+          <Field label="Fecha de ingreso (para el acumulado de parafiscales)"><FInput type="date" value={form.fechaIngreso} onChange={set("fechaIngreso")} /></Field>
+          <Field label="Cesantías ya acumuladas antes de empezar en Atlas (opcional)">
+            <FInput type="number" value={form.cesantiasAcumuladas} onChange={set("cesantiasAcumuladas")} placeholder="0 si arranca de cero" />
+          </Field>
+          <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+            Si ya sabes cuánto lleva acumulado en cesantías antes de septiembre, ponlo acá para que los intereses se calculen bien desde el arranque. Si no lo sabes, déjalo en 0 y ajústalo cuando lo tengas.
+          </div>
+        </>
+      )}
       <Field label="Tarifa por hora (para tareas sueltas)"><FInput type="number" value={form.tarifaHora} onChange={set("tarifaHora")} /></Field>
       <Field label="Código TNS (si ya tiene contrato creado en TNS)">
         <FInput value={form.tnsCodigo} onChange={set("tnsCodigo")} placeholder="Ej: 1004866225" />
@@ -353,6 +403,36 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete }) {
     }
     setAutoResultado(actualizados);
   }
+  // Crea o actualiza (por cédula) a los 5 trabajadores de "Fiscal Destajo"
+  // conocidos del archivo BASE DE DATOS PERSONAL COPIA FINAL — deja listo el
+  // catálogo base para la Nómina Fiscal Destajo sin escribirlos a mano.
+  const [fdResultado, setFdResultado] = useState(null);
+  async function cargarFiscalDestajoConocidos() {
+    let creados = 0, actualizados = 0;
+    for (const p of FISCAL_DESTAJO_CONOCIDOS) {
+      const ced = normalizarCedula(p.cedula);
+      const existente = trabajadores.find((t) => normalizarCedula(t.cedula) === ced);
+      const datos = {
+        nombre: existente?.nombre || p.nombre,
+        cedula: existente?.cedula || p.cedula,
+        tarifaHora: existente?.tarifaHora || 0,
+        activo: existente?.activo ?? true,
+        area: existente?.area || "Sin asignar",
+        tnsCodigo: existente?.tnsCodigo || "",
+        tipoNomina: "Fiscal Destajo",
+        sueldo: p.sueldo,
+        auxilioTransporte: p.auxilioTransporte,
+      };
+      if (existente) {
+        await onSave({ id: existente.id, ...datos });
+        actualizados++;
+      } else {
+        await onSave({ id: uid(), ...datos });
+        creados++;
+      }
+    }
+    setFdResultado({ creados, actualizados });
+  }
   return (
     <div>
       {modal && (
@@ -372,10 +452,12 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete }) {
         </Modal>
       )}
       {isAdmin && (
-        <div style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center" }}>
+        <div style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <Btn onClick={() => setModal("nuevo")}>+ Nuevo Trabajador</Btn>
           <Btn variant="secondary" onClick={autocompletarCodigosTNS}>🔄 Autocompletar Código TNS (13 conocidos)</Btn>
           {autoResultado !== null && <span style={{ fontSize: 12, color: C.slate }}>{autoResultado} trabajador(es) actualizado(s).</span>}
+          <Btn variant="secondary" onClick={cargarFiscalDestajoConocidos}>💼 Cargar Fiscal Destajo (5 conocidos)</Btn>
+          {fdResultado !== null && <span style={{ fontSize: 12, color: C.slate }}>{fdResultado.creados} creado(s), {fdResultado.actualizados} actualizado(s).</span>}
         </div>
       )}
       <Tabla
@@ -384,6 +466,12 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete }) {
           { key: "nombre", label: "Nombre" },
           { key: "cedula", label: "Cédula", render: (f) => f.cedula || "—" },
           { key: "area", label: "Área", render: (f) => f.area || "Sin asignar" },
+          { key: "tipoNomina", label: "Tipo Nómina", render: (f) => f.tipoNomina ? (
+            <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: f.tipoNomina === "Fiscal Destajo" ? C.violetBg : C.blueBg, color: f.tipoNomina === "Fiscal Destajo" ? C.violet : C.blue }}>
+              {f.tipoNomina}
+            </span>
+          ) : <span style={{ color: C.slate }}>—</span> },
+          { key: "sueldo", label: "Sueldo", align: "right", render: (f) => f.sueldo ? fmtMoney(f.sueldo) : "—" },
           { key: "tarifaHora", label: "Tarifa/Hora", align: "right", render: (f) => fmtMoney(f.tarifaHora) },
           { key: "tnsCodigo", label: "Código TNS", render: (f) => f.tnsCodigo ? <span style={{ color: C.green, fontWeight: 700 }}>{f.tnsCodigo}</span> : <span style={{ color: C.slate }}>—</span> },
           { key: "activo", label: "Estado", render: (f) => (
@@ -1293,6 +1381,40 @@ function ReporteAsistenciaView({ ausencias, trabajadores }) {
     }
   }
 
+  // Guarda en Firestore los días sin justificar de este reporte — sin esto,
+  // el resultado solo vive en la pantalla mientras está abierta. Con esto
+  // guardado, la Nómina Fiscal Destajo puede leerlos solos (cruzando por
+  // nombre) para descontar el día sin que nadie tenga que contarlos a mano.
+  const [guardandoFaltas, setGuardandoFaltas] = useState(false);
+  const [faltasGuardadas, setFaltasGuardadas] = useState(null);
+  async function guardarFaltasEnAtlas() {
+    if (!reporte) return;
+    setGuardandoFaltas(true);
+    try {
+      const batch = writeBatch(db);
+      let n = 0;
+      for (const f of reporte.filas) {
+        const nombreNorm = normalizarNombreHuellero(f.nombre);
+        for (const d of f.detalle) {
+          if (d.motivo) continue; // solo se guardan los SIN justificar
+          const id = `${nombreNorm}__${d.fecha}`;
+          batch.set(doc(db, "nomina_faltas_sin_justificar", id), {
+            nombre: f.nombre,
+            nombreNorm,
+            fecha: d.fecha,
+            origen: "huellero",
+            cargadoEn: new Date().toISOString(),
+          });
+          n++;
+        }
+      }
+      await batch.commit();
+      setFaltasGuardadas(n);
+    } finally {
+      setGuardandoFaltas(false);
+    }
+  }
+
   const filasMostradas = reporte ? reporte.filas.filter((f) => !soloConFaltas || f.sinJustificar > 0).sort((a, b) => b.sinJustificar - a.sinJustificar) : [];
   const totalSinJustificar = reporte ? reporte.filas.reduce((s, f) => s + f.sinJustificar, 0) : 0;
   const personasConFaltas = reporte ? reporte.filas.filter((f) => f.sinJustificar > 0).length : 0;
@@ -1324,6 +1446,17 @@ function ReporteAsistenciaView({ ausencias, trabajadores }) {
             <KPI icon="📅" label="Período" value={`${reporte.desde || "?"} — ${reporte.hasta || "?"}`} color={C.blue} bg={C.blueBg} />
             <KPI icon="🚫" label="Días sin justificar" value={fmtNum(totalSinJustificar)} color={C.red} bg={C.redBg} />
             <KPI icon="🧑" label="Personas con alguna falta" value={fmtNum(personasConFaltas)} color={C.amber} bg={C.amberBg || C.canvas} />
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <Btn onClick={guardarFaltasEnAtlas} disabled={guardandoFaltas}>
+              {guardandoFaltas ? "Guardando..." : "💾 Guardar días sin justificar en Atlas"}
+            </Btn>
+            {faltasGuardadas !== null && (
+              <span style={{ marginLeft: 10, fontSize: 12, color: C.green, fontWeight: 700 }}>
+                ✅ {faltasGuardadas} día(s) guardado(s) — ya quedan disponibles para descontar en Nómina Fiscal Destajo.
+              </span>
+            )}
           </div>
 
           <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
@@ -1361,6 +1494,175 @@ function ReporteAsistenciaView({ ausencias, trabajadores }) {
             ]}
             filas={filasMostradas}
           />
+        </>
+      )}
+    </div>
+  );
+}
+// ─── NÓMINA FISCAL DESTAJO (sueldo fijo hospedado en Atlas — sin seguridad
+// social, con parafiscales) ─────────────────────────────────────────────
+// Reglas confirmadas con el usuario (25/08/2026):
+//  - Quincenal: Q1 = días 1-15, Q2 = 16-fin de mes.
+//  - Mes comercial de 30 días → valor día = sueldo/30 (igual para el
+//    auxilio de transporte); se descuenta por cada día sin justificar.
+//  - Los días sin justificar salen solos de "nomina_faltas_sin_justificar"
+//    (lo que guarda Reporte de Asistencia desde el huellero), cruzando por
+//    nombre normalizado — no hay que contarlos a mano.
+//  - Parafiscales son PROVISIÓN (no se pagan en la quincena, se acumulan):
+//    cesantías 8.33% mensual, prima 8.33% mensual, vacaciones 4.17%
+//    mensual — se aplican sobre el sueldo YA neto de inasistencias de esa
+//    quincena (una tasa mensual sobre una base quincenal da la mitad, que
+//    es lo correcto). Intereses de cesantías = 12% anual sobre el SALDO
+//    acumulado antes de esta quincena (12%/24, porque hay 24 quincenas al
+//    año).
+const TASA_CESANTIAS_MENSUAL = 0.0833;
+const TASA_PRIMA_MENSUAL = 0.0833;
+const TASA_VACACIONES_MENSUAL = 0.0417;
+const TASA_INTERES_CESANTIAS_ANUAL = 0.12;
+// Confirmado con el usuario (26/08/2026): las provisiones SÍ se calculan
+// sobre el sueldo ya descontado por inasistencia de esa quincena (si faltó
+// sin justificar, ese día tampoco causa cesantías/prima/vacaciones — igual
+// que en la ley). Se deja como constante aparte, no metido en la fórmula,
+// para poder cambiarlo a "sobre el sueldo completo" con un solo switch acá
+// si más adelante se necesita.
+const PARAFISCALES_SOBRE_SUELDO_DESCONTADO = true;
+function rangoQuincena(anio, mes, quincena) {
+  const mm = String(mes).padStart(2, "0");
+  if (Number(quincena) === 1) {
+    return { inicio: `${anio}-${mm}-01`, fin: `${anio}-${mm}-15` };
+  }
+  const ultimoDia = new Date(Number(anio), Number(mes), 0).getDate();
+  return { inicio: `${anio}-${mm}-16`, fin: `${anio}-${mm}-${String(ultimoDia).padStart(2, "0")}` };
+}
+function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia) {
+  const sueldo = Number(trabajador.sueldo) || 0;
+  const auxilio = Number(trabajador.auxilioTransporte) || 0;
+  const descuentoSueldo = (sueldo / 30) * diasInasistencia;
+  const descuentoAuxilio = (auxilio / 30) * diasInasistencia;
+  const sueldoQuincena = Math.max(0, sueldo / 2 - descuentoSueldo);
+  const auxilioQuincena = Math.max(0, auxilio / 2 - descuentoAuxilio);
+  const saldoCesantiasInicio = Number(trabajador.cesantiasAcumuladas) || 0;
+  const baseParafiscales = PARAFISCALES_SOBRE_SUELDO_DESCONTADO ? sueldoQuincena : sueldo / 2;
+  const cesantiasPeriodo = baseParafiscales * TASA_CESANTIAS_MENSUAL;
+  const interesesPeriodo = saldoCesantiasInicio * (TASA_INTERES_CESANTIAS_ANUAL / 24);
+  const primaPeriodo = baseParafiscales * TASA_PRIMA_MENSUAL;
+  const vacacionesPeriodo = baseParafiscales * TASA_VACACIONES_MENSUAL;
+  return {
+    diasInasistencia, descuentoSueldo, descuentoAuxilio, sueldoQuincena, auxilioQuincena,
+    netoAPagar: sueldoQuincena + auxilioQuincena,
+    cesantiasPeriodo, interesesPeriodo, primaPeriodo, vacacionesPeriodo,
+    saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
+  };
+}
+function NominaFiscalDestajoView({ trabajadores, faltas, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion }) {
+  const hoy = new Date();
+  const [anio, setAnio] = useState(String(hoy.getFullYear()));
+  const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
+  const [quincena, setQuincena] = useState(hoy.getDate() <= 15 ? "1" : "2");
+  const [resultados, setResultados] = useState(null); // null | [{trabajador, calculo}]
+  const [guardando, setGuardando] = useState(false);
+  const [guardadoOk, setGuardadoOk] = useState(false);
+
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal Destajo" && t.activo !== false);
+  const periodoId = `${anio}-${mes}-Q${quincena}`;
+  const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
+  const { inicio, fin } = rangoQuincena(anio, mes, quincena);
+
+  function calcular() {
+    const filas = personas.map((t) => {
+      const nombreNorm = normalizarNombreHuellero(t.nombre);
+      const dias = faltas.filter((f) => f.nombreNorm === nombreNorm && f.fecha >= inicio && f.fecha <= fin).length;
+      return { trabajador: t, calculo: calcularLiquidacionFiscalDestajo(t, dias) };
+    });
+    setResultados(filas);
+    setGuardadoOk(false);
+  }
+
+  async function confirmarYGuardar() {
+    if (!resultados) return;
+    setGuardando(true);
+    try {
+      for (const { trabajador, calculo } of resultados) {
+        await onGuardarLiquidacion({
+          id: `${trabajador.id}__${periodoId}`,
+          periodoId, trabajadorId: trabajador.id, nombre: trabajador.nombre,
+          inicio, fin, ...calculo,
+          confirmadaEn: new Date().toISOString(),
+        });
+        await onGuardarTrabajador({ ...trabajador, cesantiasAcumuladas: calculo.saldoCesantiasFin });
+      }
+      setGuardadoOk(true);
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  const totales = resultados ? resultados.reduce((s, r) => ({
+    neto: s.neto + r.calculo.netoAPagar,
+    cesantias: s.cesantias + r.calculo.cesantiasPeriodo,
+    intereses: s.intereses + r.calculo.interesesPeriodo,
+    prima: s.prima + r.calculo.primaPeriodo,
+    vacaciones: s.vacaciones + r.calculo.vacacionesPeriodo,
+  }), { neto: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Liquidación quincenal de los trabajadores "Fiscal Destajo" (sueldo fijo, sin seguridad social, con parafiscales) — se hospeda acá en Atlas, no se envía a TNS. Los días de inasistencia sin justificar salen solos de lo que guardaste en Reporte de Asistencia.
+      </div>
+      {personas.length === 0 && (
+        <div style={{ padding: "12px 16px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          Nadie tiene tipo de nómina "Fiscal Destajo" todavía. Ve a Trabajadores → "💼 Cargar Fiscal Destajo (5 conocidos)".
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Año"><FInput type="number" value={anio} onChange={setAnio} /></Field>
+        <Field label="Mes">
+          <FSel value={mes} onChange={setMes} options={Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1).padStart(2, "0"), label: String(i + 1).padStart(2, "0") }))} />
+        </Field>
+        <Field label="Quincena">
+          <FSel value={quincena} onChange={setQuincena} options={[{ value: "1", label: "1 (días 1-15)" }, { value: "2", label: "2 (16-fin de mes)" }]} />
+        </Field>
+        <Btn onClick={calcular} disabled={personas.length === 0}>🧮 Calcular</Btn>
+      </div>
+
+      {yaLiquidado && (
+        <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          ⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.
+        </div>
+      )}
+
+      {resultados && (
+        <>
+          <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+            <KPI icon="💵" label="Neto a pagar (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
+            <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="🏖️" label="Vacaciones (provisión)" value={fmtMoney(totales.vacaciones)} color={C.amber} bg={C.amberBg} />
+          </div>
+          <Tabla
+            vacio="Sin resultados."
+            columnas={[
+              { key: "nombre", label: "Nombre", render: (f) => f.trabajador.nombre },
+              { key: "dias", label: "Días sin justificar", align: "right", render: (f) => (
+                <span style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green }}>{f.calculo.diasInasistencia}</span>
+              ) },
+              { key: "sueldoQuincena", label: "Sueldo quincena", align: "right", render: (f) => fmtMoney(f.calculo.sueldoQuincena) },
+              { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.calculo.auxilioQuincena) },
+              { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
+              { key: "cesantiasPeriodo", label: "Cesantías (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.cesantiasPeriodo) },
+              { key: "interesesPeriodo", label: "Intereses cesantías", align: "right", render: (f) => fmtMoney(f.calculo.interesesPeriodo) },
+              { key: "primaPeriodo", label: "Prima (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.primaPeriodo) },
+              { key: "vacacionesPeriodo", label: "Vacaciones (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.vacacionesPeriodo) },
+            ]}
+            filas={resultados}
+          />
+          <div style={{ marginTop: 16 }}>
+            <Btn onClick={confirmarYGuardar} disabled={guardando}>
+              {guardando ? "Guardando..." : "✅ Confirmar y guardar liquidación de la quincena"}
+            </Btn>
+            {guardadoOk && <span style={{ marginLeft: 10, fontSize: 12, color: C.green, fontWeight: 700 }}>✅ Liquidación guardada — el acumulado de cesantías de cada uno ya quedó actualizado.</span>}
+          </div>
         </>
       )}
     </div>
@@ -2044,6 +2346,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   const [cierres, setCierres] = useState([]);
   const [costosTeoricoProceso, setCostosTeoricoProceso] = useState([]);
   const [ausencias, setAusencias] = useState([]);
+  const [faltasSinJustificar, setFaltasSinJustificar] = useState([]);
+  const [liquidacionesFD, setLiquidacionesFD] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     const unsubs = [
@@ -2054,6 +2358,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
       onSnapshot(collection(db, "nomina_cierres"), (snap) => setCierres(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_costos_teorico_proceso"), (snap) => setCostosTeoricoProceso(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_ausencias"), (snap) => setAusencias(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_faltas_sin_justificar"), (snap) => setFaltasSinJustificar(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_fiscal_destajo_liquidaciones"), (snap) => setLiquidacionesFD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
     ];
     return () => unsubs.forEach((u) => u());
   }, []);
@@ -2076,6 +2382,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
         { id: "novedades_tns", icon: "🧾", label: "Novedades TNS" },
         { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
         { id: "asistencia", icon: "📊", label: "Reporte de Asistencia" },
+        { id: "fiscal_destajo", icon: "💼", label: "Nómina Fiscal Destajo" },
       ];
   // Con líder de área, todo lo que ve/registra queda limitado a su propia
   // gente — así Anny no ve ni toca la producción de Sarai y viceversa.
@@ -2092,6 +2399,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   async function borrarHoras(id) { await fsDelete("nomina_horas", id); }
   async function guardarAusencia(a) { await fsSave("nomina_ausencias", a.id, a); }
   async function borrarAusencia(id) { await fsDelete("nomina_ausencias", id); }
+  async function guardarLiquidacionFD(l) { await fsSave("nomina_fiscal_destajo_liquidaciones", l.id, l); }
   // Sube en lote (upsert por "{numLote}_{PROCESO}") las filas del Excel de
   // Costos Teóricos por Proceso — se hace con writeBatch (no una por una)
   // para que un archivo de varios cientos de filas se guarde de un solo
@@ -2209,6 +2517,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           {subView === "novedades_tns" && !areaLider && <NovedadesTNSView trabajadores={trabajadores} />}
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} isAdmin={isAdmin} currentUser={currentUser} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} />}
+          {subView === "fiscal_destajo" && !areaLider && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} />}
         </div>
       </div>
     </div>
