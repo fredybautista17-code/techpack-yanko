@@ -140,21 +140,31 @@ function stockTelaBusint(telasBusint, nombreTela) {
 function disponibilidadTelaPorColor(composicionTelas, telasBusint, ref, pinta, nombreTela) {
   const refNorm = String(ref || "").trim();
   const nombreNorm = normalizarTela(nombreTela);
-  if (!refNorm || !nombreNorm) return null;
+  if (!refNorm || !nombreNorm) return { motivo: "sin_tela_escrita" };
   const refInfo = (composicionTelas?.porReferencia || []).find((r) => r.ref === refNorm);
-  if (!refInfo) return null;
+  // (2026-08-26) Confirmado con un caso real (Ref C-408, tela MARLY): la
+  // referencia SÍ puede tener la tela registrada en "telas" pero CERO filas
+  // en "telas - detalle" — es un hueco real de captura en Busint (a nadie
+  // se le ocurrió llenar el detalle de color por pinta de esa referencia),
+  // no un error de este cruce. Por eso el motivo se reporta separado del de
+  // "la referencia ni siquiera tiene tela registrada".
+  if (!refInfo) return { motivo: "referencia_no_encontrada", refNorm };
   const slotInfo = refInfo.slots.find((s) => normalizarTela(s.nombre) === nombreNorm);
-  if (!slotInfo) return null;
+  if (!slotInfo) return { motivo: "tela_no_en_slots", refNorm, telasDeEstaReferencia: refInfo.slots.map((s) => s.nombre) };
   const detalles = (composicionTelas?.detallePorColor || []).filter((d) => d.ref === refNorm);
-  if (!detalles.length) return null;
+  if (!detalles.length) return { motivo: "sin_detalle_color", refNorm };
   const pintaNorm = String(pinta || "").trim().toUpperCase();
   const detalle = detalles.find((d) => d.pinta.toUpperCase() === pintaNorm) || detalles[0];
   const colorInfo = detalle.colores[slotInfo.slot];
-  if (!colorInfo || !colorInfo.color) return null;
+  if (!colorInfo || !colorInfo.color) return { motivo: "slot_sin_color", refNorm };
   const filaStock = (telasBusint || []).find(
     (t) => normalizarTela(t.componente) === nombreNorm && String(t.color || "").trim() === colorInfo.color
   );
-  return { color: colorInfo.color, cantidad: filaStock ? Number(filaStock.cantidad) || 0 : null };
+  return {
+    motivo: "ok",
+    color: colorInfo.color,
+    cantidad: filaStock ? Number(filaStock.cantidad) || 0 : null,
+  };
 }
 // Recuerda, en el navegador de quien esté usando el equipo (localStorage,
 // no queda en el pedido ni se sincroniza entre equipos), el último cortador
@@ -2771,7 +2781,8 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                 const dispColor = form.tipoTela.trim()
                   ? disponibilidadTelaPorColor(composicionTelas, telasBusint, grupo.ref, pintaColor, form.tipoTela)
                   : null;
-                const faltaColor = dispColor && dispColor.cantidad !== null && calc.metrosColor > dispColor.cantidad;
+                const dispColorOk = dispColor && dispColor.motivo === "ok" && dispColor.cantidad !== null;
+                const faltaColor = dispColorOk && calc.metrosColor > dispColor.cantidad;
                 return (
                   <div
                     key={c.id}
@@ -2814,7 +2825,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                       </div>
                       <div style={{ fontSize: 12, color: C.slate, display: "flex", alignItems: "center", gap: 5 }}>
                         {calc.metrosColor > 0 ? `${calc.metrosColor.toLocaleString("es-CO")} m` : "—"}
-                        {dispColor && dispColor.cantidad !== null && (
+                        {dispColorOk && (
                           <span
                             title={`Tela color ${dispColor.color}: ${dispColor.cantidad.toLocaleString("es-CO")} m disponibles en Busint`}
                             style={{ color: faltaColor ? C.red : C.green, fontSize: 13 }}
@@ -2835,9 +2846,21 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                       <div style={{ padding: "10px 12px", borderTop: `1px solid ${C.border}`, background: C.white }}>
                         {form.tipoTela.trim() && (
                           <div style={{ marginBottom: 10, fontSize: 12 }}>
-                            {!dispColor ? (
+                            {!dispColor || dispColor.motivo === "referencia_no_encontrada" ? (
                               <span style={{ color: C.slate }}>
-                                No se pudo determinar el color exacto de "{form.tipoTela}" para {pintaColor ? `la pinta "${pintaColor}"` : "esta pinta"} en Busint (referencia sin datos de composición, o esa tela no aparece en sus telas registradas).
+                                La referencia {grupo.ref} no tiene tela registrada en Busint (tabla "telas").
+                              </span>
+                            ) : dispColor.motivo === "tela_no_en_slots" ? (
+                              <span style={{ color: C.slate }}>
+                                "{form.tipoTela}" no coincide con la tela que Busint tiene para {grupo.ref}: {dispColor.telasDeEstaReferencia.join(", ") || "(ninguna)"}. Revisa que el nombre esté escrito igual.
+                              </span>
+                            ) : dispColor.motivo === "sin_detalle_color" ? (
+                              <span style={{ color: C.slate }}>
+                                {grupo.ref} tiene "{form.tipoTela}" registrada, pero Busint no tiene el detalle de color por pinta para esta referencia (tabla "telas - detalle" vacía) — no es un error, falta ese dato allá.
+                              </span>
+                            ) : dispColor.motivo === "slot_sin_color" ? (
+                              <span style={{ color: C.slate }}>
+                                {grupo.ref} tiene detalle de color registrado, pero no para {pintaColor ? `la pinta "${pintaColor}"` : "esta pinta"} específicamente.
                               </span>
                             ) : dispColor.cantidad === null ? (
                               <span style={{ color: C.slate }}>
