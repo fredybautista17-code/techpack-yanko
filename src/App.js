@@ -7890,6 +7890,9 @@ function BusintCatalogoTestView() {
                   <th style={{ textAlign: "left", padding: "6px 8px" }}>Componente</th>
                   <th style={{ textAlign: "left", padding: "6px 8px" }}>Color</th>
                   <th style={{ textAlign: "right", padding: "6px 8px" }}>Cantidad (ICant)</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px" }}>Unidad</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px" }}>Dimension</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px" }}>UnidadT</th>
                   <th style={{ textAlign: "right", padding: "6px 8px" }}>Costo</th>
                 </tr>
               </thead>
@@ -7899,6 +7902,9 @@ function BusintCatalogoTestView() {
                     <td style={{ padding: "6px 8px" }}>{f.componente}</td>
                     <td style={{ padding: "6px 8px", fontWeight: 700 }}>{f.color || "—"}</td>
                     <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.cantidad}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.unidad || "—"}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700 }}>{f.dimension === "" || f.dimension == null ? "—" : String(f.dimension)}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.unidadT === "" || f.unidadT == null ? "—" : String(f.unidadT)}</td>
                     <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.costo}</td>
                   </tr>
                 ))}

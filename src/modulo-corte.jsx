@@ -2791,6 +2791,17 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                 // un número real en vez de dejar la pregunta sin responder.
                 const dispColorFallback = form.tipoTela.trim() && dispColor && dispColor.motivo !== "ok" && dispColor.motivo !== "sin_tela_escrita" && stockTela !== null;
                 const faltaColorFallback = dispColorFallback && calc.metrosColor > 0 && calc.metrosColor > stockTela;
+                // Además del total, mostramos el desglose de códigos de
+                // color que sí están cargados en Busint para esa tela (tabla
+                // "estandar componentes prod"), aunque no sepamos cuál de
+                // esos códigos corresponde a este color puntual — al menos
+                // la persona puede identificarlo a ojo comparando cantidades.
+                const coloresTelaBusint = dispColorFallback
+                  ? (telasBusint || [])
+                      .filter((t) => normalizarTela(t.componente) === normalizarTela(form.tipoTela))
+                      .slice()
+                      .sort((a, b) => (Number(b.cantidad) || 0) - (Number(a.cantidad) || 0))
+                  : [];
                 return (
                   <div
                     key={c.id}
@@ -2880,6 +2891,17 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                                     {calc.metrosColor > 0 ? `, y este color necesita ${calc.metrosColor.toLocaleString("es-CO")} m` : ""}.
                                   </div>
                                 )}
+                                {coloresTelaBusint.length > 0 && (
+                                  <div style={{ marginTop: 6, fontSize: 11, color: C.slate, fontWeight: 400 }}>
+                                    Códigos de color de "{form.tipoTela}" cargados en Busint (no sabemos cuál corresponde a {pintaColor ? `"${pintaColor}"` : "este color"} — hay que identificarlo a ojo comparando cantidades):{" "}
+                                    {coloresTelaBusint.map((t, i) => (
+                                      <span key={`${t.color}-${i}`}>
+                                        {i > 0 ? ", " : ""}
+                                        <b style={{ color: C.ink }}>{t.color}</b> ({(Number(t.cantidad) || 0).toLocaleString("es-CO")} m)
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
                               </>
                             ) : dispColor.motivo === "slot_sin_color" ? (
                               <>
@@ -2890,6 +2912,17 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                                   <div style={{ marginTop: 6, fontWeight: 700, color: faltaColorFallback ? C.red : C.amber }}>
                                     {faltaColorFallback ? "⚠" : "~"} Sin poder confirmar el color exacto: en total hay {stockTela.toLocaleString("es-CO")} m de "{form.tipoTela}" en Busint (todos los colores juntos)
                                     {calc.metrosColor > 0 ? `, y este color necesita ${calc.metrosColor.toLocaleString("es-CO")} m` : ""}.
+                                  </div>
+                                )}
+                                {coloresTelaBusint.length > 0 && (
+                                  <div style={{ marginTop: 6, fontSize: 11, color: C.slate, fontWeight: 400 }}>
+                                    Códigos de color de "{form.tipoTela}" cargados en Busint (no sabemos cuál corresponde a {pintaColor ? `"${pintaColor}"` : "este color"} — hay que identificarlo a ojo comparando cantidades):{" "}
+                                    {coloresTelaBusint.map((t, i) => (
+                                      <span key={`${t.color}-${i}`}>
+                                        {i > 0 ? ", " : ""}
+                                        <b style={{ color: C.ink }}>{t.color}</b> ({(Number(t.cantidad) || 0).toLocaleString("es-CO")} m)
+                                      </span>
+                                    ))}
                                   </div>
                                 )}
                               </>

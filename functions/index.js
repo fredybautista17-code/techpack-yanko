@@ -820,6 +820,14 @@ exports.getTelasStockBusintBD = onCall(
         color: String(f.Color || "").trim(),
         cantidad: Number(f.ICant) || 0,
         unidad: f.Unidad || "",
+        // (2026-08-26) Campos crudos extra, solo para diagnóstico: el
+        // usuario reportó que "ICant" podría venir en M2 (metros cuadrados)
+        // y no en ML (metros lineales) como se había asumido — se necesita
+        // encontrar qué columna trae el Ancho de la tela para poder
+        // convertir M2 -> ML (ML = M2 / Ancho). "Dimension" y "UnidadT" son
+        // las candidatas más probables según el esquema de la tabla.
+        dimension: f.Dimension ?? "",
+        unidadT: f.UnidadT ?? "",
         costo: Number(f.Costo) || 0,
         activo: f.Activo !== false,
       }))
