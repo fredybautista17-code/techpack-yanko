@@ -166,27 +166,6 @@ function disponibilidadTelaPorColor(composicionTelas, telasBusint, ref, pinta, n
     cantidad: filaStock ? Number(filaStock.cantidad) || 0 : null,
   };
 }
-// (2026-08-26) Verificación alterna que propuso el usuario: en vez de (o
-// además de) cruzar por tela, cruzar directo contra el inventario de
-// PRODUCTO ya existente en Busint (ApiGen_InventarioBusint) — esa tabla usa
-// exactamente ref/pinta/color como texto libre, igual que Atlas, sin
-// intermediarios ni tablas de composición que puedan estar incompletas. Se
-// suma cantidad de todas las tallas/bodegas que calcen Referencia+Pinta+
-// Color (nombre), para comparar contra las Capas que se están programando.
-function normalizarColorNombre(s) {
-  return String(s || "").trim().toUpperCase().replace(/\s+/g, " ");
-}
-function inventarioExistente(inventarioProductoBusint, ref, pinta, colorNombre) {
-  const refNorm = String(ref || "").trim();
-  const pintaNorm = String(pinta || "").trim().toUpperCase();
-  const colorNorm = normalizarColorNombre(colorNombre);
-  if (!refNorm || !colorNorm || !Array.isArray(inventarioProductoBusint) || !inventarioProductoBusint.length) return null;
-  const filas = inventarioProductoBusint.filter(
-    (r) => r.ref === refNorm && r.pinta.toUpperCase() === pintaNorm && normalizarColorNombre(r.color) === colorNorm
-  );
-  if (!filas.length) return null;
-  return filas.reduce((s, f) => s + (Number(f.cantidad) || 0), 0);
-}
 // Recuerda, en el navegador de quien esté usando el equipo (localStorage,
 // no queda en el pedido ni se sincroniza entre equipos), el último cortador
 // usado y el último mesón usado por planta — así al abrir un corte nuevo ya
@@ -2077,7 +2056,7 @@ function ImprimirTrabajoCortadoresModal({ fecha, grupos, nombreMeson, capasTotal
 // analista con el permiso "aprobar_corte" revisa y aprueba antes de que
 // cuente como confirmado. `onClose` ahora es "volver a la lista" (deseleccionar),
 // no cerrar una ventana emergente.
-function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint, cargandoTelasBusint, onActualizarTelasBusint, composicionTelas, inventarioProductoBusint, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onSave, onClose, onGuardado, puedeAprobar, onAprobar, usuarioActual, candidatosVinculo }) {
+function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint, cargandoTelasBusint, onActualizarTelasBusint, composicionTelas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onSave, onClose, onGuardado, puedeAprobar, onAprobar, usuarioActual, candidatosVinculo }) {
   const aprobado = grupo.colores.every((c) => c.etapa === "programacion_hecha" && c.aprobado === true);
   const pendienteAprobacion = grupo.colores.every((c) => c.etapa === "programacion_hecha") && !aprobado;
   const aprobadoPorTxt = grupo.colores.find((c) => c.aprobadoPor)?.aprobadoPor;
@@ -2797,18 +2776,14 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                 const hayDatos = marcadas > 0 && calc.capasColor > 0;
                 const abierto = colorAbierto === c.id;
                 // "PINTA · COLOR" (ej. "G · AZUL CLARO") — PINTA es el
-                // código estable de Busint, COLOR es el nombre libre que sí
-                // coincide con el campo "color" de ApiGen_InventarioBusint.
-                const [pintaColor, nombreColorTexto] = String(c.descripcion || "").split(" · ").map((x) => (x || "").trim());
+                // código estable de Busint que se usa para cruzar contra
+                // "telas - detalle".
+                const pintaColor = String(c.descripcion || "").split(" · ")[0]?.trim() || "";
                 const dispColor = form.tipoTela.trim()
                   ? disponibilidadTelaPorColor(composicionTelas, telasBusint, grupo.ref, pintaColor, form.tipoTela)
                   : null;
                 const dispColorOk = dispColor && dispColor.motivo === "ok" && dispColor.cantidad !== null;
                 const faltaColor = dispColorOk && calc.metrosColor > dispColor.cantidad;
-                // Inventario de producto YA EXISTENTE de esta Ref+Pinta+Color
-                // (ApiGen_InventarioBusint) — verificación alterna/adicional
-                // que no depende de las tablas de composición de tela.
-                const invExistente = inventarioExistente(inventarioProductoBusint, grupo.ref, pintaColor, nombreColorTexto);
                 return (
                   <div
                     key={c.id}
@@ -2862,11 +2837,6 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                       </div>
                       <div style={{ fontSize: 12, color: C.slate }}>
                         Calc: <b style={{ color: C.ink }}>{hayDatos ? fmtNum(calc.prendasCalculadas) : "—"}</b> / Real: <b style={{ color: C.ink }}>{fmtNum(calc.cantidadReal)}</b>
-                        {invExistente !== null && (
-                          <span title="Ya existente en inventario de Busint (ApiGen_InventarioBusint) para esta Referencia+Pinta+Color" style={{ color: C.blue, marginLeft: 6 }}>
-                            / Inv: <b>{fmtNum(invExistente)}</b>
-                          </span>
-                        )}
                       </div>
                       <div style={{ fontSize: 16, textAlign: "center" }}>
                         {!hayDatos ? "" : coincide ? <span style={{ color: C.green }}>✓</span> : <span title={`Diferencia: ${calc.diff > 0 ? "+" : ""}${calc.diff}`} style={{ color: C.amber }}>⚠</span>}
@@ -5325,7 +5295,7 @@ function ColaSugerida({ pedidos, vpRefMap, lotesCortadoMap, onSelectPedido }) {
 // programan en lote. El cumplimiento se revisa solo por referencia: cuando
 // el pendiente de esa referencia puntual llega a 0, queda cumplida con la
 // fecha real en que se cortó, comparada contra la fecha programada.
-function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onPartirCorte, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, onRegistrarCorteManual, plantasConfig, cortadoresConfig, telas, telasBusint, cargandoTelasBusint, onActualizarTelasBusint, composicionTelas, inventarioProductoBusint, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarBloqueoMeson, onEliminarBloqueoMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onDevolverCorteReal, onEditarCantidadesCorte, onActualizarHorarioCorte, onEditarMesonCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
+function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap, trabajadores, programacion, onProgramar, onCancelar, onPartirCorte, onEditarFecha, onEditarCantidad, onEditarCumplido, onEliminarCumplido, onSelectPedido, onRegistrarCorteReal, onRegistrarCorteManual, plantasConfig, cortadoresConfig, telas, telasBusint, cargandoTelasBusint, onActualizarTelasBusint, composicionTelas, estadisticasTela, metrosUsadosMeson, itemsUsadosMeson, onGuardarBloqueoMeson, onEliminarBloqueoMeson, onGuardarProgramacionHecha, onAprobarProgramacionHecha, puedeAprobarCorte, usuarioActual, lotesExistentes, onAsignarLoteReal, onQuitarRefDeCorte, onDevolverCorteReal, onEditarCantidadesCorte, onActualizarHorarioCorte, onEditarMesonCorte, subTabInicial, produccionSubTabInicial, navProduccionTs, isAdmin }) {
   const [fechaSel, setFechaSel] = useState(today());
   // Cuántos cortes (tandas físicas) separados se van a programar de una vez
   // con la selección actual — por defecto 1 (comportamiento de siempre). Si
@@ -6973,7 +6943,6 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                     cargandoTelasBusint={cargandoTelasBusint}
                     onActualizarTelasBusint={onActualizarTelasBusint}
                     composicionTelas={composicionTelas}
-                    inventarioProductoBusint={inventarioProductoBusint}
                     estadisticasTela={estadisticasTela || {}}
                     metrosUsadosMeson={metrosUsadosMeson}
                     itemsUsadosMeson={itemsUsadosMeson}
@@ -8705,25 +8674,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
     }
   }
   useEffect(() => { cargarComposicionTelas(); }, []);
-  // (2026-08-26) Inventario de PRODUCTO ya existente en Busint
-  // (ApiGen_InventarioBusint) — usa ref/pinta/color igual que Atlas, sin
-  // necesitar cruzar tablas de tela. Se usa para comparar, al programar
-  // Capas por color, cuánto ya hay hecho de esa Referencia+Pinta+Color.
-  const [inventarioProductoBusint, setInventarioProductoBusint] = useState([]);
-  const [cargandoInventarioProducto, setCargandoInventarioProducto] = useState(false);
-  async function cargarInventarioProductoBusint() {
-    setCargandoInventarioProducto(true);
-    try {
-      const llamar = httpsCallable(functionsClient, "getInventarioProductoBusintGen");
-      const resp = await llamar();
-      setInventarioProductoBusint(resp.data?.inventario || []);
-    } catch (err) {
-      console.error("No se pudo cargar el inventario de producto de Busint", err);
-    } finally {
-      setCargandoInventarioProducto(false);
-    }
-  }
-  useEffect(() => { cargarInventarioProductoBusint(); }, []);
   useEffect(() => {
     const unsubs = [];
     async function init() {
@@ -9694,7 +9644,6 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               cargandoTelasBusint={cargandoTelasBusint}
               onActualizarTelasBusint={cargarTelasBusint}
               composicionTelas={composicionTelas}
-              inventarioProductoBusint={inventarioProductoBusint}
               trabajadores={corteConfig.nomina?.trabajadores || []}
               programacion={programacionCorte}
               onProgramar={programarCorte}
