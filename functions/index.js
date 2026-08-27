@@ -1632,6 +1632,50 @@ exports.buscarReferenciaBusint = onCall(
   }
 );
 
+// (2026-08-27) EXPLORATORIO — en vez de adivinar nombres de "ApiGen_X" uno
+// por uno (como se hizo con PanelControlFlujoOperacional e InventarioBusint,
+// por ensayo y error), esto lee el swagger público de la API "gen"
+// (api-yanko-gen.busint.info/swagger/v1/swagger.json — mismo patrón que ya
+// se usa para la API "BD" en getBarridoTotalTablasBusintBD) y lista TODOS
+// los nombres de "/consultas/X" que existen de verdad, filtrando por
+// palabra clave si se manda. Se necesita porque "estandar componentes prod"
+// (API BD) resultó tener `Ufecha` de hace semanas/meses para varios colores
+// de tela — no se actualiza en cada movimiento — y hace falta encontrar si
+// existe una fuente de verdad más viva (ej. un kardex/movimientos de
+// materia prima) antes de seguir confiando en esa tabla para avisar
+// disponibilidad en Programación de Corte.
+exports.getListaConsultasBusintGen = onCall(
+  {
+    secrets: [BUSINT_BASE_URL],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const keywords = (
+      Array.isArray(request.data?.keywords) && request.data.keywords.length ? request.data.keywords : []
+    ).map((k) => String(k).toLowerCase().trim()).filter(Boolean);
+    const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
+    let swagger;
+    try {
+      const resp = await fetch(`${baseUrl}/swagger/v1/swagger.json`);
+      if (!resp.ok) throw new Error(`swagger respondió ${resp.status}`);
+      swagger = await resp.json();
+    } catch (err) {
+      logger.error("Error trayendo el swagger de la API gen", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo traer la lista de consultas de la API gen: ${err?.message || String(err)}`);
+    }
+    const paths = Object.keys(swagger.paths || {});
+    const consultas = paths
+      .filter((p) => p.toLowerCase().includes("/consultas/"))
+      .map((p) => p.split(/\/consultas\//i)[1])
+      .filter(Boolean)
+      .map((c) => c.replace(/\/.*$/, "")); // por si el path trae algo después del nombre
+    const unicas = Array.from(new Set(consultas)).sort();
+    const filtradas = keywords.length ? unicas.filter((c) => keywords.some((k) => c.toLowerCase().includes(k))) : unicas;
+    return { total: unicas.length, totalFiltradas: filtradas.length, consultas: filtradas, todas: keywords.length ? undefined : unicas };
+  }
+);
+
 // (2026-08-21) EXPLORATORIO — la API "gen" (api-yanko-gen.busint.info) tiene
 // un catálogo nuevo "ApiGen_PanelControlFlujoOperacional" que no está
 // conectado a nada todavía. Por el nombre suena a que podría traer el

@@ -7521,6 +7521,24 @@ function BusintCatalogoTestView() {
       setCargandoValidacionPanelFlujo(false);
     }
   }
+  const [keywordsListaGen, setKeywordsListaGen] = useState("movim, kardex, tela, materia, existencia, stock, rollo");
+  const [cargandoListaGen, setCargandoListaGen] = useState(false);
+  const [listaGen, setListaGen] = useState(null);
+  async function verListaConsultasGen() {
+    setCargandoListaGen(true);
+    setError("");
+    setListaGen(null);
+    try {
+      const keywords = keywordsListaGen.split(",").map((k) => k.trim()).filter(Boolean);
+      const llamar = httpsCallable(functionsClient, "getListaConsultasBusintGen");
+      const resp = await llamar(keywords.length ? { keywords } : {});
+      setListaGen(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo listar las consultas de la API gen.");
+    } finally {
+      setCargandoListaGen(false);
+    }
+  }
   const [cargandoInventarioGen, setCargandoInventarioGen] = useState(false);
   const [inventarioGen, setInventarioGen] = useState(null);
   async function verInventarioGen() {
@@ -7805,6 +7823,33 @@ function BusintCatalogoTestView() {
           <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 280, border: `1px solid ${T.border}` }}>
             {JSON.stringify(resultadoGen.ultimas, null, 2)}
           </pre>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Listar TODAS las consultas de la API gen (exploratorio)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        En vez de adivinar nombres "ApiGen_X" uno por uno, esto lee el swagger de la API gen y lista todos los nombres reales de "/consultas/X" que existen, filtrados por palabra clave (separadas por coma). Se usa para buscar una fuente de tela/materia prima que sí se actualice en vivo (a diferencia de "estandar componentes prod").
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Palabras clave (separadas por coma)">
+          <FInput value={keywordsListaGen} onChange={setKeywordsListaGen} placeholder="Ej: movim, kardex, tela, materia" />
+        </Field>
+        <div style={{ marginBottom: 14 }}>
+          <Btn onClick={verListaConsultasGen} disabled={cargandoListaGen}>{cargandoListaGen ? "Buscando..." : "🔎 Listar consultas"}</Btn>
+        </div>
+      </div>
+      {listaGen && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ fontSize: 13, color: T.slate, marginBottom: 10 }}>
+            {listaGen.totalFiltradas} de {listaGen.total} consultas coinciden con esas palabras clave.
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {(listaGen.consultas || []).map((c) => (
+              <span key={c} style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, background: T.white, border: `1px solid ${T.border}`, fontFamily: "monospace" }}>
+                {c}
+              </span>
+            ))}
+          </div>
         </div>
       )}
       <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
