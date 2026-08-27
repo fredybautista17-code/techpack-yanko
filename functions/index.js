@@ -746,14 +746,27 @@ exports.getBarridoTotalTablasBusintBD = onCall(
 // vacía/incompleta o se alcanza `maxPaginas` — tope de seguridad para no
 // dejar un loop corriendo para siempre si la API cambia de forma
 // inesperada.
-async function consultarTablaBusintBDCompleta(tableName, pageSize = 500, maxPaginas = 30) {
+async function consultarTablaBusintBDCompleta(tableName, pageSize = 500, maxPaginas = 200) {
+  // (2026-08-26) Busint recordó explícitamente respetar la paginación:
+  // "cuando la información consultada supere el número de registros por
+  // página, se deberán realizar las consultas de las páginas siguientes
+  // hasta completar la totalidad de los registros requeridos" — este bucle
+  // ya lo hacía, pero el tope de 30 páginas (15.000 filas con pageSize=500)
+  // podía truncar en silencio una tabla grande sin que nadie se diera
+  // cuenta (posible causa de números que no cuadraban). Se sube el tope y
+  // se deja un log de advertencia si de verdad se llega a ese límite sin
+  // encontrar la última página.
   let todas = [];
+  let llegoAlTope = true;
   for (let page = 1; page <= maxPaginas; page++) {
     const data = await consultarTablaBusintBD(tableName, page, pageSize);
     const filas = extraerFilasBusintBD(data);
-    if (!filas || !filas.length) break;
+    if (!filas || !filas.length) { llegoAlTope = false; break; }
     todas = todas.concat(filas);
-    if (filas.length < pageSize) break; // última página (vino incompleta)
+    if (filas.length < pageSize) { llegoAlTope = false; break; } // última página (vino incompleta)
+  }
+  if (llegoAlTope) {
+    logger.warn(`consultarTablaBusintBDCompleta: posible truncamiento en "${tableName}" — se llegó al límite de ${maxPaginas} páginas (${todas.length} filas) sin encontrar una página final incompleta. Puede que falten registros.`);
   }
   return todas;
 }
