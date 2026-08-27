@@ -7551,11 +7551,26 @@ function BusintCatalogoTestView() {
     setCargandoColoresTela(true);
     setColoresTela(null);
     try {
-      const llamar = httpsCallable(functionsClient, "getTelasStockBusintBD");
-      const resp = await llamar();
-      const todas = resp.data?.telas || [];
-      const filas = todas.filter((t) => String(t.componente || "").toUpperCase().includes(nombre));
-      setColoresTela({ filas });
+      // (2026-08-26) Trae también "tabla colores" para poner el nombre real
+      // (ej. "004" -> "BLANCO") junto al código, y para poder distinguir
+      // fila por fila cuáles cuentan como "activas" — el usuario detectó que
+      // el total no calzaba exacto contra un reporte propio de Busint, y
+      // esto ayuda a ver de un vistazo qué filas se están sumando.
+      const [respTelas, respColores] = await Promise.all([
+        httpsCallable(functionsClient, "getTelasStockBusintBD")(),
+        httpsCallable(functionsClient, "getTablaColoresBusintBD")().catch(() => ({ data: { colores: [] } })),
+      ]);
+      const todas = respTelas.data?.telas || [];
+      const tablaColores = respColores.data?.colores || [];
+      const nombreDe = (codigo) => {
+        const fila = tablaColores.find((c) => String(c.codigo || "").trim() === String(codigo || "").trim());
+        return fila ? fila.nombre : "";
+      };
+      const filas = todas
+        .filter((t) => String(t.componente || "").toUpperCase().includes(nombre))
+        .map((t) => ({ ...t, nombreColor: nombreDe(t.color) }));
+      const totalActivo = filas.reduce((s, f) => (f.activo !== false && f.cantidad !== null && f.cantidad !== undefined ? s + (Number(f.cantidad) || 0) : s), 0);
+      setColoresTela({ filas, totalActivo });
     } catch (err) {
       setColoresTela({ error: err?.message || "No se pudo consultar el inventario de telas.", filas: [] });
     } finally {
@@ -7884,30 +7899,39 @@ function BusintCatalogoTestView() {
           ) : coloresTela.filas.length === 0 ? (
             <div style={{ fontSize: 13, color: T.slate }}>No se encontró ninguna tela con ese nombre (revisa mayúsculas/espacios exactos, o puede que no esté como tela — Telas="T" — sino como insumo).</div>
           ) : (
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-              <thead>
-                <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Componente</th>
-                  <th style={{ textAlign: "left", padding: "6px 8px" }}>Color</th>
-                  <th style={{ textAlign: "right", padding: "6px 8px" }}>M2 (ICant crudo)</th>
-                  <th style={{ textAlign: "right", padding: "6px 8px" }}>Ancho</th>
-                  <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 800 }}>ML (calculado)</th>
-                  <th style={{ textAlign: "right", padding: "6px 8px" }}>Costo</th>
-                </tr>
-              </thead>
-              <tbody>
-                {coloresTela.filas.map((f, i) => (
-                  <tr key={i} style={{ borderBottom: `1px solid ${T.border}` }}>
-                    <td style={{ padding: "6px 8px" }}>{f.componente}</td>
-                    <td style={{ padding: "6px 8px", fontWeight: 700 }}>{f.color || "—"}</td>
-                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.cantidadM2 ?? "—"}</td>
-                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.ancho || "—"}</td>
-                    <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700 }}>{f.cantidad === null || f.cantidad === undefined ? "sin ancho" : Number(f.cantidad).toFixed(2)}</td>
-                    <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.costo}</td>
+            <>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ borderBottom: `1px solid ${T.border}` }}>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Componente</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Código</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Nombre color</th>
+                    <th style={{ textAlign: "right", padding: "6px 8px" }}>M2 (ICant crudo)</th>
+                    <th style={{ textAlign: "right", padding: "6px 8px" }}>Ancho</th>
+                    <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 800 }}>ML (calculado)</th>
+                    <th style={{ textAlign: "right", padding: "6px 8px" }}>Costo</th>
+                    <th style={{ textAlign: "center", padding: "6px 8px" }}>Activo</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {coloresTela.filas.map((f, i) => (
+                    <tr key={i} style={{ borderBottom: `1px solid ${T.border}`, opacity: f.activo === false ? 0.45 : 1 }}>
+                      <td style={{ padding: "6px 8px" }}>{f.componente}</td>
+                      <td style={{ padding: "6px 8px", fontWeight: 700 }}>{f.color || "—"}</td>
+                      <td style={{ padding: "6px 8px" }}>{f.nombreColor || "—"}</td>
+                      <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.cantidadM2 ?? "—"}</td>
+                      <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.ancho || "—"}</td>
+                      <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700 }}>{f.cantidad === null || f.cantidad === undefined ? "sin ancho" : Number(f.cantidad).toFixed(2)}</td>
+                      <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.costo}</td>
+                      <td style={{ padding: "6px 8px", textAlign: "center" }}>{f.activo === false ? "No" : "Sí"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ marginTop: 10, fontSize: 13, fontWeight: 800, color: T.ink }}>
+                Total ML (solo filas activas, con ancho): {coloresTela.totalActivo.toLocaleString("es-CO", { maximumFractionDigits: 2 })} m
+              </div>
+            </>
           )}
         </div>
       )}
