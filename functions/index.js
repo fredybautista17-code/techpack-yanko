@@ -283,25 +283,43 @@ exports.getFacturacionPorClienteBusint = onCall(
     if (!fechaValida(fechaInicio) || !fechaValida(fechaFin)) {
       throw new HttpsError("invalid-argument", "fechaInicio y fechaFin son obligatorias, en formato AAAA-MM-DD.");
     }
-    let filas;
+    // (2026-08-27) Confirmado con datos reales: ApiGen_FacturadoBusint SÍ
+    // trae "codigoCliente" (101, 116, 118=Dubo ya confirmado antes, etc.)
+    // pero NO trae un nombre legible en ninguna de las columnas probadas
+    // ("nombreCliente" se copió por error de otro endpoint, Panel de
+    // Flujo). En vez de seguir adivinando nombres de columna acá, se cruza
+    // el código contra el maestro real de clientes (ApiGen_Clientes, el
+    // mismo que ya usa "Administrador General → Clientes → Importar de
+    // Busint") — se prueban varios nombres posibles de columna de código
+    // ahí también, por si acaso, y se deja un debug de columnas crudas de
+    // AMBOS lados para no tener que adivinar una tercera vez si esto
+    // tampoco cuadra.
+    let filas, filasClientes;
     try {
-      filas = await consultarFacturadoBusint(fechaInicio, fechaFin);
+      [filas, filasClientes] = await Promise.all([
+        consultarFacturadoBusint(fechaInicio, fechaFin),
+        consultarClientesBusint().catch((err) => {
+          logger.error("Error consultando ApiGen_Clientes (getFacturacionPorClienteBusint)", { error: String(err) });
+          return [];
+        }),
+      ]);
     } catch (err) {
       logger.error("Error consultando Busint (getFacturacionPorClienteBusint)", { error: String(err) });
       throw new HttpsError("unavailable", "No se pudo consultar la facturación en Busint. Intenta de nuevo en unos minutos.");
     }
-    // (2026-08-27) "nombreCliente" resultó vacío en todas las filas reales —
-    // ese nombre de columna se copió de OTRO endpoint (Panel de Flujo) sin
-    // confirmar que ApiGen_FacturadoBusint use el mismo. Se prueban varios
-    // nombres candidatos como respaldo; si ninguno trae nada, se muestra el
-    // código de cliente (que sí es real, ya usado en listarDocumentosBusintCliente)
-    // en vez de dejar todo como "(Sin cliente)" sin poder diferenciar.
-    const sacarNombreCliente = (f) =>
+    const nombrePorCodigo = new Map();
+    filasClientes.forEach((c) => {
+      const codigo = String(c.codigo ?? c.Codigo ?? c.codigoCliente ?? c.CodigoCliente ?? c.id ?? c.Id ?? "").trim();
+      const nombre = String(c.nombreORazonSocial || c.nombre || c.razonSocial || "").trim();
+      if (codigo && nombre && !nombrePorCodigo.has(codigo)) nombrePorCodigo.set(codigo, nombre);
+    });
+    const sacarNombreCliente = (f, codigoCliente) =>
+      nombrePorCodigo.get(codigoCliente) ||
       String(f.nombreCliente || f.NombreCliente || f.cliente || f.Cliente || f.razonSocial || f.nomCliente || f.nombreORazonSocial || "").trim();
     const porCliente = new Map();
     for (const f of filas) {
       const codigoCliente = String(f.codigoCliente ?? "").trim();
-      const nombreCliente = sacarNombreCliente(f);
+      const nombreCliente = sacarNombreCliente(f, codigoCliente);
       const clave = codigoCliente || nombreCliente || "(sin-identificar)";
       if (!porCliente.has(clave)) {
         porCliente.set(clave, {
@@ -352,6 +370,9 @@ exports.getFacturacionPorClienteBusint = onCall(
       // reales de la primera fila que trajo Busint.
       columnasDisponibles: filas.length ? Object.keys(filas[0]) : [],
       primeraFilaCruda: filas.length ? filas[0] : null,
+      columnasClientesDisponibles: filasClientes.length ? Object.keys(filasClientes[0]) : [],
+      primeraFilaClienteCruda: filasClientes.length ? filasClientes[0] : null,
+      totalClientesCruzados: nombrePorCodigo.size,
     };
   }
 );
