@@ -211,3 +211,93 @@
 [debug] [2026-08-27T19:25:39.693Z] Checked if tokens are valid: true, expires at: 1787860854863
 [debug] [2026-08-27T19:25:39.694Z] Checked if tokens are valid: true, expires at: 1787860854863
 [debug] [2026-08-27T19:25:39.695Z] >>> [apiv2][query] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_CODIGO_EMPRESA [none]
+[debug] [2026-08-27T19:25:39.991Z] <<< [apiv2][status] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_CODIGO_EMPRESA 200
+[debug] [2026-08-27T19:25:39.991Z] <<< [apiv2][body] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_CODIGO_EMPRESA {"name":"projects/700796768091/secrets/TNS_CODIGO_EMPRESA","replication":{"automatic":{}},"createTime":"2026-08-25T22:15:31.093901Z","labels":{"firebase-managed":"functions"},"etag":"\"1659e670e050ea\""}
+[debug] [2026-08-27T19:25:39.991Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:39.991Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:39.992Z] >>> [apiv2][query] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_CODIGO_EMPRESA/versions/latest [none]
+[debug] [2026-08-27T19:25:40.190Z] <<< [apiv2][status] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_CODIGO_EMPRESA/versions/latest 200
+[debug] [2026-08-27T19:25:40.190Z] <<< [apiv2][body] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_CODIGO_EMPRESA/versions/latest {"name":"projects/700796768091/secrets/TNS_CODIGO_EMPRESA/versions/3","createTime":"2026-08-25T22:21:56.423802Z","state":"ENABLED","replicationStatus":{"automatic":{}},"etag":"\"1659e687d3e07a\""}
+[debug] [2026-08-27T19:25:40.191Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:40.192Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:40.192Z] >>> [apiv2][query] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_USUARIO [none]
+[debug] [2026-08-27T19:25:40.488Z] <<< [apiv2][status] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_USUARIO 200
+[debug] [2026-08-27T19:25:40.488Z] <<< [apiv2][body] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_USUARIO {"name":"projects/700796768091/secrets/TNS_USUARIO","replication":{"automatic":{}},"createTime":"2026-08-25T22:22:43.352813Z","labels":{"firebase-managed":"functions"},"etag":"\"1659e68aa26ba0\""}
+[debug] [2026-08-27T19:25:40.489Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:40.489Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:40.490Z] >>> [apiv2][query] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_USUARIO/versions/latest [none]
+[debug] [2026-08-27T19:25:40.690Z] <<< [apiv2][status] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_USUARIO/versions/latest 200
+[debug] [2026-08-27T19:25:40.690Z] <<< [apiv2][body] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_USUARIO/versions/latest {"name":"projects/700796768091/secrets/TNS_USUARIO/versions/1","createTime":"2026-08-25T22:22:47.006120Z","state":"ENABLED","replicationStatus":{"automatic":{}},"etag":"\"1659e68ad7b3a8\""}
+[debug] [2026-08-27T19:25:40.691Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:40.691Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:40.691Z] >>> [apiv2][query] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_CONTRASENIA [none]
+[debug] [2026-08-27T19:25:41.010Z] <<< [apiv2][status] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_CONTRASENIA 200
+[debug] [2026-08-27T19:25:41.010Z] <<< [apiv2][body] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_CONTRASENIA {"name":"projects/700796768091/secrets/TNS_CONTRASENIA","replication":{"automatic":{}},"createTime":"2026-08-25T22:23:09.572977Z","labels":{"firebase-managed":"functions"},"etag":"\"1659e68c34611c\""}
+[debug] [2026-08-27T19:25:41.011Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:41.011Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:41.011Z] >>> [apiv2][query] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_CONTRASENIA/versions/latest [none]
+[debug] [2026-08-27T19:25:41.175Z] <<< [apiv2][status] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_CONTRASENIA/versions/latest 200
+[debug] [2026-08-27T19:25:41.175Z] <<< [apiv2][body] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_CONTRASENIA/versions/latest {"name":"projects/700796768091/secrets/TNS_CONTRASENIA/versions/2","createTime":"2026-08-26T01:21:33.291815Z","state":"ENABLED","replicationStatus":{"automatic":{}},"etag":"\"1659e90a2dd527\""}
+[debug] [2026-08-27T19:25:41.176Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:41.176Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:41.176Z] >>> [apiv2][query] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_CODIGO_EMPRESA [none]
+[debug] [2026-08-27T19:25:41.373Z] <<< [apiv2][status] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_CODIGO_EMPRESA 200
+[debug] [2026-08-27T19:25:41.373Z] <<< [apiv2][body] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_CODIGO_EMPRESA {"name":"projects/700796768091/secrets/TNS_INDUTEX_CODIGO_EMPRESA","replication":{"automatic":{}},"createTime":"2026-08-26T10:40:36.534766Z","labels":{"firebase-managed":"functions"},"etag":"\"1659f0d985b33a\""}
+[debug] [2026-08-27T19:25:41.374Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:41.374Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:41.375Z] >>> [apiv2][query] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_CODIGO_EMPRESA/versions/latest [none]
+[debug] [2026-08-27T19:25:41.565Z] <<< [apiv2][status] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_CODIGO_EMPRESA/versions/latest 200
+[debug] [2026-08-27T19:25:41.566Z] <<< [apiv2][body] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_CODIGO_EMPRESA/versions/latest {"name":"projects/700796768091/secrets/TNS_INDUTEX_CODIGO_EMPRESA/versions/2","createTime":"2026-08-26T10:41:41.078205Z","state":"ENABLED","replicationStatus":{"automatic":{}},"etag":"\"1659f0dd5bf4bd\""}
+[debug] [2026-08-27T19:25:41.566Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:41.566Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:41.566Z] >>> [apiv2][query] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_USUARIO [none]
+[debug] [2026-08-27T19:25:41.730Z] <<< [apiv2][status] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_USUARIO 200
+[debug] [2026-08-27T19:25:41.730Z] <<< [apiv2][body] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_USUARIO {"name":"projects/700796768091/secrets/TNS_INDUTEX_USUARIO","replication":{"automatic":{}},"createTime":"2026-08-26T10:47:12.455180Z","labels":{"firebase-managed":"functions"},"etag":"\"1659f0f11ee495\""}
+[debug] [2026-08-27T19:25:41.730Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:41.731Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:41.731Z] >>> [apiv2][query] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_USUARIO/versions/latest [none]
+[debug] [2026-08-27T19:25:41.908Z] <<< [apiv2][status] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_USUARIO/versions/latest 200
+[debug] [2026-08-27T19:25:41.908Z] <<< [apiv2][body] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_USUARIO/versions/latest {"name":"projects/700796768091/secrets/TNS_INDUTEX_USUARIO/versions/1","createTime":"2026-08-26T10:47:18.177964Z","state":"ENABLED","replicationStatus":{"automatic":{}},"etag":"\"1659f0f173b0ac\""}
+[debug] [2026-08-27T19:25:41.909Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:41.909Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:41.909Z] >>> [apiv2][query] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_CONTRASENIA [none]
+[debug] [2026-08-27T19:25:42.078Z] <<< [apiv2][status] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_CONTRASENIA 200
+[debug] [2026-08-27T19:25:42.078Z] <<< [apiv2][body] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_CONTRASENIA {"name":"projects/700796768091/secrets/TNS_INDUTEX_CONTRASENIA","replication":{"automatic":{}},"createTime":"2026-08-26T10:47:38.777860Z","labels":{"firebase-managed":"functions"},"etag":"\"1659f0f2b0816c\""}
+[debug] [2026-08-27T19:25:42.079Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:42.079Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:42.079Z] >>> [apiv2][query] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_CONTRASENIA/versions/latest [none]
+[debug] [2026-08-27T19:25:42.256Z] <<< [apiv2][status] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_CONTRASENIA/versions/latest 200
+[debug] [2026-08-27T19:25:42.256Z] <<< [apiv2][body] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/TNS_INDUTEX_CONTRASENIA/versions/latest {"name":"projects/700796768091/secrets/TNS_INDUTEX_CONTRASENIA/versions/1","createTime":"2026-08-26T10:47:47.490316Z","state":"ENABLED","replicationStatus":{"automatic":{}},"etag":"\"1659f0f332f60c\""}
+[info] i  functions: preparing functions directory for uploading... 
+[info] i  functions: packaged D:\ATLAS\DESK-TOP\techpack-yanko\functions (83.02 KB) for uploading 
+[info] i  functions: ensuring required API cloudscheduler.googleapis.com is enabled... 
+[info] i  functions: ensuring required API run.googleapis.com is enabled... 
+[info] i  functions: ensuring required API eventarc.googleapis.com is enabled... 
+[info] i  functions: ensuring required API pubsub.googleapis.com is enabled... 
+[info] i  functions: ensuring required API storage.googleapis.com is enabled... 
+[info] i  functions: generating the service identity for pubsub.googleapis.com... 
+[debug] [2026-08-27T19:25:42.370Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:42.370Z] Checked if tokens are valid: true, expires at: 1787860854863
+[info] i  functions: generating the service identity for eventarc.googleapis.com... 
+[debug] [2026-08-27T19:25:42.370Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:42.370Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:42.370Z] >>> [apiv2][query] POST https://serviceusage.googleapis.com/v1beta1/projects/700796768091/services/pubsub.googleapis.com:generateServiceIdentity [none]
+[debug] [2026-08-27T19:25:42.370Z] >>> [apiv2][(partial)header] POST https://serviceusage.googleapis.com/v1beta1/projects/700796768091/services/pubsub.googleapis.com:generateServiceIdentity  x-goog-user-project=700796768091
+[debug] [2026-08-27T19:25:42.371Z] >>> [apiv2][body] POST https://serviceusage.googleapis.com/v1beta1/projects/700796768091/services/pubsub.googleapis.com:generateServiceIdentity {}
+[debug] [2026-08-27T19:25:42.372Z] >>> [apiv2][query] POST https://serviceusage.googleapis.com/v1beta1/projects/700796768091/services/eventarc.googleapis.com:generateServiceIdentity [none]
+[debug] [2026-08-27T19:25:42.373Z] >>> [apiv2][(partial)header] POST https://serviceusage.googleapis.com/v1beta1/projects/700796768091/services/eventarc.googleapis.com:generateServiceIdentity  x-goog-user-project=700796768091
+[debug] [2026-08-27T19:25:42.373Z] >>> [apiv2][body] POST https://serviceusage.googleapis.com/v1beta1/projects/700796768091/services/eventarc.googleapis.com:generateServiceIdentity {}
+[debug] [2026-08-27T19:25:43.168Z] <<< [apiv2][status] POST https://serviceusage.googleapis.com/v1beta1/projects/700796768091/services/eventarc.googleapis.com:generateServiceIdentity 200
+[debug] [2026-08-27T19:25:43.168Z] <<< [apiv2][body] POST https://serviceusage.googleapis.com/v1beta1/projects/700796768091/services/eventarc.googleapis.com:generateServiceIdentity {"name":"operations/finished.DONE_OPERATION","done":true,"response":{"@type":"type.googleapis.com/google.api.serviceusage.v1beta1.ServiceIdentity","email":"service-700796768091@gcp-sa-eventarc.iam.gserviceaccount.com","uniqueId":"101752502607678304501"}}
+[debug] [2026-08-27T19:25:43.205Z] <<< [apiv2][status] POST https://serviceusage.googleapis.com/v1beta1/projects/700796768091/services/pubsub.googleapis.com:generateServiceIdentity 200
+[debug] [2026-08-27T19:25:43.205Z] <<< [apiv2][body] POST https://serviceusage.googleapis.com/v1beta1/projects/700796768091/services/pubsub.googleapis.com:generateServiceIdentity {"name":"operations/finished.DONE_OPERATION","done":true,"response":{"@type":"type.googleapis.com/google.api.serviceusage.v1beta1.ServiceIdentity","email":"service-700796768091@gcp-sa-pubsub.iam.gserviceaccount.com","uniqueId":"108227148130479436833"}}
+[info] i  functions: ensuring required API secretmanager.googleapis.com is enabled... 
+[debug] [2026-08-27T19:25:43.214Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:43.215Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:43.215Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:43.216Z] Checked if tokens are valid: true, expires at: 1787860854863
+[debug] [2026-08-27T19:25:43.217Z] >>> [apiv2][query] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/BUSINT_BD_BASE_URL/versions/latest [none]
+[debug] [2026-08-27T19:25:43.218Z] >>> [apiv2][query] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/BUSINT_BD_API_KEY/versions/latest [none]
+[debug] [2026-08-27T19:25:43.367Z] <<< [apiv2][status] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/BUSINT_BD_BASE_URL/versions/latest 200
+[debug] [2026-08-27T19:25:43.368Z] <<< [apiv2][body] GET https://secretmanager.googleapis.com/v1/projects/techpack-yanko-f37b8/secrets/BUSINT_BD_BASE_URL/versions/latest {"name":"projects/700796768091/secrets/BUSINT_BD_BASE_URL/versions/2","createTime":"2026-08-19T21:29:53.933657Z","state":"ENABLED","replicationStatus":{"automatic":{}},"etag":"\"16596d1aaa3559\""}
+[debug] [2026-08-27T19:25:43.368Z] Resolved latest secret version of BUSINT_BD_BASE_URL to 2.
