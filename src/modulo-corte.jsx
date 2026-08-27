@@ -196,12 +196,18 @@ function resolverTelaPorEstructura(composicionTelas, telasBusint, refNorm, pinta
   // registrado en Busint, "cantidad" queda en null — se reporta aparte
   // (no es que falte el color, es que no se pudo convertir la unidad).
   if (filaStock.cantidad === null || filaStock.cantidad === undefined) {
-    return { motivo: "sin_ancho", color: colorInfo.color, cantidadM2: filaStock.cantidadM2 };
+    return { motivo: "sin_ancho", color: colorInfo.color, cantidadM2: filaStock.cantidadM2, codcomp: filaStock.codcomp || null };
   }
   return {
     motivo: "ok",
     color: colorInfo.color,
     cantidad: Number(filaStock.cantidad) || 0,
+    // (2026-08-27) Codcomp = el "Cod" del reporte nativo de Busint
+    // (Informes Inventarios), único por fila real — confirmado a mano con
+    // el usuario contra el reporte de MARLY (11/11 códigos coincidieron).
+    // Se muestra junto al color para que se pueda verificar contra Busint
+    // sin ambigüedad, sin depender de "tabla colores" (global, ambiguo).
+    codcomp: filaStock.codcomp || null,
   };
 }
 // (2026-08-26) Respaldo cuando el cruce estructural (Referencia+Pinta) no da
@@ -239,6 +245,7 @@ function resolverTelaPorNombreColor(telasBusint, tablaColores, nombreNorm, nombr
     color: fila.color,
     cantidad: fila.cantidad === null || fila.cantidad === undefined ? null : Number(fila.cantidad) || 0,
     cantidadM2: fila.cantidadM2,
+    codcomp: fila.codcomp || null,
   };
 }
 function disponibilidadTelaPorColor(composicionTelas, telasBusint, tablaColores, ref, pinta, nombreTela, nombreColorAtlas) {
@@ -2941,14 +2948,14 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                         {calc.metrosColor > 0 ? `${calc.metrosColor.toLocaleString("es-CO")} m` : "—"}
                         {dispColorOk ? (
                           <span
-                            title={`Tela color ${dispColor.color}${nombreColorPorCodigo(tablaColores, dispColor.color) ? ` (${nombreColorPorCodigo(tablaColores, dispColor.color)})` : ""}: ${dispColor.cantidad.toLocaleString("es-CO")} m disponibles en Busint`}
+                            title={`Tela color ${dispColor.color}${nombreColorPorCodigo(tablaColores, dispColor.color) ? ` (${nombreColorPorCodigo(tablaColores, dispColor.color)})` : ""}${dispColor.codcomp ? ` — Cod ${dispColor.codcomp}` : ""}: ${dispColor.cantidad.toLocaleString("es-CO")} m disponibles en Busint`}
                             style={{ color: faltaColor ? C.red : C.green, fontSize: 13 }}
                           >
                             {faltaColor ? "⚠" : "✓"}
                           </span>
                         ) : dispColorPosible ? (
                           <span
-                            title={`Posible coincidencia por nombre (sin confirmar): color ${dispColor.color}, ${dispColor.cantidad.toLocaleString("es-CO")} m — verifica a mano, el mismo código puede significar otro color en otra tela.`}
+                            title={`Posible coincidencia por nombre (sin confirmar): color ${dispColor.color}${dispColor.codcomp ? ` — Cod ${dispColor.codcomp}` : ""}, ${dispColor.cantidad.toLocaleString("es-CO")} m — verifica a mano en Busint con ese Cod, el mismo código de color puede significar otro color en otra tela.`}
                             style={{ color: faltaColorPosible ? C.red : C.amber, fontSize: 13 }}
                           >
                             {faltaColorPosible ? "⚠" : "?"}
@@ -3001,7 +3008,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                                       return (
                                         <span key={`${t.color}-${i}`}>
                                           {i > 0 ? ", " : ""}
-                                          <b style={{ color: C.ink }}>{t.color}{nombreReal ? ` (${nombreReal})` : ""}</b> ({(Number(t.cantidad) || 0).toLocaleString("es-CO")} m)
+                                          <b style={{ color: C.ink }}>{t.color}{nombreReal ? ` (${nombreReal})` : ""}</b>{t.codcomp ? <> [Cod {t.codcomp}]</> : null} ({(Number(t.cantidad) || 0).toLocaleString("es-CO")} m)
                                         </span>
                                       );
                                     })}
@@ -3027,7 +3034,7 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                                       return (
                                         <span key={`${t.color}-${i}`}>
                                           {i > 0 ? ", " : ""}
-                                          <b style={{ color: C.ink }}>{t.color}{nombreReal ? ` (${nombreReal})` : ""}</b> ({(Number(t.cantidad) || 0).toLocaleString("es-CO")} m)
+                                          <b style={{ color: C.ink }}>{t.color}{nombreReal ? ` (${nombreReal})` : ""}</b>{t.codcomp ? <> [Cod {t.codcomp}]</> : null} ({(Number(t.cantidad) || 0).toLocaleString("es-CO")} m)
                                         </span>
                                       );
                                     })}
@@ -3045,12 +3052,13 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                             ) : dispColor.motivo === "posible_por_nombre" ? (
                               <span style={{ fontWeight: 700, color: faltaColorPosible ? C.red : C.amber }}>
                                 {faltaColorPosible ? "⚠" : "?"} Posible coincidencia (sin confirmar): código <b>{dispColor.color}{nombreColorAtlas ? ` (${nombreColorAtlas})` : ""}</b>
+                                {dispColor.codcomp ? <> — Cod <b>{dispColor.codcomp}</b></> : null}
                                 {dispColor.cantidad !== null ? `: hay ${dispColor.cantidad.toLocaleString("es-CO")} m` : dispColor.cantidadM2 != null ? `: hay ${dispColor.cantidadM2.toLocaleString("es-CO")} m² (sin ancho para convertir)` : ""}
-                                {calc.metrosColor > 0 ? ` (este color necesita ${calc.metrosColor.toLocaleString("es-CO")} m)` : ""}. No se confirmó por Referencia+Pinta — el mismo código puede significar otro color en otra tela, verifica en Busint antes de confiar en este número.
+                                {calc.metrosColor > 0 ? ` (este color necesita ${calc.metrosColor.toLocaleString("es-CO")} m)` : ""}. No se confirmó por Referencia+Pinta — verifica en el reporte de Busint {dispColor.codcomp ? <>con el Cod <b>{dispColor.codcomp}</b></> : "por el código de color"} antes de confiar en este número.
                               </span>
                             ) : (
                               <span style={{ fontWeight: 700, color: faltaColor ? C.red : C.green }}>
-                                {faltaColor ? "⚠" : "✅"} Color <b>{dispColor.color}{nombreColorPorCodigo(tablaColores, dispColor.color) ? ` (${nombreColorPorCodigo(tablaColores, dispColor.color)})` : ""}</b>: hay {dispColor.cantidad.toLocaleString("es-CO")} m disponibles en Busint
+                                {faltaColor ? "⚠" : "✅"} Color <b>{dispColor.color}{nombreColorPorCodigo(tablaColores, dispColor.color) ? ` (${nombreColorPorCodigo(tablaColores, dispColor.color)})` : ""}</b>{dispColor.codcomp ? <> — Cod <b>{dispColor.codcomp}</b></> : null}: hay {dispColor.cantidad.toLocaleString("es-CO")} m disponibles en Busint
                                 {calc.metrosColor > 0 ? ` (este color necesita ${calc.metrosColor.toLocaleString("es-CO")} m)` : ""}.
                               </span>
                             )}
