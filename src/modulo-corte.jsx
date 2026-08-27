@@ -211,6 +211,18 @@ function resolverTelaPorEstructura(composicionTelas, telasBusint, refNorm, pinta
 // "004") a ese mismo tipo de nombre (ej. "BLANCO") — si hay exactamente UN
 // código de esa tela cuyo nombre coincide, se usa. Si hay cero o más de uno
 // (nombres repetidos entre telas o proveedores), no se arriesga a adivinar.
+// (2026-08-26) DEGRADADO A "posible" — el usuario comparó contra la
+// pantalla nativa de Busint (Informes Inventarios → BodMp-Inv) y encontró
+// que varios códigos NO cuadran con el nombre que "tabla colores" les
+// asigna (ej. código "004" da 274 m por nombre, pero el reporte real de
+// Busint para ese color da 135 m — casi el doble). Esto sugiere que "tabla
+// colores" es un catálogo GLOBAL de códigos reutilizados entre telas, así
+// que el mismo código puede significar un color distinto según la tela —
+// cruzar solo por nombre puede acertar por coincidencia (como pasó con
+// MARFIL y ROSADO) o fallar en silencio (como con NEGRO, COCOA, GRIS JASPE,
+// AZUL PACIFICO). Por eso esto YA NO se reporta como "ok" (confirmado) sino
+// como "posible_por_nombre" — se muestra como sugerencia a verificar a
+// mano, nunca como un dato en el que se pueda confiar ciegamente.
 function resolverTelaPorNombreColor(telasBusint, tablaColores, nombreNorm, nombreColorAtlas) {
   const nombreColorNorm = normalizarNombreColor(nombreColorAtlas);
   if (!nombreColorNorm || !Array.isArray(telasBusint) || !Array.isArray(tablaColores) || !tablaColores.length) return null;
@@ -222,10 +234,12 @@ function resolverTelaPorNombreColor(telasBusint, tablaColores, nombreNorm, nombr
   });
   if (candidatas.length !== 1) return null;
   const fila = candidatas[0];
-  if (fila.cantidad === null || fila.cantidad === undefined) {
-    return { motivo: "sin_ancho", color: fila.color, cantidadM2: fila.cantidadM2, porNombre: true };
-  }
-  return { motivo: "ok", color: fila.color, cantidad: Number(fila.cantidad) || 0, porNombre: true };
+  return {
+    motivo: "posible_por_nombre",
+    color: fila.color,
+    cantidad: fila.cantidad === null || fila.cantidad === undefined ? null : Number(fila.cantidad) || 0,
+    cantidadM2: fila.cantidadM2,
+  };
 }
 function disponibilidadTelaPorColor(composicionTelas, telasBusint, tablaColores, ref, pinta, nombreTela, nombreColorAtlas) {
   const refNorm = String(ref || "").trim();
@@ -2859,12 +2873,18 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                   : null;
                 const dispColorOk = dispColor && dispColor.motivo === "ok" && dispColor.cantidad !== null;
                 const faltaColor = dispColorOk && calc.metrosColor > dispColor.cantidad;
+                // "posible_por_nombre": coincidencia encontrada comparando
+                // nombres contra "tabla colores", NUNCA se trata como
+                // confirmada (ver nota arriba en resolverTelaPorNombreColor
+                // sobre por qué esto puede fallar en silencio).
+                const dispColorPosible = dispColor && dispColor.motivo === "posible_por_nombre" && dispColor.cantidad !== null;
+                const faltaColorPosible = dispColorPosible && calc.metrosColor > dispColor.cantidad;
                 // Cuando no se puede saber el color exacto (falta detalle en
                 // Busint), caemos de respaldo al total de la tela por
                 // nombre (todos los colores juntos, ya calculado arriba
                 // como "stockTela") — no es tan preciso, pero al menos da
                 // un número real en vez de dejar la pregunta sin responder.
-                const dispColorFallback = form.tipoTela.trim() && dispColor && dispColor.motivo !== "ok" && dispColor.motivo !== "sin_tela_escrita" && stockTela !== null;
+                const dispColorFallback = form.tipoTela.trim() && dispColor && dispColor.motivo !== "ok" && dispColor.motivo !== "posible_por_nombre" && dispColor.motivo !== "sin_tela_escrita" && stockTela !== null;
                 const faltaColorFallback = dispColorFallback && calc.metrosColor > 0 && calc.metrosColor > stockTela;
                 // Además del total, mostramos el desglose de códigos de
                 // color que sí están cargados en Busint para esa tela (tabla
@@ -2925,6 +2945,13 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                             style={{ color: faltaColor ? C.red : C.green, fontSize: 13 }}
                           >
                             {faltaColor ? "⚠" : "✓"}
+                          </span>
+                        ) : dispColorPosible ? (
+                          <span
+                            title={`Posible coincidencia por nombre (sin confirmar): color ${dispColor.color}, ${dispColor.cantidad.toLocaleString("es-CO")} m — verifica a mano, el mismo código puede significar otro color en otra tela.`}
+                            style={{ color: faltaColorPosible ? C.red : C.amber, fontSize: 13 }}
+                          >
+                            {faltaColorPosible ? "⚠" : "?"}
                           </span>
                         ) : dispColorFallback ? (
                           <span
@@ -3015,11 +3042,16 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                               <span style={{ color: C.slate }}>
                                 Color de tela: <b>{dispColor.color}</b> — hay {dispColor.cantidadM2 != null ? `${dispColor.cantidadM2.toLocaleString("es-CO")} m²` : "existencia"} registrada en Busint, pero esa fila no tiene el Ancho de la tela cargado, así que no se puede convertir a metros lineales.
                               </span>
+                            ) : dispColor.motivo === "posible_por_nombre" ? (
+                              <span style={{ fontWeight: 700, color: faltaColorPosible ? C.red : C.amber }}>
+                                {faltaColorPosible ? "⚠" : "?"} Posible coincidencia (sin confirmar): código <b>{dispColor.color}{nombreColorAtlas ? ` (${nombreColorAtlas})` : ""}</b>
+                                {dispColor.cantidad !== null ? `: hay ${dispColor.cantidad.toLocaleString("es-CO")} m` : dispColor.cantidadM2 != null ? `: hay ${dispColor.cantidadM2.toLocaleString("es-CO")} m² (sin ancho para convertir)` : ""}
+                                {calc.metrosColor > 0 ? ` (este color necesita ${calc.metrosColor.toLocaleString("es-CO")} m)` : ""}. No se confirmó por Referencia+Pinta — el mismo código puede significar otro color en otra tela, verifica en Busint antes de confiar en este número.
+                              </span>
                             ) : (
                               <span style={{ fontWeight: 700, color: faltaColor ? C.red : C.green }}>
                                 {faltaColor ? "⚠" : "✅"} Color <b>{dispColor.color}{nombreColorPorCodigo(tablaColores, dispColor.color) ? ` (${nombreColorPorCodigo(tablaColores, dispColor.color)})` : ""}</b>: hay {dispColor.cantidad.toLocaleString("es-CO")} m disponibles en Busint
                                 {calc.metrosColor > 0 ? ` (este color necesita ${calc.metrosColor.toLocaleString("es-CO")} m)` : ""}.
-                                {dispColor.porNombre ? " (identificado comparando el nombre del color, no por Referencia+Pinta)" : ""}
                               </span>
                             )}
                           </div>
