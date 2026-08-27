@@ -262,6 +262,88 @@ async function consultarFacturadoBusint(fechaInicio, fechaFin) {
   return filasArr;
 }
 
+// (2026-08-27) Contabilidad pidió ver, para un rango de fechas, cuánto se
+// facturó por CLIENTE tanto en $ (monto) como en unidades — usa la misma
+// fuente ya conectada en otros informes (ApiGen_FacturadoBusint, que trae
+// facturas normales, traslados externos, traslados en consignación y sus
+// devoluciones — Busint no los separa en endpoints distintos). Se agrupa
+// por cliente y también se desglosa por "tipo" de documento dentro de cada
+// cliente, para que quien lo lea pueda ver si el monto incluye traslados o
+// devoluciones y no solo facturas normales — no se decide acá cuáles
+// "cuentan" como facturación real, se muestra todo con su tipo.
+exports.getFacturacionPorClienteBusint = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    const { fechaInicio, fechaFin } = request.data || {};
+    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    if (!fechaValida(fechaInicio) || !fechaValida(fechaFin)) {
+      throw new HttpsError("invalid-argument", "fechaInicio y fechaFin son obligatorias, en formato AAAA-MM-DD.");
+    }
+    let filas;
+    try {
+      filas = await consultarFacturadoBusint(fechaInicio, fechaFin);
+    } catch (err) {
+      logger.error("Error consultando Busint (getFacturacionPorClienteBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar la facturación en Busint. Intenta de nuevo en unos minutos.");
+    }
+    const porCliente = new Map();
+    for (const f of filas) {
+      const codigoCliente = String(f.codigoCliente ?? "").trim();
+      const nombreCliente = String(f.nombreCliente || "").trim() || "(Sin cliente)";
+      const clave = codigoCliente || nombreCliente;
+      if (!porCliente.has(clave)) {
+        porCliente.set(clave, {
+          codigoCliente,
+          nombreCliente,
+          unidades: 0,
+          monto: 0,
+          porTipo: new Map(),
+          documentos: new Set(),
+        });
+      }
+      const c = porCliente.get(clave);
+      const cant = Number(f.cant) || 0;
+      const precio = Number(f.precio) || 0;
+      const monto = cant * precio;
+      c.unidades += cant;
+      c.monto += monto;
+      const tipo = String(f.tipo || "").trim() || "(sin tipo)";
+      c.porTipo.set(tipo, {
+        monto: (c.porTipo.get(tipo)?.monto || 0) + monto,
+        unidades: (c.porTipo.get(tipo)?.unidades || 0) + cant,
+      });
+      if (f.doc !== undefined && f.doc !== null && f.doc !== "") c.documentos.add(String(f.doc).trim());
+    }
+    const clientes = [...porCliente.values()]
+      .map((c) => ({
+        codigoCliente: c.codigoCliente,
+        nombreCliente: c.nombreCliente,
+        unidades: c.unidades,
+        monto: Math.round(c.monto * 100) / 100,
+        totalDocumentos: c.documentos.size,
+        porTipo: Object.fromEntries(
+          [...c.porTipo.entries()].map(([tipo, v]) => [tipo, { monto: Math.round(v.monto * 100) / 100, unidades: v.unidades }])
+        ),
+      }))
+      .sort((a, b) => b.monto - a.monto);
+    const totalMonto = Math.round(clientes.reduce((s, c) => s + c.monto, 0) * 100) / 100;
+    const totalUnidades = clientes.reduce((s, c) => s + c.unidades, 0);
+    return {
+      fechaInicio,
+      fechaFin,
+      totalFilas: filas.length,
+      totalClientes: clientes.length,
+      totalMonto,
+      totalUnidades,
+      clientes,
+    };
+  }
+);
+
 function cryptoRandomId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }

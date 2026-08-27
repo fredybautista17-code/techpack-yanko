@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, Fragment } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import {
   getFirestore,
@@ -9,6 +9,7 @@ import {
   getDocs,
   onSnapshot,
 } from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -19,6 +20,7 @@ const firebaseConfig = {
 };
 const fbApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
+const functionsClient = getFunctions(fbApp);
 async function fsSave(col, id, data) {
   await setDoc(doc(db, col, id), data, { merge: true });
 }
@@ -3052,6 +3054,144 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
 // de compras), este lo define el usuario a mano: cuánto espera que cada
 // cliente le abone ese mes, según los pedidos que tenga con él. Compara contra
 // lo efectivamente abonado para saber quién va cumpliendo.
+// (2026-08-27) Facturación Clientes: consulta EN VIVO a Busint (no lee
+// Firestore, no depende de que alguien suba nada) cuánto se facturó por
+// cliente en un rango de fechas, en $ y en unidades. Usa la misma fuente
+// (ApiGen_FacturadoBusint) que ya está conectada en otros informes de la
+// app (Pedidos Vigentes, Traslados, Documentos por Cliente) — junta
+// facturas normales, traslados y devoluciones, y muestra el desglose por
+// tipo para que quede claro qué compone cada total, en vez de decidir acá
+// cuáles "cuentan".
+function FacturacionClientesView() {
+  const [fechaInicio, setFechaInicio] = useState(() => today().slice(0, 8) + "01");
+  const [fechaFin, setFechaFin] = useState(() => today());
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState("");
+  const [resultado, setResultado] = useState(null);
+  const [clienteAbierto, setClienteAbierto] = useState(null);
+  async function consultar() {
+    if (!fechaInicio || !fechaFin) return;
+    setCargando(true);
+    setError("");
+    setResultado(null);
+    setClienteAbierto(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getFacturacionPorClienteBusint");
+      const resp = await llamar({ fechaInicio, fechaFin });
+      setResultado(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar la facturación en Busint.");
+    } finally {
+      setCargando(false);
+    }
+  }
+  useEffect(() => {
+    consultar();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return (
+    <div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, marginBottom: 4 }}>
+        🧾 Facturación Clientes
+      </div>
+      <div style={{ fontSize: 13, color: C.slate, marginBottom: 20 }}>
+        Consulta en vivo a Busint (facturas, traslados y devoluciones) — no depende de subir nada a mano.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 20, flexWrap: "wrap" }}>
+        <Field label="Desde">
+          <FInput type="date" value={fechaInicio} onChange={setFechaInicio} />
+        </Field>
+        <Field label="Hasta">
+          <FInput type="date" value={fechaFin} onChange={setFechaFin} />
+        </Field>
+        <div style={{ marginBottom: 14 }}>
+          <Btn onClick={consultar} disabled={cargando || !fechaInicio || !fechaFin}>
+            {cargando ? "Consultando..." : "🔍 Consultar"}
+          </Btn>
+        </div>
+      </div>
+      {error && (
+        <div style={{ padding: 12, borderRadius: 8, background: C.redBg, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          ⚠ {error}
+        </div>
+      )}
+      {cargando && (
+        <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>Consultando Busint...</div>
+      )}
+      {resultado && !cargando && (
+        <>
+          <div style={{ display: "flex", gap: 16, marginBottom: 20, flexWrap: "wrap" }}>
+            <div style={{ flex: "1 1 200px", padding: 16, borderRadius: 10, background: C.white, border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Total facturado</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: C.ink }}>{fmtCOP(resultado.totalMonto)}</div>
+            </div>
+            <div style={{ flex: "1 1 200px", padding: 16, borderRadius: 10, background: C.white, border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Total unidades</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: C.ink }}>{fmtNum(resultado.totalUnidades)}</div>
+            </div>
+            <div style={{ flex: "1 1 200px", padding: 16, borderRadius: 10, background: C.white, border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Clientes</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: C.ink }}>{resultado.totalClientes}</div>
+            </div>
+          </div>
+          {resultado.clientes.length === 0 ? (
+            <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay facturación registrada en ese rango de fechas.</div>
+          ) : (
+            <div style={{ background: C.white, borderRadius: 10, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ borderBottom: `1px solid ${C.border}`, background: C.canvas }}>
+                    <th style={{ textAlign: "left", padding: "10px 12px" }}>Cliente</th>
+                    <th style={{ textAlign: "right", padding: "10px 12px" }}>Unidades</th>
+                    <th style={{ textAlign: "right", padding: "10px 12px" }}>Monto</th>
+                    <th style={{ textAlign: "right", padding: "10px 12px" }}># Documentos</th>
+                    <th style={{ textAlign: "center", padding: "10px 12px" }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {resultado.clientes.map((c, i) => {
+                    const clave = c.codigoCliente || c.nombreCliente;
+                    const abierto = clienteAbierto === clave;
+                    return (
+                      <Fragment key={clave}>
+                        <tr
+                          onClick={() => setClienteAbierto(abierto ? null : clave)}
+                          style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: i % 2 ? C.canvas : C.white }}
+                        >
+                          <td style={{ padding: "10px 12px", fontWeight: 700, color: C.ink }}>{c.nombreCliente}</td>
+                          <td style={{ padding: "10px 12px", textAlign: "right" }}>{fmtNum(c.unidades)}</td>
+                          <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700 }}>{fmtCOP(c.monto)}</td>
+                          <td style={{ padding: "10px 12px", textAlign: "right", color: C.slate }}>{c.totalDocumentos}</td>
+                          <td style={{ padding: "10px 12px", textAlign: "center", color: C.slate }}>{abierto ? "▲" : "▼"}</td>
+                        </tr>
+                        {abierto && (
+                          <tr key={`${clave}-detalle`} style={{ background: C.canvas }}>
+                            <td colSpan={5} style={{ padding: "8px 12px 14px 24px" }}>
+                              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>
+                                Desglose por tipo de documento
+                              </div>
+                              <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+                                {Object.entries(c.porTipo).map(([tipo, v]) => (
+                                  <div key={tipo} style={{ fontSize: 12 }}>
+                                    <b style={{ color: C.ink }}>{tipo}</b>: {fmtCOP(v.monto)} ({fmtNum(v.unidades)} und.)
+                                  </div>
+                                ))}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDiseno, onGuardar, onDelete, isAdmin }) {
   const [mes, setMes] = useState(() => today().slice(0, 7));
   const [showAdd, setShowAdd] = useState(false);
@@ -4295,6 +4435,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     { id: "comparativo", icon: "📊", label: "Comparativo por Concepto" },
     { id: "proyeccion", icon: "🎯", label: "Proyección" },
     { id: "clientes", icon: "🤝", label: "Presupuesto Clientes" },
+    { id: "facturacion_clientes", icon: "🧾", label: "Facturación Clientes" },
     { id: "cxp", icon: "🧾", label: "Cuentas por Pagar" },
     { id: "programacion_pagos", icon: "🧭", label: "Programación de Pagos" },
   ];
@@ -4531,6 +4672,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               isAdmin={isAdmin}
             />
           )}
+          {subView === "facturacion_clientes" && <FacturacionClientesView />}
           {subView === "cxp" && (
             <CuentasPorPagarView
               cortes={cortesCxp}
