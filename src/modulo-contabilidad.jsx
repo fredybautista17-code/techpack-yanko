@@ -3137,8 +3137,13 @@ function FacturacionClientesView() {
             <details style={{ marginBottom: 16, fontSize: 12, color: C.slate }}>
               <summary style={{ cursor: "pointer", fontWeight: 700 }}>🔧 Ver columnas crudas que trae Busint (debug)</summary>
               <div style={{ marginTop: 8, padding: 10, background: C.white, borderRadius: 8, border: `1px solid ${C.border}` }}>
-                <div style={{ marginBottom: 6 }}><b>Columnas:</b> {resultado.columnasDisponibles.join(", ")}</div>
-                <pre style={{ fontSize: 11, overflowX: "auto", margin: 0 }}>{JSON.stringify(resultado.primeraFilaCruda, null, 2)}</pre>
+                <div style={{ marginBottom: 10 }}>
+                  <b>Clientes cruzados por código:</b> {resultado.totalClientesCruzados} (de {resultado.totalClientes} clientes en el informe)
+                </div>
+                <div style={{ marginBottom: 6 }}><b>Columnas de ApiGen_FacturadoBusint:</b> {resultado.columnasDisponibles.join(", ")}</div>
+                <pre style={{ fontSize: 11, overflowX: "auto", margin: "0 0 12px" }}>{JSON.stringify(resultado.primeraFilaCruda, null, 2)}</pre>
+                <div style={{ marginBottom: 6 }}><b>Columnas de ApiGen_Clientes:</b> {(resultado.columnasClientesDisponibles || []).join(", ") || "—"}</div>
+                <pre style={{ fontSize: 11, overflowX: "auto", margin: 0 }}>{JSON.stringify(resultado.primeraFilaClienteCruda, null, 2)}</pre>
               </div>
             </details>
           )}
