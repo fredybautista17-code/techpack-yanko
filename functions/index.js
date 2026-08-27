@@ -842,6 +842,15 @@ exports.getTelasStockBusintBD = onCall(
         return {
           componente: String(f.Componente || "").trim(),
           color: String(f.Color || "").trim(),
+          // (2026-08-27) "Codcomp" es el ID único por fila de "estandar
+          // componentes prod" (ej. 5740) — confirmado que corresponde al
+          // "Cod" que muestra el reporte nativo de Busint (Informes
+          // Inventarios) por Genérico+Color (ej. 4327=ARENA de MARLY). A
+          // diferencia del código de "tabla colores" (global, se repite
+          // entre telas distintas), este es único por fila real de
+          // inventario — sirve para que el usuario verifique a mano contra
+          // el reporte de Busint sin ambigüedad.
+          codcomp: f.Codcomp !== undefined && f.Codcomp !== null && f.Codcomp !== "" ? String(f.Codcomp).trim() : null,
           // "cantidad" es la que usa el resto de la app para comparar
           // contra metros lineales (largoTrazo × capas) — ya convertida.
           // Si no hay ancho registrado para esa fila, queda en null (mejor

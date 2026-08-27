@@ -7905,6 +7905,7 @@ function BusintCatalogoTestView() {
                   <tr style={{ borderBottom: `1px solid ${T.border}` }}>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Componente</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Código</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px", fontWeight: 800 }}>Cod (Codcomp)</th>
                     <th style={{ textAlign: "left", padding: "6px 8px" }}>Nombre color</th>
                     <th style={{ textAlign: "right", padding: "6px 8px" }}>M2 (ICant crudo)</th>
                     <th style={{ textAlign: "right", padding: "6px 8px" }}>Ancho</th>
@@ -7918,6 +7919,7 @@ function BusintCatalogoTestView() {
                     <tr key={i} style={{ borderBottom: `1px solid ${T.border}`, opacity: f.activo === false ? 0.45 : 1 }}>
                       <td style={{ padding: "6px 8px" }}>{f.componente}</td>
                       <td style={{ padding: "6px 8px", fontWeight: 700 }}>{f.color || "—"}</td>
+                      <td style={{ padding: "6px 8px", fontWeight: 800, color: T.blue }}>{f.codcomp || "—"}</td>
                       <td style={{ padding: "6px 8px" }}>{f.nombreColor || "—"}</td>
                       <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.cantidadM2 ?? "—"}</td>
                       <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.ancho || "—"}</td>
