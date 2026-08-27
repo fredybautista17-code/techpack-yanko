@@ -812,6 +812,22 @@ exports.getResumenTablaBusintBD = onCall(
 // Itotal=2569.92 a Iprom=107.08 costo/unidad). Se usa desde "Programación
 // de Corte" para sugerir el nombre real de la tela (antes era texto libre)
 // y mostrar cuánta hay disponible frente a lo que el trazo va a consumir.
+// (2026-08-27) Igual que fechaBDaISO (definida más abajo en este archivo)
+// pero con hora, y a prueba de que el objeto no tenga el formato esperado —
+// se usa solo en el diagnóstico de "estandar componentes prod" para ver
+// cuándo se actualizó por última vez cada fila (Fecha / Ufecha).
+function fechaBDaISOSafe(obj) {
+  if (!obj || typeof obj !== "object" || !obj.isValidDateTime) return null;
+  const y = obj.year, m = obj.month, d = obj.day;
+  if (!y || !m || !d) return null;
+  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+function fechaBDaISOHoraSafe(obj) {
+  const base = fechaBDaISOSafe(obj);
+  if (!base) return null;
+  const h = obj.hour ?? 0, mi = obj.minute ?? 0, s = obj.second ?? 0;
+  return `${base} ${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
 exports.getTelasStockBusintBD = onCall(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
@@ -851,6 +867,24 @@ exports.getTelasStockBusintBD = onCall(
           // inventario — sirve para que el usuario verifique a mano contra
           // el reporte de Busint sin ambigüedad.
           codcomp: f.Codcomp !== undefined && f.Codcomp !== null && f.Codcomp !== "" ? String(f.Codcomp).trim() : null,
+          // (2026-08-27) EXPLORATORIO — campos crudos extra para investigar
+          // por qué "estandar componentes prod" (ICant) no cuadra contra el
+          // reporte nativo "Inventarios - Telas por Genérico" de Busint,
+          // aunque se consulten en el mismo minuto (confirmado con el
+          // usuario, ej. MARLY/ARENA: 109.12 m² en la API vs 122.80 m² en
+          // el reporte). Hipótesis a validar: "ICCant/ICtotal/ICprom" (con
+          // "IC", separado de "ICant/Itotal/Iprom") podría ser inventario
+          // comprometido/apartado vs. total; "Ubc1".."Ubc15" podrían ser
+          // cantidades por ubicación/bodega. Se dejan aparte de "cantidad"
+          // para no tocar el cálculo real todavía, solo para poder verlos
+          // en el panel de diagnóstico.
+          icCant: f.ICCant !== undefined && f.ICCant !== null ? Number(f.ICCant) || 0 : null,
+          icTotal: f.ICtotal !== undefined && f.ICtotal !== null ? Number(f.ICtotal) || 0 : null,
+          icProm: f.ICprom !== undefined && f.ICprom !== null ? Number(f.ICprom) || 0 : null,
+          invCorte: f.InvCorte ?? null,
+          ubicaciones: Array.from({ length: 15 }, (_, i) => Number(f[`Ubc${i + 1}`]) || 0),
+          fecha: fechaBDaISOSafe(f.Fecha),
+          ufecha: fechaBDaISOHoraSafe(f.Ufecha),
           // "cantidad" es la que usa el resto de la app para comparar
           // contra metros lineales (largoTrazo × capas) — ya convertida.
           // Si no hay ancho registrado para esa fila, queda en null (mejor

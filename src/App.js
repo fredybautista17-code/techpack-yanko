@@ -7910,6 +7910,11 @@ function BusintCatalogoTestView() {
                     <th style={{ textAlign: "right", padding: "6px 8px" }}>M2 (ICant crudo)</th>
                     <th style={{ textAlign: "right", padding: "6px 8px" }}>Ancho</th>
                     <th style={{ textAlign: "right", padding: "6px 8px", fontWeight: 800 }}>ML (calculado)</th>
+                    <th style={{ textAlign: "right", padding: "6px 8px", color: T.coral }}>IC Cant</th>
+                    <th style={{ textAlign: "right", padding: "6px 8px", color: T.coral }}>ICant - ICCant</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Ubicaciones (Ubc1-15, &gt;0)</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>InvCorte</th>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Última act. (Ufecha)</th>
                     <th style={{ textAlign: "right", padding: "6px 8px" }}>Costo</th>
                     <th style={{ textAlign: "center", padding: "6px 8px" }}>Activo</th>
                   </tr>
@@ -7924,6 +7929,15 @@ function BusintCatalogoTestView() {
                       <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.cantidadM2 ?? "—"}</td>
                       <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.ancho || "—"}</td>
                       <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700 }}>{f.cantidad === null || f.cantidad === undefined ? "sin ancho" : Number(f.cantidad).toFixed(2)}</td>
+                      <td style={{ padding: "6px 8px", textAlign: "right", color: T.coral, fontWeight: 700 }}>{f.icCant ?? "—"}</td>
+                      <td style={{ padding: "6px 8px", textAlign: "right", color: T.coral, fontWeight: 700 }}>{f.icCant !== null && f.icCant !== undefined ? (Number(f.cantidadM2 || 0) - Number(f.icCant)).toFixed(2) : "—"}</td>
+                      <td style={{ padding: "6px 8px", fontSize: 11 }}>
+                        {Array.isArray(f.ubicaciones) && f.ubicaciones.some((v) => v > 0)
+                          ? f.ubicaciones.map((v, idx) => (v > 0 ? `Ubc${idx + 1}=${v}` : null)).filter(Boolean).join(", ")
+                          : "—"}
+                      </td>
+                      <td style={{ padding: "6px 8px" }}>{f.invCorte ?? "—"}</td>
+                      <td style={{ padding: "6px 8px", fontSize: 11 }}>{f.ufecha || "—"}</td>
                       <td style={{ padding: "6px 8px", textAlign: "right" }}>{f.costo}</td>
                       <td style={{ padding: "6px 8px", textAlign: "center" }}>{f.activo === false ? "No" : "Sí"}</td>
                     </tr>
