@@ -7473,6 +7473,25 @@ function BusintCatalogoTestView() {
   const [endpointGen, setEndpointGen] = useState("");
   const [cargandoGen, setCargandoGen] = useState(false);
   const [resultadoGen, setResultadoGen] = useState(null);
+  const [parametrosGenTexto, setParametrosGenTexto] = useState("");
+  const [cargandoEsquemaGen, setCargandoEsquemaGen] = useState(false);
+  const [esquemaGen, setEsquemaGen] = useState(null);
+  async function verEsquemaGen() {
+    const nombre = endpointGen.trim();
+    if (!nombre) return;
+    setCargandoEsquemaGen(true);
+    setError("");
+    setEsquemaGen(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getEsquemaConsultaBusintGen");
+      const resp = await llamar({ endpoint: nombre });
+      setEsquemaGen(resp.data);
+    } catch (err) {
+      setError(err?.message || `No se pudo traer el esquema de "${nombre}".`);
+    } finally {
+      setCargandoEsquemaGen(false);
+    }
+  }
   async function consultarGen() {
     const nombre = endpointGen.trim();
     if (!nombre) return;
@@ -7480,8 +7499,22 @@ function BusintCatalogoTestView() {
     setError("");
     setResultadoGen(null);
     try {
+      // (2026-08-27) Parámetros extra en formato "Clave: valor" por línea
+      // (más fácil de escribir a mano que JSON) — ej. "FechaInicial: 2026-08-01".
+      let parametros = null;
+      const lineas = parametrosGenTexto.split("\n").map((l) => l.trim()).filter(Boolean);
+      if (lineas.length) {
+        parametros = {};
+        for (const linea of lineas) {
+          const idx = linea.indexOf(":");
+          if (idx === -1) continue;
+          const clave = linea.slice(0, idx).trim();
+          const valor = linea.slice(idx + 1).trim();
+          if (clave) parametros[clave] = valor;
+        }
+      }
       const llamar = httpsCallable(functionsClient, "getMuestraCatalogoBusintGen");
-      const resp = await llamar({ endpoint: nombre });
+      const resp = await llamar({ endpoint: nombre, ...(parametros ? { parametros } : {}) });
       setResultadoGen(resp.data);
     } catch (err) {
       setError(err?.message || `No se pudo consultar "${nombre}".`);
@@ -7805,8 +7838,41 @@ function BusintCatalogoTestView() {
           <FInput value={endpointGen} onChange={setEndpointGen} placeholder="Ej: ApiGen_MovimientosPosint" />
         </Field>
         <div style={{ marginBottom: 14 }}>
+          <Btn variant="secondary" onClick={verEsquemaGen} disabled={cargandoEsquemaGen || !endpointGen.trim()}>{cargandoEsquemaGen ? "Buscando..." : "📋 Ver parámetros esperados"}</Btn>
+        </div>
+        <div style={{ marginBottom: 14 }}>
           <Btn onClick={consultarGen} disabled={cargandoGen || !endpointGen.trim()}>{cargandoGen ? "Consultando..." : "🔍 Consultar"}</Btn>
         </div>
+      </div>
+      {esquemaGen && (
+        <div style={{ marginBottom: 16, padding: 12, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}`, fontSize: 12 }}>
+          {!esquemaGen.encontrado ? (
+            <span style={{ color: T.slate }}>No se encontró "{esquemaGen.endpoint}" en el swagger, o no tiene parámetros documentados.</span>
+          ) : esquemaGen.parametros.length === 0 ? (
+            <span style={{ color: T.slate }}>"{esquemaGen.endpoint}" no declara parámetros en el swagger (puede que el filtro no esté documentado, o que en verdad no necesite ninguno).</span>
+          ) : (
+            <>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>Parámetros que declara "{esquemaGen.endpoint}":</div>
+              {esquemaGen.parametros.map((p, i) => (
+                <div key={i}>
+                  <b>{p.nombre}</b> {p.obligatorio ? <span style={{ color: T.coral }}>(obligatorio)</span> : <span style={{ color: T.slate }}>(opcional)</span>}
+                  {p.tipo ? ` — ${p.tipo}` : ""} {p.en ? `[${p.en}]` : ""}
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+      <div style={{ marginBottom: 16, maxWidth: 520 }}>
+        <Field label="Parámetros extra a mandar (uno por línea, formato Clave: valor)">
+          <textarea
+            value={parametrosGenTexto}
+            onChange={(e) => setParametrosGenTexto(e.target.value)}
+            placeholder={"Ej:\nFechaInicial: 2026-08-01\nFechaFinal: 2026-08-27"}
+            rows={3}
+            style={{ width: "100%", fontFamily: "monospace", fontSize: 12, padding: 8, borderRadius: 8, border: `1px solid ${T.border}` }}
+          />
+        </Field>
       </div>
       {resultadoGen && (
         <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>

@@ -518,11 +518,21 @@ exports.getClientesBusint = onCall(
 // filtro en la API de Busint (siempre traen TODO el catálogo), así que se
 // filtra acá adentro por la referencia pedida antes de responder, para no
 // mandarle al navegador miles de filas que no necesita.
-async function consultarCatalogoBusint(endpoint) {
+async function consultarCatalogoBusint(endpoint, extraParams) {
   const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
   const token = BUSINT_TOKEN.value();
   const form = new FormData();
   form.append("Token", token);
+  // (2026-08-27) Algunos catálogos de la API gen (ej. "ApiGen_MovimientosPosint")
+  // devuelven [] vacío sin parámetros — probablemente esperan un rango de
+  // fecha u otro filtro obligatorio para no traer millones de filas. Se
+  // permite mandar parámetros extra (ej. { FechaInicial: "2026-08-01" }) que
+  // se agregan al mismo form-data junto con el Token.
+  if (extraParams && typeof extraParams === "object") {
+    for (const [k, v] of Object.entries(extraParams)) {
+      if (v !== undefined && v !== null && v !== "") form.append(k, String(v));
+    }
+  }
   // encodeURIComponent porque muchos nombres de catálogo de Busint traen
   // espacios y guiones sueltos (ej. "planeacion cargas desglosado") — sin
   // esto la URL queda mal formada y Busint responde 404/400.
@@ -1950,20 +1960,78 @@ exports.getMuestraCatalogoBusintGen = onCall(
     if (!endpoint) {
       throw new HttpsError("invalid-argument", "Debes indicar el nombre exacto del endpoint (ej. ApiGen_MovimientosPosint).");
     }
+    const parametros = request.data?.parametros && typeof request.data.parametros === "object" ? request.data.parametros : null;
     let filas;
     try {
-      filas = await consultarCatalogoBusint(endpoint);
+      filas = await consultarCatalogoBusint(endpoint, parametros);
     } catch (err) {
-      logger.error("Error consultando Busint (getMuestraCatalogoBusintGen)", { endpoint, error: String(err) });
+      logger.error("Error consultando Busint (getMuestraCatalogoBusintGen)", { endpoint, parametros, error: String(err) });
       throw new HttpsError("unavailable", `No se pudo consultar "${endpoint}": ${err?.message || String(err)}`);
     }
     return {
       endpoint,
+      parametrosUsados: parametros,
       total: filas.length,
       columnas: filas.length ? Object.keys(filas[0]) : [],
       primeras: filas.slice(0, 10),
       ultimas: filas.slice(-10),
     };
+  }
+);
+
+// (2026-08-27) Trae del swagger de la API gen los parámetros que declara un
+// endpoint puntual de "/consultas/X" (nombre, si es obligatorio, tipo) —
+// para saber, sin adivinar, qué mandar cuando un catálogo devuelve []
+// vacío sin filtros (ej. "ApiGen_MovimientosPosint").
+exports.getEsquemaConsultaBusintGen = onCall(
+  {
+    secrets: [BUSINT_BASE_URL],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const endpoint = String(request.data?.endpoint || "").trim();
+    if (!endpoint) {
+      throw new HttpsError("invalid-argument", "Debes indicar el nombre exacto del endpoint.");
+    }
+    const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
+    let swagger;
+    try {
+      const resp = await fetch(`${baseUrl}/swagger/v1/swagger.json`);
+      if (!resp.ok) throw new Error(`swagger respondió ${resp.status}`);
+      swagger = await resp.json();
+    } catch (err) {
+      logger.error("Error trayendo el swagger de la API gen", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo traer el swagger de la API gen: ${err?.message || String(err)}`);
+    }
+    const paths = swagger.paths || {};
+    const pathKey = Object.keys(paths).find((p) => p.toLowerCase().endsWith(`/consultas/${endpoint}`.toLowerCase()));
+    if (!pathKey) {
+      return { endpoint, encontrado: false, parametros: [] };
+    }
+    const metodos = paths[pathKey] || {};
+    const operacion = metodos.post || metodos.get || Object.values(metodos)[0] || {};
+    const parametros = (operacion.parameters || []).map((p) => ({
+      nombre: p.name,
+      obligatorio: !!p.required,
+      en: p.in,
+      tipo: p.schema?.type || p.type || "",
+    }));
+    // Si el body va como requestBody (OpenAPI 3) en vez de "parameters",
+    // también se intenta sacar de ahí (form-data con propiedades).
+    let propiedadesBody = [];
+    const bodySchema = operacion.requestBody?.content?.["multipart/form-data"]?.schema
+      || operacion.requestBody?.content?.["application/x-www-form-urlencoded"]?.schema;
+    if (bodySchema?.properties) {
+      const requeridos = new Set(bodySchema.required || []);
+      propiedadesBody = Object.keys(bodySchema.properties).map((nombre) => ({
+        nombre,
+        obligatorio: requeridos.has(nombre),
+        en: "formData",
+        tipo: bodySchema.properties[nombre]?.type || "",
+      }));
+    }
+    return { endpoint, encontrado: true, parametros: [...parametros, ...propiedadesBody] };
   }
 );
 
