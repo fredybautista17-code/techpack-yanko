@@ -290,11 +290,19 @@ exports.getFacturacionPorClienteBusint = onCall(
       logger.error("Error consultando Busint (getFacturacionPorClienteBusint)", { error: String(err) });
       throw new HttpsError("unavailable", "No se pudo consultar la facturación en Busint. Intenta de nuevo en unos minutos.");
     }
+    // (2026-08-27) "nombreCliente" resultó vacío en todas las filas reales —
+    // ese nombre de columna se copió de OTRO endpoint (Panel de Flujo) sin
+    // confirmar que ApiGen_FacturadoBusint use el mismo. Se prueban varios
+    // nombres candidatos como respaldo; si ninguno trae nada, se muestra el
+    // código de cliente (que sí es real, ya usado en listarDocumentosBusintCliente)
+    // en vez de dejar todo como "(Sin cliente)" sin poder diferenciar.
+    const sacarNombreCliente = (f) =>
+      String(f.nombreCliente || f.NombreCliente || f.cliente || f.Cliente || f.razonSocial || f.nomCliente || f.nombreORazonSocial || "").trim();
     const porCliente = new Map();
     for (const f of filas) {
       const codigoCliente = String(f.codigoCliente ?? "").trim();
-      const nombreCliente = String(f.nombreCliente || "").trim() || "(Sin cliente)";
-      const clave = codigoCliente || nombreCliente;
+      const nombreCliente = sacarNombreCliente(f);
+      const clave = codigoCliente || nombreCliente || "(sin-identificar)";
       if (!porCliente.has(clave)) {
         porCliente.set(clave, {
           codigoCliente,
@@ -321,7 +329,7 @@ exports.getFacturacionPorClienteBusint = onCall(
     const clientes = [...porCliente.values()]
       .map((c) => ({
         codigoCliente: c.codigoCliente,
-        nombreCliente: c.nombreCliente,
+        nombreCliente: c.nombreCliente || (c.codigoCliente ? `Cliente ${c.codigoCliente}` : "(Sin identificar)"),
         unidades: c.unidades,
         monto: Math.round(c.monto * 100) / 100,
         totalDocumentos: c.documentos.size,
@@ -340,6 +348,10 @@ exports.getFacturacionPorClienteBusint = onCall(
       totalMonto,
       totalUnidades,
       clientes,
+      // Para depurar si el nombre de cliente sigue sin aparecer: columnas
+      // reales de la primera fila que trajo Busint.
+      columnasDisponibles: filas.length ? Object.keys(filas[0]) : [],
+      primeraFilaCruda: filas.length ? filas[0] : null,
     };
   }
 );

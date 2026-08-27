@@ -3133,6 +3133,15 @@ function FacturacionClientesView() {
               <div style={{ fontSize: 22, fontWeight: 800, color: C.ink }}>{resultado.totalClientes}</div>
             </div>
           </div>
+          {resultado.columnasDisponibles && resultado.columnasDisponibles.length > 0 && (
+            <details style={{ marginBottom: 16, fontSize: 12, color: C.slate }}>
+              <summary style={{ cursor: "pointer", fontWeight: 700 }}>🔧 Ver columnas crudas que trae Busint (debug)</summary>
+              <div style={{ marginTop: 8, padding: 10, background: C.white, borderRadius: 8, border: `1px solid ${C.border}` }}>
+                <div style={{ marginBottom: 6 }}><b>Columnas:</b> {resultado.columnasDisponibles.join(", ")}</div>
+                <pre style={{ fontSize: 11, overflowX: "auto", margin: 0 }}>{JSON.stringify(resultado.primeraFilaCruda, null, 2)}</pre>
+              </div>
+            </details>
+          )}
           {resultado.clientes.length === 0 ? (
             <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay facturación registrada en ese rango de fechas.</div>
           ) : (
