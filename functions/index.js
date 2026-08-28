@@ -247,10 +247,17 @@ async function consultarFacturadoBusint(fechaInicio, fechaFin) {
   if (!resp.ok) {
     const texto = await resp.text().catch(() => "");
     logger.error("Busint respondió con error (ApiGen_FacturadoBusint)", { status: resp.status, texto });
-    throw new Error(`Busint respondió ${resp.status}`);
+    throw new Error(`Busint respondió ${resp.status}${texto ? ": " + texto.slice(0, 300) : ""}`);
   }
 
-  const filas = await resp.json();
+  const textoCrudo = await resp.text();
+  let filas;
+  try {
+    filas = JSON.parse(textoCrudo);
+  } catch (errParse) {
+    logger.error("Busint no devolvió JSON válido (ApiGen_FacturadoBusint)", { textoCrudo: textoCrudo.slice(0, 500) });
+    throw new Error(`Busint no devolvió JSON válido: ${textoCrudo.slice(0, 200)}`);
+  }
   const filasArr = Array.isArray(filas) ? filas : [];
   logger.info("consultarFacturadoBusint recibió respuesta", {
     fechaInicio,
@@ -310,8 +317,9 @@ exports.getFacturacionPorClienteBusint = onCall(
         }),
       ]);
     } catch (err) {
-      logger.error("Error consultando Busint (getFacturacionPorClienteBusint)", { error: String(err) });
-      throw new HttpsError("unavailable", "No se pudo consultar la facturación en Busint. Intenta de nuevo en unos minutos.");
+      const detalle = (err && err.message) ? err.message : String(err);
+      logger.error("Error consultando Busint (getFacturacionPorClienteBusint)", { error: detalle, stack: err && err.stack });
+      throw new HttpsError("unavailable", `No se pudo consultar la facturación en Busint: ${detalle}`);
     }
     const nombrePorCodigo = new Map();
     filasClientes.forEach((c) => {
