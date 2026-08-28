@@ -3187,9 +3187,18 @@ function FacturacionClientesView() {
                           style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: i % 2 ? C.canvas : C.white }}
                         >
                           <td style={{ padding: "10px 12px", fontWeight: 700, color: C.ink }}>{c.nombreCliente}</td>
-                          <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: C.green }}>{fmtCOP(c.facturado.monto)}</td>
-                          <td style={{ padding: "10px 12px", textAlign: "right" }}>{fmtCOP(c.consignacionNeta.monto)}</td>
-                          <td style={{ padding: "10px 12px", textAlign: "right" }}>{fmtCOP(c.trasladoExternoNeto.monto)}</td>
+                          <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                            <div style={{ fontWeight: 700, color: C.green }}>{fmtCOP(c.facturado.monto)}</div>
+                            <div style={{ fontSize: 11, color: C.slate }}>{fmtNum(c.facturado.unidades)} und.</div>
+                          </td>
+                          <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                            <div style={{ fontWeight: 700 }}>{fmtCOP(c.consignacionNeta.monto)}</div>
+                            <div style={{ fontSize: 11, color: C.slate }}>{fmtNum(c.consignacionNeta.unidades)} und.</div>
+                          </td>
+                          <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                            <div style={{ fontWeight: 700 }}>{fmtCOP(c.trasladoExternoNeto.monto)}</div>
+                            <div style={{ fontSize: 11, color: C.slate }}>{fmtNum(c.trasladoExternoNeto.unidades)} und.</div>
+                          </td>
                           <td style={{ padding: "10px 12px", textAlign: "right", color: C.slate }}>{c.totalDocumentos}</td>
                           <td style={{ padding: "10px 12px", textAlign: "center", color: C.slate }}>{abierto ? "▲" : "▼"}</td>
                         </tr>
