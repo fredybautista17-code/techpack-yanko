@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, Fragment } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import {
   getFirestore,
@@ -2626,6 +2626,300 @@ export function MiDiaStandalone({ currentUser, onVolver, onLogout }) {
   );
 }
 // ─── ROOT MÓDULO PLANEACIÓN ─────────────────────────────────────────────────────
+
+// (2026-08-28) "Tubo Productivo" — pedido de Fredy: de un vistazo, cuánto
+// hay AHORA en cada etapa de producción (cortado, bodega de materia prima,
+// inventario en corte, planta, semiterminado, bodega de producto
+// terminado), para saber en qué fase está la fábrica sin tener que entrar
+// a revisar Informes con detenimiento. Usa la misma fuente ya validada
+// (getCargaPlaneacionDesdeBusintGen, 135/135 contra Hoja1) y el mismo
+// normalizador (construirLotesDesdeBusintGen) que ya usa Informes — no
+// crea una "carga" nueva en Firestore, es una consulta en vivo aparte. El
+// clic en una tarjeta despliega el detalle DEBAJO, en la misma pantalla
+// (pedido explícito: sin cambiar de pantalla).
+function TuboProductivoView() {
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
+  const [lotes, setLotes] = useState([]);
+  const [actualizadoEn, setActualizadoEn] = useState(null);
+  const [etapaAbierta, setEtapaAbierta] = useState(null);
+
+  async function cargar() {
+    setCargando(true);
+    setError("");
+    try {
+      const llamar = httpsCallable(functionsClient, "getCargaPlaneacionDesdeBusintGen");
+      const resp = await llamar();
+      const filasBusint = resp.data?.lotes || [];
+      setLotes(construirLotesDesdeBusintGen(filasBusint));
+      setActualizadoEn(new Date());
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar Busint.");
+    } finally {
+      setCargando(false);
+    }
+  }
+  useEffect(() => {
+    cargar();
+  }, []);
+
+  const etapas = useMemo(() => {
+    const sum = (campo) => lotes.reduce((s, l) => s + (Number(l[campo]) || 0), 0);
+    return [
+      { id: "cortado", label: "Cortado (total)", icon: "✂️", color: C.violet, bg: C.violetBg, campo: "cantCortada", valor: sum("cantCortada") },
+      { id: "bmp", label: "Bodega Materia Prima", icon: "🧶", color: C.amber, bg: C.amberBg, campo: "invBMP", valor: sum("invBMP") },
+      { id: "corte", label: "Inventario en Corte", icon: "✂️", color: C.red, bg: C.redBg, campo: "invCorte", valor: sum("invCorte") },
+      { id: "planta", label: "En Planta", icon: "🏭", color: C.blue, bg: C.blueBg, campo: "invPlanta", valor: sum("invPlanta") },
+      { id: "semiterminado", label: "Semiterminado", icon: "🧵", color: C.amber, bg: C.amberBg, campo: "invSemiterminado", valor: sum("invSemiterminado") },
+      { id: "bpt", label: "Bodega Producto Terminado", icon: "📦", color: C.green, bg: C.greenBg, campo: "invBPT", valor: sum("invBPT") },
+    ];
+  }, [lotes]);
+
+  const etapaActiva = etapas.find((e) => e.id === etapaAbierta) || null;
+  const filasDetalle = useMemo(() => {
+    if (!etapaActiva) return [];
+    return lotes
+      .filter((l) => Number(l[etapaActiva.campo]) > 0)
+      .sort((a, b) => Number(b[etapaActiva.campo]) - Number(a[etapaActiva.campo]));
+  }, [lotes, etapaActiva]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
+        <div style={{ fontSize: 22, fontWeight: 800, color: C.ink }}>🧵 Tubo Productivo</div>
+        <Btn small variant="secondary" onClick={cargar} disabled={cargando}>
+          {cargando ? "Actualizando..." : "🔄 Actualizar"}
+        </Btn>
+      </div>
+      <div style={{ fontSize: 13, color: C.slate, marginBottom: 20 }}>
+        En vivo desde Busint: cuánto hay en cada etapa de producción ahora mismo. Clic en una tarjeta para ver el detalle, sin salir de esta pantalla.
+        {actualizadoEn && <span> · Actualizado {actualizadoEn.toLocaleTimeString()}</span>}
+      </div>
+      {error && (
+        <div style={{ padding: 12, borderRadius: 8, background: C.redBg, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          ⚠ {error}
+        </div>
+      )}
+      {cargando ? (
+        <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>Consultando Busint...</div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 20 }}>
+            {etapas.map((e) => (
+              <KPI
+                key={e.id}
+                icon={e.icon}
+                label={e.label}
+                value={`${fmtNum(e.valor)} und.`}
+                color={e.color}
+                bg={etapaAbierta === e.id ? e.color + "22" : e.bg}
+                sub={`${lotes.filter((l) => Number(l[e.campo]) > 0).length} lotes`}
+                onClick={() => setEtapaAbierta(etapaAbierta === e.id ? null : e.id)}
+              />
+            ))}
+          </div>
+          {etapaActiva && (
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.ink, marginBottom: 8 }}>
+                {etapaActiva.label} — {filasDetalle.length} lotes ({fmtNum(etapaActiva.valor)} und.)
+              </div>
+              <Tabla
+                columnas={[
+                  { key: "numLote", label: "Lote" },
+                  { key: "numPedido", label: "Pedido" },
+                  { key: "nombreCliente", label: "Cliente" },
+                  { key: "categoria", label: "Línea" },
+                  { key: "referencia", label: "Referencia" },
+                  { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(Number(f[etapaActiva.campo]) || 0) },
+                ]}
+                filas={filasDetalle}
+                vacio="No hay lotes en esta etapa."
+              />
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// (2026-08-28) "Buscar por línea" — pedido de Fredy: cuando le preguntan
+// cuánto hay de un cliente en una línea puntual (caballero/dama/niño, el
+// campo "categoria"), hoy le toca buscar a mano por varias pestañas de
+// Informes. Acá se filtra por cliente y/o línea y se ve de una vez cuánto
+// hay pendiente (sumando lo que está en BMP+Corte+Planta+Semiterminado+BPT,
+// es decir, todavía no despachado) y cuánto se ha cortado en total, con
+// clic para ver los lotes puntuales detrás de cada combinación.
+function BuscarPorLineaView() {
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
+  const [lotes, setLotes] = useState([]);
+  const [actualizadoEn, setActualizadoEn] = useState(null);
+  const [filtroCliente, setFiltroCliente] = useState("");
+  const [filtroLinea, setFiltroLinea] = useState("");
+  const [grupoAbierto, setGrupoAbierto] = useState(null);
+
+  async function cargar() {
+    setCargando(true);
+    setError("");
+    try {
+      const llamar = httpsCallable(functionsClient, "getCargaPlaneacionDesdeBusintGen");
+      const resp = await llamar();
+      const filasBusint = resp.data?.lotes || [];
+      setLotes(construirLotesDesdeBusintGen(filasBusint));
+      setActualizadoEn(new Date());
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar Busint.");
+    } finally {
+      setCargando(false);
+    }
+  }
+  useEffect(() => {
+    cargar();
+  }, []);
+
+  const clientes = useMemo(
+    () => [...new Set(lotes.map((l) => l.clienteAgrupado || l.nombreCliente).filter(Boolean))].sort(),
+    [lotes]
+  );
+  const lineas = useMemo(() => [...new Set(lotes.map((l) => l.categoria).filter(Boolean))].sort(), [lotes]);
+
+  const lotesFiltrados = useMemo(() => {
+    return lotes.filter((l) => {
+      const cliente = l.clienteAgrupado || l.nombreCliente;
+      if (filtroCliente && cliente !== filtroCliente) return false;
+      if (filtroLinea && l.categoria !== filtroLinea) return false;
+      return true;
+    });
+  }, [lotes, filtroCliente, filtroLinea]);
+
+  const grupos = useMemo(() => {
+    const mapa = new Map();
+    lotesFiltrados.forEach((l) => {
+      const cliente = l.clienteAgrupado || l.nombreCliente;
+      const linea = l.categoria || "(Sin línea)";
+      const clave = `${cliente}||${linea}`;
+      if (!mapa.has(clave)) {
+        mapa.set(clave, { clave, cliente, linea, lotes: [], unidadesPendientes: 0, cantCortada: 0 });
+      }
+      const g = mapa.get(clave);
+      const pendientes =
+        (Number(l.invBMP) || 0) +
+        (Number(l.invCorte) || 0) +
+        (Number(l.invPlanta) || 0) +
+        (Number(l.invSemiterminado) || 0) +
+        (Number(l.invBPT) || 0);
+      g.lotes.push(l);
+      g.unidadesPendientes += pendientes;
+      g.cantCortada += Number(l.cantCortada) || 0;
+    });
+    return [...mapa.values()].sort((a, b) => b.unidadesPendientes - a.unidadesPendientes);
+  }, [lotesFiltrados]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
+        <div style={{ fontSize: 22, fontWeight: 800, color: C.ink }}>🔍 Buscar por Línea</div>
+        <Btn small variant="secondary" onClick={cargar} disabled={cargando}>
+          {cargando ? "Actualizando..." : "🔄 Actualizar"}
+        </Btn>
+      </div>
+      <div style={{ fontSize: 13, color: C.slate, marginBottom: 16 }}>
+        En vivo desde Busint. Filtra por cliente y/o línea para ver de una vez cuánto hay pendiente (sin despachar) de esa combinación.
+        {actualizadoEn && <span> · Actualizado {actualizadoEn.toLocaleTimeString()}</span>}
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, marginBottom: 4, textTransform: "uppercase" }}>Cliente</div>
+          <select
+            value={filtroCliente}
+            onChange={(e) => { setFiltroCliente(e.target.value); setGrupoAbierto(null); }}
+            style={{ fontSize: 13, padding: "8px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ink, minWidth: 220 }}
+          >
+            <option value="">Todos los clientes</option>
+            {clientes.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, marginBottom: 4, textTransform: "uppercase" }}>Línea</div>
+          <select
+            value={filtroLinea}
+            onChange={(e) => { setFiltroLinea(e.target.value); setGrupoAbierto(null); }}
+            style={{ fontSize: 13, padding: "8px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ink, minWidth: 180 }}
+          >
+            <option value="">Todas las líneas</option>
+            {lineas.map((l) => <option key={l} value={l}>{l}</option>)}
+          </select>
+        </div>
+      </div>
+      {error && (
+        <div style={{ padding: 12, borderRadius: 8, background: C.redBg, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          ⚠ {error}
+        </div>
+      )}
+      {cargando ? (
+        <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>Consultando Busint...</div>
+      ) : grupos.length === 0 ? (
+        <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay lotes que coincidan con ese filtro.</div>
+      ) : (
+        <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: C.ink }}>
+                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Cliente</th>
+                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Línea</th>
+                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}># Lotes</th>
+                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Pendiente (und.)</th>
+                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Cortado total (und.)</th>
+                <th style={{ padding: "9px 12px", color: C.seam, textAlign: "center", fontWeight: 700, fontSize: 10 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {grupos.map((g, i) => {
+                const abierto = grupoAbierto === g.clave;
+                return (
+                  <Fragment key={g.clave}>
+                    <tr
+                      onClick={() => setGrupoAbierto(abierto ? null : g.clave)}
+                      style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}`, cursor: "pointer" }}
+                    >
+                      <td style={{ padding: "8px 12px", fontWeight: 700, color: C.ink }}>{g.cliente}</td>
+                      <td style={{ padding: "8px 12px" }}>{g.linea}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{g.lotes.length}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700, color: C.blue }}>{fmtNum(g.unidadesPendientes)}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtNum(g.cantCortada)}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "center", color: C.slate }}>{abierto ? "▲" : "▼"}</td>
+                    </tr>
+                    {abierto && (
+                      <tr>
+                        <td colSpan={6} style={{ padding: "0 12px 14px 12px", background: C.canvas }}>
+                          <Tabla
+                            columnas={[
+                              { key: "numLote", label: "Lote" },
+                              { key: "numPedido", label: "Pedido" },
+                              { key: "referencia", label: "Referencia" },
+                              { key: "ubicacionActual", label: "Ubicación", render: (f) => <UbicacionBadge ubicacion={f.ubicacionActual} /> },
+                              { key: "unidadesUbicacion", label: "Und. en esa ubicación", align: "right", render: (f) => fmtNum(f.unidadesUbicacion) },
+                              { key: "cantCortada", label: "Cortado", align: "right", render: (f) => fmtNum(f.cantCortada) },
+                              { key: "fechaEntregaPedidoISO", label: "Fecha entrega pedido", render: (f) => fmtFechaISO(f.fechaEntregaPedidoISO) },
+                            ]}
+                            filas={g.lotes}
+                            vacio="Sin lotes."
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
   // "Mi Día" de la Planeadora ya no vive acá adentro — se movió a un acceso
   // directo de nivel superior en el menú de ATLAS (junto a "Dashboard"), ver
@@ -2722,6 +3016,8 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
   const NAV = [
     { id: "home", icon: "◉", label: "Inicio" },
     { id: "informes", icon: "📊", label: "Informes" },
+    { id: "tubo_productivo", icon: "🧵", label: "Tubo Productivo" },
+    { id: "buscar_linea", icon: "🔍", label: "Buscar por Línea" },
   ];
   if (loading) {
     return (
@@ -2793,6 +3089,8 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
       <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
           {subView === "home" && <HomePlaneacion onGoInformes={() => setSubView("informes")} />}
+          {subView === "tubo_productivo" && <TuboProductivoView />}
+          {subView === "buscar_linea" && <BuscarPorLineaView />}
           {subView === "informes" && (
             <InformesView
               cargas={cargas}
