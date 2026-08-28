@@ -2648,6 +2648,7 @@ function TuboProductivoView() {
   const [cargandoDocs, setCargandoDocs] = useState(false);
   const [errorDocs, setErrorDocs] = useState("");
   const [soloPendientesBPT, setSoloPendientesBPT] = useState(false);
+  const [fechaInicioConsultaBPT, setFechaInicioConsultaBPT] = useState(null);
 
   async function cargar() {
     setCargando(true);
@@ -2701,20 +2702,31 @@ function TuboProductivoView() {
       setCargandoDocs(true);
       setErrorDocs("");
       try {
+        // (2026-08-28) OJO: hay lotes que llevan cientos de días en BPT
+        // (se vio uno con "426 días" en el reporte viejo) — si se usa la
+        // fecha de entrada a BPT más antigua tal cual, el rango a pedirle a
+        // Busint puede terminar siendo de más de un año, y esa consulta es
+        // tan pesada que la función se cae con un error genérico
+        // "internal" (así se vio en la prueba real). Por eso se topa el
+        // rango a máximo 180 días hacia atrás — para lotes más viejos que
+        // eso simplemente no se revisa su facturación automáticamente
+        // (mejor eso que tumbar la consulta para todos).
         const fechasEntBPT = lotesBPT.map((l) => l.fechaEntBPTISO).filter(Boolean).sort();
         const hoy = new Date();
         const iso = (d) => d.toISOString().slice(0, 10);
+        const TOPE_DIAS_ATRAS = 180;
+        const fechaTope = new Date(hoy);
+        fechaTope.setUTCDate(fechaTope.getUTCDate() - TOPE_DIAS_ATRAS);
         let fechaInicio;
         if (fechasEntBPT.length) {
           const masAntigua = new Date(`${fechasEntBPT[0]}T00:00:00Z`);
           masAntigua.setUTCDate(masAntigua.getUTCDate() - 15);
-          fechaInicio = iso(masAntigua);
+          fechaInicio = iso(masAntigua > fechaTope ? masAntigua : fechaTope);
         } else {
-          const hace180 = new Date(hoy);
-          hace180.setUTCDate(hace180.getUTCDate() - 180);
-          fechaInicio = iso(hace180);
+          fechaInicio = iso(fechaTope);
         }
         const fechaFin = iso(hoy);
+        setFechaInicioConsultaBPT(fechaInicio);
         const numpeds = [...new Set(lotesBPT.map((l) => String(l.numPedido || "").trim()).filter(Boolean))];
         const llamar = httpsCallable(functionsClient, "getDocumentosPorPedidoBusint");
         const resp = await llamar({ fechaInicio, fechaFin, numpeds });
@@ -2739,9 +2751,15 @@ function TuboProductivoView() {
       filas = filas.map((l) => {
         const docs = docsPorPedido[String(l.numPedido || "").trim()] || [];
         const docsFacturables = docs.filter((d) => d.tipo === "FAC" || d.tipo === "TCO" || d.tipo === "TEX");
-        return { ...l, _docs: docs, _facturado: docsFacturables.length > 0 };
+        // Si el lote entró a BPT antes del rango que realmente se le pidió
+        // a Busint (se topa a 180 días para no tumbar la consulta, ver
+        // nota arriba), no se puede afirmar que esté "Sin facturar" — puede
+        // que sí tenga documento, simplemente más viejo de lo que se
+        // revisó. Se marca aparte para no dar un falso "Sin facturar".
+        const fueraDeRango = fechaInicioConsultaBPT && l.fechaEntBPTISO && l.fechaEntBPTISO < fechaInicioConsultaBPT;
+        return { ...l, _docs: docs, _facturado: docsFacturables.length > 0, _fueraDeRango: fueraDeRango };
       });
-      if (soloPendientesBPT) filas = filas.filter((l) => !l._facturado);
+      if (soloPendientesBPT) filas = filas.filter((l) => !l._facturado && !l._fueraDeRango);
     }
     return filas;
   }, [lotes, etapaActiva, docsPorPedido, soloPendientesBPT]);
@@ -2750,10 +2768,12 @@ function TuboProductivoView() {
     if (etapaActiva?.id !== "bpt") return 0;
     const lotesBPT = lotes.filter((l) => Number(l.invBPT) > 0);
     return lotesBPT.filter((l) => {
+      const fueraDeRango = fechaInicioConsultaBPT && l.fechaEntBPTISO && l.fechaEntBPTISO < fechaInicioConsultaBPT;
+      if (fueraDeRango) return false; // no verificado, no cuenta como "pendiente confirmado"
       const docs = docsPorPedido[String(l.numPedido || "").trim()] || [];
       return !docs.some((d) => d.tipo === "FAC" || d.tipo === "TCO" || d.tipo === "TEX");
     }).length;
-  }, [lotes, etapaActiva, docsPorPedido]);
+  }, [lotes, etapaActiva, docsPorPedido, fechaInicioConsultaBPT]);
 
   return (
     <div>
@@ -2840,6 +2860,9 @@ function TuboProductivoView() {
                         key: "documento",
                         label: "Documento",
                         render: (f) => {
+                          if (f._fueraDeRango && (!f._docs || !f._docs.length)) {
+                            return <span title="Este lote entró a BPT antes del rango revisado (180 días) — no se pudo confirmar." style={{ fontSize: 11, fontWeight: 700, color: C.slate, background: C.canvas, padding: "2px 8px", borderRadius: 20, border: `1px solid ${C.border}` }}>No verificado (muy antiguo)</span>;
+                          }
                           if (!f._docs || !f._docs.length) {
                             return <span style={{ fontSize: 11, fontWeight: 700, color: C.red, background: C.redBg, padding: "2px 8px", borderRadius: 20 }}>Sin facturar</span>;
                           }
