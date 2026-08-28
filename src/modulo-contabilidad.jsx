@@ -3221,6 +3221,8 @@ function FacturacionClientesView() {
                               {(() => {
                                 const tiposEnCliente = [...new Set(c.documentos.map((d) => d.tipo))].sort();
                                 const documentosFiltrados = filtroTipoDoc === "TODOS" ? c.documentos : c.documentos.filter((d) => d.tipo === filtroTipoDoc);
+                                const unidadesFiltradas = documentosFiltrados.reduce((s, d) => s + d.unidades, 0);
+                                const montoFiltrado = documentosFiltrados.reduce((s, d) => s + d.monto, 0);
                                 return (
                                   <>
                                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
@@ -3240,6 +3242,12 @@ function FacturacionClientesView() {
                                           </option>
                                         ))}
                                       </select>
+                                    </div>
+                                    <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 8, fontSize: 12, color: C.slate }}>
+                                      <div>
+                                        <b style={{ color: C.ink }}>{filtroTipoDoc === "TODOS" ? "Total mostrado" : `Total ${filtroTipoDoc}`}:</b>{" "}
+                                        {fmtNum(unidadesFiltradas)} und. · {fmtCOP(montoFiltrado)}
+                                      </div>
                                     </div>
                                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, background: C.white, borderRadius: 8, overflow: "hidden" }}>
                                       <thead>
