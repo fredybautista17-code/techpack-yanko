@@ -3142,6 +3142,11 @@ function FacturacionClientesView() {
               <div style={{ fontSize: 20, fontWeight: 800, color: C.ink }}>{resultado.totalClientes}</div>
             </div>
           </div>
+          {resultado.devolucionesSinPrecio > 0 && (
+            <div style={{ padding: 10, borderRadius: 8, background: "#FFF6E5", color: "#8A6100", fontSize: 12, fontWeight: 600, marginBottom: 16 }}>
+              ⚠ {resultado.devolucionesSinPrecio} línea(s) de devolución no tenían precio real ni en la misma referencia/color/talla del cliente en este rango — quedaron valoradas en $0 (subestiman el neto). Prueba un rango de fechas más amplio si esto pesa mucho.
+            </div>
+          )}
           {resultado.columnasDisponibles && resultado.columnasDisponibles.length > 0 && (
             <details style={{ marginBottom: 16, fontSize: 12, color: C.slate }}>
               <summary style={{ cursor: "pointer", fontWeight: 700 }}>🔧 Ver columnas crudas que trae Busint (debug)</summary>
@@ -3258,7 +3263,7 @@ function FacturacionClientesView() {
                                                       <td style={{ padding: "4px 6px" }}>{l.color || "—"}</td>
                                                       <td style={{ padding: "4px 6px" }}>{l.talla || "—"}</td>
                                                       <td style={{ padding: "4px 6px", textAlign: "right" }}>{fmtNum(l.cantidad)}</td>
-                                                      <td style={{ padding: "4px 6px", textAlign: "right" }}>{fmtCOP(l.precio)}</td>
+                                                      <td style={{ padding: "4px 6px", textAlign: "right" }}>{fmtCOP(l.precio)}{l.precioEstimado ? <span title="Esta fila no traía precio (devolución) — se usó el precio de otra fila con la misma referencia/pinta/color/talla del mismo cliente en el rango." style={{ color: C.slate }}> *</span> : null}</td>
                                                       <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700 }}>{fmtCOP(l.monto)}</td>
                                                     </tr>
                                                   ))}

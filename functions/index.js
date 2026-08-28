@@ -323,7 +323,34 @@ exports.getFacturacionPorClienteBusint = onCall(
       nombrePorCodigo.get(codigoCliente) ||
       String(f.nombreCliente || f.NombreCliente || f.cliente || f.Cliente || f.razonSocial || f.nomCliente || f.nombreORazonSocial || "").trim();
 
-    // Paso 1: agrupar por cliente -> por documento (doc) -> líneas.
+    // (2026-08-28) Confirmado con datos reales: las filas de devolución
+    // (Dtc/Dte) vienen con "precio": 0 en Busint — no traen el valor de lo
+    // devuelto. Sin esto, "monto" de una devolución siempre daría $0 y el
+    // neto (TCO-DTC / TEX-DTE) en pesos NO restaría nada de verdad (aunque
+    // las unidades sí se restan bien, porque "cant" ya viene negativo). Se
+    // arma un mapa de precio real por Referencia+Pinta+Color+Talla (del
+    // mismo cliente, usando cualquier fila del rango que sí traiga precio
+    // > 0) para valorar esas devoluciones antes de sumar.
+    const precioPorClave = new Map(); // `${codigoCliente}|${ref}|${pinta}|${color}|${talla}` -> precio
+    for (const f of filas) {
+      const precio = Number(f.precio) || 0;
+      if (precio <= 0) continue;
+      const clave = [
+        String(f.codigoCliente ?? "").trim(),
+        String(f.ref || "").trim(),
+        String(f.pinta || "").trim(),
+        String(f.color || "").trim(),
+        String(f.talla || "").trim(),
+      ].join("|");
+      if (!precioPorClave.has(clave)) precioPorClave.set(clave, precio);
+    }
+    let devolucionesSinPrecio = 0;
+
+    // Paso 1: agrupar por cliente -> por documento -> líneas. Se agrupa por
+    // "doc + numped" (no solo "doc"): las devoluciones traen "doc": 0 para
+    // TODAS, así que agrupar solo por "doc" mezclaría en un solo documento
+    // falso todas las devoluciones de un cliente en el rango — "numped"
+    // (número de pedido) sí distingue una devolución de otra.
     const porCliente = new Map();
     for (const f of filas) {
       const codigoCliente = String(f.codigoCliente ?? "").trim();
@@ -333,24 +360,40 @@ exports.getFacturacionPorClienteBusint = onCall(
         porCliente.set(claveCliente, { codigoCliente, nombreCliente, documentos: new Map() });
       }
       const c = porCliente.get(claveCliente);
-      const doc = String(f.doc ?? "").trim() || "(sin número)";
+      const docNum = String(f.doc ?? "").trim() || "0";
+      const numped = String(f.numped ?? "").trim();
+      const claveDoc = `${docNum}|${numped}`;
       const tipo = String(f.tipo || "").trim().toUpperCase() || "(SIN TIPO)";
+      const ref = String(f.ref || "").trim();
+      const pinta = String(f.pinta || "").trim();
+      const color = String(f.color || "").trim();
+      const talla = String(f.talla || "").trim();
       const cant = Number(f.cant) || 0;
-      const precio = Number(f.precio) || 0;
-      const monto = cant * precio;
-      if (!c.documentos.has(doc)) {
-        c.documentos.set(doc, { numero: doc, tipo, fecha: soloFecha(f.fechaFact) || null, unidades: 0, monto: 0, lineas: [] });
+      let precio = Number(f.precio) || 0;
+      if (precio <= 0 && cant !== 0) {
+        const clavePrecio = [codigoCliente, ref, pinta, color, talla].join("|");
+        const precioEncontrado = precioPorClave.get(clavePrecio);
+        if (precioEncontrado) {
+          precio = precioEncontrado;
+        } else {
+          devolucionesSinPrecio++;
+        }
       }
-      const d = c.documentos.get(doc);
+      const monto = cant * precio;
+      if (!c.documentos.has(claveDoc)) {
+        c.documentos.set(claveDoc, { numero: docNum !== "0" ? docNum : (numped ? `Pedido ${numped}` : "(sin número)"), numped, tipo, fecha: soloFecha(f.fechaFact) || null, unidades: 0, monto: 0, lineas: [] });
+      }
+      const d = c.documentos.get(claveDoc);
       d.unidades += cant;
       d.monto += monto;
       d.lineas.push({
-        ref: String(f.ref || "").trim(),
-        pinta: String(f.pinta || "").trim(),
-        color: String(f.color || "").trim(),
-        talla: String(f.talla || "").trim(),
+        ref,
+        pinta,
+        color,
+        talla,
         cantidad: cant,
         precio,
+        precioEstimado: (Number(f.precio) || 0) <= 0 && precio > 0,
         monto: Math.round(monto * 100) / 100,
       });
     }
@@ -414,6 +457,7 @@ exports.getFacturacionPorClienteBusint = onCall(
       totalUnidadesConsignacion: sumarUnid("consignacionNeta"),
       totalTrasladoExternoNeto: sumar("trasladoExternoNeto"),
       totalUnidadesTrasladoExterno: sumarUnid("trasladoExternoNeto"),
+      devolucionesSinPrecio,
       clientes,
       columnasDisponibles: filas.length ? Object.keys(filas[0]) : [],
       primeraFilaCruda: filas.length ? filas[0] : null,
