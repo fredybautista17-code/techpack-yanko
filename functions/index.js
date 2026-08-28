@@ -278,6 +278,69 @@ async function consultarFacturadoBusint(fechaInicio, fechaFin) {
 // cliente, para que quien lo lea pueda ver si el monto incluye traslados o
 // devoluciones y no solo facturas normales — no se decide acá cuáles
 // "cuentan" como facturación real, se muestra todo con su tipo.
+// (2026-08-28) Fredy pidió, para los lotes que ya están en Bodega de
+// Producto Terminado (dentro de "Tubo Productivo"), saber cuáles YA tienen
+// factura/traslado y cuáles todavía no (para armar ahí mismo una pestaña
+// "Pendientes por Despachar"). Busint no permite preguntar "¿qué pasó con
+// el pedido X?" directamente — toca traer los documentos de un rango de
+// fechas (misma fuente que getFacturacionPorClienteBusint) y agrupar por
+// "numped" (número de pedido), que es el dato que sí comparten los lotes
+// del panel de flujo y los documentos de facturación. Se filtra solo a los
+// numpeds pedidos (numpeds) para no devolver más de lo necesario.
+exports.getDocumentosPorPedidoBusint = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    const { fechaInicio, fechaFin, numpeds } = request.data || {};
+    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    if (!fechaValida(fechaInicio) || !fechaValida(fechaFin)) {
+      throw new HttpsError("invalid-argument", "fechaInicio y fechaFin son obligatorias, en formato AAAA-MM-DD.");
+    }
+    const numpedsSet = new Set((Array.isArray(numpeds) ? numpeds : []).map((n) => String(n).trim()).filter(Boolean));
+
+    let filas;
+    try {
+      filas = await consultarFacturadoBusint(fechaInicio, fechaFin);
+    } catch (err) {
+      const detalle = (err && err.message) ? err.message : String(err);
+      logger.error("Error consultando Busint (getDocumentosPorPedidoBusint)", { error: detalle });
+      throw new HttpsError("unavailable", `No se pudo consultar la facturación en Busint: ${detalle}`);
+    }
+
+    const porPedido = new Map();
+    for (const f of filas) {
+      const numped = String(f.numped ?? "").trim();
+      if (!numped) continue;
+      if (numpedsSet.size && !numpedsSet.has(numped)) continue;
+      const tipo = String(f.tipo || "").trim().toUpperCase();
+      const doc = String(f.doc ?? "").trim();
+      const claveDoc = `${tipo}|${doc}`;
+      if (!porPedido.has(numped)) porPedido.set(numped, new Map());
+      const docs = porPedido.get(numped);
+      if (!docs.has(claveDoc)) {
+        docs.set(claveDoc, { tipo, doc: doc && doc !== "0" ? doc : null, fecha: soloFecha(f.fechaFact) || null, cant: 0 });
+      }
+      docs.get(claveDoc).cant += Number(f.cant) || 0;
+    }
+
+    const documentosPorPedido = {};
+    for (const [numped, docsMap] of porPedido.entries()) {
+      documentosPorPedido[numped] = [...docsMap.values()];
+    }
+
+    return {
+      fechaInicio,
+      fechaFin,
+      totalPedidosConsultados: numpedsSet.size,
+      totalPedidosEncontrados: Object.keys(documentosPorPedido).length,
+      documentosPorPedido,
+    };
+  }
+);
+
 exports.getFacturacionPorClienteBusint = onCall(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
@@ -2182,6 +2245,7 @@ exports.getCargaPlaneacionDesdeBusintGen = onCall(
           numPedido: Number(f.numPedido) || 0,
           referencia: String(f.referencia || ""),
           categoria: String(f.categoria || ""),
+          linea: String(f.linea || ""),
           nombreCliente: String(f.nombreCliente || "(Sin cliente)"),
           nombrePlanta: String(f.nombrePlanta || ""),
           fechaCorteISO: normFecha(f.fechaCorte),

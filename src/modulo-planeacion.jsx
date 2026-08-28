@@ -2643,6 +2643,10 @@ function TuboProductivoView() {
   const [lotes, setLotes] = useState([]);
   const [actualizadoEn, setActualizadoEn] = useState(null);
   const [etapaAbierta, setEtapaAbierta] = useState(null);
+  const [docsPorPedido, setDocsPorPedido] = useState({});
+  const [cargandoDocs, setCargandoDocs] = useState(false);
+  const [errorDocs, setErrorDocs] = useState("");
+  const [soloPendientesBPT, setSoloPendientesBPT] = useState(false);
 
   async function cargar() {
     setCargando(true);
@@ -2676,12 +2680,79 @@ function TuboProductivoView() {
   }, [lotes]);
 
   const etapaActiva = etapas.find((e) => e.id === etapaAbierta) || null;
+
+  // (2026-08-28) Al abrir BPT, se busca AUTOMÁTICAMENTE (sin que Fredy
+  // tenga que buscar lote por lote) qué pedidos de esos lotes ya tienen
+  // factura/traslado en Busint, cruzando por "numped" — mismo mecanismo
+  // que ya usa buscarTrasladoBusintPorNumero, pero para todos los lotes de
+  // BPT de una vez. El rango de fechas se calcula desde la fecha de
+  // entrada a BPT más antigua entre esos lotes (con 15 días de colchón),
+  // para no pedirle a Busint un rango más ancho de lo necesario.
+  useEffect(() => {
+    if (etapaAbierta !== "bpt") return;
+    const lotesBPT = lotes.filter((l) => Number(l.invBPT) > 0);
+    if (!lotesBPT.length) {
+      setDocsPorPedido({});
+      return;
+    }
+    let cancelado = false;
+    (async () => {
+      setCargandoDocs(true);
+      setErrorDocs("");
+      try {
+        const fechasEntBPT = lotesBPT.map((l) => l.fechaEntBPTISO).filter(Boolean).sort();
+        const hoy = new Date();
+        const iso = (d) => d.toISOString().slice(0, 10);
+        let fechaInicio;
+        if (fechasEntBPT.length) {
+          const masAntigua = new Date(`${fechasEntBPT[0]}T00:00:00Z`);
+          masAntigua.setUTCDate(masAntigua.getUTCDate() - 15);
+          fechaInicio = iso(masAntigua);
+        } else {
+          const hace180 = new Date(hoy);
+          hace180.setUTCDate(hace180.getUTCDate() - 180);
+          fechaInicio = iso(hace180);
+        }
+        const fechaFin = iso(hoy);
+        const numpeds = [...new Set(lotesBPT.map((l) => String(l.numPedido || "").trim()).filter(Boolean))];
+        const llamar = httpsCallable(functionsClient, "getDocumentosPorPedidoBusint");
+        const resp = await llamar({ fechaInicio, fechaFin, numpeds });
+        if (!cancelado) setDocsPorPedido(resp.data?.documentosPorPedido || {});
+      } catch (err) {
+        if (!cancelado) setErrorDocs(err?.message || "No se pudo consultar la facturación de estos pedidos.");
+      } finally {
+        if (!cancelado) setCargandoDocs(false);
+      }
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, [etapaAbierta, lotes]);
+
   const filasDetalle = useMemo(() => {
     if (!etapaActiva) return [];
-    return lotes
+    let filas = lotes
       .filter((l) => Number(l[etapaActiva.campo]) > 0)
       .sort((a, b) => Number(b[etapaActiva.campo]) - Number(a[etapaActiva.campo]));
-  }, [lotes, etapaActiva]);
+    if (etapaActiva.id === "bpt") {
+      filas = filas.map((l) => {
+        const docs = docsPorPedido[String(l.numPedido || "").trim()] || [];
+        const docsFacturables = docs.filter((d) => d.tipo === "FAC" || d.tipo === "TCO" || d.tipo === "TEX");
+        return { ...l, _docs: docs, _facturado: docsFacturables.length > 0 };
+      });
+      if (soloPendientesBPT) filas = filas.filter((l) => !l._facturado);
+    }
+    return filas;
+  }, [lotes, etapaActiva, docsPorPedido, soloPendientesBPT]);
+
+  const pendientesBPT = useMemo(() => {
+    if (etapaActiva?.id !== "bpt") return 0;
+    const lotesBPT = lotes.filter((l) => Number(l.invBPT) > 0);
+    return lotesBPT.filter((l) => {
+      const docs = docsPorPedido[String(l.numPedido || "").trim()] || [];
+      return !docs.some((d) => d.tipo === "FAC" || d.tipo === "TCO" || d.tipo === "TEX");
+    }).length;
+  }, [lotes, etapaActiva, docsPorPedido]);
 
   return (
     <div>
@@ -2714,15 +2785,47 @@ function TuboProductivoView() {
                 color={e.color}
                 bg={etapaAbierta === e.id ? e.color + "22" : e.bg}
                 sub={`${lotes.filter((l) => Number(l[e.campo]) > 0).length} lotes`}
-                onClick={() => setEtapaAbierta(etapaAbierta === e.id ? null : e.id)}
+                onClick={() => { setEtapaAbierta(etapaAbierta === e.id ? null : e.id); setSoloPendientesBPT(false); }}
               />
             ))}
           </div>
           {etapaActiva && (
             <div style={{ marginBottom: 20 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: C.ink, marginBottom: 8 }}>
-                {etapaActiva.label} — {filasDetalle.length} lotes ({fmtNum(etapaActiva.valor)} und.)
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>
+                  {etapaActiva.label} — {filasDetalle.length} lotes ({fmtNum(etapaActiva.valor)} und.)
+                </div>
+                {etapaActiva.id === "bpt" && (
+                  <div style={{ display: "flex", gap: 4, background: C.canvas, borderRadius: 8, padding: 3, border: `1px solid ${C.border}` }}>
+                    <button
+                      onClick={() => setSoloPendientesBPT(false)}
+                      style={{
+                        border: "none", borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer",
+                        background: !soloPendientesBPT ? C.white : "transparent", color: !soloPendientesBPT ? C.ink : C.slate,
+                      }}
+                    >
+                      Todos
+                    </button>
+                    <button
+                      onClick={() => setSoloPendientesBPT(true)}
+                      style={{
+                        border: "none", borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer",
+                        background: soloPendientesBPT ? C.white : "transparent", color: soloPendientesBPT ? C.red : C.slate,
+                      }}
+                    >
+                      Pendientes por despachar {!cargandoDocs && `(${pendientesBPT})`}
+                    </button>
+                  </div>
+                )}
               </div>
+              {etapaActiva.id === "bpt" && cargandoDocs && (
+                <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>Buscando facturas/traslados de estos pedidos en Busint...</div>
+              )}
+              {etapaActiva.id === "bpt" && errorDocs && (
+                <div style={{ padding: 10, borderRadius: 8, background: C.redBg, color: C.red, fontSize: 12, fontWeight: 600, marginBottom: 8 }}>
+                  ⚠ {errorDocs}
+                </div>
+              )}
               <Tabla
                 columnas={[
                   { key: "numLote", label: "Lote" },
@@ -2731,6 +2834,33 @@ function TuboProductivoView() {
                   { key: "categoria", label: "Línea" },
                   { key: "referencia", label: "Referencia" },
                   { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(Number(f[etapaActiva.campo]) || 0) },
+                  ...(etapaActiva.id === "bpt"
+                    ? [{
+                        key: "documento",
+                        label: "Documento",
+                        render: (f) => {
+                          if (!f._docs || !f._docs.length) {
+                            return <span style={{ fontSize: 11, fontWeight: 700, color: C.red, background: C.redBg, padding: "2px 8px", borderRadius: 20 }}>Sin facturar</span>;
+                          }
+                          return (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                              {f._docs.map((d, i) => (
+                                <span
+                                  key={i}
+                                  style={{
+                                    fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 20, whiteSpace: "nowrap",
+                                    background: d.tipo === "FAC" ? C.greenBg : (d.tipo === "DTE" || d.tipo === "DTC") ? C.redBg : C.blueBg,
+                                    color: d.tipo === "FAC" ? C.green : (d.tipo === "DTE" || d.tipo === "DTC") ? C.red : C.blue,
+                                  }}
+                                >
+                                  {d.tipo} {d.doc ? `#${d.doc}` : ""} {d.fecha ? `· ${fmtFechaISO(d.fecha)}` : ""}
+                                </span>
+                              ))}
+                            </div>
+                          );
+                        },
+                      }]
+                    : []),
                 ]}
                 filas={filasDetalle}
                 vacio="No hay lotes en esta etapa."
