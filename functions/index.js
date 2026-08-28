@@ -387,7 +387,15 @@ exports.getFacturacionPorClienteBusint = onCall(
           devolucionesSinPrecio++;
         }
       }
-      const monto = cant * precio;
+      // (2026-08-28) Busint trae "desc" por línea — un % de descuento sobre
+      // el precio (confirmado con un traslado real: Desc 10 en el impreso
+      // de Busint coincidió exacto con el 10% que Busint restó del
+      // subtotal). Si no se aplica acá, el monto queda sobreestimado en
+      // cualquier línea con descuento (factura, traslado, etc — no es solo
+      // de traslados externos, el campo viene en toda fila del endpoint).
+      const descPct = Number(f.desc) || 0;
+      const precioNeto = descPct > 0 ? precio * (1 - descPct / 100) : precio;
+      const monto = cant * precioNeto;
       if (!c.documentos.has(claveDoc)) {
         c.documentos.set(claveDoc, { numero: docNum !== "0" ? docNum : (numped ? `Pedido ${numped}` : "(sin número)"), numped, tipo, fecha: soloFecha(f.fechaFact) || null, unidades: 0, monto: 0, lineas: [] });
       }
@@ -401,6 +409,8 @@ exports.getFacturacionPorClienteBusint = onCall(
         talla,
         cantidad: cant,
         precio,
+        descPct,
+        precioNeto: Math.round(precioNeto * 100) / 100,
         precioEstimado: (Number(f.precio) || 0) <= 0 && precio > 0,
         monto: Math.round(monto * 100) / 100,
       });

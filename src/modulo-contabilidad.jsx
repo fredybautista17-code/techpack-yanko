@@ -3311,7 +3311,18 @@ function FacturacionClientesView() {
                                                       <td style={{ padding: "4px 6px" }}>{l.color || "—"}</td>
                                                       <td style={{ padding: "4px 6px" }}>{l.talla || "—"}</td>
                                                       <td style={{ padding: "4px 6px", textAlign: "right" }}>{fmtNum(l.cantidad)}</td>
-                                                      <td style={{ padding: "4px 6px", textAlign: "right" }}>{fmtCOP(l.precio)}{l.precioEstimado ? <span title="Esta fila no traía precio (devolución) — se usó el precio de otra fila con la misma referencia/pinta/color/talla del mismo cliente en el rango." style={{ color: C.slate }}> *</span> : null}</td>
+                                                      <td style={{ padding: "4px 6px", textAlign: "right" }}>
+                                                        {l.descPct > 0 ? (
+                                                          <>
+                                                            <span style={{ textDecoration: "line-through", color: C.slate, fontSize: 10 }}>{fmtCOP(l.precio)}</span>{" "}
+                                                            {fmtCOP(l.precioNeto)}
+                                                            <span title={`Busint trae ${l.descPct}% de descuento en esta línea (campo "desc") — ya se restó del precio.`} style={{ color: C.red, fontSize: 10 }}> -{l.descPct}%</span>
+                                                          </>
+                                                        ) : (
+                                                          fmtCOP(l.precio)
+                                                        )}
+                                                        {l.precioEstimado ? <span title="Esta fila no traía precio (devolución) — se usó el precio de otra fila con la misma referencia/pinta/color/talla del mismo cliente en el rango." style={{ color: C.slate }}> *</span> : null}
+                                                      </td>
                                                       <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700 }}>{fmtCOP(l.monto)}</td>
                                                     </tr>
                                                   ))}
