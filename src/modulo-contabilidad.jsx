@@ -3070,6 +3070,7 @@ function FacturacionClientesView() {
   const [resultado, setResultado] = useState(null);
   const [clienteAbierto, setClienteAbierto] = useState(null);
   const [docAbierto, setDocAbierto] = useState(null);
+  const [filtroTipoDoc, setFiltroTipoDoc] = useState("TODOS");
   async function consultar() {
     if (!fechaInicio || !fechaFin) return;
     setCargando(true);
@@ -3183,7 +3184,11 @@ function FacturacionClientesView() {
                     return (
                       <Fragment key={clave}>
                         <tr
-                          onClick={() => setClienteAbierto(abierto ? null : clave)}
+                          onClick={() => {
+                            setClienteAbierto(abierto ? null : clave);
+                            setFiltroTipoDoc("TODOS");
+                            setDocAbierto(null);
+                          }}
                           style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: i % 2 ? C.canvas : C.white }}
                         >
                           <td style={{ padding: "10px 12px", fontWeight: 700, color: C.ink }}>{c.nombreCliente}</td>
@@ -3207,28 +3212,48 @@ function FacturacionClientesView() {
                             <td colSpan={6} style={{ padding: "8px 12px 14px 24px" }}>
                               <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 12, fontSize: 12 }}>
                                 <div><b>FAC:</b> {fmtCOP(c.facturado.monto)} ({fmtNum(c.facturado.unidades)} und.)</div>
-                                <div><b>TCO bruto:</b> {fmtCOP(c.consignacionNeta.montoBruto)} · <b>DTC:</b> {fmtCOP(c.consignacionNeta.montoDevuelto)} → neto {fmtCOP(c.consignacionNeta.monto)}</div>
-                                <div><b>TEX bruto:</b> {fmtCOP(c.trasladoExternoNeto.montoBruto)} · <b>DTE:</b> {fmtCOP(c.trasladoExternoNeto.montoDevuelto)} → neto {fmtCOP(c.trasladoExternoNeto.monto)}</div>
+                                <div><b>TCO bruto:</b> {fmtCOP(c.consignacionNeta.montoBruto)} · <b>DTC:</b> -{fmtCOP(c.consignacionNeta.montoDevuelto)} → neto {fmtCOP(c.consignacionNeta.monto)}</div>
+                                <div><b>TEX bruto:</b> {fmtCOP(c.trasladoExternoNeto.montoBruto)} · <b>DTE:</b> -{fmtCOP(c.trasladoExternoNeto.montoDevuelto)} → neto {fmtCOP(c.trasladoExternoNeto.monto)}</div>
                                 {c.otros && (
                                   <div style={{ color: C.red }}><b>Otros tipos sin clasificar ({c.otros.tipos.join(", ")}):</b> {fmtCOP(c.otros.monto)} ({fmtNum(c.otros.unidades)} und.)</div>
                                 )}
                               </div>
-                              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>
-                                Documentos ({c.documentos.length})
-                              </div>
-                              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, background: C.white, borderRadius: 8, overflow: "hidden" }}>
-                                <thead>
-                                  <tr style={{ borderBottom: `1px solid ${C.border}` }}>
-                                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Documento</th>
-                                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Tipo</th>
-                                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Fecha</th>
-                                    <th style={{ textAlign: "right", padding: "6px 8px" }}>Unidades</th>
-                                    <th style={{ textAlign: "right", padding: "6px 8px" }}>Monto</th>
-                                    <th style={{ textAlign: "center", padding: "6px 8px" }}></th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {c.documentos.map((d) => {
+                              {(() => {
+                                const tiposEnCliente = [...new Set(c.documentos.map((d) => d.tipo))].sort();
+                                const documentosFiltrados = filtroTipoDoc === "TODOS" ? c.documentos : c.documentos.filter((d) => d.tipo === filtroTipoDoc);
+                                return (
+                                  <>
+                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
+                                      <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase" }}>
+                                        Documentos ({documentosFiltrados.length}{filtroTipoDoc !== "TODOS" ? ` de ${c.documentos.length}` : ""})
+                                      </div>
+                                      <select
+                                        value={filtroTipoDoc}
+                                        onClick={(e) => e.stopPropagation()}
+                                        onChange={(e) => setFiltroTipoDoc(e.target.value)}
+                                        style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.white, color: C.ink }}
+                                      >
+                                        <option value="TODOS">Todos los tipos ({c.documentos.length})</option>
+                                        {tiposEnCliente.map((t) => (
+                                          <option key={t} value={t}>
+                                            {t} ({c.documentos.filter((d) => d.tipo === t).length})
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, background: C.white, borderRadius: 8, overflow: "hidden" }}>
+                                      <thead>
+                                        <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                                          <th style={{ textAlign: "left", padding: "6px 8px" }}>Documento</th>
+                                          <th style={{ textAlign: "left", padding: "6px 8px" }}>Tipo</th>
+                                          <th style={{ textAlign: "left", padding: "6px 8px" }}>Fecha</th>
+                                          <th style={{ textAlign: "right", padding: "6px 8px" }}>Unidades</th>
+                                          <th style={{ textAlign: "right", padding: "6px 8px" }}>Monto</th>
+                                          <th style={{ textAlign: "center", padding: "6px 8px" }}></th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {documentosFiltrados.map((d) => {
                                     const claveDoc = `${clave}|${d.numero}`;
                                     const docOpen = docAbierto === claveDoc;
                                     return (
@@ -3286,6 +3311,9 @@ function FacturacionClientesView() {
                                   })}
                                 </tbody>
                               </table>
+                                  </>
+                                );
+                              })()}
                             </td>
                           </tr>
                         )}

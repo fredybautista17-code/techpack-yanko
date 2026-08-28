@@ -432,18 +432,26 @@ exports.getFacturacionPorClienteBusint = onCall(
           codigoCliente: c.codigoCliente,
           nombreCliente: c.nombreCliente || (c.codigoCliente ? `Cliente ${c.codigoCliente}` : "(Sin identificar)"),
           totalDocumentos: documentos.length,
+          // (2026-08-28) OJO: montoDTC/unidDTC/montoDTE/unidDTE ya vienen
+          // NEGATIVOS (porque "cant" en las filas de devolución ya viene
+          // negativo en Busint) — por eso el neto se SUMA (bruto + devuelto,
+          // donde devuelto es negativo) y NO se resta; restar un número que
+          // ya es negativo invierte el signo y termina inflando el neto en
+          // vez de descontar lo devuelto. montoDevuelto/unidades acá se
+          // muestran en valor absoluto (positivo) solo para que la pantalla
+          // sea legible como "se devolvió $X" en vez de "$-X".
           facturado: { monto: round2(montoFAC), unidades: unidFAC },
           consignacionNeta: {
-            monto: round2(montoTCO - montoDTC),
-            unidades: unidTCO - unidDTC,
+            monto: round2(montoTCO + montoDTC),
+            unidades: unidTCO + unidDTC,
             montoBruto: round2(montoTCO),
-            montoDevuelto: round2(montoDTC),
+            montoDevuelto: round2(Math.abs(montoDTC)),
           },
           trasladoExternoNeto: {
-            monto: round2(montoTEX - montoDTE),
-            unidades: unidTEX - unidDTE,
+            monto: round2(montoTEX + montoDTE),
+            unidades: unidTEX + unidDTE,
             montoBruto: round2(montoTEX),
-            montoDevuelto: round2(montoDTE),
+            montoDevuelto: round2(Math.abs(montoDTE)),
           },
           otros: montoOtros !== 0 || unidOtros !== 0 ? { monto: round2(montoOtros), unidades: unidOtros, tipos: [...tiposOtros] } : null,
           documentos,
