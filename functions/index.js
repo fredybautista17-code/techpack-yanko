@@ -440,18 +440,36 @@ exports.getFacturacionPorClienteBusint = onCall(
           // vez de descontar lo devuelto. montoDevuelto/unidades acá se
           // muestran en valor absoluto (positivo) solo para que la pantalla
           // sea legible como "se devolvió $X" en vez de "$-X".
+          // (2026-08-28) Fredy pidió, para clientes que trabajan por traslado
+          // en consignación (ej. Kamila), que el número principal sea lo
+          // DESPACHADO en el rango (bruto), no lo neto — porque para ellos
+          // el DTC no es "devolución física", es el mecanismo con el que
+          // Busint marca lo que el cliente decidió facturar (eso ya se
+          // refleja aparte en FAC). Netear TCO-DTC como número principal
+          // subestima lo que realmente salió de bodega ese mes. Por eso
+          // "monto"/"unidades" (bruto, lo despachado) pasa a ser el valor
+          // principal, y el neto (bruto - devuelto) queda como dato
+          // secundario junto con montoDevuelto/unidadesDevueltas.
           facturado: { monto: round2(montoFAC), unidades: unidFAC },
           consignacionNeta: {
-            monto: round2(montoTCO + montoDTC),
-            unidades: unidTCO + unidDTC,
+            monto: round2(montoTCO),
+            unidades: unidTCO,
             montoBruto: round2(montoTCO),
+            unidadesBruto: unidTCO,
             montoDevuelto: round2(Math.abs(montoDTC)),
+            unidadesDevueltas: Math.abs(unidDTC),
+            montoNeto: round2(montoTCO + montoDTC),
+            unidadesNeto: unidTCO + unidDTC,
           },
           trasladoExternoNeto: {
-            monto: round2(montoTEX + montoDTE),
-            unidades: unidTEX + unidDTE,
+            monto: round2(montoTEX),
+            unidades: unidTEX,
             montoBruto: round2(montoTEX),
+            unidadesBruto: unidTEX,
             montoDevuelto: round2(Math.abs(montoDTE)),
+            unidadesDevueltas: Math.abs(unidDTE),
+            montoNeto: round2(montoTEX + montoDTE),
+            unidadesNeto: unidTEX + unidDTE,
           },
           otros: montoOtros !== 0 || unidOtros !== 0 ? { monto: round2(montoOtros), unidades: unidOtros, tipos: [...tiposOtros] } : null,
           documentos,
@@ -461,6 +479,7 @@ exports.getFacturacionPorClienteBusint = onCall(
 
     const sumar = (campo) => round2(clientes.reduce((s, c) => s + c[campo].monto, 0));
     const sumarUnid = (campo) => clientes.reduce((s, c) => s + c[campo].unidades, 0);
+    const sumarCampo = (campo, subcampo) => round2(clientes.reduce((s, c) => s + (c[campo][subcampo] || 0), 0));
 
     return {
       fechaInicio,
@@ -469,10 +488,20 @@ exports.getFacturacionPorClienteBusint = onCall(
       totalClientes: clientes.length,
       totalFacturado: sumar("facturado"),
       totalUnidadesFacturadas: sumarUnid("facturado"),
+      // (2026-08-28) Ahora "monto"/"unidades" de consignación y traslado
+      // externo son el BRUTO despachado (ver nota arriba) — se mantienen
+      // estos mismos nombres de totales por compatibilidad, pero el valor
+      // que traen es el despachado, no el neto. El neto queda aparte en
+      // totalConsignacionDevuelta/totalTrasladoExternoDevuelto (y su versión
+      // *Neto*) para quien lo necesite.
       totalConsignacionNeta: sumar("consignacionNeta"),
       totalUnidadesConsignacion: sumarUnid("consignacionNeta"),
       totalTrasladoExternoNeto: sumar("trasladoExternoNeto"),
       totalUnidadesTrasladoExterno: sumarUnid("trasladoExternoNeto"),
+      totalConsignacionDevuelta: sumarCampo("consignacionNeta", "montoDevuelto"),
+      totalUnidadesConsignacionDevueltas: clientes.reduce((s, c) => s + c.consignacionNeta.unidadesDevueltas, 0),
+      totalTrasladoExternoDevuelto: sumarCampo("trasladoExternoNeto", "montoDevuelto"),
+      totalUnidadesTrasladoExternoDevueltas: clientes.reduce((s, c) => s + c.trasladoExternoNeto.unidadesDevueltas, 0),
       devolucionesSinPrecio,
       clientes,
       columnasDisponibles: filas.length ? Object.keys(filas[0]) : [],

@@ -3097,7 +3097,7 @@ function FacturacionClientesView() {
         🧾 Facturación Clientes
       </div>
       <div style={{ fontSize: 13, color: C.slate, marginBottom: 20 }}>
-        Consulta en vivo a Busint. <b>Facturado</b> = FAC (venta real, para cruzar contra TNS). <b>Consignación neta</b> = TCO − DTC (lo que el cliente todavía tiene por revisar/vender). <b>Traslado Externo neto</b> = TEX − DTE (despachos sin IVA).
+        Consulta en vivo a Busint. <b>Facturado</b> = FAC (venta real, para cruzar contra TNS). <b>Consignación</b> = TCO (lo que se despachó en consignación en el rango, sin restar devoluciones — el DTC se muestra aparte porque para varios clientes no es una devolución física, sino lo que ya se decidió facturar). <b>Traslado Externo</b> = TEX (despachos sin IVA), con DTE aparte igual.
       </div>
       <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 20, flexWrap: "wrap" }}>
         <Field label="Desde">
@@ -3129,14 +3129,20 @@ function FacturacionClientesView() {
               <div style={{ fontSize: 12, color: C.slate }}>{fmtNum(resultado.totalUnidadesFacturadas)} und.</div>
             </div>
             <div style={{ flex: "1 1 220px", padding: 16, borderRadius: 10, background: C.white, border: `1px solid ${C.border}` }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Consignación neta (TCO−DTC)</div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Consignación (despachado)</div>
               <div style={{ fontSize: 20, fontWeight: 800, color: C.ink }}>{fmtCOP(resultado.totalConsignacionNeta)}</div>
               <div style={{ fontSize: 12, color: C.slate }}>{fmtNum(resultado.totalUnidadesConsignacion)} und.</div>
+              {resultado.totalConsignacionDevuelta > 0 && (
+                <div style={{ fontSize: 11, color: C.red, marginTop: 2 }}>de eso, {fmtCOP(resultado.totalConsignacionDevuelta)} ({fmtNum(resultado.totalUnidadesConsignacionDevueltas)} und.) ya se facturó (DTC)</div>
+              )}
             </div>
             <div style={{ flex: "1 1 220px", padding: 16, borderRadius: 10, background: C.white, border: `1px solid ${C.border}` }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Traslado Externo neto (TEX−DTE)</div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Traslado Externo (despachado)</div>
               <div style={{ fontSize: 20, fontWeight: 800, color: C.ink }}>{fmtCOP(resultado.totalTrasladoExternoNeto)}</div>
               <div style={{ fontSize: 12, color: C.slate }}>{fmtNum(resultado.totalUnidadesTrasladoExterno)} und.</div>
+              {resultado.totalTrasladoExternoDevuelto > 0 && (
+                <div style={{ fontSize: 11, color: C.red, marginTop: 2 }}>de eso, {fmtCOP(resultado.totalTrasladoExternoDevuelto)} ({fmtNum(resultado.totalUnidadesTrasladoExternoDevueltas)} und.) devuelto (DTE)</div>
+              )}
             </div>
             <div style={{ flex: "1 1 140px", padding: 16, borderRadius: 10, background: C.white, border: `1px solid ${C.border}` }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Clientes</div>
@@ -3171,8 +3177,8 @@ function FacturacionClientesView() {
                   <tr style={{ borderBottom: `1px solid ${C.border}`, background: C.canvas }}>
                     <th style={{ textAlign: "left", padding: "10px 12px" }}>Cliente</th>
                     <th style={{ textAlign: "right", padding: "10px 12px" }}>Facturado (FAC)</th>
-                    <th style={{ textAlign: "right", padding: "10px 12px" }}>Consignación neta</th>
-                    <th style={{ textAlign: "right", padding: "10px 12px" }}>Traslado Ext. neto</th>
+                    <th style={{ textAlign: "right", padding: "10px 12px" }}>Consignación (despachado)</th>
+                    <th style={{ textAlign: "right", padding: "10px 12px" }}>Traslado Ext. (despachado)</th>
                     <th style={{ textAlign: "right", padding: "10px 12px" }}># Docs</th>
                     <th style={{ textAlign: "center", padding: "10px 12px" }}></th>
                   </tr>
@@ -3212,8 +3218,8 @@ function FacturacionClientesView() {
                             <td colSpan={6} style={{ padding: "8px 12px 14px 24px" }}>
                               <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 12, fontSize: 12 }}>
                                 <div><b>FAC:</b> {fmtCOP(c.facturado.monto)} ({fmtNum(c.facturado.unidades)} und.)</div>
-                                <div><b>TCO bruto:</b> {fmtCOP(c.consignacionNeta.montoBruto)} · <b>DTC:</b> -{fmtCOP(c.consignacionNeta.montoDevuelto)} → neto {fmtCOP(c.consignacionNeta.monto)}</div>
-                                <div><b>TEX bruto:</b> {fmtCOP(c.trasladoExternoNeto.montoBruto)} · <b>DTE:</b> -{fmtCOP(c.trasladoExternoNeto.montoDevuelto)} → neto {fmtCOP(c.trasladoExternoNeto.monto)}</div>
+                                <div><b>TCO despachado:</b> {fmtCOP(c.consignacionNeta.montoBruto)} ({fmtNum(c.consignacionNeta.unidadesBruto)} und.) · <b>DTC (ya facturado):</b> -{fmtCOP(c.consignacionNeta.montoDevuelto)} ({fmtNum(c.consignacionNeta.unidadesDevueltas)} und.) · si se restara, neto {fmtCOP(c.consignacionNeta.montoNeto)}</div>
+                                <div><b>TEX despachado:</b> {fmtCOP(c.trasladoExternoNeto.montoBruto)} ({fmtNum(c.trasladoExternoNeto.unidadesBruto)} und.) · <b>DTE:</b> -{fmtCOP(c.trasladoExternoNeto.montoDevuelto)} ({fmtNum(c.trasladoExternoNeto.unidadesDevueltas)} und.) · si se restara, neto {fmtCOP(c.trasladoExternoNeto.montoNeto)}</div>
                                 {c.otros && (
                                   <div style={{ color: C.red }}><b>Otros tipos sin clasificar ({c.otros.tipos.join(", ")}):</b> {fmtCOP(c.otros.monto)} ({fmtNum(c.otros.unidades)} und.)</div>
                                 )}
