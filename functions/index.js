@@ -290,8 +290,16 @@ async function consultarFacturadoBusint(fechaInicio, fechaFin) {
 exports.getDocumentosPorPedidoBusint = onCall(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    // (2026-08-28) Falló en producción con un "internal" genérico (sin
+    // detalle) al pedir varios meses de ApiGen_FacturadoBusint de una sola
+    // vez — muy probablemente la función se quedó sin memoria procesando
+    // la respuesta completa antes de poder devolver un error controlado.
+    // Se sube el techo de memoria Y, más importante, se parte la consulta
+    // en tandas de 30 días (ver abajo) para que el tamaño de cada
+    // respuesta individual de Busint se mantenga chico sin importar qué
+    // tan ancho sea el rango total pedido.
     timeoutSeconds: 300,
-    memory: "1GiB",
+    memory: "2GiB",
   },
   async (request) => {
     const { fechaInicio, fechaFin, numpeds } = request.data || {};
@@ -301,29 +309,49 @@ exports.getDocumentosPorPedidoBusint = onCall(
     }
     const numpedsSet = new Set((Array.isArray(numpeds) ? numpeds : []).map((n) => String(n).trim()).filter(Boolean));
 
-    let filas;
-    try {
-      filas = await consultarFacturadoBusint(fechaInicio, fechaFin);
-    } catch (err) {
-      const detalle = (err && err.message) ? err.message : String(err);
-      logger.error("Error consultando Busint (getDocumentosPorPedidoBusint)", { error: detalle });
-      throw new HttpsError("unavailable", `No se pudo consultar la facturación en Busint: ${detalle}`);
-    }
-
     const porPedido = new Map();
-    for (const f of filas) {
-      const numped = String(f.numped ?? "").trim();
-      if (!numped) continue;
-      if (numpedsSet.size && !numpedsSet.has(numped)) continue;
-      const tipo = String(f.tipo || "").trim().toUpperCase();
-      const doc = String(f.doc ?? "").trim();
-      const claveDoc = `${tipo}|${doc}`;
-      if (!porPedido.has(numped)) porPedido.set(numped, new Map());
-      const docs = porPedido.get(numped);
-      if (!docs.has(claveDoc)) {
-        docs.set(claveDoc, { tipo, doc: doc && doc !== "0" ? doc : null, fecha: soloFecha(f.fechaFact) || null, cant: 0 });
+    const iso = (d) => d.toISOString().slice(0, 10);
+    const DIAS_POR_TANDA = 30;
+    let cursor = new Date(`${fechaInicio}T00:00:00Z`);
+    const fin = new Date(`${fechaFin}T00:00:00Z`);
+    let tandas = 0;
+    let totalFilasProcesadas = 0;
+
+    while (cursor <= fin) {
+      const finTanda = new Date(cursor);
+      finTanda.setUTCDate(finTanda.getUTCDate() + DIAS_POR_TANDA - 1);
+      const finEfectivo = finTanda > fin ? fin : finTanda;
+      const inicioIso = iso(cursor);
+      const finIso = iso(finEfectivo);
+      let filasTanda;
+      try {
+        filasTanda = await consultarFacturadoBusint(inicioIso, finIso);
+      } catch (err) {
+        const detalle = (err && err.message) ? err.message : String(err);
+        logger.error("Error consultando Busint (getDocumentosPorPedidoBusint)", { tanda: `${inicioIso}..${finIso}`, error: detalle });
+        throw new HttpsError("unavailable", `No se pudo consultar la facturación en Busint (tanda ${inicioIso} a ${finIso}): ${detalle}`);
       }
-      docs.get(claveDoc).cant += Number(f.cant) || 0;
+      tandas++;
+      totalFilasProcesadas += filasTanda.length;
+      for (const f of filasTanda) {
+        const numped = String(f.numped ?? "").trim();
+        if (!numped) continue;
+        if (numpedsSet.size && !numpedsSet.has(numped)) continue;
+        const tipo = String(f.tipo || "").trim().toUpperCase();
+        const doc = String(f.doc ?? "").trim();
+        const claveDoc = `${tipo}|${doc}`;
+        if (!porPedido.has(numped)) porPedido.set(numped, new Map());
+        const docs = porPedido.get(numped);
+        if (!docs.has(claveDoc)) {
+          docs.set(claveDoc, { tipo, doc: doc && doc !== "0" ? doc : null, fecha: soloFecha(f.fechaFact) || null, cant: 0 });
+        }
+        docs.get(claveDoc).cant += Number(f.cant) || 0;
+      }
+      // filasTanda queda libre para el recolector de basura al pasar a la
+      // siguiente vuelta — nunca se acumula el histórico completo en
+      // memoria, solo el resumen por pedido (mucho más chico).
+      cursor = new Date(finEfectivo);
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
     }
 
     const documentosPorPedido = {};
@@ -334,6 +362,8 @@ exports.getDocumentosPorPedidoBusint = onCall(
     return {
       fechaInicio,
       fechaFin,
+      tandasConsultadas: tandas,
+      totalFilasProcesadas,
       totalPedidosConsultados: numpedsSet.size,
       totalPedidosEncontrados: Object.keys(documentosPorPedido).length,
       documentosPorPedido,
