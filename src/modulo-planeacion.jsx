@@ -404,6 +404,7 @@ function construirLotesDesdeBusintGen(filasBusint) {
       numPedido: f.numPedido,
       referencia: f.referencia,
       categoria: f.categoria,
+      linea: f.linea,
       nombreCliente: f.nombreCliente,
       clienteAgrupado,
       nombrePlanta: f.nombrePlanta,
@@ -2831,7 +2832,7 @@ function TuboProductivoView() {
                   { key: "numLote", label: "Lote" },
                   { key: "numPedido", label: "Pedido" },
                   { key: "nombreCliente", label: "Cliente" },
-                  { key: "categoria", label: "Línea" },
+                  { key: "linea", label: "Línea", render: (f) => f.linea || "—" },
                   { key: "referencia", label: "Referencia" },
                   { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(Number(f[etapaActiva.campo]) || 0) },
                   ...(etapaActiva.id === "bpt"
@@ -2875,7 +2876,9 @@ function TuboProductivoView() {
 
 // (2026-08-28) "Buscar por línea" — pedido de Fredy: cuando le preguntan
 // cuánto hay de un cliente en una línea puntual (caballero/dama/niño, el
-// campo "categoria"), hoy le toca buscar a mano por varias pestañas de
+// campo "linea" de ApiGen_PanelControlFlujoOperacional — confirmado con
+// datos reales, es distinto de "categoria" que es el tipo de prenda como
+// cachetero/leggings), hoy le toca buscar a mano por varias pestañas de
 // Informes. Acá se filtra por cliente y/o línea y se ve de una vez cuánto
 // hay pendiente (sumando lo que está en BMP+Corte+Planta+Semiterminado+BPT,
 // es decir, todavía no despachado) y cuánto se ha cortado en total, con
@@ -2912,13 +2915,13 @@ function BuscarPorLineaView() {
     () => [...new Set(lotes.map((l) => l.clienteAgrupado || l.nombreCliente).filter(Boolean))].sort(),
     [lotes]
   );
-  const lineas = useMemo(() => [...new Set(lotes.map((l) => l.categoria).filter(Boolean))].sort(), [lotes]);
+  const lineas = useMemo(() => [...new Set(lotes.map((l) => l.linea).filter(Boolean))].sort(), [lotes]);
 
   const lotesFiltrados = useMemo(() => {
     return lotes.filter((l) => {
       const cliente = l.clienteAgrupado || l.nombreCliente;
       if (filtroCliente && cliente !== filtroCliente) return false;
-      if (filtroLinea && l.categoria !== filtroLinea) return false;
+      if (filtroLinea && l.linea !== filtroLinea) return false;
       return true;
     });
   }, [lotes, filtroCliente, filtroLinea]);
@@ -2927,7 +2930,7 @@ function BuscarPorLineaView() {
     const mapa = new Map();
     lotesFiltrados.forEach((l) => {
       const cliente = l.clienteAgrupado || l.nombreCliente;
-      const linea = l.categoria || "(Sin línea)";
+      const linea = l.linea || "(Sin línea)";
       const clave = `${cliente}||${linea}`;
       if (!mapa.has(clave)) {
         mapa.set(clave, { clave, cliente, linea, lotes: [], unidadesPendientes: 0, cantCortada: 0 });
