@@ -476,6 +476,1429 @@ exports.getFacturacionPorClienteBusint = onCall(
   }
 );
 
+function cryptoRandomId() {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+// Informe de Pedidos Vigentes por Cliente — consulta Busint EN VIVO (no lee
+// Firestore) para el rango { fechaInicio, fechaFin } que envía la pantalla,
+// y devuelve solo los pedidos cuya fecha de despacho es hoy o está en el
+// futuro, agrupados por cliente. Se llama desde el navegador con
+// `httpsCallable(functions, "getPedidosVigentesBusint")({ fechaInicio, fechaFin })`.
+exports.getPedidosVigentesBusint = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const { fechaInicio, fechaFin } = request.data || {};
+    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    if (!fechaValida(fechaInicio) || !fechaValida(fechaFin)) {
+      throw new HttpsError("invalid-argument", "fechaInicio y fechaFin son obligatorias, en formato AAAA-MM-DD.");
+    }
+
+    let filas;
+    try {
+      filas = await consultarOrdenesBusint(fechaInicio, fechaFin);
+    } catch (err) {
+      logger.error("Error consultando Busint (getPedidosVigentesBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+    }
+
+    const porPedido = agruparFilasBusintPorPedido(filas);
+    const hoyISO = new Date().toISOString().slice(0, 10);
+
+    let facturadoPorPedido = new Map();
+    let avisoFacturacion = null;
+    try {
+      const filasFacturado = await consultarFacturadoBusint(fechaInicio, hoyISO);
+      filasFacturado.forEach((f) => {
+        const numero = String(f.numped ?? "").trim();
+        if (!numero) return;
+        const cant = Number(f.cant) || 0;
+        facturadoPorPedido.set(numero, (facturadoPorPedido.get(numero) || 0) + cant);
+      });
+    } catch (err) {
+      logger.error("Error consultando ApiGen_FacturadoBusint (getPedidosVigentesBusint)", { error: String(err) });
+      avisoFacturacion = "No se pudo consultar la facturación de Busint — este informe puede estar mostrando pedidos que ya se facturaron.";
+    }
+
+    const cargasPlaneacionSnap = await db.collection("planeacion_cargas").get();
+    const cargasPlaneacion = cargasPlaneacionSnap.docs.map((d) => d.data());
+    cargasPlaneacion.sort((a, b) => String(b.creadoEn || b.fecha || "").localeCompare(String(a.creadoEn || a.fecha || "")));
+    const cargaPlaneacionActiva = cargasPlaneacion[0] || null;
+    const lotesPorPedido = new Map();
+    (cargaPlaneacionActiva?.lotes || []).forEach((l) => {
+      const numPedido = String(l.numPedido ?? "").trim();
+      if (!numPedido) return;
+      if (!lotesPorPedido.has(numPedido)) lotesPorPedido.set(numPedido, []);
+      lotesPorPedido.get(numPedido).push({ numLote: l.numLote, ubicacionActual: l.ubicacionActual || "En proceso" });
+    });
+
+    const ocultosSnap = await db.collection("pedidos_ocultos_busint").get();
+    const ocultosSet = new Set(ocultosSnap.docs.map((d) => String(d.data().numero || d.id).trim()));
+
+    const porClienteMap = new Map();
+    for (const [, pedido] of porPedido) {
+      if (ocultosSet.has(pedido.numero)) continue;
+      const referencias = [...pedido.refsPorClave.values()];
+      const totalUnidades = referencias.reduce((s, r) => s + r.total, 0);
+      const totalFacturado = facturadoPorPedido.get(pedido.numero) || 0;
+      const completo = totalUnidades > 0 && totalFacturado >= totalUnidades;
+      if (completo) continue;
+      const lotesDelPedido = lotesPorPedido.get(pedido.numero) || [];
+      const tieneLote = lotesDelPedido.length > 0;
+      const etapas = tieneLote ? [...new Set(lotesDelPedido.map((l) => l.ubicacionActual))] : [];
+      const vencido = !!pedido.fechaDespacho && pedido.fechaDespacho < hoyISO;
+      const clienteKey = pedido.cliente || "Sin cliente";
+      if (!porClienteMap.has(clienteKey)) {
+        porClienteMap.set(clienteKey, { cliente: clienteKey, pedidos: [], totalPedidos: 0, totalUnidades: 0 });
+      }
+      const grupo = porClienteMap.get(clienteKey);
+      grupo.pedidos.push({
+        numero: pedido.numero,
+        fechaPedido: pedido.fechaPedido,
+        fechaDespacho: pedido.fechaDespacho,
+        vencido,
+        referencias,
+        totalUnidades,
+        totalFacturado,
+        pctFacturado: totalUnidades > 0 ? Math.round((totalFacturado / totalUnidades) * 100) : 0,
+        tieneLote,
+        etapas,
+      });
+      grupo.totalPedidos += 1;
+      grupo.totalUnidades += totalUnidades;
+    }
+
+    const porCliente = [...porClienteMap.values()].sort((a, b) => a.cliente.localeCompare(b.cliente));
+    porCliente.forEach((g) =>
+      g.pedidos.sort((a, b) => {
+        if (a.vencido !== b.vencido) return a.vencido ? -1 : 1;
+        return (a.fechaDespacho || "").localeCompare(b.fechaDespacho || "");
+      })
+    );
+
+    return {
+      fechaInicio,
+      fechaFin,
+      generadoEn: new Date().toISOString(),
+      totalClientes: porCliente.length,
+      totalPedidos: porCliente.reduce((s, g) => s + g.totalPedidos, 0),
+      porCliente,
+      avisoFacturacion,
+    };
+  }
+);
+
+// Callable usado por "Revisar contra Busint" tanto en Pedidos (pestaña
+// Activos) como en el módulo Corte: dado un rango de fechas, devuelve
+// simplemente la LISTA de números de pedido que Busint todavía tiene hoy en
+// ese rango (agrupando igual que consultarOrdenesBusint). Si un pedido que
+// el aplicativo tiene como "activo" ya NO aparece en esta lista, quiere
+// decir que en Busint se canceló, se cerró o se dio por cumplido — el
+// aplicativo lo usa para marcarlo automáticamente en vez de quedarse
+// pegado como activo para siempre.
+exports.getPedidosExistentesBusint = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const { fechaInicio, fechaFin } = request.data || {};
+    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    if (!fechaValida(fechaInicio) || !fechaValida(fechaFin)) {
+      throw new HttpsError("invalid-argument", "fechaInicio y fechaFin son obligatorias, en formato AAAA-MM-DD.");
+    }
+    let filas;
+    try {
+      filas = await consultarOrdenesBusint(fechaInicio, fechaFin);
+    } catch (err) {
+      logger.error("Error consultando Busint (getPedidosExistentesBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+    }
+    const porPedido = agruparFilasBusintPorPedido(filas);
+    return { fechaInicio, fechaFin, numeros: [...porPedido.keys()] };
+  }
+);
+
+// Diagnóstico: trae las filas CRUDAS (sin agrupar, sin filtrar campos) que
+// ApiGen_OrdenesDePedidoBusint devuelve para un número de pedido puntual, en
+// el rango de fechas dado. Se usa desde la pantalla de Pedidos para
+// responder la pregunta "¿este pedido todavía existe en Busint, y con qué
+// datos exactos?" sin adivinar — muestra tal cual lo que Busint responde.
+exports.getOrdenBusintPorNumero = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const { fechaInicio, fechaFin, numeroPedido } = request.data || {};
+    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    if (!fechaValida(fechaInicio) || !fechaValida(fechaFin)) {
+      throw new HttpsError("invalid-argument", "fechaInicio y fechaFin son obligatorias, en formato AAAA-MM-DD.");
+    }
+    const numeroBuscado = String(numeroPedido ?? "").trim();
+    if (!numeroBuscado) {
+      throw new HttpsError("invalid-argument", "numeroPedido es obligatorio.");
+    }
+    let filas;
+    try {
+      filas = await consultarOrdenesBusint(fechaInicio, fechaFin);
+    } catch (err) {
+      logger.error("Error consultando Busint (getOrdenBusintPorNumero)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+    }
+    const filasCoincidentes = filas.filter((f) => String(f.numPed ?? "").trim() === numeroBuscado);
+    return {
+      fechaInicio,
+      fechaFin,
+      numeroPedido: numeroBuscado,
+      totalFilasEnRango: filas.length,
+      filasCoincidentes,
+    };
+  }
+);
+
+// Consulta el maestro de clientes de Busint ("ApiGen_Clientes") — a
+// diferencia de las órdenes de pedido, este endpoint no recibe rango de
+// fechas: siempre trae el listado completo tal como está hoy en Busint.
+async function consultarClientesBusint() {
+  const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
+  const token = BUSINT_TOKEN.value();
+
+  const form = new FormData();
+  form.append("Token", token);
+
+  const resp = await fetch(`${baseUrl}/consultas/ApiGen_Clientes`, {
+    method: "POST",
+    body: form,
+  });
+
+  if (!resp.ok) {
+    const texto = await resp.text().catch(() => "");
+    logger.error("Busint respondió con error (ApiGen_Clientes)", { status: resp.status, texto });
+    throw new Error(`Busint respondió ${resp.status}`);
+  }
+
+  const filas = await resp.json();
+  return Array.isArray(filas) ? filas : [];
+}
+
+// Callable usado por Administrador General → Clientes → "Importar de
+// Busint". Trae el maestro completo y lo reduce a los campos que el
+// aplicativo realmente guarda por cliente (nombre, contacto, email,
+// teléfono) — la decisión de qué hacer con cada uno (agregar, reemplazar
+// nombre existente, u omitir) la toma el usuario en pantalla, esta función
+// solo entrega los datos crudos de Busint.
+exports.getClientesBusint = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async () => {
+    let filas;
+    try {
+      filas = await consultarClientesBusint();
+    } catch (err) {
+      logger.error("Error consultando Busint (getClientesBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+    }
+
+    const clientes = filas
+      .map((f) => ({
+        nombre: (f.nombreORazonSocial || "").trim(),
+        nombreCorto: (f.nombreCorto || "").trim(),
+        contacto: (f.contacto || "").trim(),
+        email: (f.email || "").trim(),
+        telefono: (f.telefono || f.celular || "").trim(),
+        ciudad: (f.ciudad || "").trim(),
+        activo: f.clienteActivo !== false,
+      }))
+      .filter((c) => c.nombre);
+
+    clientes.sort((a, b) => a.nombre.localeCompare(b.nombre));
+
+    return { generadoEn: new Date().toISOString(), total: clientes.length, clientes };
+  }
+);
+
+// Trae de Busint el maestro completo de referencias ("ApiGen_Referencias") y
+// de códigos de barra ("ApiGen_CodigosDeBarra") — ninguno de los dos acepta
+// filtro en la API de Busint (siempre traen TODO el catálogo), así que se
+// filtra acá adentro por la referencia pedida antes de responder, para no
+// mandarle al navegador miles de filas que no necesita.
+async function consultarCatalogoBusint(endpoint, extraParams) {
+  const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
+  const token = BUSINT_TOKEN.value();
+  const form = new FormData();
+  form.append("Token", token);
+  // (2026-08-27) Algunos catálogos de la API gen (ej. "ApiGen_MovimientosPosint")
+  // devuelven [] vacío sin parámetros — probablemente esperan un rango de
+  // fecha u otro filtro obligatorio para no traer millones de filas. Se
+  // permite mandar parámetros extra (ej. { FechaInicial: "2026-08-01" }) que
+  // se agregan al mismo form-data junto con el Token.
+  if (extraParams && typeof extraParams === "object") {
+    for (const [k, v] of Object.entries(extraParams)) {
+      if (v !== undefined && v !== null && v !== "") form.append(k, String(v));
+    }
+  }
+  // encodeURIComponent porque muchos nombres de catálogo de Busint traen
+  // espacios y guiones sueltos (ej. "planeacion cargas desglosado") — sin
+  // esto la URL queda mal formada y Busint responde 404/400.
+  const resp = await fetch(`${baseUrl}/consultas/${encodeURIComponent(endpoint)}`, { method: "POST", body: form });
+  if (!resp.ok) {
+    const texto = await resp.text().catch(() => "");
+    logger.error(`Busint respondió con error (${endpoint})`, { status: resp.status, texto });
+    throw new Error(`Busint respondió ${resp.status}`);
+  }
+  const filas = await resp.json();
+  return Array.isArray(filas) ? filas : [];
+}
+
+// Consulta la API "BD" nueva de Busint: GET a /api/Query?tableName=X&page=Y
+// &pageSize=Z, autenticado con header X-Api-Key (no Token en el body). No se
+// conoce todavía la forma exacta del JSON de respuesta (puede venir como
+// arreglo plano o como objeto con la lista adentro bajo alguna llave tipo
+// "items"/"data"/"rows") — por eso quien llama a esto debe pasar el
+// resultado crudo por `extraerFilasBusintBD` antes de asumir nada.
+async function consultarTablaBusintBD(tableName, page, pageSize) {
+  // .trim() por si el valor del secreto quedó con un salto de línea o
+  // espacio de más al pegarlo — eso rompe la URL y `fetch` falla con un
+  // "fetch failed" genérico que no dice por qué.
+  const baseUrlRaw = String(BUSINT_BD_BASE_URL.value() || "").trim();
+  const apiKey = String(BUSINT_BD_API_KEY.value() || "").trim();
+  if (!baseUrlRaw) {
+    throw new Error('El secreto BUSINT_BD_BASE_URL está vacío o no configurado. Corre: firebase functions:secrets:set BUSINT_BD_BASE_URL (valor: https://api-yanko-bd.busint.info) y vuelve a desplegar.');
+  }
+  if (!apiKey) {
+    throw new Error("El secreto BUSINT_BD_API_KEY está vacío o no configurado. Corre: firebase functions:secrets:set BUSINT_BD_API_KEY y vuelve a desplegar.");
+  }
+  const baseUrl = baseUrlRaw.replace(/\/+$/, "");
+  const url = `${baseUrl}/api/Query?tableName=${encodeURIComponent(tableName)}&page=${page}&pageSize=${pageSize}`;
+  let resp;
+  try {
+    resp = await fetch(url, { method: "POST", headers: { "X-Api-Key": apiKey, accept: "*/*" } });
+  } catch (err) {
+    // "fetch failed" de Node/undici no dice la causa real en err.message —
+    // viene adentro de err.cause (DNS, TLS, conexión rechazada, etc.).
+    const causa = err?.cause ? String(err.cause.message || err.cause) : null;
+    logger.error("Fetch de bajo nivel falló contra Busint BD", { url, causa, error: String(err) });
+    throw new Error(`No se pudo conectar a "${url}"${causa ? ` — causa: ${causa}` : ""}. Revisa que BUSINT_BD_BASE_URL sea exactamente el host correcto (sin espacios ni saltos de línea).`);
+  }
+  if (!resp.ok) {
+    const texto = await resp.text().catch(() => "");
+    logger.error(`Busint BD respondió con error (${tableName})`, { status: resp.status, texto, url });
+    throw new Error(`Busint BD respondió ${resp.status} en ${url}${texto ? `: ${texto}` : ""}`);
+  }
+  return resp.json();
+}
+// La respuesta de /api/Query no está documentada todavía — prueba las
+// formas más comunes (arreglo plano, o un objeto con la lista bajo una de
+// estas llaves) antes de rendirse. Si no reconoce nada, devuelve null y
+// quien llama muestra el objeto crudo tal cual para poder verlo.
+function extraerFilasBusintBD(data) {
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === "object") {
+    for (const key of ["items", "data", "rows", "results", "Items", "Data", "Rows", "Results", "value", "Value"]) {
+      if (Array.isArray(data[key])) return data[key];
+    }
+  }
+  return null;
+}
+// Diagnóstico genérico: consulta CUALQUIER tabla de la API "BD" de Busint
+// por su nombre exacto (tal cual aparece en la lista que dio Busint, ej.
+// "planeacion cargas", "ia_seguimientolotesv_data") y devuelve solo una
+// muestra chica — para explorar tablas nuevas que todavía no se conectaron
+// a ATLAS (columnas y unas pocas filas) sin traer todo. Se usa desde
+// Administración → "🔌 Busint (prueba)".
+exports.getCatalogoBusintCrudo = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
+  async (request) => {
+    const endpoint = String(request.data?.endpoint || "").trim();
+    if (!endpoint) {
+      throw new HttpsError("invalid-argument", "Debes indicar el nombre de la tabla a consultar.");
+    }
+    const limite = Math.min(Math.max(parseInt(request.data?.limite) || 10, 1), 50);
+    const pagina = Math.max(parseInt(request.data?.pagina) || 1, 1);
+    let data;
+    try {
+      data = await consultarTablaBusintBD(endpoint, pagina, limite);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getCatalogoBusintCrudo)", { endpoint, error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar "${endpoint}" en Busint: ${err?.message || String(err)}`);
+    }
+    const filas = extraerFilasBusintBD(data);
+    if (filas) {
+      return {
+        endpoint,
+        reconocido: true,
+        total: filas.length,
+        columnas: filas.length ? Object.keys(filas[0]) : [],
+        muestra: filas.slice(0, limite),
+      };
+    }
+    // No se reconoció la forma de la respuesta — se devuelve tal cual para
+    // poder verla y ajustar `extraerFilasBusintBD` con la llave correcta.
+    return {
+      endpoint,
+      reconocido: false,
+      total: null,
+      columnas: data && typeof data === "object" ? Object.keys(data) : [],
+      muestra: [data],
+    };
+  }
+);
+
+// (2026-08-21) EXPLORATORIO — en vez de probar tabla por tabla (una consulta
+// por clic), esto consulta VARIAS a la vez (page=1, pageSize chico, sin
+// contar el total — eso es lo lento) y devuelve solo columnas + 2 filas de
+// muestra por tabla, para escanear rápido un lote de candidatas de la lista
+// de 972 tablas de Busint BD sin gastar un clic por cada una. Si no se manda
+// `tablas`, usa una lista por defecto de candidatas para costo teórico de
+// mano de obra por proceso (lo que se está buscando para Nómina).
+const TABLAS_CANDIDATAS_NOMINA_DEFAULT = [
+  "gv-0generales valorizados",
+  "bc-visor de rendimiento de corte",
+  "lotes cumplidos conceptos",
+  "historia de dado por cumplido-lotes",
+  "lotes cumplidos teorico vs real-modcr",
+  "maestro plantas procesos",
+  "tabla procesos",
+  "rutaprocesos",
+  "unir procesos",
+];
+exports.getBarridoTablasBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    const tablas =
+      Array.isArray(request.data?.tablas) && request.data.tablas.length
+        ? request.data.tablas.map((t) => String(t))
+        : TABLAS_CANDIDATAS_NOMINA_DEFAULT;
+    const resultados = [];
+    for (const tabla of tablas) {
+      try {
+        const data = await consultarTablaBusintBD(tabla, 1, 3);
+        const filas = extraerFilasBusintBD(data);
+        resultados.push({
+          tabla,
+          ok: true,
+          columnas: filas && filas.length ? Object.keys(filas[0]) : [],
+          muestra: filas ? filas.slice(0, 2) : [data],
+        });
+      } catch (err) {
+        resultados.push({ tabla, ok: false, error: err?.message || String(err) });
+      }
+    }
+    return { resultados };
+  }
+);
+
+// (2026-08-21) EXPLORATORIO — en vez de adivinar nombres de tabla uno por
+// uno, esto revisa las 972 tablas de Busint BD DE VERDAD: trae la lista
+// completa desde el swagger público de la API BD (no hace falta mantenerla
+// a mano acá), consulta cada una con page=1/pageSize=1 en lotes paralelos
+// (25 a la vez, para no tardar una eternidad ni tumbar la API de Busint a
+// fuerza de pedidos), y se queda solo con las que tengan alguna columna que
+// contenga alguna de las palabras clave — así se ve de un vistazo cuáles
+// tablas de las 972 podrían servir, sin gastar un clic por cada una.
+exports.getBarridoTotalTablasBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    const keywords = (
+      Array.isArray(request.data?.keywords) && request.data.keywords.length
+        ? request.data.keywords
+        : ["teorico", "costo", "concepto", "tarifa", "sam", "operacion"]
+    ).map((k) => String(k).toLowerCase());
+    let enumList;
+    try {
+      const swaggerResp = await fetch("https://api-yanko-bd.busint.info/swagger/v1/swagger.json");
+      const swagger = await swaggerResp.json();
+      enumList = swagger.paths["/api/Query"].post.parameters.find((p) => p.name === "tableName").schema.enum;
+    } catch (err) {
+      logger.error("Error trayendo la lista de tablas del swagger de Busint BD", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo traer la lista de tablas del swagger: ${err?.message || String(err)}`);
+    }
+    const TAM_LOTE = 25;
+    const encontradas = [];
+    let totalErrores = 0;
+    for (let i = 0; i < enumList.length; i += TAM_LOTE) {
+      const lote = enumList.slice(i, i + TAM_LOTE);
+      const resultados = await Promise.all(
+        lote.map(async (tabla) => {
+          try {
+            const data = await consultarTablaBusintBD(tabla, 1, 1);
+            const filas = extraerFilasBusintBD(data);
+            const columnas = filas && filas.length ? Object.keys(filas[0]) : [];
+            const matchCols = columnas.filter((c) => keywords.some((k) => c.toLowerCase().includes(k)));
+            return { tabla, columnas, matchCols, muestra: filas && filas.length ? filas[0] : null };
+          } catch (err) {
+            return { tabla, error: err?.message || String(err) };
+          }
+        })
+      );
+      resultados.forEach((r) => {
+        if (r.error) {
+          totalErrores++;
+          return;
+        }
+        if (r.matchCols && r.matchCols.length) encontradas.push(r);
+      });
+    }
+    return { totalTablasRevisadas: enumList.length, totalErrores, encontradas };
+  }
+);
+
+// Trae TODAS las filas de una tabla de Busint BD, paginando sola (la API
+// entrega de a `pageSize` filas por página) hasta que una página llega
+// vacía/incompleta o se alcanza `maxPaginas` — tope de seguridad para no
+// dejar un loop corriendo para siempre si la API cambia de forma
+// inesperada.
+async function consultarTablaBusintBDCompleta(tableName, pageSize = 500, maxPaginas = 200) {
+  // (2026-08-26) Busint recordó explícitamente respetar la paginación:
+  // "cuando la información consultada supere el número de registros por
+  // página, se deberán realizar las consultas de las páginas siguientes
+  // hasta completar la totalidad de los registros requeridos" — este bucle
+  // ya lo hacía, pero el tope de 30 páginas (15.000 filas con pageSize=500)
+  // podía truncar en silencio una tabla grande sin que nadie se diera
+  // cuenta (posible causa de números que no cuadraban). Se sube el tope y
+  // se deja un log de advertencia si de verdad se llega a ese límite sin
+  // encontrar la última página.
+  let todas = [];
+  let llegoAlTope = true;
+  for (let page = 1; page <= maxPaginas; page++) {
+    const data = await consultarTablaBusintBD(tableName, page, pageSize);
+    const filas = extraerFilasBusintBD(data);
+    if (!filas || !filas.length) { llegoAlTope = false; break; }
+    todas = todas.concat(filas);
+    if (filas.length < pageSize) { llegoAlTope = false; break; } // última página (vino incompleta)
+  }
+  if (llegoAlTope) {
+    logger.warn(`consultarTablaBusintBDCompleta: posible truncamiento en "${tableName}" — se llegó al límite de ${maxPaginas} páginas (${todas.length} filas) sin encontrar una página final incompleta. Puede que falten registros.`);
+  }
+  return todas;
+}
+// Trae una tabla COMPLETA de Busint BD (paginando sola) y devuelve solo un
+// resumen: total real de filas + las primeras 3 + las últimas 5 — para
+// saber de un vistazo qué tan grande es una tabla y si sus datos llegan
+// hasta hoy, sin tener que ir adivinando número de página a mano en la
+// pantalla de prueba. Se usa desde Administración → "🔌 Busint (prueba)"
+// con el botón "📊 Ver resumen completo".
+exports.getResumenTablaBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async (request) => {
+    const endpoint = String(request.data?.endpoint || "").trim();
+    if (!endpoint) {
+      throw new HttpsError("invalid-argument", "Debes indicar el nombre de la tabla a consultar.");
+    }
+    let filas;
+    try {
+      filas = await consultarTablaBusintBDCompleta(endpoint);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getResumenTablaBusintBD)", { endpoint, error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar "${endpoint}" en Busint: ${err?.message || String(err)}`);
+    }
+    return {
+      endpoint,
+      total: filas.length,
+      columnas: filas.length ? Object.keys(filas[0]) : [],
+      primeras: filas.slice(0, 3),
+      ultimas: filas.slice(-5),
+    };
+  }
+);
+// (2026-08-26) Diseño pidió esto: cuando programan un corte no saben si hay
+// tela disponible en bodega — esto trae el inventario REAL de tela desde
+// Busint BD, tabla "estandar componentes prod" (confirmado a mano con el
+// usuario: cada fila es un componente+color, con "Telas"="T" para tela vs
+// "I" para insumo, y "ICant" es la cantidad que hay hoy en bodega — se
+// verificó con un ejemplo real: ICant=24 en un cordón cuadraba con
+// Itotal=2569.92 a Iprom=107.08 costo/unidad). Se usa desde "Programación
+// de Corte" para sugerir el nombre real de la tela (antes era texto libre)
+// y mostrar cuánta hay disponible frente a lo que el trazo va a consumir.
+// (2026-08-27) Igual que fechaBDaISO (definida más abajo en este archivo)
+// pero con hora, y a prueba de que el objeto no tenga el formato esperado —
+// se usa solo en el diagnóstico de "estandar componentes prod" para ver
+// cuándo se actualizó por última vez cada fila (Fecha / Ufecha).
+function fechaBDaISOSafe(obj) {
+  if (!obj || typeof obj !== "object" || !obj.isValidDateTime) return null;
+  const y = obj.year, m = obj.month, d = obj.day;
+  if (!y || !m || !d) return null;
+  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+function fechaBDaISOHoraSafe(obj) {
+  const base = fechaBDaISOSafe(obj);
+  if (!base) return null;
+  const h = obj.hour ?? 0, mi = obj.minute ?? 0, s = obj.second ?? 0;
+  return `${base} ${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+exports.getTelasStockBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async () => {
+    let filas;
+    try {
+      filas = await consultarTablaBusintBDCompleta("estandar componentes prod");
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getTelasStockBusintBD)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar el inventario de telas en Busint: ${err?.message || String(err)}`);
+    }
+    // (2026-08-26) Confirmado con el usuario, cruzando contra un reporte
+    // propio de Busint para "MARLY" (Ancho 1.6 constante, con Ml y M2 dados
+    // por color): "ICant" en esta tabla viene en M2 (metros cuadrados), NO
+    // en ML (metros lineales) como se había asumido antes. El Ancho de la
+    // tela vive en la columna "Unidad" (a veces repetida en "UnidadT"; ej.
+    // "1,6" o "1.6") — "Dimension" resultó ser un código fijo ("1"), no el
+    // ancho. La conversión correcta es ML = M2 / Ancho.
+    const telas = filas
+      .filter((f) => String(f.Telas || "").toUpperCase() === "T")
+      .map((f) => {
+        const anchoTxt = String(f.Unidad ?? f.UnidadT ?? "").trim();
+        const ancho = parseFloat(anchoTxt.replace(",", ".")) || 0;
+        const cantidadM2 = Number(f.ICant) || 0;
+        return {
+          componente: String(f.Componente || "").trim(),
+          color: String(f.Color || "").trim(),
+          // (2026-08-27) "Codcomp" es el ID único por fila de "estandar
+          // componentes prod" (ej. 5740) — confirmado que corresponde al
+          // "Cod" que muestra el reporte nativo de Busint (Informes
+          // Inventarios) por Genérico+Color (ej. 4327=ARENA de MARLY). A
+          // diferencia del código de "tabla colores" (global, se repite
+          // entre telas distintas), este es único por fila real de
+          // inventario — sirve para que el usuario verifique a mano contra
+          // el reporte de Busint sin ambigüedad.
+          codcomp: f.Codcomp !== undefined && f.Codcomp !== null && f.Codcomp !== "" ? String(f.Codcomp).trim() : null,
+          // (2026-08-27) EXPLORATORIO — campos crudos extra para investigar
+          // por qué "estandar componentes prod" (ICant) no cuadra contra el
+          // reporte nativo "Inventarios - Telas por Genérico" de Busint,
+          // aunque se consulten en el mismo minuto (confirmado con el
+          // usuario, ej. MARLY/ARENA: 109.12 m² en la API vs 122.80 m² en
+          // el reporte). Hipótesis a validar: "ICCant/ICtotal/ICprom" (con
+          // "IC", separado de "ICant/Itotal/Iprom") podría ser inventario
+          // comprometido/apartado vs. total; "Ubc1".."Ubc15" podrían ser
+          // cantidades por ubicación/bodega. Se dejan aparte de "cantidad"
+          // para no tocar el cálculo real todavía, solo para poder verlos
+          // en el panel de diagnóstico.
+          icCant: f.ICCant !== undefined && f.ICCant !== null ? Number(f.ICCant) || 0 : null,
+          icTotal: f.ICtotal !== undefined && f.ICtotal !== null ? Number(f.ICtotal) || 0 : null,
+          icProm: f.ICprom !== undefined && f.ICprom !== null ? Number(f.ICprom) || 0 : null,
+          invCorte: f.InvCorte ?? null,
+          ubicaciones: Array.from({ length: 15 }, (_, i) => Number(f[`Ubc${i + 1}`]) || 0),
+          fecha: fechaBDaISOSafe(f.Fecha),
+          ufecha: fechaBDaISOHoraSafe(f.Ufecha),
+          // "cantidad" es la que usa el resto de la app para comparar
+          // contra metros lineales (largoTrazo × capas) — ya convertida.
+          // Si no hay ancho registrado para esa fila, queda en null (mejor
+          // no mostrar un número que no se puede convertir, a mostrarlo
+          // en la unidad equivocada).
+          cantidad: ancho > 0 ? cantidadM2 / ancho : null,
+          cantidadM2,
+          ancho,
+          unidad: f.Unidad || "",
+          dimension: f.Dimension ?? "",
+          unidadT: f.UnidadT ?? "",
+          costo: Number(f.Costo) || 0,
+          activo: f.Activo !== false,
+        };
+      })
+      .filter((t) => t.componente);
+    return { total: telas.length, telas };
+  }
+);
+// Busca un valor entre varias posibles formas de escribir la misma columna
+// — la API BD de Busint tiene columnas con mayúscula/minúscula inconsistente
+// entre "slots" (ej. "Tela1-Cons" pero "Tela6-cons"; "Tela1-col" pero
+// "Tela5-Col") — probablemente por haberse ido agregando a mano con los años.
+function valorFlexible(obj, candidatos) {
+  for (const k of candidatos) {
+    if (obj[k] !== undefined && obj[k] !== null && obj[k] !== "") return obj[k];
+  }
+  return undefined;
+}
+// (2026-08-26) Para el aviso de tela POR COLOR exacto (no solo el total de
+// la tela) hacen falta dos tablas más de Busint BD, confirmadas con el
+// usuario vía el barrido de las 972 tablas:
+//   - "telas": por Referencia, dice el NOMBRE de cada tela que usa esa
+//     prenda (hasta 10 "slots": Tela1..Tela10) y su consumo base.
+//   - "telas - detalle": por Referencia+Pinta+Pcolor, dice el CÓDIGO DE
+//     COLOR exacto de cada slot de tela (TelaN-col) y el consumo con sesgo
+//     ya incluido (TelaN-con-ses).
+// Cruzando las dos se sabe, para una Referencia+Pinta dada, el nombre Y
+// color exactos de la tela — que es justo lo que hace falta para buscar la
+// fila correcta en "estandar componentes prod" (Componente+Color) en vez de
+// sumar el stock de todos los colores de esa tela.
+const NUM_SLOTS_TELA = 10;
+exports.getComposicionTelasBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async () => {
+    let filasTelas, filasDetalle;
+    try {
+      [filasTelas, filasDetalle] = await Promise.all([
+        consultarTablaBusintBDCompleta("telas"),
+        consultarTablaBusintBDCompleta("telas - detalle"),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getComposicionTelasBusintBD)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar la composición de telas en Busint: ${err?.message || String(err)}`);
+    }
+    const porReferencia = filasTelas
+      .map((f) => {
+        const ref = String(f.Ref || "").trim();
+        const slots = [];
+        for (let i = 1; i <= NUM_SLOTS_TELA; i++) {
+          const nombre = String(valorFlexible(f, [`Tela${i}`]) || "").trim();
+          if (!nombre) continue;
+          slots.push({
+            slot: i,
+            nombre,
+            consumo: Number(valorFlexible(f, [`Tela${i}-Cons`, `Tela${i}-cons`])) || 0,
+            unidad: valorFlexible(f, [`Unid${i}`]) || "",
+          });
+        }
+        return { ref, slots };
+      })
+      .filter((r) => r.ref && r.slots.length);
+    const detallePorColor = filasDetalle
+      .map((f) => {
+        const ref = String(f.Ref || "").trim();
+        const pinta = String(f.Pinta || "").trim();
+        const pcolor = String(f.Pcolor || "").trim();
+        const colores = {};
+        for (let i = 1; i <= NUM_SLOTS_TELA; i++) {
+          const color = valorFlexible(f, [`Tela${i}-col`, `Tela${i}-Col`]);
+          if (color === undefined) continue;
+          colores[i] = {
+            color: String(color).trim(),
+            consumoConSesgo: Number(valorFlexible(f, [`Tela${i}-con-ses`, `Tela${i}-Con-Ses`])) || 0,
+          };
+        }
+        return { ref, pinta, pcolor, colores };
+      })
+      .filter((r) => r.ref);
+    return {
+      totalReferencias: porReferencia.length,
+      totalDetalle: detallePorColor.length,
+      porReferencia,
+      detallePorColor,
+    };
+  }
+);
+// (2026-08-26) Tabla "tabla colores": traduce el código corto de color (ej.
+// "004") que usan "estandar componentes prod" y "telas - detalle" al nombre
+// real (ej. "BLANCO") — encontrada con un Barrido Total pedido por el
+// usuario para poder responder "¿de qué color es el código 004?". Se usa
+// para mostrar el nombre junto al código en vez de solo el número, y para
+// intentar identificar el color exacto por NOMBRE cuando no hay detalle de
+// color por Referencia+Pinta (ver disponibilidadTelaPorColor en el
+// frontend).
+exports.getTablaColoresBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 120,
+    memory: "256MiB",
+  },
+  async () => {
+    let filas;
+    try {
+      filas = await consultarTablaBusintBDCompleta("tabla colores");
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getTablaColoresBusintBD)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar la tabla de colores en Busint: ${err?.message || String(err)}`);
+    }
+    const colores = filas
+      .map((f) => ({
+        codigo: String(f.Codcolor || "").trim(),
+        nombre: String(f.Colores || "").trim(),
+        activo: f.Activo !== false,
+      }))
+      .filter((c) => c.codigo);
+    return { total: colores.length, colores };
+  }
+);
+// Convierte el formato de fecha que usa la API BD de Busint ({isValidDateTime,
+// year, month, day, ...}) a texto ISO YYYY-MM-DD, o null si no es válida.
+function fechaBDaISO(obj) {
+  if (!obj || typeof obj !== "object" || !obj.isValidDateTime) return null;
+  const y = obj.year, m = obj.month, d = obj.day;
+  if (!y || !m || !d) return null;
+  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+// Saca el nombre de cliente embebido en el texto de Observacion de "orden
+// producción" (ej. "Pedido: 1528  OrdComp:   Cliente: KAMILA VENEZUELA -
+// KAMILA VENEZUELA   Obs: ...") — se usa de respaldo si el pedido ya no
+// aparece en pedidos_pendientes (ej. ya se despachó del todo y salió de
+// "pendientes").
+function clienteDesdeObservacion(obs) {
+  if (!obs) return null;
+  const m = String(obs).match(/Cliente:\s*(.+?)\s{2,}/);
+  return m ? m[1].trim() : null;
+}
+// (2026-08-19) EXPLORATORIO — reconstruye "lotes" al estilo Hoja1 cruzando
+// tres tablas de la API BD de Busint:
+//   - orden produccion: NumLote -> Nped (número de pedido), Ref, FechaCorte
+//   - pedidos_pendientes: Nped/order_id -> cliente + fecha de entrega
+//   - ia_seguimientolotesv_data: NumLote -> inventario por ubicación
+// Es SOLO para validar (comparar a mano contra la última Hoja1 subida)
+// antes de decidir si reemplaza "Subir Hoja1" — todavía NO se usa en Mi
+// Día ni en Informes. Se llama desde Administración → "🔌 Busint (prueba)".
+exports.getLotesReconstruidosBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async () => {
+    let ordenProduccion, pedidosPendientes, inventarioLotes;
+    try {
+      [ordenProduccion, pedidosPendientes, inventarioLotes] = await Promise.all([
+        consultarTablaBusintBDCompleta("orden produccion"),
+        consultarTablaBusintBDCompleta("pedidos_pendientes"),
+        consultarTablaBusintBDCompleta("ia_seguimientolotesv_data"),
+      ]);
+    } catch (err) {
+      logger.error("Error reconstruyendo lotes desde Busint BD", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+
+    const pedidosMap = new Map();
+    pedidosPendientes.forEach((p) => {
+      const nped = Number(p.order_id);
+      if (!Number.isFinite(nped)) return;
+      pedidosMap.set(nped, {
+        cliente: p.client_name || null,
+        fechaEntregaISO: fechaBDaISO(p.delivery_date),
+        pendingUnits: Number(p.pending_units) || 0,
+      });
+    });
+
+    const inventarioMap = new Map();
+    inventarioLotes.forEach((f) => {
+      const numLote = Number(f.Numero_de_Lote);
+      if (!Number.isFinite(numLote)) return;
+      inventarioMap.set(numLote, {
+        invCorte: Number(f.Inventario_corte) || 0,
+        invBMP: Number(f.Inventario_en_bodega_de_materia_prima) || 0,
+        invPlanta: Number(f.Inventario_en_planta) || 0,
+        invBPT: Number(f.Inventario_en_bodega_de_producto_terminado) || 0,
+        invSemiterminado: Number(f.Inventario_en_semiterminado) || 0,
+        categoria: f.Tipo_de_categoria || "",
+        nombrePlanta: f.Nombre_planta_de_confeccion || "",
+      });
+    });
+
+    const lotes = ordenProduccion
+      .filter((r) => r.Mensaje !== "ELIMINADO" && Number(r.NumLote) > 0 && r.Nped != null)
+      .map((r) => {
+        const numLote = Number(r.NumLote);
+        const nped = Number(r.Nped);
+        const ped = pedidosMap.get(nped);
+        const inv = inventarioMap.get(numLote);
+        return {
+          numLote,
+          numPedido: nped,
+          referencia: String(r.Ref || ""),
+          nombreCliente: ped?.cliente || clienteDesdeObservacion(r.Observacion) || "(Sin cliente)",
+          fechaEntregaConfISO: ped?.fechaEntregaISO || null,
+          fechaCorteISO: fechaBDaISO(r.FechaCorte),
+          categoria: inv?.categoria || "",
+          nombrePlanta: inv?.nombrePlanta || "",
+          invCorte: inv?.invCorte || 0,
+          invBMP: inv?.invBMP || 0,
+          invPlanta: inv?.invPlanta || 0,
+          invBPT: inv?.invBPT || 0,
+          invSemiterminado: inv?.invSemiterminado || 0,
+          _tieneInventario: !!inv,
+          _tienePedidoPendiente: !!ped,
+        };
+      });
+
+    return {
+      totalOrdenProduccion: ordenProduccion.length,
+      totalPedidosPendientes: pedidosPendientes.length,
+      totalInventarioLotes: inventarioLotes.length,
+      totalLotesReconstruidos: lotes.length,
+      muestra: lotes.slice(-20),
+    };
+  }
+);
+// (2026-08-19) EXPLORATORIO — valida si `facturas` sirve como fuente VIVA de
+// cliente + fecha para reemplazar Hoja1. `pedidos_pendientes` y
+// `pedidos detalles clientes` resultaron congeladas (feb-2026 y oct-2023
+// respectivamente), pero `facturas` trae UFECHA/Fechaini de días recientes.
+// Estrategia: sacar el número de lote del texto libre `Comentarios` (ej.
+// "LOTE 7149", "LOTE 7161- FYAN1473") y comparar su `Numped` contra el
+// `Nped` que ya sabemos correcto en `orden produccion` para ese mismo
+// NumLote. Si coinciden casi siempre, `facturas` es una llave válida.
+function loteDesdeComentarios(comentarios) {
+  if (!comentarios) return null;
+  const m = String(comentarios).match(/LOTE\s*(\d+)/i);
+  return m ? Number(m[1]) : null;
+}
+exports.getValidacionFacturasBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async () => {
+    let ordenProduccion, facturas;
+    try {
+      [ordenProduccion, facturas] = await Promise.all([
+        consultarTablaBusintBDCompleta("orden produccion"),
+        consultarTablaBusintBDCompleta("facturas"),
+      ]);
+    } catch (err) {
+      logger.error("Error validando facturas Busint BD", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+
+    // NumLote -> Nped confiable (ya validado con orden produccion)
+    const npedPorLote = new Map();
+    ordenProduccion
+      .filter((r) => r.Mensaje !== "ELIMINADO" && Number(r.NumLote) > 0 && r.Nped != null)
+      .forEach((r) => npedPorLote.set(Number(r.NumLote), Number(r.Nped)));
+
+    // NumLote -> datos de factura (última factura que mencione ese lote)
+    const facturaPorLote = new Map();
+    let totalConLote = 0;
+    facturas.forEach((f) => {
+      const lote = loteDesdeComentarios(f.Comentarios);
+      if (!lote) return;
+      totalConLote++;
+      facturaPorLote.set(lote, {
+        nfact: f.Nfact,
+        numped: Number(f.Numped),
+        cliente: f.Observaciones || null,
+        fechaFacturaISO: fechaBDaISO(f.Fechaini),
+        ufechaISO: fechaBDaISO(f.UFECHA),
+      });
+    });
+
+    let coincidencias = 0;
+    let discrepancias = 0;
+    const muestraDiscrepancias = [];
+    const muestraCoincidencias = [];
+    facturaPorLote.forEach((fac, lote) => {
+      const npedReal = npedPorLote.get(lote);
+      if (npedReal == null) return;
+      if (npedReal === fac.numped) {
+        coincidencias++;
+        if (muestraCoincidencias.length < 10) {
+          muestraCoincidencias.push({ lote, npedOrden: npedReal, numpedFactura: fac.numped, cliente: fac.cliente, fechaFacturaISO: fac.fechaFacturaISO });
+        }
+      } else {
+        discrepancias++;
+        if (muestraDiscrepancias.length < 10) {
+          muestraDiscrepancias.push({ lote, npedOrden: npedReal, numpedFactura: fac.numped, cliente: fac.cliente, fechaFacturaISO: fac.fechaFacturaISO });
+        }
+      }
+    });
+
+    // Cobertura: de los últimos 100 lotes reales (con Nped), ¿cuántos tienen factura?
+    const lotesRecientes = [...npedPorLote.keys()].sort((a, b) => b - a).slice(0, 100);
+    const conFacturaEnRecientes = lotesRecientes.filter((l) => facturaPorLote.has(l)).length;
+
+    return {
+      totalOrdenProduccion: ordenProduccion.length,
+      totalFacturas: facturas.length,
+      totalFacturasConLoteParseado: totalConLote,
+      totalLotesConNpedConfiable: npedPorLote.size,
+      coincidencias,
+      discrepancias,
+      coberturaUltimos100Lotes: `${conFacturaEnRecientes}/100`,
+      muestraCoincidencias,
+      muestraDiscrepancias,
+    };
+  }
+);
+// (2026-08-19) EXPLORATORIO — valida si `historia de fechaent en
+// entproc-salplanta` sirve como fuente VIVA de fecha de entrega por lote.
+// A diferencia de `facturas`, esta trae `NumLote` DIRECTO (sin pasar por
+// Nped ni parsear texto libre) y parece ser un historial de reprogramación
+// (`FechaAnt` -> `FechaAct`, campo `Fecha` = cuándo se hizo el cambio). Se
+// toma la fila más reciente (mayor `ID`) de cada NumLote como la fecha de
+// entrega planeada vigente.
+exports.getValidacionFechaEntregaBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async () => {
+    let ordenProduccion, historiaFechas;
+    try {
+      [ordenProduccion, historiaFechas] = await Promise.all([
+        consultarTablaBusintBDCompleta("orden produccion"),
+        consultarTablaBusintBDCompleta("historia de fechaent en entproc-salplanta"),
+      ]);
+    } catch (err) {
+      logger.error("Error validando fecha de entrega Busint BD", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+
+    // NumLote -> {nped, referencia} confiable, desde orden produccion
+    const lotesReales = new Map();
+    ordenProduccion
+      .filter((r) => r.Mensaje !== "ELIMINADO" && Number(r.NumLote) > 0 && r.Nped != null)
+      .forEach((r) => {
+        lotesReales.set(Number(r.NumLote), {
+          nped: Number(r.Nped),
+          referencia: String(r.Ref || ""),
+          cliente: clienteDesdeObservacion(r.Observacion),
+        });
+      });
+
+    // NumLote -> fila más reciente (mayor ID) de la historia de fechas
+    const fechaPorLote = new Map();
+    historiaFechas.forEach((f) => {
+      const numLote = Number(f.NumLote);
+      if (!Number.isFinite(numLote) || numLote <= 0) return;
+      const actual = fechaPorLote.get(numLote);
+      if (!actual || Number(f.ID) > Number(actual.ID)) {
+        fechaPorLote.set(numLote, {
+          ID: Number(f.ID),
+          fechaEntregaISO: fechaBDaISO(f.FechaAct),
+          fechaAntISO: fechaBDaISO(f.FechaAnt),
+          ultimoCambioISO: fechaBDaISO(f.Fecha),
+          tipo: f.Tipo || null,
+        });
+      }
+    });
+
+    // Cobertura: de los últimos 100 lotes reales, ¿cuántos tienen fecha de entrega?
+    const lotesRecientes = [...lotesReales.keys()].sort((a, b) => b - a).slice(0, 100);
+    const conFechaEnRecientes = lotesRecientes.filter((l) => fechaPorLote.has(l)).length;
+
+    const muestra = lotesRecientes.slice(0, 20).map((lote) => {
+      const real = lotesReales.get(lote);
+      const fec = fechaPorLote.get(lote);
+      return {
+        numLote: lote,
+        numPedido: real.nped,
+        referencia: real.referencia,
+        cliente: real.cliente || "(Sin cliente)",
+        fechaEntregaISO: fec?.fechaEntregaISO || null,
+        ultimoCambioISO: fec?.ultimoCambioISO || null,
+        tipo: fec?.tipo || null,
+        _tieneFecha: !!fec,
+      };
+    });
+
+    return {
+      totalOrdenProduccion: ordenProduccion.length,
+      totalHistoriaFechas: historiaFechas.length,
+      totalLotesConNumLoteEnHistoria: fechaPorLote.size,
+      totalLotesRealesConfiables: lotesReales.size,
+      coberturaUltimos100Lotes: `${conFechaEnRecientes}/100`,
+      muestra,
+    };
+  }
+);
+// (2026-08-19) EXPLORATORIO — valida `pedidos pendientes` (CON espacio,
+// distinta de `pedidos_pendientes` con guion bajo, que ya sabemos congelada
+// desde feb-2026). Esta tabla está organizada por Ref+Color+NumPed (no por
+// fecha de inserción), así que "últimas 5" no representa "más reciente" —
+// hay que buscar directo por los NumPed de pedidos actuales (los de
+// `orden produccion` más recientes) y ver si ya tienen `FechaDespacho1`.
+exports.getValidacionPedidosPendientesEspacioBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async () => {
+    let ordenProduccion, pedidosPendientesEsp;
+    try {
+      [ordenProduccion, pedidosPendientesEsp] = await Promise.all([
+        consultarTablaBusintBDCompleta("orden produccion"),
+        consultarTablaBusintBDCompleta("pedidos pendientes"),
+      ]);
+    } catch (err) {
+      logger.error("Error validando 'pedidos pendientes' (espacio) Busint BD", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+
+    // Npeds recientes reales, desde orden produccion (los mismos 100 que ya
+    // usamos para medir cobertura en los otros intentos)
+    const npedsRecientes = [...new Set(
+      ordenProduccion
+        .filter((r) => r.Mensaje !== "ELIMINADO" && Number(r.NumLote) > 0 && r.Nped != null)
+        .map((r) => Number(r.Nped))
+    )].sort((a, b) => b - a).slice(0, 100);
+
+    // NumPed -> filas de pedidos pendientes (puede haber varias por ref/color)
+    const filasPorNumPed = new Map();
+    pedidosPendientesEsp.forEach((f) => {
+      const nped = Number(f.NumPed);
+      if (!Number.isFinite(nped)) return;
+      if (!filasPorNumPed.has(nped)) filasPorNumPed.set(nped, []);
+      filasPorNumPed.get(nped).push(f);
+    });
+
+    let conAlgunaFila = 0;
+    let conFechaDespacho = 0;
+    const muestra = npedsRecientes.slice(0, 20).map((nped) => {
+      const filas = filasPorNumPed.get(nped) || [];
+      const conFecha = filas.filter((f) => f.FechaDespacho1 && f.FechaDespacho1.isValidDateTime);
+      if (filas.length > 0) conAlgunaFila++;
+      if (conFecha.length > 0) conFechaDespacho++;
+      return {
+        numPedido: nped,
+        filasEncontradas: filas.length,
+        filasConFechaDespacho: conFecha.length,
+        ejemploFechaDespachoISO: conFecha.length > 0 ? fechaBDaISO(conFecha[0].FechaDespacho1) : null,
+        ejemploObservacion: filas[0]?.Observacion || filas[0]?.ObsRped || null,
+      };
+    });
+    // Completar conteos sobre los 100, no solo los primeros 20 de la muestra
+    npedsRecientes.slice(20).forEach((nped) => {
+      const filas = filasPorNumPed.get(nped) || [];
+      if (filas.length > 0) conAlgunaFila++;
+      if (filas.some((f) => f.FechaDespacho1 && f.FechaDespacho1.isValidDateTime)) conFechaDespacho++;
+    });
+
+    return {
+      totalOrdenProduccion: ordenProduccion.length,
+      totalPedidosPendientesEspacio: pedidosPendientesEsp.length,
+      totalNpedsRecientesRevisados: npedsRecientes.length,
+      coberturaConAlgunaFila: `${conAlgunaFila}/${npedsRecientes.length}`,
+      coberturaConFechaDespacho: `${conFechaDespacho}/${npedsRecientes.length}`,
+      muestra,
+    };
+  }
+);
+// (2026-08-19) EXPLORATORIO — el intento más prometedor hasta ahora.
+// `pedidos clientes` (tabla maestra de pedidos, distinta de `pedidos
+// detalles clientes` y de `pedidos_pendientes`/`pedidos pendientes`) trae
+// NumPed VIVO (llega a 1539+) con `FechaDespacho1` directo en el pedido y
+// `Codigo` de cliente, que se resuelve con `maestro de clientes` (confirmado:
+// Codigo 128 = "COMFANORTE", igual que en `facturas`). Cruza con
+// `orden produccion` (NumLote -> Nped confiable) para armar cliente + fecha
+// por lote, y marca si `FechaDespacho1` es distinto de `FechaPed` (señal de
+// que es una fecha real asignada, no solo el valor por defecto del día de
+// creación del pedido).
+exports.getValidacionPedidosClientesBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async () => {
+    let ordenProduccion, pedidosClientes, maestroClientes;
+    try {
+      [ordenProduccion, pedidosClientes, maestroClientes] = await Promise.all([
+        consultarTablaBusintBDCompleta("orden produccion"),
+        consultarTablaBusintBDCompleta("pedidos clientes"),
+        consultarTablaBusintBDCompleta("maestro de clientes"),
+      ]);
+    } catch (err) {
+      logger.error("Error validando 'pedidos clientes' Busint BD", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+
+    const nombrePorCodigo = new Map();
+    maestroClientes.forEach((c) => {
+      const cod = Number(c.Codigo);
+      if (Number.isFinite(cod)) nombrePorCodigo.set(cod, c.Nombre || c.NombreFact || null);
+    });
+
+    const pedidoPorNumPed = new Map();
+    pedidosClientes.forEach((p) => {
+      const nped = Number(p.NumPed);
+      if (!Number.isFinite(nped)) return;
+      pedidoPorNumPed.set(nped, {
+        fechaPedISO: fechaBDaISO(p.FechaPed),
+        fechaDespachoISO: fechaBDaISO(p.FechaDespacho1),
+        codigoCliente: Number(p.Codigo),
+        cliente: nombrePorCodigo.get(Number(p.Codigo)) || null,
+      });
+    });
+
+    // Lotes reales recientes (mismo criterio que los intentos anteriores)
+    const lotesReales = new Map();
+    ordenProduccion
+      .filter((r) => r.Mensaje !== "ELIMINADO" && Number(r.NumLote) > 0 && r.Nped != null)
+      .forEach((r) => lotesReales.set(Number(r.NumLote), Number(r.Nped)));
+    const lotesRecientes = [...lotesReales.keys()].sort((a, b) => b - a).slice(0, 100);
+
+    let conPedido = 0;
+    let conFechaDistinta = 0;
+    const muestra = lotesRecientes.slice(0, 20).map((lote) => {
+      const nped = lotesReales.get(lote);
+      const ped = pedidoPorNumPed.get(nped);
+      if (ped) {
+        conPedido++;
+        if (ped.fechaDespachoISO && ped.fechaDespachoISO !== ped.fechaPedISO) conFechaDistinta++;
+      }
+      return {
+        numLote: lote,
+        numPedido: nped,
+        cliente: ped?.cliente || "(Sin cliente)",
+        fechaPedISO: ped?.fechaPedISO || null,
+        fechaDespachoISO: ped?.fechaDespachoISO || null,
+        _fechaDistintaDeCreacion: !!(ped?.fechaDespachoISO && ped.fechaDespachoISO !== ped.fechaPedISO),
+        _tienePedido: !!ped,
+      };
+    });
+    lotesRecientes.slice(20).forEach((lote) => {
+      const nped = lotesReales.get(lote);
+      const ped = pedidoPorNumPed.get(nped);
+      if (ped) {
+        conPedido++;
+        if (ped.fechaDespachoISO && ped.fechaDespachoISO !== ped.fechaPedISO) conFechaDistinta++;
+      }
+    });
+
+    return {
+      totalOrdenProduccion: ordenProduccion.length,
+      totalPedidosClientes: pedidosClientes.length,
+      totalMaestroClientes: maestroClientes.length,
+      totalLotesRecientesRevisados: lotesRecientes.length,
+      coberturaConPedido: `${conPedido}/${lotesRecientes.length}`,
+      coberturaConFechaDistintaDeCreacion: `${conFechaDistinta}/${lotesRecientes.length}`,
+      muestra,
+    };
+  }
+);
+// (2026-08-19) Refresca cliente + fecha de entrega por lote, cruzando
+// `orden produccion` (NumLote -> Nped confiable) + `pedidos clientes`
+// (NumPed -> FechaDespacho1, Codigo) + `maestro de clientes` (Codigo ->
+// Nombre). Validado contra los últimos 100 lotes reales: 100/100 con
+// pedido resuelto, 98/100 con fecha de despacho distinta de la fecha de
+// creación (ver getValidacionPedidosClientesBusintBD, la exploración que
+// encontró esta llave después de probar 5 tablas congeladas/sin cobertura:
+// pedidos_pendientes, pedidos detalles clientes, facturas, historia de
+// fechaent, pedidos pendientes). Se usa desde modulo-planeacion.jsx
+// (InformesView) para refrescar SOLO nombreCliente/fechaEntregaConfISO de
+// lotes ya cargados por "Subir Hoja1" — no reemplaza la carga inicial
+// todavía (falta resolver cantidades por talla).
+exports.getClienteFechaLotesBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async () => {
+    let ordenProduccion, pedidosClientes, maestroClientes;
+    try {
+      [ordenProduccion, pedidosClientes, maestroClientes] = await Promise.all([
+        consultarTablaBusintBDCompleta("orden produccion"),
+        consultarTablaBusintBDCompleta("pedidos clientes"),
+        consultarTablaBusintBDCompleta("maestro de clientes"),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando cliente/fecha por lote en Busint BD", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+
+    const nombrePorCodigo = new Map();
+    maestroClientes.forEach((c) => {
+      const cod = Number(c.Codigo);
+      if (Number.isFinite(cod)) nombrePorCodigo.set(cod, c.Nombre || c.NombreFact || null);
+    });
+
+    const pedidoPorNumPed = new Map();
+    pedidosClientes.forEach((p) => {
+      const nped = Number(p.NumPed);
+      if (!Number.isFinite(nped)) return;
+      pedidoPorNumPed.set(nped, {
+        fechaDespachoISO: fechaBDaISO(p.FechaDespacho1),
+        cliente: nombrePorCodigo.get(Number(p.Codigo)) || null,
+      });
+    });
+
+    const lotes = ordenProduccion
+      .filter((r) => r.Mensaje !== "ELIMINADO" && Number(r.NumLote) > 0 && r.Nped != null)
+      .map((r) => {
+        const numLote = Number(r.NumLote);
+        const nped = Number(r.Nped);
+        const ped = pedidoPorNumPed.get(nped);
+        return {
+          numLote,
+          numPedido: nped,
+          nombreCliente: ped?.cliente || clienteDesdeObservacion(r.Observacion) || null,
+          fechaEntregaConfISO: ped?.fechaDespachoISO || null,
+        };
+      })
+      .filter((l) => l.nombreCliente || l.fechaEntregaConfISO);
+
+    return { total: lotes.length, lotes };
+  }
+);
+// (2026-08-19) Refresca SOLO el inventario por lote (Planta/BMP/Corte/BPT/
+// Semiterminado) contra la tabla `ia_seguimientolotesv_data` de la API "BD"
+// de Busint. OJO: esta tabla en particular se encontró CONGELADA desde
+// ~feb-2026 (ver historial de exploración), así que hoy no refresca nada de
+// lotes cortados después de esa fecha — queda pendiente confirmar con
+// Busint si la van a mantener viva. Cliente + fecha de entrega SÍ tienen
+// fuente viva ahora (ver getClienteFechaLotesBusintBD arriba), así que este
+// refresco de inventario sigue siendo el único que falta resolver. Se
+// decidió NO arriesgar los datos de "Subir Hoja1" reemplazándolos del todo
+// (cantidades por talla no tienen fuente confirmada aún), así que
+// se decidió NO arriesgar esos datos. El cruce por `Numero_de_Lote` (→
+// `numLote` en ATLAS) sí es una llave directa y sin ambigüedad, por eso
+// esto es seguro. Ver el merge/recalculo en modulo-planeacion.jsx
+// (`actualizarInventarioBusint`, dentro de InformesView).
+exports.getInventarioLotesBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async () => {
+    let filas;
+    try {
+      filas = await consultarTablaBusintBDCompleta("ia_seguimientolotesv_data");
+    } catch (err) {
+      logger.error("Error consultando ia_seguimientolotesv_data (getInventarioLotesBusintBD)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar el inventario en Busint: ${err?.message || String(err)}`);
+    }
+    const lotes = filas
+      .map((f) => ({
+        numLote: Number(f.Numero_de_Lote),
+        invCorte: Number(f.Inventario_corte) || 0,
+        invBMP: Number(f.Inventario_en_bodega_de_materia_prima) || 0,
+        invPlanta: Number(f.Inventario_en_planta) || 0,
+        invBPT: Number(f.Inventario_en_bodega_de_producto_terminado) || 0,
+        invSemiterminado: Number(f.Inventario_en_semiterminado) || 0,
+        nombrePlanta: f.Nombre_planta_de_confeccion || null,
+      }))
+      .filter((l) => Number.isFinite(l.numLote) && l.numLote > 0);
+    return { total: lotes.length, lotes };
+  }
+);
+
+// Usado por módulo Bodega → Despachos → Montar Despacho: al escribir una
+// referencia, autocompleta descripción/precio (ApiGen_Referencias) y los
+// códigos de barra por talla/color (ApiGen_CodigosDeBarra) de esa misma
+// referencia, para no tener que digitarlos a mano.
+exports.buscarReferenciaBusint = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const refBuscada = String(request.data?.ref || "").trim().toUpperCase();
+    if (!refBuscada) {
+      throw new HttpsError("invalid-argument", "Debes indicar una referencia.");
+    }
+
+    let referencias, codigosBarra;
+    try {
+      [referencias, codigosBarra] = await Promise.all([
+        consultarCatalogoBusint("ApiGen_Referencias"),
+        consultarCatalogoBusint("ApiGen_CodigosDeBarra"),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint (buscarReferenciaBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+    }
+
+    const refsCoincidentes = referencias.filter((r) => String(r.ref || "").trim().toUpperCase() === refBuscada);
+    const barrasCoincidentes = codigosBarra
+      .filter((c) => String(c.ref || "").trim().toUpperCase() === refBuscada)
+      .map((c) => ({
+        talla: (c.talla || "").trim(),
+        pinta: (c.pinta || "").trim(),
+        color: (c.color || "").trim(),
+        cbarraI: (c.cbarraI || "").trim(),
+        cbarraE: (c.cbarraE || "").trim(),
+        cbarraM: (c.cbarraM || "").trim(),
+      }));
+
+    if (!refsCoincidentes.length && !barrasCoincidentes.length) {
+      return { encontrada: false, ref: refBuscada, descripcion: "", precioPM: null, precioP: null, costoFT: null, tallas: [], barras: [] };
+    }
+
+    const r0 = refsCoincidentes[0] || {};
+    const tallas = [...new Set(refsCoincidentes.map((r) => (r.tallas || "").trim()).filter(Boolean))];
+
+    return {
+      encontrada: true,
+      ref: refBuscada,
+      descripcion: (r0.descripcionLarga || "").trim(),
+      categoria: (r0.categoria || "").trim(),
+      tipoProducto: (r0.tipoProducto || "").trim(),
+      precioPM: r0.precioPM ?? null,
+      precioP: r0.precioP ?? null,
+      costoFT: r0.costoFT ?? null,
+      tallas,
+      barras: barrasCoincidentes,
+    };
+  }
+);
+
+// (2026-08-27) EXPLORATORIO — en vez de adivinar nombres de "ApiGen_X" uno
+// por uno (como se hizo con PanelControlFlujoOperacional e InventarioBusint,
+// por ensayo y error), esto lee el swagger público de la API "gen"
+// (api-yanko-gen.busint.info/swagger/v1/swagger.json — mismo patrón que ya
+// se usa para la API "BD" en getBarridoTotalTablasBusintBD) y lista TODOS
+// los nombres de "/consultas/X" que existen de verdad, filtrando por
+// palabra clave si se manda. Se necesita porque "estandar componentes prod"
+// (API BD) resultó tener `Ufecha` de hace semanas/meses para varios colores
+// de tela — no se actualiza en cada movimiento — y hace falta encontrar si
+// existe una fuente de verdad más viva (ej. un kardex/movimientos de
+// materia prima) antes de seguir confiando en esa tabla para avisar
+// disponibilidad en Programación de Corte.
+exports.getListaConsultasBusintGen = onCall(
+  {
+    secrets: [BUSINT_BASE_URL],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const keywords = (
+      Array.isArray(request.data?.keywords) && request.data.keywords.length ? request.data.keywords : []
+    ).map((k) => String(k).toLowerCase().trim()).filter(Boolean);
+    const baseUrl = BUSINT_BASE_URL.value().replace(/\/+$/, "");
+    let swagger;
+    try {
+      const resp = await fetch(`${baseUrl}/swagger/v1/swagger.json`);
+      if (!resp.ok) throw new Error(`swagger respondió ${resp.status}`);
+      swagger = await resp.json();
+    } catch (err) {
+      logger.error("Error trayendo el swagger de la API gen", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo traer la lista de consultas de la API gen: ${err?.message || String(err)}`);
+    }
+    const paths = Object.keys(swagger.paths || {});
+    const consultas = paths
+      .filter((p) => p.toLowerCase().includes("/consultas/"))
+      .map((p) => p.split(/\/consultas\//i)[1])
+      .filter(Boolean)
+      .map((c) => c.replace(/\/.*$/, "")); // por si el path trae algo después del nombre
+    const unicas = Array.from(new Set(consultas)).sort();
+    const filtradas = keywords.length ? unicas.filter((c) => keywords.some((k) => c.toLowerCase().includes(k))) : unicas;
+    return { total: unicas.length, totalFiltradas: filtradas.length, consultas: filtradas, todas: keywords.length ? undefined : unicas };
+  }
+);
 // (2026-08-21) EXPLORATORIO — la API "gen" (api-yanko-gen.busint.info) tiene
 // un catálogo nuevo "ApiGen_PanelControlFlujoOperacional" que no está
 // conectado a nada todavía. Por el nombre suena a que podría traer el
