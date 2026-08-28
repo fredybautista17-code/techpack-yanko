@@ -3069,12 +3069,14 @@ function FacturacionClientesView() {
   const [error, setError] = useState("");
   const [resultado, setResultado] = useState(null);
   const [clienteAbierto, setClienteAbierto] = useState(null);
+  const [docAbierto, setDocAbierto] = useState(null);
   async function consultar() {
     if (!fechaInicio || !fechaFin) return;
     setCargando(true);
     setError("");
     setResultado(null);
     setClienteAbierto(null);
+    setDocAbierto(null);
     try {
       const llamar = httpsCallable(functionsClient, "getFacturacionPorClienteBusint");
       const resp = await llamar({ fechaInicio, fechaFin });
@@ -3094,7 +3096,7 @@ function FacturacionClientesView() {
         🧾 Facturación Clientes
       </div>
       <div style={{ fontSize: 13, color: C.slate, marginBottom: 20 }}>
-        Consulta en vivo a Busint (facturas, traslados y devoluciones) — no depende de subir nada a mano.
+        Consulta en vivo a Busint. <b>Facturado</b> = FAC (venta real, para cruzar contra TNS). <b>Consignación neta</b> = TCO − DTC (lo que el cliente todavía tiene por revisar/vender). <b>Traslado Externo neto</b> = TEX − DTE (despachos sin IVA).
       </div>
       <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 20, flexWrap: "wrap" }}>
         <Field label="Desde">
@@ -3120,17 +3122,24 @@ function FacturacionClientesView() {
       {resultado && !cargando && (
         <>
           <div style={{ display: "flex", gap: 16, marginBottom: 20, flexWrap: "wrap" }}>
-            <div style={{ flex: "1 1 200px", padding: 16, borderRadius: 10, background: C.white, border: `1px solid ${C.border}` }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Total facturado</div>
-              <div style={{ fontSize: 22, fontWeight: 800, color: C.ink }}>{fmtCOP(resultado.totalMonto)}</div>
+            <div style={{ flex: "1 1 220px", padding: 16, borderRadius: 10, background: C.white, border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Facturado (FAC)</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: C.green }}>{fmtCOP(resultado.totalFacturado)}</div>
+              <div style={{ fontSize: 12, color: C.slate }}>{fmtNum(resultado.totalUnidadesFacturadas)} und.</div>
             </div>
-            <div style={{ flex: "1 1 200px", padding: 16, borderRadius: 10, background: C.white, border: `1px solid ${C.border}` }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Total unidades</div>
-              <div style={{ fontSize: 22, fontWeight: 800, color: C.ink }}>{fmtNum(resultado.totalUnidades)}</div>
+            <div style={{ flex: "1 1 220px", padding: 16, borderRadius: 10, background: C.white, border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Consignación neta (TCO−DTC)</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: C.ink }}>{fmtCOP(resultado.totalConsignacionNeta)}</div>
+              <div style={{ fontSize: 12, color: C.slate }}>{fmtNum(resultado.totalUnidadesConsignacion)} und.</div>
             </div>
-            <div style={{ flex: "1 1 200px", padding: 16, borderRadius: 10, background: C.white, border: `1px solid ${C.border}` }}>
+            <div style={{ flex: "1 1 220px", padding: 16, borderRadius: 10, background: C.white, border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Traslado Externo neto (TEX−DTE)</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: C.ink }}>{fmtCOP(resultado.totalTrasladoExternoNeto)}</div>
+              <div style={{ fontSize: 12, color: C.slate }}>{fmtNum(resultado.totalUnidadesTrasladoExterno)} und.</div>
+            </div>
+            <div style={{ flex: "1 1 140px", padding: 16, borderRadius: 10, background: C.white, border: `1px solid ${C.border}` }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Clientes</div>
-              <div style={{ fontSize: 22, fontWeight: 800, color: C.ink }}>{resultado.totalClientes}</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: C.ink }}>{resultado.totalClientes}</div>
             </div>
           </div>
           {resultado.columnasDisponibles && resultado.columnasDisponibles.length > 0 && (
@@ -3155,9 +3164,10 @@ function FacturacionClientesView() {
                 <thead>
                   <tr style={{ borderBottom: `1px solid ${C.border}`, background: C.canvas }}>
                     <th style={{ textAlign: "left", padding: "10px 12px" }}>Cliente</th>
-                    <th style={{ textAlign: "right", padding: "10px 12px" }}>Unidades</th>
-                    <th style={{ textAlign: "right", padding: "10px 12px" }}>Monto</th>
-                    <th style={{ textAlign: "right", padding: "10px 12px" }}># Documentos</th>
+                    <th style={{ textAlign: "right", padding: "10px 12px" }}>Facturado (FAC)</th>
+                    <th style={{ textAlign: "right", padding: "10px 12px" }}>Consignación neta</th>
+                    <th style={{ textAlign: "right", padding: "10px 12px" }}>Traslado Ext. neto</th>
+                    <th style={{ textAlign: "right", padding: "10px 12px" }}># Docs</th>
                     <th style={{ textAlign: "center", padding: "10px 12px" }}></th>
                   </tr>
                 </thead>
@@ -3172,24 +3182,96 @@ function FacturacionClientesView() {
                           style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: i % 2 ? C.canvas : C.white }}
                         >
                           <td style={{ padding: "10px 12px", fontWeight: 700, color: C.ink }}>{c.nombreCliente}</td>
-                          <td style={{ padding: "10px 12px", textAlign: "right" }}>{fmtNum(c.unidades)}</td>
-                          <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700 }}>{fmtCOP(c.monto)}</td>
+                          <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: C.green }}>{fmtCOP(c.facturado.monto)}</td>
+                          <td style={{ padding: "10px 12px", textAlign: "right" }}>{fmtCOP(c.consignacionNeta.monto)}</td>
+                          <td style={{ padding: "10px 12px", textAlign: "right" }}>{fmtCOP(c.trasladoExternoNeto.monto)}</td>
                           <td style={{ padding: "10px 12px", textAlign: "right", color: C.slate }}>{c.totalDocumentos}</td>
                           <td style={{ padding: "10px 12px", textAlign: "center", color: C.slate }}>{abierto ? "▲" : "▼"}</td>
                         </tr>
                         {abierto && (
-                          <tr key={`${clave}-detalle`} style={{ background: C.canvas }}>
-                            <td colSpan={5} style={{ padding: "8px 12px 14px 24px" }}>
+                          <tr style={{ background: C.canvas }}>
+                            <td colSpan={6} style={{ padding: "8px 12px 14px 24px" }}>
+                              <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 12, fontSize: 12 }}>
+                                <div><b>FAC:</b> {fmtCOP(c.facturado.monto)} ({fmtNum(c.facturado.unidades)} und.)</div>
+                                <div><b>TCO bruto:</b> {fmtCOP(c.consignacionNeta.montoBruto)} · <b>DTC:</b> {fmtCOP(c.consignacionNeta.montoDevuelto)} → neto {fmtCOP(c.consignacionNeta.monto)}</div>
+                                <div><b>TEX bruto:</b> {fmtCOP(c.trasladoExternoNeto.montoBruto)} · <b>DTE:</b> {fmtCOP(c.trasladoExternoNeto.montoDevuelto)} → neto {fmtCOP(c.trasladoExternoNeto.monto)}</div>
+                                {c.otros && (
+                                  <div style={{ color: C.red }}><b>Otros tipos sin clasificar ({c.otros.tipos.join(", ")}):</b> {fmtCOP(c.otros.monto)} ({fmtNum(c.otros.unidades)} und.)</div>
+                                )}
+                              </div>
                               <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>
-                                Desglose por tipo de documento
+                                Documentos ({c.documentos.length})
                               </div>
-                              <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-                                {Object.entries(c.porTipo).map(([tipo, v]) => (
-                                  <div key={tipo} style={{ fontSize: 12 }}>
-                                    <b style={{ color: C.ink }}>{tipo}</b>: {fmtCOP(v.monto)} ({fmtNum(v.unidades)} und.)
-                                  </div>
-                                ))}
-                              </div>
+                              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, background: C.white, borderRadius: 8, overflow: "hidden" }}>
+                                <thead>
+                                  <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Documento</th>
+                                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Tipo</th>
+                                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Fecha</th>
+                                    <th style={{ textAlign: "right", padding: "6px 8px" }}>Unidades</th>
+                                    <th style={{ textAlign: "right", padding: "6px 8px" }}>Monto</th>
+                                    <th style={{ textAlign: "center", padding: "6px 8px" }}></th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {c.documentos.map((d) => {
+                                    const claveDoc = `${clave}|${d.numero}`;
+                                    const docOpen = docAbierto === claveDoc;
+                                    return (
+                                      <Fragment key={claveDoc}>
+                                        <tr onClick={() => setDocAbierto(docOpen ? null : claveDoc)} style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer" }}>
+                                          <td style={{ padding: "6px 8px", fontWeight: 700 }}>{d.numero}</td>
+                                          <td style={{ padding: "6px 8px" }}>
+                                            <span style={{
+                                              fontSize: 11, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
+                                              background: d.tipo === "FAC" ? C.greenBg : (d.tipo === "DTE" || d.tipo === "DTC") ? C.redBg : C.canvas,
+                                              color: d.tipo === "FAC" ? C.green : (d.tipo === "DTE" || d.tipo === "DTC") ? C.red : C.slate,
+                                            }}>
+                                              {d.tipo}
+                                            </span>
+                                          </td>
+                                          <td style={{ padding: "6px 8px", color: C.slate }}>{d.fecha || "—"}</td>
+                                          <td style={{ padding: "6px 8px", textAlign: "right" }}>{fmtNum(d.unidades)}</td>
+                                          <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700 }}>{fmtCOP(d.monto)}</td>
+                                          <td style={{ padding: "6px 8px", textAlign: "center", color: C.slate }}>{docOpen ? "▲" : "▼"}</td>
+                                        </tr>
+                                        {docOpen && (
+                                          <tr>
+                                            <td colSpan={6} style={{ padding: "6px 8px 12px 20px", background: C.canvas }}>
+                                              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                                                <thead>
+                                                  <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                                                    <th style={{ textAlign: "left", padding: "4px 6px" }}>Referencia</th>
+                                                    <th style={{ textAlign: "left", padding: "4px 6px" }}>Pinta</th>
+                                                    <th style={{ textAlign: "left", padding: "4px 6px" }}>Color</th>
+                                                    <th style={{ textAlign: "left", padding: "4px 6px" }}>Talla</th>
+                                                    <th style={{ textAlign: "right", padding: "4px 6px" }}>Cant.</th>
+                                                    <th style={{ textAlign: "right", padding: "4px 6px" }}>Precio</th>
+                                                    <th style={{ textAlign: "right", padding: "4px 6px" }}>Monto</th>
+                                                  </tr>
+                                                </thead>
+                                                <tbody>
+                                                  {d.lineas.map((l, li) => (
+                                                    <tr key={li} style={{ borderBottom: `1px solid ${C.border}` }}>
+                                                      <td style={{ padding: "4px 6px", fontWeight: 700 }}>{l.ref}</td>
+                                                      <td style={{ padding: "4px 6px" }}>{l.pinta || "—"}</td>
+                                                      <td style={{ padding: "4px 6px" }}>{l.color || "—"}</td>
+                                                      <td style={{ padding: "4px 6px" }}>{l.talla || "—"}</td>
+                                                      <td style={{ padding: "4px 6px", textAlign: "right" }}>{fmtNum(l.cantidad)}</td>
+                                                      <td style={{ padding: "4px 6px", textAlign: "right" }}>{fmtCOP(l.precio)}</td>
+                                                      <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700 }}>{fmtCOP(l.monto)}</td>
+                                                    </tr>
+                                                  ))}
+                                                </tbody>
+                                              </table>
+                                            </td>
+                                          </tr>
+                                        )}
+                                      </Fragment>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
                             </td>
                           </tr>
                         )}
