@@ -7460,6 +7460,8 @@ function BusintCatalogoTestView() {
   const [resultado, setResultado] = useState(null);
   const [cargandoResumen, setCargandoResumen] = useState(false);
   const [resumen, setResumen] = useState(null);
+  const [filtroLocalCampoBD, setFiltroLocalCampoBD] = useState("");
+  const [filtroLocalValorBD, setFiltroLocalValorBD] = useState("");
   const [cargandoLotes, setCargandoLotes] = useState(false);
   const [lotesReconstruidos, setLotesReconstruidos] = useState(null);
   const [cargandoValidacion, setCargandoValidacion] = useState(false);
@@ -7749,7 +7751,10 @@ function BusintCatalogoTestView() {
     setResumen(null);
     try {
       const llamar = httpsCallable(functionsClient, "getResumenTablaBusintBD");
-      const resp = await llamar({ endpoint: nombre });
+      const resp = await llamar({
+        endpoint: nombre,
+        ...(filtroLocalCampoBD.trim() ? { filtroCampo: filtroLocalCampoBD.trim(), filtroValor: filtroLocalValorBD.trim() } : {}),
+      });
       setResumen(resp.data);
     } catch (err) {
       setError(err?.message || "No se pudo traer el resumen completo.");
@@ -8246,12 +8251,29 @@ function BusintCatalogoTestView() {
           </Btn>
         </div>
       </div>
+      <div style={{ marginBottom: 16, padding: 12, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}`, maxWidth: 520 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: T.ink, marginBottom: 4 }}>Buscar 1 solo lote/pedido puntual (filtro local, solo para "📊 Ver resumen completo")</div>
+        <div style={{ fontSize: 11, color: T.slate, marginBottom: 10 }}>
+          Trae la tabla COMPLETA y la filtra acá adentro por el campo exacto que le digas (ej. campo "NumLote", valor "7250").
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <Field label="Campo (ej: NumLote)">
+            <FInput value={filtroLocalCampoBD} onChange={setFiltroLocalCampoBD} placeholder="NumLote" />
+          </Field>
+          <Field label="Valor (ej: 7250)">
+            <FInput value={filtroLocalValorBD} onChange={setFiltroLocalValorBD} placeholder="7250" />
+          </Field>
+        </div>
+      </div>
       {error && <div style={{ padding: "10px 14px", background: T.coralBg, color: T.coral, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>⚠ {error}</div>}
       {resumen && (
         <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
-          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: T.slate }}>
+          <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: T.slate, flexWrap: "wrap" }}>
             <span>Catálogo: <strong style={{ color: T.ink }}>{resumen.endpoint}</strong></span>
-            <span>Total REAL de filas: <strong style={{ color: T.ink }}>{resumen.total}</strong></span>
+            {resumen.filtroLocalAplicado && (
+              <span>Filtro local: <strong style={{ color: T.ink }}>{resumen.filtroLocalAplicado.campo} = {resumen.filtroLocalAplicado.valor}</strong> (de {resumen.totalSinFiltrar} filas totales)</span>
+            )}
+            <span>Total {resumen.filtroLocalAplicado ? "que coinciden" : "REAL de filas"}: <strong style={{ color: T.ink }}>{resumen.total}</strong></span>
           </div>
           <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Primeras 3</div>
           <pre style={{ background: T.white, borderRadius: 10, padding: 12, fontSize: 12, overflowX: "auto", maxHeight: 240, border: `1px solid ${T.border}`, marginBottom: 12 }}>

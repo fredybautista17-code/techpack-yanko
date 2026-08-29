@@ -1158,12 +1158,26 @@ exports.getResumenTablaBusintBD = onCall(
       logger.error("Error consultando Busint BD (getResumenTablaBusintBD)", { endpoint, error: String(err) });
       throw new HttpsError("unavailable", `No se pudo consultar "${endpoint}" en Busint: ${err?.message || String(err)}`);
     }
+    // (2026-08-29) Mismo filtro LOCAL que ya existe en getMuestraCatalogoBusintGen
+    // — se aplica acá después de traer la tabla COMPLETA (paginando sola),
+    // para buscar un lote puntual en una tabla de miles de filas sin tener
+    // que ir revisando página por página a mano.
+    const filtroCampo = String(request.data?.filtroCampo || "").trim();
+    const filtroValor = request.data?.filtroValor;
+    let filasFiltradas = filas;
+    let filtroAplicado = null;
+    if (filtroCampo && filtroValor !== undefined && filtroValor !== null && String(filtroValor) !== "") {
+      filasFiltradas = filas.filter((f) => String(f?.[filtroCampo]) === String(filtroValor));
+      filtroAplicado = { campo: filtroCampo, valor: String(filtroValor) };
+    }
     return {
       endpoint,
-      total: filas.length,
-      columnas: filas.length ? Object.keys(filas[0]) : [],
-      primeras: filas.slice(0, 3),
-      ultimas: filas.slice(-5),
+      filtroLocalAplicado: filtroAplicado,
+      totalSinFiltrar: filas.length,
+      total: filasFiltradas.length,
+      columnas: filasFiltradas.length ? Object.keys(filasFiltradas[0]) : filas.length ? Object.keys(filas[0]) : [],
+      primeras: filtroAplicado ? filasFiltradas.slice(0, 10) : filasFiltradas.slice(0, 3),
+      ultimas: filtroAplicado ? filasFiltradas.slice(-10) : filasFiltradas.slice(-5),
     };
   }
 );
