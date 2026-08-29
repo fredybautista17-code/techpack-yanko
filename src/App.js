@@ -7476,6 +7476,8 @@ function BusintCatalogoTestView() {
   const [parametrosGenTexto, setParametrosGenTexto] = useState("");
   const [cargandoEsquemaGen, setCargandoEsquemaGen] = useState(false);
   const [esquemaGen, setEsquemaGen] = useState(null);
+  const [filtroLocalCampo, setFiltroLocalCampo] = useState("");
+  const [filtroLocalValor, setFiltroLocalValor] = useState("");
   async function verEsquemaGen() {
     const nombre = endpointGen.trim();
     if (!nombre) return;
@@ -7514,7 +7516,11 @@ function BusintCatalogoTestView() {
         }
       }
       const llamar = httpsCallable(functionsClient, "getMuestraCatalogoBusintGen");
-      const resp = await llamar({ endpoint: nombre, ...(parametros ? { parametros } : {}) });
+      const resp = await llamar({
+        endpoint: nombre,
+        ...(parametros ? { parametros } : {}),
+        ...(filtroLocalCampo.trim() ? { filtroCampo: filtroLocalCampo.trim(), filtroValor: filtroLocalValor.trim() } : {}),
+      });
       setResultadoGen(resp.data);
     } catch (err) {
       setError(err?.message || `No se pudo consultar "${nombre}".`);
@@ -7874,11 +7880,28 @@ function BusintCatalogoTestView() {
           />
         </Field>
       </div>
+      <div style={{ marginBottom: 16, padding: 12, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}`, maxWidth: 520 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: T.ink, marginBottom: 4 }}>Buscar 1 solo lote/pedido puntual (filtro local)</div>
+        <div style={{ fontSize: 11, color: T.slate, marginBottom: 10 }}>
+          Esto NO se manda a Busint — trae TODAS las filas del endpoint y las filtra acá adentro por el campo exacto que le digas (ej. campo "numLote", valor "7250"), para encontrar un lote puntual aunque el endpoint no soporte ese filtro.
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <Field label="Campo (ej: numLote)">
+            <FInput value={filtroLocalCampo} onChange={setFiltroLocalCampo} placeholder="numLote" />
+          </Field>
+          <Field label="Valor (ej: 7250)">
+            <FInput value={filtroLocalValor} onChange={setFiltroLocalValor} placeholder="7250" />
+          </Field>
+        </div>
+      </div>
       {resultadoGen && (
         <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
           <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13, color: T.slate, flexWrap: "wrap" }}>
             <span>Endpoint: <strong style={{ color: T.ink }}>{resultadoGen.endpoint}</strong></span>
-            <span>Total REAL de filas: <strong style={{ color: T.ink }}>{resultadoGen.total}</strong></span>
+            {resultadoGen.filtroLocalAplicado && (
+              <span>Filtro local: <strong style={{ color: T.ink }}>{resultadoGen.filtroLocalAplicado.campo} = {resultadoGen.filtroLocalAplicado.valor}</strong> (de {resultadoGen.totalSinFiltrar} filas totales)</span>
+            )}
+            <span>Total {resultadoGen.filtroLocalAplicado ? "que coinciden" : "REAL de filas"}: <strong style={{ color: T.ink }}>{resultadoGen.total}</strong></span>
             <span>Columnas: <strong style={{ color: T.ink }}>{(resultadoGen.columnas || []).join(", ") || "—"}</strong></span>
           </div>
           <div style={{ fontSize: 12, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Primeras 10</div>

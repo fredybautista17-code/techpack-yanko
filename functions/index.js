@@ -2322,13 +2322,28 @@ exports.getMuestraCatalogoBusintGen = onCall(
       logger.error("Error consultando Busint (getMuestraCatalogoBusintGen)", { endpoint, parametros, error: String(err) });
       throw new HttpsError("unavailable", `No se pudo consultar "${endpoint}": ${err?.message || String(err)}`);
     }
+    // (2026-08-29) Filtro LOCAL opcional (no se manda a Busint, se aplica
+    // acá después de traer todo) — para buscar un lote/pedido puntual
+    // dentro de un catálogo que no soporta ese filtro en la API de Busint
+    // (ej. ApiGen_PanelControlFlujoOperacional no filtra por numLote), sin
+    // tener que revisar a mano cientos/miles de filas.
+    const filtroCampo = String(request.data?.filtroCampo || "").trim();
+    const filtroValor = request.data?.filtroValor;
+    let filasFiltradas = filas;
+    let filtroAplicado = null;
+    if (filtroCampo && filtroValor !== undefined && filtroValor !== null && String(filtroValor) !== "") {
+      filasFiltradas = filas.filter((f) => String(f?.[filtroCampo]) === String(filtroValor));
+      filtroAplicado = { campo: filtroCampo, valor: String(filtroValor) };
+    }
     return {
       endpoint,
       parametrosUsados: parametros,
-      total: filas.length,
-      columnas: filas.length ? Object.keys(filas[0]) : [],
-      primeras: filas.slice(0, 10),
-      ultimas: filas.slice(-10),
+      filtroLocalAplicado: filtroAplicado,
+      totalSinFiltrar: filas.length,
+      total: filasFiltradas.length,
+      columnas: filasFiltradas.length ? Object.keys(filasFiltradas[0]) : filas.length ? Object.keys(filas[0]) : [],
+      primeras: filasFiltradas.slice(0, 10),
+      ultimas: filasFiltradas.slice(-10),
     };
   }
 );
