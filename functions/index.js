@@ -1192,16 +1192,23 @@ exports.getResumenTablaBusintBD = onCall(
 // Busint — hay que traer la tabla COMPLETA (paginando) y filtrar acá. Por
 // eso esto es un botón APARTE en Informes ("Ver entradas/salidas reales"),
 // no algo que se dispare en cada tecla de la búsqueda normal de lote.
-async function entradasOSalidasPorLoteBusintBD(tableName, numLote) {
+async function entradasOSalidasPorLoteBusintBD(tableName, numLote, campoNumero) {
   const todas = await consultarTablaBusintBDCompleta(tableName);
   const deEsteLote = todas.filter((f) => String(f?.NumLote) === String(numLote));
   const porProceso = new Map();
   deEsteLote.forEach((f) => {
     const proceso = String(f?.Proceso || "(sin proceso)");
-    if (!porProceso.has(proceso)) porProceso.set(proceso, { proceso, total: 0, filas: 0 });
+    if (!porProceso.has(proceso)) porProceso.set(proceso, { proceso, total: 0, filas: 0, numeros: [] });
     const p = porProceso.get(proceso);
     p.total += Number(f?.Total) || 0;
     p.filas += 1;
+    // (2026-08-29) Fredy pidió también el número de documento de cada
+    // movimiento (columna "Entrada"/"Salida" de estas tablas — es un
+    // consecutivo único por movimiento, no la cantidad), tal como se ve en
+    // el reporte "Producción - Seguimiento a Lotes" de Busint (columna
+    // "Documento").
+    const num = f?.[campoNumero];
+    if (num !== undefined && num !== null && num !== "") p.numeros.push(num);
   });
   return [...porProceso.values()];
 }
@@ -1219,8 +1226,8 @@ exports.getMovimientosLoteBusintBD = onCall(
     let entradas, salidas;
     try {
       [entradas, salidas] = await Promise.all([
-        entradasOSalidasPorLoteBusintBD("bmp - entrada plantaproc ref", numLote),
-        entradasOSalidasPorLoteBusintBD("bmp - salida plantaproc ref", numLote),
+        entradasOSalidasPorLoteBusintBD("bmp - entrada plantaproc ref", numLote, "Entrada"),
+        entradasOSalidasPorLoteBusintBD("bmp - salida plantaproc ref", numLote, "Salida"),
       ]);
     } catch (err) {
       logger.error("Error consultando Busint BD (getMovimientosLoteBusintBD)", { numLote, error: String(err) });

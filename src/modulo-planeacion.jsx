@@ -2267,8 +2267,14 @@ function InformesView({
                                     return (
                                       <div key={p} style={{ fontSize: 12, color: C.ink }}>
                                         <strong>{p}</strong>
-                                        <span style={{ color: C.green, fontWeight: 700 }}> · Entrada: {ent ? fmtNum(ent.total) : "—"}</span>
-                                        <span style={{ color: C.red, fontWeight: 700 }}> · Salida: {sal ? fmtNum(sal.total) : "—"}</span>
+                                        <span style={{ color: C.green, fontWeight: 700 }}>
+                                          {" "}· Entrada: {ent ? fmtNum(ent.total) : "—"}
+                                          {ent?.numeros?.length ? <span style={{ color: C.slate, fontWeight: 400 }}> (doc. {ent.numeros.join(", ")})</span> : null}
+                                        </span>
+                                        <span style={{ color: C.red, fontWeight: 700 }}>
+                                          {" "}· Salida: {sal ? fmtNum(sal.total) : "—"}
+                                          {sal?.numeros?.length ? <span style={{ color: C.slate, fontWeight: 400 }}> (doc. {sal.numeros.join(", ")})</span> : null}
+                                        </span>
                                       </div>
                                     );
                                   })}
