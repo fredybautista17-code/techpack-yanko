@@ -1181,6 +1181,54 @@ exports.getResumenTablaBusintBD = onCall(
     };
   }
 );
+
+// (2026-08-29) Fredy pidió ver, por lote, cuánto entró REALMENTE a cada
+// proceso (no lo que quedó pendiente, sino lo que Busint registró como
+// entrada) — validado a mano contra el lote 7250: "BAJADA DE VINILO" tenía
+// 432 asignados pero Entrada=396 en esta tabla (coincide exacto con las 36
+// unidades que faltaron por un insumo). Las tablas "bmp - entrada
+// plantaproc ref" / "bmp - salida plantaproc ref" (API BD, ~27.000 filas
+// cada una) tienen esto, pero no soportan filtro por lote en la API de
+// Busint — hay que traer la tabla COMPLETA (paginando) y filtrar acá. Por
+// eso esto es un botón APARTE en Informes ("Ver entradas/salidas reales"),
+// no algo que se dispare en cada tecla de la búsqueda normal de lote.
+async function entradasOSalidasPorLoteBusintBD(tableName, numLote) {
+  const todas = await consultarTablaBusintBDCompleta(tableName);
+  const deEsteLote = todas.filter((f) => String(f?.NumLote) === String(numLote));
+  const porProceso = new Map();
+  deEsteLote.forEach((f) => {
+    const proceso = String(f?.Proceso || "(sin proceso)");
+    if (!porProceso.has(proceso)) porProceso.set(proceso, { proceso, total: 0, filas: 0 });
+    const p = porProceso.get(proceso);
+    p.total += Number(f?.Total) || 0;
+    p.filas += 1;
+  });
+  return [...porProceso.values()];
+}
+exports.getMovimientosLoteBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async (request) => {
+    const numLote = String(request.data?.numLote || "").trim();
+    if (!numLote) {
+      throw new HttpsError("invalid-argument", "Debes indicar el número de lote.");
+    }
+    let entradas, salidas;
+    try {
+      [entradas, salidas] = await Promise.all([
+        entradasOSalidasPorLoteBusintBD("bmp - entrada plantaproc ref", numLote),
+        entradasOSalidasPorLoteBusintBD("bmp - salida plantaproc ref", numLote),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getMovimientosLoteBusintBD)", { numLote, error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar los movimientos del lote ${numLote}: ${err?.message || String(err)}`);
+    }
+    return { numLote, entradas, salidas };
+  }
+);
 // (2026-08-26) Diseño pidió esto: cuando programan un corte no saben si hay
 // tela disponible en bodega — esto trae el inventario REAL de tela desde
 // Busint BD, tabla "estandar componentes prod" (confirmado a mano con el

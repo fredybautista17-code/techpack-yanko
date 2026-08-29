@@ -1853,6 +1853,34 @@ function InformesView({
   const [busquedaLote, setBusquedaLote] = useState("");
   const [pedidoTallaExpandido, setPedidoTallaExpandido] = useState(null);
   const [tallasPorPedido, setTallasPorPedido] = useState({});
+  const [loteMovimientosExpandido, setLoteMovimientosExpandido] = useState(null);
+  const [movimientosPorLote, setMovimientosPorLote] = useState({});
+  // (2026-08-29) Entradas/salidas REALES por proceso, directo de Busint BD
+  // (tablas "bmp - entrada plantaproc ref" / "bmp - salida plantaproc ref")
+  // — a diferencia del inventario pendiente que ya se muestra arriba, esto
+  // es lo que Busint registró como trabajado de verdad en cada proceso
+  // (ej. lote 7250: 432 asignados a Bajada de Vinilo, pero Entrada real
+  // 396 por un faltante de insumo). Son tablas grandes (~27.000 filas cada
+  // una) sin filtro por lote en la API de Busint, así que esto SOLO se
+  // consulta cuando el usuario pide un lote puntual (no en cada tecla de
+  // la búsqueda normal).
+  async function toggleMovimientosLote(numLote) {
+    const clave = String(numLote);
+    if (loteMovimientosExpandido === clave) {
+      setLoteMovimientosExpandido(null);
+      return;
+    }
+    setLoteMovimientosExpandido(clave);
+    if (movimientosPorLote[clave]) return; // ya en caché, no repetir la consulta
+    setMovimientosPorLote((prev) => ({ ...prev, [clave]: { cargando: true } }));
+    try {
+      const llamar = httpsCallable(functionsClient, "getMovimientosLoteBusintBD");
+      const resp = await llamar({ numLote: clave });
+      setMovimientosPorLote((prev) => ({ ...prev, [clave]: { cargando: false, ...resp.data } }));
+    } catch (err) {
+      setMovimientosPorLote((prev) => ({ ...prev, [clave]: { cargando: false, error: err?.message || String(err) } }));
+    }
+  }
   // (2026-08-20) Desglose por talla de un pedido, EN VIVO desde la API "gen"
   // de Busint (ApiGen_OrdenesDePedidoBusint vía getOrdenBusintPorNumero, ya
   // usada en producción por Pedidos/Corte) — no la API "BD" que se exploró
@@ -2216,6 +2244,40 @@ function InformesView({
                           </div>
                         </div>
                       )}
+                      <div style={{ width: "100%" }}>
+                        <button
+                          onClick={() => toggleMovimientosLote(l.numLote)}
+                          style={{ padding: "5px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}
+                        >
+                          {loteMovimientosExpandido === String(l.numLote) ? "▲ Ocultar entradas/salidas reales" : "📦 Ver entradas/salidas reales (Busint)"}
+                        </button>
+                        {loteMovimientosExpandido === String(l.numLote) && (
+                          <div style={{ marginTop: 8, padding: 10, background: C.white, border: `1px solid ${C.border}`, borderRadius: 8 }}>
+                            {(() => {
+                              const info = movimientosPorLote[String(l.numLote)];
+                              if (!info || info.cargando) return <div style={{ fontSize: 12, color: C.slate }}>Consultando Busint (tabla grande, puede tardar)…</div>;
+                              if (info.error) return <div style={{ fontSize: 12, color: C.red }}>⚠ {info.error}</div>;
+                              const procesos = [...new Set([...(info.entradas || []), ...(info.salidas || [])].map((p) => p.proceso))];
+                              if (!procesos.length) return <div style={{ fontSize: 12, color: C.slate }}>Busint no tiene movimientos de entrada/salida registrados para este lote.</div>;
+                              return (
+                                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                  {procesos.map((p) => {
+                                    const ent = (info.entradas || []).find((x) => x.proceso === p);
+                                    const sal = (info.salidas || []).find((x) => x.proceso === p);
+                                    return (
+                                      <div key={p} style={{ fontSize: 12, color: C.ink }}>
+                                        <strong>{p}</strong>
+                                        <span style={{ color: C.green, fontWeight: 700 }}> · Entrada: {ent ? fmtNum(ent.total) : "—"}</span>
+                                        <span style={{ color: C.red, fontWeight: 700 }}> · Salida: {sal ? fmtNum(sal.total) : "—"}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        )}
+                      </div>
                       {l.numPedido && (
                         <div style={{ width: "100%" }}>
                           <button
