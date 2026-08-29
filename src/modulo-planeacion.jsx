@@ -2906,6 +2906,27 @@ function TuboProductivoView() {
 // hay pendiente (sumando lo que está en BMP+Corte+Planta+Semiterminado+BPT,
 // es decir, todavía no despachado) y cuánto se ha cortado en total, con
 // clic para ver los lotes puntuales detrás de cada combinación.
+function agruparPorCategoria(lotesGrupo) {
+  const mapa = new Map();
+  lotesGrupo.forEach((l) => {
+    const categoria = l.categoria || "(Sin categoría)";
+    if (!mapa.has(categoria)) {
+      mapa.set(categoria, { categoria, numLotes: 0, unidadesPendientes: 0, cantCortada: 0 });
+    }
+    const c = mapa.get(categoria);
+    const pendientes =
+      (Number(l.invBMP) || 0) +
+      (Number(l.invCorte) || 0) +
+      (Number(l.invPlanta) || 0) +
+      (Number(l.invSemiterminado) || 0) +
+      (Number(l.invBPT) || 0);
+    c.numLotes += 1;
+    c.unidadesPendientes += pendientes;
+    c.cantCortada += Number(l.cantCortada) || 0;
+  });
+  return [...mapa.values()].sort((a, b) => b.unidadesPendientes - a.unidadesPendientes);
+}
+
 function BuscarPorLineaView() {
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
@@ -3049,8 +3070,24 @@ function BuscarPorLineaView() {
                     {abierto && (
                       <tr>
                         <td colSpan={6} style={{ padding: "0 12px 14px 12px", background: C.canvas }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", margin: "10px 0 6px" }}>
+                            Por categoría
+                          </div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+                            {agruparPorCategoria(g.lotes).map((c) => (
+                              <div
+                                key={c.categoria}
+                                style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px", minWidth: 150 }}
+                              >
+                                <div style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>{c.categoria}</div>
+                                <div style={{ fontSize: 11, color: C.slate }}>{c.numLotes} lote{c.numLotes === 1 ? "" : "s"} · cortado {fmtNum(c.cantCortada)}</div>
+                                <div style={{ fontSize: 13, fontWeight: 800, color: C.blue }}>{fmtNum(c.unidadesPendientes)} und. pend.</div>
+                              </div>
+                            ))}
+                          </div>
                           <Tabla
                             columnas={[
+                              { key: "categoria", label: "Categoría" },
                               { key: "numLote", label: "Lote" },
                               { key: "numPedido", label: "Pedido" },
                               { key: "referencia", label: "Referencia" },
