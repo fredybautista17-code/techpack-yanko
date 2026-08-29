@@ -382,8 +382,10 @@ function construirLotesDesdeBusintGen(filasBusint) {
   return (filasBusint || []).map((f) => {
     const procesos = (f.procesos || []).map((p) => ({
       nombre: p.nombre || "",
+      planta: p.planta || "",
       salida: isoToLocalDate(p.fechaSalida),
       entrega: isoToLocalDate(p.fechaEntrada),
+      inventario: Number(p.inventario) || 0,
     }));
     const { proceso: procesoDondeQuedo, ultimaSalida, sinSalida } = calcularProcesoDondeQuedo(procesos, f.invSemiterminado);
     let ultimaSalidaTexto = "";
@@ -423,6 +425,7 @@ function construirLotesDesdeBusintGen(filasBusint) {
       semanaEntregaISO,
       ubicacionActual,
       unidadesUbicacion,
+      procesos,
     };
   });
 }
@@ -2178,6 +2181,29 @@ function InformesView({
                       {l.ubicacionActual === "Semiterminado" && (
                         <div style={{ fontSize: 12, color: C.slate, width: "100%" }}>
                           Proceso donde quedó: <strong>{l.procesoDondeQuedo || "—"}</strong>{l.ultimaSalidaTexto ? ` · Última salida: ${l.ultimaSalidaTexto}` : ""}
+                        </div>
+                      )}
+                      {(l.procesos || []).some((p) => p.inventario > 0) && (
+                        <div style={{ width: "100%", marginTop: 4, padding: 10, background: C.white, border: `1px solid ${C.border}`, borderRadius: 8 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>
+                            Dónde quedó represado (por proceso)
+                          </div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                            {(l.procesos || [])
+                              .filter((p) => p.inventario > 0)
+                              .map((p, i) => (
+                                <div key={i} style={{ fontSize: 12, color: C.ink, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                  <strong>{p.nombre || "(sin nombre)"}</strong>
+                                  <span style={{ color: C.blue, fontWeight: 700 }}>{fmtNum(p.inventario)} und.</span>
+                                  {p.planta && <span style={{ color: C.slate }}>{p.planta}</span>}
+                                  <span style={{ color: C.slate }}>
+                                    {esFechaValida(p.salida) ? `Salió: ${fmtFecha(p.salida)}` : "Sin fecha de salida"}
+                                    {" · "}
+                                    {esFechaValida(p.entrega) ? `Entró siguiente: ${fmtFecha(p.entrega)}` : "Aún sin entrar al siguiente proceso"}
+                                  </span>
+                                </div>
+                              ))}
+                          </div>
                         </div>
                       )}
                       {l.numPedido && (
