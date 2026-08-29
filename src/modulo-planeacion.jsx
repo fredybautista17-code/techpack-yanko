@@ -390,6 +390,16 @@ function construirLotesDesdeBusintGen(filasBusint) {
     const { proceso: procesoDondeQuedo, ultimaSalida, sinSalida } = calcularProcesoDondeQuedo(procesos, f.invSemiterminado);
     let ultimaSalidaTexto = "";
     if (f.invSemiterminado > 0) ultimaSalidaTexto = sinSalida ? "Sin salida" : fmtFecha(ultimaSalida);
+    // (2026-08-29) Ver comentario arriba: se guardan las fechas de cada
+    // proceso ya como texto (no como Date) para que sobrevivan el viaje por
+    // Firestore igual que ultimaSalidaTexto.
+    const procesosParaGuardar = procesos.map((p) => ({
+      nombre: p.nombre,
+      planta: p.planta,
+      inventario: p.inventario,
+      salidaTexto: esFechaValida(p.salida) ? fmtFecha(p.salida) : "",
+      entregaTexto: esFechaValida(p.entrega) ? fmtFecha(p.entrega) : "",
+    }));
     const clienteAgrupado =
       f.nombreCliente === "KAMILA GROUP SAS-KAMILA COLOMBIA" || f.nombreCliente === "KAMILA VENEZUELA-KAMILA VENEZUELA"
         ? "KAMILA (COLOMBIA + VENEZUELA)"
@@ -425,7 +435,7 @@ function construirLotesDesdeBusintGen(filasBusint) {
       semanaEntregaISO,
       ubicacionActual,
       unidadesUbicacion,
-      procesos,
+      procesos: procesosParaGuardar,
     };
   });
 }
@@ -2197,9 +2207,9 @@ function InformesView({
                                   <span style={{ color: C.blue, fontWeight: 700 }}>{fmtNum(p.inventario)} und.</span>
                                   {p.planta && <span style={{ color: C.slate }}>{p.planta}</span>}
                                   <span style={{ color: C.slate }}>
-                                    {esFechaValida(p.salida) ? `Salió: ${fmtFecha(p.salida)}` : "Sin fecha de salida"}
+                                    {p.salidaTexto ? `Salida: ${p.salidaTexto}` : "Sin fecha de salida"}
                                     {" · "}
-                                    {esFechaValida(p.entrega) ? `Entró siguiente: ${fmtFecha(p.entrega)}` : "Aún sin entrar al siguiente proceso"}
+                                    {p.entregaTexto ? `Entrada: ${p.entregaTexto}` : "Sin fecha de entrada"}
                                   </span>
                                 </div>
                               ))}
