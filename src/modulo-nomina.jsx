@@ -1195,13 +1195,13 @@ const MOTIVOS_AUSENCIA = [
   "Vacaciones", "Incapacidad", "Licencia Remunerada", "Licencia No Remunerada",
   "Licencia Maternidad/Paternidad", "Permiso", "Luto", "Suspensión de Contrato", "Otro",
 ];
-function AusenciaModal({ ausencia, trabajadores, onSave, onClose }) {
+function AusenciaModal({ ausencia, trabajadores, onSave, onClose, trabajadorIdSugerido, fechaInicioSugerida, onDelete }) {
   const [form, setForm] = useState({
-    trabajadorId: ausencia?.trabajadorId || "",
+    trabajadorId: ausencia?.trabajadorId || trabajadorIdSugerido || "",
     nombreLibre: ausencia?.nombreLibre || "",
     motivo: ausencia?.motivo || "",
-    fechaInicio: ausencia?.fechaInicio || today(),
-    fechaFin: ausencia?.fechaFin || today(),
+    fechaInicio: ausencia?.fechaInicio || fechaInicioSugerida || today(),
+    fechaFin: ausencia?.fechaFin || fechaInicioSugerida || today(),
     observaciones: ausencia?.observaciones || "",
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
@@ -1236,6 +1236,11 @@ function AusenciaModal({ ausencia, trabajadores, onSave, onClose }) {
       <Field label="Fecha Fin"><FInput type="date" value={form.fechaFin} onChange={set("fechaFin")} /></Field>
       <Field label="Observaciones (opcional)"><FInput value={form.observaciones} onChange={set("observaciones")} /></Field>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        {onDelete && (
+          <div style={{ marginRight: "auto" }}>
+            <Btn variant="danger" onClick={onDelete}>Borrar</Btn>
+          </div>
+        )}
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn onClick={guardar} disabled={!form.motivo || (!form.trabajadorId && !form.nombreLibre.trim())}>Guardar</Btn>
       </div>
@@ -1293,6 +1298,109 @@ function AusenciasView({ ausencias, trabajadores, isAdmin, currentUser, onSave, 
         ]}
         filas={ordenadas}
       />
+    </div>
+  );
+}
+// ─── PERMISOS (calendario mensual: quien vino, quien tiene permiso) ───
+const MOTIVO_ICONO = {
+  "Vacaciones": "🏖️",
+  "Incapacidad": "🩺",
+  "Licencia Remunerada": "📄",
+  "Licencia No Remunerada": "📄",
+  "Licencia Maternidad/Paternidad": "👶",
+  "Permiso": "🟡",
+  "Luto": "🖤",
+  "Suspensión de Contrato": "⛔",
+  "Otro": "❔",
+};
+function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, currentUser, isAdmin, onSave, onDelete }) {
+  const [ref, setRef] = useState(today().slice(0, 7)); // "YYYY-MM"
+  const [modal, setModal] = useState(null); // null | { nuevo, trabajadorId, fechaInicio } | ausencia existente
+  const [anioStr, mesStr] = ref.split("-");
+  const anio = Number(anioStr);
+  const mes = Number(mesStr); // 1-12
+  const diasEnMes = new Date(anio, mes, 0).getDate();
+  const dias = Array.from({ length: diasEnMes }, (_, i) => i + 1);
+  function fechaISO(d) {
+    return `${anio}-${String(mes).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  }
+  function cambiarMes(delta) {
+    const d = new Date(anio, mes - 1 + delta, 1);
+    setRef(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+  function ausenciaDelDia(trabajadorId, diaISO) {
+    return ausencias.find((a) => a.trabajadorId === trabajadorId && a.fechaInicio <= diaISO && a.fechaFin >= diaISO);
+  }
+  function vinoElDia(trabajadorId, diaISO) {
+    return produccion.some((p) => p.trabajadorId === trabajadorId && p.fecha === diaISO)
+      || horas.some((h) => h.trabajadorId === trabajadorId && h.fecha === diaISO);
+  }
+  function abrirCelda(trabajadorId, diaISO) {
+    const existente = ausenciaDelDia(trabajadorId, diaISO);
+    if (existente) { setModal(existente); return; }
+    setModal({ nuevo: true, trabajadorId, fechaInicio: diaISO });
+  }
+  const hoyISO = today();
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Vista rápida del mes: ✅ = tiene producción u horas registradas ese día (vino a trabajar). Un ícono de color = tiene un permiso/ausencia registrada (pasa el mouse para ver el motivo). Click en una celda vacía para registrar un permiso nuevo.
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <Btn variant="secondary" onClick={() => cambiarMes(-1)}>← Mes anterior</Btn>
+        <div style={{ fontWeight: 700, color: C.ink, minWidth: 160, textAlign: "center", textTransform: "capitalize" }}>
+          {new Date(anio, mes - 1, 1).toLocaleDateString("es-CO", { month: "long", year: "numeric" })}
+        </div>
+        <Btn variant="secondary" onClick={() => cambiarMes(1)}>Mes siguiente →</Btn>
+      </div>
+      <div style={{ overflowX: "auto", border: `1px solid ${C.border}`, borderRadius: 10 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+          <thead>
+            <tr>
+              <th style={{ position: "sticky", left: 0, background: C.white, padding: "8px 10px", textAlign: "left", borderBottom: `1px solid ${C.border}`, borderRight: `1px solid ${C.border}`, minWidth: 160 }}>Trabajador</th>
+              {dias.map((d) => (
+                <th key={d} style={{ padding: "6px 4px", textAlign: "center", borderBottom: `1px solid ${C.border}`, color: fechaISO(d) === hoyISO ? C.blue : C.slate, minWidth: 30 }}>{d}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {trabajadores.map((t) => (
+              <tr key={t.id}>
+                <td style={{ position: "sticky", left: 0, background: C.white, padding: "6px 10px", borderRight: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>{t.nombre}</td>
+                {dias.map((d) => {
+                  const diaISO = fechaISO(d);
+                  const a = ausenciaDelDia(t.id, diaISO);
+                  const vino = !a && vinoElDia(t.id, diaISO);
+                  return (
+                    <td
+                      key={d}
+                      onClick={() => abrirCelda(t.id, diaISO)}
+                      title={a ? `${a.motivo}${a.observaciones ? " — " + a.observaciones : ""}` : (vino ? "Vino (con producción/horas registradas)" : "Sin registro — click para agregar permiso")}
+                      style={{ padding: "4px 2px", textAlign: "center", borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: diaISO === hoyISO ? C.blueBg : "transparent" }}
+                    >
+                      {a ? (MOTIVO_ICONO[a.motivo] || "❔") : (vino ? "✅" : "")}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {trabajadores.length === 0 && (
+        <div style={{ marginTop: 16, color: C.slate, fontSize: 13 }}>No hay trabajadores para mostrar.</div>
+      )}
+      {modal && (
+        <AusenciaModal
+          ausencia={modal.nuevo ? null : modal}
+          trabajadores={trabajadores}
+          trabajadorIdSugerido={modal.nuevo ? modal.trabajadorId : null}
+          fechaInicioSugerida={modal.nuevo ? modal.fechaInicio : null}
+          onSave={(data) => onSave(modal.nuevo ? { id: uid(), ...data, registradoPor: currentUser?.name || currentUser?.username || "", registradoEn: new Date().toISOString() } : { id: modal.id, ...data })}
+          onClose={() => setModal(null)}
+          onDelete={!modal.nuevo && (isAdmin || modal.registradoPor === (currentUser?.name || currentUser?.username)) ? () => { onDelete(modal.id); setModal(null); } : null}
+        />
+      )}
     </div>
   );
 }
@@ -2981,6 +3089,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
     ? [
         { id: "produccion", icon: "🧵", label: "Registrar Producción" },
         { id: "horas", icon: "🕐", label: "Registrar Horas" },
+        { id: "permisos", icon: "📅", label: "Permisos" },
         { id: "resumen", icon: "💰", label: "Resumen" },
       ]
     : [
@@ -2999,6 +3108,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           ] },
         { group: "Novedades", icon: "📣", items: [
             { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
+            { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
             { id: "asistencia", icon: "📊", label: "Reporte de Asistencia" },
           ] },
         { group: "Reporte de Nómina", icon: "📊", items: [
@@ -3018,6 +3128,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   const trabajadoresVisibles = areaLider ? trabajadores.filter((t) => (t.area || "Sin asignar") === areaLider) : trabajadores;
   const produccionVisible = areaLider ? produccion.filter((p) => trabajadoresVisibles.some((t) => t.id === p.trabajadorId)) : produccion;
   const horasVisibles = areaLider ? horas.filter((h) => trabajadoresVisibles.some((t) => t.id === h.trabajadorId)) : horas;
+  const ausenciasVisibles = areaLider ? ausencias.filter((a) => trabajadoresVisibles.some((t) => t.id === a.trabajadorId)) : ausencias;
   async function guardarTrabajador(t) { await fsSave("nomina_trabajadores", t.id, t); }
   async function borrarTrabajador(id) { await fsDelete("nomina_trabajadores", id); }
   async function guardarProceso(p) { await fsSave("nomina_precios_proceso", p.id, p); }
@@ -3176,6 +3287,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           {subView === "novedades_tns" && !areaLider && <NovedadesTNSView trabajadores={trabajadores} />}
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} isAdmin={isAdmin} currentUser={currentUser} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} />}
+          {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "fiscal_destajo" && !areaLider && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} />}
           {subView === "historial_fiscal_destajo" && !areaLider && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
           {subView === "destajo" && !areaLider && <NominaDestajoView trabajadores={trabajadores} produccion={produccion} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} />}
