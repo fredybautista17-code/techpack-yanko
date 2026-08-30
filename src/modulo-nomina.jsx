@@ -1811,22 +1811,22 @@ function HistorialFiscalDestajoView({ liquidaciones }) {
 function calcularLiquidacionDestajo(trabajador, netoProduccion) {
   const sueldo = Number(trabajador.sueldo) || 0;
   const auxilio = Number(trabajador.auxilioTransporte) || 0;
-  const sueldoQuincena = sueldo / 2;
-  const auxilioQuincena = auxilio / 2;
+  // (2026-08-30) Fredy confirmo que su tabla de referencia (cesantias/
+  // intereses/prima/vacaciones) ya es QUINCENAL, no mensual -- a diferencia
+  // de Fiscal Destajo, donde el sueldo es mensual y se divide entre 2. Para
+  // estos 12 trabajadores de Destajo, sueldo/auxilioTransporte representan
+  // directamente el valor de la quincena, asi que las tasas mensuales
+  // (8.33%, 12%, 4.17%) se aplican sobre el valor completo, sin dividir.
+  // Validado exacto con MARIA AYDE CONTRERAS SANCHEZ (sueldo=$875.452,
+  // auxilio=$124.547): cesantias=(875.452+124.547)x8.33%=$83.300,
+  // interes=$83.300x12%=$9.996, prima=$83.300, vacaciones=875.452x4.17%=$36.506
+  // -- coincide exacto con su tabla en los 4 conceptos.
   const saldoCesantiasInicio = Number(trabajador.cesantiasAcumuladas) || 0;
-  const baseConAuxilio = sueldoQuincena + auxilioQuincena;
+  const baseConAuxilio = sueldo + auxilio;
   const cesantiasPeriodo = baseConAuxilio * TASA_CESANTIAS_MENSUAL;
-  // (2026-08-30) Corregido contra la tabla de referencia real de Fredy: en
-  // su archivo INTERES = CESANTIAS del mismo período × 12% (no 12% sobre un
-  // saldo acumulado de períodos anteriores, como sí hace Fiscal Destajo).
-  // Validado con MARIA AYDE CONTRERAS SANCHEZ: cesantías mensuales
-  // (sueldo+auxilio)×8.33% = $83.300, interés = $83.300×12% = $9.996 —
-  // coincide exacto con su tabla. Acá se aplica sobre cesantiasPeriodo
-  // (ya quincenal, mitad del mes) para mantener la misma convención
-  // quincenal que el resto del módulo.
   const interesesPeriodo = cesantiasPeriodo * TASA_INTERES_CESANTIAS_ANUAL;
   const primaPeriodo = baseConAuxilio * TASA_PRIMA_MENSUAL;
-  const vacacionesPeriodo = sueldoQuincena * TASA_VACACIONES_MENSUAL;
+  const vacacionesPeriodo = sueldo * TASA_VACACIONES_MENSUAL;
   return {
     netoAPagar: netoProduccion,
     cesantiasPeriodo, interesesPeriodo, primaPeriodo, vacacionesPeriodo,
