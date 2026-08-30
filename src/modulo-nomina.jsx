@@ -258,11 +258,15 @@ function Tabla({ columnas, filas, vacio, onRowClick }) {
 // Maestro simple: nombre + tarifa por hora (usada para calcular las "Horas
 // Sueltas") + activo/inactivo (un trabajador inactivo no aparece en los
 // selects de los formularios de registro, pero su historial queda intacto).
-// Áreas de Nómina: hoy solo hay dos líderes con equipo propio (Terminación →
-// Anny Beltrán, Termofijación → Sarai Méndez); "Sin asignar" cubre todo lo
-// demás mientras no se necesite otra área. Es la misma etiqueta que se usa
-// para filtrarle a cada líder únicamente su gente al iniciar sesión.
-const AREAS_NOMINA = ["Terminación", "Termofijación", "Sin asignar"];
+// Áreas de Nómina (2026-08-30): antes era una lista fija en el código
+// (Terminación/Termofijación) que no coincidía con las áreas reales que se
+// venían usando para los trabajadores (ZONA CALOR, EMPAQUE, ADMINISTRATIVO,
+// etc.) -- eso dejaba a las líderes sin ver a nadie. Ahora es una lista
+// editable por el admin (Administrativo → Áreas de Nómina, colección
+// Firestore "nomina_areas"), la misma que alimenta tanto el campo "Área" de
+// cada trabajador como el "Área de Nómina" que se le asigna a un líder en
+// Usuarios. "Sin asignar" sigue siendo el valor por defecto para quien no
+// tenga área (no es un documento real en "nomina_areas").
 // Códigos TNS ya confirmados a mano (Nómina → Reportes → Listado de Personal
 // de TNS, Industrias Yanko BC SAS, Jul/2026) — en esta empresa TNS usa la
 // misma cédula como "codigo"/"codigotercero" del contrato. Solo cubre las 13
@@ -332,7 +336,86 @@ const DESTAJO_CONOCIDOS = [
   { cedula: "1127350028", nombre: "VICTOR MANUEL ADOLFO PORRAS", area: "ZONA CALOR", sueldo: 1750905, auxilioTransporte: 249095 },
   { cedula: "1092254889", nombre: "JHONEIDER BOTELLO BECERRA", area: "ZONA CALOR", sueldo: 1750905, auxilioTransporte: 249095 },
 ];
-function TrabajadorModal({ trabajador, onSave, onClose }) {
+function AreaNominaModal({ area, onSave, onClose }) {
+  const [form, setForm] = useState({ nombre: area?.nombre || "" });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  function guardar() {
+    if (!form.nombre.trim()) return;
+    onSave({ nombre: form.nombre.trim() });
+    onClose();
+  }
+  return (
+    <Modal title={area ? "Editar Área" : "Nueva Área de Nómina"} onClose={onClose} width={400}>
+      <Field label="Nombre del Área"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: ZONA CALOR, EMPAQUE, ADMINISTRATIVO" /></Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        Esta lista alimenta el campo "Área" de cada trabajador y el "Área de Nómina" que se le asigna a un líder en Usuarios.
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar} disabled={!form.nombre.trim()}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+function AreasNominaView({ areas, trabajadores, isAdmin, onSave, onDelete }) {
+  const [modal, setModal] = useState(null); // null | "nuevo" | area
+  const [confirmDel, setConfirmDel] = useState(null);
+  const ordenadas = [...areas].sort((a, b) => a.nombre.localeCompare(b.nombre));
+  function contarTrabajadores(nombre) {
+    return (trabajadores || []).filter((t) => (t.area || "Sin asignar") === nombre).length;
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Estas son las áreas reales de la planta (ej. ZONA CALOR, EMPAQUE, ADMINISTRATIVO) — se usan para clasificar a cada trabajador y para asignarle a un líder de área su gente en Usuarios → Área de Nómina.
+      </div>
+      {modal && (
+        <AreaNominaModal
+          area={modal === "nuevo" ? null : modal}
+          onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {confirmDel && (
+        <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Eliminar el área <strong>{confirmDel.nombre}</strong>?
+            {contarTrabajadores(confirmDel.nombre) > 0 && (
+              <div style={{ marginTop: 10, color: C.red, fontWeight: 600 }}>⚠️ {contarTrabajadores(confirmDel.nombre)} trabajador(es) tienen esta área asignada — no se les cambia sola, quedarían con un área que ya no existe en la lista. Revísalos primero en Trabajadores.</div>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={() => { onDelete(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+          </div>
+        </Modal>
+      )}
+      {isAdmin && (
+        <div style={{ marginBottom: 16 }}>
+          <Btn onClick={() => setModal("nuevo")}>+ Nueva Área</Btn>
+        </div>
+      )}
+      <Tabla
+        vacio="Sin áreas registradas todavía."
+        columnas={[
+          { key: "nombre", label: "Área" },
+          { key: "trabajadores", label: "Trabajadores", align: "right", render: (f) => contarTrabajadores(f.nombre) },
+          ...(isAdmin ? [{
+            key: "acciones", label: "", align: "right",
+            render: (f) => (
+              <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <span onClick={(e) => { e.stopPropagation(); setModal(f); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>Editar</span>
+                <span onClick={(e) => { e.stopPropagation(); setConfirmDel(f); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>
+              </span>
+            ),
+          }] : []),
+        ]}
+        filas={ordenadas}
+      />
+    </div>
+  );
+}
+function TrabajadorModal({ trabajador, onSave, onClose, areasNomina }) {
   const [form, setForm] = useState({
     nombre: trabajador?.nombre || "",
     cedula: trabajador?.cedula || "",
@@ -368,7 +451,7 @@ function TrabajadorModal({ trabajador, onSave, onClose }) {
     <Modal title={trabajador ? "Editar Trabajador" : "Nuevo Trabajador"} onClose={onClose} width={440}>
       <Field label="Nombre"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Carlos Javier González" /></Field>
       <Field label="Cédula"><FInput value={form.cedula} onChange={set("cedula")} placeholder="Ej: 1004802413" /></Field>
-      <Field label="Área"><FSel value={form.area} onChange={set("area")} options={AREAS_NOMINA} placeholder="Sin asignar" /></Field>
+      <Field label="Área"><FSel value={form.area} onChange={set("area")} options={[...areasNomina.map((a) => a.nombre), "Sin asignar"]} placeholder="Sin asignar" /></Field>
       <Field label="Tipo de Nómina">
         <FSel value={form.tipoNomina} onChange={set("tipoNomina")} options={TIPOS_NOMINA} placeholder="Sin clasificar" />
       </Field>
@@ -408,7 +491,7 @@ function TrabajadorModal({ trabajador, onSave, onClose }) {
     </Modal>
   );
 }
-function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete }) {
+function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | trabajador
   const [confirmDel, setConfirmDel] = useState(null);
   const [autoResultado, setAutoResultado] = useState(null);
@@ -495,6 +578,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete }) {
       {modal && (
         <TrabajadorModal
           trabajador={modal === "nuevo" ? null : modal}
+          areasNomina={areasNomina}
           onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
           onClose={() => setModal(null)}
         />
@@ -3056,6 +3140,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   const [gruposAbiertos, setGruposAbiertos] = useState({});
   const [trabajadores, setTrabajadores] = useState([]);
   const [precios, setPrecios] = useState([]);
+  const [areasNomina, setAreasNomina] = useState([]);
   const [produccion, setProduccion] = useState([]);
   const [horas, setHoras] = useState([]);
   const [cierres, setCierres] = useState([]);
@@ -3069,6 +3154,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
     const unsubs = [
       onSnapshot(collection(db, "nomina_trabajadores"), (snap) => { setTrabajadores(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setLoading(false); }),
       onSnapshot(collection(db, "nomina_precios_proceso"), (snap) => setPrecios(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_areas"), (snap) => setAreasNomina(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_produccion"), (snap) => setProduccion(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_horas"), (snap) => setHoras(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_cierres"), (snap) => setCierres(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -3104,6 +3190,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
             { id: "tns", icon: "🔌", label: "Conexión TNS" },
             { id: "novedades_tns", icon: "🧾", label: "Novedades TNS" },
             { id: "precios", icon: "⚙️", label: "Procesos" },
+            { id: "areas_nomina", icon: "🏷️", label: "Áreas de Nómina" },
             { id: "trabajadores", icon: "👷", label: "Trabajadores" },
           ] },
         { group: "Novedades", icon: "📣", items: [
@@ -3133,6 +3220,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   async function borrarTrabajador(id) { await fsDelete("nomina_trabajadores", id); }
   async function guardarProceso(p) { await fsSave("nomina_precios_proceso", p.id, p); }
   async function borrarProceso(id) { await fsDelete("nomina_precios_proceso", id); }
+  async function guardarAreaNomina(a) { await fsSave("nomina_areas", a.id, a); }
+  async function borrarAreaNomina(id) { await fsDelete("nomina_areas", id); }
   async function guardarProduccion(p) { await fsSave("nomina_produccion", p.id, p); }
   async function borrarProduccion(id) { await fsDelete("nomina_produccion", id); }
   async function guardarHoras(h) { await fsSave("nomina_horas", h.id, h); }
@@ -3279,7 +3368,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           {subView === "produccion" && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} costosTeoricoProceso={costosTeoricoProceso} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
           {subView === "horas" && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
           {subView === "resumen" && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} />}
-          {subView === "trabajadores" && !areaLider && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} />}
+          {subView === "trabajadores" && !areaLider && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} />}
+          {subView === "areas_nomina" && !areaLider && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarAreaNomina} onDelete={borrarAreaNomina} />}
           {subView === "precios" && !areaLider && <PreciosProcesoView precios={precios} isAdmin={isAdmin} onSave={guardarProceso} onDelete={borrarProceso} />}
           {subView === "costos_teorico" && !areaLider && <CostosTeoricoProcesoView costos={costosTeoricoProceso} isAdmin={isAdmin} onGuardarLote={guardarCostosTeoricoProcesoLote} onBorrarTodo={vaciarCostosTeoricoProceso} />}
           {subView === "costo_referencia" && !areaLider && <ConsultarCostoReferenciaView />}

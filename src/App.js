@@ -5634,7 +5634,7 @@ function EditNombreModal({ item, tipo, config, onSave, onClose }) {
     </Modal>
   );
 }
-function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
+function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina }) {
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState(null);
   const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "", areaNomina: "" });
@@ -5837,10 +5837,9 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin }) {
               <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Área de Nómina (opcional)</label>
               <select value={form.areaNomina} onChange={(e) => setForm((f) => ({ ...f, areaNomina: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
                 <option value="">— Ninguna (no es líder de área) —</option>
-                <option value="Terminación">Terminación</option>
-                <option value="Termofijación">Termofijación</option>
+                {(areasNomina || []).map((a) => <option key={a.id} value={a.nombre}>{a.nombre}</option>)}
               </select>
-              <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Si eliges un área, este usuario entra a Nómina con una pantalla simple para registrar solo la producción de su gente (ej. Anny Beltrán → Terminación, Sarai Méndez → Termofijación). Necesita también acceso al módulo "Nómina" en su rol.</div>
+              <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Si eliges un área, este usuario entra a Nómina con una pantalla simple para registrar solo la producción/permisos de su gente (los trabajadores con esa misma "Área" en Trabajadores). Las áreas se administran en Nómina → Administrativo → Áreas de Nómina. Necesita también acceso al módulo "Nómina" en su rol.</div>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
@@ -6903,7 +6902,7 @@ function SincronizarLineasBusintBtn({ config, onUpdateConfig }) {
     </div>
   );
 }
-function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula, onRestaurarProto, onRestaurarCapsula, onRestaurarRef, onPurgarProto, onPurgarCapsula, onPurgarRef, isAdmin }) {
+function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula, onRestaurarProto, onRestaurarCapsula, onRestaurarRef, onPurgarProto, onPurgarCapsula, onPurgarRef, isAdmin, areasNomina }) {
   const [tab, setTab] = useState("etapas");
   const [newItem, setNewItem] = useState("");
   const [editItem, setEditItem] = useState(null);
@@ -7392,7 +7391,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
             </div>
           </div>
         )}
-        {tab === "usuarios" && <UsersTab users={users} onUpdateUsers={onUpdateUsers} config={config} isAdmin={isAdmin} />}
+        {tab === "usuarios" && <UsersTab users={users} onUpdateUsers={onUpdateUsers} config={config} isAdmin={isAdmin} areasNomina={areasNomina} />}
         {tab === "clientes" && <ClientesTab config={config} onUpdateConfig={onUpdateConfig} />}
         {tab === "contenido" && (
           <div>
@@ -10080,6 +10079,7 @@ function AppInner() {
   const [currentUser, setCurrentUser] = useState(null);
   const [users, setUsers] = useState([]);
   const [config, setConfig] = useState(INIT_CONFIG);
+  const [areasNomina, setAreasNomina] = useState([]);
   const [protos, setProtos] = useState([]);
   const [capsulas, setCapsulas] = useState([]);
   const [historial, setHistorial] = useState([]);
@@ -10260,6 +10260,8 @@ function AppInner() {
           setConfig({ ...INIT_CONFIG, ...mainDoc.data() });
         });
         unsubsDatos.push(unsubConfig);
+        const unsubAreasNomina = onSnapshot(collection(db, "nomina_areas"), (snap) => { setAreasNomina(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubsDatos.push(unsubAreasNomina);
         const unsubProtos = onSnapshot(collection(db, "prototipos"), (snap) => { setProtos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubsDatos.push(unsubProtos);
         const unsubCapsulas = onSnapshot(collection(db, "capsulas"), (snap) => { setCapsulas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
@@ -11148,6 +11150,7 @@ function AppInner() {
                 onRestaurarProto={restaurarProto} onRestaurarCapsula={restaurarCapsula} onRestaurarRef={restaurarRefDeCapsula}
                 onPurgarProto={purgarProtoDefinitivo} onPurgarCapsula={purgarCapsulaDefinitivo} onPurgarRef={purgarRefDefinitivo}
                 isAdmin={currentUser?.isAdmin}
+                areasNomina={areasNomina}
               />
             )}
             {view === "admin" && !currentUser?.isAdmin && !canAccessAdminDiseno && (
