@@ -305,6 +305,33 @@ const FISCAL_DESTAJO_CONOCIDOS = [
   { cedula: "1090514287", nombre: "ANDRES FELIPE BECERRA RINCON", area: "CORTE", sueldo: 1750905, auxilioTransporte: 249095 },
   { cedula: "PPT 5021799", nombre: "JAIRO DAVID ANDRADE ANDUEZA", area: "CORTE", sueldo: 1750905, auxilioTransporte: 249095 },
 ];
+// Los 12 de "Destajo" (forma de pago = DESTAJO, pagados por produccion via
+// Registrar Produccion) identificados en BASE DE DATOS PERSONAL COPIA FINAL
+// (30/08/2026) -- boton de abajo los crea/actualiza en Trabajadores de un
+// solo clic. Se guarda tambien sueldo/auxilioTransporte de referencia (el
+// archivo trae cesantias/intereses/prima/vacaciones proporcionales a ese
+// sueldo) aunque el formulario de Trabajador no los muestra para este tipo
+// -- quedan disponibles para cuando se construya la liquidacion de
+// prestaciones de Destajo (como ya existe para Fiscal Destajo).
+// OJO (Fredy, 2026-08-30): 2 datos por confirmar de este archivo --
+// "CAROLINA" en EMPAQUE tiene cedula "1" (incompleta en el archivo), y
+// LINDA MAYERLI CALDERON FLOREZ es EMPRESA=INDUTEX (las demas son YANKO;
+// Atlas hoy no distingue empresa por trabajador, así que esto no bloquea
+// la carga pero conviene revisarlo).
+const DESTAJO_CONOCIDOS = [
+  { cedula: "27603235", nombre: "MARIA AYDE CONTRERAS SANCHEZ", area: "ADMINISTRATIVO", sueldo: 875452, auxilioTransporte: 124547 },
+  { cedula: "1093791786", nombre: "CAROL MICHEL MEZA MELO", area: "EMPAQUE", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "60349160", nombre: "OLGA LUCIA MELO DIETIZ", area: "EMPAQUE", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1193535527", nombre: "MARIA ESPERANZA SARABIA NIETO", area: "EMPAQUE", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1090491202", nombre: "LINDA MAYERLI CALDERON FLOREZ", area: "EMPAQUE", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1", nombre: "CAROLINA", area: "EMPAQUE", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1093799768", nombre: "ANDREA MICHELL BONILLA ACEVEDO", area: "ZONA CALOR", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1090535599", nombre: "EYDER YAIR MENDOZA TORRES", area: "ZONA CALOR", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1090181616", nombre: "YORLENY ALARCON SANCHEZ", area: "ZONA CALOR", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "PPT 31395555", nombre: "MAYDELIS ARIANA BARCO HERNANDEZ", area: "ZONA CALOR", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1127350028", nombre: "VICTOR MANUEL ADOLFO PORRAS", area: "ZONA CALOR", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1092254889", nombre: "JHONEIDER BOTELLO BECERRA", area: "ZONA CALOR", sueldo: 1750905, auxilioTransporte: 249095 },
+];
 function TrabajadorModal({ trabajador, onSave, onClose }) {
   const [form, setForm] = useState({
     nombre: trabajador?.nombre || "",
@@ -433,6 +460,36 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete }) {
     }
     setFdResultado({ creados, actualizados });
   }
+  // Mismo patron que arriba, pero para tipoNomina "Destajo" (pago por
+  // produccion, no lleva seguridad social ni sueldo fijo editable en el
+  // formulario -- se guarda igual sueldo/auxilioTransporte de referencia).
+  const [dResultado, setDResultado] = useState(null);
+  async function cargarDestajoConocidos() {
+    let creados = 0, actualizados = 0;
+    for (const p of DESTAJO_CONOCIDOS) {
+      const ced = normalizarCedula(p.cedula);
+      const existente = trabajadores.find((t) => normalizarCedula(t.cedula) === ced);
+      const datos = {
+        nombre: existente?.nombre || p.nombre,
+        cedula: existente?.cedula || p.cedula,
+        tarifaHora: existente?.tarifaHora || 0,
+        activo: existente?.activo ?? true,
+        area: existente?.area || p.area || "Sin asignar",
+        tnsCodigo: existente?.tnsCodigo || "",
+        tipoNomina: "Destajo",
+        sueldo: p.sueldo,
+        auxilioTransporte: p.auxilioTransporte,
+      };
+      if (existente) {
+        await onSave({ id: existente.id, ...datos });
+        actualizados++;
+      } else {
+        await onSave({ id: uid(), ...datos });
+        creados++;
+      }
+    }
+    setDResultado({ creados, actualizados });
+  }
   return (
     <div>
       {modal && (
@@ -458,6 +515,8 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete }) {
           {autoResultado !== null && <span style={{ fontSize: 12, color: C.slate }}>{autoResultado} trabajador(es) actualizado(s).</span>}
           <Btn variant="secondary" onClick={cargarFiscalDestajoConocidos}>💼 Cargar Fiscal Destajo (5 conocidos)</Btn>
           {fdResultado !== null && <span style={{ fontSize: 12, color: C.slate }}>{fdResultado.creados} creado(s), {fdResultado.actualizados} actualizado(s).</span>}
+          <Btn variant="secondary" onClick={cargarDestajoConocidos}>💼 Cargar Destajo (12 conocidos)</Btn>
+          {dResultado !== null && <span style={{ fontSize: 12, color: C.slate }}>{dResultado.creados} creado(s), {dResultado.actualizados} actualizado(s).</span>}
         </div>
       )}
       <Tabla
