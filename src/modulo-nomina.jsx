@@ -2392,6 +2392,105 @@ function DashboardNominaView({ trabajadores, precios, produccion, horas }) {
   );
 }
 // ─── RAÍZ DEL MÓDULO ────────────────────────────────────────────────────────
+// ─── CONSULTAR COSTO TEÓRICO POR REFERENCIA/LOTE ───────────────────────────
+// Pantalla de solo consulta (no registra nada) para revisar el costo
+// teórico de confección de una referencia, o de un lote puntual, sin tener
+// que pasar por Registrar Producción. Reutiliza las mismas funciones de
+// Busint ya validadas ahí (getLoteBusintPorNumero, getCostoTeoricoReferenciaBusint)
+// y el mismo criterio de auto-carga (2026-08-25): no hay que darle clic
+// aparte a un botón de "buscar costo" una vez ya se escribió la referencia
+// o se encontró el lote. (2026-08-30, a pedido del usuario)
+function ConsultarCostoReferenciaView() {
+  const [numLote, setNumLote] = useState("");
+  const [loteInfo, setLoteInfo] = useState(null);
+  const [buscandoLote, setBuscandoLote] = useState(false);
+  const [referencia, setReferencia] = useState("");
+  const [costoTeorico, setCostoTeorico] = useState(null);
+  const [buscandoCosto, setBuscandoCosto] = useState(false);
+  async function buscarLote() {
+    const n = numLote.trim();
+    if (!n) return;
+    setBuscandoLote(true);
+    setLoteInfo(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getLoteBusintPorNumero");
+      const resp = await llamar({ numLote: n });
+      setLoteInfo(resp.data);
+      if (resp.data?.encontrada) setReferencia(resp.data.referencia || "");
+    } catch (err) {
+      setLoteInfo({ error: err?.message || String(err) });
+    } finally {
+      setBuscandoLote(false);
+    }
+  }
+  async function buscarCostoTeorico(ref) {
+    setBuscandoCosto(true);
+    setCostoTeorico(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getCostoTeoricoReferenciaBusint");
+      const resp = await llamar({ ref });
+      setCostoTeorico({ ...resp.data, _ref: ref });
+    } catch (err) {
+      setCostoTeorico({ error: err?.message || String(err) });
+    } finally {
+      setBuscandoCosto(false);
+    }
+  }
+  // Auto-carga: apenas hay una referencia (a mano o traída por la búsqueda
+  // de lote), se consulta el costo teórico solo, sin botón aparte — espera
+  // un momento corto sin cambios antes de consultar, para no golpear la
+  // función de Busint en cada tecla.
+  useEffect(() => {
+    const ref = referencia.trim();
+    if (!ref) { setCostoTeorico(null); return; }
+    if (costoTeorico && !costoTeorico.error && costoTeorico._ref === ref) return;
+    const t = setTimeout(() => { buscarCostoTeorico(ref); }, 700);
+    return () => clearTimeout(t);
+  }, [referencia]);
+  return (
+    <div style={{ maxWidth: 620 }}>
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20, marginBottom: 20 }}>
+        <Field label="N° de Lote (opcional — trae la referencia sola)">
+          <div style={{ display: "flex", gap: 6 }}>
+            <FInput type="number" value={numLote} onChange={(v) => { setNumLote(v); setLoteInfo(null); }} placeholder="Ej: 7150" />
+            <Btn small onClick={buscarLote} disabled={!numLote.trim() || buscandoLote}>{buscandoLote ? "..." : "🔍 Buscar Lote"}</Btn>
+          </div>
+        </Field>
+        {loteInfo?.error && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se pudo buscar el lote: {loteInfo.error}</div>}
+        {loteInfo && !loteInfo.error && !loteInfo.encontrada && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se encontró ese lote en Busint.</div>}
+        {loteInfo?.encontrada && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, padding: "10px 12px", background: C.canvas, borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
+            <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>PEDIDO</div><div style={{ fontWeight: 700 }}>{loteInfo.numPedido || "—"}</div></div>
+            <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>CLIENTE</div><div style={{ fontWeight: 700 }}>{loteInfo.nombreCliente || "—"}</div></div>
+            <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>CANT. CORTADA</div><div style={{ fontWeight: 700 }}>{fmtNum(loteInfo.cantCortada)}</div></div>
+            <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>CATEGORÍA</div><div style={{ fontWeight: 700 }}>{loteInfo.categoria || "—"}</div></div>
+            <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>UBICACIÓN</div><div style={{ fontWeight: 700, color: loteInfo.vigente ? C.green : C.red }}>{loteInfo.ubicacionActual || "—"}</div></div>
+          </div>
+        )}
+        <Field label="Referencia">
+          <FInput value={referencia} onChange={(v) => { setReferencia(v); setCostoTeorico(null); }} placeholder="Ej: CK3000" />
+        </Field>
+        <div style={{ padding: "14px 16px", background: C.canvas, borderRadius: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>Costo Teórico de Confección</div>
+          {buscandoCosto ? (
+            <div style={{ color: C.slate, fontSize: 13 }}>Buscando...</div>
+          ) : costoTeorico?.error ? (
+            <div style={{ color: C.amber, fontSize: 12, fontWeight: 600 }}>No se pudo consultar: {costoTeorico.error}</div>
+          ) : costoTeorico && !costoTeorico.encontrada ? (
+            <div style={{ color: C.amber, fontSize: 12, fontWeight: 600 }}>Esa referencia no existe en el maestro de Busint.</div>
+          ) : costoTeorico?.encontrada ? (
+            <>
+              <div style={{ fontWeight: 800, fontSize: 20, color: C.ink }}>{costoTeorico.costoFT > 0 ? fmtMoney(costoTeorico.costoFT) : "Sin costear en Busint"}</div>
+              {costoTeorico.descripcion && <div style={{ fontSize: 12, color: C.slate, marginTop: 4 }}>{costoTeorico.descripcion}</div>}
+            </>
+          ) : (
+            <div style={{ color: C.slate, fontSize: 13 }}>Escribe una referencia o busca un lote arriba.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   // Líder de área (Anny Beltrán → Terminación, Sarai Méndez → Termofijación,
   // etc.): entra con un panel reducido, ya filtrado a su propia gente, en vez
@@ -2447,6 +2546,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           ] },
         { group: "Administrativo", icon: "🗂️", items: [
             { id: "costos_teorico", icon: "📐", label: "Costos Teóricos" },
+            { id: "costo_referencia", icon: "💲", label: "Costo x Referencia" },
             { id: "tns", icon: "🔌", label: "Conexión TNS" },
             { id: "novedades_tns", icon: "🧾", label: "Novedades TNS" },
             { id: "precios", icon: "⚙️", label: "Procesos" },
@@ -2623,6 +2723,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           {subView === "trabajadores" && !areaLider && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} />}
           {subView === "precios" && !areaLider && <PreciosProcesoView precios={precios} isAdmin={isAdmin} onSave={guardarProceso} onDelete={borrarProceso} />}
           {subView === "costos_teorico" && !areaLider && <CostosTeoricoProcesoView costos={costosTeoricoProceso} isAdmin={isAdmin} onGuardarLote={guardarCostosTeoricoProcesoLote} onBorrarTodo={vaciarCostosTeoricoProceso} />}
+          {subView === "costo_referencia" && !areaLider && <ConsultarCostoReferenciaView />}
           {subView === "tns" && !areaLider && <TNSConexionView />}
           {subView === "novedades_tns" && !areaLider && <NovedadesTNSView trabajadores={trabajadores} />}
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} isAdmin={isAdmin} currentUser={currentUser} onSave={guardarAusencia} onDelete={borrarAusencia} />}
