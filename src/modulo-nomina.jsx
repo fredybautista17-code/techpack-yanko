@@ -1816,7 +1816,15 @@ function calcularLiquidacionDestajo(trabajador, netoProduccion) {
   const saldoCesantiasInicio = Number(trabajador.cesantiasAcumuladas) || 0;
   const baseConAuxilio = sueldoQuincena + auxilioQuincena;
   const cesantiasPeriodo = baseConAuxilio * TASA_CESANTIAS_MENSUAL;
-  const interesesPeriodo = saldoCesantiasInicio * (TASA_INTERES_CESANTIAS_ANUAL / 24);
+  // (2026-08-30) Corregido contra la tabla de referencia real de Fredy: en
+  // su archivo INTERES = CESANTIAS del mismo período × 12% (no 12% sobre un
+  // saldo acumulado de períodos anteriores, como sí hace Fiscal Destajo).
+  // Validado con MARIA AYDE CONTRERAS SANCHEZ: cesantías mensuales
+  // (sueldo+auxilio)×8.33% = $83.300, interés = $83.300×12% = $9.996 —
+  // coincide exacto con su tabla. Acá se aplica sobre cesantiasPeriodo
+  // (ya quincenal, mitad del mes) para mantener la misma convención
+  // quincenal que el resto del módulo.
+  const interesesPeriodo = cesantiasPeriodo * TASA_INTERES_CESANTIAS_ANUAL;
   const primaPeriodo = baseConAuxilio * TASA_PRIMA_MENSUAL;
   const vacacionesPeriodo = sueldoQuincena * TASA_VACACIONES_MENSUAL;
   return {
