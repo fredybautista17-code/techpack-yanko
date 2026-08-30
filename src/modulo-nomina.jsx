@@ -1749,6 +1749,15 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   // no golpear la función de Busint en cada tecla.
   const [costoTeorico, setCostoTeorico] = useState(null);
   const [buscandoCosto, setBuscandoCosto] = useState(false);
+  // (2026-08-30) Tope de pago EN VIVO desde Busint, por proceso -- pasa a
+  // ser la fuente PRINCIPAL del tope (reemplaza al Excel de Costos
+  // Teoricos por Proceso, decision de Fredy 2026-08-30). Se valido con 3
+  // casos reales que el "Cant" de "insumos dig" (Busint BD), filtrando por
+  // Referencia+Insumo=proceso, YA ES el precio maximo en pesos por unidad
+  // -- ver claude/atlas-codebase-overview.md, seccion "Costeo por
+  // proceso/referencia".
+  const [costosProcesoBusint, setCostosProcesoBusint] = useState(null);
+  const [buscandoCostosProcesoBusint, setBuscandoCostosProcesoBusint] = useState(false);
   // Búsqueda por N° de Lote (Busint → Panel de Flujo Operacional): en vez de
   // escribir la referencia a mano, buscan el lote y les trae de una vez
   // pedido, cliente, cantidad cortada, referencia y costo teórico — así lo
@@ -1795,6 +1804,21 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
       setBuscandoCosto(false);
     }
   }
+  async function buscarCostosProcesoBusint() {
+    const ref = referencia.trim();
+    if (!ref) return;
+    setBuscandoCostosProcesoBusint(true);
+    setCostosProcesoBusint(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getCostosProcesoDesdeBusintPorReferencia");
+      const resp = await llamar({ ref });
+      setCostosProcesoBusint({ ...resp.data, _ref: ref });
+    } catch (err) {
+      setCostosProcesoBusint({ error: err?.message || String(err), _ref: ref });
+    } finally {
+      setBuscandoCostosProcesoBusint(false);
+    }
+  }
   // (2026-08-25) Apenas quede cargada la referencia (a mano o por búsqueda de
   // lote), se busca el costo teórico solo — ya no hay que darle clic aparte
   // al botón "🔍 Costo". Sigue sin ser INMEDIATO tecla por tecla (para no
@@ -1806,6 +1830,13 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
     if (!ref) return;
     if (costoTeorico && !costoTeorico.error && costoTeorico._ref === ref) return;
     const t = setTimeout(() => { buscarCostoTeorico(); }, 700);
+    return () => clearTimeout(t);
+  }, [referencia]);
+  useEffect(() => {
+    const ref = referencia.trim();
+    if (!ref) { setCostosProcesoBusint(null); return; }
+    if (costosProcesoBusint && costosProcesoBusint._ref === ref) return;
+    const t = setTimeout(() => { buscarCostosProcesoBusint(); }, 700);
     return () => clearTimeout(t);
   }, [referencia]);
   const trabajadoresActivos = trabajadores.filter((t) => t.activo);
@@ -1821,6 +1852,16 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   // Proceso (cargada a mano desde el Excel de Busint), ese valor es más
   // específico que el costoFT de la referencia (que es un solo número, sin
   // distinguir procesos) — así que manda sobre él si existe.
+  // (2026-08-30) Prioridad MAS ALTA: tope calculado EN VIVO desde Busint
+  // (ver arriba) -- reemplaza al Excel como fuente principal. Solo si
+  // Busint no tiene esta combinacion Referencia+Proceso (ej. una
+  // referencia que Busint todavia no tiene digitada) se cae a la cascada
+  // de siempre (Lote+Proceso > Referencia+Proceso del Excel > Proceso
+  // generico) como respaldo.
+  const costoBusintProceso =
+    referencia.trim() && proceso && costosProcesoBusint && costosProcesoBusint._ref === referencia.trim() && !costosProcesoBusint.error
+      ? (costosProcesoBusint.procesos || []).find((p) => normalizarProceso(p.insumo) === normalizarProceso(proceso) && Number(p.cant) > 0)
+      : null;
   const costoProcesoEspecifico =
     loteAsociado && proceso
       ? (costosTeoricoProceso || []).find((c) => c.numLote === loteAsociado.numLote && normalizarProceso(c.proceso) === normalizarProceso(proceso) && c.costoFT > 0)
@@ -1851,9 +1892,12 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   // como si fuera el tope de un proceso sueltito). Por pedido del usuario,
   // YA NO se usa como tope — se sigue consultando y mostrando como dato
   // informativo (más abajo, junto al campo Referencia), pero no entra en la
-  // cascada de costoAplicaA. Prioridad real del tope: Lote+Proceso >
-  // Referencia+Proceso (Costos Teóricos) > Proceso (catálogo).
-  const costoAplicaA = costoProcesoEspecifico
+  // cascada de costoAplicaA. Prioridad real del tope (2026-08-30): Busint
+  // en vivo (Referencia+Proceso) > Lote+Proceso (Excel) > Referencia+
+  // Proceso (Excel) > Proceso (catálogo).
+  const costoAplicaA = costoBusintProceso
+    ? { costoFT: Number(costoBusintProceso.cant), _ref: referencia.trim(), _origen: "busint_vivo" }
+    : costoProcesoEspecifico
     ? { costoFT: costoProcesoEspecifico.costoFT, _ref: referencia.trim(), _origen: "lote_proceso" }
     : costoRefProceso
     ? { costoFT: costoRefProceso.costoFT, _ref: referencia.trim(), _origen: "ref_proceso" }
@@ -1947,7 +1991,11 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
             (catálogo). El costoFT de la Referencia (Busint) NO es tope acá
             (es el costo de toda la prenda, no de un proceso) — se muestra
             aparte, solo informativo. */}
-        {costoProcesoEspecifico ? (
+        {costoBusintProceso ? (
+          <div style={{ fontSize: 11, color: C.green, fontWeight: 700, marginBottom: 4 }}>
+            🌐 Precio máximo permitido para "{proceso}" en esta referencia (Busint, en vivo): {fmtMoney(Number(costoBusintProceso.cant))}.
+          </div>
+        ) : costoProcesoEspecifico ? (
           <div style={{ fontSize: 11, color: C.blue, fontWeight: 700, marginBottom: 4 }}>
             📐 Precio máximo permitido para "{costoProcesoEspecifico.proceso}" en este lote: {fmtMoney(costoProcesoEspecifico.costoFT)}.
           </div>
@@ -1959,7 +2007,7 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
           <div style={{ fontSize: 11, color: C.violet, fontWeight: 700, marginBottom: 4 }}>
             ⚙️ Precio máximo permitido para el proceso "{costoProcesoGenerico.proceso}": {fmtMoney(costoProcesoGenerico.costoTeorico)}.
           </div>
-        ) : buscandoCosto ? (
+        ) : (buscandoCosto || buscandoCostosProcesoBusint) ? (
           <div style={{ fontSize: 11, color: C.slate, marginBottom: 4 }}>Buscando precio máximo...</div>
         ) : proceso ? (
           <div style={{ fontSize: 11, color: C.slate, fontWeight: 600, marginBottom: 4 }}>No hay un precio máximo configurado para este proceso — puedes registrar el precio libremente.</div>
@@ -1972,6 +2020,9 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
           </div>
         )}
         {costoTeorico?.error && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se pudo consultar el precio máximo: {costoTeorico.error}</div>}
+        {costosProcesoBusint?.error && costosProcesoBusint._ref === referencia.trim() && (
+          <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se pudo consultar el precio máximo en vivo desde Busint (se usa el respaldo si existe): {costosProcesoBusint.error}</div>
+        )}
         {registroPrevio && (
           <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginBottom: 10 }}>
             El proceso "{proceso}" del lote {loteAsociado.numLote} ya fue pagado ({registroPrevio.trabajadorNombre}, {fmtFechaISO(registroPrevio.fecha)}) — no se puede pagar dos veces.

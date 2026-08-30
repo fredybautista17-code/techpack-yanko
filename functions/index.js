@@ -1236,6 +1236,47 @@ exports.getMovimientosLoteBusintBD = onCall(
     return { numLote, entradas, salidas };
   }
 );
+// (2026-08-30) NUEVA fuente EN VIVO para el tope de pago de Registrar
+// Producción en Nómina — reemplaza al Excel de "Costos Teóricos por
+// Proceso" como fuente principal (decisión de Fredy, 2026-08-30). Se validó
+// con 3 casos reales (98-440/MDEO-CORTE, GM2008/TERMINACION,
+// 98-440/BAJADA DE VINILO — este último decisivo porque distinguió entre
+// dos hipótesis) que el "Cant" de la tabla "insumos dig" (Busint BD),
+// filtrando por Ref, YA ES el precio máximo en pesos por unidad de ese
+// proceso para esa referencia — NO hay que multiplicar por el "Costo" de
+// "maestro de insumos" (esa tabla parece ser el precio que se le paga al
+// proveedor/subcontratista del servicio, no el tope interno — ver
+// claude/atlas-codebase-overview.md, sección "Costeo por proceso/
+// referencia" para el detalle completo de las 3 validaciones).
+// Trae TODAS las filas de la referencia de una sola vez (no solo un
+// proceso puntual) para que el frontend pueda cambiar de proceso sin
+// volver a golpear Busint cada vez.
+exports.getCostosProcesoDesdeBusintPorReferencia = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
+  async (request) => {
+    const ref = String(request.data?.ref || "").trim();
+    if (!ref) {
+      throw new HttpsError("invalid-argument", "ref es obligatorio.");
+    }
+    let todas;
+    try {
+      todas = await consultarTablaBusintBDCompleta("insumos dig");
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getCostosProcesoDesdeBusintPorReferencia)", { ref, error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+    const normBuscada = normalizarRefComparacion(ref);
+    const filas = todas.filter((f) => normalizarRefComparacion(f?.Ref) === normBuscada);
+    const procesos = filas
+      .filter((f) => f?.Insumo)
+      .map((f) => ({ insumo: String(f.Insumo).trim(), cant: Number(f.Cant) || 0 }));
+    return { ref, encontrada: procesos.length > 0, procesos };
+  }
+);
 // (2026-08-26) Diseño pidió esto: cuando programan un corte no saben si hay
 // tela disponible en bodega — esto trae el inventario REAL de tela desde
 // Busint BD, tabla "estandar componentes prod" (confirmado a mano con el
