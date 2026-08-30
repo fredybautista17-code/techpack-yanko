@@ -1727,8 +1727,116 @@ function NominaFiscalDestajoView({ trabajadores, faltas, liquidaciones, onGuarda
     </div>
   );
 }
+function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
+  const fechaGen = new Date().toISOString().slice(0, 10);
+  const esFiscal = tipoNomina === "Fiscal Destajo";
+  const nombre = trabajador?.nombre || liquidacion.nombre || "—";
+  const cedula = trabajador?.cedula || "—";
+  const area = trabajador?.area || "—";
+  const sueldoBasico = Number(trabajador?.sueldo) || 0;
+  const auxilioBasico = Number(trabajador?.auxilioTransporte) || 0;
+  const totalPrestaciones = (liquidacion.cesantiasPeriodo || 0) + (liquidacion.interesesPeriodo || 0) + (liquidacion.primaPeriodo || 0) + (liquidacion.vacacionesPeriodo || 0);
+  const filasPago = esFiscal
+    ? `
+      <tr><td>Sueldo básico (mensual)</td><td style="text-align:right">${fmtMoney(sueldoBasico)}</td></tr>
+      <tr><td>Auxilio de transporte (mensual)</td><td style="text-align:right">${fmtMoney(auxilioBasico)}</td></tr>
+      <tr><td>Días sin justificar</td><td style="text-align:right">${liquidacion.diasInasistencia || 0}</td></tr>
+      <tr><td>Descuento por inasistencia</td><td style="text-align:right;color:#B23A48">-${fmtMoney((liquidacion.descuentoSueldo || 0) + (liquidacion.descuentoAuxilio || 0))}</td></tr>
+      <tr><td>Sueldo quincena</td><td style="text-align:right">${fmtMoney(liquidacion.sueldoQuincena)}</td></tr>
+      <tr><td>Auxilio quincena</td><td style="text-align:right">${fmtMoney(liquidacion.auxilioQuincena)}</td></tr>`
+    : `
+      <tr><td>Producción registrada en la quincena</td><td style="text-align:right">${fmtMoney(liquidacion.netoAPagar)}</td></tr>
+      <tr><td colspan="2" style="color:#5A5A7A;font-size:11px;padding-top:2px">Sueldo básico de referencia: ${fmtMoney(sueldoBasico)} · Auxilio de referencia: ${fmtMoney(auxilioBasico)} — solo se usan para calcular las prestaciones sociales, no hacen parte del pago.</td></tr>`;
+  const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<title>Recibo de Liquidación — ${nombre}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',Arial,sans-serif;background:#F7F4F0;color:#1A1A2E;padding:32px}
+  @media print{body{padding:0;background:#fff}}
+  .page{max-width:820px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 4px 32px rgba(26,26,46,0.1)}
+  .header{background:linear-gradient(135deg,#1A1A2E 0%,#2D1B69 100%);padding:28px 32px;display:flex;justify-content:space-between;align-items:center}
+  .header-left h1{color:#fff;font-size:20px;font-weight:800;letter-spacing:-0.3px}
+  .header-left p{color:#C8B8A2;font-size:12px;margin-top:4px}
+  .header-right{text-align:right}
+  .header-right .badge{background:rgba(200,184,162,0.2);border:1px solid #C8B8A2;border-radius:8px;padding:8px 16px;color:#C8B8A2;font-size:13px;font-weight:700}
+  .body{padding:28px 32px}
+  .info-row{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:20px}
+  .info-card{background:#F7F4F0;border-radius:8px;padding:12px 14px;border:1px solid #E8E2DB}
+  .info-card label{display:block;font-size:10px;font-weight:700;color:#5A5A7A;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px}
+  .info-card span{font-size:14px;font-weight:700;color:#1A1A2E}
+  .section-title{font-size:14px;font-weight:800;color:#1A1A2E;margin:22px 0 10px;padding-bottom:8px;border-bottom:2px solid #E8E2DB}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  table td{padding:8px 10px;border-bottom:1px solid #F0ECE6}
+  table td:first-child{color:#5A5A7A}
+  .totales{margin-top:22px;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .total-card{border-radius:10px;padding:14px 16px;text-align:center}
+  .total-card label{display:block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;opacity:0.85}
+  .total-card .val{font-size:19px;font-weight:900}
+  .firma{margin-top:44px;display:grid;grid-template-columns:1fr 1fr;gap:40px}
+  .firma div{border-top:1px solid #1A1A2E;padding-top:8px;text-align:center;font-size:11px;color:#5A5A7A}
+  .footer{background:#F7F4F0;padding:16px 32px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid #E8E2DB;font-size:12px;color:#5A5A7A}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <div class="header-left">
+      <h1>🧾 Recibo de Liquidación</h1>
+      <p>Industrias Yanko · Nómina ${tipoNomina}</p>
+    </div>
+    <div class="header-right">
+      <div class="badge">${liquidacion.periodoId || ""}</div>
+      <div style="color:#C8B8A2;font-size:11px;margin-top:8px">${fechaGen}</div>
+    </div>
+  </div>
+  <div class="body">
+    <div class="info-row">
+      <div class="info-card"><label>Trabajador</label><span>${nombre}</span></div>
+      <div class="info-card"><label>Cédula</label><span>${cedula}</span></div>
+      <div class="info-card"><label>Área</label><span>${area}</span></div>
+      <div class="info-card"><label>Tipo de nómina</label><span>${tipoNomina}</span></div>
+    </div>
+    <div class="section-title">💰 Pago de la quincena</div>
+    <table><tbody>${filasPago}</tbody></table>
+    <div class="section-title">📦 Prestaciones sociales (provisión de esta quincena)</div>
+    <table><tbody>
+      <tr><td>Cesantías</td><td style="text-align:right">${fmtMoney(liquidacion.cesantiasPeriodo)}</td></tr>
+      <tr><td>Intereses de cesantías</td><td style="text-align:right">${fmtMoney(liquidacion.interesesPeriodo)}</td></tr>
+      <tr><td>Prima</td><td style="text-align:right">${fmtMoney(liquidacion.primaPeriodo)}</td></tr>
+      <tr><td>Vacaciones</td><td style="text-align:right">${fmtMoney(liquidacion.vacacionesPeriodo)}</td></tr>
+      <tr><td>Saldo acumulado de cesantías (a la fecha)</td><td style="text-align:right">${fmtMoney(liquidacion.saldoCesantiasFin)}</td></tr>
+    </tbody></table>
+    <div class="totales">
+      <div class="total-card" style="background:#EBF7F2;color:#2D9E6B"><label>Neto a Pagar</label><div class="val">${fmtMoney(liquidacion.netoAPagar)}</div></div>
+      <div class="total-card" style="background:#F3EEF9;color:#7B5EA7"><label>Total Prestaciones Provisionadas</label><div class="val">${fmtMoney(totalPrestaciones)}</div></div>
+    </div>
+    <div class="firma">
+      <div>Firma del Trabajador</div>
+      <div>Firma quien Autoriza</div>
+    </div>
+  </div>
+  <div class="footer">
+    <span>ATLAS · Industrias Yanko</span>
+    <span>Período: ${liquidacion.inicio ? fmtFechaISO(liquidacion.inicio) : ""} — ${liquidacion.fin ? fmtFechaISO(liquidacion.fin) : ""} · Generado el ${new Date().toLocaleDateString("es-CO", { dateStyle: "long" })}</span>
+    <button onclick="window.print()" style="background:#1A1A2E;color:#C8B8A2;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:700">🖨 Imprimir / PDF</button>
+  </div>
+</div>
+</body>
+</html>`;
+  const blob = new Blob([html], { type: "text/html;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `Recibo_Liquidacion_${(nombre || "trabajador").replace(/\s+/g, "_")}_${liquidacion.periodoId || ""}.html`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ─── HISTORIAL FISCAL DESTAJO (quincenas ya confirmadas) ──────────────────
-function HistorialFiscalDestajoView({ liquidaciones }) {
+function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
   const periodos = [...new Set(liquidaciones.map((l) => l.periodoId))].sort().reverse();
   const [periodoFiltro, setPeriodoFiltro] = useState("");
   const filas = [...liquidaciones]
@@ -1741,6 +1849,10 @@ function HistorialFiscalDestajoView({ liquidaciones }) {
     prima: s.prima + (l.primaPeriodo || 0),
     vacaciones: s.vacaciones + (l.vacacionesPeriodo || 0),
   }), { neto: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 });
+  function descargarRecibo(l) {
+    const trabajador = (trabajadores || []).find((t) => t.id === l.trabajadorId);
+    exportReciboLiquidacionHTML({ tipoNomina: "Fiscal Destajo", trabajador, liquidacion: l });
+  }
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
@@ -1780,6 +1892,9 @@ function HistorialFiscalDestajoView({ liquidaciones }) {
               { key: "primaPeriodo", label: "Prima (prov.)", align: "right", render: (f) => fmtMoney(f.primaPeriodo) },
               { key: "vacacionesPeriodo", label: "Vacaciones (prov.)", align: "right", render: (f) => fmtMoney(f.vacacionesPeriodo) },
               { key: "confirmadaEn", label: "Confirmada", render: (f) => f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : "—" },
+              { key: "acciones", label: "", align: "right", render: (f) => (
+                <span onClick={() => descargarRecibo(f)} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }} title="Descargar recibo de liquidación">🖨</span>
+              ) },
             ]}
             filas={filas}
           />
@@ -1944,7 +2059,7 @@ function NominaDestajoView({ trabajadores, produccion, liquidaciones, onGuardarT
   );
 }
 // ─── HISTORIAL DESTAJO (quincenas ya confirmadas) ────────────────────────
-function HistorialDestajoView({ liquidaciones }) {
+function HistorialDestajoView({ liquidaciones, trabajadores }) {
   const periodos = [...new Set(liquidaciones.map((l) => l.periodoId))].sort().reverse();
   const [periodoFiltro, setPeriodoFiltro] = useState("");
   const filas = [...liquidaciones]
@@ -1957,6 +2072,10 @@ function HistorialDestajoView({ liquidaciones }) {
     prima: s.prima + (l.primaPeriodo || 0),
     vacaciones: s.vacaciones + (l.vacacionesPeriodo || 0),
   }), { neto: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 });
+  function descargarRecibo(l) {
+    const trabajador = (trabajadores || []).find((t) => t.id === l.trabajadorId);
+    exportReciboLiquidacionHTML({ tipoNomina: "Destajo", trabajador, liquidacion: l });
+  }
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
@@ -1991,6 +2110,9 @@ function HistorialDestajoView({ liquidaciones }) {
               { key: "primaPeriodo", label: "Prima (prov.)", align: "right", render: (f) => fmtMoney(f.primaPeriodo) },
               { key: "vacacionesPeriodo", label: "Vacaciones (prov.)", align: "right", render: (f) => fmtMoney(f.vacacionesPeriodo) },
               { key: "confirmadaEn", label: "Confirmada", render: (f) => f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : "—" },
+              { key: "acciones", label: "", align: "right", render: (f) => (
+                <span onClick={() => descargarRecibo(f)} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }} title="Descargar recibo de liquidación">🖨</span>
+              ) },
             ]}
             filas={filas}
           />
@@ -3055,9 +3177,9 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} isAdmin={isAdmin} currentUser={currentUser} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} />}
           {subView === "fiscal_destajo" && !areaLider && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} />}
-          {subView === "historial_fiscal_destajo" && !areaLider && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} />}
+          {subView === "historial_fiscal_destajo" && !areaLider && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
           {subView === "destajo" && !areaLider && <NominaDestajoView trabajadores={trabajadores} produccion={produccion} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} />}
-          {subView === "historial_destajo" && !areaLider && <HistorialDestajoView liquidaciones={liquidacionesD} />}
+          {subView === "historial_destajo" && !areaLider && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
         </div>
       </div>
     </div>
