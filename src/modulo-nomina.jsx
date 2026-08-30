@@ -372,7 +372,7 @@ function TrabajadorModal({ trabajador, onSave, onClose }) {
       <Field label="Tipo de Nómina">
         <FSel value={form.tipoNomina} onChange={set("tipoNomina")} options={TIPOS_NOMINA} placeholder="Sin clasificar" />
       </Field>
-      {form.tipoNomina === "Fiscal Destajo" && (
+      {(form.tipoNomina === "Fiscal Destajo" || form.tipoNomina === "Destajo") && (
         <>
           <Field label="Sueldo mensual fijo"><FInput type="number" value={form.sueldo} onChange={set("sueldo")} placeholder="Ej: 1750905" /></Field>
           <Field label="Auxilio de transporte mensual"><FInput type="number" value={form.auxilioTransporte} onChange={set("auxilioTransporte")} placeholder="Ej: 249095" /></Field>
@@ -1788,6 +1788,209 @@ function HistorialFiscalDestajoView({ liquidaciones }) {
     </div>
   );
 }
+// ─── NÓMINA DESTAJO (pago por producción — provisiona prestaciones sobre un
+// sueldo de referencia, igual patrón que Fiscal Destajo) ──────────────────
+// Reglas confirmadas con el usuario (30/08/2026):
+//  - El "neto a pagar" de la quincena NO se calcula con una fórmula fija —
+//    es la suma real de lo que cada trabajador ya registró en Registrar
+//    Producción para ese rango de fechas (mismo total que usa Resumen de
+//    Quincena), porque a diferencia de Fiscal Destajo acá no hay sueldo
+//    fijo: se paga lo que se produjo.
+//  - Las provisiones (cesantías, prima, vacaciones, intereses) SÍ usan un
+//    sueldo/auxilio de referencia (el que se cargó con "Cargar Destajo" en
+//    Trabajadores) — misma mecánica quincenal que Fiscal Destajo (tasa
+//    mensual aplicada a la mitad del mes), con una diferencia confirmada
+//    por Fredy: cesantías y prima SÍ incluyen el auxilio de transporte en
+//    la base (sueldo+auxilio), vacaciones NO (solo sueldo) — así lo trae
+//    su archivo de referencia.
+//  - OJO: Fiscal Destajo hoy calcula cesantías/prima solo sobre el sueldo
+//    (sin auxilio) — es una fórmula distinta a esta. Si corresponde
+//    corregir Fiscal Destajo también, es una decisión aparte pendiente de
+//    confirmar con Fredy antes de tocarla (afectaría liquidaciones ya
+//    confirmadas en su historial).
+function calcularLiquidacionDestajo(trabajador, netoProduccion) {
+  const sueldo = Number(trabajador.sueldo) || 0;
+  const auxilio = Number(trabajador.auxilioTransporte) || 0;
+  const sueldoQuincena = sueldo / 2;
+  const auxilioQuincena = auxilio / 2;
+  const saldoCesantiasInicio = Number(trabajador.cesantiasAcumuladas) || 0;
+  const baseConAuxilio = sueldoQuincena + auxilioQuincena;
+  const cesantiasPeriodo = baseConAuxilio * TASA_CESANTIAS_MENSUAL;
+  const interesesPeriodo = saldoCesantiasInicio * (TASA_INTERES_CESANTIAS_ANUAL / 24);
+  const primaPeriodo = baseConAuxilio * TASA_PRIMA_MENSUAL;
+  const vacacionesPeriodo = sueldoQuincena * TASA_VACACIONES_MENSUAL;
+  return {
+    netoAPagar: netoProduccion,
+    cesantiasPeriodo, interesesPeriodo, primaPeriodo, vacacionesPeriodo,
+    saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
+  };
+}
+function NominaDestajoView({ trabajadores, produccion, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion }) {
+  const hoy = new Date();
+  const [anio, setAnio] = useState(String(hoy.getFullYear()));
+  const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
+  const [quincena, setQuincena] = useState(hoy.getDate() <= 15 ? "1" : "2");
+  const [resultados, setResultados] = useState(null); // null | [{trabajador, calculo}]
+  const [guardando, setGuardando] = useState(false);
+  const [guardadoOk, setGuardadoOk] = useState(false);
+
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Destajo" && t.activo !== false);
+  const periodoId = `${anio}-${mes}-Q${quincena}`;
+  const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
+  const { inicio, fin } = rangoQuincena(anio, mes, quincena);
+
+  function calcular() {
+    const filas = personas.map((t) => {
+      const netoProduccion = produccion
+        .filter((p) => p.trabajadorId === t.id && p.fecha >= inicio && p.fecha <= fin)
+        .reduce((s, p) => s + (Number(p.total) || 0), 0);
+      return { trabajador: t, calculo: calcularLiquidacionDestajo(t, netoProduccion) };
+    });
+    setResultados(filas);
+    setGuardadoOk(false);
+  }
+
+  async function confirmarYGuardar() {
+    if (!resultados) return;
+    setGuardando(true);
+    try {
+      for (const { trabajador, calculo } of resultados) {
+        await onGuardarLiquidacion({
+          id: `${trabajador.id}__${periodoId}`,
+          periodoId, trabajadorId: trabajador.id, nombre: trabajador.nombre,
+          inicio, fin, ...calculo,
+          confirmadaEn: new Date().toISOString(),
+        });
+        await onGuardarTrabajador({ ...trabajador, cesantiasAcumuladas: calculo.saldoCesantiasFin });
+      }
+      setGuardadoOk(true);
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  const totales = resultados ? resultados.reduce((s, r) => ({
+    neto: s.neto + r.calculo.netoAPagar,
+    cesantias: s.cesantias + r.calculo.cesantiasPeriodo,
+    intereses: s.intereses + r.calculo.interesesPeriodo,
+    prima: s.prima + r.calculo.primaPeriodo,
+    vacaciones: s.vacaciones + r.calculo.vacacionesPeriodo,
+  }), { neto: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Liquidación quincenal de los trabajadores "Destajo" (se les paga lo que produjeron, registrado en Registrar Producción) — acá se junta ese total con las prestaciones que se provisionan (cesantías, prima, vacaciones) sobre su sueldo de referencia. No se envía a TNS.
+      </div>
+      {personas.length === 0 && (
+        <div style={{ padding: "12px 16px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          Nadie tiene tipo de nómina "Destajo" todavía. Ve a Trabajadores → "💼 Cargar Destajo (12 conocidos)".
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Año"><FInput type="number" value={anio} onChange={setAnio} /></Field>
+        <Field label="Mes">
+          <FSel value={mes} onChange={setMes} options={Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1).padStart(2, "0"), label: String(i + 1).padStart(2, "0") }))} />
+        </Field>
+        <Field label="Quincena">
+          <FSel value={quincena} onChange={setQuincena} options={[{ value: "1", label: "1 (días 1-15)" }, { value: "2", label: "2 (16-fin de mes)" }]} />
+        </Field>
+        <Btn onClick={calcular} disabled={personas.length === 0}>🧮 Calcular</Btn>
+      </div>
+
+      {yaLiquidado && (
+        <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          ⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.
+        </div>
+      )}
+
+      {resultados && (
+        <>
+          <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+            <KPI icon="💵" label="Neto a pagar (producción)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
+            <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="🏖️" label="Vacaciones (provisión)" value={fmtMoney(totales.vacaciones)} color={C.amber} bg={C.amberBg} />
+          </div>
+          <Tabla
+            vacio="Sin resultados."
+            columnas={[
+              { key: "nombre", label: "Nombre", render: (f) => f.trabajador.nombre },
+              { key: "netoAPagar", label: "Neto a pagar (producción)", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
+              { key: "cesantiasPeriodo", label: "Cesantías (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.cesantiasPeriodo) },
+              { key: "interesesPeriodo", label: "Intereses cesantías", align: "right", render: (f) => fmtMoney(f.calculo.interesesPeriodo) },
+              { key: "primaPeriodo", label: "Prima (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.primaPeriodo) },
+              { key: "vacacionesPeriodo", label: "Vacaciones (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.vacacionesPeriodo) },
+            ]}
+            filas={resultados}
+          />
+          <div style={{ marginTop: 16 }}>
+            <Btn onClick={confirmarYGuardar} disabled={guardando}>
+              {guardando ? "Guardando..." : "✅ Confirmar y guardar liquidación de la quincena"}
+            </Btn>
+            {guardadoOk && <span style={{ marginLeft: 10, fontSize: 12, color: C.green, fontWeight: 700 }}>✅ Liquidación guardada — el acumulado de cesantías de cada uno ya quedó actualizado.</span>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+// ─── HISTORIAL DESTAJO (quincenas ya confirmadas) ────────────────────────
+function HistorialDestajoView({ liquidaciones }) {
+  const periodos = [...new Set(liquidaciones.map((l) => l.periodoId))].sort().reverse();
+  const [periodoFiltro, setPeriodoFiltro] = useState("");
+  const filas = [...liquidaciones]
+    .filter((l) => !periodoFiltro || l.periodoId === periodoFiltro)
+    .sort((a, b) => (b.periodoId || "").localeCompare(a.periodoId || "") || (a.nombre || "").localeCompare(b.nombre || ""));
+  const totales = filas.reduce((s, l) => ({
+    neto: s.neto + (l.netoAPagar || 0),
+    cesantias: s.cesantias + (l.cesantiasPeriodo || 0),
+    intereses: s.intereses + (l.interesesPeriodo || 0),
+    prima: s.prima + (l.primaPeriodo || 0),
+    vacaciones: s.vacaciones + (l.vacacionesPeriodo || 0),
+  }), { neto: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 });
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Todas las quincenas de Nómina Destajo ya confirmadas y guardadas — para consultar o comparar períodos pasados.
+      </div>
+      {liquidaciones.length === 0 ? (
+        <div style={{ padding: "12px 16px", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, color: C.slate, fontSize: 13, maxWidth: 480 }}>
+          Todavía no hay ninguna quincena confirmada. Ve a "Nómina Destajo", calcula una y dale "Confirmar y guardar".
+        </div>
+      ) : (
+        <>
+          <div style={{ marginBottom: 16, maxWidth: 260 }}>
+            <Field label="Filtrar por período">
+              <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
+            </Field>
+          </div>
+          <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+            <KPI icon="💵" label="Neto pagado (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
+            <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="📈" label="Intereses cesantías" value={fmtMoney(totales.intereses)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="🏖️" label="Vacaciones (provisión)" value={fmtMoney(totales.vacaciones)} color={C.amber} bg={C.amberBg} />
+          </div>
+          <Tabla
+            vacio="Sin resultados para este período."
+            columnas={[
+              { key: "periodoId", label: "Período" },
+              { key: "nombre", label: "Nombre" },
+              { key: "netoAPagar", label: "Neto a pagar (producción)", align: "right", render: (f) => <strong>{fmtMoney(f.netoAPagar)}</strong> },
+              { key: "cesantiasPeriodo", label: "Cesantías (prov.)", align: "right", render: (f) => fmtMoney(f.cesantiasPeriodo) },
+              { key: "interesesPeriodo", label: "Intereses cesantías", align: "right", render: (f) => fmtMoney(f.interesesPeriodo) },
+              { key: "primaPeriodo", label: "Prima (prov.)", align: "right", render: (f) => fmtMoney(f.primaPeriodo) },
+              { key: "vacacionesPeriodo", label: "Vacaciones (prov.)", align: "right", render: (f) => fmtMoney(f.vacacionesPeriodo) },
+              { key: "confirmadaEn", label: "Confirmada", render: (f) => f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : "—" },
+            ]}
+            filas={filas}
+          />
+        </>
+      )}
+    </div>
+  );
+}
 // ─── REGISTRAR PRODUCCIÓN (pago por pieza / proceso) ───────────────────────
 function RegistrarProduccionView({ trabajadores, precios, produccion, produccionCompleta, costosTeoricoProceso, currentUser, onGuardar, onBorrar, isAdmin }) {
   const [trabajadorId, setTrabajadorId] = useState("");
@@ -2622,6 +2825,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   const [ausencias, setAusencias] = useState([]);
   const [faltasSinJustificar, setFaltasSinJustificar] = useState([]);
   const [liquidacionesFD, setLiquidacionesFD] = useState([]);
+  const [liquidacionesD, setLiquidacionesD] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     const unsubs = [
@@ -2634,6 +2838,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
       onSnapshot(collection(db, "nomina_ausencias"), (snap) => setAusencias(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_faltas_sin_justificar"), (snap) => setFaltasSinJustificar(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_fiscal_destajo_liquidaciones"), (snap) => setLiquidacionesFD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
     ];
     return () => unsubs.forEach((u) => u());
   }, []);
@@ -2670,6 +2875,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
             { id: "resumen", icon: "💰", label: "Cierre de Quincena" },
             { id: "fiscal_destajo", icon: "💼", label: "Nómina Fiscal Destajo" },
             { id: "historial_fiscal_destajo", icon: "🗂️", label: "Historial Fiscal Destajo" },
+            { id: "destajo", icon: "💼", label: "Nómina Destajo" },
+            { id: "historial_destajo", icon: "🗂️", label: "Historial Destajo" },
           ] },
       ];
   // Versión "aplanada" del menú (sin grupos) — sirve para buscar el label
@@ -2692,6 +2899,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   async function guardarAusencia(a) { await fsSave("nomina_ausencias", a.id, a); }
   async function borrarAusencia(id) { await fsDelete("nomina_ausencias", id); }
   async function guardarLiquidacionFD(l) { await fsSave("nomina_fiscal_destajo_liquidaciones", l.id, l); }
+  async function guardarLiquidacionD(l) { await fsSave("nomina_destajo_liquidaciones", l.id, l); }
   // Sube en lote (upsert por "{numLote}_{PROCESO}") las filas del Excel de
   // Costos Teóricos por Proceso — se hace con writeBatch (no una por una)
   // para que un archivo de varios cientos de filas se guarde de un solo
@@ -2840,6 +3048,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} />}
           {subView === "fiscal_destajo" && !areaLider && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} />}
           {subView === "historial_fiscal_destajo" && !areaLider && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} />}
+          {subView === "destajo" && !areaLider && <NominaDestajoView trabajadores={trabajadores} produccion={produccion} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} />}
+          {subView === "historial_destajo" && !areaLider && <HistorialDestajoView liquidaciones={liquidacionesD} />}
         </div>
       </div>
     </div>
