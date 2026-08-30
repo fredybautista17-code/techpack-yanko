@@ -1904,7 +1904,7 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
           </Field>
           <Field label="Fecha"><FInput type="date" value={fecha} onChange={setFecha} /></Field>
         </div>
-        <Field label="N° Lote (Busint)">
+        <Field label="N° de Lote">
           <div style={{ display: "flex", gap: 6 }}>
             <FInput type="number" value={numLote} onChange={(v) => { setNumLote(v); setLoteInfo(null); }} placeholder="Ej: 7150" />
             <Btn small onClick={buscarLote} disabled={!numLote.trim() || buscandoLote}>{buscandoLote ? "..." : "🔍 Buscar Lote"}</Btn>
@@ -1920,14 +1920,14 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
             <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>CATEGORÍA</div><div style={{ fontWeight: 700 }}>{loteInfo.categoria || "—"}</div></div>
             <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>UBICACIÓN</div><div style={{ fontWeight: 700, color: loteInfo.vigente ? C.green : C.red }}>{loteInfo.ubicacionActual || "—"}</div></div>
             <div>
-              <div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>COSTO TEÓRICO/UND</div>
+              <div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>PRECIO MÁX./UND</div>
               <div style={{ fontWeight: 700 }}>{loteInfo.costoFT > 0 ? fmtMoney(loteInfo.costoFT) : "Sin costear"}</div>
             </div>
           </div>
         )}
         {loteBloqueado && (
           <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginBottom: 12 }}>
-            El lote {loteAsociado.numLote} ya está en BPT (terminado) — no se puede registrar nómina sobre un lote que ya salió.
+            El lote {loteAsociado.numLote} ya salió terminado a bodega — no se puede registrar nómina sobre un lote que ya se terminó.
           </div>
         )}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -1949,29 +1949,29 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
             aparte, solo informativo. */}
         {costoProcesoEspecifico ? (
           <div style={{ fontSize: 11, color: C.blue, fontWeight: 700, marginBottom: 4 }}>
-            📐 Costo teórico del proceso "{costoProcesoEspecifico.proceso}" para el lote {loteAsociado.numLote}: {fmtMoney(costoProcesoEspecifico.costoFT)} (cargado en Administración → Costos Teóricos).
+            📐 Precio máximo permitido para "{costoProcesoEspecifico.proceso}" en este lote: {fmtMoney(costoProcesoEspecifico.costoFT)}.
           </div>
         ) : costoRefProceso ? (
           <div style={{ fontSize: 11, color: C.blue, fontWeight: 700, marginBottom: 4 }}>
-            📐 Costo teórico del proceso "{costoRefProceso.proceso}" para la referencia {referencia.trim()}: {fmtMoney(costoRefProceso.costoFT)} (de Administración → Costos Teóricos, lote {costoRefProceso.numLote} — no hay match exacto con este lote, pero sí con esta referencia+proceso).
+            📐 Precio máximo permitido para "{costoRefProceso.proceso}" en esta referencia: {fmtMoney(costoRefProceso.costoFT)}.
           </div>
         ) : costoProcesoGenerico ? (
           <div style={{ fontSize: 11, color: C.violet, fontWeight: 700, marginBottom: 4 }}>
-            ⚙️ Sin costo teórico específico para esta referencia — se usa el configurado para el proceso "{costoProcesoGenerico.proceso}" en Administración → Procesos: {fmtMoney(costoProcesoGenerico.costoTeorico)}.
+            ⚙️ Precio máximo permitido para el proceso "{costoProcesoGenerico.proceso}": {fmtMoney(costoProcesoGenerico.costoTeorico)}.
           </div>
         ) : buscandoCosto ? (
-          <div style={{ fontSize: 11, color: C.slate, marginBottom: 4 }}>Buscando costo teórico...</div>
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 4 }}>Buscando precio máximo...</div>
         ) : proceso ? (
-          <div style={{ fontSize: 11, color: C.slate, fontWeight: 600, marginBottom: 4 }}>Sin costo teórico específico para este proceso (ni por Lote+Proceso, Referencia+Proceso, ni configurado en el catálogo) — no aplica tope.</div>
+          <div style={{ fontSize: 11, color: C.slate, fontWeight: 600, marginBottom: 4 }}>No hay un precio máximo configurado para este proceso — puedes registrar el precio libremente.</div>
         ) : null}
         {/* Informativo aparte: costo teórico de TODA la prenda según la ficha
             técnica de Busint — nunca es el tope de un proceso individual. */}
         {costoTeorico && !costoTeorico.error && costoTeorico._ref === referencia.trim() && costoTeorico.encontrada && costoTeorico.costoFT > 0 && (
           <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>
-            ℹ️ Costo teórico de toda la prenda (Busint) para {costoTeorico._ref}: {fmtMoney(costoTeorico.costoFT)} — informativo, no es el tope de este proceso.
+            ℹ️ Precio de referencia de toda la prenda: {fmtMoney(costoTeorico.costoFT)} (dato informativo, no aplica solo a este proceso).
           </div>
         )}
-        {costoTeorico?.error && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se pudo consultar el costo teórico: {costoTeorico.error}</div>}
+        {costoTeorico?.error && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se pudo consultar el precio máximo: {costoTeorico.error}</div>}
         {registroPrevio && (
           <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginBottom: 10 }}>
             El proceso "{proceso}" del lote {loteAsociado.numLote} ya fue pagado ({registroPrevio.trabajadorNombre}, {fmtFechaISO(registroPrevio.fecha)}) — no se puede pagar dos veces.
@@ -1981,7 +1981,7 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
           <Field label="Cantidad"><FInput type="number" value={cantidad} onChange={setCantidad} /></Field>
           <Field label="Precio real (por unidad)"><FInput type="number" value={precioReal} onChange={setPrecioReal} placeholder="Lo que se le paga" /></Field>
           <div style={{ marginBottom: 14 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>Costo Teórico</div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>Precio Máximo</div>
             <div style={{ padding: "9px 12px", background: excedeCostoTeorico ? C.redBg : C.canvas, borderRadius: 8, fontWeight: 800, color: excedeCostoTeorico ? C.red : C.ink, fontSize: 14 }}>
               {buscandoCosto ? "Buscando..." : costoAplicaA ? fmtMoney(costoAplicaA.costoFT) : "—"}
             </div>
@@ -1991,10 +1991,10 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
             <div style={{ padding: "9px 12px", background: C.canvas, borderRadius: 8, fontWeight: 800, color: C.ink, fontSize: 14 }}>{fmtMoney(total)}</div>
           </div>
         </div>
-        {!proceso && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>Selecciona un proceso (Administración → Procesos).</div>}
+        {!proceso && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>Selecciona un proceso.</div>}
         {excedeCostoTeorico && (
           <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginBottom: 10 }}>
-            El precio real ({fmtMoney(Number(precioReal))}) supera el costo teórico {costoAplicaA._origen === "lote_proceso" ? `del proceso "${proceso}" para este lote` : costoAplicaA._origen === "ref_proceso" ? `del proceso "${proceso}" para esta referencia` : `configurado para el proceso "${proceso}"`} ({fmtMoney(costoAplicaA.costoFT)}). No se puede registrar así.
+            Ese precio ({fmtMoney(Number(precioReal))}) supera el máximo permitido para este proceso: {fmtMoney(costoAplicaA.costoFT)}. No se puede guardar.
           </div>
         )}
         <Btn onClick={guardar} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Registrar Producción"}</Btn>
