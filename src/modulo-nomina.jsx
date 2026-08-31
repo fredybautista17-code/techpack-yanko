@@ -3363,6 +3363,164 @@ function ConsultarCostoReferenciaView() {
     </div>
   );
 }
+// ─── HISTORIAL DE LOTE (qué se ha registrado en Nómina para un lote) ──────
+// (2026-08-31) Fredy pidió, después de que un trabajador registre un lote,
+// una pantalla donde se pueda ver -- pensado sobre todo para revisar cómo
+// quedó un lote que se repartió entre varios trabajadores (ver el tope por
+// cantidad cortada agregado arriba). Muestra TODOS los trabajadores que
+// registraron algo de este lote, sin importar su área -- mismo criterio que
+// ya se usa en Registrar Producción, donde un líder ya ve el nombre de
+// cualquier trabajador que compartió un lote con su gente.
+function HistorialLoteView({ produccion }) {
+  const [numLote, setNumLote] = useState("");
+  const [loteInfo, setLoteInfo] = useState(null);
+  const [buscandoLote, setBuscandoLote] = useState(false);
+
+  async function buscarLote() {
+    const n = numLote.trim();
+    if (!n) { setLoteInfo(null); return; }
+    setBuscandoLote(true);
+    setLoteInfo(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getLoteBusintPorNumero");
+      const resp = await llamar({ numLote: n });
+      setLoteInfo(resp.data);
+    } catch (err) {
+      setLoteInfo({ error: err?.message || String(err) });
+    } finally {
+      setBuscandoLote(false);
+    }
+  }
+
+  const registros = numLote.trim()
+    ? (produccion || [])
+        .filter((p) => p.numLote === numLote.trim())
+        .sort((a, b) => (a.fecha || "").localeCompare(b.fecha || "") || (a.proceso || "").localeCompare(b.proceso || ""))
+    : [];
+  const totalGeneral = registros.reduce((s, r) => s + (Number(r.total) || 0), 0);
+  const procesosDistintos = new Set(registros.map((r) => r.proceso)).size;
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Busca un número de lote para ver todo lo que ya se ha registrado en Nómina para ese lote -- qué procesos, quién los hizo, cuánto y cuándo. Útil para revisar cómo va o cómo quedó repartido un lote entre varios trabajadores.
+      </div>
+      <Field label="N° de Lote">
+        <div style={{ display: "flex", gap: 6, maxWidth: 320 }}>
+          <FInput type="number" value={numLote} onChange={(v) => { setNumLote(v); setLoteInfo(null); }} placeholder="Ej: 7250" />
+          <Btn small onClick={buscarLote} disabled={!numLote.trim() || buscandoLote}>{buscandoLote ? "..." : "🔍 Buscar"}</Btn>
+        </div>
+      </Field>
+      {loteInfo?.error && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se pudo consultar el lote en Busint: {loteInfo.error}</div>}
+      {loteInfo && !loteInfo.error && !loteInfo.encontrada && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se encontró ese lote en Busint (igual se muestra abajo lo que haya registrado en Nómina).</div>}
+      {loteInfo?.encontrada && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, padding: "10px 12px", background: C.canvas, borderRadius: 8, marginBottom: 16, fontSize: 12, maxWidth: 700 }}>
+          <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>REFERENCIA</div><div style={{ fontWeight: 700 }}>{loteInfo.referencia || "—"}</div></div>
+          <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>PEDIDO</div><div style={{ fontWeight: 700 }}>{loteInfo.numPedido || "—"}</div></div>
+          <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>CLIENTE</div><div style={{ fontWeight: 700 }}>{loteInfo.nombreCliente || "—"}</div></div>
+          <div><div style={{ color: C.slate, fontSize: 10, fontWeight: 700 }}>CANT. CORTADA</div><div style={{ fontWeight: 700 }}>{fmtNum(loteInfo.cantCortada)}</div></div>
+        </div>
+      )}
+      {numLote.trim() && registros.length === 0 && <div style={{ fontSize: 12, color: C.slate }}>Todavía no hay nada registrado en Nómina para este lote.</div>}
+      {registros.length > 0 && (
+        <>
+          <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+            <KPI icon="🧵" label="Procesos registrados" value={fmtNum(procesosDistintos)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="💵" label="Total pagado (hasta ahora)" value={fmtMoney(totalGeneral)} color={C.green} bg={C.greenBg} />
+          </div>
+          <Tabla
+            vacio="Sin registros."
+            columnas={[
+              { key: "proceso", label: "Proceso" },
+              { key: "trabajadorNombre", label: "Trabajador" },
+              { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
+              { key: "precioUnidad", label: "Precio unidad", align: "right", render: (f) => fmtMoney(f.precioUnidad) },
+              { key: "total", label: "Total", align: "right", render: (f) => <strong>{fmtMoney(f.total)}</strong> },
+              { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+            ]}
+            filas={registros}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+// ─── HISTORIAL DE TRABAJADOR (su nómina a través de los distintos lotes) ──
+// (2026-08-31) Segunda parte del mismo pedido de Fredy: ver todo lo que un
+// trabajador ha registrado en distintos lotes. Marca cada registro con si
+// ya quedó dentro de una quincena de "Nómina Destajo" ya confirmada
+// (mismo periodoId que usa NominaDestajoView -- AAAA-MM-Q1/Q2) o si sigue
+// pendiente de liquidar -- Fredy pidió explícitamente tener en cuenta el
+// cierre de mes de la Nómina Destajo. El estado de liquidación solo
+// aplica a trabajadores tipo "Destajo" (los únicos que NominaDestajoView
+// liquida); para los demás no se muestra esa columna.
+function periodoQuincenaDeFecha(fecha) {
+  if (!fecha) return null;
+  const partes = String(fecha).split("-");
+  if (partes.length !== 3) return null;
+  const [anio, mes, dia] = partes;
+  const quincena = Number(dia) <= 15 ? "1" : "2";
+  return `${anio}-${mes}-Q${quincena}`;
+}
+function HistorialTrabajadorView({ trabajadores, produccion, liquidaciones }) {
+  const [trabajadorId, setTrabajadorId] = useState("");
+  const trabajador = trabajadores.find((t) => t.id === trabajadorId);
+  const esDestajo = trabajador?.tipoNomina === "Destajo";
+
+  const registros = trabajadorId
+    ? (produccion || []).filter((p) => p.trabajadorId === trabajadorId).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
+    : [];
+  const registrosConEstado = registros.map((r) => {
+    const periodoId = periodoQuincenaDeFecha(r.fecha);
+    const liquidado = periodoId ? (liquidaciones || []).some((l) => l.periodoId === periodoId && l.trabajadorId === trabajadorId) : false;
+    return { ...r, _periodoId: periodoId, _liquidado: liquidado };
+  });
+  const totalHistorico = registros.reduce((s, r) => s + (Number(r.total) || 0), 0);
+  const totalPendiente = registrosConEstado.filter((r) => !r._liquidado).reduce((s, r) => s + (Number(r.total) || 0), 0);
+  const lotesDistintos = new Set(registros.map((r) => r.numLote).filter(Boolean)).size;
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Elige un trabajador para ver todo lo que ha registrado en Registrar Producción, en todos los lotes -- si es de tipo "Destajo", cada registro se marca según si ya quedó dentro de una quincena de Nómina Destajo ya confirmada o si sigue pendiente de liquidar.
+      </div>
+      <Field label="Trabajador">
+        <FSel value={trabajadorId} onChange={setTrabajadorId} options={[{ value: "", label: "Selecciona..." }, ...trabajadores.map((t) => ({ value: t.id, label: t.nombre }))]} />
+      </Field>
+      {trabajadorId && (
+        <>
+          <div style={{ display: "flex", gap: 14, margin: "16px 0", flexWrap: "wrap" }}>
+            <KPI icon="📦" label="Lotes distintos" value={fmtNum(lotesDistintos)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="💵" label="Total histórico" value={fmtMoney(totalHistorico)} color={C.violet} bg={C.violetBg} />
+            {esDestajo && <KPI icon="⏳" label="Pendiente de liquidar" value={fmtMoney(totalPendiente)} color={C.amber} bg={C.amberBg} />}
+          </div>
+          {!esDestajo && (
+            <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Este trabajador no es tipo "Destajo" -- el estado de liquidación de Nómina Destajo no aplica acá, solo se muestra su histórico de registros.</div>
+          )}
+          {registros.length === 0 ? (
+            <div style={{ fontSize: 12, color: C.slate }}>{trabajador?.nombre || "Este trabajador"} todavía no tiene producción registrada.</div>
+          ) : (
+            <Tabla
+              vacio="Sin registros."
+              columnas={[
+                { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+                { key: "numLote", label: "Lote", render: (f) => f.numLote || "—" },
+                { key: "proceso", label: "Proceso" },
+                { key: "referencia", label: "Referencia", render: (f) => f.referencia || "—" },
+                { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
+                { key: "total", label: "Total", align: "right", render: (f) => <strong>{fmtMoney(f.total)}</strong> },
+                ...(esDestajo ? [{ key: "_liquidado", label: "Estado", render: (f) => f._liquidado
+                  ? <span style={{ color: C.green, fontWeight: 700, fontSize: 11 }}>✅ Liquidado ({f._periodoId})</span>
+                  : <span style={{ color: C.amber, fontWeight: 700, fontSize: 11 }}>⏳ Pendiente</span> }] : []),
+              ]}
+              filas={registrosConEstado}
+            />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
@@ -3417,6 +3575,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
         { id: "horas", icon: "🕐", label: "Registrar Horas" },
         { id: "permisos", icon: "📅", label: "Permisos" },
         { id: "resumen", icon: "💰", label: "Resumen" },
+        { id: "historial_lote", icon: "📦", label: "Historial de Lote" },
+        { id: "historial_trabajador", icon: "🧑‍🏭", label: "Historial de Trabajador" },
       ]
     : [
         { id: "dashboard", icon: "◉", label: "Inicio" },
@@ -3440,6 +3600,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
             { id: "asistencia", icon: "📊", label: "Reporte de Asistencia" },
           ] },
         { group: "Reporte de Nómina", icon: "📊", items: [
+            { id: "historial_lote", icon: "📦", label: "Historial de Lote" },
+            { id: "historial_trabajador", icon: "🧑‍🏭", label: "Historial de Trabajador" },
             { id: "resumen", icon: "💰", label: "Cierre de Quincena" },
             { id: "fiscal_destajo", icon: "💼", label: "Nómina Fiscal Destajo" },
             { id: "historial_fiscal_destajo", icon: "🗂️", label: "Historial Fiscal Destajo" },
@@ -3626,6 +3788,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           {subView === "historial_fiscal_destajo" && !areaLider && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
           {subView === "destajo" && !areaLider && <NominaDestajoView trabajadores={trabajadores} produccion={produccion} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} />}
           {subView === "historial_destajo" && !areaLider && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
+          {subView === "historial_lote" && <HistorialLoteView produccion={produccion} />}
+          {subView === "historial_trabajador" && <HistorialTrabajadorView trabajadores={trabajadoresVisibles} produccion={produccionVisible} liquidaciones={liquidacionesD} />}
         </div>
       </div>
     </div>
