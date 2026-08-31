@@ -1513,15 +1513,18 @@ const MOTIVO_ICONO = {
 };
 function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, currentUser, isAdmin, onSave, onDelete }) {
   const [ref, setRef] = useState(today().slice(0, 7)); // "YYYY-MM"
+  // (2026-08-31) Fredy pidio que Permisos se viera "como calendario" -- antes
+  // era una tabla trabajador x dia-1-31. Ahora es una grilla real de mes
+  // (Lunes a Domingo, reutilizando mondayOf/addDays que ya usa el resto de
+  // Nomina para semanas). Con "Todos" cada celda resume cuantos vinieron y
+  // quienes tienen permiso ese dia; al elegir un trabajador puntual, la
+  // celda muestra su estado individual como antes.
+  const [trabajadorFiltro, setTrabajadorFiltro] = useState(""); // "" = todos
   const [modal, setModal] = useState(null); // null | { nuevo, trabajadorId, fechaInicio } | ausencia existente
+  const [diaDetalle, setDiaDetalle] = useState(null); // fecha ISO -- panel del dia (solo modo "Todos")
   const [anioStr, mesStr] = ref.split("-");
   const anio = Number(anioStr);
   const mes = Number(mesStr); // 1-12
-  const diasEnMes = new Date(anio, mes, 0).getDate();
-  const dias = Array.from({ length: diasEnMes }, (_, i) => i + 1);
-  function fechaISO(d) {
-    return `${anio}-${String(mes).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-  }
   function cambiarMes(delta) {
     const d = new Date(anio, mes - 1 + delta, 1);
     setRef(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
@@ -1538,55 +1541,138 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
     if (existente) { setModal(existente); return; }
     setModal({ nuevo: true, trabajadorId, fechaInicio: diaISO });
   }
+  function resumenDia(diaISO) {
+    const conAusencia = [];
+    let vinieron = 0;
+    for (const t of trabajadores) {
+      const a = ausenciaDelDia(t.id, diaISO);
+      if (a) { conAusencia.push({ trabajador: t, ausencia: a }); continue; }
+      if (vinoElDia(t.id, diaISO)) vinieron++;
+    }
+    return { conAusencia, vinieron };
+  }
   const hoyISO = today();
+  const trabajadorSel = trabajadorFiltro ? trabajadores.find((t) => t.id === trabajadorFiltro) : null;
+
+  // Grilla del mes: del lunes de la semana que trae el día 1, al domingo de
+  // la semana que trae el último día del mes -- siempre múltiplo de 7, así
+  // que se reparte limpio en semanas completas.
+  const inicioGrilla = mondayOf(new Date(anio, mes - 1, 1));
+  const finGrilla = addDays(mondayOf(new Date(anio, mes, 0)), 6);
+  const diasGrilla = [];
+  for (let d = inicioGrilla; d <= finGrilla; d = addDays(d, 1)) diasGrilla.push(d);
+  const semanas = [];
+  for (let i = 0; i < diasGrilla.length; i += 7) semanas.push(diasGrilla.slice(i, i + 7));
+  const DOW = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
+
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
-        Vista rápida del mes: ✅ = tiene producción u horas registradas ese día (vino a trabajar). Un ícono de color = tiene un permiso/ausencia registrada (pasa el mouse para ver el motivo). Click en una celda vacía para registrar un permiso nuevo.
+        Calendario del mes: ✅ = tiene producción u horas registradas ese día (vino a trabajar). Un ícono de color = tiene un permiso/ausencia (pasa el mouse para ver el motivo). Click en un día para ver el detalle y registrar un permiso nuevo.
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
         <Btn variant="secondary" onClick={() => cambiarMes(-1)}>← Mes anterior</Btn>
         <div style={{ fontWeight: 700, color: C.ink, minWidth: 160, textAlign: "center", textTransform: "capitalize" }}>
           {new Date(anio, mes - 1, 1).toLocaleDateString("es-CO", { month: "long", year: "numeric" })}
         </div>
         <Btn variant="secondary" onClick={() => cambiarMes(1)}>Mes siguiente →</Btn>
+        <div style={{ marginLeft: "auto", minWidth: 220 }}>
+          <FSel value={trabajadorFiltro} onChange={setTrabajadorFiltro} options={trabajadores.map((t) => ({ value: t.id, label: t.nombre }))} placeholder="Todos los trabajadores" />
+        </div>
       </div>
-      <div style={{ overflowX: "auto", border: `1px solid ${C.border}`, borderRadius: 10 }}>
-        <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
-          <thead>
-            <tr>
-              <th style={{ position: "sticky", left: 0, background: C.white, padding: "8px 10px", textAlign: "left", borderBottom: `1px solid ${C.border}`, borderRight: `1px solid ${C.border}`, minWidth: 160 }}>Trabajador</th>
-              {dias.map((d) => (
-                <th key={d} style={{ padding: "6px 4px", textAlign: "center", borderBottom: `1px solid ${C.border}`, color: fechaISO(d) === hoyISO ? C.blue : C.slate, minWidth: 30 }}>{d}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {trabajadores.map((t) => (
-              <tr key={t.id}>
-                <td style={{ position: "sticky", left: 0, background: C.white, padding: "6px 10px", borderRight: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>{t.nombre}</td>
-                {dias.map((d) => {
-                  const diaISO = fechaISO(d);
-                  const a = ausenciaDelDia(t.id, diaISO);
-                  const vino = !a && vinoElDia(t.id, diaISO);
-                  return (
-                    <td
-                      key={d}
-                      onClick={() => abrirCelda(t.id, diaISO)}
-                      title={a ? `${a.motivo}${a.observaciones ? " — " + a.observaciones : ""}` : (vino ? "Vino (con producción/horas registradas)" : "Sin registro — click para agregar permiso")}
-                      style={{ padding: "4px 2px", textAlign: "center", borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: diaISO === hoyISO ? C.blueBg : "transparent" }}
-                    >
-                      {a ? (MOTIVO_ICONO[a.motivo] || "❔") : (vino ? "✅" : "")}
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: 16, overflow: "hidden", background: C.white, boxShadow: "0 1px 2px rgba(22,26,24,.04), 0 6px 16px -10px rgba(22,26,24,.18)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", background: C.ink }}>
+          {DOW.map((d) => (
+            <div key={d} style={{ padding: "8px 6px", textAlign: "center", fontSize: 11, fontWeight: 700, color: C.seam, letterSpacing: "0.04em", textTransform: "uppercase" }}>{d}</div>
+          ))}
+        </div>
+        {semanas.map((semana, si) => (
+          <div key={si} style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)" }}>
+            {semana.map((d) => {
+              const diaISO = isoDate(d);
+              const dentroDelMes = d.getMonth() === mes - 1;
+              const esHoy = diaISO === hoyISO;
+              if (!dentroDelMes) {
+                return (
+                  <div key={diaISO} style={{ minHeight: 74, padding: "6px 6px", borderTop: `1px solid ${C.border}`, borderLeft: `1px solid ${C.border}`, color: C.border, fontSize: 11 }}>
+                    {d.getDate()}
+                  </div>
+                );
+              }
+              if (trabajadorSel) {
+                const a = ausenciaDelDia(trabajadorSel.id, diaISO);
+                const vino = !a && vinoElDia(trabajadorSel.id, diaISO);
+                return (
+                  <div
+                    key={diaISO}
+                    onClick={() => abrirCelda(trabajadorSel.id, diaISO)}
+                    title={a ? `${a.motivo}${a.observaciones ? " — " + a.observaciones : ""}` : (vino ? "Vino (con producción/horas registradas)" : "Sin registro — click para agregar permiso")}
+                    style={{ minHeight: 74, padding: "6px 8px", borderTop: `1px solid ${C.border}`, borderLeft: `1px solid ${C.border}`, cursor: "pointer", background: esHoy ? C.blueBg : C.white, display: "flex", flexDirection: "column", gap: 4 }}
+                  >
+                    <span style={{ fontSize: 11, fontWeight: esHoy ? 800 : 600, color: esHoy ? C.blue : C.slate }}>{d.getDate()}</span>
+                    {a && <span style={{ fontSize: 20, lineHeight: 1 }}>{MOTIVO_ICONO[a.motivo] || "❔"}</span>}
+                    {!a && vino && <span style={{ fontSize: 20, lineHeight: 1 }}>✅</span>}
+                  </div>
+                );
+              }
+              const { conAusencia, vinieron } = resumenDia(diaISO);
+              const visibles = conAusencia.slice(0, 3);
+              const resto = conAusencia.length - visibles.length;
+              return (
+                <div
+                  key={diaISO}
+                  onClick={() => setDiaDetalle(diaISO)}
+                  style={{ minHeight: 74, padding: "6px 8px", borderTop: `1px solid ${C.border}`, borderLeft: `1px solid ${C.border}`, cursor: "pointer", background: esHoy ? C.blueBg : C.white, display: "flex", flexDirection: "column", gap: 4 }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <span style={{ fontSize: 11, fontWeight: esHoy ? 800 : 600, color: esHoy ? C.blue : C.slate }}>{d.getDate()}</span>
+                    {vinieron > 0 && (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: C.green, background: C.greenBg, borderRadius: 20, padding: "1px 6px" }}>✅ {vinieron}</span>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+                    {visibles.map(({ trabajador, ausencia }) => (
+                      <span key={trabajador.id} title={`${trabajador.nombre} — ${ausencia.motivo}`} style={{ fontSize: 10, fontWeight: 700, color: C.amber, background: C.amberBg, borderRadius: 20, padding: "1px 6px", whiteSpace: "nowrap", maxWidth: 78, overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {MOTIVO_ICONO[ausencia.motivo] || "❔"} {trabajador.nombre.split(" ")[0]}
+                      </span>
+                    ))}
+                    {resto > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: C.slate }}>+{resto}</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginTop: 14, fontSize: 11.5, color: C.slate }}>
+        <span>✅ Vino (producción/horas registradas)</span>
+        {Object.entries(MOTIVO_ICONO).map(([motivo, icono]) => (
+          <span key={motivo}>{icono} {motivo}</span>
+        ))}
       </div>
       {trabajadores.length === 0 && (
         <div style={{ marginTop: 16, color: C.slate, fontSize: 13 }}>No hay trabajadores para mostrar.</div>
+      )}
+      {diaDetalle && !trabajadorSel && (
+        <Modal title={`Permisos — ${fmtFechaISO(diaDetalle)}`} onClose={() => setDiaDetalle(null)} width={480}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {trabajadores.map((t) => {
+              const a = ausenciaDelDia(t.id, diaDetalle);
+              const vino = !a && vinoElDia(t.id, diaDetalle);
+              return (
+                <div
+                  key={t.id}
+                  onClick={() => { setDiaDetalle(null); abrirCelda(t.id, diaDetalle); }}
+                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${C.border}`, cursor: "pointer" }}
+                >
+                  <span style={{ fontSize: 18 }}>{a ? (MOTIVO_ICONO[a.motivo] || "❔") : (vino ? "✅" : "◻️")}</span>
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: C.ink }}>{t.nombre}</span>
+                  <span style={{ fontSize: 11, color: C.slate }}>{a ? a.motivo : (vino ? "Vino" : "Sin registro")}</span>
+                </div>
+              );
+            })}
+          </div>
+        </Modal>
       )}
       {modal && (
         <AusenciaModal
