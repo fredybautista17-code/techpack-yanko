@@ -155,6 +155,8 @@ function EstadoBadge({ estado }) {
     VENCIDO: { bg: C.redBg, color: C.red },
     URGENTE: { bg: C.amberBg, color: C.amber },
     "EN TIEMPO": { bg: C.greenBg, color: C.green },
+    CUMPLIDO: { bg: C.greenBg, color: C.green },
+    PENDIENTE: { bg: C.blueBg, color: C.blue },
   };
   const s = map[estado] || { bg: C.canvas, color: C.slate };
   return (
@@ -2724,6 +2726,313 @@ export function MiDiaStandalone({ currentUser, onVolver, onLogout }) {
             programacionCorte={programacionCorte}
             corteConfig={corteConfig}
             bloqueosMeson={bloqueosMeson}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+// (2026-08-31) "Programador de Procesos" — Anny Beltrán (Postura Dije,
+// Proceso Adicio. Cordón, Terminación) y Sarai Méndez (el resto de
+// procesos, menos Estampación que queda fuera por ahora, a pedido de
+// Fredy). Cada líder revisa cuánto tiene pendiente en SU proceso (mismo
+// campo `procesos` por lote que ya trae la carga activa de Busint, la que
+// usan Mi Día/Informes) y programa una fecha + un trabajador de su equipo
+// para que ese lote pase por su proceso. El "equipo" reutiliza el mismo
+// campo `areaNomina`/`Área Interna` que ya separa a Anny de Sarai en
+// Nómina (Trabajadores con esa misma área) — no se inventó una fuente de
+// equipos nueva. El cumplimiento se calcula contra Busint real (entrada o
+// salida registrada en ese proceso, en la fecha programada o antes =
+// CUMPLIDO; fecha programada ya pasada sin ese movimiento = VENCIDO; el
+// resto queda PENDIENTE) usando getMovimientosProcesoBusintBD — una
+// consulta pesada (trae 4 tablas completas de Busint BD), por eso es un
+// botón "Actualizar cumplimiento" aparte, no algo que se dispare solo en
+// cada carga de pantalla.
+function estadoProgramacion(fechaProgramada, movEntrada, movSalida) {
+  const candidatas = [movEntrada?.primera, movSalida?.primera].filter(Boolean);
+  const cumplioEn = candidatas.length ? candidatas.sort()[0] : null;
+  if (cumplioEn && cumplioEn <= fechaProgramada) return "CUMPLIDO";
+  if (fechaProgramada < today()) return "VENCIDO";
+  return "PENDIENTE";
+}
+function ProgramadorProcesosView({
+  currentUser,
+  lotesActivos,
+  trabajadoresEquipo,
+  programaciones,
+  movimientos,
+  cargandoMovimientos,
+  onActualizarMovimientos,
+  onProgramar,
+  onCancelarProgramacion,
+}) {
+  const misProcesos = currentUser?.procesosPlaneacion || [];
+  const [modalProgramar, setModalProgramar] = useState(null);
+  const [fechaForm, setFechaForm] = useState(today());
+  const [trabajadorForm, setTrabajadorForm] = useState("");
+  const [filtroProceso, setFiltroProceso] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const pendientes = useMemo(() => {
+    const filas = [];
+    (lotesActivos || []).forEach((l) => {
+      (l.procesos || []).forEach((p) => {
+        if (!misProcesos.includes(p.nombre)) return;
+        if (!(p.inventario > 0)) return;
+        filas.push({
+          numLote: l.numLote,
+          referencia: l.referencia,
+          cliente: l.clienteAgrupado || l.nombreCliente,
+          proceso: p.nombre,
+          inventario: p.inventario,
+          planta: p.planta,
+        });
+      });
+    });
+    return filas;
+  }, [lotesActivos, misProcesos]);
+  const pendientesFiltrados = filtroProceso ? pendientes.filter((f) => f.proceso === filtroProceso) : pendientes;
+  const lookupEntradas = useMemo(() => {
+    const m = new Map();
+    (movimientos?.entradas || []).forEach((r) => m.set(`${r.numLote}||${r.proceso}`, r));
+    return m;
+  }, [movimientos]);
+  const lookupSalidas = useMemo(() => {
+    const m = new Map();
+    (movimientos?.salidas || []).forEach((r) => m.set(`${r.numLote}||${r.proceso}`, r));
+    return m;
+  }, [movimientos]);
+  const misProgramaciones = useMemo(() => {
+    return (programaciones || [])
+      .filter((p) => misProcesos.includes(p.proceso))
+      .map((p) => {
+        const clave = `${p.numLote}||${p.proceso}`;
+        const estado = estadoProgramacion(p.fechaProgramada, lookupEntradas.get(clave), lookupSalidas.get(clave));
+        return { ...p, estado };
+      })
+      .sort((a, b) => a.fechaProgramada.localeCompare(b.fechaProgramada));
+  }, [programaciones, misProcesos, lookupEntradas, lookupSalidas]);
+  const vencidos = misProgramaciones.filter((p) => p.estado === "VENCIDO");
+  const cumplidos = misProgramaciones.filter((p) => p.estado === "CUMPLIDO");
+  const pendientesProg = misProgramaciones.filter((p) => p.estado === "PENDIENTE");
+  function abrirProgramar(fila) {
+    setModalProgramar(fila);
+    setFechaForm(today());
+    setTrabajadorForm("");
+  }
+  async function confirmarProgramar() {
+    if (!trabajadorForm) return;
+    const trabajador = trabajadoresEquipo.find((t) => t.id === trabajadorForm);
+    setGuardando(true);
+    try {
+      await onProgramar({
+        numLote: modalProgramar.numLote,
+        referencia: modalProgramar.referencia,
+        proceso: modalProgramar.proceso,
+        fechaProgramada: fechaForm,
+        trabajadorId: trabajadorForm,
+        trabajadorNombre: trabajador?.name || trabajador?.nombre || "",
+      });
+      setModalProgramar(null);
+    } finally {
+      setGuardando(false);
+    }
+  }
+  const columnasPendientes = [
+    { key: "numLote", label: "Lote" },
+    { key: "referencia", label: "Referencia" },
+    { key: "cliente", label: "Cliente" },
+    { key: "proceso", label: "Proceso" },
+    { key: "inventario", label: "Pendiente", align: "right", render: (f) => fmtNum(f.inventario) },
+    { key: "planta", label: "Planta/Taller" },
+    { key: "_accion", label: "", render: (f) => <Btn small onClick={() => abrirProgramar(f)}>📅 Programar</Btn> },
+  ];
+  const columnasProgramados = [
+    { key: "estado", label: "Estado", render: (f) => <EstadoBadge estado={f.estado} /> },
+    { key: "fechaProgramada", label: "Fecha", render: (f) => fmtFechaISO(f.fechaProgramada) },
+    { key: "numLote", label: "Lote" },
+    { key: "referencia", label: "Referencia" },
+    { key: "proceso", label: "Proceso" },
+    { key: "trabajadorNombre", label: "Trabajador" },
+    { key: "_accion", label: "", render: (f) => <Btn small variant="danger" onClick={() => onCancelarProgramacion(f.id)}>Cancelar</Btn> },
+  ];
+  return (
+    <div>
+      {modalProgramar && (
+        <Modal title={`Programar Lote ${modalProgramar.numLote} — ${modalProgramar.proceso}`} onClose={() => setModalProgramar(null)} width={480}>
+          <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>
+            Referencia {modalProgramar.referencia} — {fmtNum(modalProgramar.inventario)} unidades pendientes en {modalProgramar.proceso}.
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Fecha programada</label>
+            <input type="date" value={fechaForm} onChange={(e) => setFechaForm(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} />
+          </div>
+          <div style={{ marginBottom: 18 }}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Trabajador de tu equipo</label>
+            <select value={trabajadorForm} onChange={(e) => setTrabajadorForm(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }}>
+              <option value="">Seleccionar...</option>
+              {trabajadoresEquipo.map((t) => <option key={t.id} value={t.id}>{t.name || t.nombre}</option>)}
+            </select>
+            {!trabajadoresEquipo.length && (
+              <div style={{ fontSize: 11, color: C.red, marginTop: 6 }}>
+                No hay trabajadores en tu equipo (misma "Área Interna" que tu usuario) — pide a un administrador que los cree/asigne en Nómina → Trabajadores.
+              </div>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setModalProgramar(null)}>Cancelar</Btn>
+            <Btn onClick={confirmarProgramar} disabled={!trabajadorForm || guardando}>{guardando ? "Guardando..." : "Guardar programación"}</Btn>
+          </div>
+        </Modal>
+      )}
+      <div style={{ marginBottom: 22, display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>📋 Programador de Procesos</h2>
+          <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>
+            Tus procesos: {misProcesos.length ? misProcesos.join(", ") : "ninguno asignado todavía"}.
+          </p>
+        </div>
+        <Btn variant="ghost" onClick={onActualizarMovimientos} disabled={cargandoMovimientos}>
+          {cargandoMovimientos ? "Consultando Busint..." : "🔄 Actualizar cumplimiento"}
+        </Btn>
+      </div>
+      {!misProcesos.length && (
+        <div style={{ background: C.white, borderRadius: 14, padding: 24, border: `1px solid ${C.border}`, color: C.slate, fontSize: 13, marginBottom: 20 }}>
+          Tu usuario todavía no tiene procesos asignados. Pide a un administrador que te los asigne en Administrador General → Usuarios → "Procesos que puede programar".
+        </div>
+      )}
+      {movimientos?.generadoEn && (
+        <div style={{ fontSize: 11, color: C.slate, marginBottom: 14 }}>Cumplimiento actualizado: {fmtFechaHora(movimientos.generadoEn)}</div>
+      )}
+      {!movimientos && (
+        <div style={{ fontSize: 11, color: C.amber, marginBottom: 14 }}>Todavía no has consultado el cumplimiento contra Busint en esta sesión — dale a "Actualizar cumplimiento" para ver Cumplido/Vencido real (mientras tanto todo aparece Pendiente).</div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
+        <KPI icon="📦" label="Pendientes por programar" value={pendientes.length} color={C.blue} bg={C.blueBg} />
+        <KPI icon="⏳" label="Programados — en tiempo" value={pendientesProg.length} color={C.amber} bg={C.amberBg} />
+        <KPI icon="✅" label="Cumplidos" value={cumplidos.length} color={C.green} bg={C.greenBg} />
+        <KPI icon="⚠️" label="Vencidos" value={vencidos.length} color={C.red} bg={C.redBg} />
+      </div>
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>Bodega de tu proceso — pendiente de programar</div>
+          <select value={filtroProceso} onChange={(e) => setFiltroProceso(e.target.value)} style={{ padding: "5px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, fontFamily: "inherit" }}>
+            <option value="">Todos tus procesos</option>
+            {misProcesos.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </div>
+        <Tabla vacio="No hay lotes pendientes en tus procesos ahora mismo." columnas={columnasPendientes} filas={pendientesFiltrados} />
+      </div>
+      <div>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 10 }}>Lotes programados</div>
+        <Tabla vacio="Todavía no has programado ningún lote." columnas={columnasProgramados} filas={misProgramaciones} />
+      </div>
+    </div>
+  );
+}
+// Acceso directo de nivel superior a "Programador de Procesos" — igual
+// patrón que MiDiaStandalone arriba: pantalla independiente montada desde
+// App.js, con sus propias suscripciones de Firestore.
+export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout }) {
+  const [cargas, setCargas] = useState([]);
+  const [trabajadores, setTrabajadores] = useState([]);
+  const [programaciones, setProgramaciones] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [movimientos, setMovimientos] = useState(null);
+  const [cargandoMovimientos, setCargandoMovimientos] = useState(false);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_cargas"), (snap) => {
+      setCargas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "nomina_trabajadores"), (snap) => {
+      setTrabajadores(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_programacion_procesos"), (snap) => {
+      setProgramaciones(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  const lotesActivos = useMemo(() => {
+    if (!cargas.length) return [];
+    const ordenadas = [...cargas].sort((a, b) => (b.creadoEn || b.fecha).localeCompare(a.creadoEn || a.fecha));
+    return ordenadas[0]?.lotes || [];
+  }, [cargas]);
+  const trabajadoresEquipo = useMemo(() => {
+    if (!currentUser?.areaNomina) return [];
+    return trabajadores.filter((t) => (t.area || "Sin asignar") === currentUser.areaNomina);
+  }, [trabajadores, currentUser]);
+  const misProgramaciones = useMemo(
+    () => programaciones.filter((p) => p.liderUsername === currentUser?.username),
+    [programaciones, currentUser]
+  );
+  async function actualizarMovimientos() {
+    setCargandoMovimientos(true);
+    try {
+      const llamar = httpsCallable(functionsClient, "getMovimientosProcesoBusintBD");
+      const resp = await llamar();
+      setMovimientos(resp.data);
+    } catch (err) {
+      alert(`No se pudo consultar el cumplimiento en Busint: ${err?.message || String(err)}`);
+    } finally {
+      setCargandoMovimientos(false);
+    }
+  }
+  async function guardarProgramacion(datos) {
+    const id = uid();
+    await fsSave("planeacion_programacion_procesos", id, {
+      ...datos,
+      liderUsername: currentUser?.username || "",
+      liderNombre: currentUser?.name || "",
+      creadoEn: new Date().toISOString(),
+    });
+  }
+  async function cancelarProgramacion(id) {
+    await fsDelete("planeacion_programacion_procesos", id);
+  }
+  if (loading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.canvas }}>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>📋</div>
+          <div style={{ color: C.slate }}>Cargando Programador de Procesos...</div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 32px", background: C.ink }}>
+        {onVolver && (
+          <button onClick={onVolver} style={{ background: "transparent", border: "1px solid rgba(200,184,162,0.3)", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, color: C.seam }}>
+            ← Volver
+          </button>
+        )}
+        <div style={{ flex: 1, fontSize: 14, fontWeight: 800, color: C.white }}>📋 Programador de Procesos — {currentUser?.name}</div>
+        {onLogout && (
+          <button onClick={onLogout} style={{ background: "transparent", border: "none", cursor: "pointer", color: "rgba(232,93,74,0.85)", fontWeight: 700, fontSize: 12 }}>
+            ⏏ Cerrar sesión
+          </button>
+        )}
+      </div>
+      <div style={{ padding: "28px 32px" }}>
+        <div style={{ maxWidth: 1400, margin: "0 auto" }}>
+          <ProgramadorProcesosView
+            currentUser={currentUser}
+            lotesActivos={lotesActivos}
+            trabajadoresEquipo={trabajadoresEquipo}
+            programaciones={misProgramaciones}
+            movimientos={movimientos}
+            cargandoMovimientos={cargandoMovimientos}
+            onActualizarMovimientos={actualizarMovimientos}
+            onProgramar={guardarProgramacion}
+            onCancelarProgramacion={cancelarProgramacion}
           />
         </div>
       </div>

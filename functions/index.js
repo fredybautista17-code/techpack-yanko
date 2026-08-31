@@ -1236,6 +1236,104 @@ exports.getMovimientosLoteBusintBD = onCall(
     return { numLote, entradas, salidas };
   }
 );
+// (2026-08-31) Fredy pidió el "Programador de Procesos" para Anny Beltrán
+// y Sarai Méndez: cada líder programa una fecha para que un lote pase por
+// SU proceso, y hay que saber si se "cumplió" (hubo entrada o salida real
+// en Busint en esa fecha o antes) o quedó "vencido" (la fecha ya pasó sin
+// movimiento real). Las tablas "... ref" (con NumLote/Proceso) NO tienen
+// fecha — la fecha vive en la tabla SIN " ref" (cabecera del documento de
+// entrada/salida), unida por el número de Entrada/Salida. Confirmado a
+// mano con Fredy (2026-08-31): la Entrada 28285 aparece en "bmp - entrada
+// plantaproc ref" con NumLote 7234 / Proceso "POSTURA DIJE", y esa misma
+// Entrada 28285 aparece en "bmp - entrada plantaproc" (cabecera) con
+// Fecha 2026-08-29 y nfact "7234" (= NumLote, prueba adicional del cruce
+// correcto). El mismo patrón se asume para salida (misma forma de tabla,
+// mismos nombres de campo "Salida"/"NumLote"/"Proceso" ya usados por
+// getMovimientosLoteBusintBD en producción) — Fredy autorizó construir
+// sobre este supuesto sin verificarlo fila por fila; por eso
+// fechasPorDocumentoBusintBD prueba varias variantes de mayúscula/minúscula
+// del campo de número de documento en la cabecera, y se deja un
+// logger.warn si el cruce da 0 fechas para poder detectarlo apenas se
+// pruebe en producción.
+//
+// Se trae UNA sola vez cada una de las 4 tablas completas (paginando) y se
+// cruzan en memoria — a propósito NO se hace por lote individual, porque
+// el Programador de Procesos necesita revisar muchos lotes/procesos a la
+// vez (todo lo que Anny o Sarai tengan programado) y repetir esta consulta
+// por cada uno saldría carísimo contra la API de Busint.
+function primerCampoDefinido(fila, nombres) {
+  for (const n of nombres) {
+    const v = fila?.[n];
+    if (v !== undefined && v !== null && v !== "") return v;
+  }
+  return undefined;
+}
+function fechaISODesdeCampoBusintBD(fechaRaw) {
+  if (!fechaRaw || typeof fechaRaw !== "object" || !fechaRaw.isValidDateTime) return null;
+  const y = fechaRaw.year, m = fechaRaw.month || 1, d = fechaRaw.day || 1;
+  if (!y) return null;
+  return new Date(Date.UTC(y, m - 1, d)).toISOString().slice(0, 10);
+}
+async function fechasPorDocumentoBusintBD(tableNameCabecera, camposNumero) {
+  const todas = await consultarTablaBusintBDCompleta(tableNameCabecera);
+  const porNumero = new Map();
+  todas.forEach((f) => {
+    const num = primerCampoDefinido(f, camposNumero);
+    if (num === undefined) return;
+    const fecha = fechaISODesdeCampoBusintBD(f?.Fecha);
+    if (fecha) porNumero.set(String(num), fecha);
+  });
+  return porNumero;
+}
+function resumenMovimientosPorLoteProceso(filasRef, fechasPorNumero, campoNumero) {
+  const porClave = new Map();
+  filasRef.forEach((f) => {
+    const numLote = f?.NumLote;
+    if (numLote === undefined || numLote === null || numLote === "") return;
+    const proceso = String(f?.Proceso || "(sin proceso)");
+    const num = f?.[campoNumero];
+    const fecha = num !== undefined && num !== null ? fechasPorNumero.get(String(num)) : undefined;
+    if (!fecha) return; // sin cabecera/fecha encontrada — no sirve para cumplido/vencido, se ignora
+    const clave = `${numLote}||${proceso}`;
+    if (!porClave.has(clave)) porClave.set(clave, { numLote: String(numLote), proceso, primera: fecha, ultima: fecha, total: 0 });
+    const r = porClave.get(clave);
+    if (fecha < r.primera) r.primera = fecha;
+    if (fecha > r.ultima) r.ultima = fecha;
+    r.total += Number(f?.Total) || 0;
+  });
+  return [...porClave.values()];
+}
+// Devuelve, para TODOS los lotes/procesos (no uno solo), la primera y
+// última fecha real de entrada y de salida registrada en Busint — es lo
+// que el Programador de Procesos usa para pintar cada lote programado como
+// cumplido (hubo entrada/salida <= fecha programada) o vencido (ya pasó la
+// fecha programada y no hay movimiento real todavía).
+exports.getMovimientosProcesoBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async () => {
+    let entradasRef, salidasRef, fechasEntrada, fechasSalida;
+    try {
+      [entradasRef, salidasRef, fechasEntrada, fechasSalida] = await Promise.all([
+        consultarTablaBusintBDCompleta("bmp - entrada plantaproc ref"),
+        consultarTablaBusintBDCompleta("bmp - salida plantaproc ref"),
+        fechasPorDocumentoBusintBD("bmp - entrada plantaproc", ["Entrada", "entrada"]),
+        fechasPorDocumentoBusintBD("bmp - salida plantaproc", ["Salida", "salida"]),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getMovimientosProcesoBusintBD)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudieron consultar los movimientos de proceso: ${err?.message || String(err)}`);
+    }
+    if (!fechasEntrada.size) logger.warn("getMovimientosProcesoBusintBD: 0 fechas cruzadas para entrada — revisar nombre de campo en 'bmp - entrada plantaproc'.");
+    if (!fechasSalida.size) logger.warn("getMovimientosProcesoBusintBD: 0 fechas cruzadas para salida — revisar nombre de campo en 'bmp - salida plantaproc'.");
+    const entradas = resumenMovimientosPorLoteProceso(entradasRef, fechasEntrada, "Entrada");
+    const salidas = resumenMovimientosPorLoteProceso(salidasRef, fechasSalida, "Salida");
+    return { entradas, salidas, generadoEn: new Date().toISOString() };
+  }
+);
 // (2026-08-30) NUEVA fuente EN VIVO para el tope de pago de Registrar
 // Producción en Nómina — reemplaza al Excel de "Costos Teóricos por
 // Proceso" como fuente principal (decisión de Fredy, 2026-08-30). Se validó
@@ -3081,7 +3179,7 @@ exports.adminCrearUsuario = onCall(
   { timeoutSeconds: 60, memory: "256MiB" },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
-    const { name, username, password, role, isAdmin, clienteAsociado, areaNomina } = request.data || {};
+    const { name, username, password, role, isAdmin, clienteAsociado, areaNomina, procesosPlaneacion } = request.data || {};
     const nombreLimpio = String(name || "").trim();
     const usernameNorm = String(username || "").trim().toLowerCase();
     if (!nombreLimpio || !usernameNorm || !password) {
@@ -3125,6 +3223,12 @@ exports.adminCrearUsuario = onCall(
       // esto puesto, el módulo de Nómina les muestra una pantalla simple
       // filtrada solo a su gente en vez del panel completo de admin.
       areaNomina: areaNomina ? String(areaNomina).trim() : "",
+      // (2026-08-31) Procesos que puede programar en el "Programador de
+      // Procesos" de Planeación (ej. Anny Beltrán: ["POSTURA DIJE",
+      // "PROCESO ADICIO. CORDON", "TERMINACION"]) — mismos nombres exactos
+      // que en Nómina → Administrativo → Procesos (colección
+      // nomina_precios_proceso, campo "proceso").
+      procesosPlaneacion: Array.isArray(procesosPlaneacion) ? procesosPlaneacion.map((p) => String(p)) : [],
     });
     return { id: docRef.id };
   }

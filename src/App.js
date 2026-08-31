@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import ModuloCorte from "./modulo-corte";
 import ModuloContabilidad from "./modulo-contabilidad";
-import ModuloPlaneacion, { MiDiaStandalone } from "./modulo-planeacion";
+import ModuloPlaneacion, { MiDiaStandalone, ProgramadorProcesosStandalone } from "./modulo-planeacion";
 import ModuloPlanta from "./modulo-planta";
 import ModuloBodega from "./modulo-bodega";
 import ModuloNomina from "./modulo-nomina";
@@ -5634,10 +5634,10 @@ function EditNombreModal({ item, tipo, config, onSave, onClose }) {
     </Modal>
   );
 }
-function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina }) {
+function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesosNomina }) {
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState(null);
-  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "", areaNomina: "" });
+  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "", areaNomina: "", procesosPlaneacion: [] });
   const [changePwdId, setChangePwdId] = useState(null);
   const [newPwd, setNewPwd] = useState("");
   const [showPwd, setShowPwd] = useState(false);
@@ -5672,8 +5672,8 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina }) {
     }
     setMigrando(false);
   }
-  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "", areaNomina: "" }); setEditUser(null); setShowForm(true); setError(""); }
-  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", email: u.email || "", areaNomina: u.areaNomina || "" }); setEditUser(u); setShowForm(true); setError(""); }
+  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "", areaNomina: "", procesosPlaneacion: [] }); setEditUser(null); setShowForm(true); setError(""); }
+  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [] }); setEditUser(u); setShowForm(true); setError(""); }
   // Crear usuario nuevo pasa por la Cloud Function `adminCrearUsuario` (Fase
   // B): a diferencia de editar, crear SÍ necesita generar una cuenta real de
   // Firebase Auth para que esa persona pueda entrar — eso no lo puede hacer
@@ -5690,7 +5690,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina }) {
       if (!form.name) { setError("El nombre es obligatorio."); return; }
       if (form.email && form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) { setError("El correo no parece válido."); return; }
       const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", avatar } : u)));
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], avatar } : u)));
       setShowForm(false);
       return;
     }
@@ -5702,7 +5702,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina }) {
     setCreando(true);
     try {
       const llamar = httpsCallable(functionsClient, "adminCrearUsuario");
-      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado, email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "" });
+      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado, email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [] });
       setShowForm(false);
     } catch (err) {
       setError(err?.message || "No se pudo crear el usuario.");
@@ -5840,6 +5840,30 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina }) {
                 {(areasNomina || []).map((a) => <option key={a.id} value={a.nombre}>{a.nombre}</option>)}
               </select>
               <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Si eliges un área, este usuario entra a Nómina con una pantalla simple para registrar solo la producción/permisos de su gente (los trabajadores con esa misma "Área Interna" en Trabajadores -- distinta de "Área TNS"). Las áreas se administran en Nómina → Administrativo → Área Interna. Necesita también acceso al módulo "Nómina" en su rol.</div>
+            </div>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Procesos que puede programar (opcional)</label>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, maxHeight: 180, overflowY: "auto" }}>
+                {(procesosNomina || []).length === 0 && <div style={{ fontSize: 12, color: T.slate }}>No hay procesos cargados en Nómina → Administrativo → Procesos.</div>}
+                {(procesosNomina || []).map((p) => {
+                  const marcado = (form.procesosPlaneacion || []).includes(p.proceso);
+                  return (
+                    <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: T.ink }}>
+                      <input
+                        type="checkbox"
+                        checked={marcado}
+                        onChange={(e) => setForm((f) => {
+                          const actuales = f.procesosPlaneacion || [];
+                          const siguientes = e.target.checked ? [...actuales, p.proceso] : actuales.filter((x) => x !== p.proceso);
+                          return { ...f, procesosPlaneacion: siguientes };
+                        })}
+                      />
+                      {p.proceso}
+                    </label>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Si marcas uno o más procesos, le aparece en el menú lateral un "Programador de Procesos" aparte (además de "Mi Día") donde solo ve/programa lotes en esos procesos (ej. Anny Beltrán: Postura Dije, Proceso Adicio. Cordón, Terminación) — no depende del acceso al módulo completo de Planeación. Para el selector de "trabajador de tu equipo" también necesita tener puesta el Área Interna arriba.</div>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
@@ -7391,7 +7415,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
             </div>
           </div>
         )}
-        {tab === "usuarios" && <UsersTab users={users} onUpdateUsers={onUpdateUsers} config={config} isAdmin={isAdmin} areasNomina={areasNomina} />}
+        {tab === "usuarios" && <UsersTab users={users} onUpdateUsers={onUpdateUsers} config={config} isAdmin={isAdmin} areasNomina={areasNomina} procesosNomina={procesosNomina} />}
         {tab === "clientes" && <ClientesTab config={config} onUpdateConfig={onUpdateConfig} />}
         {tab === "contenido" && (
           <div>
@@ -10080,6 +10104,7 @@ function AppInner() {
   const [users, setUsers] = useState([]);
   const [config, setConfig] = useState(INIT_CONFIG);
   const [areasNomina, setAreasNomina] = useState([]);
+  const [procesosNomina, setProcesosNomina] = useState([]);
   const [protos, setProtos] = useState([]);
   const [capsulas, setCapsulas] = useState([]);
   const [historial, setHistorial] = useState([]);
@@ -10262,6 +10287,8 @@ function AppInner() {
         unsubsDatos.push(unsubConfig);
         const unsubAreasNomina = onSnapshot(collection(db, "nomina_areas"), (snap) => { setAreasNomina(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubsDatos.push(unsubAreasNomina);
+        const unsubProcesosNomina = onSnapshot(collection(db, "nomina_precios_proceso"), (snap) => { setProcesosNomina(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubsDatos.push(unsubProcesosNomina);
         const unsubProtos = onSnapshot(collection(db, "prototipos"), (snap) => { setProtos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubsDatos.push(unsubProtos);
         const unsubCapsulas = onSnapshot(collection(db, "capsulas"), (snap) => { setCapsulas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
@@ -10911,6 +10938,9 @@ function AppInner() {
   if (moduloActivo === "mi_dia") {
     return <MiDiaStandalone currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
+  if (moduloActivo === "programador_procesos") {
+    return <ProgramadorProcesosStandalone currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+  }
   if (moduloActivo === "planta") {
     return <ModuloPlanta currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
@@ -10956,8 +10986,18 @@ function AppInner() {
           </div>
           <button onClick={() => setShowCambiarClave(true)} style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "6px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: "transparent", color: "rgba(200,184,162,0.5)", fontWeight: 600, fontSize: 11, marginBottom: 12, textAlign: "left" }}>🔑 Cambiar contraseña</button>
           <button onClick={() => setView("dashboard")} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: view === "dashboard" ? T.seam : "transparent", color: view === "dashboard" ? T.ink : "#8888AA", fontWeight: view === "dashboard" ? 800 : 500, fontSize: 13, textAlign: "left", marginBottom: 8 }}><span style={{ fontSize: 15 }}>◉</span> Dashboard</button>
-          {/^planeadora?$/i.test(currentUser?.username || currentUser?.name || "") && (
+          {/* (2026-08-31) "Mi Día" antes solo era para el usuario literal
+              "planeadora" (regex de abajo). Ahora también entra cualquier
+              líder con procesos asignados en "Procesos que puede
+              programar" (Admin → Usuarios) — hoy Anny Beltrán y Sarai
+              Méndez — porque Fredy pidió que ellas también vean ahí las
+              programaciones de planta y lo que se va a recibir de plantas
+              externas, además de su Programador de Procesos aparte. */}
+          {(/^planeadora?$/i.test(currentUser?.username || currentUser?.name || "") || (currentUser?.procesosPlaneacion || []).length > 0) && (
             <button onClick={() => setModuloActivo("mi_dia")} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: moduloActivo === "mi_dia" ? T.seam : "transparent", color: moduloActivo === "mi_dia" ? T.ink : "#8888AA", fontWeight: moduloActivo === "mi_dia" ? 800 : 500, fontSize: 13, textAlign: "left", marginBottom: 8 }}><span style={{ fontSize: 15 }}>☀️</span> Mi Día</button>
+          )}
+          {(currentUser?.procesosPlaneacion || []).length > 0 && (
+            <button onClick={() => setModuloActivo("programador_procesos")} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: moduloActivo === "programador_procesos" ? T.seam : "transparent", color: moduloActivo === "programador_procesos" ? T.ink : "#8888AA", fontWeight: moduloActivo === "programador_procesos" ? 800 : 500, fontSize: 13, textAlign: "left", marginBottom: 8 }}><span style={{ fontSize: 15 }}>📋</span> Programador de Procesos</button>
           )}
           <div style={{ height: 1, background: "rgba(200,184,162,0.15)", marginBottom: 10 }} />
           <nav style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2, overflowY: "auto" }}>
