@@ -6926,7 +6926,7 @@ function SincronizarLineasBusintBtn({ config, onUpdateConfig }) {
     </div>
   );
 }
-function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula, onRestaurarProto, onRestaurarCapsula, onRestaurarRef, onPurgarProto, onPurgarCapsula, onPurgarRef, isAdmin, areasNomina }) {
+function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula, onRestaurarProto, onRestaurarCapsula, onRestaurarRef, onPurgarProto, onPurgarCapsula, onPurgarRef, isAdmin, areasNomina, procesosNomina }) {
   const [tab, setTab] = useState("etapas");
   const [newItem, setNewItem] = useState("");
   const [editItem, setEditItem] = useState(null);
@@ -11191,6 +11191,7 @@ function AppInner() {
                 onPurgarProto={purgarProtoDefinitivo} onPurgarCapsula={purgarCapsulaDefinitivo} onPurgarRef={purgarRefDefinitivo}
                 isAdmin={currentUser?.isAdmin}
                 areasNomina={areasNomina}
+                procesosNomina={procesosNomina}
               />
             )}
             {view === "admin" && !currentUser?.isAdmin && !canAccessAdminDiseno && (
