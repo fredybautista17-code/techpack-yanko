@@ -2455,6 +2455,8 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   const [loteInfo, setLoteInfo] = useState(null);
   const [buscandoLote, setBuscandoLote] = useState(false);
   const [movimientosLote, setMovimientosLote] = useState(null);
+  const [avisandoDiseno, setAvisandoDiseno] = useState(false);
+  const [avisoDisenoInfo, setAvisoDisenoInfo] = useState(null);
   async function buscarLote() {
     const n = numLote.trim();
     if (!n) return;
@@ -2551,10 +2553,11 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   const total = (Number(cantidad) || 0) * (Number(precioReal) || 0);
   // El lote encontrado solo cuenta si sigue siendo el de la referencia
   // actual (mismo resguardo que costoAplicaA, por si cambian la referencia a
-  // mano después de buscar). "Vigente" = no está ya en BPT (terminado). Y
-  // nunca se deja pagar dos veces el mismo lote+proceso, sin importar quién
-  // lo registró — pidió el usuario "nunca puede repetir doble vez el pago en
-  // un mismo lote".
+  // mano después de buscar). "Vigente" = no está ya en BPT (terminado).
+  // (2026-08-31) El bloqueo de "no pagar dos veces" ahora es POR
+  // TRABAJADOR, no por lote+proceso en general -- Fredy pidió poder
+  // repartir un mismo lote+proceso entre 2 trabajadores (ver
+  // registroPrevio/otrosRegistrosLoteProceso más abajo).
   const loteAsociado = loteInfo?.encontrada && loteInfo.referencia === referencia.trim() ? loteInfo : null;
   // (2026-08-31) Movimientos reales de Busint (entradas/salidas) para el
   // lote que está vigente ahora mismo en el formulario -- si el usuario
@@ -2623,8 +2626,55 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
     : null;
   const excedeCostoTeorico = !!(costoAplicaA && Number(precioReal) > costoAplicaA.costoFT);
   const loteBloqueado = !!(loteAsociado && !loteAsociado.vigente);
-  const registroPrevio = loteAsociado && proceso ? (produccionCompleta || []).find((p) => p.numLote === loteAsociado.numLote && p.proceso === proceso) : null;
+  // (2026-08-31) Fredy pidió permitir que un mismo lote+proceso se reparta
+  // entre 2 (o más) trabajadores -- el bloqueo de "no pagar dos veces" ahora
+  // solo mira si es EL MISMO trabajador quien ya cobró este proceso en este
+  // lote, no si CUALQUIER trabajador ya lo registró.
+  const registroPrevio = loteAsociado && proceso ? (produccionCompleta || []).find((p) => p.numLote === loteAsociado.numLote && p.proceso === proceso && p.trabajadorId === trabajadorId) : null;
+  // Informativo (no bloquea): otros trabajadores que ya registraron parte de
+  // este mismo lote+proceso -- para que quien reparte el lote vea cuánto ya
+  // se repartió y no se pase de lo cortado.
+  const otrosRegistrosLoteProceso = loteAsociado && proceso
+    ? (produccionCompleta || []).filter((p) => p.numLote === loteAsociado.numLote && p.proceso === proceso && p.trabajadorId !== trabajadorId)
+    : [];
   const puedeGuardar = trabajadorId && proceso && Number(cantidad) > 0 && Number(precioReal) > 0 && !guardando && !excedeCostoTeorico && !loteBloqueado && !registroPrevio;
+  // (2026-08-31) Fredy pidió que cuando un proceso no tenga NINGÚN precio
+  // máximo configurado (ni Busint en vivo, ni Excel, ni catálogo), se avise
+  // automáticamente por correo al área de Diseño para que lo costeen --
+  // dispara sola, sin botón, un momento después de que el usuario deja de
+  // escribir/cambiar Proceso o Referencia (mismo patrón de auto-carga que
+  // ya se usa para costoTeorico/costosProcesoBusint). El backend se encarga
+  // de no repetir el aviso para la misma Referencia+Proceso.
+  const sinPrecioMaximoAlguno = !!(
+    proceso && referencia.trim() &&
+    !costoBusintProceso && !costoProcesoEspecifico && !costoRefProceso && !costoProcesoGenerico &&
+    !buscandoCosto && !buscandoCostosProcesoBusint &&
+    !(costosProcesoBusint && costosProcesoBusint.error)
+  );
+  useEffect(() => {
+    if (!sinPrecioMaximoAlguno) return;
+    const key = `${referencia.trim().toUpperCase()}__${proceso.trim().toUpperCase()}`;
+    if (avisoDisenoInfo?._key === key) return;
+    const timer = setTimeout(async () => {
+      setAvisandoDiseno(true);
+      try {
+        const trabajadorActual = trabajadores.find((tr) => tr.id === trabajadorId);
+        const llamar = httpsCallable(functionsClient, "avisarProcesoSinPrecioMaximo");
+        const resp = await llamar({
+          referencia: referencia.trim(),
+          proceso,
+          numLote: numLote.trim(),
+          trabajadorNombre: trabajadorActual?.nombre || "",
+        });
+        setAvisoDisenoInfo({ ...resp.data, _key: key });
+      } catch (err) {
+        setAvisoDisenoInfo({ error: err?.message || String(err), _key: key });
+      } finally {
+        setAvisandoDiseno(false);
+      }
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [sinPrecioMaximoAlguno, referencia, proceso]);
   async function guardar() {
     if (!puedeGuardar) return;
     setGuardando(true);
@@ -2727,7 +2777,24 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
         ) : (buscandoCosto || buscandoCostosProcesoBusint) ? (
           <div style={{ fontSize: 11, color: C.slate, marginBottom: 4 }}>Buscando precio máximo...</div>
         ) : proceso ? (
-          <div style={{ fontSize: 11, color: C.slate, fontWeight: 600, marginBottom: 4 }}>No hay un precio máximo configurado para este proceso — puedes registrar el precio libremente.</div>
+          <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 12, fontWeight: 700, marginBottom: 10 }}>
+            ⚠️ No hay un precio máximo configurado para este proceso — comunícate con el área de Diseño. Puedes registrar el precio libremente mientras tanto.
+            {referencia.trim() && (
+              <div style={{ fontWeight: 600, marginTop: 4, fontSize: 11 }}>
+                {avisandoDiseno
+                  ? "Avisando a Diseño por correo..."
+                  : avisoDisenoInfo?.enviado
+                  ? `✅ Se avisó por correo a Diseño (${(avisoDisenoInfo.correos || []).join(", ")}).`
+                  : avisoDisenoInfo?.yaAvisado
+                  ? "✅ Ya se le había avisado antes a Diseño de este proceso — están al tanto."
+                  : avisoDisenoInfo?.motivo === "sin_correos"
+                  ? "⚠️ No se pudo avisar: falta el correo de Dayana Delgado o Daniel Mejía en Usuarios."
+                  : avisoDisenoInfo?.error
+                  ? `⚠️ No se pudo avisar por correo: ${avisoDisenoInfo.error}`
+                  : ""}
+              </div>
+            )}
+          </div>
         ) : null}
         {/* Informativo aparte: costo teórico de TODA la prenda según la ficha
             técnica de Busint — nunca es el tope de un proceso individual. */}
@@ -2742,7 +2809,14 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
         )}
         {registroPrevio && (
           <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginBottom: 10 }}>
-            El proceso "{proceso}" del lote {loteAsociado.numLote} ya fue pagado ({registroPrevio.trabajadorNombre}, {fmtFechaISO(registroPrevio.fecha)}) — no se puede pagar dos veces.
+            El proceso "{proceso}" del lote {loteAsociado.numLote} ya le fue pagado a este trabajador ({registroPrevio.trabajadorNombre}, {fmtFechaISO(registroPrevio.fecha)}) — no se le puede pagar dos veces a la misma persona.
+          </div>
+        )}
+        {/* (2026-08-31) Informativo -- otros trabajadores que ya se
+            repartieron este mismo lote+proceso. No bloquea puedeGuardar. */}
+        {otrosRegistrosLoteProceso.length > 0 && (
+          <div style={{ fontSize: 11, color: C.blue, fontWeight: 600, marginBottom: 10, background: C.blueBg, borderRadius: 8, padding: "8px 12px" }}>
+            ℹ️ Este proceso del lote {loteAsociado.numLote} ya se repartió con otro(s) trabajador(es): {otrosRegistrosLoteProceso.map((p) => `${p.trabajadorNombre} (${fmtNum(p.cantidad)} und)`).join(", ")}.
           </div>
         )}
         {/* (2026-08-31) Aviso informativo -- NO bloquea puedeGuardar. Se

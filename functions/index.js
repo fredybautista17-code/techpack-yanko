@@ -3449,6 +3449,72 @@ exports.avisarVencidos = onSchedule(
   }
 );
 
+// (2026-08-31) Nómina — Registrar Producción: cuando un proceso no tiene
+// ningún precio máximo configurado (ni en vivo desde Busint, ni en el
+// Excel de Costos Teóricos, ni en el catálogo de Procesos), Fredy pidió
+// que se avise automáticamente por correo al área de Diseño (Dayana
+// Delgado y Daniel Mejía) para que lo costeen en Busint — mismo patrón que
+// ya se usa arriba con Dayana/Karen/Yuliana: los correos se buscan por
+// NOMBRE en la colección `users` (buscarCorreoPorNombre), nunca quedan
+// escritos a mano en este archivo. Para no saturarles el correo, solo se
+// manda UNA vez por cada combinación Referencia+Proceso (se guarda en
+// `nomina_avisos_precio_faltante`) — mientras Diseño no lo soluciona, un
+// segundo intento de registrar el mismo proceso no repite el aviso, solo
+// informa que ya se avisó antes.
+const DESTINATARIOS_PRECIO_FALTANTE = ["Dayana Delgado", "Daniel Mejía"];
+
+function idAvisoPrecioFaltante(referencia, proceso) {
+  const r = normalizarRefComparacion(referencia);
+  const p = String(proceso || "").trim().toUpperCase();
+  return `${r}__${p}`.replace(/[^A-Z0-9_]/g, "_").slice(0, 400);
+}
+
+exports.avisarProcesoSinPrecioMaximo = onCall(
+  {
+    secrets: [EMAIL_USER, EMAIL_APP_PASSWORD],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const referencia = String(request.data?.referencia || "").trim();
+    const proceso = String(request.data?.proceso || "").trim();
+    const numLote = String(request.data?.numLote || "").trim();
+    const trabajadorNombre = String(request.data?.trabajadorNombre || "").trim();
+    if (!referencia || !proceso) {
+      throw new HttpsError("invalid-argument", "referencia y proceso son obligatorios.");
+    }
+    const idAviso = idAvisoPrecioFaltante(referencia, proceso);
+    const avisoRef = db.collection("nomina_avisos_precio_faltante").doc(idAviso);
+    const yaExiste = await avisoRef.get();
+    if (yaExiste.exists) {
+      return { enviado: false, yaAvisado: true };
+    }
+    const usersSnap = await db.collection("users").get();
+    const usuarios = usersSnap.docs.map((d) => d.data());
+    const correos = DESTINATARIOS_PRECIO_FALTANTE.map((n) => buscarCorreoPorNombre(n, usuarios)).filter(Boolean);
+    if (!correos.length) {
+      logger.warn("No se encontró correo de Dayana Delgado / Daniel Mejía en Usuarios — no se pudo avisar de precio faltante.", { referencia, proceso });
+      return { enviado: false, motivo: "sin_correos" };
+    }
+    const transporte = crearTransporte();
+    await mandarCorreo(
+      transporte,
+      correos,
+      `ATLAS — Falta precio máximo: "${proceso}" en referencia ${referencia}`,
+      `<p>En Nómina, al registrar producción, se intentó pagar el proceso <b>"${proceso}"</b> de la referencia <b>${referencia}</b>${numLote ? ` (lote ${numLote})` : ""}${trabajadorNombre ? `, trabajador ${trabajadorNombre}` : ""}, pero no tiene ningún precio máximo configurado — ni en vivo desde Busint, ni en el Excel de Costos Teóricos, ni en el catálogo de Procesos.</p><p>Por favor revisen y costeen este proceso para esta referencia en Busint (tabla "insumos dig") para que Nómina pueda tomar el precio automáticamente.</p>`
+    );
+    await avisoRef.set({
+      referencia,
+      proceso,
+      numLote: numLote || null,
+      trabajadorNombre: trabajadorNombre || null,
+      correos,
+      creadoEn: new Date().toISOString(),
+    });
+    return { enviado: true, correos };
+  }
+);
+
 // ---------------------------------------------------------------------------
 // TNS (paquete contable) — integración de Nómina
 // ---------------------------------------------------------------------------
