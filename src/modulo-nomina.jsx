@@ -28,23 +28,32 @@ async function fsDelete(col, id) {
   await deleteDoc(doc(db, col, id));
 }
 // ─── TOKENS (mismos de los demás módulos, para mantener el mismo look) ────────
+// (2026-08-31) Paleta "Hilo Digital" -- una de 3 propuestas visuales que le
+// mostre a Fredy para modernizar Nomina; la eligio el mismo dia. Antes este
+// modulo compartia los tokens "Mesa de Corte" (crema+tierra) del resto de
+// Atlas -- ahora Nomina tiene su propia identidad, mas moderna, con un solo
+// verde esmeralda como color de marca (mismo verde que ya se usaba para
+// "todo bien"). "blue" se dejo como un azul-verdoso distinto del verde
+// (no identico) para que siga sirviendo como color de "informativo" sin
+// confundirse con "exito" cuando aparecen uno al lado del otro (ej. KPIs de
+// Neto a pagar vs Prima).
 const C = {
-  ink: "#1A1A2E",
-  slate: "#5A5A7A",
-  border: "#E8E2DB",
-  canvas: "#F7F4F0",
+  ink: "#161A18",
+  slate: "#666E6A",
+  border: "#E1E4E1",
+  canvas: "#F7F8F7",
   white: "#FFFFFF",
-  seam: "#C8B8A2",
-  green: "#2D9E6B",
-  greenBg: "#EBF7F2",
-  red: "#E85D4A",
-  redBg: "#FDF0EE",
-  blue: "#3D6B9E",
-  blueBg: "#EBF1F7",
-  amber: "#C47C1A",
-  amberBg: "#FDF5E6",
-  violet: "#7B5EA7",
-  violetBg: "#F3EEF9",
+  seam: "#8FE0C7",
+  green: "#12866B",
+  greenBg: "#E3F3EE",
+  red: "#C1483D",
+  redBg: "#F8E1DE",
+  blue: "#2E7DA6",
+  blueBg: "#E7F1F5",
+  amber: "#B8862E",
+  amberBg: "#F6EDDB",
+  violet: "#6E5FA6",
+  violetBg: "#EEEBF8",
 };
 function uid() {
   return Math.random().toString(36).slice(2, 9);
@@ -142,7 +151,7 @@ function Btn({ children, onClick, variant = "primary", small, disabled }) {
       disabled={disabled}
       style={{
         ...s,
-        borderRadius: 8,
+        borderRadius: 12,
         padding: small ? "5px 10px" : "9px 18px",
         fontWeight: 700,
         fontSize: small ? 12 : 13,
@@ -172,7 +181,7 @@ function FInput({ value, onChange, placeholder, type = "text" }) {
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
+      style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 12, fontSize: 14, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
     />
   );
 }
@@ -181,7 +190,7 @@ function FSel({ value, onChange, options, placeholder = "Seleccionar..." }) {
     <select
       value={value || ""}
       onChange={(e) => onChange(e.target.value)}
-      style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
+      style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 12, fontSize: 14, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
     >
       <option value="">{placeholder}</option>
       {(options || []).map((o) => (
@@ -193,11 +202,11 @@ function FSel({ value, onChange, options, placeholder = "Seleccionar..." }) {
 function Modal({ title, onClose, children, width = 560 }) {
   return (
     <div
-      style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+      style={{ position: "fixed", inset: 0, background: "rgba(22,26,24,0.55)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
       onClick={onClose}
     >
       <div
-        style={{ background: C.white, borderRadius: 14, width: "100%", maxWidth: width, maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}
+        style={{ background: C.white, borderRadius: 20, width: "100%", maxWidth: width, maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 24px 80px rgba(22,26,24,0.18)" }}
         onClick={(e) => e.stopPropagation()}
       >
         <div style={{ padding: "18px 24px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
@@ -211,9 +220,9 @@ function Modal({ title, onClose, children, width = 560 }) {
 }
 function KPI({ icon, label, value, color, bg, sub }) {
   return (
-    <div style={{ background: bg || C.canvas, borderRadius: 12, padding: "16px 18px", border: `1px solid ${color}22` }}>
+    <div style={{ background: bg || C.canvas, borderRadius: 16, padding: "16px 18px", border: `1px solid ${color}22`, boxShadow: "0 1px 2px rgba(22,26,24,.04), 0 6px 16px -10px rgba(22,26,24,.18)" }}>
       <div style={{ fontSize: 22, marginBottom: 4 }}>{icon}</div>
-      <div style={{ fontSize: 22, fontWeight: 900, color, lineHeight: 1 }}>{value}</div>
+      <div style={{ fontSize: 22, fontWeight: 900, color, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{value}</div>
       <div style={{ fontSize: 11, color: C.slate, marginTop: 4, fontWeight: 600 }}>{label}</div>
       {sub && <div style={{ fontSize: 11, color, fontWeight: 700, marginTop: 2 }}>{sub}</div>}
     </div>
@@ -224,7 +233,7 @@ function Tabla({ columnas, filas, vacio, onRowClick }) {
     return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>{vacio || "Sin datos."}</div>;
   }
   return (
-    <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+    <div style={{ background: C.white, borderRadius: 16, border: `1px solid ${C.border}`, overflow: "auto", boxShadow: "0 1px 2px rgba(22,26,24,.04), 0 6px 16px -10px rgba(22,26,24,.18)" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
         <thead>
           <tr style={{ background: C.ink, position: "sticky", top: 0 }}>
@@ -243,7 +252,7 @@ function Tabla({ columnas, filas, vacio, onRowClick }) {
               style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}`, cursor: onRowClick ? "pointer" : "default" }}
             >
               {columnas.map((c) => (
-                <td key={c.key} style={{ padding: "7px 12px", textAlign: c.align || "left", whiteSpace: "nowrap", color: c.color ? c.color(f) : C.ink }}>
+                <td key={c.key} style={{ padding: "7px 12px", textAlign: c.align || "left", whiteSpace: "nowrap", color: c.color ? c.color(f) : C.ink, fontVariantNumeric: "tabular-nums" }}>
                   {c.render ? c.render(f) : f[c.key]}
                 </td>
               ))}
@@ -3688,15 +3697,15 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
     );
   }
   return (
-    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif", display: "flex" }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
+    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Manrope',-apple-system,sans-serif", display: "flex" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap');*{box-sizing:border-box;}`}</style>
       <div style={{ width: 220, background: C.ink, padding: "24px 14px", display: "flex", flexDirection: "column", flexShrink: 0 }}>
         <div style={{ marginBottom: 20 }}>
           <div style={{ fontSize: 15, fontWeight: 900, color: C.white }}>👷 Nómina</div>
           <div style={{ fontSize: 10, color: C.seam, marginTop: 2, letterSpacing: "0.1em", textTransform: "uppercase" }}>{areaLider || "Semiterminados"}</div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "#2A2A45", borderRadius: 10, marginBottom: 16 }}>
-          <div style={{ width: 32, height: 32, borderRadius: "50%", background: `linear-gradient(135deg,${C.seam},#9E8870)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, color: C.ink, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "#1D2B27", borderRadius: 14, marginBottom: 16 }}>
+          <div style={{ width: 32, height: 32, borderRadius: "50%", background: `linear-gradient(135deg,${C.seam},#3D9078)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800, color: C.ink, flexShrink: 0 }}>
             {(currentUser?.name || "U").split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase()}
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -3712,7 +3721,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
                 <div key={item.group}>
                   <button
                     onClick={() => setGruposAbiertos((g) => ({ ...g, [item.group]: !abierto }))}
-                    style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: "transparent", color: "#8888AA", fontWeight: 700, fontSize: 13, textAlign: "left" }}
+                    style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: "transparent", color: "#8FA39D", fontWeight: 700, fontSize: 13, textAlign: "left" }}
                   >
                     <span style={{ fontSize: 14 }}>{item.icon}</span>
                     <span style={{ flex: 1 }}>{item.group}</span>
@@ -3724,7 +3733,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
                       <button
                         key={sub.id}
                         onClick={() => setSubView(sub.id)}
-                        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px 9px 26px", border: "none", borderRadius: 8, cursor: "pointer", background: active ? "#C8B8A2" : "transparent", color: active ? C.ink : "#8888AA", fontWeight: active ? 800 : 500, fontSize: 13, textAlign: "left" }}
+                        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px 9px 26px", border: "none", borderRadius: 8, cursor: "pointer", background: active ? "#CDEFE3" : "transparent", color: active ? C.ink : "#8FA39D", fontWeight: active ? 800 : 500, fontSize: 13, textAlign: "left" }}
                       >
                         <span style={{ fontSize: 14 }}>{sub.icon}</span>
                         <span style={{ flex: 1 }}>{sub.label}</span>
@@ -3739,7 +3748,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
               <button
                 key={item.id}
                 onClick={() => setSubView(item.id)}
-                style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: active ? "#C8B8A2" : "transparent", color: active ? C.ink : "#8888AA", fontWeight: active ? 800 : 500, fontSize: 13, textAlign: "left" }}
+                style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: active ? "#CDEFE3" : "transparent", color: active ? C.ink : "#8FA39D", fontWeight: active ? 800 : 500, fontSize: 13, textAlign: "left" }}
               >
                 <span style={{ fontSize: 14 }}>{item.icon}</span>
                 <span style={{ flex: 1 }}>{item.label}</span>
@@ -3749,7 +3758,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           {onVolver && (
             <button
               onClick={onVolver}
-              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: "transparent", color: "rgba(200,184,162,0.5)", fontWeight: 500, fontSize: 12, textAlign: "left", marginTop: 8 }}
+              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: "transparent", color: "rgba(143,224,199,0.5)", fontWeight: 500, fontSize: 12, textAlign: "left", marginTop: 8 }}
             >
               ← Volver al Inicio
             </button>
@@ -3757,7 +3766,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           {onLogout && (
             <button
               onClick={onLogout}
-              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: "transparent", color: "rgba(232,93,74,0.85)", fontWeight: 700, fontSize: 12, textAlign: "left", marginTop: onVolver ? 2 : 8 }}
+              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: "transparent", color: "rgba(193,72,61,0.85)", fontWeight: 700, fontSize: 12, textAlign: "left", marginTop: onVolver ? 2 : 8 }}
             >
               ⏏ Cerrar sesión
             </button>
