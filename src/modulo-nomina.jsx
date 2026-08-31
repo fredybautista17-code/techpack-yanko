@@ -1833,6 +1833,11 @@ function ReporteAsistenciaView({ ausencias, trabajadores }) {
           depto: emp.depto,
           totalDias: diasPeriodo.length,
           diasConMarca: diasConMarca.size,
+          // (2026-08-31) Lista real de fechas ISO con marca dentro del
+          // periodo -- para poder guardarlas como "dias trabajados" (pedido
+          // de Fredy: que Nomina Destajo y Fiscal Destajo muestren dias
+          // trabajados verificados por el huellero, no por produccion).
+          diasConMarcaLista: diasPeriodo.filter((iso) => diasConMarca.has(iso)),
           diasSinMarca: detalle.length,
           sinJustificar: sinJustificar.length,
           detalle,
@@ -1881,6 +1886,40 @@ function ReporteAsistenciaView({ ausencias, trabajadores }) {
     }
   }
 
+  // (2026-08-31) Guarda en Firestore los dias CON marca (dias trabajados,
+  // verificados por el huellero) -- mismo patron que guardarFaltasEnAtlas()
+  // pero en su propia coleccion, para que Nomina Destajo y Nomina Fiscal
+  // Destajo puedan mostrar "Dias trabajados" sin depender de produccion
+  // registrada (que es otra cosa: cuanto se pago, no si vino).
+  const [guardandoDiasTrabajados, setGuardandoDiasTrabajados] = useState(false);
+  const [diasTrabajadosGuardados, setDiasTrabajadosGuardados] = useState(null);
+  async function guardarDiasTrabajadosEnAtlas() {
+    if (!reporte) return;
+    setGuardandoDiasTrabajados(true);
+    try {
+      const batch = writeBatch(db);
+      let n = 0;
+      for (const f of reporte.filas) {
+        const nombreNorm = normalizarNombreHuellero(f.nombre);
+        for (const fecha of f.diasConMarcaLista) {
+          const id = `${nombreNorm}__${fecha}`;
+          batch.set(doc(db, "nomina_dias_trabajados", id), {
+            nombre: f.nombre,
+            nombreNorm,
+            fecha,
+            origen: "huellero",
+            cargadoEn: new Date().toISOString(),
+          });
+          n++;
+        }
+      }
+      await batch.commit();
+      setDiasTrabajadosGuardados(n);
+    } finally {
+      setGuardandoDiasTrabajados(false);
+    }
+  }
+
   const filasMostradas = reporte ? reporte.filas.filter((f) => !soloConFaltas || f.sinJustificar > 0).sort((a, b) => b.sinJustificar - a.sinJustificar) : [];
   const totalSinJustificar = reporte ? reporte.filas.reduce((s, f) => s + f.sinJustificar, 0) : 0;
   const personasConFaltas = reporte ? reporte.filas.filter((f) => f.sinJustificar > 0).length : 0;
@@ -1914,13 +1953,23 @@ function ReporteAsistenciaView({ ausencias, trabajadores }) {
             <KPI icon="🧑" label="Personas con alguna falta" value={fmtNum(personasConFaltas)} color={C.amber} bg={C.amberBg || C.canvas} />
           </div>
 
-          <div style={{ marginBottom: 16 }}>
+          <div style={{ marginBottom: 10 }}>
             <Btn onClick={guardarFaltasEnAtlas} disabled={guardandoFaltas}>
               {guardandoFaltas ? "Guardando..." : "💾 Guardar días sin justificar en Atlas"}
             </Btn>
             {faltasGuardadas !== null && (
               <span style={{ marginLeft: 10, fontSize: 12, color: C.green, fontWeight: 700 }}>
                 ✅ {faltasGuardadas} día(s) guardado(s) — ya quedan disponibles para descontar en Nómina Fiscal Destajo.
+              </span>
+            )}
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <Btn onClick={guardarDiasTrabajadosEnAtlas} disabled={guardandoDiasTrabajados}>
+              {guardandoDiasTrabajados ? "Guardando..." : "💾 Guardar días trabajados en Atlas"}
+            </Btn>
+            {diasTrabajadosGuardados !== null && (
+              <span style={{ marginLeft: 10, fontSize: 12, color: C.green, fontWeight: 700 }}>
+                ✅ {diasTrabajadosGuardados} día(s) guardado(s) — ya quedan disponibles como "Días trabajados" en Nómina Destajo y Fiscal Destajo.
               </span>
             )}
           </div>
@@ -2020,7 +2069,7 @@ function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia) {
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
 }
-function NominaFiscalDestajoView({ trabajadores, faltas, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion }) {
+function NominaFiscalDestajoView({ trabajadores, faltas, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -2038,7 +2087,11 @@ function NominaFiscalDestajoView({ trabajadores, faltas, liquidaciones, onGuarda
     const filas = personas.map((t) => {
       const nombreNorm = normalizarNombreHuellero(t.nombre);
       const dias = faltas.filter((f) => f.nombreNorm === nombreNorm && f.fecha >= inicio && f.fecha <= fin).length;
-      return { trabajador: t, calculo: calcularLiquidacionFiscalDestajo(t, dias) };
+      // (2026-08-31) Dias trabajados = dias CON marca en el huellero dentro
+      // de la quincena -- solo informativo/verificacion (pedido de Fredy),
+      // no reemplaza ni toca el descuento por inasistencia de arriba.
+      const diasTrabajadosCount = diasTrabajados.filter((d) => d.nombreNorm === nombreNorm && d.fecha >= inicio && d.fecha <= fin).length;
+      return { trabajador: t, calculo: { ...calcularLiquidacionFiscalDestajo(t, dias), diasTrabajados: diasTrabajadosCount } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -2113,6 +2166,9 @@ function NominaFiscalDestajoView({ trabajadores, faltas, liquidaciones, onGuarda
               { key: "dias", label: "Días sin justificar", align: "right", render: (f) => (
                 <span style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green }}>{f.calculo.diasInasistencia}</span>
               ) },
+              { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
+                <span style={{ fontWeight: 700, color: C.green }}>{f.calculo.diasTrabajados}</span>
+              ) },
               { key: "sueldoQuincena", label: "Sueldo quincena", align: "right", render: (f) => fmtMoney(f.calculo.sueldoQuincena) },
               { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.calculo.auxilioQuincena) },
               { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
@@ -2148,11 +2204,13 @@ function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
       <tr><td>Sueldo básico (mensual)</td><td style="text-align:right">${fmtMoney(sueldoBasico)}</td></tr>
       <tr><td>Auxilio de transporte (mensual)</td><td style="text-align:right">${fmtMoney(auxilioBasico)}</td></tr>
       <tr><td>Días sin justificar</td><td style="text-align:right">${liquidacion.diasInasistencia || 0}</td></tr>
+      <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasTrabajados == null ? "—" : liquidacion.diasTrabajados}</td></tr>
       <tr><td>Descuento por inasistencia</td><td style="text-align:right;color:#B23A48">-${fmtMoney((liquidacion.descuentoSueldo || 0) + (liquidacion.descuentoAuxilio || 0))}</td></tr>
       <tr><td>Sueldo quincena</td><td style="text-align:right">${fmtMoney(liquidacion.sueldoQuincena)}</td></tr>
       <tr><td>Auxilio quincena</td><td style="text-align:right">${fmtMoney(liquidacion.auxilioQuincena)}</td></tr>`
     : `
       <tr><td>Producción registrada en la quincena</td><td style="text-align:right">${fmtMoney(liquidacion.netoAPagar)}</td></tr>
+      <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasTrabajados == null ? "—" : liquidacion.diasTrabajados}</td></tr>
       <tr><td colspan="2" style="color:#5A5A7A;font-size:11px;padding-top:2px">Sueldo básico de referencia: ${fmtMoney(sueldoBasico)} · Auxilio de referencia: ${fmtMoney(auxilioBasico)} — solo se usan para calcular las prestaciones sociales, no hacen parte del pago.</td></tr>`;
   const html = `<!DOCTYPE html>
 <html lang="es">
@@ -2291,6 +2349,9 @@ function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
               { key: "diasInasistencia", label: "Días sin justificar", align: "right", render: (f) => (
                 <span style={{ fontWeight: 700, color: f.diasInasistencia > 0 ? C.red : C.green }}>{f.diasInasistencia || 0}</span>
               ) },
+              { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
+                <span style={{ fontWeight: 700, color: C.green }}>{f.diasTrabajados == null ? "—" : f.diasTrabajados}</span>
+              ) },
               { key: "sueldoQuincena", label: "Sueldo quincena", align: "right", render: (f) => fmtMoney(f.sueldoQuincena) },
               { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.auxilioQuincena) },
               { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.netoAPagar)}</strong> },
@@ -2355,7 +2416,7 @@ function calcularLiquidacionDestajo(trabajador, netoProduccion) {
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
 }
-function NominaDestajoView({ trabajadores, produccion, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion }) {
+function NominaDestajoView({ trabajadores, produccion, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -2374,7 +2435,14 @@ function NominaDestajoView({ trabajadores, produccion, liquidaciones, onGuardarT
       const netoProduccion = produccion
         .filter((p) => p.trabajadorId === t.id && p.fecha >= inicio && p.fecha <= fin)
         .reduce((s, p) => s + (Number(p.total) || 0), 0);
-      return { trabajador: t, calculo: calcularLiquidacionDestajo(t, netoProduccion) };
+      // (2026-08-31) Dias trabajados = dias CON marca en el huellero dentro
+      // de la quincena -- puramente informativo/verificacion (pedido de
+      // Fredy). El "neto a pagar" de Destajo sigue siendo, sin cambios, la
+      // suma real de produccion registrada (confirmado 30/08/2026) -- esto
+      // NO reemplaza ni afecta esa formula.
+      const nombreNorm = normalizarNombreHuellero(t.nombre);
+      const diasTrabajadosCount = diasTrabajados.filter((d) => d.nombreNorm === nombreNorm && d.fecha >= inicio && d.fecha <= fin).length;
+      return { trabajador: t, calculo: { ...calcularLiquidacionDestajo(t, netoProduccion), diasTrabajados: diasTrabajadosCount } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -2446,6 +2514,9 @@ function NominaDestajoView({ trabajadores, produccion, liquidaciones, onGuardarT
             vacio="Sin resultados."
             columnas={[
               { key: "nombre", label: "Nombre", render: (f) => f.trabajador.nombre },
+              { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
+                <span style={{ fontWeight: 700, color: C.green }}>{f.calculo.diasTrabajados}</span>
+              ) },
               { key: "netoAPagar", label: "Neto a pagar (producción)", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
               { key: "cesantiasPeriodo", label: "Cesantías (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.cesantiasPeriodo) },
               { key: "interesesPeriodo", label: "Intereses cesantías", align: "right", render: (f) => fmtMoney(f.calculo.interesesPeriodo) },
@@ -2511,6 +2582,9 @@ function HistorialDestajoView({ liquidaciones, trabajadores }) {
             columnas={[
               { key: "periodoId", label: "Período" },
               { key: "nombre", label: "Nombre" },
+              { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
+                <span style={{ fontWeight: 700, color: C.green }}>{f.diasTrabajados == null ? "—" : f.diasTrabajados}</span>
+              ) },
               { key: "netoAPagar", label: "Neto a pagar (producción)", align: "right", render: (f) => <strong>{fmtMoney(f.netoAPagar)}</strong> },
               { key: "cesantiasPeriodo", label: "Cesantías (prov.)", align: "right", render: (f) => fmtMoney(f.cesantiasPeriodo) },
               { key: "interesesPeriodo", label: "Intereses cesantías", align: "right", render: (f) => fmtMoney(f.interesesPeriodo) },
@@ -3654,6 +3728,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   const [costosTeoricoProceso, setCostosTeoricoProceso] = useState([]);
   const [ausencias, setAusencias] = useState([]);
   const [faltasSinJustificar, setFaltasSinJustificar] = useState([]);
+  const [diasTrabajadosHuellero, setDiasTrabajadosHuellero] = useState([]);
   const [liquidacionesFD, setLiquidacionesFD] = useState([]);
   const [liquidacionesD, setLiquidacionesD] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -3669,6 +3744,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
       onSnapshot(collection(db, "nomina_costos_teorico_proceso"), (snap) => setCostosTeoricoProceso(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_ausencias"), (snap) => setAusencias(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_faltas_sin_justificar"), (snap) => setFaltasSinJustificar(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_dias_trabajados"), (snap) => setDiasTrabajadosHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_fiscal_destajo_liquidaciones"), (snap) => setLiquidacionesFD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
     ];
@@ -3894,9 +3970,9 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} isAdmin={isAdmin} currentUser={currentUser} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} />}
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} onSave={guardarAusencia} onDelete={borrarAusencia} />}
-          {subView === "fiscal_destajo" && !areaLider && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} />}
+          {subView === "fiscal_destajo" && !areaLider && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} />}
           {subView === "historial_fiscal_destajo" && !areaLider && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
-          {subView === "destajo" && !areaLider && <NominaDestajoView trabajadores={trabajadores} produccion={produccion} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} />}
+          {subView === "destajo" && !areaLider && <NominaDestajoView trabajadores={trabajadores} produccion={produccion} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} />}
           {subView === "historial_destajo" && !areaLider && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
           {subView === "historial_lote" && <HistorialLoteView produccion={produccion} />}
           {subView === "historial_trabajador" && <HistorialTrabajadorView trabajadores={trabajadoresVisibles} produccion={produccionVisible} liquidaciones={liquidacionesD} />}
