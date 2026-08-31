@@ -2454,12 +2454,31 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   const [numLote, setNumLote] = useState("");
   const [loteInfo, setLoteInfo] = useState(null);
   const [buscandoLote, setBuscandoLote] = useState(false);
+  const [movimientosLote, setMovimientosLote] = useState(null);
   async function buscarLote() {
     const n = numLote.trim();
     if (!n) return;
     setBuscandoLote(true);
     setLoteInfo(null);
     setCostoTeorico(null);
+    setMovimientosLote(null);
+    // (2026-08-31) Consulta en paralelo, sin bloquear la ficha del lote: si
+    // Busint ya tiene una entrada real registrada para el proceso que se
+    // vaya a elegir (tabla de movimientos "bmp - entrada plantaproc ref"),
+    // se usa más abajo solo como AVISO informativo -- no bloquea el
+    // guardado (a diferencia de "registroPrevio", que sí bloquea porque
+    // compara contra los propios registros de Atlas). Pedido de Fredy para
+    // evitar pagar dos veces el mismo proceso cuando ya hubo una entrada
+    // hecha por fuera de Atlas, mientras Nómina y Busint no están conectados.
+    (async () => {
+      try {
+        const llamarMov = httpsCallable(functionsClient, "getMovimientosLoteBusintBD");
+        const respMov = await llamarMov({ numLote: n });
+        setMovimientosLote(respMov.data);
+      } catch (err) {
+        setMovimientosLote({ error: err?.message || String(err) });
+      }
+    })();
     try {
       const llamar = httpsCallable(functionsClient, "getLoteBusintPorNumero");
       const resp = await llamar({ numLote: n });
@@ -2537,6 +2556,15 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   // lo registró — pidió el usuario "nunca puede repetir doble vez el pago en
   // un mismo lote".
   const loteAsociado = loteInfo?.encontrada && loteInfo.referencia === referencia.trim() ? loteInfo : null;
+  // (2026-08-31) Movimientos reales de Busint (entradas/salidas) para el
+  // lote que está vigente ahora mismo en el formulario -- si el usuario
+  // cambia el número de lote sin volver a buscar, esto se ignora (mismo
+  // criterio que loteAsociado). Solo mira "entradas": son las que indican
+  // que ya se registró producción de ese proceso.
+  const movimientosLoteVigente = movimientosLote && !movimientosLote.error && movimientosLote.numLote === numLote.trim() ? movimientosLote : null;
+  const entradaBusintProceso = movimientosLoteVigente && proceso
+    ? (movimientosLoteVigente.entradas || []).find((e) => normalizarProceso(e.proceso) === normalizarProceso(proceso) && Number(e.total) > 0)
+    : null;
   // Si este lote+proceso exacto está en la tabla de Costos Teóricos por
   // Proceso (cargada a mano desde el Excel de Busint), ese valor es más
   // específico que el costoFT de la referencia (que es un solo número, sin
@@ -2716,6 +2744,18 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
           <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginBottom: 10 }}>
             El proceso "{proceso}" del lote {loteAsociado.numLote} ya fue pagado ({registroPrevio.trabajadorNombre}, {fmtFechaISO(registroPrevio.fecha)}) — no se puede pagar dos veces.
           </div>
+        )}
+        {/* (2026-08-31) Aviso informativo -- NO bloquea puedeGuardar. Se
+            avisa si Busint ya tiene una entrada real hecha para este
+            proceso+lote (por fuera de Atlas), para que el usuario verifique
+            antes de pagar de nuevo. */}
+        {entradaBusintProceso && !registroPrevio && (
+          <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 12, fontWeight: 700, marginBottom: 10 }}>
+            ⚠️ Busint ya tiene una entrada registrada para el proceso "{proceso}" del lote {numLote.trim()}: {fmtNum(entradaBusintProceso.total)} unidades ({entradaBusintProceso.filas} movimiento{entradaBusintProceso.filas === 1 ? "" : "s"}). Puede que este trabajo ya se haya pagado por otro medio -- verifícalo antes de guardar.
+          </div>
+        )}
+        {movimientosLote?.error && (
+          <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se pudo verificar contra Busint si ya hay una entrada de este proceso: {movimientosLote.error}</div>
         )}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12, alignItems: "end" }}>
           <Field label="Cantidad"><FInput type="number" value={cantidad} onChange={setCantidad} /></Field>
