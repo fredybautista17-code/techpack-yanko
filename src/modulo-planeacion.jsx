@@ -54,6 +54,9 @@ function today() {
 function fmtNum(n) {
   return Number(n || 0).toLocaleString("es-CO");
 }
+function fmtMoney(n) {
+  return "$" + Number(n || 0).toLocaleString("es-CO", { maximumFractionDigits: 0 });
+}
 // ─── UI ATOMS ─────────────────────────────────────────────────────────────────
 function Btn({ children, onClick, variant = "primary", small, disabled }) {
   const S = {
@@ -2474,25 +2477,37 @@ function InformesView({
   );
 }
 // ─── HOME PLANEACIÓN ────────────────────────────────────────────────────────────
-function HomePlaneacion({ onGoInformes }) {
+function HomePlaneacion({ onGoInformes, onGoCentroCosto, onGoEstadisticas, onGoControlCalidad }) {
+  // (2026-08-31) Pedido explícito de Fredy: 3 tarjetas nuevas junto a
+  // Informes — Centro de Costo, Estadísticas y Control de Calidad (ver
+  // las 3 vistas nuevas más abajo en este archivo).
+  const tarjetas = [
+    { icon: "📊", titulo: "Informes", desc: "Sube la Hoja1 y genera Semiterminado, En Planta, Por Cliente, Cronograma de Entrega, Por Pedido, BMP y Programación Yanko.", color: C.blue, bg: C.blueBg, onClick: onGoInformes },
+    { icon: "💰", titulo: "Centro de Costo", desc: "Nómina por pagar en cada área versus el valor de lo que cada trabajador está produciendo.", color: C.green, bg: C.greenBg, onClick: onGoCentroCosto },
+    { icon: "📈", titulo: "Estadísticas", desc: "Cumplimiento de las programaciones de los líderes de área, y volumen de producción/inventario.", color: C.violet, bg: C.violetBg, onClick: onGoEstadisticas },
+    { icon: "🔍", titulo: "Control de Calidad", desc: "Devoluciones y reclamos de cliente por calidad.", color: C.red, bg: C.redBg, onClick: onGoControlCalidad },
+  ];
   return (
     <div>
       <div style={{ marginBottom: 28 }}>
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>📋 Planeación</h2>
         <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>Informes de producción de Industrias Yanko</p>
       </div>
-      <div
-        onClick={onGoInformes}
-        style={{ background: C.white, borderRadius: 14, padding: 22, border: `1.5px solid ${C.border}`, cursor: "pointer", maxWidth: 320, transition: "all 0.2s" }}
-        onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.borderColor = C.blue; }}
-        onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.borderColor = C.border; }}
-      >
-        <div style={{ width: 46, height: 46, borderRadius: 12, background: C.blueBg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, marginBottom: 14 }}>📊</div>
-        <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 6 }}>Informes</div>
-        <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5, marginBottom: 12 }}>
-          Sube la Hoja1 y genera Semiterminado, En Planta, Por Cliente, Cronograma de Entrega, Por Pedido, BMP y Programación Yanko.
-        </div>
-        <div style={{ fontSize: 12, fontWeight: 700, color: C.blue }}>Entrar →</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
+        {tarjetas.map((t) => (
+          <div
+            key={t.titulo}
+            onClick={t.onClick}
+            style={{ background: C.white, borderRadius: 14, padding: 22, border: `1.5px solid ${C.border}`, cursor: "pointer", transition: "all 0.2s" }}
+            onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.borderColor = t.color; }}
+            onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.borderColor = C.border; }}
+          >
+            <div style={{ width: 46, height: 46, borderRadius: 12, background: t.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, marginBottom: 14 }}>{t.icon}</div>
+            <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 6 }}>{t.titulo}</div>
+            <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5, marginBottom: 12 }}>{t.desc}</div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: t.color }}>Entrar →</div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -3036,6 +3051,394 @@ export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout 
           />
         </div>
       </div>
+    </div>
+  );
+}
+// ─── CENTRO DE COSTO (Planeación) ──────────────────────────────────────────
+// Mismo patrón que "Centro de Costo — Corte" (modulo-corte.jsx, primer
+// centro de costo del aplicativo): por cada trabajador de un Área Interna,
+// compara cuánto le cuesta a la empresa (su sueldo, prorrateado por
+// período: Día/Mes/Año) contra cuánto "generó" en producción registrada en
+// Nómina (nomina_produccion.total, ya valorado con el precio máximo
+// vigente de cada proceso — ver "Costeo por proceso/referencia" en el
+// documento del proyecto). Pedido explícito de Fredy (2026-08-31): "EL
+// CENTRO DE COSTO ES TOMAR LA NOMINA QUE DEBO PAGAR EN ESA AREA VERSUS A LO
+// QUE ESTA HACEINDO CADA TRABAJADOR DEL AREA" — mismo concepto que ya
+// existe en Corte, aplicado ahora a las áreas de Nómina/Planeación (hoy:
+// el equipo de Anny Beltrán y el de Sarai Méndez). Un trabajador sin
+// sueldo cargado en Nómina se marca aparte (no se le puede calcular costo)
+// para que el balance no se lea como más positivo de lo que realmente es.
+function diasHabiles(mes, anio) {
+  let count = 0;
+  const d = new Date(anio, mes - 1, 1);
+  while (d.getMonth() === mes - 1) {
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) count++;
+    d.setDate(d.getDate() + 1);
+  }
+  return count;
+}
+const DIAS_LABORALES_MES = 20;
+const MESES_CORTOS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina }) {
+  const hoy = today();
+  const [periodo, setPeriodo] = useState("mes"); // "dia" | "mes" | "anio"
+  const [fechaDia, setFechaDia] = useState(hoy);
+  const [mesSel, setMesSel] = useState(new Date().getMonth() + 1);
+  const [anioSel, setAnioSel] = useState(new Date().getFullYear());
+  const [areaSel, setAreaSel] = useState("");
+  function enPeriodo(fechaISO) {
+    if (!fechaISO) return false;
+    if (periodo === "dia") return fechaISO === fechaDia;
+    if (periodo === "mes") return fechaISO.slice(0, 7) === `${anioSel}-${String(mesSel).padStart(2, "0")}`;
+    if (periodo === "anio") return fechaISO.slice(0, 4) === String(anioSel);
+    return false;
+  }
+  function costoPeriodo(sueldoMensual) {
+    if (periodo === "dia") {
+      const [y, m] = fechaDia.split("-").map(Number);
+      return sueldoMensual / (diasHabiles(m, y) || DIAS_LABORALES_MES);
+    }
+    if (periodo === "anio") return sueldoMensual * 12;
+    return sueldoMensual;
+  }
+  const trabajadoresArea = useMemo(() => {
+    const activos = (trabajadores || []).filter((t) => t.activo !== false);
+    return areaSel ? activos.filter((t) => (t.area || "Sin asignar") === areaSel) : activos;
+  }, [trabajadores, areaSel]);
+  const produccionPeriodo = useMemo(
+    () => (produccion || []).filter((p) => enPeriodo(p.fecha)),
+    [produccion, periodo, fechaDia, mesSel, anioSel]
+  );
+  const porTrabajador = useMemo(() => {
+    const m = new Map();
+    produccionPeriodo.forEach((p) => {
+      if (!p.trabajadorId) return;
+      if (!m.has(p.trabajadorId)) m.set(p.trabajadorId, { unidades: 0, valor: 0 });
+      const acc = m.get(p.trabajadorId);
+      acc.unidades += Number(p.cantidad) || 0;
+      acc.valor += Number(p.total) || 0;
+    });
+    return m;
+  }, [produccionPeriodo]);
+  const filas = useMemo(() => {
+    return trabajadoresArea
+      .map((t) => {
+        const datos = porTrabajador.get(t.id);
+        return {
+          id: t.id,
+          nombre: t.nombre,
+          area: t.area || "Sin asignar",
+          unidades: datos?.unidades || 0,
+          valorProducido: datos?.valor || 0,
+          costo: costoPeriodo(Number(t.sueldo) || 0),
+          sinSueldo: !t.sueldo,
+        };
+      })
+      .sort((a, b) => b.valorProducido - a.valorProducido);
+  }, [trabajadoresArea, porTrabajador, periodo, fechaDia, mesSel, anioSel]);
+  const totalUnidades = filas.reduce((s, f) => s + f.unidades, 0);
+  const totalValor = filas.reduce((s, f) => s + f.valorProducido, 0);
+  const totalCosto = filas.reduce((s, f) => s + (f.sinSueldo ? 0 : f.costo), 0);
+  const balance = totalValor - totalCosto;
+  const pctCobertura = totalCosto > 0 ? (totalValor / totalCosto) * 100 : 0;
+  const algunoSinSueldo = filas.some((f) => f.sinSueldo);
+  const etiquetaPeriodo =
+    periodo === "dia" ? fmtFechaISO(fechaDia)
+    : periodo === "mes" ? `${MESES_CORTOS[mesSel - 1]} ${anioSel}`
+    : String(anioSel);
+  const btnPeriodo = (id, label) => (
+    <button
+      onClick={() => setPeriodo(id)}
+      style={{ padding: "8px 16px", borderRadius: 8, border: `1px solid ${periodo === id ? C.ink : C.border}`, background: periodo === id ? C.ink : C.white, color: periodo === id ? "#fff" : C.slate, fontWeight: 800, fontSize: 12, cursor: "pointer" }}
+    >
+      {label}
+    </button>
+  );
+  const columnas = [
+    { key: "nombre", label: "Trabajador" },
+    { key: "area", label: "Área Interna" },
+    { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
+    { key: "valorProducido", label: "Valor producido", align: "right", render: (f) => fmtMoney(f.valorProducido) },
+    { key: "costo", label: `Costo nómina (${etiquetaPeriodo})`, align: "right", render: (f) => (f.sinSueldo ? <span style={{ color: C.amber }}>⚠️ sin sueldo</span> : fmtMoney(f.costo)) },
+    { key: "balance", label: "Balance", align: "right", render: (f) => <span style={{ color: f.valorProducido - f.costo >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtMoney(f.valorProducido - f.costo)}</span> },
+  ];
+  return (
+    <div>
+      <div style={{ marginBottom: 22 }}>
+        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>💰 Centro de Costo — Planeación</h2>
+        <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>
+          Nómina que hay que pagar en cada área versus el valor de lo que cada trabajador está produciendo (Registrar Producción de Nómina, valorado con el precio máximo vigente por proceso).
+        </p>
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 18 }}>
+        {btnPeriodo("dia", "Día")}
+        {btnPeriodo("mes", "Mes")}
+        {btnPeriodo("anio", "Año")}
+        {periodo === "dia" && (
+          <input type="date" value={fechaDia} onChange={(e) => setFechaDia(e.target.value)} style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
+        )}
+        {periodo === "mes" && (
+          <>
+            <select value={mesSel} onChange={(e) => setMesSel(Number(e.target.value))} style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }}>
+              {MESES_CORTOS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+            </select>
+            <input type="number" value={anioSel} onChange={(e) => setAnioSel(Number(e.target.value))} style={{ width: 90, padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
+          </>
+        )}
+        {periodo === "anio" && (
+          <input type="number" value={anioSel} onChange={(e) => setAnioSel(Number(e.target.value))} style={{ width: 90, padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
+        )}
+        <select value={areaSel} onChange={(e) => setAreaSel(e.target.value)} style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, marginLeft: "auto" }}>
+          <option value="">Todas las áreas</option>
+          {(areasNomina || []).map((a) => <option key={a.id} value={a.nombre}>{a.nombre}</option>)}
+        </select>
+      </div>
+      {algunoSinSueldo && (
+        <div style={{ background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: C.ink, marginBottom: 16 }}>
+          ⚠️ Algunos trabajadores no tienen sueldo cargado en Nómina → Trabajadores — su costo aparece en blanco y no se suma al total, así que el balance está incompleto para ellos.
+        </div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
+        <KPI icon="📦" label="Unidades producidas" value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
+        <KPI icon="💵" label="Valor producido" value={fmtMoney(totalValor)} color={C.green} bg={C.greenBg} />
+        <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(totalCosto)} color={C.violet} bg={C.violetBg} />
+        <KPI icon={balance >= 0 ? "✅" : "⚠️"} label="Balance" value={fmtMoney(balance)} color={balance >= 0 ? C.green : C.red} bg={balance >= 0 ? C.greenBg : C.redBg} sub={totalCosto > 0 ? `${pctCobertura.toFixed(0)}% cubierto` : undefined} />
+      </div>
+      <Tabla vacio="No hay trabajadores en esta área." columnas={columnas} filas={filas} />
+    </div>
+  );
+}
+// ─── ESTADÍSTICAS (Planeación) ─────────────────────────────────────────────
+// Pedido explícito de Fredy (2026-08-31): cumplimiento de las
+// programaciones de TODOS los líderes/procesos (reutiliza estadoProgramacion
+// y getMovimientosProcesoBusintBD, ya construidos para Programador de
+// Procesos, pero sin filtrar por "mis procesos" — acá se ve todo) y volumen
+// de producción por proceso + inventario pendiente por planta/taller.
+function EstadisticasPlaneacionView({ programaciones, produccion, lotesActivos, movimientos, cargandoMovimientos, onActualizarMovimientos }) {
+  const [mesSel, setMesSel] = useState(new Date().getMonth() + 1);
+  const [anioSel, setAnioSel] = useState(new Date().getFullYear());
+  const lookupEntradas = useMemo(() => {
+    const m = new Map();
+    (movimientos?.entradas || []).forEach((r) => m.set(`${r.numLote}||${r.proceso}`, r));
+    return m;
+  }, [movimientos]);
+  const lookupSalidas = useMemo(() => {
+    const m = new Map();
+    (movimientos?.salidas || []).forEach((r) => m.set(`${r.numLote}||${r.proceso}`, r));
+    return m;
+  }, [movimientos]);
+  const programacionesConEstado = useMemo(() => {
+    return (programaciones || []).map((p) => {
+      const clave = `${p.numLote}||${p.proceso}`;
+      return { ...p, estado: estadoProgramacion(p.fechaProgramada, lookupEntradas.get(clave), lookupSalidas.get(clave)) };
+    });
+  }, [programaciones, lookupEntradas, lookupSalidas]);
+  function agruparEstado(campo) {
+    const m = new Map();
+    programacionesConEstado.forEach((p) => {
+      const key = p[campo] || "(sin dato)";
+      if (!m.has(key)) m.set(key, { clave: key, cumplidos: 0, vencidos: 0, pendientes: 0, total: 0 });
+      const acc = m.get(key);
+      acc.total++;
+      if (p.estado === "CUMPLIDO") acc.cumplidos++;
+      else if (p.estado === "VENCIDO") acc.vencidos++;
+      else acc.pendientes++;
+    });
+    return [...m.values()].sort((a, b) => b.total - a.total);
+  }
+  const porLider = useMemo(() => agruparEstado("liderNombre"), [programacionesConEstado]);
+  const porProcesoCumpl = useMemo(() => agruparEstado("proceso"), [programacionesConEstado]);
+  const produccionMes = useMemo(
+    () => (produccion || []).filter((p) => (p.fecha || "").slice(0, 7) === `${anioSel}-${String(mesSel).padStart(2, "0")}`),
+    [produccion, mesSel, anioSel]
+  );
+  const porProcesoVolumen = useMemo(() => {
+    const m = new Map();
+    produccionMes.forEach((p) => {
+      const key = p.proceso || "(sin proceso)";
+      if (!m.has(key)) m.set(key, { proceso: key, unidades: 0, valor: 0 });
+      const acc = m.get(key);
+      acc.unidades += Number(p.cantidad) || 0;
+      acc.valor += Number(p.total) || 0;
+    });
+    return [...m.values()].sort((a, b) => b.unidades - a.unidades);
+  }, [produccionMes]);
+  const porPlanta = useMemo(() => {
+    const m = new Map();
+    (lotesActivos || []).forEach((l) => (l.procesos || []).forEach((p) => {
+      if (!(p.inventario > 0)) return;
+      const key = p.planta || "(sin planta)";
+      if (!m.has(key)) m.set(key, { planta: key, unidades: 0 });
+      m.get(key).unidades += Number(p.inventario) || 0;
+    }));
+    return [...m.values()].sort((a, b) => b.unidades - a.unidades);
+  }, [lotesActivos]);
+  const columnasEstado = (primeraLabel, primeraKey) => [
+    { key: primeraKey, label: primeraLabel, render: (f) => f.clave },
+    { key: "total", label: "Programados", align: "right" },
+    { key: "cumplidos", label: "Cumplidos", align: "right", render: (f) => <span style={{ color: C.green, fontWeight: 700 }}>{f.cumplidos}</span> },
+    { key: "vencidos", label: "Vencidos", align: "right", render: (f) => <span style={{ color: C.red, fontWeight: 700 }}>{f.vencidos}</span> },
+    { key: "pendientes", label: "Pendientes", align: "right", render: (f) => <span style={{ color: C.blue, fontWeight: 700 }}>{f.pendientes}</span> },
+  ];
+  const columnasVolumenProceso = [
+    { key: "proceso", label: "Proceso" },
+    { key: "unidades", label: "Unidades producidas", align: "right", render: (f) => fmtNum(f.unidades) },
+    { key: "valor", label: "Valor producido", align: "right", render: (f) => fmtMoney(f.valor) },
+  ];
+  const columnasVolumenPlanta = [
+    { key: "planta", label: "Planta/Taller" },
+    { key: "unidades", label: "Pendiente (inventario)", align: "right", render: (f) => fmtNum(f.unidades) },
+  ];
+  const totalCumplidos = programacionesConEstado.filter((p) => p.estado === "CUMPLIDO").length;
+  const totalVencidos = programacionesConEstado.filter((p) => p.estado === "VENCIDO").length;
+  const totalPendientes = programacionesConEstado.filter((p) => p.estado === "PENDIENTE").length;
+  return (
+    <div>
+      <div style={{ marginBottom: 22, display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>📈 Estadísticas — Planeación</h2>
+          <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>Cumplimiento de las programaciones de los líderes de área, y volumen de producción/inventario.</p>
+        </div>
+        <Btn variant="ghost" onClick={onActualizarMovimientos} disabled={cargandoMovimientos}>
+          {cargandoMovimientos ? "Consultando Busint..." : "🔄 Actualizar cumplimiento"}
+        </Btn>
+      </div>
+      {!movimientos && (
+        <div style={{ fontSize: 11, color: C.amber, marginBottom: 14 }}>Todavía no has consultado el cumplimiento contra Busint en esta sesión — dale a "Actualizar cumplimiento" para ver Cumplido/Vencido real.</div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
+        <KPI icon="📋" label="Total programados" value={programacionesConEstado.length} color={C.blue} bg={C.blueBg} />
+        <KPI icon="✅" label="Cumplidos" value={totalCumplidos} color={C.green} bg={C.greenBg} />
+        <KPI icon="⚠️" label="Vencidos" value={totalVencidos} color={C.red} bg={C.redBg} />
+        <KPI icon="⏳" label="Pendientes" value={totalPendientes} color={C.amber} bg={C.amberBg} />
+      </div>
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 10 }}>Cumplimiento por líder</div>
+        <Tabla vacio="Todavía no hay programaciones registradas." columnas={columnasEstado("Líder", "clave")} filas={porLider} />
+      </div>
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 10 }}>Cumplimiento por proceso</div>
+        <Tabla vacio="Todavía no hay programaciones registradas." columnas={columnasEstado("Proceso", "clave")} filas={porProcesoCumpl} />
+      </div>
+      <div style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>Producción registrada por proceso</div>
+        <select value={mesSel} onChange={(e) => setMesSel(Number(e.target.value))} style={{ padding: "5px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }}>
+          {MESES_CORTOS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+        </select>
+        <input type="number" value={anioSel} onChange={(e) => setAnioSel(Number(e.target.value))} style={{ width: 80, padding: "5px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }} />
+      </div>
+      <div style={{ marginBottom: 28 }}>
+        <Tabla vacio="Sin producción registrada en este mes." columnas={columnasVolumenProceso} filas={porProcesoVolumen} />
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>Inventario pendiente por planta/taller (carga activa)</div>
+      </div>
+      <Tabla vacio="No hay inventario pendiente." columnas={columnasVolumenPlanta} filas={porPlanta} />
+    </div>
+  );
+}
+// ─── CONTROL DE CALIDAD (Planeación) ───────────────────────────────────────
+// Nuevo, 2026-08-31, pedido explícito de Fredy: registrar devoluciones y
+// reclamos de cliente por calidad — qué lote/referencia, motivo, cantidad.
+// Confirmado por Fredy que esto NO existe en Busint — se registra directo
+// en Atlas, colección nueva `planeacion_control_calidad`. Cada reclamo se
+// puede marcar "Resuelto" (o reabrir) una vez atendido; borrar es solo admin.
+function ControlCalidadView({ reclamos, onGuardar, onCambiarEstado, onBorrar, isAdmin }) {
+  const [numLote, setNumLote] = useState("");
+  const [referencia, setReferencia] = useState("");
+  const [cliente, setCliente] = useState("");
+  const [motivo, setMotivo] = useState("");
+  const [cantidad, setCantidad] = useState("");
+  const [fecha, setFecha] = useState(today());
+  const [guardando, setGuardando] = useState(false);
+  const puedeGuardar = referencia.trim() && motivo.trim() && Number(cantidad) > 0 && !guardando;
+  async function guardar() {
+    if (!puedeGuardar) return;
+    setGuardando(true);
+    try {
+      await onGuardar({
+        id: uid(),
+        numLote: numLote.trim(),
+        referencia: referencia.trim(),
+        cliente: cliente.trim(),
+        motivo: motivo.trim(),
+        cantidad: Number(cantidad) || 0,
+        fecha,
+        estado: "ABIERTO",
+        creadoEn: new Date().toISOString(),
+      });
+      setNumLote("");
+      setReferencia("");
+      setCliente("");
+      setMotivo("");
+      setCantidad("");
+    } finally {
+      setGuardando(false);
+    }
+  }
+  const abiertos = (reclamos || []).filter((r) => r.estado !== "RESUELTO");
+  const resueltos = (reclamos || []).filter((r) => r.estado === "RESUELTO");
+  const totalUnidadesAbiertas = abiertos.reduce((s, r) => s + (Number(r.cantidad) || 0), 0);
+  const columnas = [
+    { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+    { key: "numLote", label: "Lote" },
+    { key: "referencia", label: "Referencia" },
+    { key: "cliente", label: "Cliente" },
+    { key: "motivo", label: "Motivo" },
+    { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
+    { key: "estado", label: "Estado", render: (f) => <EstadoBadge estado={f.estado === "RESUELTO" ? "CUMPLIDO" : "PENDIENTE"} /> },
+    { key: "_accion", label: "", render: (f) => (
+      <div style={{ display: "flex", gap: 6 }}>
+        {f.estado !== "RESUELTO" && <Btn small onClick={() => onCambiarEstado(f.id, "RESUELTO")}>Marcar resuelto</Btn>}
+        {f.estado === "RESUELTO" && <Btn small variant="secondary" onClick={() => onCambiarEstado(f.id, "ABIERTO")}>Reabrir</Btn>}
+        {isAdmin && <Btn small variant="danger" onClick={() => onBorrar(f.id)}>Borrar</Btn>}
+      </div>
+    ) },
+  ];
+  const recientes = useMemo(() => [...(reclamos || [])].sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || "")), [reclamos]);
+  return (
+    <div>
+      <div style={{ marginBottom: 22 }}>
+        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>🔍 Control de Calidad</h2>
+        <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>Devoluciones y reclamos de cliente por calidad.</p>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
+        <KPI icon="📋" label="Reclamos abiertos" value={abiertos.length} color={C.red} bg={C.redBg} />
+        <KPI icon="📦" label="Unidades afectadas (abiertos)" value={fmtNum(totalUnidadesAbiertas)} color={C.amber} bg={C.amberBg} />
+        <KPI icon="✅" label="Resueltos" value={resueltos.length} color={C.green} bg={C.greenBg} />
+      </div>
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20, marginBottom: 24, maxWidth: 640 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 14 }}>Registrar reclamo</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>N° Lote (opcional)</label>
+            <input value={numLote} onChange={(e) => setNumLote(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Referencia</label>
+            <input value={referencia} onChange={(e) => setReferencia(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Cliente</label>
+            <input value={cliente} onChange={(e) => setCliente(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Fecha</label>
+            <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Cantidad afectada</label>
+            <input type="number" value={cantidad} onChange={(e) => setCantidad(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} />
+          </div>
+        </div>
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Motivo</label>
+          <textarea value={motivo} onChange={(e) => setMotivo(e.target.value)} rows={3} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit", resize: "vertical" }} />
+        </div>
+        <Btn onClick={guardar} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Registrar reclamo"}</Btn>
+      </div>
+      <Tabla vacio="No hay reclamos registrados todavía." columnas={columnas} filas={recientes} />
     </div>
   );
 }
@@ -3618,12 +4021,87 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     setProgramacionBMP((ps) => ps.filter((p) => p.id !== id));
     await fsDelete("planeacion_programacion_bmp", id);
   }
+  // (2026-08-31) Datos para las 3 tarjetas nuevas de Planeación — Centro de
+  // Costo, Estadísticas y Control de Calidad (ver las vistas más arriba en
+  // este archivo). Se leen acá, en la raíz del módulo, porque las 3
+  // vistas conviven en el mismo sidebar/subView que Informes/Tubo
+  // Productivo/Buscar por Línea.
+  const [trabajadoresNominaPlaneacion, setTrabajadoresNominaPlaneacion] = useState([]);
+  const [produccionNominaPlaneacion, setProduccionNominaPlaneacion] = useState([]);
+  const [areasNominaPlaneacion, setAreasNominaPlaneacion] = useState([]);
+  const [programacionesProcesosTodas, setProgramacionesProcesosTodas] = useState([]);
+  const [reclamosCalidad, setReclamosCalidad] = useState([]);
+  const [movimientosEstadisticas, setMovimientosEstadisticas] = useState(null);
+  const [cargandoMovimientosEstadisticas, setCargandoMovimientosEstadisticas] = useState(false);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "nomina_trabajadores"), (snap) => {
+      setTrabajadoresNominaPlaneacion(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "nomina_produccion"), (snap) => {
+      setProduccionNominaPlaneacion(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "nomina_areas"), (snap) => {
+      setAreasNominaPlaneacion(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_programacion_procesos"), (snap) => {
+      setProgramacionesProcesosTodas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_control_calidad"), (snap) => {
+      setReclamosCalidad(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  const lotesActivosPlaneacion = useMemo(() => {
+    if (!cargas.length) return [];
+    const ordenadas = [...cargas].sort((a, b) => (b.creadoEn || b.fecha).localeCompare(a.creadoEn || a.fecha));
+    return ordenadas[0]?.lotes || [];
+  }, [cargas]);
+  async function actualizarMovimientosEstadisticas() {
+    setCargandoMovimientosEstadisticas(true);
+    try {
+      const llamar = httpsCallable(functionsClient, "getMovimientosProcesoBusintBD");
+      const resp = await llamar();
+      setMovimientosEstadisticas(resp.data);
+    } catch (err) {
+      alert(`No se pudo consultar el cumplimiento en Busint: ${err?.message || String(err)}`);
+    } finally {
+      setCargandoMovimientosEstadisticas(false);
+    }
+  }
+  async function guardarReclamoCalidad(datos) {
+    const nuevo = { ...datos, creadoPor: currentUser?.name || currentUser?.username || "" };
+    setReclamosCalidad((rs) => [...rs, nuevo]);
+    await fsSave("planeacion_control_calidad", nuevo.id, nuevo);
+  }
+  async function cambiarEstadoReclamoCalidad(id, estado) {
+    setReclamosCalidad((rs) => rs.map((r) => (r.id === id ? { ...r, estado } : r)));
+    await fsSave("planeacion_control_calidad", id, { estado });
+  }
+  async function borrarReclamoCalidad(id) {
+    setReclamosCalidad((rs) => rs.filter((r) => r.id !== id));
+    await fsDelete("planeacion_control_calidad", id);
+  }
   const isAdmin = currentUser?.isAdmin;
   const NAV = [
     { id: "home", icon: "◉", label: "Inicio" },
     { id: "informes", icon: "📊", label: "Informes" },
     { id: "tubo_productivo", icon: "🧵", label: "Tubo Productivo" },
     { id: "buscar_linea", icon: "🔍", label: "Buscar por Línea" },
+    { id: "centro_costo", icon: "💰", label: "Centro de Costo" },
+    { id: "estadisticas", icon: "📈", label: "Estadísticas" },
+    { id: "control_calidad", icon: "🔍", label: "Control de Calidad" },
   ];
   if (loading) {
     return (
@@ -3694,9 +4172,42 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
       </div>
       <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
-          {subView === "home" && <HomePlaneacion onGoInformes={() => setSubView("informes")} />}
+          {subView === "home" && (
+            <HomePlaneacion
+              onGoInformes={() => setSubView("informes")}
+              onGoCentroCosto={() => setSubView("centro_costo")}
+              onGoEstadisticas={() => setSubView("estadisticas")}
+              onGoControlCalidad={() => setSubView("control_calidad")}
+            />
+          )}
           {subView === "tubo_productivo" && <TuboProductivoView />}
           {subView === "buscar_linea" && <BuscarPorLineaView />}
+          {subView === "centro_costo" && (
+            <CentroCostoPlaneacionView
+              trabajadores={trabajadoresNominaPlaneacion}
+              produccion={produccionNominaPlaneacion}
+              areasNomina={areasNominaPlaneacion}
+            />
+          )}
+          {subView === "estadisticas" && (
+            <EstadisticasPlaneacionView
+              programaciones={programacionesProcesosTodas}
+              produccion={produccionNominaPlaneacion}
+              lotesActivos={lotesActivosPlaneacion}
+              movimientos={movimientosEstadisticas}
+              cargandoMovimientos={cargandoMovimientosEstadisticas}
+              onActualizarMovimientos={actualizarMovimientosEstadisticas}
+            />
+          )}
+          {subView === "control_calidad" && (
+            <ControlCalidadView
+              reclamos={reclamosCalidad}
+              onGuardar={guardarReclamoCalidad}
+              onCambiarEstado={cambiarEstadoReclamoCalidad}
+              onBorrar={borrarReclamoCalidad}
+              isAdmin={isAdmin}
+            />
+          )}
           {subView === "informes" && (
             <InformesView
               cargas={cargas}

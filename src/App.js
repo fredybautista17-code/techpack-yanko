@@ -10936,7 +10936,19 @@ function AppInner() {
     return <ModuloPlaneacion currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "mi_dia") {
-    return <MiDiaStandalone currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    // (2026-08-31) Pedido explícito de Fredy: para un líder con procesos
+    // asignados (hoy Anny Beltrán y Sarai Méndez), "Mi Día" deja de mostrar
+    // las programaciones de planta de la planeadora y muestra en su lugar
+    // exactamente los lotes que tiene pendientes de programar (lo mismo que
+    // ya construye ProgramadorProcesosStandalone) — se REEMPLAZA, no se
+    // agrega aparte. El usuario "planeadora" (sin procesosPlaneacion) sigue
+    // viendo el contenido original de siempre.
+    const onVolverMiDia = () => setModuloActivo("diseno");
+    const onLogoutMiDia = () => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); };
+    if ((currentUser?.procesosPlaneacion || []).length > 0) {
+      return <ProgramadorProcesosStandalone currentUser={currentUser} onVolver={onVolverMiDia} onLogout={onLogoutMiDia} />;
+    }
+    return <MiDiaStandalone currentUser={currentUser} onVolver={onVolverMiDia} onLogout={onLogoutMiDia} />;
   }
   if (moduloActivo === "programador_procesos") {
     return <ProgramadorProcesosStandalone currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
