@@ -258,15 +258,22 @@ function Tabla({ columnas, filas, vacio, onRowClick }) {
 // Maestro simple: nombre + tarifa por hora (usada para calcular las "Horas
 // Sueltas") + activo/inactivo (un trabajador inactivo no aparece en los
 // selects de los formularios de registro, pero su historial queda intacto).
-// Áreas de Nómina (2026-08-30): antes era una lista fija en el código
-// (Terminación/Termofijación) que no coincidía con las áreas reales que se
-// venían usando para los trabajadores (ZONA CALOR, EMPAQUE, ADMINISTRATIVO,
-// etc.) -- eso dejaba a las líderes sin ver a nadie. Ahora es una lista
-// editable por el admin (Administrativo → Áreas de Nómina, colección
-// Firestore "nomina_areas"), la misma que alimenta tanto el campo "Área" de
-// cada trabajador como el "Área de Nómina" que se le asigna a un líder en
-// Usuarios. "Sin asignar" sigue siendo el valor por defecto para quien no
-// tenga área (no es un documento real en "nomina_areas").
+// Área Interna (2026-08-30, renombrada 2026-08-31): antes era una lista
+// fija en el código (Terminación/Termofijación) que no coincidía con las
+// áreas reales que se venían usando para los trabajadores (ZONA CALOR,
+// EMPAQUE, ADMINISTRATIVO, etc.) -- eso dejaba a las líderes sin ver a
+// nadie. Ahora es una lista editable por el admin (Administrativo → Área
+// Interna, colección Firestore "nomina_areas" -- el nombre de la colección
+// no cambió, solo cómo se muestra en pantalla), la misma que alimenta tanto
+// el campo "Área Interna" de cada trabajador como el área que se le asigna
+// a un líder en Usuarios. "Sin asignar" sigue siendo el valor por defecto
+// para quien no tenga área (no es un documento real en "nomina_areas").
+// Es DISTINTA del "Área TNS" (más abajo): Área Interna es la clasificación
+// propia de la planta (ZONA CALOR, EMPAQUE, CONTROL DE CALIDAD, BODEGA...)
+// y también la que usan los líderes para ver solo a su gente; Área TNS es
+// la clasificación que ya trae TNS para todo el personal (Operativa /
+// Administrativo / Diseño), pensada solo para cruzarla más adelante contra
+// el archivo plano que exporta TNS -- no afecta a los líderes.
 // Códigos TNS ya confirmados a mano (Nómina → Reportes → Listado de Personal
 // de TNS, Industrias Yanko BC SAS, Jul/2026) — en esta empresa TNS usa la
 // misma cédula como "codigo"/"codigotercero" del contrato. Solo cubre las 13
@@ -345,10 +352,10 @@ function AreaNominaModal({ area, onSave, onClose }) {
     onClose();
   }
   return (
-    <Modal title={area ? "Editar Área" : "Nueva Área de Nómina"} onClose={onClose} width={400}>
-      <Field label="Nombre del Área"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: ZONA CALOR, EMPAQUE, ADMINISTRATIVO" /></Field>
+    <Modal title={area ? "Editar Área Interna" : "Nueva Área Interna"} onClose={onClose} width={400}>
+      <Field label="Nombre del Área Interna"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: ZONA CALOR, EMPAQUE, ADMINISTRATIVO, CONTROL DE CALIDAD" /></Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
-        Esta lista alimenta el campo "Área" de cada trabajador y el "Área de Nómina" que se le asigna a un líder en Usuarios.
+        Esta lista alimenta el campo "Área Interna" de cada trabajador y el área que se le asigna a un líder en Usuarios. Es distinta de "Área TNS" (Operativa/Administrativo/Diseño, más abajo en Administrativo).
       </div>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
@@ -367,7 +374,7 @@ function AreasNominaView({ areas, trabajadores, isAdmin, onSave, onDelete }) {
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
-        Estas son las áreas reales de la planta (ej. ZONA CALOR, EMPAQUE, ADMINISTRATIVO) — se usan para clasificar a cada trabajador y para asignarle a un líder de área su gente en Usuarios → Área de Nómina.
+        Estas son las áreas reales de la planta (ej. ZONA CALOR, EMPAQUE, ADMINISTRATIVO, CONTROL DE CALIDAD) — se usan para clasificar a cada trabajador y para asignarle a un líder de área su gente en Usuarios. Es distinta de "Área TNS" (más abajo en Administrativo), que es la clasificación que ya trae TNS para todo el personal.
       </div>
       {modal && (
         <AreaNominaModal
@@ -379,9 +386,9 @@ function AreasNominaView({ areas, trabajadores, isAdmin, onSave, onDelete }) {
       {confirmDel && (
         <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
           <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
-            ¿Eliminar el área <strong>{confirmDel.nombre}</strong>?
+            ¿Eliminar el área interna <strong>{confirmDel.nombre}</strong>?
             {contarTrabajadores(confirmDel.nombre) > 0 && (
-              <div style={{ marginTop: 10, color: C.red, fontWeight: 600 }}>⚠️ {contarTrabajadores(confirmDel.nombre)} trabajador(es) tienen esta área asignada — no se les cambia sola, quedarían con un área que ya no existe en la lista. Revísalos primero en Trabajadores.</div>
+              <div style={{ marginTop: 10, color: C.red, fontWeight: 600 }}>⚠️ {contarTrabajadores(confirmDel.nombre)} trabajador(es) tienen esta área interna asignada — no se les cambia sola, quedarían con un área que ya no existe en la lista. Revísalos primero en Trabajadores.</div>
             )}
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
@@ -392,13 +399,13 @@ function AreasNominaView({ areas, trabajadores, isAdmin, onSave, onDelete }) {
       )}
       {isAdmin && (
         <div style={{ marginBottom: 16 }}>
-          <Btn onClick={() => setModal("nuevo")}>+ Nueva Área</Btn>
+          <Btn onClick={() => setModal("nuevo")}>+ Nueva Área Interna</Btn>
         </div>
       )}
       <Tabla
-        vacio="Sin áreas registradas todavía."
+        vacio="Sin áreas internas registradas todavía."
         columnas={[
-          { key: "nombre", label: "Área" },
+          { key: "nombre", label: "Área Interna" },
           { key: "trabajadores", label: "Trabajadores", align: "right", render: (f) => contarTrabajadores(f.nombre) },
           ...(isAdmin ? [{
             key: "acciones", label: "", align: "right",
@@ -415,13 +422,104 @@ function AreasNominaView({ areas, trabajadores, isAdmin, onSave, onDelete }) {
     </div>
   );
 }
-function TrabajadorModal({ trabajador, onSave, onClose, areasNomina }) {
+// Área TNS (2026-08-31, pedido de Fredy): clasificación que ya usa TNS para
+// TODO el personal -- Operativa (labores de producción), Administrativo
+// (oficina), Diseño -- tal como TNS las llama. Es SEPARADA de "Área Interna"
+// (arriba, ZONA CALOR/EMPAQUE/CONTROL DE CALIDAD/etc., la que usan los
+// líderes para ver solo a su gente). Lista editable por el admin, igual que
+// Área Interna (Administrativo → Área TNS, colección Firestore
+// "nomina_areas_tns") -- Fredy prefirió que fuera editable en vez de una
+// lista fija de solo 3, por si TNS agrega o renombra una categoría más
+// adelante. Se guarda en cada trabajador (campo "areaTNS") para poder
+// cruzar/verificar más adelante contra el archivo plano que exporta TNS; no
+// se usa para nada de "líder ve solo su gente" (eso sigue siendo Área Interna).
+function AreaTnsModal({ area, onSave, onClose }) {
+  const [form, setForm] = useState({ nombre: area?.nombre || "" });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  function guardar() {
+    if (!form.nombre.trim()) return;
+    onSave({ nombre: form.nombre.trim() });
+    onClose();
+  }
+  return (
+    <Modal title={area ? "Editar Área TNS" : "Nueva Área TNS"} onClose={onClose} width={400}>
+      <Field label="Nombre del Área TNS"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Operativa, Administrativo, Diseño" /></Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        Clasificación que ya usa TNS para todo el personal, aparte de "Área Interna" (arriba en Administrativo). Alimenta el campo "Área TNS" de cada trabajador, para cruzar contra el archivo de TNS.
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar} disabled={!form.nombre.trim()}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+function AreasTnsView({ areas, trabajadores, isAdmin, onSave, onDelete }) {
+  const [modal, setModal] = useState(null); // null | "nuevo" | area
+  const [confirmDel, setConfirmDel] = useState(null);
+  const ordenadas = [...areas].sort((a, b) => a.nombre.localeCompare(b.nombre));
+  function contarTrabajadores(nombre) {
+    return (trabajadores || []).filter((t) => t.areaTNS === nombre).length;
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Clasificación que ya trae TNS para todo el personal (Operativa, Administrativo, Diseño) — distinta de "Área Interna" (ZONA CALOR/EMPAQUE/CONTROL DE CALIDAD/etc., la que usan los líderes). Sirve para cruzar cada trabajador contra el archivo plano que exporta TNS.
+      </div>
+      {modal && (
+        <AreaTnsModal
+          area={modal === "nuevo" ? null : modal}
+          onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {confirmDel && (
+        <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Eliminar el área TNS <strong>{confirmDel.nombre}</strong>?
+            {contarTrabajadores(confirmDel.nombre) > 0 && (
+              <div style={{ marginTop: 10, color: C.red, fontWeight: 600 }}>⚠️ {contarTrabajadores(confirmDel.nombre)} trabajador(es) tienen esta área TNS asignada — no se les cambia sola, quedarían con un área que ya no existe en la lista. Revísalos primero en Trabajadores.</div>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={() => { onDelete(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+          </div>
+        </Modal>
+      )}
+      {isAdmin && (
+        <div style={{ marginBottom: 16 }}>
+          <Btn onClick={() => setModal("nuevo")}>+ Nueva Área TNS</Btn>
+        </div>
+      )}
+      <Tabla
+        vacio="Sin áreas TNS registradas todavía."
+        columnas={[
+          { key: "nombre", label: "Área TNS" },
+          { key: "trabajadores", label: "Trabajadores", align: "right", render: (f) => contarTrabajadores(f.nombre) },
+          ...(isAdmin ? [{
+            key: "acciones", label: "", align: "right",
+            render: (f) => (
+              <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <span onClick={(e) => { e.stopPropagation(); setModal(f); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>Editar</span>
+                <span onClick={(e) => { e.stopPropagation(); setConfirmDel(f); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>
+              </span>
+            ),
+          }] : []),
+        ]}
+        filas={ordenadas}
+      />
+    </div>
+  );
+}
+function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS }) {
   const [form, setForm] = useState({
     nombre: trabajador?.nombre || "",
     cedula: trabajador?.cedula || "",
     tarifaHora: trabajador?.tarifaHora ?? "",
     activo: trabajador?.activo ?? true,
     area: trabajador?.area || "Sin asignar",
+    areaTNS: trabajador?.areaTNS || "",
     tnsCodigo: trabajador?.tnsCodigo || "",
     tipoNomina: trabajador?.tipoNomina || "",
     sueldo: trabajador?.sueldo ?? "",
@@ -438,6 +536,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina }) {
       tarifaHora: Number(form.tarifaHora) || 0,
       activo: !!form.activo,
       area: form.area || "Sin asignar",
+      areaTNS: form.areaTNS || "",
       tnsCodigo: form.tnsCodigo.trim(),
       tipoNomina: form.tipoNomina || "",
       sueldo: Number(form.sueldo) || 0,
@@ -451,7 +550,11 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina }) {
     <Modal title={trabajador ? "Editar Trabajador" : "Nuevo Trabajador"} onClose={onClose} width={440}>
       <Field label="Nombre"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Carlos Javier González" /></Field>
       <Field label="Cédula"><FInput value={form.cedula} onChange={set("cedula")} placeholder="Ej: 1004802413" /></Field>
-      <Field label="Área"><FSel value={form.area} onChange={set("area")} options={[...areasNomina.map((a) => a.nombre), "Sin asignar"]} placeholder="Sin asignar" /></Field>
+      <Field label="Área Interna"><FSel value={form.area} onChange={set("area")} options={[...areasNomina.map((a) => a.nombre), "Sin asignar"]} placeholder="Sin asignar" /></Field>
+      <Field label="Área TNS"><FSel value={form.areaTNS} onChange={set("areaTNS")} options={areasTNS.map((a) => a.nombre)} placeholder="Sin clasificar" /></Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        "Área Interna" es la clasificación propia de la planta (los líderes ven solo a su gente por ahí). "Área TNS" es la que ya usa TNS (Operativa/Administrativo/Diseño) — sirve para cruzar cuando llegue el archivo de TNS.
+      </div>
       <Field label="Tipo de Nómina">
         <FSel value={form.tipoNomina} onChange={set("tipoNomina")} options={TIPOS_NOMINA} placeholder="Sin clasificar" />
       </Field>
@@ -491,7 +594,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina }) {
     </Modal>
   );
 }
-function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina }) {
+function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina, areasTNS }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | trabajador
   const [confirmDel, setConfirmDel] = useState(null);
   const [autoResultado, setAutoResultado] = useState(null);
@@ -579,6 +682,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
         <TrabajadorModal
           trabajador={modal === "nuevo" ? null : modal}
           areasNomina={areasNomina}
+          areasTNS={areasTNS}
           onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
           onClose={() => setModal(null)}
         />
@@ -608,7 +712,8 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
         columnas={[
           { key: "nombre", label: "Nombre" },
           { key: "cedula", label: "Cédula", render: (f) => f.cedula || "—" },
-          { key: "area", label: "Área", render: (f) => f.area || "Sin asignar" },
+          { key: "area", label: "Área Interna", render: (f) => f.area || "Sin asignar" },
+          { key: "areaTNS", label: "Área TNS", render: (f) => f.areaTNS || <span style={{ color: C.slate }}>—</span> },
           { key: "tipoNomina", label: "Tipo Nómina", render: (f) => f.tipoNomina ? (
             <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: f.tipoNomina === "Fiscal Destajo" ? C.violetBg : C.blueBg, color: f.tipoNomina === "Fiscal Destajo" ? C.violet : C.blue }}>
               {f.tipoNomina}
@@ -3127,11 +3232,12 @@ function ConsultarCostoReferenciaView() {
   );
 }
 export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
-  // Líder de área (Anny Beltrán → Terminación, Sarai Méndez → Termofijación,
-  // etc.): entra con un panel reducido, ya filtrado a su propia gente, en vez
-  // del panel completo de admin (nada de Trabajadores/Precios ni ver otras
-  // áreas). Se define con el campo "Área de Nómina" del usuario, puesto por
-  // un admin en Administrador General → Usuarios.
+  // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
+  // Interna real -- ver Administrativo → Área Interna): entra con un panel
+  // reducido, ya filtrado a su propia gente, en vez del panel completo de
+  // admin (nada de Trabajadores/Precios ni ver otras áreas). Se define con
+  // el campo "Área de Nómina" del usuario (mismo valor que la Área Interna
+  // del trabajador), puesto por un admin en Administrador General → Usuarios.
   const areaLider = !currentUser?.isAdmin && currentUser?.areaNomina ? currentUser.areaNomina : null;
   const [subView, setSubView] = useState(() => (areaLider ? "produccion" : "dashboard"));
   // Qué grupos del menú están desplegados — si un grupo todavía no se ha
@@ -3141,6 +3247,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   const [trabajadores, setTrabajadores] = useState([]);
   const [precios, setPrecios] = useState([]);
   const [areasNomina, setAreasNomina] = useState([]);
+  const [areasTNS, setAreasTNS] = useState([]);
   const [produccion, setProduccion] = useState([]);
   const [horas, setHoras] = useState([]);
   const [cierres, setCierres] = useState([]);
@@ -3155,6 +3262,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
       onSnapshot(collection(db, "nomina_trabajadores"), (snap) => { setTrabajadores(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setLoading(false); }),
       onSnapshot(collection(db, "nomina_precios_proceso"), (snap) => setPrecios(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_areas"), (snap) => setAreasNomina(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_areas_tns"), (snap) => setAreasTNS(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_produccion"), (snap) => setProduccion(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_horas"), (snap) => setHoras(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_cierres"), (snap) => setCierres(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -3190,7 +3298,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
             { id: "tns", icon: "🔌", label: "Conexión TNS" },
             { id: "novedades_tns", icon: "🧾", label: "Novedades TNS" },
             { id: "precios", icon: "⚙️", label: "Procesos" },
-            { id: "areas_nomina", icon: "🏷️", label: "Áreas de Nómina" },
+            { id: "areas_nomina", icon: "🏭", label: "Área Interna" },
+            { id: "areas_tns", icon: "🏛️", label: "Área TNS" },
             { id: "trabajadores", icon: "👷", label: "Trabajadores" },
           ] },
         { group: "Novedades", icon: "📣", items: [
@@ -3222,6 +3331,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
   async function borrarProceso(id) { await fsDelete("nomina_precios_proceso", id); }
   async function guardarAreaNomina(a) { await fsSave("nomina_areas", a.id, a); }
   async function borrarAreaNomina(id) { await fsDelete("nomina_areas", id); }
+  async function guardarAreaTNS(a) { await fsSave("nomina_areas_tns", a.id, a); }
+  async function borrarAreaTNS(id) { await fsDelete("nomina_areas_tns", id); }
   async function guardarProduccion(p) { await fsSave("nomina_produccion", p.id, p); }
   async function borrarProduccion(id) { await fsDelete("nomina_produccion", id); }
   async function guardarHoras(h) { await fsSave("nomina_horas", h.id, h); }
@@ -3368,8 +3479,9 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           {subView === "produccion" && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} costosTeoricoProceso={costosTeoricoProceso} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
           {subView === "horas" && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
           {subView === "resumen" && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} />}
-          {subView === "trabajadores" && !areaLider && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} />}
+          {subView === "trabajadores" && !areaLider && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} />}
           {subView === "areas_nomina" && !areaLider && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarAreaNomina} onDelete={borrarAreaNomina} />}
+          {subView === "areas_tns" && !areaLider && <AreasTnsView areas={areasTNS} trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarAreaTNS} onDelete={borrarAreaTNS} />}
           {subView === "precios" && !areaLider && <PreciosProcesoView precios={precios} isAdmin={isAdmin} onSave={guardarProceso} onDelete={borrarProceso} />}
           {subView === "costos_teorico" && !areaLider && <CostosTeoricoProcesoView costos={costosTeoricoProceso} isAdmin={isAdmin} onGuardarLote={guardarCostosTeoricoProcesoLote} onBorrarTodo={vaciarCostosTeoricoProceso} />}
           {subView === "costo_referencia" && !areaLider && <ConsultarCostoReferenciaView />}

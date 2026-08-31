@@ -5834,12 +5834,12 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina }) {
               <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Si eliges un cliente, este usuario solo verá prototipos, cápsulas, pedidos y estadísticas de ese cliente.</div>
             </div>
             <div>
-              <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Área de Nómina (opcional)</label>
+              <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Área Interna (opcional)</label>
               <select value={form.areaNomina} onChange={(e) => setForm((f) => ({ ...f, areaNomina: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
                 <option value="">— Ninguna (no es líder de área) —</option>
                 {(areasNomina || []).map((a) => <option key={a.id} value={a.nombre}>{a.nombre}</option>)}
               </select>
-              <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Si eliges un área, este usuario entra a Nómina con una pantalla simple para registrar solo la producción/permisos de su gente (los trabajadores con esa misma "Área" en Trabajadores). Las áreas se administran en Nómina → Administrativo → Áreas de Nómina. Necesita también acceso al módulo "Nómina" en su rol.</div>
+              <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Si eliges un área, este usuario entra a Nómina con una pantalla simple para registrar solo la producción/permisos de su gente (los trabajadores con esa misma "Área Interna" en Trabajadores -- distinta de "Área TNS"). Las áreas se administran en Nómina → Administrativo → Área Interna. Necesita también acceso al módulo "Nómina" en su rol.</div>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14 }}>
