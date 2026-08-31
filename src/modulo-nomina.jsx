@@ -343,20 +343,66 @@ const DESTAJO_CONOCIDOS = [
   { cedula: "1127350028", nombre: "VICTOR MANUEL ADOLFO PORRAS", area: "ZONA CALOR", sueldo: 1750905, auxilioTransporte: 249095 },
   { cedula: "1092254889", nombre: "JHONEIDER BOTELLO BECERRA", area: "ZONA CALOR", sueldo: 1750905, auxilioTransporte: 249095 },
 ];
-function AreaNominaModal({ area, onSave, onClose }) {
-  const [form, setForm] = useState({ nombre: area?.nombre || "" });
+function AreaNominaModal({ area, procesos, onSave, onClose }) {
+  const [form, setForm] = useState({
+    nombre: area?.nombre || "",
+    procesosCentroCosto: area?.procesosCentroCosto || [],
+    metaDiariaUnidades: area?.metaDiariaUnidades ?? "",
+  });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function guardar() {
     if (!form.nombre.trim()) return;
-    onSave({ nombre: form.nombre.trim() });
+    onSave({
+      nombre: form.nombre.trim(),
+      procesosCentroCosto: form.procesosCentroCosto,
+      metaDiariaUnidades: form.metaDiariaUnidades === "" ? null : Number(form.metaDiariaUnidades) || 0,
+    });
     onClose();
   }
   return (
-    <Modal title={area ? "Editar Área Interna" : "Nueva Área Interna"} onClose={onClose} width={400}>
+    <Modal title={area ? "Editar Área Interna" : "Nueva Área Interna"} onClose={onClose} width={440}>
       <Field label="Nombre del Área Interna"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: ZONA CALOR, EMPAQUE, ADMINISTRATIVO, CONTROL DE CALIDAD" /></Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
         Esta lista alimenta el campo "Área Interna" de cada trabajador y el área que se le asigna a un líder en Usuarios. Es distinta de "Área TNS" (Operativa/Administrativo/Diseño, más abajo en Administrativo).
       </div>
+      {/* Pedido explícito de Fredy (2026-08-31): para áreas de apoyo con
+          sueldo fijo (sin Registrar Producción, ej. ZONA CALOR, CONTROL DE
+          CALIDAD) Centro de Costo (Planeación) no puede comparar $ producido
+          vs $ nómina porque no hay unidades de producción registradas para
+          ellas. En su lugar, el área se marca con los procesos (de Nómina →
+          Administrativo → Precios) cuyos movimientos de planta (entrada/
+          salida en Busint) cuentan como "lo que hizo" esta área, y una meta
+          diaria de unidades para medir si el día "le da" o no. Un área sin
+          procesos marcados aquí sigue funcionando como antes (modo $, para
+          Destajo/Fiscal Destajo que sí registran producción). */}
+      <Field label="Procesos que cuentan para Centro de Costo (opcional)">
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, maxHeight: 160, overflowY: "auto" }}>
+          {(procesos || []).length === 0 && <div style={{ fontSize: 12, color: C.slate }}>No hay procesos cargados en Nómina → Administrativo → Precios.</div>}
+          {(procesos || []).map((p) => {
+            const marcado = (form.procesosCentroCosto || []).includes(p.proceso);
+            return (
+              <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: C.ink }}>
+                <input
+                  type="checkbox"
+                  checked={marcado}
+                  onChange={(e) => setForm((f) => {
+                    const actuales = f.procesosCentroCosto || [];
+                    const siguientes = e.target.checked ? [...actuales, p.proceso] : actuales.filter((x) => x !== p.proceso);
+                    return { ...f, procesosCentroCosto: siguientes };
+                  })}
+                />
+                {p.proceso}
+              </label>
+            );
+          })}
+        </div>
+      </Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        Si marcas uno o más procesos, Centro de Costo (Planeación) mide esta área por unidades movidas en esos procesos (Busint) vs. la meta diaria de abajo, en vez de $ producido — pensado para áreas de sueldo fijo sin Registrar Producción.
+      </div>
+      {(form.procesosCentroCosto || []).length > 0 && (
+        <Field label="Meta diaria de unidades (opcional)"><FInput type="number" value={form.metaDiariaUnidades} onChange={set("metaDiariaUnidades")} placeholder="Ej: 500" /></Field>
+      )}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
         <Btn onClick={guardar} disabled={!form.nombre.trim()}>Guardar</Btn>
@@ -364,7 +410,7 @@ function AreaNominaModal({ area, onSave, onClose }) {
     </Modal>
   );
 }
-function AreasNominaView({ areas, trabajadores, isAdmin, onSave, onDelete }) {
+function AreasNominaView({ areas, trabajadores, procesos, isAdmin, onSave, onDelete }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | area
   const [confirmDel, setConfirmDel] = useState(null);
   const ordenadas = [...areas].sort((a, b) => a.nombre.localeCompare(b.nombre));
@@ -379,6 +425,7 @@ function AreasNominaView({ areas, trabajadores, isAdmin, onSave, onDelete }) {
       {modal && (
         <AreaNominaModal
           area={modal === "nuevo" ? null : modal}
+          procesos={procesos}
           onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
           onClose={() => setModal(null)}
         />
@@ -3960,7 +4007,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout }) {
           {subView === "horas" && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
           {subView === "resumen" && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} />}
           {subView === "trabajadores" && !areaLider && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} />}
-          {subView === "areas_nomina" && !areaLider && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarAreaNomina} onDelete={borrarAreaNomina} />}
+          {subView === "areas_nomina" && !areaLider && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} isAdmin={isAdmin} onSave={guardarAreaNomina} onDelete={borrarAreaNomina} />}
           {subView === "areas_tns" && !areaLider && <AreasTnsView areas={areasTNS} trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarAreaTNS} onDelete={borrarAreaTNS} />}
           {subView === "precios" && !areaLider && <PreciosProcesoView precios={precios} isAdmin={isAdmin} onSave={guardarProceso} onDelete={borrarProceso} />}
           {subView === "costos_teorico" && !areaLider && <CostosTeoricoProcesoView costos={costosTeoricoProceso} isAdmin={isAdmin} onGuardarLote={guardarCostosTeoricoProcesoLote} onBorrarTodo={vaciarCostosTeoricoProceso} />}

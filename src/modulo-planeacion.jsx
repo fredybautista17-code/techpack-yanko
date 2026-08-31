@@ -3080,7 +3080,7 @@ function diasHabiles(mes, anio) {
 }
 const DIAS_LABORALES_MES = 20;
 const MESES_CORTOS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
-function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina }) {
+function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movimientos, cargandoMovimientos, onActualizarMovimientos }) {
   const hoy = today();
   const [periodo, setPeriodo] = useState("mes"); // "dia" | "mes" | "anio"
   const [fechaDia, setFechaDia] = useState(hoy);
@@ -3102,6 +3102,28 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina }) {
     if (periodo === "anio") return sueldoMensual * 12;
     return sueldoMensual;
   }
+  // Meta de unidades del periodo elegido, a partir de la meta DIARIA que se
+  // configura en el área (Nómina → Administrativo → Área Interna) — misma
+  // estimación que costoPeriodo (no hay histórico día a día de movimientos).
+  function metaPeriodo(metaDiaria) {
+    if (!metaDiaria) return 0;
+    if (periodo === "dia") return metaDiaria;
+    if (periodo === "anio") return metaDiaria * DIAS_LABORALES_MES * 12;
+    return metaDiaria * (diasHabiles(mesSel, anioSel) || DIAS_LABORALES_MES);
+  }
+  const areaSeleccionada = useMemo(() => (areasNomina || []).find((a) => a.nombre === areaSel), [areasNomina, areaSel]);
+  // Pedido explícito de Fredy (2026-08-31): las áreas de sueldo fijo sin
+  // Registrar Producción (ej. ZONA CALOR, CONTROL DE CALIDAD) no tienen $
+  // producido que comparar contra su nómina — ahí "le da el día" no se
+  // puede medir en plata. Si el área tiene procesos marcados en su
+  // configuración (Nómina → Administrativo → Área Interna), este modo mide
+  // unidades REALES movidas en esos procesos (entrada/salida en Busint, el
+  // mismo dato que ya usa Estadísticas → "Actualizar cumplimiento") contra
+  // la meta diaria configurada. Sin área elegida ("Todas las áreas") o sin
+  // procesos marcados, se sigue viendo en modo $ (igual que Centro de Costo
+  // — Corte: valor producido vs. costo de nómina).
+  const procesosApoyo = areaSeleccionada?.procesosCentroCosto || [];
+  const modoApoyo = !!areaSel && procesosApoyo.length > 0;
   const trabajadoresArea = useMemo(() => {
     const activos = (trabajadores || []).filter((t) => t.activo !== false);
     return areaSel ? activos.filter((t) => (t.area || "Sin asignar") === areaSel) : activos;
@@ -3142,7 +3164,20 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina }) {
   const totalCosto = filas.reduce((s, f) => s + (f.sinSueldo ? 0 : f.costo), 0);
   const balance = totalValor - totalCosto;
   const pctCobertura = totalCosto > 0 ? (totalValor / totalCosto) * 100 : 0;
-  const algunoSinSueldo = filas.some((f) => f.sinSueldo);
+  const algunoSinSueldo = trabajadoresArea.some((t) => !t.sueldo);
+  // ── Modo apoyo: unidades movidas (Busint) en los procesos del área ──────
+  const movimientosArea = useMemo(() => {
+    if (!modoApoyo) return [];
+    return (movimientos?.salidas || [])
+      .filter((r) => procesosApoyo.includes(r.proceso) && enPeriodo(r.ultima))
+      .sort((a, b) => (b.ultima || "").localeCompare(a.ultima || ""));
+  }, [modoApoyo, movimientos, procesosApoyo, periodo, fechaDia, mesSel, anioSel]);
+  const unidadesMovidasApoyo = movimientosArea.reduce((s, r) => s + (r.total || 0), 0);
+  const metaDiariaApoyo = Number(areaSeleccionada?.metaDiariaUnidades) || 0;
+  const metaPeriodoApoyo = metaPeriodo(metaDiariaApoyo);
+  const pctCumplimientoApoyo = metaPeriodoApoyo > 0 ? (unidadesMovidasApoyo / metaPeriodoApoyo) * 100 : 0;
+  const estadoApoyo = metaPeriodoApoyo > 0 ? (unidadesMovidasApoyo >= metaPeriodoApoyo ? "ok" : "bad") : null;
+  const costoAreaApoyo = trabajadoresArea.reduce((s, t) => s + (t.sueldo ? costoPeriodo(Number(t.sueldo) || 0) : 0), 0);
   const etiquetaPeriodo =
     periodo === "dia" ? fmtFechaISO(fechaDia)
     : periodo === "mes" ? `${MESES_CORTOS[mesSel - 1]} ${anioSel}`
@@ -3163,12 +3198,20 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina }) {
     { key: "costo", label: `Costo nómina (${etiquetaPeriodo})`, align: "right", render: (f) => (f.sinSueldo ? <span style={{ color: C.amber }}>⚠️ sin sueldo</span> : fmtMoney(f.costo)) },
     { key: "balance", label: "Balance", align: "right", render: (f) => <span style={{ color: f.valorProducido - f.costo >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtMoney(f.valorProducido - f.costo)}</span> },
   ];
+  const columnasApoyo = [
+    { key: "numLote", label: "Lote" },
+    { key: "proceso", label: "Proceso" },
+    { key: "total", label: "Unidades", align: "right", render: (f) => fmtNum(f.total) },
+    { key: "ultima", label: "Última salida", render: (f) => fmtFechaISO(f.ultima) },
+  ];
   return (
     <div>
       <div style={{ marginBottom: 22 }}>
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>💰 Centro de Costo — Planeación</h2>
         <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>
-          Nómina que hay que pagar en cada área versus el valor de lo que cada trabajador está produciendo (Registrar Producción de Nómina, valorado con el precio máximo vigente por proceso).
+          {modoApoyo
+            ? "Nómina del área versus unidades reales movidas (Busint) en sus procesos — pensado para áreas de sueldo fijo sin Registrar Producción."
+            : "Nómina que hay que pagar en cada área versus el valor de lo que cada trabajador está produciendo (Registrar Producción de Nómina, valorado con el precio máximo vigente por proceso)."}
         </p>
       </div>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 18 }}>
@@ -3193,19 +3236,43 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina }) {
           <option value="">Todas las áreas</option>
           {(areasNomina || []).map((a) => <option key={a.id} value={a.nombre}>{a.nombre}</option>)}
         </select>
+        {modoApoyo && (
+          <Btn variant="ghost" onClick={onActualizarMovimientos} disabled={cargandoMovimientos}>
+            {cargandoMovimientos ? "Consultando Busint..." : "🔄 Actualizar movimientos"}
+          </Btn>
+        )}
       </div>
       {algunoSinSueldo && (
         <div style={{ background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: C.ink, marginBottom: 16 }}>
-          ⚠️ Algunos trabajadores no tienen sueldo cargado en Nómina → Trabajadores — su costo aparece en blanco y no se suma al total, así que el balance está incompleto para ellos.
+          ⚠️ Algunos trabajadores no tienen sueldo cargado en Nómina → Trabajadores — su costo no se suma al total, así que el costo de nómina está incompleto para ellos.
         </div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
-        <KPI icon="📦" label="Unidades producidas" value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
-        <KPI icon="💵" label="Valor producido" value={fmtMoney(totalValor)} color={C.green} bg={C.greenBg} />
-        <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(totalCosto)} color={C.violet} bg={C.violetBg} />
-        <KPI icon={balance >= 0 ? "✅" : "⚠️"} label="Balance" value={fmtMoney(balance)} color={balance >= 0 ? C.green : C.red} bg={balance >= 0 ? C.greenBg : C.redBg} sub={totalCosto > 0 ? `${pctCobertura.toFixed(0)}% cubierto` : undefined} />
-      </div>
-      <Tabla vacio="No hay trabajadores en esta área." columnas={columnas} filas={filas} />
+      {modoApoyo ? (
+        <>
+          {!movimientos && (
+            <div style={{ fontSize: 11, color: C.amber, marginBottom: 14 }}>Todavía no has consultado los movimientos de proceso en Busint en esta sesión — dale a "Actualizar movimientos" para ver las unidades reales.</div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 }}>
+            <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(costoAreaApoyo)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="📦" label="Unidades movidas" value={fmtNum(unidadesMovidasApoyo)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="🎯" label={`Meta ${etiquetaPeriodo}`} value={metaPeriodoApoyo > 0 ? fmtNum(metaPeriodoApoyo) : "Sin meta"} color={C.slate} bg={C.canvas} />
+            {metaPeriodoApoyo > 0 && (
+              <KPI icon={estadoApoyo === "ok" ? "✅" : "⚠️"} label="Cumplimiento" value={`${pctCumplimientoApoyo.toFixed(0)}%`} color={estadoApoyo === "ok" ? C.green : C.red} bg={estadoApoyo === "ok" ? C.greenBg : C.redBg} sub={estadoApoyo === "ok" ? "✓ Le da el período" : "⚠ No le da el período"} />
+            )}
+          </div>
+          <Tabla vacio="Sin movimientos de proceso en este periodo para los procesos configurados de esta área." columnas={columnasApoyo} filas={movimientosArea} />
+        </>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
+            <KPI icon="📦" label="Unidades producidas" value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="💵" label="Valor producido" value={fmtMoney(totalValor)} color={C.green} bg={C.greenBg} />
+            <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(totalCosto)} color={C.violet} bg={C.violetBg} />
+            <KPI icon={balance >= 0 ? "✅" : "⚠️"} label="Balance" value={fmtMoney(balance)} color={balance >= 0 ? C.green : C.red} bg={balance >= 0 ? C.greenBg : C.redBg} sub={totalCosto > 0 ? `${pctCobertura.toFixed(0)}% cubierto` : undefined} />
+          </div>
+          <Tabla vacio="No hay trabajadores en esta área." columnas={columnas} filas={filas} />
+        </>
+      )}
     </div>
   );
 }
@@ -4187,6 +4254,9 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
               trabajadores={trabajadoresNominaPlaneacion}
               produccion={produccionNominaPlaneacion}
               areasNomina={areasNominaPlaneacion}
+              movimientos={movimientosEstadisticas}
+              cargandoMovimientos={cargandoMovimientosEstadisticas}
+              onActualizarMovimientos={actualizarMovimientosEstadisticas}
             />
           )}
           {subView === "estadisticas" && (
