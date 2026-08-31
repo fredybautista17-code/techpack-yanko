@@ -2637,7 +2637,16 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   const otrosRegistrosLoteProceso = loteAsociado && proceso
     ? (produccionCompleta || []).filter((p) => p.numLote === loteAsociado.numLote && p.proceso === proceso && p.trabajadorId !== trabajadorId)
     : [];
-  const puedeGuardar = trabajadorId && proceso && Number(cantidad) > 0 && Number(precioReal) > 0 && !guardando && !excedeCostoTeorico && !loteBloqueado && !registroPrevio;
+  // (2026-08-31) Fredy pidió además un tope: la SUMA de lo que registren
+  // entre todos los trabajadores para este mismo lote+proceso no puede
+  // superar la cantidad cortada del lote (loteInfo.cantCortada). Si el lote
+  // no trae cantCortada (dato faltante en Busint), no se aplica el tope —
+  // no hay con qué compararlo.
+  const cantCortadaLote = loteAsociado ? Number(loteAsociado.cantCortada) || 0 : 0;
+  const totalRegistradoLoteProceso = otrosRegistrosLoteProceso.reduce((acc, p) => acc + (Number(p.cantidad) || 0), 0);
+  const cantidadDisponibleLoteProceso = cantCortadaLote > 0 ? Math.max(0, cantCortadaLote - totalRegistradoLoteProceso) : null;
+  const excedeCantidadLote = !!(loteAsociado && proceso && cantCortadaLote > 0 && Number(cantidad) > 0 && (totalRegistradoLoteProceso + Number(cantidad)) > cantCortadaLote);
+  const puedeGuardar = trabajadorId && proceso && Number(cantidad) > 0 && Number(precioReal) > 0 && !guardando && !excedeCostoTeorico && !loteBloqueado && !registroPrevio && !excedeCantidadLote;
   // (2026-08-31) Fredy pidió que cuando un proceso no tenga NINGÚN precio
   // máximo configurado (ni Busint en vivo, ni Excel, ni catálogo), se avise
   // automáticamente por correo al área de Diseño para que lo costeen --
@@ -2817,6 +2826,15 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
         {otrosRegistrosLoteProceso.length > 0 && (
           <div style={{ fontSize: 11, color: C.blue, fontWeight: 600, marginBottom: 10, background: C.blueBg, borderRadius: 8, padding: "8px 12px" }}>
             ℹ️ Este proceso del lote {loteAsociado.numLote} ya se repartió con otro(s) trabajador(es): {otrosRegistrosLoteProceso.map((p) => `${p.trabajadorNombre} (${fmtNum(p.cantidad)} und)`).join(", ")}.
+            {cantidadDisponibleLoteProceso != null && ` Quedan ${fmtNum(cantidadDisponibleLoteProceso)} und disponibles de lo cortado (${fmtNum(cantCortadaLote)}).`}
+          </div>
+        )}
+        {/* (2026-08-31) Bloquea puedeGuardar -- la suma entre todos los
+            trabajadores para este lote+proceso no puede superar lo
+            cortado. */}
+        {excedeCantidadLote && (
+          <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginBottom: 10 }}>
+            La suma de este proceso en el lote {loteAsociado.numLote} ({fmtNum(totalRegistradoLoteProceso)} ya registradas + {fmtNum(Number(cantidad))} que estás por guardar) supera lo cortado ({fmtNum(cantCortadaLote)} und) — no se puede guardar.
           </div>
         )}
         {/* (2026-08-31) Aviso informativo -- NO bloquea puedeGuardar. Se
