@@ -1400,6 +1400,11 @@ function AusenciaModal({ ausencia, trabajadores, onSave, onClose, trabajadorIdSu
     motivo: ausencia?.motivo || "",
     fechaInicio: ausencia?.fechaInicio || fechaInicioSugerida || today(),
     fechaFin: ausencia?.fechaFin || fechaInicioSugerida || today(),
+    // (2026-08-31) Fredy pidio poder ubicar un permiso por hora (ej. "8 a
+    // 10 am") ademas del rango de fechas -- opcional, para permisos de solo
+    // unas horas dentro de un dia, no todo el dia completo.
+    horaInicio: ausencia?.horaInicio || "",
+    horaFin: ausencia?.horaFin || "",
     observaciones: ausencia?.observaciones || "",
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
@@ -1413,6 +1418,8 @@ function AusenciaModal({ ausencia, trabajadores, onSave, onClose, trabajadorIdSu
       motivo: form.motivo,
       fechaInicio: form.fechaInicio,
       fechaFin: form.fechaFin,
+      horaInicio: form.horaInicio || "",
+      horaFin: form.horaFin || "",
       observaciones: form.observaciones.trim(),
     });
     onClose();
@@ -1432,6 +1439,13 @@ function AusenciaModal({ ausencia, trabajadores, onSave, onClose, trabajadorIdSu
       </Field>
       <Field label="Fecha Inicio"><FInput type="date" value={form.fechaInicio} onChange={set("fechaInicio")} /></Field>
       <Field label="Fecha Fin"><FInput type="date" value={form.fechaFin} onChange={set("fechaFin")} /></Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -6, marginBottom: 10 }}>
+        Déjalo vacío si el permiso es por el día completo. Si es solo por unas horas (ej. 8:00 a 10:00), complétalas acá.
+      </div>
+      <div style={{ display: "flex", gap: 12 }}>
+        <div style={{ flex: 1 }}><Field label="Hora Inicio (opcional)"><FInput type="time" value={form.horaInicio} onChange={set("horaInicio")} /></Field></div>
+        <div style={{ flex: 1 }}><Field label="Hora Fin (opcional)"><FInput type="time" value={form.horaFin} onChange={set("horaFin")} /></Field></div>
+      </div>
       <Field label="Observaciones (opcional)"><FInput value={form.observaciones} onChange={set("observaciones")} /></Field>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         {onDelete && (
@@ -1483,6 +1497,7 @@ function AusenciasView({ ausencias, trabajadores, isAdmin, currentUser, onSave, 
           { key: "motivo", label: "Motivo" },
           { key: "fechaInicio", label: "Desde", render: (f) => fmtFechaISO(f.fechaInicio) },
           { key: "fechaFin", label: "Hasta", render: (f) => fmtFechaISO(f.fechaFin) },
+          { key: "hora", label: "Hora", render: (f) => (f.horaInicio && f.horaFin) ? `${f.horaInicio}–${f.horaFin}` : "—" },
           { key: "observaciones", label: "Observaciones", render: (f) => f.observaciones || "—" },
           ...(isAdmin ? [{
             key: "acciones", label: "", align: "right",
@@ -1511,6 +1526,12 @@ const MOTIVO_ICONO = {
   "Suspensión de Contrato": "⛔",
   "Otro": "❔",
 };
+// (2026-08-31) Rango de hora de un permiso parcial (ej. "8:00 a 10:00"),
+// cuando la usuaria lo especificó -- vacío si el permiso es por el día
+// completo (la mayoría de los casos, ej. Vacaciones).
+function fmtHoraRango(a) {
+  return a && a.horaInicio && a.horaFin ? ` (${a.horaInicio}–${a.horaFin})` : "";
+}
 function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, currentUser, isAdmin, onSave, onDelete }) {
   const [ref, setRef] = useState(today().slice(0, 7)); // "YYYY-MM"
   // (2026-08-31) Fredy pidio que Permisos se viera "como calendario" -- antes
@@ -1606,11 +1627,14 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
                   <div
                     key={diaISO}
                     onClick={() => abrirCelda(trabajadorSel.id, diaISO)}
-                    title={a ? `${a.motivo}${a.observaciones ? " — " + a.observaciones : ""}` : (vino ? "Vino (con producción/horas registradas)" : "Sin registro — click para agregar permiso")}
+                    title={a ? `${a.motivo}${fmtHoraRango(a)}${a.observaciones ? " — " + a.observaciones : ""}` : (vino ? "Vino (con producción/horas registradas)" : "Sin registro — click para agregar permiso")}
                     style={{ minHeight: 74, padding: "6px 8px", borderTop: `1px solid ${C.border}`, borderLeft: `1px solid ${C.border}`, cursor: "pointer", background: esHoy ? C.blueBg : C.white, display: "flex", flexDirection: "column", gap: 4 }}
                   >
                     <span style={{ fontSize: 11, fontWeight: esHoy ? 800 : 600, color: esHoy ? C.blue : C.slate }}>{d.getDate()}</span>
                     {a && <span style={{ fontSize: 20, lineHeight: 1 }}>{MOTIVO_ICONO[a.motivo] || "❔"}</span>}
+                    {a && a.horaInicio && a.horaFin && (
+                      <span style={{ fontSize: 9, fontWeight: 700, color: C.amber }}>{a.horaInicio}–{a.horaFin}</span>
+                    )}
                     {!a && vino && <span style={{ fontSize: 20, lineHeight: 1 }}>✅</span>}
                   </div>
                 );
@@ -1632,7 +1656,7 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
                   </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
                     {visibles.map(({ trabajador, ausencia }) => (
-                      <span key={trabajador.id} title={`${trabajador.nombre} — ${ausencia.motivo}`} style={{ fontSize: 10, fontWeight: 700, color: C.amber, background: C.amberBg, borderRadius: 20, padding: "1px 6px", whiteSpace: "nowrap", maxWidth: 78, overflow: "hidden", textOverflow: "ellipsis" }}>
+                      <span key={trabajador.id} title={`${trabajador.nombre} — ${ausencia.motivo}${fmtHoraRango(ausencia)}`} style={{ fontSize: 10, fontWeight: 700, color: C.amber, background: C.amberBg, borderRadius: 20, padding: "1px 6px", whiteSpace: "nowrap", maxWidth: 78, overflow: "hidden", textOverflow: "ellipsis" }}>
                         {MOTIVO_ICONO[ausencia.motivo] || "❔"} {trabajador.nombre.split(" ")[0]}
                       </span>
                     ))}
@@ -1667,7 +1691,7 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
                 >
                   <span style={{ fontSize: 18 }}>{a ? (MOTIVO_ICONO[a.motivo] || "❔") : (vino ? "✅" : "◻️")}</span>
                   <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: C.ink }}>{t.nombre}</span>
-                  <span style={{ fontSize: 11, color: C.slate }}>{a ? a.motivo : (vino ? "Vino" : "Sin registro")}</span>
+                  <span style={{ fontSize: 11, color: C.slate }}>{a ? `${a.motivo}${fmtHoraRango(a)}` : (vino ? "Vino" : "Sin registro")}</span>
                 </div>
               );
             })}
