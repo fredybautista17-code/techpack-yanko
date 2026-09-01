@@ -2772,6 +2772,12 @@ function estadoProgramacion(fechaProgramada, movEntrada, movSalida) {
 }
 function ProgramadorProcesosView({
   currentUser,
+  // opcional: si se pasa, se usa en vez de currentUser.procesosPlaneacion —
+  // permite ver esta pantalla como admin, para cualquier área, sin depender
+  // del usuario logueado (ver AreasStandalone más abajo).
+  procesos,
+  // opcional: texto del renglón "Tus procesos: ..." (default sin cambios).
+  etiquetaProcesos,
   lotesActivos,
   trabajadoresEquipo,
   programaciones,
@@ -2781,7 +2787,7 @@ function ProgramadorProcesosView({
   onProgramar,
   onCancelarProgramacion,
 }) {
-  const misProcesos = currentUser?.procesosPlaneacion || [];
+  const misProcesos = procesos || currentUser?.procesosPlaneacion || [];
   const [modalProgramar, setModalProgramar] = useState(null);
   const [fechaForm, setFechaForm] = useState(today());
   const [trabajadorForm, setTrabajadorForm] = useState("");
@@ -2903,7 +2909,7 @@ function ProgramadorProcesosView({
         <div>
           <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>📋 Programador de Procesos</h2>
           <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>
-            Tus procesos: {misProcesos.length ? misProcesos.join(", ") : "ninguno asignado todavía"}.
+            {etiquetaProcesos || "Tus procesos"}: {misProcesos.length ? misProcesos.join(", ") : "ninguno asignado todavía"}.
           </p>
         </div>
         <Btn variant="ghost" onClick={onActualizarMovimientos} disabled={cargandoMovimientos}>
@@ -2912,7 +2918,9 @@ function ProgramadorProcesosView({
       </div>
       {!misProcesos.length && (
         <div style={{ background: C.white, borderRadius: 14, padding: 24, border: `1px solid ${C.border}`, color: C.slate, fontSize: 13, marginBottom: 20 }}>
-          Tu usuario todavía no tiene procesos asignados. Pide a un administrador que te los asigne en Administrador General → Usuarios → "Procesos que puede programar".
+          {procesos
+            ? "Ningún líder tiene esta área asignada todavía (o no tiene procesos marcados en \"Procesos que puede programar\") — sin eso no hay nada que programar aquí."
+            : "Tu usuario todavía no tiene procesos asignados. Pide a un administrador que te los asigne en Administrador General → Usuarios → \"Procesos que puede programar\"."}
         </div>
       )}
       {movimientos?.generadoEn && (
@@ -3080,13 +3088,13 @@ function diasHabiles(mes, anio) {
 }
 const DIAS_LABORALES_MES = 20;
 const MESES_CORTOS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
-function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movimientos, cargandoMovimientos, onActualizarMovimientos, reclamosCalidad }) {
+function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movimientos, cargandoMovimientos, onActualizarMovimientos, reclamosCalidad, areaFija }) {
   const hoy = today();
   const [periodo, setPeriodo] = useState("mes"); // "dia" | "mes" | "anio"
   const [fechaDia, setFechaDia] = useState(hoy);
   const [mesSel, setMesSel] = useState(new Date().getMonth() + 1);
   const [anioSel, setAnioSel] = useState(new Date().getFullYear());
-  const [areaSel, setAreaSel] = useState("");
+  const [areaSel, setAreaSel] = useState(areaFija || "");
   function enPeriodo(fechaISO) {
     if (!fechaISO) return false;
     if (periodo === "dia") return fechaISO === fechaDia;
@@ -3247,10 +3255,14 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
         {periodo === "anio" && (
           <input type="number" value={anioSel} onChange={(e) => setAnioSel(Number(e.target.value))} style={{ width: 90, padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
         )}
-        <select value={areaSel} onChange={(e) => setAreaSel(e.target.value)} style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, marginLeft: "auto" }}>
-          <option value="">Todas las áreas</option>
-          {(areasNomina || []).map((a) => <option key={a.id} value={a.nombre}>{a.nombre}</option>)}
-        </select>
+        {areaFija ? (
+          <div style={{ padding: "7px 12px", borderRadius: 8, background: C.canvas, border: `1px solid ${C.border}`, fontSize: 13, fontWeight: 700, color: C.ink, marginLeft: "auto" }}>{areaFija}</div>
+        ) : (
+          <select value={areaSel} onChange={(e) => setAreaSel(e.target.value)} style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, marginLeft: "auto" }}>
+            <option value="">Todas las áreas</option>
+            {(areasNomina || []).map((a) => <option key={a.id} value={a.nombre}>{a.nombre}</option>)}
+          </select>
+        )}
         {modoApoyo && (
           <Btn variant="ghost" onClick={onActualizarMovimientos} disabled={cargandoMovimientos}>
             {cargandoMovimientos ? "Consultando Busint..." : "🔄 Actualizar movimientos"}
@@ -3536,6 +3548,300 @@ function ControlCalidadView({ reclamos, onGuardar, onCambiarEstado, onBorrar, is
         <Btn onClick={guardar} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Registrar reclamo"}</Btn>
       </div>
       <Tabla vacio="No hay reclamos registrados todavía." columnas={columnas} filas={recientes} />
+    </div>
+  );
+}
+// ─── ÁREAS (módulo nuevo de nivel superior) ────────────────────────────────
+// Pedido explícito de Fredy (2026-09-01): un módulo aparte en el tablero
+// principal (junto a Diseño/Pedidos/Contabilidad/Planeación/Planta/Bodega/
+// Talento Humano/KPIs/Informes) donde entra por ÁREA (ej. Control de
+// Calidad, Zona Calor) y ahí ve, para esa área puntual: Centro de Costo,
+// Estadísticas (filtradas a los procesos de esa área), Reclamos y
+// Programador (viéndolo él como admin — puede programar lotes de cualquier
+// área, no solo la suya). Mismo patrón que ProgramadorProcesosStandalone/
+// MiDiaStandalone: pantalla de nivel superior montada aparte desde App.js,
+// con sus propias suscripciones de Firestore (no reutiliza el estado de
+// ModuloPlaneacion).
+//
+// "Procesos de esta área": no existe un campo directo área→procesos, así
+// que se deriva de los líderes cuya "Área Interna" (users.areaNomina)
+// coincide con el área elegida, uniendo sus procesosPlaneacion — es el
+// mismo dato que ya separa a Anny de Sarai en Nómina/Programador de
+// Procesos, sin pedirle a Fredy que configure nada aparte. Si un área no
+// tiene ningún líder asignado (o el líder no tiene procesos marcados),
+// Estadísticas/Programador quedan vacíos para esa área — se avisa en
+// pantalla, no se adivina un mapeo.
+const AREAS_SECCIONES = [
+  { id: "centro_costo", icon: "💰", label: "Centro de Costo" },
+  { id: "estadisticas", icon: "📈", label: "Estadísticas" },
+  { id: "reclamos", icon: "🔍", label: "Reclamos" },
+  { id: "programador", icon: "📋", label: "Programador" },
+];
+export function AreasStandalone({ currentUser, onVolver, onLogout }) {
+  const [areas, setAreas] = useState([]);
+  const [trabajadores, setTrabajadores] = useState([]);
+  const [produccion, setProduccion] = useState([]);
+  const [cargas, setCargas] = useState([]);
+  const [programaciones, setProgramaciones] = useState([]);
+  const [reclamos, setReclamos] = useState([]);
+  const [usuarios, setUsuarios] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [movimientos, setMovimientos] = useState(null);
+  const [cargandoMovimientos, setCargandoMovimientos] = useState(false);
+  const [areaSel, setAreaSel] = useState(null);
+  const [seccion, setSeccion] = useState("centro_costo");
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "nomina_areas"), (snap) => {
+      setAreas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "nomina_trabajadores"), (snap) => {
+      setTrabajadores(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "nomina_produccion"), (snap) => {
+      setProduccion(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_cargas"), (snap) => {
+      setCargas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_programacion_procesos"), (snap) => {
+      setProgramaciones(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_control_calidad"), (snap) => {
+      setReclamos(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "users"), (snap) => {
+      setUsuarios(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  const lotesActivos = useMemo(() => {
+    if (!cargas.length) return [];
+    const ordenadas = [...cargas].sort((a, b) => (b.creadoEn || b.fecha).localeCompare(a.creadoEn || a.fecha));
+    return ordenadas[0]?.lotes || [];
+  }, [cargas]);
+  const areaActual = useMemo(() => areas.find((a) => a.nombre === areaSel) || null, [areas, areaSel]);
+  const lideresArea = useMemo(() => {
+    if (!areaActual) return [];
+    return usuarios.filter((u) => u.areaNomina === areaActual.nombre);
+  }, [usuarios, areaActual]);
+  const procesosArea = useMemo(() => {
+    const set = new Set();
+    lideresArea.forEach((u) => (u.procesosPlaneacion || []).forEach((p) => set.add(p)));
+    return [...set];
+  }, [lideresArea]);
+  const trabajadoresArea = useMemo(() => {
+    if (!areaActual) return [];
+    return trabajadores.filter((t) => (t.area || "Sin asignar") === areaActual.nombre);
+  }, [trabajadores, areaActual]);
+  const programacionesArea = useMemo(
+    () => programaciones.filter((p) => procesosArea.includes(p.proceso)),
+    [programaciones, procesosArea]
+  );
+  const produccionArea = useMemo(
+    () => produccion.filter((p) => procesosArea.includes(p.proceso)),
+    [produccion, procesosArea]
+  );
+  const lotesActivosArea = useMemo(() => {
+    return lotesActivos
+      .map((l) => ({ ...l, procesos: (l.procesos || []).filter((p) => procesosArea.includes(p.nombre)) }))
+      .filter((l) => l.procesos.length > 0);
+  }, [lotesActivos, procesosArea]);
+  async function actualizarMovimientos() {
+    setCargandoMovimientos(true);
+    try {
+      const llamar = httpsCallable(functionsClient, "getMovimientosProcesoBusintBD");
+      const resp = await llamar();
+      setMovimientos(resp.data);
+    } catch (err) {
+      alert(`No se pudo consultar el cumplimiento en Busint: ${err?.message || String(err)}`);
+    } finally {
+      setCargandoMovimientos(false);
+    }
+  }
+  async function guardarReclamo(datos) {
+    const nuevo = { ...datos, creadoPor: currentUser?.name || currentUser?.username || "" };
+    setReclamos((rs) => [...rs, nuevo]);
+    await fsSave("planeacion_control_calidad", nuevo.id, nuevo);
+  }
+  async function cambiarEstadoReclamo(id, estado) {
+    setReclamos((rs) => rs.map((r) => (r.id === id ? { ...r, estado } : r)));
+    await fsSave("planeacion_control_calidad", id, { estado });
+  }
+  async function borrarReclamo(id) {
+    setReclamos((rs) => rs.filter((r) => r.id !== id));
+    await fsDelete("planeacion_control_calidad", id);
+  }
+  async function guardarProgramacion(datos) {
+    const id = uid();
+    await fsSave("planeacion_programacion_procesos", id, {
+      ...datos,
+      liderUsername: currentUser?.username || "",
+      liderNombre: currentUser?.name || "",
+      programadoDesdeArea: areaActual?.nombre || "",
+      creadoEn: new Date().toISOString(),
+    });
+  }
+  async function cancelarProgramacion(id) {
+    await fsDelete("planeacion_programacion_procesos", id);
+  }
+  function abrirArea(nombre) {
+    setAreaSel(nombre);
+    setSeccion("centro_costo");
+  }
+  if (loading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.canvas }}>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>🗂️</div>
+          <div style={{ color: C.slate }}>Cargando Áreas...</div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 32px", background: C.ink }}>
+        {areaSel ? (
+          <button onClick={() => setAreaSel(null)} style={{ background: "transparent", border: "1px solid rgba(200,184,162,0.3)", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, color: C.seam }}>
+            ← Áreas
+          </button>
+        ) : onVolver && (
+          <button onClick={onVolver} style={{ background: "transparent", border: "1px solid rgba(200,184,162,0.3)", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, color: C.seam }}>
+            ← Volver
+          </button>
+        )}
+        <div style={{ flex: 1, fontSize: 14, fontWeight: 800, color: C.white }}>
+          🗂️ Áreas{areaSel ? ` — ${areaSel}` : ""}
+        </div>
+        {onLogout && (
+          <button onClick={onLogout} style={{ background: "transparent", border: "none", cursor: "pointer", color: "rgba(232,93,74,0.85)", fontWeight: 700, fontSize: 12 }}>
+            ⏏ Cerrar sesión
+          </button>
+        )}
+      </div>
+      <div style={{ padding: "28px 32px" }}>
+        <div style={{ maxWidth: 1400, margin: "0 auto" }}>
+          {!areaSel ? (
+            <div>
+              <div style={{ marginBottom: 22 }}>
+                <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>🗂️ Áreas</h2>
+                <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>
+                  Elige un área para ver junto su Centro de Costo, Estadísticas, Reclamos y Programador.
+                </p>
+              </div>
+              {!areas.length ? (
+                <div style={{ background: C.white, borderRadius: 14, padding: 24, border: `1px solid ${C.border}`, color: C.slate, fontSize: 13 }}>
+                  Todavía no hay ninguna Área Interna creada — créalas en Nómina → Administrativo → Área Interna.
+                </div>
+              ) : (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 }}>
+                  {areas.map((a) => {
+                    const numLideres = usuarios.filter((u) => u.areaNomina === a.nombre).length;
+                    const numTrabajadores = trabajadores.filter((t) => (t.area || "Sin asignar") === a.nombre).length;
+                    return (
+                      <div
+                        key={a.id}
+                        onClick={() => abrirArea(a.nombre)}
+                        style={{ background: C.white, borderRadius: 14, padding: 22, border: `1.5px solid ${C.border}`, cursor: "pointer", transition: "all 0.2s" }}
+                        onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.borderColor = C.violet; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.borderColor = C.border; }}
+                      >
+                        <div style={{ width: 46, height: 46, borderRadius: 12, background: C.violetBg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, marginBottom: 14 }}>🗂️</div>
+                        <div style={{ fontWeight: 800, fontSize: 16, color: C.ink, marginBottom: 6 }}>{a.nombre}</div>
+                        <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>
+                          {numTrabajadores} trabajador{numTrabajadores !== 1 ? "es" : ""} · {numLideres} líder{numLideres !== 1 ? "es" : ""} asignado{numLideres !== 1 ? "s" : ""}
+                          {a.mideReclamosCalidad ? " · mide reclamos de Calidad" : ""}
+                        </div>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: C.violet }}>Entrar →</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 22, flexWrap: "wrap" }}>
+                {AREAS_SECCIONES.map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => setSeccion(s.id)}
+                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", borderRadius: 8, border: `1.5px solid ${seccion === s.id ? C.ink : C.border}`, background: seccion === s.id ? C.ink : C.white, color: seccion === s.id ? "#fff" : C.slate, fontWeight: 800, fontSize: 13, cursor: "pointer" }}
+                  >
+                    <span>{s.icon}</span> {s.label}
+                  </button>
+                ))}
+              </div>
+              {seccion === "centro_costo" && (
+                <CentroCostoPlaneacionView
+                  trabajadores={trabajadores}
+                  produccion={produccion}
+                  areasNomina={areas}
+                  areaFija={areaActual?.nombre}
+                  movimientos={movimientos}
+                  cargandoMovimientos={cargandoMovimientos}
+                  onActualizarMovimientos={actualizarMovimientos}
+                  reclamosCalidad={reclamos}
+                />
+              )}
+              {seccion === "estadisticas" && (
+                <EstadisticasPlaneacionView
+                  programaciones={programacionesArea}
+                  produccion={produccionArea}
+                  lotesActivos={lotesActivosArea}
+                  movimientos={movimientos}
+                  cargandoMovimientos={cargandoMovimientos}
+                  onActualizarMovimientos={actualizarMovimientos}
+                />
+              )}
+              {seccion === "reclamos" && (
+                <ControlCalidadView
+                  reclamos={reclamos}
+                  onGuardar={guardarReclamo}
+                  onCambiarEstado={cambiarEstadoReclamo}
+                  onBorrar={borrarReclamo}
+                  isAdmin={currentUser?.isAdmin}
+                />
+              )}
+              {seccion === "programador" && (
+                <ProgramadorProcesosView
+                  currentUser={currentUser}
+                  procesos={procesosArea}
+                  etiquetaProcesos={`Procesos de ${areaActual?.nombre}`}
+                  lotesActivos={lotesActivosArea}
+                  trabajadoresEquipo={trabajadoresArea}
+                  programaciones={programacionesArea}
+                  movimientos={movimientos}
+                  cargandoMovimientos={cargandoMovimientos}
+                  onActualizarMovimientos={actualizarMovimientos}
+                  onProgramar={guardarProgramacion}
+                  onCancelarProgramacion={cancelarProgramacion}
+                />
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

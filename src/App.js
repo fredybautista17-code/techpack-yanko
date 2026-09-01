@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import ModuloCorte from "./modulo-corte";
 import ModuloContabilidad from "./modulo-contabilidad";
-import ModuloPlaneacion, { MiDiaStandalone, ProgramadorProcesosStandalone } from "./modulo-planeacion";
+import ModuloPlaneacion, { MiDiaStandalone, ProgramadorProcesosStandalone, AreasStandalone } from "./modulo-planeacion";
 import ModuloPlanta from "./modulo-planta";
 import ModuloBodega from "./modulo-bodega";
 import ModuloNomina from "./modulo-nomina";
@@ -5020,7 +5020,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     </div>
   );
 }
-function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canAccessKpis, canAccessInformes, onGoArea, protos, capsulas, pedidos }) {
+function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, canAccessPlaneacion, canAccessPlanta, canAccessBodega, canAccessNomina, canAccessDiseno, canAccessPedidosArea, canAccessKpis, canAccessInformes, canAccessAreas, onGoArea, protos, capsulas, pedidos }) {
   const hoy = new Date();
   const protosEnProceso = protos.filter((p) => p.status === "en_proceso").length;
   const pedidosActivos = pedidos.filter((p) => p.estado === "activo" || p.estado === "terminado").length;
@@ -5075,6 +5075,11 @@ function HomeView({ currentUser, perms, canAccessCorte, canAccessContabilidad, c
       id: "informes_area", icon: "📋", label: "Informes", desc: "Lo que está vencido en cada área, en vivo — la misma info que manda el aviso automático por correo", color: T.coral, bg: T.coralBg,
       stats: [],
       permiso: canAccessInformes,
+    },
+    {
+      id: "areas_internas_area", icon: "🗂️", label: "Áreas", desc: "Entra por Área Interna (Control de Calidad, Zona Calor...) y mira su Centro de Costo, Estadísticas, Reclamos y Programador juntos", color: T.violet, bg: T.violetBg,
+      stats: [],
+      permiso: canAccessAreas,
     },
   ].filter((a) => a.permiso);
   return (
@@ -6997,7 +7002,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // KPIs ahora es un módulo de compañía completo (no solo Diseño — cubre
   // Corte, Ventas, Contabilidad, Planeación, etc.), por eso su permiso vive
   // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
-  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["kpis", "🎯 KPIs"], ["informes", "📋 Informes"]];
+  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["kpis", "🎯 KPIs"], ["informes", "📋 Informes"], ["areas_internas", "🗂️ Áreas"]];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["papelera", "🗑 Papelera"], ["busint_test", "🔌 Busint (prueba)"]];
   const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", grupo: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
   // Si tiene valor, el formulario de arriba está EDITANDO esa fila (en vez
@@ -10791,6 +10796,12 @@ function AppInner() {
   // compañía (hoy solo Diseño, se va ampliando a Bodega/Corte/Contabilidad).
   // Es la contraparte en pantalla del aviso automático por correo.
   const canAccessInformes = moduloVisible(userRoleData, "informes", currentUser?.isAdmin);
+  // "Áreas" — módulo nuevo de nivel superior (2026-09-01, pedido explícito
+  // de Fredy): entra por Área Interna (Control de Calidad, Zona Calor, ...)
+  // y ahí ve, para esa área puntual, Centro de Costo + Estadísticas +
+  // Reclamos + Programador (viéndolo él como admin). Ver AreasStandalone en
+  // modulo-planeacion.jsx.
+  const canAccessAreas = moduloVisible(userRoleData, "areas_internas", currentUser?.isAdmin);
   // "admin_diseno" es un permiso aparte del admin general: da entrada al panel
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
@@ -10871,6 +10882,9 @@ function AppInner() {
     ...(canAccessInformes
       ? [{ id: "informes_area", icon: "📋", label: "Informes", items: [{ id: "informes_area", icon: "📋", label: "Módulo Informes" }] }]
       : []),
+    ...(canAccessAreas
+      ? [{ id: "areas_internas_area", icon: "🗂️", label: "Áreas", items: [{ id: "areas_internas_area", icon: "🗂️", label: "Módulo Áreas" }] }]
+      : []),
   ];
   const [areaAbierta, setAreaAbierta] = useState("diseno");
   function isViewActive(itemId) {
@@ -10886,6 +10900,7 @@ function AppInner() {
     if (itemId === "bodega_area") return moduloActivo === "bodega";
     if (itemId === "nomina_area") return moduloActivo === "nomina";
     if (itemId === "informes_area") return moduloActivo === "informes";
+    if (itemId === "areas_internas_area") return moduloActivo === "areas_internas";
     return view === itemId;
   }
   function navClick(itemId) {
@@ -10896,6 +10911,7 @@ function AppInner() {
     if (itemId === "bodega_area") { setModuloActivo("bodega"); return; }
     if (itemId === "nomina_area") { setModuloActivo("nomina"); return; }
     if (itemId === "informes_area") { setModuloActivo("informes"); return; }
+    if (itemId === "areas_internas_area") { setModuloActivo("areas_internas"); return; }
     setView(itemId);
   }
   // "Planeador puro": solo tiene Corte y NINGUNA otra sección de Diseño (ni
@@ -10964,6 +10980,9 @@ function AppInner() {
   }
   if (moduloActivo === "informes") {
     return <ModuloInformes currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+  }
+  if (moduloActivo === "areas_internas") {
+    return <AreasStandalone currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   return (
     <div style={{ minHeight: "100vh", background: T.canvas, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,sans-serif" }}>
@@ -11047,7 +11066,7 @@ function AppInner() {
         <div style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
           <div style={{ maxWidth: 1020, margin: "0 auto" }}>
             {view === "dashboard" && (
-              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes}
+              <HomeView currentUser={currentUser} perms={perms} canAccessCorte={canAccessCorte} canAccessContabilidad={canAccessContabilidad} canAccessPlaneacion={canAccessPlaneacion} canAccessPlanta={canAccessPlanta} canAccessBodega={canAccessBodega} canAccessNomina={canAccessNomina} canAccessDiseno={canAccessDiseno} canAccessPedidosArea={canAccessPedidosArea} canAccessKpis={canAccessKpis} canAccessInformes={canAccessInformes} canAccessAreas={canAccessAreas}
                 onGoArea={(id) => {
                   if (id === "contabilidad_area") { setModuloActivo("contabilidad"); }
                   else if (id === "planeacion_area") { setModuloActivo("planeacion"); }
@@ -11055,6 +11074,7 @@ function AppInner() {
                   else if (id === "bodega_area") { setModuloActivo("bodega"); }
                   else if (id === "nomina_area") { setModuloActivo("nomina"); }
                   else if (id === "informes_area") { setModuloActivo("informes"); }
+                  else if (id === "areas_internas_area") { setModuloActivo("areas_internas"); }
                   else if (id === "kpis_area") { setAreaAbierta("kpis_area"); setView("kpis"); }
                   else if (id === "pedidos_area") {
                     setAreaAbierta("pedidos_area");
