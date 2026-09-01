@@ -809,9 +809,34 @@ function celda(v, style, numFmt) {
 
 // (CURVA_TALLAS_ESTANDAR y normTalla ahora están definidos arriba, junto a
 // TALLAS_BODEGA, para poder usarlos también en Montar Despacho.)
+// (2026-09-01, a pedido de Fredy) Solo para el Excel de Dubo que se
+// descarga: unifica en una sola fila las líneas que comparten REF + N°
+// Traslado + Descripción + Precio + Dcto, sumando Cantidad y Total — así
+// no sale la misma referencia repetida varias veces con cantidades
+// chicas cuando vino repartida en varios bultos. No toca lo guardado en
+// Firestore ni lo que se ve en pantalla, solo el archivo descargado.
+function agruparLineasPorRef(lineas) {
+  const grupos = new Map();
+  const orden = [];
+  (lineas || []).forEach((l) => {
+    const key = [l.referencia || "", l.numTraslado || "", l.descripcion || "", Number(l.precio) || 0, Number(l.dcto) || 0].join("||");
+    if (!grupos.has(key)) {
+      grupos.set(key, { ...l, cantidad: 0, total: 0 });
+      orden.push(key);
+    }
+    const g = grupos.get(key);
+    g.cantidad = (Number(g.cantidad) || 0) + (Number(l.cantidad) || 0);
+    g.total = (Number(g.total) || 0) + (Number(l.total) || 0);
+  });
+  return orden.map((k) => grupos.get(k));
+}
 async function exportarDespachoExcel(despacho, esDubo) {
   const XLSX = await import("xlsx-js-style");
   const lineas = despacho.lineas || [];
+  // Solo para Dubo: unifica filas repetidas de la misma REF (ver
+  // agruparLineasPorRef arriba). Venezuela/Colombia sigue línea por línea
+  // (cada bulto trae su propio N° de Corte/Bulto y códigos de barra).
+  const lineasExport = esDubo ? agruparLineasPorRef(lineas) : lineas;
   // Dubo no lleva columnas de código de barra por talla en su Excel.
   const tallas = esDubo ? [] : [...CURVA_TALLAS_ESTANDAR];
   if (!esDubo) {
@@ -825,7 +850,7 @@ async function exportarDespachoExcel(despacho, esDubo) {
   const colHeaders = esDubo ? COL_HEADERS_DUBO : COL_HEADERS_BASE;
   const nColsTallas = tallas.length;
   const nColsTotal = colsBase + nColsTallas;
-  const nFilasDatos = Math.max(CAPACIDAD_LINEAS, lineas.length);
+  const nFilasDatos = Math.max(CAPACIDAD_LINEAS, lineasExport.length);
   const nColsBase = colHeaders.length;
 
   const grid = [];
@@ -851,7 +876,7 @@ async function exportarDespachoExcel(despacho, esDubo) {
   grid.push(filaHeader);
   // filas de datos: siempre CAPACIDAD_LINEAS filas (o más si el despacho tiene más líneas)
   for (let idx = 0; idx < nFilasDatos; idx++) {
-    const l = lineas[idx];
+    const l = lineasExport[idx];
     const fila = [];
     if (l) {
       const totalDcto = (Number(l.precio) || 0) - (Number(l.dcto) || 0);
@@ -891,8 +916,8 @@ async function exportarDespachoExcel(despacho, esDubo) {
   // fila espaciadora antes de totales
   grid.push([]);
   // fila de totales
-  const totalUnd = lineas.reduce((s, l) => s + (Number(l.cantidad) || 0), 0);
-  const totalGeneral = lineas.reduce((s, l) => s + (Number(l.total) || 0), 0);
+  const totalUnd = lineasExport.reduce((s, l) => s + (Number(l.cantidad) || 0), 0);
+  const totalGeneral = lineasExport.reduce((s, l) => s + (Number(l.total) || 0), 0);
   const filaTotales = [];
   for (let c = 1; c <= nColsTotal - 1; c++) filaTotales[c] = celda("", ESTILO_TOTAL_VACIA);
   filaTotales[1] = celda("TOTAL UND", ESTILO_TOTAL);
@@ -901,7 +926,7 @@ async function exportarDespachoExcel(despacho, esDubo) {
     filaTotales[7] = celda("TOTAL", ESTILO_TOTAL);
     filaTotales[8] = celda(totalGeneral, ESTILO_TOTAL, FORMATO_MONEDA);
   } else {
-    const nBultos = new Set(lineas.map((l) => l.numBulto)).size;
+    const nBultos = new Set(lineasExport.map((l) => l.numBulto)).size;
     filaTotales[4] = celda("TOTAL BTS", ESTILO_TOTAL);
     filaTotales[5] = celda(nBultos, ESTILO_TOTAL);
     filaTotales[11] = celda("TOTAL", ESTILO_TOTAL);
