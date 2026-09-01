@@ -348,6 +348,7 @@ function AreaNominaModal({ area, procesos, onSave, onClose }) {
     nombre: area?.nombre || "",
     procesosCentroCosto: area?.procesosCentroCosto || [],
     metaDiariaUnidades: area?.metaDiariaUnidades ?? "",
+    mideReclamosCalidad: !!area?.mideReclamosCalidad,
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function guardar() {
@@ -356,6 +357,7 @@ function AreaNominaModal({ area, procesos, onSave, onClose }) {
       nombre: form.nombre.trim(),
       procesosCentroCosto: form.procesosCentroCosto,
       metaDiariaUnidades: form.metaDiariaUnidades === "" ? null : Number(form.metaDiariaUnidades) || 0,
+      mideReclamosCalidad: form.mideReclamosCalidad,
     });
     onClose();
   }
@@ -402,6 +404,15 @@ function AreaNominaModal({ area, procesos, onSave, onClose }) {
       </div>
       {(form.procesosCentroCosto || []).length > 0 && (
         <Field label="Meta diaria de unidades (opcional)"><FInput type="number" value={form.metaDiariaUnidades} onChange={set("metaDiariaUnidades")} placeholder="Ej: 500" /></Field>
+      )}
+      <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: C.ink, marginBottom: 8 }}>
+        <input type="checkbox" checked={form.mideReclamosCalidad} onChange={(e) => set("mideReclamosCalidad")(e.target.checked)} />
+        Esta área mide reclamos de Control de Calidad en Centro de Costo
+      </label>
+      {form.mideReclamosCalidad && (
+        <div style={{ fontSize: 11, color: C.slate, marginTop: -4, marginBottom: 8 }}>
+          En Centro de Costo (Planeación), al elegir esta área va a aparecer un panel con reclamos abiertos/resueltos y unidades afectadas (los mismos datos de la pantalla Control de Calidad), además de lo que ya se muestre por procesos/producción.
+        </div>
       )}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
