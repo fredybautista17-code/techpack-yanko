@@ -6997,6 +6997,22 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
       }),
     });
   }
+  // Generaliza toggleDisenoGroup para cualquier grupo de permisos por área
+  // (Nómina, Áreas, y cualquier área nueva que en el futuro tenga más de un
+  // permiso) — prende TODAS las llaves del grupo de una vez si falta alguna,
+  // o las apaga todas si ya estaban todas activas. 2026-09-01, a pedido de
+  // Fredy: reorganizar Roles por área en vez de una lista plana de checkboxes.
+  function toggleGrupoModulos(roleId, keys) {
+    onUpdateConfig({
+      roles: config.roles.map((r) => {
+        if (r.id !== roleId) return r;
+        const current = effectiveModulos(r);
+        const todosActivos = keys.every((m) => current.includes(m));
+        const resto = current.filter((m) => !keys.includes(m));
+        return { ...r, modulos: todosActivos ? resto : [...resto, ...keys] };
+      }),
+    });
+  }
   const DISENO_ITEMS_DEF = [
     ["protos", "⬡ Prototipos"],
     ["capsulas", "⬢ Cápsulas"],
@@ -7011,7 +7027,23 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // KPIs ahora es un módulo de compañía completo (no solo Diseño — cubre
   // Corte, Ventas, Contabilidad, Planeación, etc.), por eso su permiso vive
   // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
-  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["nomina_novedades", "👷📣 Nómina: solo Novedades"], ["kpis", "🎯 KPIs"], ["informes", "📋 Informes"], ["areas_centro_costo", "🗂️💰 Áreas: Centro de Costo"], ["areas_estadisticas", "🗂️📊 Áreas: Estadísticas"], ["areas_reclamos", "🗂️📝 Áreas: Reclamos"], ["areas_programador", "🗂️🗓️ Áreas: Programador"]];
+  // Reorganizado 2026-09-01 (a pedido de Fredy) de una lista plana de
+  // checkboxes a grupos por área — mismo patrón visual que ya usaba Diseño
+  // (header con contador + toggle de grupo, chips individuales debajo). Un
+  // área con un solo permiso (ej. Contabilidad) se muestra como una sola
+  // caja clicable sin fila de chips aparte — no hace falta duplicar el
+  // control. Agregar una llave nueva a un área existente (o un área nueva)
+  // es solo agregarla a este array; el render de abajo es genérico.
+  const GRUPOS_MODULOS_DEF = [
+    { area: "💰 Contabilidad", items: [["contabilidad", "Contabilidad"]] },
+    { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
+    { area: "🏭 Planta", items: [["planta", "Planta"]] },
+    { area: "📦 Bodega", items: [["bodega", "Bodega"]] },
+    { area: "👷 Nómina", items: [["nomina", "Completa (todo el módulo)"], ["nomina_novedades", "Solo Novedades"]] },
+    { area: "🎯 KPIs", items: [["kpis", "KPIs"]] },
+    { area: "📋 Informes", items: [["informes", "Informes"]] },
+    { area: "🗂️ Áreas", items: [["areas_centro_costo", "Centro de Costo"], ["areas_estadisticas", "Estadísticas"], ["areas_reclamos", "Reclamos"], ["areas_programador", "Programador"]] },
+  ];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["papelera", "🗑 Papelera"], ["busint_test", "🔌 Busint (prueba)"]];
   const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", grupo: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
   // Si tiene valor, el formulario de arriba está EDITANDO esa fila (en vez
@@ -7409,13 +7441,32 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                           })()}
                         </div>
                       </div>
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
-                        {OTROS_MODULOS_DEF.map(([mod, label]) => {
-                          const activo = modulosActivos.includes(mod);
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+                        {GRUPOS_MODULOS_DEF.map(({ area, items }) => {
+                          const claves = items.map(([mod]) => mod);
+                          const activos = claves.filter((mod) => modulosActivos.includes(mod)).length;
+                          const total = items.length;
                           return (
-                            <span key={mod} onClick={() => toggleModulo(r.id, mod)}
-                              style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: activo ? T.violetBg : "#EDEDF2", color: activo ? T.violet : T.slate, border: `1px solid ${activo ? T.violet : T.border}` }}
-                            >{label}</span>
+                            <div key={area} style={{ border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden", maxWidth: 420 }}>
+                              <span onClick={() => toggleGrupoModulos(r.id, claves)}
+                                style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: activos > 0 ? T.violetBg : T.canvas, cursor: "pointer", fontSize: 12, fontWeight: 700, color: activos > 0 ? T.violet : T.slate }}
+                              >
+                                <span style={{ flex: 1 }}>{area}</span>
+                                {total > 1 && <span style={{ fontSize: 10, fontWeight: 600, opacity: 0.75 }}>{activos}/{total} activas</span>}
+                              </span>
+                              {total > 1 && (
+                                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "8px 10px 8px 26px", borderTop: `1px solid ${T.border}` }}>
+                                  {items.map(([mod, label]) => {
+                                    const activo = modulosActivos.includes(mod);
+                                    return (
+                                      <span key={mod} onClick={() => toggleModulo(r.id, mod)}
+                                        style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: activo ? T.violetBg : "#EDEDF2", color: activo ? T.violet : T.slate, border: `1px solid ${activo ? T.violet : T.border}` }}
+                                      >{label}</span>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
                           );
                         })}
                       </div>
