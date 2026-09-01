@@ -1018,6 +1018,12 @@ function ultimasReferenciasBusint(prefijo, inicio, fin, busintLista, n = 3) {
 // Claves granulares de sección dentro de Diseño (Corte y Contabilidad siempre
 // se gestionan como llaves independientes, nunca implícitas en "diseno").
 const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial", "cronograma_muestras", "bitacora"];
+// Claves granulares de pestaña dentro del módulo "Áreas" (2026-09-01, a
+// pedido de Fredy: poder darle a un rol solo alguna(s) de las 4 pestañas —
+// Centro de Costo/Estadísticas/Reclamos/Programador — en vez de todo o
+// nada). "areas_internas" queda como llave de compatibilidad: un rol que
+// ya la tenga marcada sigue viendo las 4, igual que antes.
+const AREAS_SUBMODULOS = ["areas_centro_costo", "areas_estadisticas", "areas_reclamos", "areas_programador"];
 function moduloVisible(roleData, mod, isAdmin) {
   if (isAdmin) return true;
   if (!roleData) return false;
@@ -1028,6 +1034,9 @@ function moduloVisible(roleData, mod, isAdmin) {
     // (Prototipos, Cápsulas, Pedidos, Clientes, Estadísticas) — Corte y
     // Contabilidad siempre requirieron su propia llave explícita.
     if (roleData.modulos.includes("diseno") && DISENO_SUBMODULOS.includes(mod)) return true;
+    // Compatibilidad con la versión original de "Áreas" (2026-09-01), antes
+    // de dividirla en 4 llaves por pestaña — ver AREAS_SUBMODULOS arriba.
+    if (roleData.modulos.includes("areas_internas") && AREAS_SUBMODULOS.includes(mod)) return true;
     return false;
   }
   if (mod === "corte") return !!roleData.perms?.includes("corte");
@@ -7002,7 +7011,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // KPIs ahora es un módulo de compañía completo (no solo Diseño — cubre
   // Corte, Ventas, Contabilidad, Planeación, etc.), por eso su permiso vive
   // junto a Contabilidad/Planeación y no dentro de DISENO_ITEMS_DEF.
-  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["kpis", "🎯 KPIs"], ["informes", "📋 Informes"], ["areas_internas", "🗂️ Áreas"]];
+  const OTROS_MODULOS_DEF = [["contabilidad", "💰 Contabilidad"], ["planeacion", "📋 Planeación"], ["planta", "🏭 Planta"], ["bodega", "📦 Bodega"], ["nomina", "👷 Nómina"], ["nomina_novedades", "👷📣 Nómina: solo Novedades"], ["kpis", "🎯 KPIs"], ["informes", "📋 Informes"], ["areas_centro_costo", "🗂️💰 Áreas: Centro de Costo"], ["areas_estadisticas", "🗂️📊 Áreas: Estadísticas"], ["areas_reclamos", "🗂️📝 Áreas: Reclamos"], ["areas_programador", "🗂️🗓️ Áreas: Programador"]];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["papelera", "🗑 Papelera"], ["busint_test", "🔌 Busint (prueba)"]];
   const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", grupo: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
   // Si tiene valor, el formulario de arriba está EDITANDO esa fila (en vez
@@ -10791,7 +10800,15 @@ function AppInner() {
   const canAccessPlaneacion = moduloVisible(userRoleData, "planeacion", currentUser?.isAdmin);
   const canAccessPlanta = moduloVisible(userRoleData, "planta", currentUser?.isAdmin);
   const canAccessBodega = moduloVisible(userRoleData, "bodega", currentUser?.isAdmin);
-  const canAccessNomina = moduloVisible(userRoleData, "nomina", currentUser?.isAdmin);
+  const canAccessNominaCompleta = moduloVisible(userRoleData, "nomina", currentUser?.isAdmin);
+  // "nomina_novedades" (2026-09-01, a pedido de Fredy): permiso angosto para
+  // dar acceso SOLO al grupo "Novedades" de Nómina (Motivos de Ausencia,
+  // Permisos, Reporte de Asistencia) sin dar el módulo completo. Alguien con
+  // "nomina" completo ya ve Novedades igual que siempre — este permiso es
+  // aditivo, solo importa para quien NO tiene "nomina" completo.
+  const canAccessNominaNovedades = moduloVisible(userRoleData, "nomina_novedades", currentUser?.isAdmin);
+  const canAccessNomina = canAccessNominaCompleta || canAccessNominaNovedades;
+  const soloNovedadesNomina = !canAccessNominaCompleta && canAccessNominaNovedades;
   // Informes: vista consolidada de "lo que está vencido" en toda la
   // compañía (hoy solo Diseño, se va ampliando a Bodega/Corte/Contabilidad).
   // Es la contraparte en pantalla del aviso automático por correo.
@@ -10801,7 +10818,11 @@ function AppInner() {
   // y ahí ve, para esa área puntual, Centro de Costo + Estadísticas +
   // Reclamos + Programador (viéndolo él como admin). Ver AreasStandalone en
   // modulo-planeacion.jsx.
-  const canAccessAreas = moduloVisible(userRoleData, "areas_internas", currentUser?.isAdmin);
+  const canAccessAreasCentroCosto = moduloVisible(userRoleData, "areas_centro_costo", currentUser?.isAdmin);
+  const canAccessAreasEstadisticas = moduloVisible(userRoleData, "areas_estadisticas", currentUser?.isAdmin);
+  const canAccessAreasReclamos = moduloVisible(userRoleData, "areas_reclamos", currentUser?.isAdmin);
+  const canAccessAreasProgramador = moduloVisible(userRoleData, "areas_programador", currentUser?.isAdmin);
+  const canAccessAreas = canAccessAreasCentroCosto || canAccessAreasEstadisticas || canAccessAreasReclamos || canAccessAreasProgramador;
   // "admin_diseno" es un permiso aparte del admin general: da entrada al panel
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
@@ -10976,13 +10997,13 @@ function AppInner() {
     return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} soloLecturaBodega={currentUser?.role === "Cliente"} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "nomina") {
-    return <ModuloNomina currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloNomina currentUser={currentUser} soloNovedades={soloNovedadesNomina} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "informes") {
     return <ModuloInformes currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "areas_internas") {
-    return <AreasStandalone currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <AreasStandalone currentUser={currentUser} puedeCentroCosto={canAccessAreasCentroCosto} puedeEstadisticas={canAccessAreasEstadisticas} puedeReclamos={canAccessAreasReclamos} puedeProgramador={canAccessAreasProgramador} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   return (
     <div style={{ minHeight: "100vh", background: T.canvas, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,sans-serif" }}>

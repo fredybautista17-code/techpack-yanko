@@ -3577,7 +3577,15 @@ const AREAS_SECCIONES = [
   { id: "reclamos", icon: "🔍", label: "Reclamos" },
   { id: "programador", icon: "📋", label: "Programador" },
 ];
-export function AreasStandalone({ currentUser, onVolver, onLogout }) {
+export function AreasStandalone({ currentUser, onVolver, onLogout, puedeCentroCosto, puedeEstadisticas, puedeReclamos, puedeProgramador }) {
+  // Si es un líder de área (mismo criterio que ya usa Nómina: no-admin con
+  // Área Interna asignada), el módulo Áreas entra DIRECTO a su propia área,
+  // sin mostrarle la lista de las demás (2026-09-01, a pedido de Fredy).
+  const areaLiderNombre = !currentUser?.isAdmin && currentUser?.areaNomina ? currentUser.areaNomina : null;
+  // Qué pestañas puede ver este usuario (permiso por rol, ver App.js) — un
+  // admin siempre las ve las 4 porque moduloVisible le da acceso total.
+  const PERMISO_TAB = { centro_costo: !!puedeCentroCosto, estadisticas: !!puedeEstadisticas, reclamos: !!puedeReclamos, programador: !!puedeProgramador };
+  const seccionesVisibles = AREAS_SECCIONES.filter((s) => PERMISO_TAB[s.id]);
   const [areas, setAreas] = useState([]);
   const [trabajadores, setTrabajadores] = useState([]);
   const [produccion, setProduccion] = useState([]);
@@ -3588,8 +3596,8 @@ export function AreasStandalone({ currentUser, onVolver, onLogout }) {
   const [loading, setLoading] = useState(true);
   const [movimientos, setMovimientos] = useState(null);
   const [cargandoMovimientos, setCargandoMovimientos] = useState(false);
-  const [areaSel, setAreaSel] = useState(null);
-  const [seccion, setSeccion] = useState("centro_costo");
+  const [areaSel, setAreaSel] = useState(() => areaLiderNombre || null);
+  const [seccion, setSeccion] = useState(() => seccionesVisibles[0]?.id || "centro_costo");
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "nomina_areas"), (snap) => {
       setAreas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
@@ -3705,7 +3713,7 @@ export function AreasStandalone({ currentUser, onVolver, onLogout }) {
   }
   function abrirArea(nombre) {
     setAreaSel(nombre);
-    setSeccion("centro_costo");
+    setSeccion(seccionesVisibles[0]?.id || "centro_costo");
   }
   if (loading) {
     return (
@@ -3721,7 +3729,7 @@ export function AreasStandalone({ currentUser, onVolver, onLogout }) {
     <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
       <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 32px", background: C.ink }}>
-        {areaSel ? (
+        {areaSel && !areaLiderNombre ? (
           <button onClick={() => setAreaSel(null)} style={{ background: "transparent", border: "1px solid rgba(200,184,162,0.3)", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, color: C.seam }}>
             ← Áreas
           </button>
@@ -3741,7 +3749,7 @@ export function AreasStandalone({ currentUser, onVolver, onLogout }) {
       </div>
       <div style={{ padding: "28px 32px" }}>
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
-          {!areaSel ? (
+          {(!areaLiderNombre && !areaSel) ? (
             <div>
               <div style={{ marginBottom: 22 }}>
                 <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>🗂️ Áreas</h2>
@@ -3779,10 +3787,14 @@ export function AreasStandalone({ currentUser, onVolver, onLogout }) {
                 </div>
               )}
             </div>
+          ) : (areaLiderNombre && !areaActual) ? (
+            <div style={{ background: C.white, borderRadius: 14, padding: 24, border: `1px solid ${C.border}`, color: C.slate, fontSize: 13 }}>
+              Tu Área Interna (<b>{areaLiderNombre}</b>) no coincide con ninguna área creada en Nómina → Administrativo → Área Interna. Pídele a un administrador que la cree, o que corrija tu Área Interna en Usuarios.
+            </div>
           ) : (
             <div>
               <div style={{ display: "flex", gap: 8, marginBottom: 22, flexWrap: "wrap" }}>
-                {AREAS_SECCIONES.map((s) => (
+                {seccionesVisibles.map((s) => (
                   <button
                     key={s.id}
                     onClick={() => setSeccion(s.id)}
@@ -3792,7 +3804,7 @@ export function AreasStandalone({ currentUser, onVolver, onLogout }) {
                   </button>
                 ))}
               </div>
-              {seccion === "centro_costo" && (
+              {seccion === "centro_costo" && PERMISO_TAB.centro_costo && (
                 <CentroCostoPlaneacionView
                   trabajadores={trabajadores}
                   produccion={produccion}
@@ -3804,7 +3816,7 @@ export function AreasStandalone({ currentUser, onVolver, onLogout }) {
                   reclamosCalidad={reclamos}
                 />
               )}
-              {seccion === "estadisticas" && (
+              {seccion === "estadisticas" && PERMISO_TAB.estadisticas && (
                 <EstadisticasPlaneacionView
                   programaciones={programacionesArea}
                   produccion={produccionArea}
@@ -3814,7 +3826,7 @@ export function AreasStandalone({ currentUser, onVolver, onLogout }) {
                   onActualizarMovimientos={actualizarMovimientos}
                 />
               )}
-              {seccion === "reclamos" && (
+              {seccion === "reclamos" && PERMISO_TAB.reclamos && (
                 <ControlCalidadView
                   reclamos={reclamos}
                   onGuardar={guardarReclamo}
@@ -3823,7 +3835,7 @@ export function AreasStandalone({ currentUser, onVolver, onLogout }) {
                   isAdmin={currentUser?.isAdmin}
                 />
               )}
-              {seccion === "programador" && (
+              {seccion === "programador" && PERMISO_TAB.programador && (
                 <ProgramadorProcesosView
                   currentUser={currentUser}
                   procesos={procesosArea}
