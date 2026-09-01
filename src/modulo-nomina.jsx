@@ -570,6 +570,95 @@ function AreasTnsView({ areas, trabajadores, isAdmin, onSave, onDelete }) {
     </div>
   );
 }
+// (2026-09-01, pedido de Fredy) Catálogo de Motivos de Ausencia: antes era
+// una lista fija en el código (ver MOTIVOS_AUSENCIA/MOTIVO_ICONO arriba),
+// ahora editable por el admin -- mismo patrón que Área Interna/Área TNS
+// (colección Firestore "nomina_motivos_ausencia", { nombre, icono }). Fredy
+// pidió poder agregar motivos nuevos (ej. "Escolaridad") sin depender de
+// que se le agreguen en el código cada vez. El desplegable "Motivo" del
+// modal Nueva/Editar Ausencia y los íconos del calendario de Permisos
+// ahora leen esta lista en vez de la constante fija.
+function MotivoAusenciaModal({ motivo, onSave, onClose }) {
+  const [form, setForm] = useState({ nombre: motivo?.nombre || "", icono: motivo?.icono || "" });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  function guardar() {
+    if (!form.nombre.trim()) return;
+    onSave({ nombre: form.nombre.trim(), icono: form.icono.trim() || "❔" });
+    onClose();
+  }
+  return (
+    <Modal title={motivo ? "Editar Motivo de Ausencia" : "Nuevo Motivo de Ausencia"} onClose={onClose} width={400}>
+      <Field label="Nombre del motivo"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Escolaridad, Vacaciones, Incapacidad" /></Field>
+      <Field label="Ícono (opcional)"><FInput value={form.icono} onChange={set("icono")} placeholder="Ej: 🎓 (si lo dejas vacío usa ❔)" /></Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        Este ícono aparece junto al motivo en el calendario de Permisos.
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar} disabled={!form.nombre.trim()}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+function MotivosAusenciaView({ motivos, ausencias, isAdmin, onSave, onDelete }) {
+  const [modal, setModal] = useState(null); // null | "nuevo" | motivo
+  const [confirmDel, setConfirmDel] = useState(null);
+  const ordenados = [...motivos].sort((a, b) => a.nombre.localeCompare(b.nombre));
+  function contarAusencias(nombre) {
+    return (ausencias || []).filter((a) => a.motivo === nombre).length;
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Estos son los motivos que se pueden elegir al registrar una ausencia (Motivos de Ausencia, calendario de Permisos). Agrega, renombra o borra los que necesites — ej. "Escolaridad".
+      </div>
+      {modal && (
+        <MotivoAusenciaModal
+          motivo={modal === "nuevo" ? null : modal}
+          onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {confirmDel && (
+        <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Eliminar el motivo <strong>{confirmDel.nombre}</strong>?
+            {contarAusencias(confirmDel.nombre) > 0 && (
+              <div style={{ marginTop: 10, color: C.red, fontWeight: 600 }}>⚠️ {contarAusencias(confirmDel.nombre)} ausencia(s) ya registradas usan este motivo — no se les cambia ni se borran, pero este motivo ya no va a aparecer en la lista para elegir de nuevo.</div>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={() => { onDelete(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+          </div>
+        </Modal>
+      )}
+      {isAdmin && (
+        <div style={{ marginBottom: 16 }}>
+          <Btn onClick={() => setModal("nuevo")}>+ Nuevo Motivo</Btn>
+        </div>
+      )}
+      <Tabla
+        vacio="Sin motivos registrados todavía."
+        columnas={[
+          { key: "icono", label: "", render: (f) => <span style={{ fontSize: 18 }}>{f.icono || "❔"}</span> },
+          { key: "nombre", label: "Motivo" },
+          { key: "usos", label: "Ausencias registradas", align: "right", render: (f) => contarAusencias(f.nombre) },
+          ...(isAdmin ? [{
+            key: "acciones", label: "", align: "right",
+            render: (f) => (
+              <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <span onClick={(e) => { e.stopPropagation(); setModal(f); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>Editar</span>
+                <span onClick={(e) => { e.stopPropagation(); setConfirmDel(f); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>
+              </span>
+            ),
+          }] : []),
+        ]}
+        filas={ordenados}
+      />
+    </div>
+  );
+}
 function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS }) {
   const [form, setForm] = useState({
     nombre: trabajador?.nombre || "",
@@ -1442,7 +1531,7 @@ const MOTIVOS_AUSENCIA = [
   "Vacaciones", "Incapacidad", "Licencia Remunerada", "Licencia No Remunerada",
   "Licencia Maternidad/Paternidad", "Permiso", "Luto", "Suspensión de Contrato", "Otro",
 ];
-function AusenciaModal({ ausencia, trabajadores, onSave, onClose, trabajadorIdSugerido, fechaInicioSugerida, onDelete }) {
+function AusenciaModal({ ausencia, trabajadores, motivosDisponibles = MOTIVOS_AUSENCIA, onSave, onClose, trabajadorIdSugerido, fechaInicioSugerida, onDelete }) {
   const [form, setForm] = useState({
     trabajadorId: ausencia?.trabajadorId || trabajadorIdSugerido || "",
     nombreLibre: ausencia?.nombreLibre || "",
@@ -1484,7 +1573,7 @@ function AusenciaModal({ ausencia, trabajadores, onSave, onClose, trabajadorIdSu
         </Field>
       )}
       <Field label="Motivo">
-        <FSel value={form.motivo} onChange={set("motivo")} options={MOTIVOS_AUSENCIA} placeholder="Selecciona..." />
+        <FSel value={form.motivo} onChange={set("motivo")} options={motivosDisponibles} placeholder="Selecciona..." />
       </Field>
       <Field label="Fecha Inicio"><FInput type="date" value={form.fechaInicio} onChange={set("fechaInicio")} /></Field>
       <Field label="Fecha Fin"><FInput type="date" value={form.fechaFin} onChange={set("fechaFin")} /></Field>
@@ -1508,7 +1597,7 @@ function AusenciaModal({ ausencia, trabajadores, onSave, onClose, trabajadorIdSu
     </Modal>
   );
 }
-function AusenciasView({ ausencias, trabajadores, currentUser, onSave, onDelete }) {
+function AusenciasView({ ausencias, trabajadores, currentUser, motivosDisponibles, onSave, onDelete }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | ausencia
   const [confirmDel, setConfirmDel] = useState(null);
   const ordenadas = [...ausencias].sort((a, b) => (b.fechaInicio || "").localeCompare(a.fechaInicio || ""));
@@ -1518,6 +1607,7 @@ function AusenciasView({ ausencias, trabajadores, currentUser, onSave, onDelete 
         <AusenciaModal
           ausencia={modal === "nuevo" ? null : modal}
           trabajadores={trabajadores}
+          motivosDisponibles={motivosDisponibles}
           onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data, registradoPor: currentUser?.name || currentUser?.username || "", registradoEn: new Date().toISOString() } : { id: modal.id, ...data })}
           onClose={() => setModal(null)}
         />
@@ -1577,13 +1667,19 @@ const MOTIVO_ICONO = {
   "Suspensión de Contrato": "⛔",
   "Otro": "❔",
 };
+// (2026-09-01, a pedido de Fredy) Semilla para "nomina_motivos_ausencia"
+// -- ver MotivosAusenciaView mas abajo. La lista de motivos paso de fija
+// en el codigo a editable por el admin; esto preserva los mismos 9
+// motivos + iconos de siempre la primera vez que se despliega (ver el
+// useEffect de auto-siembra en ModuloNomina, mas abajo).
+const MOTIVOS_AUSENCIA_DEFAULT = MOTIVOS_AUSENCIA.map((nombre) => ({ nombre, icono: MOTIVO_ICONO[nombre] || "❔" }));
 // (2026-08-31) Rango de hora de un permiso parcial (ej. "8:00 a 10:00"),
 // cuando la usuaria lo especificó -- vacío si el permiso es por el día
 // completo (la mayoría de los casos, ej. Vacaciones).
 function fmtHoraRango(a) {
   return a && a.horaInicio && a.horaFin ? ` (${a.horaInicio}–${a.horaFin})` : "";
 }
-function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, currentUser, isAdmin, onSave, onDelete }) {
+function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, currentUser, isAdmin, motivosDisponibles = MOTIVOS_AUSENCIA, motivoIcono = MOTIVO_ICONO, onSave, onDelete }) {
   const [ref, setRef] = useState(today().slice(0, 7)); // "YYYY-MM"
   // (2026-08-31) Fredy pidio que Permisos se viera "como calendario" -- antes
   // era una tabla trabajador x dia-1-31. Ahora es una grilla real de mes
@@ -1682,7 +1778,7 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
                     style={{ minHeight: 74, padding: "6px 8px", borderTop: `1px solid ${C.border}`, borderLeft: `1px solid ${C.border}`, cursor: "pointer", background: esHoy ? C.blueBg : C.white, display: "flex", flexDirection: "column", gap: 4 }}
                   >
                     <span style={{ fontSize: 11, fontWeight: esHoy ? 800 : 600, color: esHoy ? C.blue : C.slate }}>{d.getDate()}</span>
-                    {a && <span style={{ fontSize: 20, lineHeight: 1 }}>{MOTIVO_ICONO[a.motivo] || "❔"}</span>}
+                    {a && <span style={{ fontSize: 20, lineHeight: 1 }}>{motivoIcono[a.motivo] || "❔"}</span>}
                     {a && a.horaInicio && a.horaFin && (
                       <span style={{ fontSize: 9, fontWeight: 700, color: C.amber }}>{a.horaInicio}–{a.horaFin}</span>
                     )}
@@ -1708,7 +1804,7 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
                     {visibles.map(({ trabajador, ausencia }) => (
                       <span key={trabajador.id} title={`${trabajador.nombre} — ${ausencia.motivo}${fmtHoraRango(ausencia)}`} style={{ fontSize: 10, fontWeight: 700, color: C.amber, background: C.amberBg, borderRadius: 20, padding: "1px 6px", whiteSpace: "nowrap", maxWidth: 78, overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {MOTIVO_ICONO[ausencia.motivo] || "❔"} {trabajador.nombre.split(" ")[0]}
+                        {motivoIcono[ausencia.motivo] || "❔"} {trabajador.nombre.split(" ")[0]}
                       </span>
                     ))}
                     {resto > 0 && <span style={{ fontSize: 10, fontWeight: 700, color: C.slate }}>+{resto}</span>}
@@ -1721,7 +1817,7 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginTop: 14, fontSize: 11.5, color: C.slate }}>
         <span>✅ Vino (producción/horas registradas)</span>
-        {Object.entries(MOTIVO_ICONO).map(([motivo, icono]) => (
+        {Object.entries(motivoIcono).map(([motivo, icono]) => (
           <span key={motivo}>{icono} {motivo}</span>
         ))}
       </div>
@@ -1740,7 +1836,7 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
                   onClick={() => { setDiaDetalle(null); abrirCelda(t.id, diaDetalle); }}
                   style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, border: `1px solid ${C.border}`, cursor: "pointer" }}
                 >
-                  <span style={{ fontSize: 18 }}>{a ? (MOTIVO_ICONO[a.motivo] || "❔") : (vino ? "✅" : "◻️")}</span>
+                  <span style={{ fontSize: 18 }}>{a ? (motivoIcono[a.motivo] || "❔") : (vino ? "✅" : "◻️")}</span>
                   <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: C.ink }}>{t.nombre}</span>
                   <span style={{ fontSize: 11, color: C.slate }}>{a ? `${a.motivo}${fmtHoraRango(a)}` : (vino ? "Vino" : "Sin registro")}</span>
                 </div>
@@ -1753,6 +1849,7 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
         <AusenciaModal
           ausencia={modal.nuevo ? null : modal}
           trabajadores={trabajadores}
+          motivosDisponibles={motivosDisponibles}
           trabajadorIdSugerido={modal.nuevo ? modal.trabajadorId : null}
           fechaInicioSugerida={modal.nuevo ? modal.fechaInicio : null}
           onSave={(data) => onSave(modal.nuevo ? { id: uid(), ...data, registradoPor: currentUser?.name || currentUser?.username || "", registradoEn: new Date().toISOString() } : { id: modal.id, ...data })}
@@ -3782,6 +3879,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [precios, setPrecios] = useState([]);
   const [areasNomina, setAreasNomina] = useState([]);
   const [areasTNS, setAreasTNS] = useState([]);
+  const [motivosAusencia, setMotivosAusencia] = useState([]);
+  const [motivosAusenciaCargado, setMotivosAusenciaCargado] = useState(false);
   const [produccion, setProduccion] = useState([]);
   const [horas, setHoras] = useState([]);
   const [cierres, setCierres] = useState([]);
@@ -3798,6 +3897,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_precios_proceso"), (snap) => setPrecios(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_areas"), (snap) => setAreasNomina(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_areas_tns"), (snap) => setAreasTNS(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_motivos_ausencia"), (snap) => { setMotivosAusencia(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setMotivosAusenciaCargado(true); }),
       onSnapshot(collection(db, "nomina_produccion"), (snap) => setProduccion(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_horas"), (snap) => setHoras(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_cierres"), (snap) => setCierres(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -3810,6 +3910,20 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
     ];
     return () => unsubs.forEach((u) => u());
   }, []);
+  // (2026-09-01, a pedido de Fredy) Auto-siembra la coleccion de motivos si
+  // todavia esta vacia (primer despliegue de este cambio) -- preserva los
+  // mismos 9 motivos/iconos que antes vivian fijos en el codigo, para que
+  // nadie pierda el desplegable el dia que esto salga a producción. IDs
+  // deterministicos ("motivo_0".."motivo_8") para que sea seguro repetir
+  // (setDoc con merge:true) si dos sesiones intentan sembrar a la vez.
+  const motivosSeedHechoRef = useRef(false);
+  useEffect(() => {
+    if (!motivosAusenciaCargado || motivosAusencia.length > 0 || motivosSeedHechoRef.current) return;
+    motivosSeedHechoRef.current = true;
+    MOTIVOS_AUSENCIA_DEFAULT.forEach((m, i) => { fsSave("nomina_motivos_ausencia", `motivo_${i}`, m); });
+  }, [motivosAusenciaCargado, motivosAusencia]);
+  const nombresMotivosDisponibles = motivosAusencia.length > 0 ? motivosAusencia.map((m) => m.nombre) : MOTIVOS_AUSENCIA;
+  const iconoPorMotivo = motivosAusencia.length > 0 ? Object.fromEntries(motivosAusencia.map((m) => [m.nombre, m.icono || "❔"])) : MOTIVO_ICONO;
   const isAdmin = !!currentUser?.isAdmin;
   // Menú del admin reacomodado en grupos desplegables (25/08/2026, a pedido
   // del usuario) — pensado para que más adelante, cuando se manejen roles,
@@ -3844,6 +3958,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "precios", icon: "⚙️", label: "Procesos" },
             { id: "areas_nomina", icon: "🏭", label: "Área Interna" },
             { id: "areas_tns", icon: "🏛️", label: "Área TNS" },
+            { id: "motivos_ausencia", icon: "🏷️", label: "Motivos de Ausencia (catálogo)" },
             { id: "trabajadores", icon: "👷", label: "Trabajadores" },
           ] },
         { group: "Novedades", icon: "📣", items: [
@@ -3879,6 +3994,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function borrarAreaNomina(id) { await fsDelete("nomina_areas", id); }
   async function guardarAreaTNS(a) { await fsSave("nomina_areas_tns", a.id, a); }
   async function borrarAreaTNS(id) { await fsDelete("nomina_areas_tns", id); }
+  async function guardarMotivoAusencia(m) { await fsSave("nomina_motivos_ausencia", m.id, m); }
+  async function borrarMotivoAusencia(id) { await fsDelete("nomina_motivos_ausencia", id); }
   async function guardarProduccion(p) { await fsSave("nomina_produccion", p.id, p); }
   async function borrarProduccion(id) { await fsDelete("nomina_produccion", id); }
   async function guardarHoras(h) { await fsSave("nomina_horas", h.id, h); }
@@ -4028,14 +4145,15 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} />}
           {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} isAdmin={isAdmin} onSave={guardarAreaNomina} onDelete={borrarAreaNomina} />}
           {subView === "areas_tns" && !areaLider && !soloNovedades && <AreasTnsView areas={areasTNS} trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarAreaTNS} onDelete={borrarAreaTNS} />}
+          {subView === "motivos_ausencia" && !areaLider && !soloNovedades && <MotivosAusenciaView motivos={motivosAusencia} ausencias={ausencias} isAdmin={isAdmin} onSave={guardarMotivoAusencia} onDelete={borrarMotivoAusencia} />}
           {subView === "precios" && !areaLider && !soloNovedades && <PreciosProcesoView precios={precios} isAdmin={isAdmin} onSave={guardarProceso} onDelete={borrarProceso} />}
           {subView === "costos_teorico" && !areaLider && !soloNovedades && <CostosTeoricoProcesoView costos={costosTeoricoProceso} isAdmin={isAdmin} onGuardarLote={guardarCostosTeoricoProcesoLote} onBorrarTodo={vaciarCostosTeoricoProceso} />}
           {subView === "costo_referencia" && !areaLider && !soloNovedades && <ConsultarCostoReferenciaView />}
           {subView === "tns" && !areaLider && !soloNovedades && <TNSConexionView />}
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
-          {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} onSave={guardarAusencia} onDelete={borrarAusencia} />}
+          {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} />}
-          {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} onSave={guardarAusencia} onDelete={borrarAusencia} />}
+          {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} />}
           {subView === "historial_fiscal_destajo" && !areaLider && !soloNovedades && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
           {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView trabajadores={trabajadores} produccion={produccion} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} />}
