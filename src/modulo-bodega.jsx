@@ -786,9 +786,13 @@ const COLS_MONEDA = new Set([9, 10, 11, 12]);
 // de barra por talla (esos campos siguen existiendo en el formulario de
 // Bodega por si acaso, pero no se piden en este despacho) — así que el
 // Excel que se descarga sale con menos columnas y la descripción más ancha.
+// (2026-09-01, a pedido de Fredy) También se quitaron N° Traslado, Dcto y
+// Total Dcto de este Excel — quedaban sin usar en Dubo. Los datos siguen
+// guardados en Firestore (por si hicieran falta después), solo dejan de
+// imprimirse en este archivo.
 // Esto es solo para la exportación; el formulario en pantalla no cambia.
-const COLS_BASE_DUBO = 9; // columna espaciadora + 8 campos (REF..TOTAL)
-const COL_HEADERS_DUBO = ["REF", "CANTIDAD", "N° TRASLADO", "DESCRIPCION", "PRECIO", "DCTO", "TOTAL DCTTO", "TOTAL"];
+const COLS_BASE_DUBO = 6; // columna espaciadora + 5 campos (REF..TOTAL)
+const COL_HEADERS_DUBO = ["REF", "CANTIDAD", "DESCRIPCION", "PRECIO", "TOTAL"];
 
 function celda(v, style, numFmt) {
   if (v === null || v === undefined || v === "") {
@@ -883,12 +887,9 @@ async function exportarDespachoExcel(despacho, esDubo) {
       if (esDubo) {
         fila[1] = celda(l.referencia || "", ESTILO_DATO);
         fila[2] = celda(Number(l.cantidad) || 0, ESTILO_DATO);
-        fila[3] = celda(l.numTraslado || "", ESTILO_DATO);
-        fila[4] = celda(l.descripcion || "", ESTILO_DATO);
-        fila[5] = celda(Number(l.precio) || 0, ESTILO_DATO, FORMATO_MONEDA);
-        fila[6] = celda(Number(l.dcto) || 0, ESTILO_DATO, FORMATO_MONEDA);
-        fila[7] = celda(totalDcto, ESTILO_DATO, FORMATO_MONEDA);
-        fila[8] = celda(Number(l.total) || 0, ESTILO_DATO, FORMATO_MONEDA);
+        fila[3] = celda(l.descripcion || "", ESTILO_DATO);
+        fila[4] = celda(Number(l.precio) || 0, ESTILO_DATO, FORMATO_MONEDA);
+        fila[5] = celda(Number(l.total) || 0, ESTILO_DATO, FORMATO_MONEDA);
       } else {
         fila[1] = celda(l.referencia || "", ESTILO_DATO);
         fila[2] = celda(Number(l.cantidad) || 0, ESTILO_DATO);
@@ -923,8 +924,8 @@ async function exportarDespachoExcel(despacho, esDubo) {
   filaTotales[1] = celda("TOTAL UND", ESTILO_TOTAL);
   filaTotales[2] = celda(totalUnd, ESTILO_TOTAL);
   if (esDubo) {
-    filaTotales[7] = celda("TOTAL", ESTILO_TOTAL);
-    filaTotales[8] = celda(totalGeneral, ESTILO_TOTAL, FORMATO_MONEDA);
+    filaTotales[4] = celda("TOTAL", ESTILO_TOTAL);
+    filaTotales[5] = celda(totalGeneral, ESTILO_TOTAL, FORMATO_MONEDA);
   } else {
     const nBultos = new Set(lineasExport.map((l) => l.numBulto)).size;
     filaTotales[4] = celda("TOTAL BTS", ESTILO_TOTAL);
@@ -936,7 +937,7 @@ async function exportarDespachoExcel(despacho, esDubo) {
 
   const ws = XLSX.utils.aoa_to_sheet(grid);
   ws["!cols"] = esDubo
-    ? [{ wch: 3 }, { wch: 10 }, { wch: 9 }, { wch: 12 }, { wch: 40 }, { wch: 11 }, { wch: 9 }, { wch: 13 }, { wch: 13 }]
+    ? [{ wch: 3 }, { wch: 10 }, { wch: 9 }, { wch: 40 }, { wch: 13 }, { wch: 13 }]
     : [{ wch: 3 }, { wch: 10 }, { wch: 9 }, { wch: 12 }, { wch: 11 }, { wch: 20 }, { wch: 28 }, { wch: 10 }, { wch: 10 }, { wch: 11 }, { wch: 9 }, { wch: 13 }, { wch: 13 }, ...Array.from({ length: nColsTallas }, () => ({ wch: 16 }))];
 
   const wb = XLSX.utils.book_new();
