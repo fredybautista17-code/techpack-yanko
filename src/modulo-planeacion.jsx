@@ -160,6 +160,7 @@ function EstadoBadge({ estado }) {
     "EN TIEMPO": { bg: C.greenBg, color: C.green },
     CUMPLIDO: { bg: C.greenBg, color: C.green },
     PENDIENTE: { bg: C.blueBg, color: C.blue },
+    PROGRAMADO: { bg: C.blueBg, color: C.blue },
   };
   const s = map[estado] || { bg: C.canvas, color: C.slate };
   return (
@@ -2768,7 +2769,7 @@ function estadoProgramacion(fechaProgramada, movEntrada, movSalida) {
   const cumplioEn = candidatas.length ? candidatas.sort()[0] : null;
   if (cumplioEn && cumplioEn <= fechaProgramada) return "CUMPLIDO";
   if (fechaProgramada < today()) return "VENCIDO";
-  return "PENDIENTE";
+  return "PROGRAMADO";
 }
 function ProgramadorProcesosView({
   currentUser,
@@ -2827,14 +2828,33 @@ function ProgramadorProcesosView({
       .filter((p) => misProcesos.includes(p.proceso))
       .map((p) => {
         const clave = `${p.numLote}||${p.proceso}`;
-        const estado = estadoProgramacion(p.fechaProgramada, lookupEntradas.get(clave), lookupSalidas.get(clave));
-        return { ...p, estado };
+        const movEntrada = lookupEntradas.get(clave);
+        const movSalida = lookupSalidas.get(clave);
+        const estado = estadoProgramacion(p.fechaProgramada, movEntrada, movSalida);
+        return { ...p, estado, movEntrada, movSalida };
       })
       .sort((a, b) => a.fechaProgramada.localeCompare(b.fechaProgramada));
   }, [programaciones, misProcesos, lookupEntradas, lookupSalidas]);
   const vencidos = misProgramaciones.filter((p) => p.estado === "VENCIDO");
   const cumplidos = misProgramaciones.filter((p) => p.estado === "CUMPLIDO");
-  const pendientesProg = misProgramaciones.filter((p) => p.estado === "PENDIENTE");
+  const pendientesProg = misProgramaciones.filter((p) => p.estado === "PROGRAMADO");
+  // (2026-09-02, a pedido de Fredy) Para marcar en la tabla de arriba
+  // ("Pendientes por programar") los lote+proceso que YA tienen una
+  // programación activa -- así no parece que falta programarlos de nuevo.
+  const clavesYaProgramadas = useMemo(() => new Set(misProgramaciones.map((p) => `${p.numLote}||${p.proceso}`)), [misProgramaciones]);
+  // (2026-09-02, a pedido de Fredy) Para la tabla de "Lotes programados":
+  // cuando un lote sale CUMPLIDO, mostrar qué entrada/salida real de Busint
+  // fue la que lo cumplió (unidades y fecha), no solo la palabra "Cumplido".
+  function detalleCumplimiento(f) {
+    if (f.estado !== "CUMPLIDO") return null;
+    const candidatos = [];
+    if (f.movEntrada?.primera) candidatos.push({ tipo: "Entrada", ...f.movEntrada });
+    if (f.movSalida?.primera) candidatos.push({ tipo: "Salida", ...f.movSalida });
+    if (!candidatos.length) return null;
+    candidatos.sort((a, b) => a.primera.localeCompare(b.primera));
+    const c = candidatos[0];
+    return `${c.tipo}: ${fmtNum(c.total)} und (${fmtFechaISO(c.primera)})`;
+  }
   function abrirProgramar(fila) {
     setModalProgramar(fila);
     setFechaForm(today());
@@ -2865,6 +2885,7 @@ function ProgramadorProcesosView({
     { key: "proceso", label: "Proceso" },
     { key: "inventario", label: "Pendiente", align: "right", render: (f) => fmtNum(f.inventario) },
     { key: "planta", label: "Planta/Taller" },
+    { key: "yaProgramado", label: "", render: (f) => (clavesYaProgramadas.has(`${f.numLote}||${f.proceso}`) ? <span style={{ fontSize: 11, fontWeight: 700, color: C.blue, background: C.blueBg, borderRadius: 20, padding: "2px 8px", whiteSpace: "nowrap" }}>✓ Ya programado</span> : null) },
     { key: "_accion", label: "", render: (f) => <Btn small onClick={() => abrirProgramar(f)}>📅 Programar</Btn> },
   ];
   const columnasProgramados = [
@@ -2874,6 +2895,10 @@ function ProgramadorProcesosView({
     { key: "referencia", label: "Referencia" },
     { key: "proceso", label: "Proceso" },
     { key: "trabajadorNombre", label: "Trabajador" },
+    { key: "detalle", label: "Entrada/Salida Busint", render: (f) => {
+      const d = detalleCumplimiento(f);
+      return d ? <span style={{ fontSize: 12, color: C.green, fontWeight: 600 }}>{d}</span> : <span style={{ color: C.slate }}>—</span>;
+    } },
     { key: "_accion", label: "", render: (f) => <Btn small variant="danger" onClick={() => onCancelarProgramacion(f.id)}>Cancelar</Btn> },
   ];
   return (
@@ -2927,7 +2952,7 @@ function ProgramadorProcesosView({
         <div style={{ fontSize: 11, color: C.slate, marginBottom: 14 }}>Cumplimiento actualizado: {fmtFechaHora(movimientos.generadoEn)}</div>
       )}
       {!movimientos && (
-        <div style={{ fontSize: 11, color: C.amber, marginBottom: 14 }}>Todavía no has consultado el cumplimiento contra Busint en esta sesión — dale a "Actualizar cumplimiento" para ver Cumplido/Vencido real (mientras tanto todo aparece Pendiente).</div>
+        <div style={{ fontSize: 11, color: C.amber, marginBottom: 14 }}>Todavía no has consultado el cumplimiento contra Busint en esta sesión — dale a "Actualizar cumplimiento" para ver Cumplido/Vencido real (mientras tanto todo aparece Programado).</div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
         <KPI icon="📦" label="Pendientes por programar" value={pendientes.length} color={C.blue} bg={C.blueBg} />
@@ -3401,7 +3426,7 @@ function EstadisticasPlaneacionView({ programaciones, produccion, lotesActivos, 
   ];
   const totalCumplidos = programacionesConEstado.filter((p) => p.estado === "CUMPLIDO").length;
   const totalVencidos = programacionesConEstado.filter((p) => p.estado === "VENCIDO").length;
-  const totalPendientes = programacionesConEstado.filter((p) => p.estado === "PENDIENTE").length;
+  const totalPendientes = programacionesConEstado.filter((p) => p.estado === "PROGRAMADO").length;
   return (
     <div>
       <div style={{ marginBottom: 22, display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
