@@ -1508,7 +1508,7 @@ function AusenciaModal({ ausencia, trabajadores, onSave, onClose, trabajadorIdSu
     </Modal>
   );
 }
-function AusenciasView({ ausencias, trabajadores, isAdmin, currentUser, onSave, onDelete }) {
+function AusenciasView({ ausencias, trabajadores, currentUser, onSave, onDelete }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | ausencia
   const [confirmDel, setConfirmDel] = useState(null);
   const ordenadas = [...ausencias].sort((a, b) => (b.fechaInicio || "").localeCompare(a.fechaInicio || ""));
@@ -1534,11 +1534,13 @@ function AusenciasView({ ausencias, trabajadores, isAdmin, currentUser, onSave, 
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 720 }}>
         Registra acá vacaciones, incapacidades, licencias, permisos, etc. — el Reporte de Asistencia cruza esto contra el huellero para saber si un día sin marca está justificado.
       </div>
-      {isAdmin && (
-        <div style={{ marginBottom: 16 }}>
-          <Btn onClick={() => setModal("nuevo")}>+ Nueva Ausencia</Btn>
-        </div>
-      )}
+      {/* 2026-09-01, a pedido de Fredy: antes esto era isAdmin-only; ahora
+         cualquiera que llegue a esta pantalla ya tiene permiso legitimo
+         (admin, o Nomina Completa/Solo Novedades no-lider -- los lideres de
+         area nunca llegan aca, ver el guard "!areaLider" en ModuloNomina). */}
+      <div style={{ marginBottom: 16 }}>
+        <Btn onClick={() => setModal("nuevo")}>+ Nueva Ausencia</Btn>
+      </div>
       <Tabla
         vacio="Sin ausencias registradas."
         columnas={[
@@ -1548,7 +1550,7 @@ function AusenciasView({ ausencias, trabajadores, isAdmin, currentUser, onSave, 
           { key: "fechaFin", label: "Hasta", render: (f) => fmtFechaISO(f.fechaFin) },
           { key: "hora", label: "Hora", render: (f) => (f.horaInicio && f.horaFin) ? `${f.horaInicio}–${f.horaFin}` : "—" },
           { key: "observaciones", label: "Observaciones", render: (f) => f.observaciones || "—" },
-          ...(isAdmin ? [{
+          {
             key: "acciones", label: "", align: "right",
             render: (f) => (
               <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
@@ -1556,7 +1558,7 @@ function AusenciasView({ ausencias, trabajadores, isAdmin, currentUser, onSave, 
                 <span onClick={(e) => { e.stopPropagation(); setConfirmDel(f); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>
               </span>
             ),
-          }] : []),
+          },
         ]}
         filas={ordenadas}
       />
@@ -4031,7 +4033,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "costo_referencia" && !areaLider && !soloNovedades && <ConsultarCostoReferenciaView />}
           {subView === "tns" && !areaLider && !soloNovedades && <TNSConexionView />}
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
-          {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} isAdmin={isAdmin} currentUser={currentUser} onSave={guardarAusencia} onDelete={borrarAusencia} />}
+          {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} />}
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} />}
