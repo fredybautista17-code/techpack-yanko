@@ -3080,7 +3080,7 @@ function diasHabiles(mes, anio) {
 }
 const DIAS_LABORALES_MES = 20;
 const MESES_CORTOS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
-function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movimientos, cargandoMovimientos, onActualizarMovimientos }) {
+function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movimientos, cargandoMovimientos, onActualizarMovimientos, reclamosCalidad }) {
   const hoy = today();
   const [periodo, setPeriodo] = useState("mes"); // "dia" | "mes" | "anio"
   const [fechaDia, setFechaDia] = useState(hoy);
@@ -3112,6 +3112,21 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     return metaDiaria * (diasHabiles(mesSel, anioSel) || DIAS_LABORALES_MES);
   }
   const areaSeleccionada = useMemo(() => (areasNomina || []).find((a) => a.nombre === areaSel), [areasNomina, areaSel]);
+  // Pedido explícito de Fredy (2026-09-01): áreas como CONTROL DE CALIDAD no
+  // tienen procesos de Busint que medir (no cortan ni cosen), así que ni el
+  // modo $ ni el modo unidades de arriba le sirven. Si el área tiene marcada
+  // "mide reclamos de Control de Calidad" (Nómina -> Área Interna), se
+  // agrega un panel aparte a la izquierda con sus reclamos/devoluciones del
+  // mismo período elegido — no reemplaza lo de arriba, se suma (Fredy pidió
+  // "que se vea como está" + el panel nuevo al lado).
+  const mideReclamos = !!areaSeleccionada?.mideReclamosCalidad;
+  const reclamosPeriodo = useMemo(() => {
+    if (!mideReclamos) return [];
+    return (reclamosCalidad || []).filter((r) => enPeriodo(r.fecha));
+  }, [mideReclamos, reclamosCalidad, periodo, fechaDia, mesSel, anioSel]);
+  const reclamosAbiertosPeriodo = reclamosPeriodo.filter((r) => r.estado !== "RESUELTO");
+  const reclamosResueltosPeriodo = reclamosPeriodo.filter((r) => r.estado === "RESUELTO");
+  const unidadesAfectadasPeriodo = reclamosAbiertosPeriodo.reduce((s, r) => s + (Number(r.cantidad) || 0), 0);
   // Pedido explícito de Fredy (2026-08-31): las áreas de sueldo fijo sin
   // Registrar Producción (ej. ZONA CALOR, CONTROL DE CALIDAD) no tienen $
   // producido que comparar contra su nómina — ahí "le da el día" no se
@@ -3247,32 +3262,47 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
           ⚠️ Algunos trabajadores no tienen sueldo cargado en Nómina → Trabajadores — su costo no se suma al total, así que el costo de nómina está incompleto para ellos.
         </div>
       )}
-      {modoApoyo ? (
-        <>
-          {!movimientos && (
-            <div style={{ fontSize: 11, color: C.amber, marginBottom: 14 }}>Todavía no has consultado los movimientos de proceso en Busint en esta sesión — dale a "Actualizar movimientos" para ver las unidades reales.</div>
+      <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
+        {mideReclamos && (
+          <div style={{ flex: "0 0 240px", padding: 16, borderRadius: 12, border: `1px solid ${C.border}`, background: C.canvas }}>
+            <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 4 }}>📋 Calidad — {etiquetaPeriodo}</div>
+            <div style={{ fontSize: 11, color: C.slate, marginBottom: 14 }}>Reclamos/devoluciones registrados en Control de Calidad, mismo período elegido arriba.</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <KPI icon="⚠️" label="Reclamos abiertos" value={fmtNum(reclamosAbiertosPeriodo.length)} color={C.red} bg={C.redBg} />
+              <KPI icon="✅" label="Reclamos resueltos" value={fmtNum(reclamosResueltosPeriodo.length)} color={C.green} bg={C.greenBg} />
+              <KPI icon="📦" label="Unidades afectadas" value={fmtNum(unidadesAfectadasPeriodo)} color={C.amber} bg={C.amberBg} />
+            </div>
+          </div>
+        )}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {modoApoyo ? (
+            <>
+              {!movimientos && (
+                <div style={{ fontSize: 11, color: C.amber, marginBottom: 14 }}>Todavía no has consultado los movimientos de proceso en Busint en esta sesión — dale a "Actualizar movimientos" para ver las unidades reales.</div>
+              )}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 }}>
+                <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(costoAreaApoyo)} color={C.violet} bg={C.violetBg} />
+                <KPI icon="📦" label="Unidades movidas" value={fmtNum(unidadesMovidasApoyo)} color={C.blue} bg={C.blueBg} />
+                <KPI icon="🎯" label={`Meta ${etiquetaPeriodo}`} value={metaPeriodoApoyo > 0 ? fmtNum(metaPeriodoApoyo) : "Sin meta"} color={C.slate} bg={C.canvas} />
+                {metaPeriodoApoyo > 0 && (
+                  <KPI icon={estadoApoyo === "ok" ? "✅" : "⚠️"} label="Cumplimiento" value={`${pctCumplimientoApoyo.toFixed(0)}%`} color={estadoApoyo === "ok" ? C.green : C.red} bg={estadoApoyo === "ok" ? C.greenBg : C.redBg} sub={estadoApoyo === "ok" ? "✓ Le da el período" : "⚠ No le da el período"} />
+                )}
+              </div>
+              <Tabla vacio="Sin movimientos de proceso en este periodo para los procesos configurados de esta área." columnas={columnasApoyo} filas={movimientosArea} />
+            </>
+          ) : (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
+                <KPI icon="📦" label="Unidades producidas" value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
+                <KPI icon="💵" label="Valor producido" value={fmtMoney(totalValor)} color={C.green} bg={C.greenBg} />
+                <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(totalCosto)} color={C.violet} bg={C.violetBg} />
+                <KPI icon={balance >= 0 ? "✅" : "⚠️"} label="Balance" value={fmtMoney(balance)} color={balance >= 0 ? C.green : C.red} bg={balance >= 0 ? C.greenBg : C.redBg} sub={totalCosto > 0 ? `${pctCobertura.toFixed(0)}% cubierto` : undefined} />
+              </div>
+              <Tabla vacio="No hay trabajadores en esta área." columnas={columnas} filas={filas} />
+            </>
           )}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 }}>
-            <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(costoAreaApoyo)} color={C.violet} bg={C.violetBg} />
-            <KPI icon="📦" label="Unidades movidas" value={fmtNum(unidadesMovidasApoyo)} color={C.blue} bg={C.blueBg} />
-            <KPI icon="🎯" label={`Meta ${etiquetaPeriodo}`} value={metaPeriodoApoyo > 0 ? fmtNum(metaPeriodoApoyo) : "Sin meta"} color={C.slate} bg={C.canvas} />
-            {metaPeriodoApoyo > 0 && (
-              <KPI icon={estadoApoyo === "ok" ? "✅" : "⚠️"} label="Cumplimiento" value={`${pctCumplimientoApoyo.toFixed(0)}%`} color={estadoApoyo === "ok" ? C.green : C.red} bg={estadoApoyo === "ok" ? C.greenBg : C.redBg} sub={estadoApoyo === "ok" ? "✓ Le da el período" : "⚠ No le da el período"} />
-            )}
-          </div>
-          <Tabla vacio="Sin movimientos de proceso en este periodo para los procesos configurados de esta área." columnas={columnasApoyo} filas={movimientosArea} />
-        </>
-      ) : (
-        <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
-            <KPI icon="📦" label="Unidades producidas" value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
-            <KPI icon="💵" label="Valor producido" value={fmtMoney(totalValor)} color={C.green} bg={C.greenBg} />
-            <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(totalCosto)} color={C.violet} bg={C.violetBg} />
-            <KPI icon={balance >= 0 ? "✅" : "⚠️"} label="Balance" value={fmtMoney(balance)} color={balance >= 0 ? C.green : C.red} bg={balance >= 0 ? C.greenBg : C.redBg} sub={totalCosto > 0 ? `${pctCobertura.toFixed(0)}% cubierto` : undefined} />
-          </div>
-          <Tabla vacio="No hay trabajadores en esta área." columnas={columnas} filas={filas} />
-        </>
-      )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -4257,6 +4287,7 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
               movimientos={movimientosEstadisticas}
               cargandoMovimientos={cargandoMovimientosEstadisticas}
               onActualizarMovimientos={actualizarMovimientosEstadisticas}
+              reclamosCalidad={reclamosCalidad}
             />
           )}
           {subView === "estadisticas" && (
