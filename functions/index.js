@@ -3909,3 +3909,131 @@ exports.probarConexionTNS = onCall(
     }
   }
 );
+
+// (2026-09-03, a pedido de Fredy) Cierre automático de Centro de Costo --
+// todas las noches a las 10pm (hora Bogotá) guarda el cierre del período
+// "Día" de hoy para cada área en modo Destajo, igual que el botón manual
+// "Guardar cierre" (ver guardarCierreAyuda en src/modulo-planeacion.jsx:
+// mismo cálculo de costo -- sueldo + auxilio de transporte ÷ días hábiles
+// reales del mes -- y mismo "detalle" por trabajador). Un área sin ningún
+// líder/trabajador activo, o sin ninguna producción registrada hoy,
+// igual guarda un cierre en $0 -- así el historial no tiene huecos.
+function diasHabilesMes(mes, anio) {
+  let count = 0;
+  const d = new Date(anio, mes - 1, 1);
+  while (d.getMonth() === mes - 1) {
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) count++;
+    d.setDate(d.getDate() + 1);
+  }
+  return count;
+}
+const DIAS_LABORALES_MES_FALLBACK = 20;
+function fechaHoyBogota() {
+  // en-CA formatea como YYYY-MM-DD directo, sin tener que armarlo a mano.
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota" }).format(new Date());
+}
+function idNormalizado(texto) {
+  return String(texto || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 120);
+}
+function resolverModoMedicion(area) {
+  if (area.modoMedicion) return area.modoMedicion;
+  const procesosApoyo = area.procesosCentroCosto || [];
+  return procesosApoyo.length > 0 ? "busint_unidades" : "destajo";
+}
+async function correrCierreAutomaticoNocturno() {
+  const hoy = fechaHoyBogota();
+  const [anioStr, mesStr, diaStr] = hoy.split("-");
+  const anio = Number(anioStr);
+  const mes = Number(mesStr);
+  const divisorDia = diasHabilesMes(mes, anio) || DIAS_LABORALES_MES_FALLBACK;
+  const etiquetaPeriodo = `${diaStr}/${mesStr}/${anioStr}`;
+
+  const [areasSnap, trabajadoresSnap, produccionSnap] = await Promise.all([
+    db.collection("nomina_areas").get(),
+    db.collection("nomina_trabajadores").get(),
+    db.collection("nomina_produccion").where("fecha", "==", hoy).get(),
+  ]);
+  const areas = areasSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
+  const trabajadores = trabajadoresSnap.docs
+    .map((d) => ({ ...d.data(), id: d.id }))
+    .filter((t) => t.activo !== false);
+  const produccionHoy = produccionSnap.docs.map((d) => d.data());
+
+  const porTrabajador = new Map();
+  produccionHoy.forEach((p) => {
+    if (!p.trabajadorId) return;
+    if (!porTrabajador.has(p.trabajadorId)) porTrabajador.set(p.trabajadorId, { unidades: 0, valor: 0 });
+    const acc = porTrabajador.get(p.trabajadorId);
+    acc.unidades += Number(p.cantidad) || 0;
+    acc.valor += Number(p.total) || 0;
+  });
+
+  const areasDestajo = areas.filter((a) => a.nombre && resolverModoMedicion(a) === "destajo");
+  let guardados = 0;
+  for (const area of areasDestajo) {
+    const trabajadoresArea = trabajadores.filter((t) => (t.area || "Sin asignar") === area.nombre);
+    const detalle = trabajadoresArea.map((t) => {
+      const datos = porTrabajador.get(t.id);
+      const sinSueldo = !t.sueldo;
+      const costo = ((Number(t.sueldo) || 0) + (Number(t.auxilioTransporte) || 0)) / divisorDia;
+      return {
+        id: t.id,
+        nombre: t.nombre,
+        area: t.area || "Sin asignar",
+        unidades: datos?.unidades || 0,
+        valorProducido: datos?.valor || 0,
+        costo,
+        sinSueldo,
+      };
+    });
+    const totalValor = detalle.reduce((s, f) => s + f.valorProducido, 0);
+    const totalCosto = detalle.reduce((s, f) => s + (f.sinSueldo ? 0 : f.costo), 0);
+    const balance = totalValor - totalCosto;
+    const totalAyuda = detalle.reduce((s, f) => {
+      if (f.sinSueldo) return s;
+      const bal = f.valorProducido - f.costo;
+      return bal < 0 ? s + (f.costo - f.valorProducido) : s;
+    }, 0);
+    const totalExcedente = detalle.reduce((s, f) => {
+      if (f.sinSueldo) return s;
+      const bal = f.valorProducido - f.costo;
+      return bal > 0 ? s + bal : s;
+    }, 0);
+    const idCierre = `auto_${idNormalizado(area.nombre)}__${hoy}`;
+    await db.collection("centro_costo_historial_ayuda").doc(idCierre).set({
+      area: area.nombre,
+      periodo: "dia",
+      etiquetaPeriodo,
+      fechaGuardado: new Date().toISOString(),
+      origen: "automatico",
+      totalCosto,
+      totalValor,
+      totalAyuda,
+      totalExcedente,
+      balance,
+      detalle,
+    });
+    guardados += 1;
+  }
+  logger.info(`Cierre automático de las 10pm: ${guardados} área(s) en modo Destajo guardadas para ${hoy}.`);
+  return { guardados, fecha: hoy };
+}
+
+exports.cierreAutomaticoNocturno = onSchedule(
+  {
+    schedule: "every day 22:00",
+    timeZone: "America/Bogota",
+    timeoutSeconds: 300,
+    memory: "256MiB",
+  },
+  async () => {
+    await correrCierreAutomaticoNocturno();
+  }
+);
