@@ -58,6 +58,13 @@ const C = {
 function uid() {
   return Math.random().toString(36).slice(2, 9);
 }
+// (2026-09-02, a pedido de Fredy) Para comparar el "Insumo" que trae
+// Busint (tabla "insumos dig") contra "MDEO - CORTE" -- el nombre puede
+// venir con o sin guion y con espacios distintos, así que se normaliza
+// quitando guiones y espacios de más antes de comparar.
+function normalizarInsumoCorte(s) {
+  return (s || "").toString().toUpperCase().replace(/-/g, " ").replace(/\s+/g, " ").trim();
+}
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -1010,6 +1017,50 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
     });
     return c;
   });
+  // (2026-09-02, a pedido de Fredy) Precio de corte EN VIVO desde Busint --
+  // se busca una vez por cada referencia del pedido, apenas se abre el
+  // modal (sin botón aparte, igual que en Nómina). Mientras se consulta,
+  // queda el precio de archivo/manual que ya se precargó arriba; si
+  // Busint SÍ trae esa referencia, ese valor manda -- salvo que el
+  // usuario ya lo haya editado a mano (precioTocado), para no pisarle lo
+  // que escribió.
+  const [precioBusintPorRef, setPrecioBusintPorRef] = useState({});
+  const [precioTocado, setPrecioTocado] = useState({});
+  useEffect(() => {
+    const refsUnicas = [...new Set(pedido.referencias.map((r) => String(r.ref).trim()).filter(Boolean))];
+    refsUnicas.forEach((ref) => {
+      (async () => {
+        try {
+          const llamar = httpsCallable(functionsClient, "getCostosProcesoDesdeBusintPorReferencia");
+          const resp = await llamar({ ref });
+          const procesos = resp.data?.procesos || [];
+          const fila = procesos.find((p) => normalizarInsumoCorte(p.insumo) === "MDEO CORTE");
+          setPrecioBusintPorRef((m) => ({ ...m, [ref]: fila && Number(fila.cant) > 0 ? Number(fila.cant) : null }));
+        } catch (err) {
+          setPrecioBusintPorRef((m) => ({ ...m, [ref]: null }));
+        }
+      })();
+    });
+  }, [pedido.referencias]);
+  useEffect(() => {
+    pedido.referencias.forEach((r) => {
+      const precioLive = precioBusintPorRef[String(r.ref).trim()];
+      if (precioLive != null && !precioTocado[r.id]) {
+        setCantidades((c) => (c[r.id]?.precio === precioLive ? c : { ...c, [r.id]: { ...c[r.id], precio: precioLive } }));
+      }
+    });
+  }, [precioBusintPorRef]);
+  // Para el texto junto al campo de precio: qué fuente aplica AHORA para
+  // esta referencia -- Busint en vivo > archivo subido > nada (manual).
+  function fuentePrecioCorte(ref) {
+    if (precioTocado[ref.id]) return null;
+    const refKey = String(ref.ref).trim();
+    const live = precioBusintPorRef[refKey];
+    if (live != null) return "Busint";
+    if (live === undefined && !preciosMap?.has(refKey)) return "buscando Busint…";
+    if (preciosMap?.has(refKey)) return "archivo";
+    return null;
+  }
   // Referencias (colores) que se programaron específicamente en el grupo
   // preseleccionado — si existe, la tabla de "Unidades a cortar" se filtra
   // para no mostrar el resto del pedido, solo lo que realmente se programó.
@@ -1774,22 +1825,23 @@ function ProgramarCorteModal({ pedido, plantas, cortadores, telas, preciosMap, l
                   </div>
                   <div style={{ fontSize: 12 }}>
                     <span style={{ color: C.slate }}>
-                      Precio/prenda{preciosMap?.has(String(ref.ref).trim()) && (
-                        <span style={{ color: C.violet, fontWeight: 700 }}> (archivo)</span>
+                      Precio/prenda{fuentePrecioCorte(ref) && (
+                        <span style={{ color: fuentePrecioCorte(ref) === "Busint" ? C.green : C.violet, fontWeight: 700 }}> ({fuentePrecioCorte(ref)})</span>
                       )}:{" "}
                     </span>
                     <input
                       type="number"
                       value={cantidades[ref.id]?.precio || 0}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        setPrecioTocado((t) => ({ ...t, [ref.id]: true }));
                         setCantidades((c) => ({
                           ...c,
                           [ref.id]: {
                             ...c[ref.id],
                             precio: parseFloat(e.target.value) || 0,
                           },
-                        }))
-                      }
+                        }));
+                      }}
                       style={{
                         width: 80,
                         padding: "4px 6px",
