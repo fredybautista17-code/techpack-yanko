@@ -3158,6 +3158,20 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     if (periodo === "anio") return metaDiaria * DIAS_LABORALES_MES * 12;
     return metaDiaria * (diasHabiles(mesSel, anioSel) || DIAS_LABORALES_MES);
   }
+  // (2026-09-02, a pedido de Fredy) Presupuesto de nómina del área -- a
+  // diferencia de la meta de unidades (que usa los días hábiles reales del
+  // mes), el presupuesto se reparte siempre entre 20 días fijos: el
+  // presupuesto mensual completo ÷ 20 da el presupuesto del día, y × 12 da
+  // el del año. Se compara contra el costo de nómina real (el mismo que ya
+  // se muestra en el KPI "Costo nómina") para avisar si el área se pasó
+  // del presupuesto -- aplica a cualquier área, no solo a las que miden
+  // por unidades (modoApoyo).
+  function presupuestoPeriodo(presupuestoMensual) {
+    if (!presupuestoMensual) return 0;
+    if (periodo === "dia") return presupuestoMensual / DIAS_LABORALES_MES;
+    if (periodo === "anio") return presupuestoMensual * 12;
+    return presupuestoMensual;
+  }
   const areaSeleccionada = useMemo(() => (areasNomina || []).find((a) => a.nombre === areaSel), [areasNomina, areaSel]);
   // Pedido explícito de Fredy (2026-09-01): áreas como CONTROL DE CALIDAD no
   // tienen procesos de Busint que medir (no cortan ni cosen), así que ni el
@@ -3240,6 +3254,16 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   const pctCumplimientoApoyo = metaPeriodoApoyo > 0 ? (unidadesMovidasApoyo / metaPeriodoApoyo) * 100 : 0;
   const estadoApoyo = metaPeriodoApoyo > 0 ? (unidadesMovidasApoyo >= metaPeriodoApoyo ? "ok" : "bad") : null;
   const costoAreaApoyo = trabajadoresArea.reduce((s, t) => s + (t.sueldo ? costoPeriodo(Number(t.sueldo) || 0) : 0), 0);
+  // (2026-09-02, a pedido de Fredy) Presupuesto de nómina del área vs. el
+  // costo real -- aplica sin importar si el área mide por unidades
+  // (modoApoyo) o por $ producido, por eso usa "costoAreaApoyo" o
+  // "totalCosto" según el modo (el mismo dato que efectivamente se
+  // muestra en el KPI "Costo nómina" de cada rama).
+  const presupuestoMensualArea = Number(areaSeleccionada?.presupuestoMensualNomina) || 0;
+  const presupuestoPeriodoArea = presupuestoPeriodo(presupuestoMensualArea);
+  const costoNominaPeriodo = modoApoyo ? costoAreaApoyo : totalCosto;
+  const pctPresupuesto = presupuestoPeriodoArea > 0 ? (costoNominaPeriodo / presupuestoPeriodoArea) * 100 : 0;
+  const dentroPresupuesto = presupuestoPeriodoArea > 0 ? costoNominaPeriodo <= presupuestoPeriodoArea : null;
   const etiquetaPeriodo =
     periodo === "dia" ? fmtFechaISO(fechaDia)
     : periodo === "mes" ? `${MESES_CORTOS[mesSel - 1]} ${anioSel}`
@@ -3333,6 +3357,10 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
               )}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 }}>
                 <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(costoAreaApoyo)} color={C.violet} bg={C.violetBg} />
+                <KPI icon="💰" label={`Presupuesto (${etiquetaPeriodo})`} value={presupuestoPeriodoArea > 0 ? fmtMoney(presupuestoPeriodoArea) : "Sin presupuesto"} color={C.slate} bg={C.canvas} />
+                {presupuestoPeriodoArea > 0 && (
+                  <KPI icon={dentroPresupuesto ? "✅" : "⚠️"} label="Presupuesto nómina" value={`${pctPresupuesto.toFixed(0)}%`} color={dentroPresupuesto ? C.green : C.red} bg={dentroPresupuesto ? C.greenBg : C.redBg} sub={dentroPresupuesto ? "✓ Dentro del presupuesto" : "⚠ Se pasó del presupuesto"} />
+                )}
                 <KPI icon="📦" label="Unidades movidas" value={fmtNum(unidadesMovidasApoyo)} color={C.blue} bg={C.blueBg} />
                 <KPI icon="🎯" label={`Meta ${etiquetaPeriodo}`} value={metaPeriodoApoyo > 0 ? fmtNum(metaPeriodoApoyo) : "Sin meta"} color={C.slate} bg={C.canvas} />
                 {metaPeriodoApoyo > 0 && (
@@ -3347,6 +3375,10 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                 <KPI icon="📦" label="Unidades producidas" value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
                 <KPI icon="💵" label="Valor producido" value={fmtMoney(totalValor)} color={C.green} bg={C.greenBg} />
                 <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(totalCosto)} color={C.violet} bg={C.violetBg} />
+                <KPI icon="💰" label={`Presupuesto (${etiquetaPeriodo})`} value={presupuestoPeriodoArea > 0 ? fmtMoney(presupuestoPeriodoArea) : "Sin presupuesto"} color={C.slate} bg={C.canvas} />
+                {presupuestoPeriodoArea > 0 && (
+                  <KPI icon={dentroPresupuesto ? "✅" : "⚠️"} label="Presupuesto nómina" value={`${pctPresupuesto.toFixed(0)}%`} color={dentroPresupuesto ? C.green : C.red} bg={dentroPresupuesto ? C.greenBg : C.redBg} sub={dentroPresupuesto ? "✓ Dentro del presupuesto" : "⚠ Se pasó del presupuesto"} />
+                )}
                 <KPI icon={balance >= 0 ? "✅" : "⚠️"} label="Balance" value={fmtMoney(balance)} color={balance >= 0 ? C.green : C.red} bg={balance >= 0 ? C.greenBg : C.redBg} sub={totalCosto > 0 ? `${pctCobertura.toFixed(0)}% cubierto` : undefined} />
               </div>
               <Tabla vacio="No hay trabajadores en esta área." columnas={columnas} filas={filas} />

@@ -348,6 +348,7 @@ function AreaNominaModal({ area, procesos, onSave, onClose }) {
     nombre: area?.nombre || "",
     procesosCentroCosto: area?.procesosCentroCosto || [],
     metaDiariaUnidades: area?.metaDiariaUnidades ?? "",
+    presupuestoMensualNomina: area?.presupuestoMensualNomina ?? "",
     mideReclamosCalidad: !!area?.mideReclamosCalidad,
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
@@ -357,6 +358,7 @@ function AreaNominaModal({ area, procesos, onSave, onClose }) {
       nombre: form.nombre.trim(),
       procesosCentroCosto: form.procesosCentroCosto,
       metaDiariaUnidades: form.metaDiariaUnidades === "" ? null : Number(form.metaDiariaUnidades) || 0,
+      presupuestoMensualNomina: form.presupuestoMensualNomina === "" ? null : Number(form.presupuestoMensualNomina) || 0,
       mideReclamosCalidad: form.mideReclamosCalidad,
     });
     onClose();
@@ -366,6 +368,19 @@ function AreaNominaModal({ area, procesos, onSave, onClose }) {
       <Field label="Nombre del Área Interna"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: ZONA CALOR, EMPAQUE, ADMINISTRATIVO, CONTROL DE CALIDAD" /></Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
         Esta lista alimenta el campo "Área Interna" de cada trabajador y el área que se le asigna a un líder en Usuarios. Es distinta de "Área TNS" (Operativa/Administrativo/Diseño, más abajo en Administrativo).
+      </div>
+      {/* (2026-09-02, a pedido de Fredy) Presupuesto mensual de nómina del
+          área -- Centro de Costo (Planeación) lo compara contra el costo
+          real de nómina (el mismo dato que ya se muestra ahí como "Costo
+          nómina") para avisar si el área se pasó del presupuesto o no. El
+          presupuesto del día sale de dividir este valor entre 20 días
+          laborales, y el del año de multiplicarlo por 12. Aplica a
+          cualquier área, tenga o no procesos marcados abajo. */}
+      <Field label="Presupuesto mensual de nómina (opcional)">
+        <FInput type="number" value={form.presupuestoMensualNomina} onChange={set("presupuestoMensualNomina")} placeholder="Ej: 8000000" />
+      </Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        Techo de gasto de nómina para esta área, por mes completo. Centro de Costo (Planeación) reparte este valor entre 20 días laborales para el día, y lo multiplica por 12 para el año.
       </div>
       {/* Pedido explícito de Fredy (2026-08-31): para áreas de apoyo con
           sueldo fijo (sin Registrar Producción, ej. ZONA CALOR, CONTROL DE
