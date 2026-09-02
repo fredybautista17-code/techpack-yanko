@@ -3232,6 +3232,12 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     });
     return m;
   }, [produccionPeriodo]);
+  // (2026-09-03, a pedido de Fredy) El monto de nómina usado en Centro de
+  // Costo es sueldo + auxilio de transporte (no solo el sueldo) -- aplica
+  // aquí (costo por trabajador en modo Destajo) y también en
+  // costoAreaApoyo más abajo (modo Despachado/Busint). Un trabajador sin
+  // sueldo cargado sigue sin contar (sinSueldo), aunque tenga auxilio de
+  // transporte cargado.
   const filas = useMemo(() => {
     return trabajadoresArea
       .map((t) => {
@@ -3242,7 +3248,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
           area: t.area || "Sin asignar",
           unidades: datos?.unidades || 0,
           valorProducido: datos?.valor || 0,
-          costo: costoPeriodo(Number(t.sueldo) || 0),
+          costo: costoPeriodo((Number(t.sueldo) || 0) + (Number(t.auxilioTransporte) || 0)),
           sinSueldo: !t.sueldo,
         };
       })
@@ -3266,7 +3272,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   const metaPeriodoApoyo = metaPeriodo(metaDiariaApoyo);
   const pctCumplimientoApoyo = metaPeriodoApoyo > 0 ? (unidadesMovidasApoyo / metaPeriodoApoyo) * 100 : 0;
   const estadoApoyo = metaPeriodoApoyo > 0 ? (unidadesMovidasApoyo >= metaPeriodoApoyo ? "ok" : "bad") : null;
-  const costoAreaApoyo = trabajadoresArea.reduce((s, t) => s + (t.sueldo ? costoPeriodo(Number(t.sueldo) || 0) : 0), 0);
+  const costoAreaApoyo = trabajadoresArea.reduce((s, t) => s + (t.sueldo ? costoPeriodo((Number(t.sueldo) || 0) + (Number(t.auxilioTransporte) || 0)) : 0), 0);
   // (2026-09-02, a pedido de Fredy) Presupuesto de nómina del área vs. el
   // costo real -- aplica sin importar si el área mide por unidades
   // (modoApoyo) o por $ producido, por eso usa "costoAreaApoyo" o
