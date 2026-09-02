@@ -3700,6 +3700,60 @@ function EstadisticasPlaneacionView({ programaciones, produccion, lotesActivos, 
     { key: "planta", label: "Planta/Taller" },
     { key: "unidades", label: "Pendiente (inventario)", align: "right", render: (f) => fmtNum(f.unidades) },
   ];
+  // (2026-09-04, a pedido de Fredy) Clic en una fila de cualquiera de las
+  // 4 tablas de arriba abre en una ventana aparte el detalle concreto que
+  // arma ese total.
+  const [detalle, setDetalle] = useState(null);
+  const detalleFilas = useMemo(() => {
+    if (!detalle) return [];
+    if (detalle.tipo === "lider") {
+      return programacionesConEstado.filter((p) => (p.liderNombre || "(sin dato)") === detalle.clave);
+    }
+    if (detalle.tipo === "proceso_cumpl") {
+      return programacionesConEstado.filter((p) => (p.proceso || "(sin dato)") === detalle.clave);
+    }
+    if (detalle.tipo === "proceso_volumen") {
+      return produccionMes.filter((p) => (p.proceso || "(sin proceso)") === detalle.clave);
+    }
+    if (detalle.tipo === "planta") {
+      const filasPlanta = [];
+      (lotesActivos || []).forEach((l) => (l.procesos || []).forEach((p) => {
+        if (!(p.inventario > 0)) return;
+        if ((p.planta || "(sin planta)") !== detalle.clave) return;
+        filasPlanta.push({ numLote: l.numLote, referencia: l.referencia, proceso: p.nombre, inventario: p.inventario });
+      }));
+      return filasPlanta.sort((a, b) => (Number(b.inventario) || 0) - (Number(a.inventario) || 0));
+    }
+    return [];
+  }, [detalle, programacionesConEstado, produccionMes, lotesActivos]);
+  const detalleTitulo = !detalle
+    ? ""
+    : detalle.tipo === "lider" ? `Líder: ${detalle.clave}`
+    : detalle.tipo === "proceso_cumpl" ? `Proceso: ${detalle.clave}`
+    : detalle.tipo === "proceso_volumen" ? `Producción — ${detalle.clave} (${MESES_CORTOS[mesSel - 1]} ${anioSel})`
+    : `Planta/Taller: ${detalle.clave}`;
+  const columnasDetalleProgramacion = [
+    { key: "numLote", label: "Lote" },
+    { key: "referencia", label: "Referencia", render: (f) => f.referencia || "—" },
+    { key: "proceso", label: "Proceso" },
+    { key: "liderNombre", label: "Líder", render: (f) => f.liderNombre || "—" },
+    { key: "trabajadorNombre", label: "Trabajador", render: (f) => f.trabajadorNombre || "—" },
+    { key: "fechaProgramada", label: "Programado para", render: (f) => fmtFechaISO(f.fechaProgramada) },
+    { key: "estado", label: "Estado", render: (f) => <EstadoBadge estado={f.estado} /> },
+  ];
+  const columnasDetalleProduccion = [
+    { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+    { key: "numLote", label: "Lote", render: (f) => f.numLote || "—" },
+    { key: "trabajadorNombre", label: "Trabajador", render: (f) => f.trabajadorNombre || "—" },
+    { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
+    { key: "total", label: "Total", align: "right", render: (f) => <strong>{fmtMoney(f.total)}</strong> },
+  ];
+  const columnasDetallePlanta = [
+    { key: "numLote", label: "Lote" },
+    { key: "referencia", label: "Referencia", render: (f) => f.referencia || "—" },
+    { key: "proceso", label: "Proceso" },
+    { key: "inventario", label: "Pendiente", align: "right", render: (f) => fmtNum(f.inventario) },
+  ];
   const totalCumplidos = programacionesConEstado.filter((p) => p.estado === "CUMPLIDO").length;
   const totalVencidos = programacionesConEstado.filter((p) => p.estado === "VENCIDO").length;
   const totalPendientes = programacionesConEstado.filter((p) => p.estado === "PROGRAMADO").length;
@@ -3725,11 +3779,11 @@ function EstadisticasPlaneacionView({ programaciones, produccion, lotesActivos, 
       </div>
       <div style={{ marginBottom: 28 }}>
         <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 10 }}>Cumplimiento por líder</div>
-        <Tabla vacio="Todavía no hay programaciones registradas." columnas={columnasEstado("Líder", "clave")} filas={porLider} />
+        <Tabla vacio="Todavía no hay programaciones registradas." columnas={columnasEstado("Líder", "clave")} filas={porLider} onRowClick={(f) => setDetalle({ tipo: "lider", clave: f.clave })} />
       </div>
       <div style={{ marginBottom: 28 }}>
         <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 10 }}>Cumplimiento por proceso</div>
-        <Tabla vacio="Todavía no hay programaciones registradas." columnas={columnasEstado("Proceso", "clave")} filas={porProcesoCumpl} />
+        <Tabla vacio="Todavía no hay programaciones registradas." columnas={columnasEstado("Proceso", "clave")} filas={porProcesoCumpl} onRowClick={(f) => setDetalle({ tipo: "proceso_cumpl", clave: f.clave })} />
       </div>
       <div style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>Producción registrada por proceso</div>
@@ -3739,12 +3793,25 @@ function EstadisticasPlaneacionView({ programaciones, produccion, lotesActivos, 
         <input type="number" value={anioSel} onChange={(e) => setAnioSel(Number(e.target.value))} style={{ width: 80, padding: "5px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }} />
       </div>
       <div style={{ marginBottom: 28 }}>
-        <Tabla vacio="Sin producción registrada en este mes." columnas={columnasVolumenProceso} filas={porProcesoVolumen} />
+        <Tabla vacio="Sin producción registrada en este mes." columnas={columnasVolumenProceso} filas={porProcesoVolumen} onRowClick={(f) => setDetalle({ tipo: "proceso_volumen", clave: f.proceso })} />
       </div>
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>Inventario pendiente por planta/taller (carga activa)</div>
       </div>
-      <Tabla vacio="No hay inventario pendiente." columnas={columnasVolumenPlanta} filas={porPlanta} />
+      <Tabla vacio="No hay inventario pendiente." columnas={columnasVolumenPlanta} filas={porPlanta} onRowClick={(f) => setDetalle({ tipo: "planta", clave: f.planta })} />
+      {detalle && (
+        <Modal title={detalleTitulo} onClose={() => setDetalle(null)} width={860}>
+          <Tabla
+            vacio="Sin detalle para mostrar."
+            columnas={
+              detalle.tipo === "proceso_volumen" ? columnasDetalleProduccion
+              : detalle.tipo === "planta" ? columnasDetallePlanta
+              : columnasDetalleProgramacion
+            }
+            filas={detalleFilas}
+          />
+        </Modal>
+      )}
     </div>
   );
 }
