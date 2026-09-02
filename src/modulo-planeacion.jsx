@@ -3312,6 +3312,12 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   const historialAyudaArea = historialAyuda
     .filter((h) => h.area === areaSel)
     .sort((a, b) => (b.fechaGuardado || "").localeCompare(a.fechaGuardado || ""));
+  // (2026-09-03, a pedido de Fredy) Detalle de un cierre guardado -- clic
+  // en una fila del historial abre esto en una ventana aparte (Modal),
+  // con la foto congelada de cada trabajador tal como estaba cuando se
+  // guardó el cierre. Cierres guardados antes de este cambio no tienen
+  // "detalle" -- se avisa en vez de mostrar una tabla vacía.
+  const [historialDetalleAbierto, setHistorialDetalleAbierto] = useState(null);
   // (2026-09-02, a pedido de Fredy) Modo "Despachado" (Administrativo,
   // Bodega): el costo de nómina del área se compara contra el
   // despachado TOTAL de toda la empresa (no repartido entre áreas --
@@ -3382,7 +3388,26 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
       totalAyuda,
       totalExcedente,
       balance,
+      // (2026-09-03, a pedido de Fredy) Foto congelada de cada
+      // trabajador en el momento de guardar el cierre -- así el clic en
+      // el historial puede mostrar "qué hicieron" sin depender de que
+      // los datos en vivo sigan igual después.
+      detalle: filas.map((f) => ({
+        id: f.id,
+        nombre: f.nombre,
+        area: f.area,
+        unidades: f.unidades,
+        valorProducido: f.valorProducido,
+        costo: f.costo,
+        sinSueldo: f.sinSueldo,
+      })),
     });
+  }
+  // (2026-09-03, a pedido de Fredy) "Retroceder" un cierre guardado --
+  // lo borra de Firestore, por si se guardó por error.
+  async function borrarCierreAyuda(id) {
+    await fsDelete("centro_costo_historial_ayuda", id);
+    if (historialDetalleAbierto?.id === id) setHistorialDetalleAbierto(null);
   }
   const btnPeriodo = (id, label) => (
     <button
@@ -3530,6 +3555,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                   <Btn variant="ghost" onClick={guardarCierreAyuda}>💾 Guardar cierre de este período</Btn>
                   {historialAyudaArea.length > 0 && (
                     <div style={{ marginTop: 12, background: C.white, borderRadius: 10, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+                      <div style={{ fontSize: 11, color: C.slate, padding: "8px 10px 0" }}>Haz clic en un cierre para ver el detalle por trabajador, o en "Borrar" para deshacerlo.</div>
                       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                         <thead>
                           <tr style={{ borderBottom: `1px solid ${C.border}`, background: C.canvas }}>
@@ -3538,16 +3564,20 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                             <th style={{ textAlign: "right", padding: "8px 10px" }}>Ayudado</th>
                             <th style={{ textAlign: "right", padding: "8px 10px" }}>Excedente</th>
                             <th style={{ textAlign: "right", padding: "8px 10px" }}>Balance</th>
+                            <th style={{ textAlign: "right", padding: "8px 10px" }}></th>
                           </tr>
                         </thead>
                         <tbody>
                           {historialAyudaArea.map((h) => (
-                            <tr key={h.id} style={{ borderBottom: `1px solid ${C.border}` }}>
+                            <tr key={h.id} style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer" }} onClick={() => setHistorialDetalleAbierto(h)}>
                               <td style={{ padding: "8px 10px" }}>{new Date(h.fechaGuardado).toLocaleString("es-CO")}</td>
                               <td style={{ padding: "8px 10px" }}>{h.etiquetaPeriodo}</td>
                               <td style={{ padding: "8px 10px", textAlign: "right", color: C.red }}>{fmtMoney(h.totalAyuda)}</td>
                               <td style={{ padding: "8px 10px", textAlign: "right", color: C.green }}>{fmtMoney(h.totalExcedente)}</td>
                               <td style={{ padding: "8px 10px", textAlign: "right" }}>{fmtMoney(h.balance)}</td>
+                              <td style={{ padding: "8px 10px", textAlign: "right" }} onClick={(e) => e.stopPropagation()}>
+                                <span onClick={() => borrarCierreAyuda(h.id)} style={{ cursor: "pointer", color: C.red, fontWeight: 700, fontSize: 11 }}>Borrar</span>
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -3557,6 +3587,29 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                 </div>
               )}
               <Tabla vacio="No hay trabajadores en esta área." columnas={columnas} filas={filas} />
+              {historialDetalleAbierto && (
+                <Modal title={`Detalle del cierre — ${historialDetalleAbierto.etiquetaPeriodo}`} onClose={() => setHistorialDetalleAbierto(null)} width={720}>
+                  <div style={{ fontSize: 11, color: C.slate, marginBottom: 12 }}>
+                    Guardado el {new Date(historialDetalleAbierto.fechaGuardado).toLocaleString("es-CO")} — {historialDetalleAbierto.area}
+                  </div>
+                  {historialDetalleAbierto.detalle && historialDetalleAbierto.detalle.length > 0 ? (
+                    <Tabla
+                      vacio="Sin trabajadores en este cierre."
+                      columnas={[
+                        { key: "nombre", label: "Trabajador" },
+                        { key: "area", label: "Área Interna" },
+                        { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
+                        { key: "valorProducido", label: "Valor producido", align: "right", render: (f) => fmtMoney(f.valorProducido) },
+                        { key: "costo", label: `Costo nómina (${historialDetalleAbierto.etiquetaPeriodo})`, align: "right", render: (f) => (f.sinSueldo ? <span style={{ color: C.amber }}>⚠️ sin sueldo</span> : fmtMoney(f.costo)) },
+                        { key: "balance", label: "Balance", align: "right", render: (f) => <span style={{ color: f.valorProducido - f.costo >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtMoney(f.valorProducido - f.costo)}</span> },
+                      ]}
+                      filas={historialDetalleAbierto.detalle}
+                    />
+                  ) : (
+                    <div style={{ fontSize: 12, color: C.slate }}>Este cierre se guardó antes de que se empezara a guardar el detalle por trabajador — no hay detalle disponible, solo los totales de arriba.</div>
+                  )}
+                </Modal>
+              )}
             </>
           )}
         </div>
