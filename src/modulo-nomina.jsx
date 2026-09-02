@@ -349,6 +349,7 @@ function AreaNominaModal({ area, procesos, onSave, onClose }) {
     procesosCentroCosto: area?.procesosCentroCosto || [],
     metaDiariaUnidades: area?.metaDiariaUnidades ?? "",
     presupuestoMensualNomina: area?.presupuestoMensualNomina ?? "",
+    modoMedicion: area?.modoMedicion || "",
     mideReclamosCalidad: !!area?.mideReclamosCalidad,
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
@@ -359,6 +360,7 @@ function AreaNominaModal({ area, procesos, onSave, onClose }) {
       procesosCentroCosto: form.procesosCentroCosto,
       metaDiariaUnidades: form.metaDiariaUnidades === "" ? null : Number(form.metaDiariaUnidades) || 0,
       presupuestoMensualNomina: form.presupuestoMensualNomina === "" ? null : Number(form.presupuestoMensualNomina) || 0,
+      modoMedicion: form.modoMedicion || "",
       mideReclamosCalidad: form.mideReclamosCalidad,
     });
     onClose();
@@ -382,16 +384,33 @@ function AreaNominaModal({ area, procesos, onSave, onClose }) {
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
         Techo de gasto de nómina para esta área, por mes completo. Centro de Costo (Planeación) reparte este valor entre 20 días laborales para el día, y lo multiplica por 12 para el año.
       </div>
-      {/* Pedido explícito de Fredy (2026-08-31): para áreas de apoyo con
-          sueldo fijo (sin Registrar Producción, ej. ZONA CALOR, CONTROL DE
-          CALIDAD) Centro de Costo (Planeación) no puede comparar $ producido
-          vs $ nómina porque no hay unidades de producción registradas para
-          ellas. En su lugar, el área se marca con los procesos (de Nómina →
-          Administrativo → Precios) cuyos movimientos de planta (entrada/
-          salida en Busint) cuentan como "lo que hizo" esta área, y una meta
-          diaria de unidades para medir si el día "le da" o no. Un área sin
-          procesos marcados aquí sigue funcionando como antes (modo $, para
-          Destajo/Fiscal Destajo que sí registran producción). */}
+      {/* (2026-09-02, a pedido de Fredy) Modo de medición explícito --
+          reemplaza la detección automática ("si tiene procesos marcados")
+          porque ya no alcanza con un solo caso: Destajo (Valor producido/
+          Balance por trabajador, para áreas con Registrar Producción, ej.
+          Corte, Confección, y también Zona de Calor y Control de Calidad),
+          Despachado (compara el costo de nómina del área contra el
+          despachado TOTAL de toda la empresa, de Facturación Clientes --
+          para Administrativo y Bodega), o Unidades movidas en Busint (el
+          modo viejo, por proceso marcado abajo + meta diaria). "Automático"
+          (dejar en blanco) mantiene el comportamiento de antes para
+          cualquier área que todavía no se haya reclasificado: con procesos
+          marcados = Busint, sin marcar = Destajo. */}
+      <Field label="Modo de medición en Centro de Costo">
+        <select
+          value={form.modoMedicion}
+          onChange={(e) => set("modoMedicion")(e.target.value)}
+          style={{ width: "100%", padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, background: C.white, color: C.ink }}
+        >
+          <option value="">Automático (según procesos marcados abajo)</option>
+          <option value="destajo">Destajo (Valor producido / Balance)</option>
+          <option value="despachado">Despachado (Facturación Clientes)</option>
+          <option value="busint_unidades">Unidades movidas en Busint (por proceso)</option>
+        </select>
+      </Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        "Despachado" y "Unidades movidas en Busint" no usan la tabla de trabajadores por destajo -- "Despachado" tampoco usa los procesos ni la meta de abajo, esos campos son solo para "Unidades movidas en Busint" (o "Automático" con procesos marcados).
+      </div>
       <Field label="Procesos que cuentan para Centro de Costo (opcional)">
         <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, maxHeight: 160, overflowY: "auto" }}>
           {(procesos || []).length === 0 && <div style={{ fontSize: 12, color: C.slate }}>No hay procesos cargados en Nómina → Administrativo → Precios.</div>}
