@@ -3083,8 +3083,19 @@ function FacturacionClientesView() {
   const [tiposCliente, setTiposCliente] = useState({});
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "facturacion_tipo_cliente"), (snap) => {
+      // (2026-09-02, corrección a pedido de Fredy) Un mismo cliente puede
+      // venir identificado por su código de Busint en un rango de fechas
+      // y solo por nombre en otro (Busint no siempre trae el código en
+      // cada factura) -- se indexa por LAS DOS claves que traiga cada
+      // documento guardado, para reconocerlo sin importar cuál de las
+      // dos venga la próxima vez que se consulte.
       const m = {};
-      snap.docs.forEach((d) => { m[d.data().clave] = d.data().tipo; });
+      snap.docs.forEach((d) => {
+        const data = d.data();
+        if (data.codigoCliente) m[data.codigoCliente] = data.tipo;
+        if (data.nombreCliente) m[data.nombreCliente] = data.tipo;
+        if (data.clave && !(data.clave in m)) m[data.clave] = data.tipo; // docs guardados antes de este cambio
+      });
       setTiposCliente(m);
     });
     return () => unsub();
@@ -3092,8 +3103,21 @@ function FacturacionClientesView() {
   function claveDoc(clave) {
     return String(clave || "").trim().replace(/[/.#$[\]]/g, "_") || "sin_clave";
   }
-  async function guardarTipoCliente(clave, nombreCliente, tipo) {
-    await fsSave("facturacion_tipo_cliente", claveDoc(clave), { clave, nombreCliente, tipo });
+  // (2026-09-02, corrección a pedido de Fredy) Se guarda en dos
+  // documentos separados -- uno por código de cliente, otro por nombre
+  // -- cuando Busint trae los dos, para que la clasificación se siga
+  // encontrando sin importar cuál de las dos venga en un rango de
+  // fechas distinto.
+  async function guardarTipoCliente(codigoCliente, nombreCliente, tipo) {
+    const cod = String(codigoCliente || "").trim();
+    const nom = String(nombreCliente || "").trim();
+    const writes = [];
+    if (cod) writes.push(fsSave("facturacion_tipo_cliente", claveDoc(cod), { codigoCliente: cod, nombreCliente: nom, tipo }));
+    if (nom) writes.push(fsSave("facturacion_tipo_cliente", claveDoc(nom), { codigoCliente: cod, nombreCliente: nom, tipo }));
+    await Promise.all(writes);
+  }
+  function tipoDeCliente(c) {
+    return tiposCliente[c.codigoCliente] || tiposCliente[c.nombreCliente] || "";
   }
   async function consultar() {
     if (!fechaInicio || !fechaFin) return;
@@ -3120,8 +3144,7 @@ function FacturacionClientesView() {
   // YA están clasificados (Facturado o Consignación); los que faltan por
   // clasificar no cuentan todavía, para no sumar mal por adivinar.
   const totalesDespachados = (resultado?.clientes || []).reduce((acc, c) => {
-    const clave = c.codigoCliente || c.nombreCliente;
-    const tipo = tiposCliente[clave] || "";
+    const tipo = tipoDeCliente(c);
     if (tipo === "facturado") {
       return { monto: acc.monto + c.facturado.monto + c.trasladoExternoNeto.monto, unidades: acc.unidades + c.facturado.unidades + c.trasladoExternoNeto.unidades };
     }
@@ -3130,7 +3153,7 @@ function FacturacionClientesView() {
     }
     return acc;
   }, { monto: 0, unidades: 0 });
-  const clientesSinClasificar = (resultado?.clientes || []).filter((c) => !tiposCliente[c.codigoCliente || c.nombreCliente]).length;
+  const clientesSinClasificar = (resultado?.clientes || []).filter((c) => !tipoDeCliente(c)).length;
   return (
     <div>
       <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, marginBottom: 4 }}>
@@ -3241,7 +3264,7 @@ function FacturacionClientesView() {
                   {resultado.clientes.map((c, i) => {
                     const clave = c.codigoCliente || c.nombreCliente;
                     const abierto = clienteAbierto === clave;
-                    const tipoCliente = tiposCliente[clave] || "";
+                    const tipoCliente = tipoDeCliente(c);
                     const totalDespachadoMonto =
                       tipoCliente === "facturado" ? c.facturado.monto + c.trasladoExternoNeto.monto
                       : tipoCliente === "consignacion" ? c.consignacionNeta.monto + c.trasladoExternoNeto.monto
@@ -3276,7 +3299,7 @@ function FacturacionClientesView() {
                           <td style={{ padding: "10px 12px", textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
                             <select
                               value={tipoCliente}
-                              onChange={(e) => guardarTipoCliente(clave, c.nombreCliente, e.target.value)}
+                              onChange={(e) => guardarTipoCliente(c.codigoCliente, c.nombreCliente, e.target.value)}
                               style={{ fontSize: 12, padding: "4px 6px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.white, color: C.ink }}
                             >
                               <option value="">— elegir —</option>

@@ -3450,8 +3450,18 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   const [tiposClienteFact, setTiposClienteFact] = useState({});
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "facturacion_tipo_cliente"), (snap) => {
+      // (2026-09-02, corrección a pedido de Fredy) Mismo fix que en
+      // Facturación Clientes (modulo-contabilidad.jsx): un cliente puede
+      // venir identificado por código en un rango de fechas y solo por
+      // nombre en otro -- se indexa por las dos claves de cada documento
+      // guardado para reconocerlo sin importar cuál venga la próxima vez.
       const m = {};
-      snap.docs.forEach((d) => { m[d.data().clave] = d.data().tipo; });
+      snap.docs.forEach((d) => {
+        const data = d.data();
+        if (data.codigoCliente) m[data.codigoCliente] = data.tipo;
+        if (data.nombreCliente) m[data.nombreCliente] = data.tipo;
+        if (data.clave && !(data.clave in m)) m[data.clave] = data.tipo; // docs guardados antes de este cambio
+      });
       setTiposClienteFact(m);
     });
     return () => unsub();
@@ -3480,8 +3490,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     }
   }
   const despachadoTotal = (despachadoData?.clientes || []).reduce((acc, c) => {
-    const clave = c.codigoCliente || c.nombreCliente;
-    const tipo = tiposClienteFact[clave] || "";
+    const tipo = tiposClienteFact[c.codigoCliente] || tiposClienteFact[c.nombreCliente] || "";
     if (tipo === "facturado") {
       return { monto: acc.monto + c.facturado.monto + c.trasladoExternoNeto.monto, unidades: acc.unidades + c.facturado.unidades + c.trasladoExternoNeto.unidades };
     }
@@ -3490,7 +3499,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     }
     return acc;
   }, { monto: 0, unidades: 0 });
-  const clientesSinClasificarDespachado = (despachadoData?.clientes || []).filter((c) => !tiposClienteFact[c.codigoCliente || c.nombreCliente]).length;
+  const clientesSinClasificarDespachado = (despachadoData?.clientes || []).filter((c) => !(tiposClienteFact[c.codigoCliente] || tiposClienteFact[c.nombreCliente])).length;
   const participacionPct = despachadoTotal.monto > 0 ? (costoAreaApoyo / despachadoTotal.monto) * 100 : 0;
   const costoPorPrenda = despachadoTotal.unidades > 0 ? costoAreaApoyo / despachadoTotal.unidades : 0;
   const etiquetaPeriodo =
