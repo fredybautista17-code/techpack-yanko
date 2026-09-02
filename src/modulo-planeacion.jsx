@@ -3199,7 +3199,20 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   // procesos marcados, se sigue viendo en modo $ (igual que Centro de Costo
   // — Corte: valor producido vs. costo de nómina).
   const procesosApoyo = areaSeleccionada?.procesosCentroCosto || [];
-  const modoApoyo = !!areaSel && procesosApoyo.length > 0;
+  // (2026-09-02, a pedido de Fredy) Modo de medición explícito (ver el
+  // selector nuevo en AreaNominaModal, modulo-nomina.jsx): "destajo",
+  // "despachado" o "busint_unidades". Si el área no tiene nada elegido
+  // ("" o sin configurar todavía), se mantiene el comportamiento
+  // automático de antes -- con procesos marcados = Busint, sin marcar =
+  // Destajo -- así ninguna área que Fredy no haya reclasificado cambia
+  // de comportamiento por este cambio.
+  const modoMedicion = !areaSel
+    ? "destajo"
+    : areaSeleccionada?.modoMedicion
+    ? areaSeleccionada.modoMedicion
+    : procesosApoyo.length > 0
+    ? "busint_unidades"
+    : "destajo";
   const trabajadoresArea = useMemo(() => {
     const activos = (trabajadores || []).filter((t) => t.activo !== false);
     return areaSel ? activos.filter((t) => (t.area || "Sin asignar") === areaSel) : activos;
@@ -3243,11 +3256,11 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   const algunoSinSueldo = trabajadoresArea.some((t) => !t.sueldo);
   // ── Modo apoyo: unidades movidas (Busint) en los procesos del área ──────
   const movimientosArea = useMemo(() => {
-    if (!modoApoyo) return [];
+    if (modoMedicion !== "busint_unidades") return [];
     return (movimientos?.salidas || [])
       .filter((r) => procesosApoyo.includes(r.proceso) && enPeriodo(r.ultima))
       .sort((a, b) => (b.ultima || "").localeCompare(a.ultima || ""));
-  }, [modoApoyo, movimientos, procesosApoyo, periodo, fechaDia, mesSel, anioSel]);
+  }, [modoMedicion, movimientos, procesosApoyo, periodo, fechaDia, mesSel, anioSel]);
   const unidadesMovidasApoyo = movimientosArea.reduce((s, r) => s + (r.total || 0), 0);
   const metaDiariaApoyo = Number(areaSeleccionada?.metaDiariaUnidades) || 0;
   const metaPeriodoApoyo = metaPeriodo(metaDiariaApoyo);
@@ -3261,13 +3274,110 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   // muestra en el KPI "Costo nómina" de cada rama).
   const presupuestoMensualArea = Number(areaSeleccionada?.presupuestoMensualNomina) || 0;
   const presupuestoPeriodoArea = presupuestoPeriodo(presupuestoMensualArea);
-  const costoNominaPeriodo = modoApoyo ? costoAreaApoyo : totalCosto;
+  const costoNominaPeriodo = modoMedicion === "destajo" ? totalCosto : costoAreaApoyo;
   const pctPresupuesto = presupuestoPeriodoArea > 0 ? (costoNominaPeriodo / presupuestoPeriodoArea) * 100 : 0;
   const dentroPresupuesto = presupuestoPeriodoArea > 0 ? costoNominaPeriodo <= presupuestoPeriodoArea : null;
+  // (2026-09-02, a pedido de Fredy) En modo Destajo: cuando a un
+  // trabajador el valor producido no le alcanza para llegar a su sueldo
+  // garantizado, la empresa le "ayuda" con la diferencia -- y cuando lo
+  // supera, ese extra es "excedente". Se excluyen los trabajadores sin
+  // sueldo cargado (no hay con qué comparar). Se suman aparte del
+  // Balance neto de arriba, para ver los dos lados por separado.
+  const totalAyuda = filas.reduce((s, f) => {
+    if (f.sinSueldo) return s;
+    const bal = f.valorProducido - f.costo;
+    return bal < 0 ? s + (f.costo - f.valorProducido) : s;
+  }, 0);
+  const totalExcedente = filas.reduce((s, f) => {
+    if (f.sinSueldo) return s;
+    const bal = f.valorProducido - f.costo;
+    return bal > 0 ? s + bal : s;
+  }, 0);
+  // Registro histórico de esos totales (por quincena u otro corte que
+  // el usuario elija) -- se guarda a mano con el botón "Guardar cierre",
+  // queda en Firestore y no se pierde aunque cambien los datos después.
+  const [historialAyuda, setHistorialAyuda] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "centro_costo_historial_ayuda"), (snap) => {
+      setHistorialAyuda(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  const historialAyudaArea = historialAyuda
+    .filter((h) => h.area === areaSel)
+    .sort((a, b) => (b.fechaGuardado || "").localeCompare(a.fechaGuardado || ""));
+  // (2026-09-02, a pedido de Fredy) Modo "Despachado" (Administrativo,
+  // Bodega): el costo de nómina del área se compara contra el
+  // despachado TOTAL de toda la empresa (no repartido entre áreas --
+  // Fredy pidió "participación por unidad despachada", cada área
+  // comparada por separado contra el mismo total), usando la misma
+  // clasificación Facturado/Consignación por cliente que se armó en
+  // Facturación Clientes (colección "facturacion_tipo_cliente"). Consulta
+  // en vivo a Busint (misma función que usa esa pantalla), con un botón
+  // "Actualizar despachado" aparte -- no se mezcla con el botón de
+  // "Actualizar movimientos" del modo Busint por proceso.
+  const [tiposClienteFact, setTiposClienteFact] = useState({});
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "facturacion_tipo_cliente"), (snap) => {
+      const m = {};
+      snap.docs.forEach((d) => { m[d.data().clave] = d.data().tipo; });
+      setTiposClienteFact(m);
+    });
+    return () => unsub();
+  }, []);
+  const [despachadoData, setDespachadoData] = useState(null);
+  const [cargandoDespachado, setCargandoDespachado] = useState(false);
+  function rangoFechasPeriodo() {
+    if (periodo === "dia") return { fechaInicio: fechaDia, fechaFin: fechaDia };
+    if (periodo === "anio") return { fechaInicio: `${anioSel}-01-01`, fechaFin: `${anioSel}-12-31` };
+    const mm = String(mesSel).padStart(2, "0");
+    const ultimoDia = new Date(anioSel, mesSel, 0).getDate();
+    return { fechaInicio: `${anioSel}-${mm}-01`, fechaFin: `${anioSel}-${mm}-${String(ultimoDia).padStart(2, "0")}` };
+  }
+  async function actualizarDespachado() {
+    setCargandoDespachado(true);
+    try {
+      const { fechaInicio, fechaFin } = rangoFechasPeriodo();
+      const llamar = httpsCallable(functionsClient, "getFacturacionPorClienteBusint");
+      const resp = await llamar({ fechaInicio, fechaFin });
+      setDespachadoData(resp.data);
+    } catch (err) {
+      alert(`No se pudo consultar el despachado en Busint: ${err?.message || String(err)}`);
+    } finally {
+      setCargandoDespachado(false);
+    }
+  }
+  const despachadoTotal = (despachadoData?.clientes || []).reduce((acc, c) => {
+    const clave = c.codigoCliente || c.nombreCliente;
+    const tipo = tiposClienteFact[clave] || "";
+    if (tipo === "facturado") {
+      return { monto: acc.monto + c.facturado.monto + c.trasladoExternoNeto.monto, unidades: acc.unidades + c.facturado.unidades + c.trasladoExternoNeto.unidades };
+    }
+    if (tipo === "consignacion") {
+      return { monto: acc.monto + c.consignacionNeta.monto + c.trasladoExternoNeto.monto, unidades: acc.unidades + c.consignacionNeta.unidades + c.trasladoExternoNeto.unidades };
+    }
+    return acc;
+  }, { monto: 0, unidades: 0 });
+  const clientesSinClasificarDespachado = (despachadoData?.clientes || []).filter((c) => !tiposClienteFact[c.codigoCliente || c.nombreCliente]).length;
+  const participacionPct = despachadoTotal.monto > 0 ? (costoAreaApoyo / despachadoTotal.monto) * 100 : 0;
+  const costoPorPrenda = despachadoTotal.unidades > 0 ? costoAreaApoyo / despachadoTotal.unidades : 0;
   const etiquetaPeriodo =
     periodo === "dia" ? fmtFechaISO(fechaDia)
     : periodo === "mes" ? `${MESES_CORTOS[mesSel - 1]} ${anioSel}`
     : String(anioSel);
+  async function guardarCierreAyuda() {
+    await fsSave("centro_costo_historial_ayuda", uid(), {
+      area: areaSel,
+      periodo,
+      etiquetaPeriodo,
+      fechaGuardado: new Date().toISOString(),
+      totalCosto,
+      totalValor,
+      totalAyuda,
+      totalExcedente,
+      balance,
+    });
+  }
   const btnPeriodo = (id, label) => (
     <button
       onClick={() => setPeriodo(id)}
@@ -3295,8 +3405,10 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
       <div style={{ marginBottom: 22 }}>
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>💰 Centro de Costo — Planeación</h2>
         <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>
-          {modoApoyo
+          {modoMedicion === "busint_unidades"
             ? "Nómina del área versus unidades reales movidas (Busint) en sus procesos — pensado para áreas de sueldo fijo sin Registrar Producción."
+            : modoMedicion === "despachado"
+            ? "Nómina del área versus el despachado total de la empresa (Facturación Clientes) — pensado para áreas de sueldo fijo sin producción ni procesos propios que medir, como Administrativo o Bodega."
             : "Nómina que hay que pagar en cada área versus el valor de lo que cada trabajador está produciendo (Registrar Producción de Nómina, valorado con el precio máximo vigente por proceso)."}
         </p>
       </div>
@@ -3326,9 +3438,14 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
             {(areasNomina || []).map((a) => <option key={a.id} value={a.nombre}>{a.nombre}</option>)}
           </select>
         )}
-        {modoApoyo && (
+        {modoMedicion === "busint_unidades" && (
           <Btn variant="ghost" onClick={onActualizarMovimientos} disabled={cargandoMovimientos}>
             {cargandoMovimientos ? "Consultando Busint..." : "🔄 Actualizar movimientos"}
+          </Btn>
+        )}
+        {modoMedicion === "despachado" && (
+          <Btn variant="ghost" onClick={actualizarDespachado} disabled={cargandoDespachado}>
+            {cargandoDespachado ? "Consultando Busint..." : "🔄 Actualizar despachado"}
           </Btn>
         )}
       </div>
@@ -3350,7 +3467,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
           </div>
         )}
         <div style={{ flex: 1, minWidth: 0 }}>
-          {modoApoyo ? (
+          {modoMedicion === "busint_unidades" ? (
             <>
               {!movimientos && (
                 <div style={{ fontSize: 11, color: C.amber, marginBottom: 14 }}>Todavía no has consultado los movimientos de proceso en Busint en esta sesión — dale a "Actualizar movimientos" para ver las unidades reales.</div>
@@ -3369,6 +3486,25 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
               </div>
               <Tabla vacio="Sin movimientos de proceso en este periodo para los procesos configurados de esta área." columnas={columnasApoyo} filas={movimientosArea} />
             </>
+          ) : modoMedicion === "despachado" ? (
+            <>
+              {!despachadoData && (
+                <div style={{ fontSize: 11, color: C.amber, marginBottom: 14 }}>Todavía no has consultado el despachado de la empresa en esta sesión — dale a "Actualizar despachado" para ver el dato real.</div>
+              )}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 }}>
+                <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(costoAreaApoyo)} color={C.violet} bg={C.violetBg} />
+                <KPI icon="💰" label={`Presupuesto (${etiquetaPeriodo})`} value={presupuestoPeriodoArea > 0 ? fmtMoney(presupuestoPeriodoArea) : "Sin presupuesto"} color={C.slate} bg={C.canvas} />
+                {presupuestoPeriodoArea > 0 && (
+                  <KPI icon={dentroPresupuesto ? "✅" : "⚠️"} label="Presupuesto nómina" value={`${pctPresupuesto.toFixed(0)}%`} color={dentroPresupuesto ? C.green : C.red} bg={dentroPresupuesto ? C.greenBg : C.redBg} sub={dentroPresupuesto ? "✓ Dentro del presupuesto" : "⚠ Se pasó del presupuesto"} />
+                )}
+                <KPI icon="🚚" label={`Despachado empresa (${etiquetaPeriodo})`} value={fmtMoney(despachadoTotal.monto)} color={C.blue} bg={C.blueBg} sub={`${fmtNum(despachadoTotal.unidades)} und.`} />
+                <KPI icon="📊" label="Participación" value={despachadoTotal.monto > 0 ? `${participacionPct.toFixed(2)}%` : "—"} color={C.ink} bg={C.canvas} sub="del despachado total de la empresa" />
+                <KPI icon="👕" label="Costo por prenda" value={despachadoTotal.unidades > 0 ? fmtMoney(costoPorPrenda) : "—"} color={C.ink} bg={C.canvas} sub="costo del área por cada unidad despachada" />
+              </div>
+              {clientesSinClasificarDespachado > 0 && (
+                <div style={{ fontSize: 11, color: C.amber }}>⚠ {clientesSinClasificarDespachado} cliente(s) sin clasificar (Facturado/Consignación) en Facturación Clientes — no cuentan todavía en el despachado total.</div>
+              )}
+            </>
           ) : (
             <>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
@@ -3380,7 +3516,40 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                   <KPI icon={dentroPresupuesto ? "✅" : "⚠️"} label="Presupuesto nómina" value={`${pctPresupuesto.toFixed(0)}%`} color={dentroPresupuesto ? C.green : C.red} bg={dentroPresupuesto ? C.greenBg : C.redBg} sub={dentroPresupuesto ? "✓ Dentro del presupuesto" : "⚠ Se pasó del presupuesto"} />
                 )}
                 <KPI icon={balance >= 0 ? "✅" : "⚠️"} label="Balance" value={fmtMoney(balance)} color={balance >= 0 ? C.green : C.red} bg={balance >= 0 ? C.greenBg : C.redBg} sub={totalCosto > 0 ? `${pctCobertura.toFixed(0)}% cubierto` : undefined} />
+                <KPI icon="🆘" label="Total ayudado" value={fmtMoney(totalAyuda)} color={C.red} bg={C.redBg} sub="trabajadores que no llegaron a su sueldo con destajo" />
+                <KPI icon="📈" label="Total excedente" value={fmtMoney(totalExcedente)} color={C.green} bg={C.greenBg} sub="trabajadores que superaron su sueldo con destajo" />
               </div>
+              {areaSel && (
+                <div style={{ marginBottom: 20 }}>
+                  <Btn variant="ghost" onClick={guardarCierreAyuda}>💾 Guardar cierre de este período</Btn>
+                  {historialAyudaArea.length > 0 && (
+                    <div style={{ marginTop: 12, background: C.white, borderRadius: 10, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ borderBottom: `1px solid ${C.border}`, background: C.canvas }}>
+                            <th style={{ textAlign: "left", padding: "8px 10px" }}>Guardado</th>
+                            <th style={{ textAlign: "left", padding: "8px 10px" }}>Período</th>
+                            <th style={{ textAlign: "right", padding: "8px 10px" }}>Ayudado</th>
+                            <th style={{ textAlign: "right", padding: "8px 10px" }}>Excedente</th>
+                            <th style={{ textAlign: "right", padding: "8px 10px" }}>Balance</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {historialAyudaArea.map((h) => (
+                            <tr key={h.id} style={{ borderBottom: `1px solid ${C.border}` }}>
+                              <td style={{ padding: "8px 10px" }}>{new Date(h.fechaGuardado).toLocaleString("es-CO")}</td>
+                              <td style={{ padding: "8px 10px" }}>{h.etiquetaPeriodo}</td>
+                              <td style={{ padding: "8px 10px", textAlign: "right", color: C.red }}>{fmtMoney(h.totalAyuda)}</td>
+                              <td style={{ padding: "8px 10px", textAlign: "right", color: C.green }}>{fmtMoney(h.totalExcedente)}</td>
+                              <td style={{ padding: "8px 10px", textAlign: "right" }}>{fmtMoney(h.balance)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
               <Tabla vacio="No hay trabajadores en esta área." columnas={columnas} filas={filas} />
             </>
           )}
