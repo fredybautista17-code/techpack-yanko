@@ -4048,6 +4048,12 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [diasTrabajadosHuellero, setDiasTrabajadosHuellero] = useState([]);
   const [liquidacionesFD, setLiquidacionesFD] = useState([]);
   const [liquidacionesD, setLiquidacionesD] = useState([]);
+  // (2026-09-02, a pedido de Fredy) Solo para el encadenamiento automático
+  // Dije -> Terminación (ver guardarProduccion/encadenarDijeATerminacion
+  // más abajo): quién es la líder dueña de "Terminación" (por areaNomina)
+  // y qué ya está programado en Planeación, para no duplicar.
+  const [usuariosApp, setUsuariosApp] = useState([]);
+  const [programacionesProcesos, setProgramacionesProcesos] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     const unsubs = [
@@ -4065,6 +4071,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_dias_trabajados"), (snap) => setDiasTrabajadosHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_fiscal_destajo_liquidaciones"), (snap) => setLiquidacionesFD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "users"), (snap) => setUsuariosApp(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "planeacion_programacion_procesos"), (snap) => setProgramacionesProcesos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
     ];
     return () => unsubs.forEach((u) => u());
   }, []);
@@ -4154,7 +4162,48 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function borrarAreaTNS(id) { await fsDelete("nomina_areas_tns", id); }
   async function guardarMotivoAusencia(m) { await fsSave("nomina_motivos_ausencia", m.id, m); }
   async function borrarMotivoAusencia(id) { await fsDelete("nomina_motivos_ausencia", id); }
-  async function guardarProduccion(p) { await fsSave("nomina_produccion", p.id, p); }
+  // (2026-09-02, a pedido de Fredy) Pareja fija: SOLO Postura Dije
+  // encadena con Terminación (nada más). Se dispara siempre que se
+  // registre producción de Dije para un trabajador+lote, así el lote no
+  // hubiera pasado antes por el Programador de Procesos.
+  async function encadenarDijeATerminacion(p) {
+    if (!p.numLote || !p.trabajadorId) return;
+    const procesoTerminacion = (precios.find((pr) => normalizarProceso(pr.proceso) === normalizarProceso("Terminación"))?.proceso) || "Terminación";
+    // No duplicar: si este lote+trabajador ya tiene una programación de
+    // Terminación (manual o de un encadenamiento anterior), no crear otra.
+    const yaProgramado = programacionesProcesos.some((prog) =>
+      prog.numLote === p.numLote && prog.trabajadorId === p.trabajadorId && normalizarProceso(prog.proceso) === normalizarProceso(procesoTerminacion)
+    );
+    if (yaProgramado) return;
+    const trabajador = trabajadores.find((t) => t.id === p.trabajadorId);
+    // La líder dueña de Terminación es quien tenga esa Área Interna como
+    // su Área de Nómina (mismo criterio que ya separa a Anny de Sarai).
+    const lider = trabajador?.area ? usuariosApp.find((u) => !u.isAdmin && u.areaNomina === trabajador.area) : null;
+    await fsSave("planeacion_programacion_procesos", uid(), {
+      numLote: p.numLote,
+      referencia: p.referencia || "",
+      proceso: procesoTerminacion,
+      fechaProgramada: p.fecha || today(),
+      trabajadorId: p.trabajadorId,
+      trabajadorNombre: p.trabajadorNombre || trabajador?.nombre || "",
+      cantidad: Number(p.cantidad) || 0,
+      liderUsername: lider?.username || "",
+      liderNombre: lider?.name || "",
+      creadoEn: new Date().toISOString(),
+      origenAutomatico: "dije_a_terminacion",
+    });
+  }
+  async function guardarProduccion(p) {
+    const esNuevo = !produccion.some((x) => x.id === p.id);
+    await fsSave("nomina_produccion", p.id, p);
+    if (esNuevo && normalizarProceso(p.proceso) === normalizarProceso("Postura Dije")) {
+      try {
+        await encadenarDijeATerminacion(p);
+      } catch (err) {
+        console.error("No se pudo encadenar Terminación desde Dije:", err);
+      }
+    }
+  }
   async function borrarProduccion(id) { await fsDelete("nomina_produccion", id); }
   async function guardarHoras(h) { await fsSave("nomina_horas", h.id, h); }
   async function borrarHoras(id) { await fsDelete("nomina_horas", id); }
