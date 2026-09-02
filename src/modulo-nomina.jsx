@@ -2840,6 +2840,11 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   const [movimientosLote, setMovimientosLote] = useState(null);
   const [avisandoDiseno, setAvisandoDiseno] = useState(false);
   const [avisoDisenoInfo, setAvisoDisenoInfo] = useState(null);
+  // (2026-09-02, a pedido de Fredy) Editar un registro ya guardado --
+  // antes solo se podía Borrar (admin) y volver a registrar de cero.
+  const [modalEditar, setModalEditar] = useState(null);
+  const [formEditar, setFormEditar] = useState(null);
+  const [guardandoEdicion, setGuardandoEdicion] = useState(false);
   async function buscarLote() {
     const n = numLote.trim();
     if (!n) return;
@@ -3086,6 +3091,59 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
     }, 700);
     return () => clearTimeout(timer);
   }, [sinPrecioMaximoAlguno, referencia, proceso]);
+  // (2026-09-02, a pedido de Fredy) Ventana editable: quincena en curso
+  // o la anterior -- así una líder puede corregir un error reciente sin
+  // poder tocar algo de meses atrás ya liquidado. Un admin no tiene este
+  // límite (misma confianza que ya tiene con Borrar).
+  const quincenaActualProd = quincenaDe(0);
+  const quincenaAnteriorProd = quincenaDe(-1);
+  function puedeEditarFila(f) {
+    if (isAdmin) return true;
+    return f.fecha >= quincenaAnteriorProd.desde && f.fecha <= quincenaActualProd.hasta;
+  }
+  function abrirEditar(f) {
+    setModalEditar(f);
+    setFormEditar({
+      trabajadorId: f.trabajadorId || "",
+      fecha: f.fecha || today(),
+      proceso: f.proceso || "",
+      referencia: f.referencia || "",
+      numLote: f.numLote || "",
+      cantidad: f.cantidad != null ? String(f.cantidad) : "",
+      precioReal: f.precioUnidad != null ? String(f.precioUnidad) : "",
+    });
+  }
+  const puedeGuardarEdicion = !!(
+    formEditar && formEditar.trabajadorId && formEditar.proceso &&
+    Number(formEditar.cantidad) > 0 && Number(formEditar.precioReal) > 0 && !guardandoEdicion
+  );
+  async function guardarEdicion() {
+    if (!puedeGuardarEdicion || !modalEditar) return;
+    setGuardandoEdicion(true);
+    try {
+      const trabajador = trabajadores.find((t) => t.id === formEditar.trabajadorId);
+      const cant = Number(formEditar.cantidad) || 0;
+      const precio = Number(formEditar.precioReal) || 0;
+      await onGuardar({
+        ...modalEditar,
+        trabajadorId: formEditar.trabajadorId,
+        trabajadorNombre: trabajador?.nombre || modalEditar.trabajadorNombre || "",
+        fecha: formEditar.fecha,
+        proceso: formEditar.proceso,
+        referencia: formEditar.referencia.trim(),
+        numLote: formEditar.numLote.trim() || null,
+        cantidad: cant,
+        precioUnidad: precio,
+        total: cant * precio,
+        editadoPor: currentUser?.name || currentUser?.username || "",
+        editadoEn: new Date().toISOString(),
+      });
+      setModalEditar(null);
+      setFormEditar(null);
+    } finally {
+      setGuardandoEdicion(false);
+    }
+  }
   async function guardar() {
     if (!puedeGuardar) return;
     setGuardando(true);
@@ -3293,10 +3351,41 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
           { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
           { key: "precioUnidad", label: "Precio/Und", align: "right", render: (f) => fmtMoney(f.precioUnidad) },
           { key: "total", label: "Total", align: "right", render: (f) => fmtMoney(f.total) },
-          ...(isAdmin ? [{ key: "acciones", label: "", align: "right", render: (f) => <span onClick={(e) => { e.stopPropagation(); onBorrar(f.id); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span> }] : []),
+          {
+            key: "acciones", label: "", align: "right",
+            render: (f) => (
+              <span style={{ display: "inline-flex", gap: 12 }}>
+                {puedeEditarFila(f) && <span onClick={(e) => { e.stopPropagation(); abrirEditar(f); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>Editar</span>}
+                {isAdmin && <span onClick={(e) => { e.stopPropagation(); onBorrar(f.id); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>}
+              </span>
+            ),
+          },
         ]}
         filas={recientes}
       />
+      {modalEditar && formEditar && (
+        <Modal title="Editar registro de producción" onClose={() => { setModalEditar(null); setFormEditar(null); }} width={480}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Trabajador">
+              <FSel value={formEditar.trabajadorId} onChange={(v) => setFormEditar((s) => ({ ...s, trabajadorId: v }))} options={trabajadoresActivos.map((t) => ({ value: t.id, label: t.nombre }))} />
+            </Field>
+            <Field label="Fecha"><FInput type="date" value={formEditar.fecha} onChange={(v) => setFormEditar((s) => ({ ...s, fecha: v }))} /></Field>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Proceso">
+              <FSel value={formEditar.proceso} onChange={(v) => setFormEditar((s) => ({ ...s, proceso: v }))} options={precios.map((p) => ({ value: p.proceso, label: p.proceso }))} />
+            </Field>
+            <Field label="N° de Lote"><FInput value={formEditar.numLote} onChange={(v) => setFormEditar((s) => ({ ...s, numLote: v }))} placeholder="Ej: 7150" /></Field>
+          </div>
+          <Field label="Referencia"><FInput value={formEditar.referencia} onChange={(v) => setFormEditar((s) => ({ ...s, referencia: v }))} placeholder="Ej: CK3000" /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Cantidad"><FInput type="number" value={formEditar.cantidad} onChange={(v) => setFormEditar((s) => ({ ...s, cantidad: v }))} /></Field>
+            <Field label="Precio real (por unidad)"><FInput type="number" value={formEditar.precioReal} onChange={(v) => setFormEditar((s) => ({ ...s, precioReal: v }))} /></Field>
+          </div>
+          <div style={{ fontSize: 12, color: C.slate, fontWeight: 700, marginBottom: 14 }}>Nuevo total: {fmtMoney((Number(formEditar.cantidad) || 0) * (Number(formEditar.precioReal) || 0))}</div>
+          <Btn onClick={guardarEdicion} disabled={!puedeGuardarEdicion}>{guardandoEdicion ? "Guardando..." : "Guardar cambios"}</Btn>
+        </Modal>
+      )}
     </div>
   );
 }
