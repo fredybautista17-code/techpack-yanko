@@ -968,7 +968,7 @@ function SubirHoja1Modal({ onConfirm, onClose }) {
   );
 }
 // ─── TABLA GENÉRICA ─────────────────────────────────────────────────────────────
-function Tabla({ columnas, filas, vacio }) {
+function Tabla({ columnas, filas, vacio, onRowClick }) {
   if (!filas.length) {
     return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>{vacio || "Sin datos."}</div>;
   }
@@ -986,7 +986,11 @@ function Tabla({ columnas, filas, vacio }) {
         </thead>
         <tbody>
           {filas.map((f, i) => (
-            <tr key={i} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+            <tr
+              key={f.id ?? i}
+              onClick={onRowClick ? () => onRowClick(f) : undefined}
+              style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}`, cursor: onRowClick ? "pointer" : "default" }}
+            >
               {columnas.map((c) => (
                 <td key={c.key} style={{ padding: "7px 12px", textAlign: c.align || "left", whiteSpace: "nowrap", color: c.color ? c.color(f) : C.ink }}>
                   {c.render ? c.render(f) : f[c.key]}
@@ -3318,6 +3322,17 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   // guardó el cierre. Cierres guardados antes de este cambio no tienen
   // "detalle" -- se avisa en vez de mostrar una tabla vacía.
   const [historialDetalleAbierto, setHistorialDetalleAbierto] = useState(null);
+  // (2026-09-03, a pedido de Fredy) Clic en un trabajador de la tabla
+  // principal (modo Destajo) abre en una ventana aparte todo lo que
+  // registró en Registrar Producción durante el período elegido --
+  // fecha, lote, proceso, referencia, cantidad y total de cada registro
+  // (la suma de estos es "Unidades"/"Valor producido" de su fila).
+  const [trabajadorDetalleAbierto, setTrabajadorDetalleAbierto] = useState(null);
+  const registrosTrabajadorDetalle = trabajadorDetalleAbierto
+    ? produccionPeriodo
+        .filter((p) => p.trabajadorId === trabajadorDetalleAbierto.id)
+        .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
+    : [];
   // (2026-09-02, a pedido de Fredy) Modo "Despachado" (Administrativo,
   // Bodega): el costo de nómina del área se compara contra el
   // despachado TOTAL de toda la empresa (no repartido entre áreas --
@@ -3586,7 +3601,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                   )}
                 </div>
               )}
-              <Tabla vacio="No hay trabajadores en esta área." columnas={columnas} filas={filas} />
+              <Tabla vacio="No hay trabajadores en esta área." columnas={columnas} filas={filas} onRowClick={setTrabajadorDetalleAbierto} />
               {historialDetalleAbierto && (
                 <Modal title={`Detalle del cierre — ${historialDetalleAbierto.etiquetaPeriodo}`} onClose={() => setHistorialDetalleAbierto(null)} width={720}>
                   <div style={{ fontSize: 11, color: C.slate, marginBottom: 12 }}>
@@ -3608,6 +3623,25 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                   ) : (
                     <div style={{ fontSize: 12, color: C.slate }}>Este cierre se guardó antes de que se empezara a guardar el detalle por trabajador — no hay detalle disponible, solo los totales de arriba.</div>
                   )}
+                </Modal>
+              )}
+              {trabajadorDetalleAbierto && (
+                <Modal title={`${trabajadorDetalleAbierto.nombre} — ${etiquetaPeriodo}`} onClose={() => setTrabajadorDetalleAbierto(null)} width={780}>
+                  <div style={{ fontSize: 11, color: C.slate, marginBottom: 12 }}>
+                    {trabajadorDetalleAbierto.area} — {fmtNum(trabajadorDetalleAbierto.unidades)} unidades, {fmtMoney(trabajadorDetalleAbierto.valorProducido)} producidos en total este período.
+                  </div>
+                  <Tabla
+                    vacio="Sin registros de producción en este período."
+                    columnas={[
+                      { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+                      { key: "numLote", label: "Lote", render: (f) => f.numLote || "—" },
+                      { key: "proceso", label: "Proceso" },
+                      { key: "referencia", label: "Referencia", render: (f) => f.referencia || "—" },
+                      { key: "cantidad", label: "Cantidad", align: "right", render: (f) => fmtNum(f.cantidad) },
+                      { key: "total", label: "Total", align: "right", render: (f) => <strong>{fmtMoney(f.total)}</strong> },
+                    ]}
+                    filas={registrosTrabajadorDetalle}
+                  />
                 </Modal>
               )}
             </>
