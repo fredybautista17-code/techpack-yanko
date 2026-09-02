@@ -2851,6 +2851,38 @@ function ProgramadorProcesosView({
     });
     return m;
   }, [produccion]);
+  // (2026-09-02, a pedido de Fredy) Cuántas programaciones activas tiene
+  // cada lote+proceso -- si hay más de una, ese lote+proceso está
+  // "compartido" entre varios trabajadores (ver misProgramaciones y el
+  // modal de Programar más abajo). Va ANTES de misProgramaciones porque
+  // su callback la usa.
+  const conteoPorLoteProceso = useMemo(() => {
+    const m = new Map();
+    (programaciones || []).filter((p) => misProcesos.includes(p.proceso)).forEach((p) => {
+      const clave = `${p.numLote}||${p.proceso}`;
+      m.set(clave, (m.get(clave) || 0) + 1);
+    });
+    return m;
+  }, [programaciones, misProcesos]);
+  // (2026-09-02, a pedido de Fredy) Cuánto ya está asignado (sumando la
+  // cantidad de cada programación activa) por lote+proceso -- para el
+  // aviso "✓ Ya programado" de la tabla de pendientes. Una
+  // programación vieja sin campo "cantidad" (de antes de este cambio)
+  // se cuenta como que ya ocupa TODO lo pendiente, para no dejar
+  // repartir por encima de una programación que no se puede medir.
+  const asignadoPorLoteProceso = useMemo(() => {
+    const m = new Map();
+    (programaciones || []).filter((p) => misProcesos.includes(p.proceso)).forEach((p) => {
+      const clave = `${p.numLote}||${p.proceso}`;
+      if (p.cantidad == null) {
+        m.set(clave, Infinity);
+        return;
+      }
+      if (m.get(clave) === Infinity) return;
+      m.set(clave, (m.get(clave) || 0) + (Number(p.cantidad) || 0));
+    });
+    return m;
+  }, [programaciones, misProcesos]);
   const misProgramaciones = useMemo(() => {
     return (programaciones || [])
       .filter((p) => misProcesos.includes(p.proceso))
@@ -2899,37 +2931,6 @@ function ProgramadorProcesosView({
   // ("Pendientes por programar") los lote+proceso que YA tienen una
   // programación activa -- así no parece que falta programarlos de nuevo.
   const clavesYaProgramadas = useMemo(() => new Set(misProgramaciones.map((p) => `${p.numLote}||${p.proceso}`)), [misProgramaciones]);
-  // (2026-09-02, a pedido de Fredy) Cuántas programaciones activas tiene
-  // cada lote+proceso -- si hay más de una, ese lote+proceso está
-  // "compartido" entre varios trabajadores (ver misProgramaciones y el
-  // modal de Programar más abajo).
-  const conteoPorLoteProceso = useMemo(() => {
-    const m = new Map();
-    (programaciones || []).filter((p) => misProcesos.includes(p.proceso)).forEach((p) => {
-      const clave = `${p.numLote}||${p.proceso}`;
-      m.set(clave, (m.get(clave) || 0) + 1);
-    });
-    return m;
-  }, [programaciones, misProcesos]);
-  // (2026-09-02, a pedido de Fredy) Cuánto ya está asignado (sumando la
-  // cantidad de cada programación activa) por lote+proceso -- para el
-  // aviso "✓ Ya programado" de la tabla de pendientes. Una
-  // programación vieja sin campo "cantidad" (de antes de este cambio)
-  // se cuenta como que ya ocupa TODO lo pendiente, para no dejar
-  // repartir por encima de una programación que no se puede medir.
-  const asignadoPorLoteProceso = useMemo(() => {
-    const m = new Map();
-    (programaciones || []).filter((p) => misProcesos.includes(p.proceso)).forEach((p) => {
-      const clave = `${p.numLote}||${p.proceso}`;
-      if (p.cantidad == null) {
-        m.set(clave, Infinity);
-        return;
-      }
-      if (m.get(clave) === Infinity) return;
-      m.set(clave, (m.get(clave) || 0) + (Number(p.cantidad) || 0));
-    });
-    return m;
-  }, [programaciones, misProcesos]);
   // (2026-09-02, a pedido de Fredy) Para la tabla de "Lotes programados":
   // cuando un lote sale CUMPLIDO, mostrar qué entrada/salida real de Busint
   // fue la que lo cumplió (unidades y fecha), no solo la palabra "Cumplido".
