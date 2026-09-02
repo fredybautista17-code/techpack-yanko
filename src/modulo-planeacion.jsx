@@ -3285,6 +3285,19 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     () => (produccion || []).filter((p) => enPeriodo(p.fecha)),
     [produccion, periodo, fechaDia, mesSel, anioSel]
   );
+  // (2026-09-03, a pedido de Fredy) "Unidades en Terminadas" -- unidades
+  // realmente terminadas (proceso TERMINACION), a diferencia de "Unidades
+  // producidas" que suma cada paso de proceso por separado. Alcance TODA
+  // LA EMPRESA en el período elegido, sin importar el área seleccionada
+  // arriba -- así se ve cuánto se terminó de verdad aunque estés mirando
+  // el Centro de Costo de un área que no hace terminación.
+  const unidadesTerminadasPeriodo = useMemo(
+    () =>
+      produccionPeriodo
+        .filter((p) => String(p.proceso || "").trim().toUpperCase() === "TERMINACION")
+        .reduce((s, p) => s + (Number(p.cantidad) || 0), 0),
+    [produccionPeriodo]
+  );
   const porTrabajador = useMemo(() => {
     const m = new Map();
     produccionPeriodo.forEach((p) => {
@@ -3615,6 +3628,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
             <>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
                 <KPI icon="📦" label="Unidades producidas" value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
+                <KPI icon="✅" label="Unidades en Terminadas" value={fmtNum(unidadesTerminadasPeriodo)} color={C.amber} bg={C.amberBg} sub="proceso Terminación, toda la empresa" />
                 <KPI icon="💵" label="Valor producido" value={fmtMoney(totalValor)} color={C.green} bg={C.greenBg} />
                 <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(totalCosto)} color={C.violet} bg={C.violetBg} />
                 <KPI icon="💰" label={`Presupuesto (${etiquetaPeriodo})`} value={presupuestoPeriodoArea > 0 ? fmtMoney(presupuestoPeriodoArea) : "Sin presupuesto"} color={C.slate} bg={C.canvas} />
@@ -3964,8 +3978,133 @@ function ControlCalidadView({ reclamos, onGuardar, onCambiarEstado, onBorrar, is
 // tiene ningún líder asignado (o el líder no tiene procesos marcados),
 // Estadísticas/Programador quedan vacíos para esa área — se avisa en
 // pantalla, no se adivina un mapeo.
+// (2026-09-03, a pedido de Fredy) "Centro de Costo Cierre" -- todos los
+// cierres guardados (botón manual "Guardar cierre" Y el automático de
+// las 10pm), de TODAS las áreas, en un solo lugar. Filtro por día (el
+// día en que se guardó el cierre, no el período que mide) y por
+// trabajador -- al buscar un trabajador se arma su propio historial
+// cruzando todos los cierres donde aparece en el "detalle" guardado.
+function CentroCostoCierreView() {
+  const [historial, setHistorial] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "centro_costo_historial_ayuda"), (snap) => {
+      setHistorial(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  const [filtroFecha, setFiltroFecha] = useState("");
+  const [filtroTrabajador, setFiltroTrabajador] = useState("");
+  const [detalleAbierto, setDetalleAbierto] = useState(null);
+  const busq = filtroTrabajador.trim().toLowerCase();
+  const cierresFiltrados = useMemo(() => {
+    return historial
+      .filter((h) => !filtroFecha || (h.fechaGuardado || "").slice(0, 10) === filtroFecha)
+      .filter((h) => !busq || (h.detalle || []).some((d) => (d.nombre || "").toLowerCase().includes(busq)))
+      .sort((a, b) => (b.fechaGuardado || "").localeCompare(a.fechaGuardado || ""));
+  }, [historial, filtroFecha, busq]);
+  const totalAyudado = cierresFiltrados.reduce((s, h) => s + (Number(h.totalAyuda) || 0), 0);
+  const totalExcedente = cierresFiltrados.reduce((s, h) => s + (Number(h.totalExcedente) || 0), 0);
+  const historialTrabajador = useMemo(() => {
+    if (!busq) return [];
+    const filas = [];
+    cierresFiltrados.forEach((h) => {
+      (h.detalle || []).forEach((d) => {
+        if ((d.nombre || "").toLowerCase().includes(busq)) {
+          filas.push({
+            id: `${h.id}__${d.id}`,
+            fechaGuardado: h.fechaGuardado,
+            area: h.area,
+            etiquetaPeriodo: h.etiquetaPeriodo,
+            nombre: d.nombre,
+            unidades: d.unidades,
+            valorProducido: d.valorProducido,
+            costo: d.sinSueldo ? 0 : d.costo,
+            balance: (Number(d.valorProducido) || 0) - (d.sinSueldo ? 0 : Number(d.costo) || 0),
+          });
+        }
+      });
+    });
+    return filas.sort((a, b) => (b.fechaGuardado || "").localeCompare(a.fechaGuardado || ""));
+  }, [cierresFiltrados, busq]);
+  const columnasCierres = [
+    { key: "fechaGuardado", label: "Guardado", render: (f) => new Date(f.fechaGuardado).toLocaleString("es-CO") },
+    { key: "area", label: "Área" },
+    { key: "etiquetaPeriodo", label: "Período" },
+    { key: "totalAyuda", label: "Ayudado", align: "right", render: (f) => <span style={{ color: C.red }}>{fmtMoney(f.totalAyuda)}</span> },
+    { key: "totalExcedente", label: "Excedente", align: "right", render: (f) => <span style={{ color: C.green }}>{fmtMoney(f.totalExcedente)}</span> },
+    { key: "balance", label: "Balance", align: "right", render: (f) => <strong>{fmtMoney(f.balance)}</strong> },
+  ];
+  const columnasTrabajador = [
+    { key: "fechaGuardado", label: "Guardado", render: (f) => new Date(f.fechaGuardado).toLocaleString("es-CO") },
+    { key: "area", label: "Área" },
+    { key: "etiquetaPeriodo", label: "Período" },
+    { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
+    { key: "valorProducido", label: "Valor producido", align: "right", render: (f) => fmtMoney(f.valorProducido) },
+    { key: "costo", label: "Costo nómina", align: "right", render: (f) => fmtMoney(f.costo) },
+    { key: "balance", label: "Ayuda / Excedente", align: "right", render: (f) => <strong style={{ color: f.balance < 0 ? C.red : C.green }}>{fmtMoney(f.balance)}</strong> },
+  ];
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 6px", fontSize: 22, fontWeight: 900, color: C.ink }}>🔒 Centro de Costo Cierre</h2>
+      <p style={{ margin: "0 0 18px", fontSize: 14, color: C.slate }}>Todos los cierres guardados (manuales y el automático de las 10pm), de todas las áreas, en un solo lugar.</p>
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 18 }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, marginBottom: 4 }}>Día del cierre</div>
+          <input type="date" value={filtroFecha} onChange={(e) => setFiltroFecha(e.target.value)} style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
+        </div>
+        <div style={{ flex: "0 1 260px" }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, marginBottom: 4 }}>Trabajador</div>
+          <input type="text" value={filtroTrabajador} onChange={(e) => setFiltroTrabajador(e.target.value)} placeholder="Buscar por nombre..." style={{ width: "100%", padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
+        </div>
+        {(filtroFecha || filtroTrabajador) && (
+          <Btn variant="ghost" small onClick={() => { setFiltroFecha(""); setFiltroTrabajador(""); }}>Limpiar filtros</Btn>
+        )}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 }}>
+        <KPI icon="🗂️" label="Cierres encontrados" value={fmtNum(cierresFiltrados.length)} color={C.slate} bg={C.canvas} />
+        <KPI icon="🆘" label="Total ayudado" value={fmtMoney(totalAyudado)} color={C.red} bg={C.redBg} />
+        <KPI icon="📈" label="Total excedente" value={fmtMoney(totalExcedente)} color={C.green} bg={C.greenBg} />
+      </div>
+      {busq && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 10 }}>Historial de "{filtroTrabajador.trim()}"</div>
+          <Tabla vacio="No aparece en ningún cierre guardado con los filtros de arriba." columnas={columnasTrabajador} filas={historialTrabajador} />
+        </div>
+      )}
+      <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 10 }}>Cierres</div>
+      <div style={{ fontSize: 11, color: C.slate, marginBottom: 8 }}>Haz clic en un cierre para ver el detalle por trabajador.</div>
+      <Tabla vacio="No hay cierres guardados con estos filtros." columnas={columnasCierres} filas={cierresFiltrados} onRowClick={setDetalleAbierto} />
+      {detalleAbierto && (
+        <Modal title={`${detalleAbierto.area} — ${detalleAbierto.etiquetaPeriodo}`} onClose={() => setDetalleAbierto(null)} width={780}>
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 12 }}>
+            Guardado el {new Date(detalleAbierto.fechaGuardado).toLocaleString("es-CO")} — Ayudado {fmtMoney(detalleAbierto.totalAyuda)}, Excedente {fmtMoney(detalleAbierto.totalExcedente)}, Balance {fmtMoney(detalleAbierto.balance)}.
+          </div>
+          {detalleAbierto.detalle ? (
+            <Tabla
+              vacio="Sin trabajadores en este cierre."
+              columnas={[
+                { key: "nombre", label: "Trabajador" },
+                { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
+                { key: "valorProducido", label: "Valor producido", align: "right", render: (f) => fmtMoney(f.valorProducido) },
+                { key: "costo", label: "Costo nómina", align: "right", render: (f) => (f.sinSueldo ? "Sin sueldo" : fmtMoney(f.costo)) },
+                { key: "balance", label: "Ayuda / Excedente", align: "right", render: (f) => {
+                    const bal = (Number(f.valorProducido) || 0) - (f.sinSueldo ? 0 : Number(f.costo) || 0);
+                    return <strong style={{ color: bal < 0 ? C.red : C.green }}>{fmtMoney(bal)}</strong>;
+                  } },
+              ]}
+              filas={detalleAbierto.detalle}
+            />
+          ) : (
+            <div style={{ fontSize: 12, color: C.slate }}>Este cierre se guardó antes de que se empezara a guardar el detalle por trabajador — no hay detalle disponible, solo los totales de arriba.</div>
+          )}
+        </Modal>
+      )}
+    </div>
+  );
+}
 const AREAS_SECCIONES = [
   { id: "centro_costo", icon: "💰", label: "Centro de Costo" },
+  { id: "cierre", icon: "🔒", label: "Centro de Costo Cierre" },
   { id: "estadisticas", icon: "📈", label: "Estadísticas" },
   { id: "reclamos", icon: "🔍", label: "Reclamos" },
   { id: "programador", icon: "📋", label: "Programador" },
@@ -3976,8 +4115,10 @@ export function AreasStandalone({ currentUser, onVolver, onLogout, puedeCentroCo
   // sin mostrarle la lista de las demás (2026-09-01, a pedido de Fredy).
   const areaLiderNombre = !currentUser?.isAdmin && currentUser?.areaNomina ? currentUser.areaNomina : null;
   // Qué pestañas puede ver este usuario (permiso por rol, ver App.js) — un
-  // admin siempre las ve las 4 porque moduloVisible le da acceso total.
-  const PERMISO_TAB = { centro_costo: !!puedeCentroCosto, estadisticas: !!puedeEstadisticas, reclamos: !!puedeReclamos, programador: !!puedeProgramador };
+  // admin siempre las ve las 5 porque moduloVisible le da acceso total.
+  // (2026-09-03, a pedido de Fredy) "cierre" usa el mismo permiso que
+  // "centro_costo" -- no se pidió un rol aparte para esta pestaña.
+  const PERMISO_TAB = { centro_costo: !!puedeCentroCosto, cierre: !!puedeCentroCosto, estadisticas: !!puedeEstadisticas, reclamos: !!puedeReclamos, programador: !!puedeProgramador };
   const seccionesVisibles = AREAS_SECCIONES.filter((s) => PERMISO_TAB[s.id]);
   const [areas, setAreas] = useState([]);
   const [trabajadores, setTrabajadores] = useState([]);
@@ -4255,6 +4396,7 @@ export function AreasStandalone({ currentUser, onVolver, onLogout, puedeCentroCo
                   onCancelarProgramacion={cancelarProgramacion}
                 />
               )}
+              {seccion === "cierre" && PERMISO_TAB.cierre && <CentroCostoCierreView />}
             </div>
           )}
         </div>
