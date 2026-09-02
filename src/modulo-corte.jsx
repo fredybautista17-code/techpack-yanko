@@ -8268,26 +8268,44 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin }) {
   const [resultadoRecalculo, setResultadoRecalculo] = useState(null);
   // Corrige cortes YA registrados (de cualquier fecha, incluso pedidos
   // cerrados) cuyo ingreso quedó mal calculado porque, al momento de
-  // guardarse, la referencia todavía no tenía precio en el archivo de
-  // Precios Corte (quedó en $0) o tenía un precio viejo. `precio` e
-  // `ingresoCorte` se guardan congelados dentro de cada corte al crearse —
-  // subir un archivo de precios nuevo NO los actualiza solo, hay que
-  // recalcularlos a mano con esto. Solo toca las referencias cuyo precio
-  // actual en el archivo es DISTINTO al que quedó guardado en el corte.
+  // guardarse, la referencia todavía no tenía precio (ni en Busint ni en
+  // el archivo de Precios Corte -- quedó en $0) o tenía un precio viejo.
+  // `precio` e `ingresoCorte` se guardan congelados dentro de cada corte
+  // al crearse — ni Busint ni un archivo nuevo los actualizan solos, hay
+  // que recalcularlos a mano con esto. Solo toca las referencias cuyo
+  // precio actual (Busint o archivo) es DISTINTO al que quedó guardado.
+  // (2026-09-02, a pedido de Fredy) Ahora también consulta Busint en
+  // vivo -- mismo mecanismo ya usado en Programar Corte, pero acá con
+  // UNA sola consulta para TODAS las referencias (getPreciosCorteBusint),
+  // no una por cada una, porque este recalculo puede tocar decenas de
+  // referencias distintas de una sola vez. Prioridad: Busint en vivo >
+  // archivo de Precios Corte subido > lo que ya tuviera guardado el
+  // corte.
   async function recalcularPrecios() {
-    if (!preciosMap || !preciosMap.size) {
-      alert("No hay un archivo de Precios Corte cargado todavía — súbelo primero en Admin Corte.");
-      return;
-    }
     if (
       !window.confirm(
-        "Esto revisa TODOS los cortes ya registrados (de cualquier fecha, incluso pedidos cerrados) y actualiza el precio/ingreso de las referencias cuyo precio en el archivo más reciente sea distinto al que quedó guardado. ¿Continuar?"
+        "Esto revisa TODOS los cortes ya registrados (de cualquier fecha, incluso pedidos cerrados) y actualiza el precio/ingreso de las referencias cuyo precio en Busint (en vivo) o en el archivo más reciente sea distinto al que quedó guardado. ¿Continuar?"
       )
     ) {
       return;
     }
     setRecalculando(true);
     setResultadoRecalculo(null);
+    const preciosCombinados = new Map(preciosMap || []);
+    try {
+      const llamar = httpsCallable(functionsClient, "getPreciosCorteBusint");
+      const resp = await llamar({});
+      (resp.data?.precios || []).forEach((pr) => {
+        if (Number(pr.precio) > 0) preciosCombinados.set(String(pr.ref).trim(), Number(pr.precio));
+      });
+    } catch (err) {
+      console.error("No se pudo consultar Busint para recalcular precios de corte -- sigue con el archivo:", err);
+    }
+    if (!preciosCombinados.size) {
+      setRecalculando(false);
+      alert("No hay precios disponibles todavía (ni de Busint en vivo ni del archivo de Precios Corte) para recalcular.");
+      return;
+    }
     let pedidosActualizados = 0;
     let cortesActualizados = 0;
     let refsActualizadas = 0;
@@ -8299,7 +8317,7 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin }) {
         const nuevosCortes = p.cortesRealizados.map((c) => {
           let cambioCorte = false;
           const nuevosRefs = (c.refs || []).map((r) => {
-            const nuevoPrecio = preciosMap.get(String(r.ref || "").trim());
+            const nuevoPrecio = preciosCombinados.get(String(r.ref || "").trim());
             if (nuevoPrecio != null && nuevoPrecio !== (r.precio || 0)) {
               cambioCorte = true;
               refsActualizadas++;
