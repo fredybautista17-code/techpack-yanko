@@ -98,6 +98,14 @@ function addDays(d, n) {
 function isoDate(d) {
   return d.toISOString().slice(0, 10);
 }
+// (2026-09-03) Diferencia en días (valor absoluto) entre dos fechas
+// ISO "YYYY-MM-DD" -- usado para el aviso de posible duplicado en
+// Registrar Producción.
+function diasEntre(isoA, isoB) {
+  const a = new Date(isoA);
+  const b = new Date(isoB);
+  return Math.abs((a - b) / 86400000);
+}
 const MONTHS_SHORT = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 // Quincena colombiana: 1–15 y 16–fin de mes (el fin varía: 28, 29, 30 o 31
 // según el mes — "se deben incluir los 31 de cada mes si hay", pidió el
@@ -3021,6 +3029,25 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   const totalRegistradoLoteProceso = otrosRegistrosLoteProceso.reduce((acc, p) => acc + (Number(p.cantidad) || 0), 0);
   const cantidadDisponibleLoteProceso = cantCortadaLote > 0 ? Math.max(0, cantCortadaLote - totalRegistradoLoteProceso) : null;
   const excedeCantidadLote = !!(loteAsociado && proceso && cantCortadaLote > 0 && Number(cantidad) > 0 && (totalRegistradoLoteProceso + Number(cantidad)) > cantCortadaLote);
+  // (2026-09-03, a pedido de Fredy) Aviso de posible duplicado: mismo
+  // trabajador + mismo proceso + misma cantidad + mismo total ya
+  // registrado en los últimos 7 días -- a diferencia de
+  // "registroPrevio" (que solo compara dentro del mismo lote buscado),
+  // esto también agarra el caso de registrar SIN buscar lote, que fue
+  // como se coló un duplicado real (mismo proceso/cantidad/total del
+  // día siguiente, sin lote ni referencia -- ver Historial de
+  // Trabajador). Es solo un AVISO, no bloquea guardar, porque a veces
+  // sí se repite el mismo proceso con la misma cantidad en días
+  // distintos (ej. el mismo lote se corta y reparte por partes).
+  const posibleDuplicado = trabajadorId && proceso && Number(cantidad) > 0 && Number(precioReal) > 0
+    ? (produccionCompleta || []).find((p) =>
+        p.trabajadorId === trabajadorId &&
+        p.proceso === proceso &&
+        Number(p.cantidad) === Number(cantidad) &&
+        Number(p.total) === total &&
+        p.fecha && fecha && diasEntre(p.fecha, fecha) <= 7
+      )
+    : null;
   const puedeGuardar = trabajadorId && proceso && Number(cantidad) > 0 && Number(precioReal) > 0 && !guardando && !excedeCostoTeorico && !loteBloqueado && !registroPrevio && !excedeCantidadLote;
   // (2026-08-31) Fredy pidió que cuando un proceso no tenga NINGÚN precio
   // máximo configurado (ni Busint en vivo, ni Excel, ni catálogo), se avise
@@ -3219,6 +3246,14 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
         {entradaBusintProceso && !registroPrevio && (
           <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 12, fontWeight: 700, marginBottom: 10 }}>
             ⚠️ Busint ya tiene una entrada registrada para el proceso "{proceso}" del lote {numLote.trim()}: {fmtNum(entradaBusintProceso.total)} unidades ({entradaBusintProceso.filas} movimiento{entradaBusintProceso.filas === 1 ? "" : "s"}). Puede que este trabajo ya se haya pagado por otro medio -- verifícalo antes de guardar.
+          </div>
+        )}
+        {/* (2026-09-03, a pedido de Fredy) Aviso informativo -- NO
+            bloquea puedeGuardar. Mismo trabajador+proceso+cantidad+total
+            ya registrado en los últimos 7 días, con o sin lote. */}
+        {posibleDuplicado && (
+          <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 12, fontWeight: 700, marginBottom: 10 }}>
+            ⚠️ Posible duplicado: a {trabajadores.find((t) => t.id === trabajadorId)?.nombre || "este trabajador"} ya se le registró el mismo proceso "{proceso}", {fmtNum(Number(cantidad))} unidades por {fmtMoney(total)}, el {fmtFechaISO(posibleDuplicado.fecha)}{posibleDuplicado.numLote ? ` (lote ${posibleDuplicado.numLote})` : ""}. Verifica que no sea el mismo trabajo antes de guardar otra vez.
           </div>
         )}
         {movimientosLote?.error && (
