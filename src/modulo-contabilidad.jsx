@@ -3071,6 +3071,30 @@ function FacturacionClientesView() {
   const [clienteAbierto, setClienteAbierto] = useState(null);
   const [docAbierto, setDocAbierto] = useState(null);
   const [filtroTipoDoc, setFiltroTipoDoc] = useState("TODOS");
+  // (2026-09-02, a pedido de Fredy) Clasificación de cada cliente --
+  // Facturado o Consignación -- para poder sumar bien su "despachado"
+  // total: un cliente que factura por Consignación se suma con Traslado
+  // Externo pero NUNCA con Facturado, y viceversa (son excluyentes entre
+  // sí); Traslado Externo sí se suma con cualquiera de los dos. Como los
+  // clientes de esta pantalla no son una colección propia (vienen en vivo
+  // de Busint), la clasificación se guarda aparte, por nombre/código de
+  // cliente, en Firestore -- así queda fija sin importar qué rango de
+  // fechas se consulte.
+  const [tiposCliente, setTiposCliente] = useState({});
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "facturacion_tipo_cliente"), (snap) => {
+      const m = {};
+      snap.docs.forEach((d) => { m[d.data().clave] = d.data().tipo; });
+      setTiposCliente(m);
+    });
+    return () => unsub();
+  }, []);
+  function claveDoc(clave) {
+    return String(clave || "").trim().replace(/[/.#$[\]]/g, "_") || "sin_clave";
+  }
+  async function guardarTipoCliente(clave, nombreCliente, tipo) {
+    await fsSave("facturacion_tipo_cliente", claveDoc(clave), { clave, nombreCliente, tipo });
+  }
   async function consultar() {
     if (!fechaInicio || !fechaFin) return;
     setCargando(true);
@@ -3091,6 +3115,18 @@ function FacturacionClientesView() {
   useEffect(() => {
     consultar();
   }, []);
+  // (2026-09-02, a pedido de Fredy) Totales para las tarjetas nuevas de
+  // arriba -- "Unidades despachadas (total)" solo suma los clientes que
+  // YA están clasificados (Facturado o Consignación); los que faltan por
+  // clasificar no cuentan todavía, para no sumar mal por adivinar.
+  const totalUnidadesDespachadas = (resultado?.clientes || []).reduce((s, c) => {
+    const clave = c.codigoCliente || c.nombreCliente;
+    const tipo = tiposCliente[clave] || "";
+    if (tipo === "facturado") return s + c.facturado.unidades + c.trasladoExternoNeto.unidades;
+    if (tipo === "consignacion") return s + c.consignacionNeta.unidades + c.trasladoExternoNeto.unidades;
+    return s;
+  }, 0);
+  const clientesSinClasificar = (resultado?.clientes || []).filter((c) => !tiposCliente[c.codigoCliente || c.nombreCliente]).length;
   return (
     <div>
       <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, marginBottom: 4 }}>
@@ -3148,6 +3184,17 @@ function FacturacionClientesView() {
               <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Clientes</div>
               <div style={{ fontSize: 20, fontWeight: 800, color: C.ink }}>{resultado.totalClientes}</div>
             </div>
+            <div style={{ flex: "1 1 200px", padding: 16, borderRadius: 10, background: C.white, border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Unidades facturadas</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: C.green }}>{fmtNum(resultado.totalUnidadesFacturadas)}</div>
+            </div>
+            <div style={{ flex: "1 1 220px", padding: 16, borderRadius: 10, background: C.white, border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Unidades despachadas (total)</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: C.violet }}>{fmtNum(totalUnidadesDespachadas)}</div>
+              {clientesSinClasificar > 0 && (
+                <div style={{ fontSize: 11, color: C.amber, marginTop: 2 }}>⚠ {clientesSinClasificar} cliente(s) sin clasificar (Facturado/Consignación) -- no cuentan todavía en este total.</div>
+              )}
+            </div>
           </div>
           {resultado.devolucionesSinPrecio > 0 && (
             <div style={{ padding: 10, borderRadius: 8, background: "#FFF6E5", color: "#8A6100", fontSize: 12, fontWeight: 600, marginBottom: 16 }}>
@@ -3179,6 +3226,8 @@ function FacturacionClientesView() {
                     <th style={{ textAlign: "right", padding: "10px 12px" }}>Facturado (FAC)</th>
                     <th style={{ textAlign: "right", padding: "10px 12px" }}>Consignación (despachado)</th>
                     <th style={{ textAlign: "right", padding: "10px 12px" }}>Traslado Ext. (despachado)</th>
+                    <th style={{ textAlign: "center", padding: "10px 12px" }}>Tipo</th>
+                    <th style={{ textAlign: "right", padding: "10px 12px" }}>Total despachado</th>
                     <th style={{ textAlign: "right", padding: "10px 12px" }}># Docs</th>
                     <th style={{ textAlign: "center", padding: "10px 12px" }}></th>
                   </tr>
@@ -3187,6 +3236,15 @@ function FacturacionClientesView() {
                   {resultado.clientes.map((c, i) => {
                     const clave = c.codigoCliente || c.nombreCliente;
                     const abierto = clienteAbierto === clave;
+                    const tipoCliente = tiposCliente[clave] || "";
+                    const totalDespachadoMonto =
+                      tipoCliente === "facturado" ? c.facturado.monto + c.trasladoExternoNeto.monto
+                      : tipoCliente === "consignacion" ? c.consignacionNeta.monto + c.trasladoExternoNeto.monto
+                      : null;
+                    const totalDespachadoUnidades =
+                      tipoCliente === "facturado" ? c.facturado.unidades + c.trasladoExternoNeto.unidades
+                      : tipoCliente === "consignacion" ? c.consignacionNeta.unidades + c.trasladoExternoNeto.unidades
+                      : null;
                     return (
                       <Fragment key={clave}>
                         <tr
@@ -3210,12 +3268,33 @@ function FacturacionClientesView() {
                             <div style={{ fontWeight: 700 }}>{fmtCOP(c.trasladoExternoNeto.monto)}</div>
                             <div style={{ fontSize: 11, color: C.slate }}>{fmtNum(c.trasladoExternoNeto.unidades)} und.</div>
                           </td>
+                          <td style={{ padding: "10px 12px", textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
+                            <select
+                              value={tipoCliente}
+                              onChange={(e) => guardarTipoCliente(clave, c.nombreCliente, e.target.value)}
+                              style={{ fontSize: 12, padding: "4px 6px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.white, color: C.ink }}
+                            >
+                              <option value="">— elegir —</option>
+                              <option value="facturado">Facturado</option>
+                              <option value="consignacion">Consignación</option>
+                            </select>
+                          </td>
+                          <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                            {totalDespachadoMonto !== null ? (
+                              <>
+                                <div style={{ fontWeight: 700, color: C.violet }}>{fmtCOP(totalDespachadoMonto)}</div>
+                                <div style={{ fontSize: 11, color: C.slate }}>{fmtNum(totalDespachadoUnidades)} und.</div>
+                              </>
+                            ) : (
+                              <span style={{ fontSize: 11, color: C.amber }}>⚠ clasificar</span>
+                            )}
+                          </td>
                           <td style={{ padding: "10px 12px", textAlign: "right", color: C.slate }}>{c.totalDocumentos}</td>
                           <td style={{ padding: "10px 12px", textAlign: "center", color: C.slate }}>{abierto ? "▲" : "▼"}</td>
                         </tr>
                         {abierto && (
                           <tr style={{ background: C.canvas }}>
-                            <td colSpan={6} style={{ padding: "8px 12px 14px 24px" }}>
+                            <td colSpan={8} style={{ padding: "8px 12px 14px 24px" }}>
                               <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 12, fontSize: 12 }}>
                                 <div><b>FAC:</b> {fmtCOP(c.facturado.monto)} ({fmtNum(c.facturado.unidades)} und.)</div>
                                 <div><b>TCO despachado:</b> {fmtCOP(c.consignacionNeta.montoBruto)} ({fmtNum(c.consignacionNeta.unidadesBruto)} und.) · <b>DTC (ya facturado):</b> -{fmtCOP(c.consignacionNeta.montoDevuelto)} ({fmtNum(c.consignacionNeta.unidadesDevueltas)} und.) · si se restara, neto {fmtCOP(c.consignacionNeta.montoNeto)}</div>
