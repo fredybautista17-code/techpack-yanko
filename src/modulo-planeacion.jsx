@@ -3197,13 +3197,37 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   const [fechaDia, setFechaDia] = useState(hoy);
   const [mesSel, setMesSel] = useState(new Date().getMonth() + 1);
   const [anioSel, setAnioSel] = useState(new Date().getFullYear());
+  // (2026-09-02, corrección a pedido de Fredy) Cuarta opción de período,
+  // "Rango de fechas" -- para que el líder pueda elegir cualquier
+  // ventana de días (ej. del 1 al día de hoy) y ver ahí mismo qué lleva
+  // cada trabajador exactamente en esos días, sin esperar a que
+  // termine el mes completo ni quedar atado a Día/Mes/Año fijos.
+  // Arranca en el primer día del mes actual hasta hoy.
+  const [fechaRangoInicio, setFechaRangoInicio] = useState(`${hoy.slice(0, 7)}-01`);
+  const [fechaRangoFin, setFechaRangoFin] = useState(hoy);
   const [areaSel, setAreaSel] = useState(areaFija || "");
   function enPeriodo(fechaISO) {
     if (!fechaISO) return false;
     if (periodo === "dia") return fechaISO === fechaDia;
     if (periodo === "mes") return fechaISO.slice(0, 7) === `${anioSel}-${String(mesSel).padStart(2, "0")}`;
     if (periodo === "anio") return fechaISO.slice(0, 4) === String(anioSel);
+    if (periodo === "rango") return fechaISO >= fechaRangoInicio && fechaISO <= fechaRangoFin;
     return false;
+  }
+  // Cuenta días hábiles (lunes a viernes) reales dentro de un rango de
+  // fechas -- usado por metaPeriodo/presupuestoPeriodo para "Rango".
+  function diasHabilesEnRango(fechaInicioISO, fechaFinISO) {
+    const ini = new Date(`${fechaInicioISO}T00:00:00`);
+    const fin = new Date(`${fechaFinISO}T00:00:00`);
+    if (isNaN(ini) || isNaN(fin) || fin < ini) return 0;
+    let dias = 0;
+    const d = new Date(ini);
+    while (d <= fin) {
+      const dow = d.getDay();
+      if (dow !== 0 && dow !== 6) dias++;
+      d.setDate(d.getDate() + 1);
+    }
+    return dias;
   }
   function costoPeriodo(sueldoMensual) {
     if (periodo === "dia") {
@@ -3211,6 +3235,26 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
       return sueldoMensual / (diasHabiles(m, y) || DIAS_LABORALES_MES);
     }
     if (periodo === "anio") return sueldoMensual * 12;
+    if (periodo === "rango") {
+      // Día por día dentro del rango, cada uno con el divisor de días
+      // hábiles de SU propio mes -- así un rango que cruza de un mes a
+      // otro queda correcto aunque los dos meses no tengan la misma
+      // cantidad de días hábiles.
+      const ini = new Date(`${fechaRangoInicio}T00:00:00`);
+      const fin = new Date(`${fechaRangoFin}T00:00:00`);
+      if (isNaN(ini) || isNaN(fin) || fin < ini) return 0;
+      let costo = 0;
+      const d = new Date(ini);
+      while (d <= fin) {
+        const dow = d.getDay();
+        if (dow !== 0 && dow !== 6) {
+          const divisor = diasHabiles(d.getMonth() + 1, d.getFullYear()) || DIAS_LABORALES_MES;
+          costo += sueldoMensual / divisor;
+        }
+        d.setDate(d.getDate() + 1);
+      }
+      return costo;
+    }
     return sueldoMensual;
   }
   // Meta de unidades del periodo elegido, a partir de la meta DIARIA que se
@@ -3220,6 +3264,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     if (!metaDiaria) return 0;
     if (periodo === "dia") return metaDiaria;
     if (periodo === "anio") return metaDiaria * DIAS_LABORALES_MES * 12;
+    if (periodo === "rango") return metaDiaria * diasHabilesEnRango(fechaRangoInicio, fechaRangoFin);
     return metaDiaria * (diasHabiles(mesSel, anioSel) || DIAS_LABORALES_MES);
   }
   // (2026-09-02, a pedido de Fredy) Presupuesto de nómina del área -- a
@@ -3234,6 +3279,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     if (!presupuestoMensual) return 0;
     if (periodo === "dia") return presupuestoMensual / DIAS_LABORALES_MES;
     if (periodo === "anio") return presupuestoMensual * 12;
+    if (periodo === "rango") return (presupuestoMensual / DIAS_LABORALES_MES) * diasHabilesEnRango(fechaRangoInicio, fechaRangoFin);
     return presupuestoMensual;
   }
   const areaSeleccionada = useMemo(() => (areasNomina || []).find((a) => a.nombre === areaSel), [areasNomina, areaSel]);
@@ -3248,7 +3294,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   const reclamosPeriodo = useMemo(() => {
     if (!mideReclamos) return [];
     return (reclamosCalidad || []).filter((r) => enPeriodo(r.fecha));
-  }, [mideReclamos, reclamosCalidad, periodo, fechaDia, mesSel, anioSel]);
+  }, [mideReclamos, reclamosCalidad, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]);
   const reclamosAbiertosPeriodo = reclamosPeriodo.filter((r) => r.estado !== "RESUELTO");
   const reclamosResueltosPeriodo = reclamosPeriodo.filter((r) => r.estado === "RESUELTO");
   const unidadesAfectadasPeriodo = reclamosAbiertosPeriodo.reduce((s, r) => s + (Number(r.cantidad) || 0), 0);
@@ -3283,7 +3329,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   }, [trabajadores, areaSel]);
   const produccionPeriodo = useMemo(
     () => (produccion || []).filter((p) => enPeriodo(p.fecha)),
-    [produccion, periodo, fechaDia, mesSel, anioSel]
+    [produccion, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]
   );
   // (2026-09-03, a pedido de Fredy) "Unidades en Terminadas" -- unidades
   // realmente terminadas (proceso TERMINACION), a diferencia de "Unidades
@@ -3309,20 +3355,6 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     });
     return m;
   }, [produccionPeriodo]);
-  // (2026-09-04, a pedido de Fredy) "Ganado histórico" -- columna
-  // aparte para que el líder del área vea de un vistazo, sin cambiar
-  // el período elegido arriba, cuánto lleva producido ese trabajador
-  // por destajo desde que hay registros en Atlas (todo el tiempo,
-  // todas las áreas -- por eso usa "produccion" completo, no
-  // "produccionPeriodo").
-  const porTrabajadorHistorico = useMemo(() => {
-    const m = new Map();
-    (produccion || []).forEach((p) => {
-      if (!p.trabajadorId) return;
-      m.set(p.trabajadorId, (m.get(p.trabajadorId) || 0) + (Number(p.total) || 0));
-    });
-    return m;
-  }, [produccion]);
   // (2026-09-03, a pedido de Fredy) El monto de nómina usado en Centro de
   // Costo es sueldo + auxilio de transporte (no solo el sueldo) -- aplica
   // aquí (costo por trabajador en modo Destajo) y también en
@@ -3339,13 +3371,12 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
           area: t.area || "Sin asignar",
           unidades: datos?.unidades || 0,
           valorProducido: datos?.valor || 0,
-          gananciaHistorica: porTrabajadorHistorico.get(t.id) || 0,
           costo: costoPeriodo((Number(t.sueldo) || 0) + (Number(t.auxilioTransporte) || 0)),
           sinSueldo: !t.sueldo,
         };
       })
       .sort((a, b) => b.valorProducido - a.valorProducido);
-  }, [trabajadoresArea, porTrabajador, porTrabajadorHistorico, periodo, fechaDia, mesSel, anioSel]);
+  }, [trabajadoresArea, porTrabajador, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]);
   const totalUnidades = filas.reduce((s, f) => s + f.unidades, 0);
   const totalValor = filas.reduce((s, f) => s + f.valorProducido, 0);
   const totalCosto = filas.reduce((s, f) => s + (f.sinSueldo ? 0 : f.costo), 0);
@@ -3358,7 +3389,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     return (movimientos?.salidas || [])
       .filter((r) => procesosApoyo.includes(r.proceso) && enPeriodo(r.ultima))
       .sort((a, b) => (b.ultima || "").localeCompare(a.ultima || ""));
-  }, [modoMedicion, movimientos, procesosApoyo, periodo, fechaDia, mesSel, anioSel]);
+  }, [modoMedicion, movimientos, procesosApoyo, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]);
   const unidadesMovidasApoyo = movimientosArea.reduce((s, r) => s + (r.total || 0), 0);
   const metaDiariaApoyo = Number(areaSeleccionada?.metaDiariaUnidades) || 0;
   const metaPeriodoApoyo = metaPeriodo(metaDiariaApoyo);
@@ -3430,6 +3461,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   function rangoFechasPeriodo() {
     if (periodo === "dia") return { fechaInicio: fechaDia, fechaFin: fechaDia };
     if (periodo === "anio") return { fechaInicio: `${anioSel}-01-01`, fechaFin: `${anioSel}-12-31` };
+    if (periodo === "rango") return { fechaInicio: fechaRangoInicio, fechaFin: fechaRangoFin };
     const mm = String(mesSel).padStart(2, "0");
     const ultimoDia = new Date(anioSel, mesSel, 0).getDate();
     return { fechaInicio: `${anioSel}-${mm}-01`, fechaFin: `${anioSel}-${mm}-${String(ultimoDia).padStart(2, "0")}` };
@@ -3464,6 +3496,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   const etiquetaPeriodo =
     periodo === "dia" ? fmtFechaISO(fechaDia)
     : periodo === "mes" ? `${MESES_CORTOS[mesSel - 1]} ${anioSel}`
+    : periodo === "rango" ? `${fmtFechaISO(fechaRangoInicio)} – ${fmtFechaISO(fechaRangoFin)}`
     : String(anioSel);
   const btnPeriodo = (id, label) => (
     <button
@@ -3475,7 +3508,6 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   );
   const columnas = [
     { key: "nombre", label: "Trabajador" },
-    { key: "gananciaHistorica", label: "Ganado histórico", align: "right", render: (f) => <strong style={{ color: C.violet }}>{fmtMoney(f.gananciaHistorica)}</strong> },
     { key: "area", label: "Área Interna" },
     { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
     { key: "valorProducido", label: "Valor producido", align: "right", render: (f) => fmtMoney(f.valorProducido) },
@@ -3504,6 +3536,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
         {btnPeriodo("dia", "Día")}
         {btnPeriodo("mes", "Mes")}
         {btnPeriodo("anio", "Año")}
+        {btnPeriodo("rango", "Rango")}
         {periodo === "dia" && (
           <input type="date" value={fechaDia} onChange={(e) => setFechaDia(e.target.value)} style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
         )}
@@ -3517,6 +3550,13 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
         )}
         {periodo === "anio" && (
           <input type="number" value={anioSel} onChange={(e) => setAnioSel(Number(e.target.value))} style={{ width: 90, padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
+        )}
+        {periodo === "rango" && (
+          <>
+            <input type="date" value={fechaRangoInicio} onChange={(e) => setFechaRangoInicio(e.target.value)} style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
+            <span style={{ fontSize: 12, color: C.slate, fontWeight: 700 }}>a</span>
+            <input type="date" value={fechaRangoFin} onChange={(e) => setFechaRangoFin(e.target.value)} style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
+          </>
         )}
         {areaFija ? (
           <div style={{ padding: "7px 12px", borderRadius: 8, background: C.canvas, border: `1px solid ${C.border}`, fontSize: 13, fontWeight: 700, color: C.ink, marginLeft: "auto" }}>{areaFija}</div>
