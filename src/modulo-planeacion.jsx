@@ -2802,6 +2802,9 @@ function ProgramadorProcesosView({
   const [trabajadorForm, setTrabajadorForm] = useState("");
   const [filtroProceso, setFiltroProceso] = useState("");
   const [guardando, setGuardando] = useState(false);
+  // (2026-09-03, a pedido de Fredy) Pestaña activa de "Lotes
+  // programados" -- "programados" | "vencidos" | "historicos".
+  const [tabLotes, setTabLotes] = useState("programados");
   const pendientes = useMemo(() => {
     const filas = [];
     (lotesActivos || []).forEach((l) => {
@@ -2853,13 +2856,35 @@ function ProgramadorProcesosView({
         const movSalida = lookupSalidas.get(clave);
         const regNomina = lookupNomina.get(`${p.numLote}||${p.proceso}||${p.trabajadorId}`);
         const estado = regNomina ? "CUMPLIDO" : estadoProgramacion(p.fechaProgramada, movEntrada, movSalida);
-        return { ...p, estado, movEntrada, movSalida, regNomina };
+        // (2026-09-03, a pedido de Fredy) Si se cumplió (por Nómina o por
+        // Busint) pero la fecha real fue DESPUÉS de la programada, queda
+        // marcado como "llegó vencido" -- se ve en la pestaña Históricos.
+        const candidatasBusint = [movEntrada?.primera, movSalida?.primera].filter(Boolean);
+        const fechaCumplimiento = regNomina ? regNomina.fecha : (candidatasBusint.length ? candidatasBusint.sort()[0] : null);
+        const llegoVencido = estado === "CUMPLIDO" && !!fechaCumplimiento && fechaCumplimiento > p.fechaProgramada;
+        return { ...p, estado, movEntrada, movSalida, regNomina, llegoVencido };
       })
       .sort((a, b) => a.fechaProgramada.localeCompare(b.fechaProgramada));
   }, [programaciones, misProcesos, lookupEntradas, lookupSalidas, lookupNomina]);
   const vencidos = misProgramaciones.filter((p) => p.estado === "VENCIDO");
   const cumplidos = misProgramaciones.filter((p) => p.estado === "CUMPLIDO");
   const pendientesProg = misProgramaciones.filter((p) => p.estado === "PROGRAMADO");
+  const filasLotesTab = tabLotes === "vencidos" ? vencidos : tabLotes === "historicos" ? cumplidos : pendientesProg;
+  const vacioLotesTab = tabLotes === "vencidos"
+    ? "No hay lotes vencidos ahora mismo."
+    : tabLotes === "historicos"
+    ? "Todavía no hay lotes cumplidos."
+    : "No hay lotes programados en tiempo ahora mismo.";
+  function tabLotesBtn(id, label, count) {
+    return (
+      <button
+        onClick={() => setTabLotes(id)}
+        style={{ padding: "7px 14px", borderRadius: 8, border: `1px solid ${tabLotes === id ? C.ink : C.border}`, background: tabLotes === id ? C.ink : C.white, color: tabLotes === id ? "#fff" : C.slate, fontWeight: 800, fontSize: 12, cursor: "pointer" }}
+      >
+        {label} ({count})
+      </button>
+    );
+  }
   // (2026-09-02, a pedido de Fredy) Para marcar en la tabla de arriba
   // ("Pendientes por programar") los lote+proceso que YA tienen una
   // programación activa -- así no parece que falta programarlos de nuevo.
@@ -2914,7 +2939,12 @@ function ProgramadorProcesosView({
     { key: "_accion", label: "", render: (f) => <Btn small onClick={() => abrirProgramar(f)}>📅 Programar</Btn> },
   ];
   const columnasProgramados = [
-    { key: "estado", label: "Estado", render: (f) => <EstadoBadge estado={f.estado} /> },
+    { key: "estado", label: "Estado", render: (f) => (
+      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+        <EstadoBadge estado={f.estado} />
+        {f.llegoVencido && <span style={{ fontSize: 10, fontWeight: 700, color: C.red }}>⚠️ Llegó vencido</span>}
+      </div>
+    ) },
     { key: "fechaProgramada", label: "Fecha", render: (f) => fmtFechaISO(f.fechaProgramada) },
     { key: "numLote", label: "Lote" },
     { key: "referencia", label: "Referencia" },
@@ -2991,8 +3021,12 @@ function ProgramadorProcesosView({
         <Tabla vacio="No hay lotes pendientes en tus procesos ahora mismo." columnas={columnasPendientes} filas={pendientesFiltrados} />
       </div>
       <div>
-        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 10 }}>Lotes programados</div>
-        <Tabla vacio="Todavía no has programado ningún lote." columnas={columnasProgramados} filas={misProgramaciones} />
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+          {tabLotesBtn("programados", "Lotes programados", pendientesProg.length)}
+          {tabLotesBtn("vencidos", "Vencidos", vencidos.length)}
+          {tabLotesBtn("historicos", "Históricos", cumplidos.length)}
+        </div>
+        <Tabla vacio={vacioLotesTab} columnas={columnasProgramados} filas={filasLotesTab} />
       </div>
     </div>
   );
