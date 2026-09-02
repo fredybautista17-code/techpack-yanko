@@ -2800,6 +2800,10 @@ function ProgramadorProcesosView({
   const [modalProgramar, setModalProgramar] = useState(null);
   const [fechaForm, setFechaForm] = useState(today());
   const [trabajadorForm, setTrabajadorForm] = useState("");
+  // (2026-09-02, a pedido de Fredy) Cantidad a programarle a ESTE
+  // trabajador -- para poder repartir un mismo lote+proceso entre 2 o
+  // más operadores, cada uno con su propia parte.
+  const [cantidadForm, setCantidadForm] = useState("");
   const [filtroProceso, setFiltroProceso] = useState("");
   const [guardando, setGuardando] = useState(false);
   // (2026-09-03, a pedido de Fredy) Pestaña activa de "Lotes
@@ -2855,7 +2859,13 @@ function ProgramadorProcesosView({
         const movEntrada = lookupEntradas.get(clave);
         const movSalida = lookupSalidas.get(clave);
         const regNomina = lookupNomina.get(`${p.numLote}||${p.proceso}||${p.trabajadorId}`);
-        const estado = regNomina ? "CUMPLIDO" : estadoProgramacion(p.fechaProgramada, movEntrada, movSalida);
+        // (2026-09-02, a pedido de Fredy) Si este lote+proceso está
+        // repartido entre 2+ trabajadores, Busint (que solo dice si el
+        // lote completo se movió, no quién de los dos lo hizo) no sirve
+        // para marcar Cumplido -- cada uno depende SOLO de su propio
+        // registro en Nómina.
+        const compartido = (conteoPorLoteProceso.get(clave) || 0) > 1;
+        const estado = regNomina ? "CUMPLIDO" : estadoProgramacion(p.fechaProgramada, compartido ? null : movEntrada, compartido ? null : movSalida);
         // (2026-09-03, a pedido de Fredy) Si se cumplió (por Nómina o por
         // Busint) pero la fecha real fue DESPUÉS de la programada, queda
         // marcado como "llegó vencido" -- se ve en la pestaña Históricos.
@@ -2889,6 +2899,37 @@ function ProgramadorProcesosView({
   // ("Pendientes por programar") los lote+proceso que YA tienen una
   // programación activa -- así no parece que falta programarlos de nuevo.
   const clavesYaProgramadas = useMemo(() => new Set(misProgramaciones.map((p) => `${p.numLote}||${p.proceso}`)), [misProgramaciones]);
+  // (2026-09-02, a pedido de Fredy) Cuántas programaciones activas tiene
+  // cada lote+proceso -- si hay más de una, ese lote+proceso está
+  // "compartido" entre varios trabajadores (ver misProgramaciones y el
+  // modal de Programar más abajo).
+  const conteoPorLoteProceso = useMemo(() => {
+    const m = new Map();
+    (programaciones || []).filter((p) => misProcesos.includes(p.proceso)).forEach((p) => {
+      const clave = `${p.numLote}||${p.proceso}`;
+      m.set(clave, (m.get(clave) || 0) + 1);
+    });
+    return m;
+  }, [programaciones, misProcesos]);
+  // (2026-09-02, a pedido de Fredy) Cuánto ya está asignado (sumando la
+  // cantidad de cada programación activa) por lote+proceso -- para el
+  // aviso "✓ Ya programado" de la tabla de pendientes. Una
+  // programación vieja sin campo "cantidad" (de antes de este cambio)
+  // se cuenta como que ya ocupa TODO lo pendiente, para no dejar
+  // repartir por encima de una programación que no se puede medir.
+  const asignadoPorLoteProceso = useMemo(() => {
+    const m = new Map();
+    (programaciones || []).filter((p) => misProcesos.includes(p.proceso)).forEach((p) => {
+      const clave = `${p.numLote}||${p.proceso}`;
+      if (p.cantidad == null) {
+        m.set(clave, Infinity);
+        return;
+      }
+      if (m.get(clave) === Infinity) return;
+      m.set(clave, (m.get(clave) || 0) + (Number(p.cantidad) || 0));
+    });
+    return m;
+  }, [programaciones, misProcesos]);
   // (2026-09-02, a pedido de Fredy) Para la tabla de "Lotes programados":
   // cuando un lote sale CUMPLIDO, mostrar qué entrada/salida real de Busint
   // fue la que lo cumplió (unidades y fecha), no solo la palabra "Cumplido".
@@ -2909,9 +2950,13 @@ function ProgramadorProcesosView({
     setModalProgramar(fila);
     setFechaForm(today());
     setTrabajadorForm("");
+    const clave = `${fila.numLote}||${fila.proceso}`;
+    const asignado = asignadoPorLoteProceso.get(clave) || 0;
+    const restante = asignado === Infinity ? 0 : Math.max(0, fila.inventario - asignado);
+    setCantidadForm(restante > 0 ? String(restante) : "");
   }
   async function confirmarProgramar() {
-    if (!trabajadorForm) return;
+    if (!trabajadorForm || !(Number(cantidadForm) > 0) || excedeCantidadModal) return;
     const trabajador = trabajadoresEquipo.find((t) => t.id === trabajadorForm);
     setGuardando(true);
     try {
@@ -2922,12 +2967,25 @@ function ProgramadorProcesosView({
         fechaProgramada: fechaForm,
         trabajadorId: trabajadorForm,
         trabajadorNombre: trabajador?.name || trabajador?.nombre || "",
+        cantidad: Number(cantidadForm),
       });
       setModalProgramar(null);
     } finally {
       setGuardando(false);
     }
   }
+  // (2026-09-02, a pedido de Fredy) Para el modal de Programar: quiénes
+  // más ya están programados en este mismo lote+proceso (para repartir
+  // entre 2+ operadores) y cuánto les toca, más el tope duro -- la suma
+  // de lo ya asignado + lo nuevo no puede pasar de lo pendiente real.
+  const otrosProgramadosModal = modalProgramar
+    ? (programaciones || []).filter((p) => p.numLote === modalProgramar.numLote && p.proceso === modalProgramar.proceso)
+    : [];
+  const hayProgramacionSinCantidadModal = otrosProgramadosModal.some((p) => p.cantidad == null);
+  const yaAsignadoModal = hayProgramacionSinCantidadModal
+    ? (modalProgramar?.inventario || 0)
+    : otrosProgramadosModal.reduce((s, p) => s + (Number(p.cantidad) || 0), 0);
+  const excedeCantidadModal = !!(modalProgramar && Number(cantidadForm) > 0 && (yaAsignadoModal + Number(cantidadForm)) > modalProgramar.inventario);
   const columnasPendientes = [
     { key: "numLote", label: "Lote" },
     { key: "referencia", label: "Referencia" },
@@ -2935,7 +2993,13 @@ function ProgramadorProcesosView({
     { key: "proceso", label: "Proceso" },
     { key: "inventario", label: "Pendiente", align: "right", render: (f) => fmtNum(f.inventario) },
     { key: "planta", label: "Planta/Taller" },
-    { key: "yaProgramado", label: "", render: (f) => (clavesYaProgramadas.has(`${f.numLote}||${f.proceso}`) ? <span style={{ fontSize: 11, fontWeight: 700, color: C.blue, background: C.blueBg, borderRadius: 20, padding: "2px 8px", whiteSpace: "nowrap" }}>✓ Ya programado</span> : null) },
+    { key: "yaProgramado", label: "", render: (f) => {
+      const clave = `${f.numLote}||${f.proceso}`;
+      if (!clavesYaProgramadas.has(clave)) return null;
+      const asignado = asignadoPorLoteProceso.get(clave) || 0;
+      const texto = asignado === Infinity ? "✓ Ya programado" : `✓ Programado: ${fmtNum(asignado)}/${fmtNum(f.inventario)}`;
+      return <span style={{ fontSize: 11, fontWeight: 700, color: C.blue, background: C.blueBg, borderRadius: 20, padding: "2px 8px", whiteSpace: "nowrap" }}>{texto}</span>;
+    } },
     { key: "_accion", label: "", render: (f) => <Btn small onClick={() => abrirProgramar(f)}>📅 Programar</Btn> },
   ];
   const columnasProgramados = [
@@ -2950,6 +3014,7 @@ function ProgramadorProcesosView({
     { key: "referencia", label: "Referencia" },
     { key: "proceso", label: "Proceso" },
     { key: "trabajadorNombre", label: "Trabajador" },
+    { key: "cantidad", label: "Cantidad", align: "right", render: (f) => (f.cantidad != null ? fmtNum(f.cantidad) : "—") },
     { key: "detalle", label: "Cumplimiento", render: (f) => {
       const d = detalleCumplimiento(f);
       return d ? <span style={{ fontSize: 12, color: C.green, fontWeight: 600 }}>{d}</span> : <span style={{ color: C.slate }}>—</span>;
@@ -2967,7 +3032,7 @@ function ProgramadorProcesosView({
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Fecha programada</label>
             <input type="date" value={fechaForm} onChange={(e) => setFechaForm(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} />
           </div>
-          <div style={{ marginBottom: 18 }}>
+          <div style={{ marginBottom: 14 }}>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Trabajador de tu equipo</label>
             <select value={trabajadorForm} onChange={(e) => setTrabajadorForm(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }}>
               <option value="">Seleccionar...</option>
@@ -2979,9 +3044,31 @@ function ProgramadorProcesosView({
               </div>
             )}
           </div>
+          {/* (2026-09-02, a pedido de Fredy) Cantidad a programarle a este
+              trabajador -- para repartir un mismo lote+proceso entre 2+
+              operadores, cada uno con su propia cantidad. */}
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Cantidad a programarle</label>
+            <input type="number" min="1" value={cantidadForm} onChange={(e) => setCantidadForm(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} />
+          </div>
+          {otrosProgramadosModal.length > 0 && (
+            <div style={{ background: C.blueBg, border: `1px solid ${C.blue}`, borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: C.ink, marginBottom: 14 }}>
+              Este lote+proceso ya tiene programado:
+              <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                {otrosProgramadosModal.map((p) => (
+                  <li key={p.id}>{p.trabajadorNombre || "(sin nombre)"}: {p.cantidad != null ? `${fmtNum(p.cantidad)} und` : "todo lo pendiente (programación anterior a este cambio)"}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {excedeCantidadModal && (
+            <div style={{ background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: C.red, fontWeight: 700, marginBottom: 14 }}>
+              La suma de lo ya programado ({fmtNum(yaAsignadoModal)}) + esta cantidad ({fmtNum(Number(cantidadForm) || 0)}) supera lo pendiente en este proceso ({fmtNum(modalProgramar.inventario)} und) — no se puede guardar.
+            </div>
+          )}
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => setModalProgramar(null)}>Cancelar</Btn>
-            <Btn onClick={confirmarProgramar} disabled={!trabajadorForm || guardando}>{guardando ? "Guardando..." : "Guardar programación"}</Btn>
+            <Btn onClick={confirmarProgramar} disabled={!trabajadorForm || !(Number(cantidadForm) > 0) || excedeCantidadModal || guardando}>{guardando ? "Guardando..." : "Guardar programación"}</Btn>
           </div>
         </Modal>
       )}
