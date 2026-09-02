@@ -3119,13 +3119,17 @@ function FacturacionClientesView() {
   // arriba -- "Unidades despachadas (total)" solo suma los clientes que
   // YA están clasificados (Facturado o Consignación); los que faltan por
   // clasificar no cuentan todavía, para no sumar mal por adivinar.
-  const totalUnidadesDespachadas = (resultado?.clientes || []).reduce((s, c) => {
+  const totalesDespachados = (resultado?.clientes || []).reduce((acc, c) => {
     const clave = c.codigoCliente || c.nombreCliente;
     const tipo = tiposCliente[clave] || "";
-    if (tipo === "facturado") return s + c.facturado.unidades + c.trasladoExternoNeto.unidades;
-    if (tipo === "consignacion") return s + c.consignacionNeta.unidades + c.trasladoExternoNeto.unidades;
-    return s;
-  }, 0);
+    if (tipo === "facturado") {
+      return { monto: acc.monto + c.facturado.monto + c.trasladoExternoNeto.monto, unidades: acc.unidades + c.facturado.unidades + c.trasladoExternoNeto.unidades };
+    }
+    if (tipo === "consignacion") {
+      return { monto: acc.monto + c.consignacionNeta.monto + c.trasladoExternoNeto.monto, unidades: acc.unidades + c.consignacionNeta.unidades + c.trasladoExternoNeto.unidades };
+    }
+    return acc;
+  }, { monto: 0, unidades: 0 });
   const clientesSinClasificar = (resultado?.clientes || []).filter((c) => !tiposCliente[c.codigoCliente || c.nombreCliente]).length;
   return (
     <div>
@@ -3190,7 +3194,8 @@ function FacturacionClientesView() {
             </div>
             <div style={{ flex: "1 1 220px", padding: 16, borderRadius: 10, background: C.white, border: `1px solid ${C.border}` }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 4 }}>Unidades despachadas (total)</div>
-              <div style={{ fontSize: 20, fontWeight: 800, color: C.violet }}>{fmtNum(totalUnidadesDespachadas)}</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: C.violet }}>{fmtCOP(totalesDespachados.monto)}</div>
+              <div style={{ fontSize: 12, color: C.slate }}>{fmtNum(totalesDespachados.unidades)} und.</div>
               {clientesSinClasificar > 0 && (
                 <div style={{ fontSize: 11, color: C.amber, marginTop: 2 }}>⚠ {clientesSinClasificar} cliente(s) sin clasificar (Facturado/Consignación) -- no cuentan todavía en este total.</div>
               )}
