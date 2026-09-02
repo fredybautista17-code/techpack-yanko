@@ -2987,6 +2987,19 @@ export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout 
   const [loading, setLoading] = useState(true);
   const [movimientos, setMovimientos] = useState(null);
   const [cargandoMovimientos, setCargandoMovimientos] = useState(false);
+  // (2026-09-02, a pedido de Fredy) El cumplimiento contra Busint se
+  // cachea en Firestore -- antes vivía solo en memoria de este
+  // componente y se perdía (volvía todo a "Programado") apenas
+  // Anny/Sarai salían de esta pantalla y volvían a entrar. Ahora, en
+  // cuanto alguien lo actualiza (desde cualquiera de las 3 pantallas
+  // que usan este mismo caché), se guarda en Firestore y todos lo ven
+  // al entrar, sin volver a consultar Busint.
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "planeacion_cache", "movimientos_procesos"), (snap) => {
+      if (snap.exists()) setMovimientos(snap.data());
+    });
+    return () => unsub();
+  }, []);
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "planeacion_cargas"), (snap) => {
       setCargas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
@@ -3025,6 +3038,7 @@ export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout 
       const llamar = httpsCallable(functionsClient, "getMovimientosProcesoBusintBD");
       const resp = await llamar();
       setMovimientos(resp.data);
+      await fsSave("planeacion_cache", "movimientos_procesos", resp.data);
     } catch (err) {
       alert(`No se pudo consultar el cumplimiento en Busint: ${err?.message || String(err)}`);
     } finally {
@@ -3621,6 +3635,16 @@ export function AreasStandalone({ currentUser, onVolver, onLogout, puedeCentroCo
   const [loading, setLoading] = useState(true);
   const [movimientos, setMovimientos] = useState(null);
   const [cargandoMovimientos, setCargandoMovimientos] = useState(false);
+  // (2026-09-02, a pedido de Fredy) Mismo caché en Firestore que usan
+  // ProgramadorProcesosStandalone y ModuloPlaneacion -- ver esa nota
+  // para el detalle. Así el cumplimiento no se pierde al salir y
+  // volver a esta pantalla.
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "planeacion_cache", "movimientos_procesos"), (snap) => {
+      if (snap.exists()) setMovimientos(snap.data());
+    });
+    return () => unsub();
+  }, []);
   const [areaSel, setAreaSel] = useState(() => areaLiderNombre || null);
   const [seccion, setSeccion] = useState(() => seccionesVisibles[0]?.id || "centro_costo");
   useEffect(() => {
@@ -3704,6 +3728,7 @@ export function AreasStandalone({ currentUser, onVolver, onLogout, puedeCentroCo
       const llamar = httpsCallable(functionsClient, "getMovimientosProcesoBusintBD");
       const resp = await llamar();
       setMovimientos(resp.data);
+      await fsSave("planeacion_cache", "movimientos_procesos", resp.data);
     } catch (err) {
       alert(`No se pudo consultar el cumplimiento en Busint: ${err?.message || String(err)}`);
     } finally {
@@ -4473,6 +4498,16 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
   const [reclamosCalidad, setReclamosCalidad] = useState([]);
   const [movimientosEstadisticas, setMovimientosEstadisticas] = useState(null);
   const [cargandoMovimientosEstadisticas, setCargandoMovimientosEstadisticas] = useState(false);
+  // (2026-09-02, a pedido de Fredy) Mismo caché en Firestore que usan
+  // ProgramadorProcesosStandalone y AreasStandalone -- ver esa nota
+  // para el detalle. Así el cumplimiento no se pierde al salir y
+  // volver a esta pantalla.
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "planeacion_cache", "movimientos_procesos"), (snap) => {
+      if (snap.exists()) setMovimientosEstadisticas(snap.data());
+    });
+    return () => unsub();
+  }, []);
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "nomina_trabajadores"), (snap) => {
       setTrabajadoresNominaPlaneacion(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
@@ -4514,6 +4549,7 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
       const llamar = httpsCallable(functionsClient, "getMovimientosProcesoBusintBD");
       const resp = await llamar();
       setMovimientosEstadisticas(resp.data);
+      await fsSave("planeacion_cache", "movimientos_procesos", resp.data);
     } catch (err) {
       alert(`No se pudo consultar el cumplimiento en Busint: ${err?.message || String(err)}`);
     } finally {
