@@ -3309,6 +3309,20 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     });
     return m;
   }, [produccionPeriodo]);
+  // (2026-09-04, a pedido de Fredy) "Ganado histórico" -- columna
+  // aparte para que el líder del área vea de un vistazo, sin cambiar
+  // el período elegido arriba, cuánto lleva producido ese trabajador
+  // por destajo desde que hay registros en Atlas (todo el tiempo,
+  // todas las áreas -- por eso usa "produccion" completo, no
+  // "produccionPeriodo").
+  const porTrabajadorHistorico = useMemo(() => {
+    const m = new Map();
+    (produccion || []).forEach((p) => {
+      if (!p.trabajadorId) return;
+      m.set(p.trabajadorId, (m.get(p.trabajadorId) || 0) + (Number(p.total) || 0));
+    });
+    return m;
+  }, [produccion]);
   // (2026-09-03, a pedido de Fredy) El monto de nómina usado en Centro de
   // Costo es sueldo + auxilio de transporte (no solo el sueldo) -- aplica
   // aquí (costo por trabajador en modo Destajo) y también en
@@ -3325,12 +3339,13 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
           area: t.area || "Sin asignar",
           unidades: datos?.unidades || 0,
           valorProducido: datos?.valor || 0,
+          gananciaHistorica: porTrabajadorHistorico.get(t.id) || 0,
           costo: costoPeriodo((Number(t.sueldo) || 0) + (Number(t.auxilioTransporte) || 0)),
           sinSueldo: !t.sueldo,
         };
       })
       .sort((a, b) => b.valorProducido - a.valorProducido);
-  }, [trabajadoresArea, porTrabajador, periodo, fechaDia, mesSel, anioSel]);
+  }, [trabajadoresArea, porTrabajador, porTrabajadorHistorico, periodo, fechaDia, mesSel, anioSel]);
   const totalUnidades = filas.reduce((s, f) => s + f.unidades, 0);
   const totalValor = filas.reduce((s, f) => s + f.valorProducido, 0);
   const totalCosto = filas.reduce((s, f) => s + (f.sinSueldo ? 0 : f.costo), 0);
@@ -3460,6 +3475,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   );
   const columnas = [
     { key: "nombre", label: "Trabajador" },
+    { key: "gananciaHistorica", label: "Ganado histórico", align: "right", render: (f) => <strong style={{ color: C.violet }}>{fmtMoney(f.gananciaHistorica)}</strong> },
     { key: "area", label: "Área Interna" },
     { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
     { key: "valorProducido", label: "Valor producido", align: "right", render: (f) => fmtMoney(f.valorProducido) },
