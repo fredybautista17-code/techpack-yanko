@@ -2786,6 +2786,10 @@ function ProgramadorProcesosView({
   lotesActivos,
   trabajadoresEquipo,
   programaciones,
+  // (2026-09-03, a pedido de Fredy) Producción registrada en Nómina --
+  // se usa para marcar CUMPLIDO un lote+proceso+trabajador programado en
+  // cuanto se le registre su producción, sin depender de Busint.
+  produccion,
   movimientos,
   cargandoMovimientos,
   onActualizarMovimientos,
@@ -2827,6 +2831,19 @@ function ProgramadorProcesosView({
     (movimientos?.salidas || []).forEach((r) => m.set(`${r.numLote}||${r.proceso}`, r));
     return m;
   }, [movimientos]);
+  // (2026-09-03, a pedido de Fredy) Igual que lookupEntradas/lookupSalidas
+  // pero contra Nómina (Registrar Producción) -- clave por lote+proceso+
+  // trabajador porque acá sí importa QUIÉN lo registró (debe ser el mismo
+  // trabajador que se programó, no cualquiera).
+  const lookupNomina = useMemo(() => {
+    const m = new Map();
+    (produccion || []).forEach((p) => {
+      if (!p.numLote || !p.trabajadorId) return;
+      const clave = `${p.numLote}||${p.proceso}||${p.trabajadorId}`;
+      if (!m.has(clave)) m.set(clave, p);
+    });
+    return m;
+  }, [produccion]);
   const misProgramaciones = useMemo(() => {
     return (programaciones || [])
       .filter((p) => misProcesos.includes(p.proceso))
@@ -2834,11 +2851,12 @@ function ProgramadorProcesosView({
         const clave = `${p.numLote}||${p.proceso}`;
         const movEntrada = lookupEntradas.get(clave);
         const movSalida = lookupSalidas.get(clave);
-        const estado = estadoProgramacion(p.fechaProgramada, movEntrada, movSalida);
-        return { ...p, estado, movEntrada, movSalida };
+        const regNomina = lookupNomina.get(`${p.numLote}||${p.proceso}||${p.trabajadorId}`);
+        const estado = regNomina ? "CUMPLIDO" : estadoProgramacion(p.fechaProgramada, movEntrada, movSalida);
+        return { ...p, estado, movEntrada, movSalida, regNomina };
       })
       .sort((a, b) => a.fechaProgramada.localeCompare(b.fechaProgramada));
-  }, [programaciones, misProcesos, lookupEntradas, lookupSalidas]);
+  }, [programaciones, misProcesos, lookupEntradas, lookupSalidas, lookupNomina]);
   const vencidos = misProgramaciones.filter((p) => p.estado === "VENCIDO");
   const cumplidos = misProgramaciones.filter((p) => p.estado === "CUMPLIDO");
   const pendientesProg = misProgramaciones.filter((p) => p.estado === "PROGRAMADO");
@@ -2850,6 +2868,9 @@ function ProgramadorProcesosView({
   // cuando un lote sale CUMPLIDO, mostrar qué entrada/salida real de Busint
   // fue la que lo cumplió (unidades y fecha), no solo la palabra "Cumplido".
   function detalleCumplimiento(f) {
+    if (f.regNomina) {
+      return `✅ Registrado en Nómina: ${fmtNum(f.regNomina.cantidad)} und (${fmtFechaISO(f.regNomina.fecha)})`;
+    }
     if (f.estado !== "CUMPLIDO") return null;
     const candidatos = [];
     if (f.movEntrada?.primera) candidatos.push({ tipo: "Entrada", ...f.movEntrada });
@@ -2899,7 +2920,7 @@ function ProgramadorProcesosView({
     { key: "referencia", label: "Referencia" },
     { key: "proceso", label: "Proceso" },
     { key: "trabajadorNombre", label: "Trabajador" },
-    { key: "detalle", label: "Entrada/Salida Busint", render: (f) => {
+    { key: "detalle", label: "Cumplimiento", render: (f) => {
       const d = detalleCumplimiento(f);
       return d ? <span style={{ fontSize: 12, color: C.green, fontWeight: 600 }}>{d}</span> : <span style={{ color: C.slate }}>—</span>;
     } },
@@ -2934,16 +2955,11 @@ function ProgramadorProcesosView({
           </div>
         </Modal>
       )}
-      <div style={{ marginBottom: 22, display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>📋 Programador de Procesos</h2>
-          <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>
-            {etiquetaProcesos || "Tus procesos"}: {misProcesos.length ? misProcesos.join(", ") : "ninguno asignado todavía"}.
-          </p>
-        </div>
-        <Btn variant="ghost" onClick={onActualizarMovimientos} disabled={cargandoMovimientos}>
-          {cargandoMovimientos ? "Consultando Busint..." : "🔄 Actualizar cumplimiento"}
-        </Btn>
+      <div style={{ marginBottom: 22 }}>
+        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>📋 Programador de Procesos</h2>
+        <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>
+          {etiquetaProcesos || "Tus procesos"}: {misProcesos.length ? misProcesos.join(", ") : "ninguno asignado todavía"}.
+        </p>
       </div>
       {!misProcesos.length && (
         <div style={{ background: C.white, borderRadius: 14, padding: 24, border: `1px solid ${C.border}`, color: C.slate, fontSize: 13, marginBottom: 20 }}>
@@ -2956,7 +2972,7 @@ function ProgramadorProcesosView({
         <div style={{ fontSize: 11, color: C.slate, marginBottom: 14 }}>Cumplimiento actualizado: {fmtFechaHora(movimientos.generadoEn)}</div>
       )}
       {!movimientos && (
-        <div style={{ fontSize: 11, color: C.amber, marginBottom: 14 }}>Todavía no has consultado el cumplimiento contra Busint en esta sesión — dale a "Actualizar cumplimiento" para ver Cumplido/Vencido real (mientras tanto todo aparece Programado).</div>
+        <div style={{ fontSize: 11, color: C.amber, marginBottom: 14 }}>Todavía no se ha consultado el cumplimiento contra Busint en esta sesión (se actualiza desde Estadísticas o Mi Día) — mientras tanto, lo que ya esté registrado en Nómina de todos modos se ve Cumplido.</div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
         <KPI icon="📦" label="Pendientes por programar" value={pendientes.length} color={C.blue} bg={C.blueBg} />
@@ -3020,6 +3036,15 @@ export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout 
   useEffect(() => {
     const unsub = onSnapshot(collection(db, "planeacion_programacion_procesos"), (snap) => {
       setProgramaciones(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  // (2026-09-03, a pedido de Fredy) Para poder marcar CUMPLIDO un lote+
+  // proceso+trabajador en cuanto se le registre su producción en Nómina.
+  const [produccion, setProduccion] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "nomina_produccion"), (snap) => {
+      setProduccion(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
     });
     return () => unsub();
   }, []);
@@ -3094,6 +3119,7 @@ export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout 
             lotesActivos={lotesActivos}
             trabajadoresEquipo={trabajadoresEquipo}
             programaciones={misProgramaciones}
+            produccion={produccion}
             movimientos={movimientos}
             cargandoMovimientos={cargandoMovimientos}
             onActualizarMovimientos={actualizarMovimientos}
@@ -4187,6 +4213,7 @@ export function AreasStandalone({ currentUser, onVolver, onLogout, puedeCentroCo
                   lotesActivos={lotesActivosArea}
                   trabajadoresEquipo={trabajadoresArea}
                   programaciones={programacionesArea}
+                  produccion={produccionArea}
                   movimientos={movimientos}
                   cargandoMovimientos={cargandoMovimientos}
                   onActualizarMovimientos={actualizarMovimientos}
