@@ -1375,6 +1375,34 @@ exports.getCostosProcesoDesdeBusintPorReferencia = onCall(
     return { ref, encontrada: procesos.length > 0, procesos };
   }
 );
+// (2026-09-02, a pedido de Fredy) Precios de corte ("MDEO - CORTE") de
+// TODAS las referencias en una sola consulta -- para "Recalcular precios
+// de cortes ya registrados" (Centro de Costo de Corte), que revisa
+// potencialmente decenas de referencias distintas de una sola vez. Trae
+// la tabla "insumos dig" COMPLETA una sola vez (misma función que ya usa
+// getCostosProcesoDesdeBusintPorReferencia) y filtra server-side solo las
+// filas de mano de obra de corte, para no mandar la tabla completa (con
+// TODOS los procesos) al frontend.
+exports.getPreciosCorteBusint = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 180,
+    memory: "512MiB",
+  },
+  async (request) => {
+    let todas;
+    try {
+      todas = await consultarTablaBusintBDCompleta("insumos dig");
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getPreciosCorteBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+    const precios = todas
+      .filter((f) => f?.Ref && f?.Insumo && normalizarInsumoBD(f.Insumo) === "MDEO CORTE")
+      .map((f) => ({ ref: String(f.Ref).trim(), precio: Number(f.Cant) || 0 }));
+    return { precios };
+  }
+);
 // (2026-08-26) Diseño pidió esto: cuando programan un corte no saben si hay
 // tela disponible en bodega — esto trae el inventario REAL de tela desde
 // Busint BD, tabla "estandar componentes prod" (confirmado a mano con el
@@ -2652,6 +2680,12 @@ exports.getReferenciasBusint = onCall(
 // comparar (98-423 = 98423), igual que normalizarRefComparacion en
 // src/App.js — devuelve el registro CRUDO de Busint tal cual, sin filtrar
 // campos, para depurar qué trae realmente el maestro.
+// (2026-09-02, a pedido de Fredy) Igual que normalizarRefComparacion,
+// pero para comparar el campo "Insumo" de "insumos dig" contra "MDEO -
+// CORTE" -- puede venir con o sin guion y con espacios de más.
+function normalizarInsumoBD(s) {
+  return (s || "").toString().toUpperCase().replace(/-/g, " ").replace(/\s+/g, " ").trim();
+}
 function normalizarRefComparacion(v) {
   return String(v || "").trim().toUpperCase().replace(/-/g, "");
 }
