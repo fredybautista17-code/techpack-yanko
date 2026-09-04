@@ -1429,7 +1429,12 @@ exports.getVentasPerdidasBusintLive = onCall(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 540,
-    memory: "1GiB",
+    // (2026-09-04) 1GiB no alcanzó -- "internal" sin ninguna línea de error
+    // en los logs (corte justo tras recibir Facturado), firma típica de un
+    // contenedor sin memoria (OOM kill). Esta función trae 3 tablas
+    // COMPLETAS a la vez (~42k + ~31k filas) más ~30k filas de Facturado
+    // (~10MB) -- bastante más que cualquier otra función de Busint BD.
+    memory: "2GiB",
   },
   async (request) => {
     const { fechaInicio, fechaFin } = request.data || {};
