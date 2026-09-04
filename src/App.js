@@ -9146,6 +9146,7 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos, currentUser }) {
   // no lo factura ni lo traslada (p. ej. sigue en planta de confección).
   const [planeacionCargas, setPlaneacionCargas] = useState([]);
   const [subiendoVP, setSubiendoVP] = useState(false);
+  const [actualizandoVPLive, setActualizandoVPLive] = useState(false);
   const [congelando, setCongelando] = useState(false);
   const [resultCongelar, setResultCongelar] = useState(null);
   const vpInputRef = useRef(null);
@@ -9247,6 +9248,31 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos, currentUser }) {
       setError(err?.message || "No se pudo leer el archivo. Verifica que sea el reporte de Ventas Perdidas de Busint (.xlsx).");
     }
     setSubiendoVP(false);
+  }
+  // (2026-09-04, a pedido de Fredy) Igual que subirVentasPerdidas, pero SIN
+  // archivo -- consulta Busint en vivo (getVentasPerdidasBusintLive) y
+  // guarda en la MISMA coleccion, para que el resto de la pantalla no
+  // tenga que cambiar nada. Usa el mismo rango Fecha Inicio/Fecha Fin que
+  // ya está arriba para "📡 Consultar Busint".
+  async function actualizarVentasPerdidasLive() {
+    if (!fechaInicio || !fechaFin) {
+      setError("Elige Fecha Inicio y Fecha Fin arriba antes de actualizar desde Busint.");
+      return;
+    }
+    setActualizandoVPLive(true);
+    try {
+      const llamar = httpsCallable(functionsClient, "getVentasPerdidasBusintLive");
+      const resp = await llamar({ fechaInicio, fechaFin });
+      const { porPedido, porReferencia } = resp.data || {};
+      await fsSave("ventas_perdidas_cargas", uid(), {
+        creadoEn: today(), creadoTs: Date.now(), subidoPor: currentUser?.name || "—",
+        fuente: "busint_live",
+        filas: porPedido || [], filasPorRef: porReferencia || [],
+      });
+    } catch (err) {
+      setError(err?.message || "No se pudo actualizar Ventas Perdidas desde Busint.");
+    }
+    setActualizandoVPLive(false);
   }
   // "Congelar" toma la lista vigente que se ve en pantalla (ya filtrada por
   // ocultos + Ventas Perdidas) y la escribe en pedidos_activos — la única
@@ -9530,6 +9556,14 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos, currentUser }) {
             <Btn variant="secondary" onClick={() => vpInputRef.current?.click()} disabled={subiendoVP}>
               {subiendoVP ? "Procesando..." : "📤 Actualizar Ventas Perdidas"}
             </Btn>
+            <Btn
+              variant="secondary"
+              onClick={actualizarVentasPerdidasLive}
+              disabled={actualizandoVPLive || !fechaInicio || !fechaFin}
+              title="Prueba en paralelo -- todavia no reemplaza la subida a mano"
+            >
+              {actualizandoVPLive ? "Consultando Busint..." : "🔌 Actualizar desde Busint (en vivo)"}
+            </Btn>
           </>
         )}
         {isAdmin && resultado && (
@@ -9540,7 +9574,7 @@ function InformeVigentesBusintView({ isAdmin, pedidosActivos, currentUser }) {
       </div>
       {ultimaCargaVP && (
         <div style={{ fontSize: 11, color: T.slate, marginBottom: 4 }}>
-          Último reporte de Ventas Perdidas subido: {ultimaCargaVP.creadoEn}{ultimaCargaVP.subidoPor ? ` · Subido por ${ultimaCargaVP.subidoPor}` : ""} — se usa automáticamente para ocultar de esta lista los pedidos que Busint ya marca "Cumplido" ahí.
+          Último reporte de Ventas Perdidas {ultimaCargaVP.fuente === "busint_live" ? "actualizado desde Busint (en vivo)" : "subido"}: {ultimaCargaVP.creadoEn}{ultimaCargaVP.subidoPor ? ` · por ${ultimaCargaVP.subidoPor}` : ""} — se usa automáticamente para ocultar de esta lista los pedidos que Busint ya marca "Cumplido" ahí.
         </div>
       )}
       {ultimaCargaPlaneacion && (

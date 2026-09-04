@@ -1403,6 +1403,161 @@ exports.getPreciosCorteBusint = onCall(
     return { precios };
   }
 );
+// (2026-09-04, a pedido de Fredy) Reemplazo EN VIVO del reporte "Ventas
+// Perdidas" que hasta ahora se subia a mano (parseVentasPerdidasBusint en
+// App.js) -- validado a mano con el pedido 1103 (2026-09-04): Cant Pedida
+// [SUM(T2..T36) de "pedidos detalles clientes", agrupado por NumPed+Ref]
+// coincidio EXACTO en 3 referencias (C-335:210, C-336:154, C-337:154);
+// Cant Ventas Perdidas [SUM(Total) de "pedidos detalles clientes -
+// cumplidos" donde NConcepto=12, agrupado por NumPed+Ref] coincidio
+// EXACTO en 9 referencias (C-335, C-336, C-337, C-338, C-339, C-5016,
+// C-5049, C-104, C-105). Facturada/TrasExt/TrasCon reutilizan la MISMA
+// consulta ya validada y en produccion de getFacturacionPorClienteBusint
+// (ApiGen_FacturadoBusint, tipos FAC/TEX/TCO netos de sus devoluciones
+// DTE/DTC) -- OJO: esta parte todavia NO se validó numero a numero contra
+// un pedido real (el 1103 no tenia Facturada ni TrasCon distintos de 0),
+// por eso arranca en paralelo con el archivo subido a mano (mismo criterio
+// ya usado con precios de corte: en vivo primero, archivo de respaldo) --
+// ver botón "🔌 Actualizar desde Busint (en vivo)" en Vigentes por Cliente.
+// Cumplido a nivel pedido sale de "pedidos clientes".Dadoporcumplido,
+// cruzado con "maestro de clientes" para el nombre (mismo patrón ya usado
+// en getValidacionPedidosClientesBusintBD). Arma la MISMA forma que ya
+// devuelve parseVentasPerdidasBusint (porPedido/porReferencia) para que el
+// resto de la app (Vigentes por Cliente, Corte) no tenga que cambiar nada.
+const TALLAS_VP_BUSINT = ["T2", "T4", "T6", "T8", "T10", "T12", "T14", "T16", "T18", "T24", "T36"];
+exports.getVentasPerdidasBusintLive = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    const { fechaInicio, fechaFin } = request.data || {};
+    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    if (!fechaValida(fechaInicio) || !fechaValida(fechaFin)) {
+      throw new HttpsError("invalid-argument", "fechaInicio y fechaFin son obligatorias, en formato AAAA-MM-DD.");
+    }
+    let pedidosDetalle, cumplidosDetalle, pedidosClientes, maestroClientes, filasFacturado;
+    try {
+      [pedidosDetalle, cumplidosDetalle, pedidosClientes, maestroClientes, filasFacturado] = await Promise.all([
+        consultarTablaBusintBDCompleta("pedidos detalles clientes"),
+        consultarTablaBusintBDCompleta("pedidos detalles clientes - cumplidos"),
+        consultarTablaBusintBDCompleta("pedidos clientes"),
+        consultarTablaBusintBDCompleta("maestro de clientes"),
+        consultarFacturadoBusint(fechaInicio, fechaFin),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint (getVentasPerdidasBusintLive)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+
+    // Cant Pedida por NumPed+Ref (sumando todas las tallas de todos los colores).
+    const pedidaPorRef = new Map(); // `${numped}__${ref}` -> cantidad
+    pedidosDetalle.forEach((f) => {
+      const numped = String(f?.NumPed ?? "").trim();
+      const ref = String(f?.Ref ?? "").trim();
+      if (!numped || !ref) return;
+      const clave = `${numped}__${ref}`;
+      const cant = TALLAS_VP_BUSINT.reduce((s, t) => s + (Number(f?.[t]) || 0), 0);
+      pedidaPorRef.set(clave, (pedidaPorRef.get(clave) || 0) + cant);
+    });
+
+    // Cant Ventas Perdidas por NumPed+Ref -- SOLO NConcepto=12 (validado
+    // 2026-09-04 contra el pedido 1103: 9/9 referencias exactas).
+    const perdidaPorRef = new Map();
+    cumplidosDetalle.forEach((f) => {
+      if (Number(f?.NConcepto) !== 12) return;
+      const numped = String(f?.NumPed ?? "").trim();
+      const ref = String(f?.Ref ?? "").trim();
+      if (!numped || !ref) return;
+      const clave = `${numped}__${ref}`;
+      perdidaPorRef.set(clave, (perdidaPorRef.get(clave) || 0) + (Number(f?.Total) || 0));
+    });
+
+    // Cumplido + cliente a nivel pedido -- "pedidos clientes" (maestro,
+    // trae TODOS los pedidos, no solo los que ya tienen algo despachado)
+    // cruzado con "maestro de clientes" (Codigo -> Nombre), mismo patrón ya
+    // validado en getValidacionPedidosClientesBusintBD.
+    const nombrePorCodigoVP = new Map();
+    maestroClientes.forEach((c) => {
+      const cod = Number(c.Codigo);
+      if (Number.isFinite(cod)) nombrePorCodigoVP.set(cod, c.Nombre || c.NombreFact || null);
+    });
+    const cumplidoPorPedido = new Map();
+    const clientePorPedido = new Map();
+    pedidosClientes.forEach((p) => {
+      const numped = String(p?.NumPed ?? "").trim();
+      if (!numped) return;
+      const cumplidoRaw = primerCampoDefinido(p, ["Dadoporcumplido", "DadoPorCumplido", "dadoporcumplido", "DadoCumplido"]);
+      cumplidoPorPedido.set(numped, String(cumplidoRaw ?? "").trim().toUpperCase() === "S");
+      const nombre = nombrePorCodigoVP.get(Number(p.Codigo));
+      if (nombre) clientePorPedido.set(numped, nombre);
+    });
+
+    // Facturada/TrasExt/TrasCon por NumPed+Ref -- misma fuente y misma
+    // clasificación FAC/TCO/DTC/TEX/DTE ya validada en
+    // getFacturacionPorClienteBusint (netos de sus devoluciones, que ya
+    // llegan en "cant" negativo).
+    const facPorRef = new Map();
+    filasFacturado.forEach((f) => {
+      const numped = String(f.numped ?? "").trim();
+      const ref = String(f.ref || "").trim();
+      if (!numped || !ref) return;
+      const clave = `${numped}__${ref}`;
+      if (!facPorRef.has(clave)) facPorRef.set(clave, { facturada: 0, trasExt: 0, trasCon: 0 });
+      const acc = facPorRef.get(clave);
+      const tipo = String(f.tipo || "").trim().toUpperCase();
+      const cant = Number(f.cant) || 0;
+      if (tipo === "FAC") acc.facturada += cant;
+      else if (tipo === "TEX" || tipo === "DTE") acc.trasExt += cant;
+      else if (tipo === "TCO" || tipo === "DTC") acc.trasCon += cant;
+      if (!clientePorPedido.has(numped)) {
+        const nombreCliente = String(f.nombreCliente || f.NombreCliente || f.cliente || f.Cliente || "").trim();
+        if (nombreCliente) clientePorPedido.set(numped, nombreCliente);
+      }
+    });
+
+    // Unir todas las claves NumPed+Ref vistas en cualquiera de las 3
+    // fuentes (Pedida, Venta Perdida, Facturado/traslados) para no perder
+    // una referencia que solo aparezca en una de ellas.
+    const todasClaves = new Set([...pedidaPorRef.keys(), ...perdidaPorRef.keys(), ...facPorRef.keys()]);
+    const porReferencia = [];
+    const porPedidoAcc = new Map();
+    todasClaves.forEach((clave) => {
+      const idx = clave.indexOf("__");
+      const numero = clave.slice(0, idx);
+      const ref = clave.slice(idx + 2);
+      const fac = facPorRef.get(clave) || { facturada: 0, trasExt: 0, trasCon: 0 };
+      const totalPedida = pedidaPorRef.get(clave) || 0;
+      const totalVentasPerdidas = perdidaPorRef.get(clave) || 0;
+      porReferencia.push({
+        numero,
+        ref,
+        totalPedida,
+        totalFacturada: fac.facturada,
+        totalTrasExt: fac.trasExt,
+        totalTrasCon: fac.trasCon,
+        totalVentasPerdidas,
+      });
+      if (!porPedidoAcc.has(numero)) {
+        porPedidoAcc.set(numero, {
+          numero,
+          cliente: clientePorPedido.get(numero) || "",
+          cumplido: cumplidoPorPedido.get(numero) || false,
+          totalPedida: 0,
+          totalFacturada: 0,
+          totalVentasPerdidas: 0,
+        });
+      }
+      const accPedido = porPedidoAcc.get(numero);
+      accPedido.totalPedida += totalPedida;
+      accPedido.totalFacturada += fac.facturada;
+      accPedido.totalVentasPerdidas += totalVentasPerdidas;
+    });
+
+    return { porPedido: [...porPedidoAcc.values()], porReferencia };
+  }
+);
 // (2026-08-26) Diseño pidió esto: cuando programan un corte no saben si hay
 // tela disponible en bodega — esto trae el inventario REAL de tela desde
 // Busint BD, tabla "estandar componentes prod" (confirmado a mano con el
