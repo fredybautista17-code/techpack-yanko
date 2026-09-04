@@ -628,8 +628,14 @@ function cryptoRandomId() {
 exports.getPedidosVigentesBusint = onCall(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
-    timeoutSeconds: 60,
-    memory: "256MiB",
+    // (2026-09-04) 256MiB/60s no alcanzaba con rangos de fecha largos
+    // (varios meses) -- error "internal" sin nada mas en los logs, misma
+    // firma de OOM que ya vimos y resolvimos en getVentasPerdidasBusintLive.
+    // Esta funcion es mas liviana que esa (no trae tablas completas de la
+    // BD, solo ordenes + facturado del rango pedido), asi que no hace falta
+    // llegar a 2GiB/540s -- se sube a un punto intermedio.
+    timeoutSeconds: 300,
+    memory: "1GiB",
   },
   async (request) => {
     const { fechaInicio, fechaFin } = request.data || {};
