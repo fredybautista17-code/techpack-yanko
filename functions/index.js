@@ -1452,24 +1452,32 @@ exports.getVentasPerdidasBusintLive = onCall(
     }
 
     // Cant Pedida por NumPed+Ref (sumando todas las tallas de todos los colores).
+    // (2026-09-04) Filtrada por FechaInicial dentro del rango pedido -- sin
+    // esto se traía AÑOS de historial y el documento de Firestore superaba
+    // el límite de 1 MB (bug real, encontrado por Fredy al probar).
     const pedidaPorRef = new Map(); // `${numped}__${ref}` -> cantidad
     pedidosDetalle.forEach((f) => {
       const numped = String(f?.NumPed ?? "").trim();
       const ref = String(f?.Ref ?? "").trim();
       if (!numped || !ref) return;
+      const fechaIni = String(f?.FechaInicial ?? "").slice(0, 10);
+      if (fechaIni && (fechaIni < fechaInicio || fechaIni > fechaFin)) return;
       const clave = `${numped}__${ref}`;
       const cant = TALLAS_VP_BUSINT.reduce((s, t) => s + (Number(f?.[t]) || 0), 0);
       pedidaPorRef.set(clave, (pedidaPorRef.get(clave) || 0) + cant);
     });
 
     // Cant Ventas Perdidas por NumPed+Ref -- SOLO NConcepto=12 (validado
-    // 2026-09-04 contra el pedido 1103: 9/9 referencias exactas).
+    // 2026-09-04 contra el pedido 1103: 9/9 referencias exactas). Filtrada
+    // por Fecha dentro del rango pedido, mismo motivo que arriba.
     const perdidaPorRef = new Map();
     cumplidosDetalle.forEach((f) => {
       if (Number(f?.NConcepto) !== 12) return;
       const numped = String(f?.NumPed ?? "").trim();
       const ref = String(f?.Ref ?? "").trim();
       if (!numped || !ref) return;
+      const fechaISO = fechaBDaISOSafe(f?.Fecha);
+      if (fechaISO && (fechaISO < fechaInicio || fechaISO > fechaFin)) return;
       const clave = `${numped}__${ref}`;
       perdidaPorRef.set(clave, (perdidaPorRef.get(clave) || 0) + (Number(f?.Total) || 0));
     });
