@@ -7795,6 +7795,29 @@ function BusintCatalogoTestView() {
       setCargandoBarridoTotal(false);
     }
   }
+  // (2026-09-04) EXPLORATORIO — busca por el NOMBRE de la tabla misma (no
+  // por nombre de columna, que es lo que ya hace el Barrido TOTAL de
+  // arriba). Sirve para encontrar una tabla cuando no se sabe el nombre
+  // exacto, en vez de ir adivinando "traslado X"/"trasladoX Y" uno por uno.
+  const [keywordsTablaNombre, setKeywordsTablaNombre] = useState("");
+  const [cargandoTablaNombre, setCargandoTablaNombre] = useState(false);
+  const [tablaNombreResultado, setTablaNombreResultado] = useState(null);
+  async function buscarTablasPorNombre() {
+    const palabrasClave = keywordsTablaNombre.split(",").map((k) => k.trim()).filter(Boolean);
+    if (!palabrasClave.length) return;
+    setCargandoTablaNombre(true);
+    setError("");
+    setTablaNombreResultado(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "buscarTablasBusintBDPorNombre");
+      const resp = await llamar({ palabrasClave });
+      setTablaNombreResultado(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo buscar tablas por nombre.");
+    } finally {
+      setCargandoTablaNombre(false);
+    }
+  }
   const [cargandoBarrido, setCargandoBarrido] = useState(false);
   const [barrido, setBarrido] = useState(null);
   async function verBarrido() {
@@ -8279,6 +8302,33 @@ function BusintCatalogoTestView() {
                   {JSON.stringify(r.muestra, null, 2)}
                 </pre>
               </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Buscar tablas por su NOMBRE (API BD, exploratorio)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Distinto del Barrido TOTAL de arriba (ese busca en el nombre de las COLUMNAS): esto busca palabras dentro del NOMBRE de la tabla misma, entre las ~972 que existen — para encontrar una tabla cuando no se sabe el nombre exacto, en vez de adivinar una por una. Es casi instantáneo, no trae datos, solo nombres.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Palabras clave (separadas por coma)">
+          <FInput value={keywordsTablaNombre} onChange={setKeywordsTablaNombre} placeholder="Ej: traslad, consig" />
+        </Field>
+        <div style={{ marginBottom: 14 }}>
+          <Btn onClick={buscarTablasPorNombre} disabled={cargandoTablaNombre}>{cargandoTablaNombre ? "Buscando..." : "🔎 Buscar por nombre de tabla"}</Btn>
+        </div>
+      </div>
+      {tablaNombreResultado && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ fontSize: 13, color: T.slate, marginBottom: 10 }}>
+            {(tablaNombreResultado.coincidencias || []).length} de {tablaNombreResultado.totalTablas} tablas coinciden con esas palabras clave.
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {(tablaNombreResultado.coincidencias || []).map((t) => (
+              <span key={t} style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, background: T.white, border: `1px solid ${T.border}`, fontFamily: "monospace" }}>
+                {t}
+              </span>
             ))}
           </div>
         </div>

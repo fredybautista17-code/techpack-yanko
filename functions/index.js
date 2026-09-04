@@ -1105,6 +1105,45 @@ exports.getBarridoTotalTablasBusintBD = onCall(
   }
 );
 
+// (2026-09-04) EXPLORATORIO — el barrido de arriba (getBarridoTotalTablasBusintBD)
+// busca palabras clave en el nombre de las COLUMNAS de cada tabla, no en el
+// nombre de la tabla misma. Para encontrar una tabla por su propio nombre
+// (ej. buscar "traslad" o "consig" y ver TODOS los nombres reales que
+// existen, en vez de adivinar uno por uno) hace falta esto: solo trae la
+// lista de las ~972 tablas desde el swagger (mismo mecanismo de arriba) y
+// filtra por texto contenido en el nombre — no consulta ni una fila de
+// datos de ninguna tabla, así que es casi instantáneo y no necesita
+// secrets de Busint (el swagger es público).
+exports.buscarTablasBusintBDPorNombre = onCall(
+  {
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (request) => {
+    const palabrasClave = (
+      Array.isArray(request.data?.palabrasClave) && request.data.palabrasClave.length
+        ? request.data.palabrasClave
+        : String(request.data?.palabrasClave || "").split(",")
+    ).map((k) => String(k).trim().toLowerCase()).filter(Boolean);
+    if (!palabrasClave.length) {
+      throw new HttpsError("invalid-argument", "Debes indicar al menos una palabra clave para buscar en el nombre de la tabla.");
+    }
+    let enumList;
+    try {
+      const swaggerResp = await fetch("https://api-yanko-bd.busint.info/swagger/v1/swagger.json");
+      const swagger = await swaggerResp.json();
+      enumList = swagger.paths["/api/Query"].post.parameters.find((p) => p.name === "tableName").schema.enum;
+    } catch (err) {
+      logger.error("Error trayendo la lista de tablas del swagger de Busint BD", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo traer la lista de tablas del swagger: ${err?.message || String(err)}`);
+    }
+    const coincidencias = enumList.filter((tabla) =>
+      palabrasClave.some((k) => tabla.toLowerCase().includes(k))
+    );
+    return { totalTablas: enumList.length, palabrasClave, coincidencias };
+  }
+);
+
 // Trae TODAS las filas de una tabla de Busint BD, paginando sola (la API
 // entrega de a `pageSize` filas por página) hasta que una página llega
 // vacía/incompleta o se alcanza `maxPaginas` — tope de seguridad para no
