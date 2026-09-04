@@ -7818,6 +7818,29 @@ function BusintCatalogoTestView() {
       setCargandoTablaNombre(false);
     }
   }
+  // (2026-09-04) EXPLORATORIO — dado un numero de pedido, cruza la cabecera
+  // "facturas" (por Numped) con "facturas detalles" (por Nfact) y suma
+  // unidades por Referencia, todo del lado del servidor -- para comparar
+  // directo contra el reporte de Ventas Perdidas sin sumar JSON a mano.
+  const [numPedFacturacion, setNumPedFacturacion] = useState("");
+  const [cargandoFacturacionPedido, setCargandoFacturacionPedido] = useState(false);
+  const [facturacionPedidoResultado, setFacturacionPedidoResultado] = useState(null);
+  async function verFacturacionPorPedido() {
+    const numPed = numPedFacturacion.trim();
+    if (!numPed) return;
+    setCargandoFacturacionPedido(true);
+    setError("");
+    setFacturacionPedidoResultado(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getResumenFacturacionPorPedidoBusintBD");
+      const resp = await llamar({ numPed });
+      setFacturacionPedidoResultado(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar la facturación de este pedido.");
+    } finally {
+      setCargandoFacturacionPedido(false);
+    }
+  }
   const [cargandoBarrido, setCargandoBarrido] = useState(false);
   const [barrido, setBarrido] = useState(null);
   async function verBarrido() {
@@ -8331,6 +8354,51 @@ function BusintCatalogoTestView() {
               </span>
             ))}
           </div>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Facturación por pedido — cruce automático (API BD, exploratorio)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Da un número de pedido: busca sus facturas (cabecera "facturas" por Numped), junta los Nfact, y suma "facturas detalles" por Referencia — todo del lado del servidor, para comparar directo contra Ventas Perdidas sin sumar JSON a mano. Ojo: si el pedido se facturó en varias facturas a lo largo del tiempo, puede que no todas queden etiquetadas con Numped y la suma salga por debajo de la real — por eso se muestra también cuántas facturas se encontraron.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Número de pedido">
+          <FInput value={numPedFacturacion} onChange={setNumPedFacturacion} placeholder="Ej: 1363" />
+        </Field>
+        <div style={{ marginBottom: 14 }}>
+          <Btn onClick={verFacturacionPorPedido} disabled={cargandoFacturacionPedido}>{cargandoFacturacionPedido ? "Consultando..." : "🧾 Ver facturación del pedido"}</Btn>
+        </div>
+      </div>
+      {facturacionPedidoResultado && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ fontSize: 13, color: T.slate, marginBottom: 10 }}>
+            Pedido {facturacionPedidoResultado.numPed}: {facturacionPedidoResultado.totalFacturas} factura(s) encontrada(s) con ese Numped, {facturacionPedidoResultado.totalLineasDetalle} línea(s) de detalle, total general {facturacionPedidoResultado.totalGeneral} unidades.
+          </div>
+          {(facturacionPedidoResultado.facturasEncontradas || []).length > 0 && (
+            <div style={{ marginBottom: 14, display: "flex", flexDirection: "column", gap: 6 }}>
+              {facturacionPedidoResultado.facturasEncontradas.map((f) => (
+                <div key={f.Nfact} style={{ fontSize: 12, color: T.ink, background: T.white, border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 10px" }}>
+                  Nfact {f.Nfact} — {f.Observaciones || "(sin cliente)"} — {f.Comentarios || "(sin comentarios)"}
+                </div>
+              ))}
+            </div>
+          )}
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: "left", padding: "6px 8px", borderBottom: `1px solid ${T.border}`, color: T.slate }}>Referencia</th>
+                <th style={{ textAlign: "right", padding: "6px 8px", borderBottom: `1px solid ${T.border}`, color: T.slate }}>Unidades</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(facturacionPedidoResultado.resumenPorReferencia || []).map((r) => (
+                <tr key={r.ref}>
+                  <td style={{ padding: "6px 8px", borderBottom: `1px solid ${T.border}`, fontFamily: "monospace" }}>{r.ref}</td>
+                  <td style={{ padding: "6px 8px", borderBottom: `1px solid ${T.border}`, textAlign: "right" }}>{r.total}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
       <div style={{ height: 1, background: T.border, margin: "24px 0" }} />

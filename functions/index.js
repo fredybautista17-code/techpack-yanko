@@ -1227,6 +1227,71 @@ exports.getResumenTablaBusintBD = onCall(
   }
 );
 
+// (2026-09-04) EXPLORATORIO — construido a pedido de Fredy mientras se
+// investiga de dónde sacar en vivo "Cant Facturada" para Ventas Perdidas
+// (las otras dos, Cant Pedida/Cumplido/Cant Ventas Perdidas, ya salen de
+// getVentasPerdidasBusintLive). Dado un número de pedido: busca en la
+// cabecera "facturas" TODAS las filas cuyo campo Numped calza, junta los
+// Nfact encontrados, trae TODAS las líneas de "facturas detalles" de esos
+// Nfact, y devuelve la suma de unidades (T2...T36) agrupada por Referencia
+// — para comparar de un tiro contra el reporte de Ventas Perdidas subido a
+// mano, sin sumar filas de JSON a mano en el chat.
+// OJO (hallazgo de esta misma investigación, validado con el pedido 1363 /
+// referencia 98-997): el campo `Numped` de la cabecera NO siempre etiqueta
+// todas las facturas de un pedido que se facturó en varios documentos a lo
+// largo del tiempo — esta suma puede quedar por debajo de la real si
+// Busint dejó alguna factura del mismo pedido sin ese campo puesto. Por
+// eso también se devuelve `totalFacturas` (cuántas facturas se encontraron
+// con ese Numped) para poder notar el caso a simple vista.
+exports.getResumenFacturacionPorPedidoBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async (request) => {
+    const numPed = String(request.data?.numPed ?? "").trim();
+    if (!numPed) {
+      throw new HttpsError("invalid-argument", "Debes indicar el número de pedido.");
+    }
+    let cabeceras, detalles;
+    try {
+      [cabeceras, detalles] = await Promise.all([
+        consultarTablaBusintBDCompleta("facturas"),
+        consultarTablaBusintBDCompleta("facturas detalles"),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getResumenFacturacionPorPedidoBusintBD)", { numPed, error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint BD: ${err?.message || String(err)}`);
+    }
+    const facturasDelPedido = cabeceras.filter((f) => String(f?.Numped ?? "").trim() === numPed);
+    const nfactsSet = new Set(facturasDelPedido.map((f) => String(f?.Nfact ?? "").trim()).filter(Boolean));
+    const detallesDelPedido = detalles.filter((d) => nfactsSet.has(String(d?.Nfact ?? "").trim()));
+    const porReferencia = new Map();
+    detallesDelPedido.forEach((d) => {
+      const ref = String(d?.Ref ?? "").trim() || "(sin referencia)";
+      const totalFila = TALLAS_VP_BUSINT.reduce((s, t) => s + (Number(d?.[t]) || 0), 0);
+      porReferencia.set(ref, (porReferencia.get(ref) || 0) + totalFila);
+    });
+    const resumenPorReferencia = [...porReferencia.entries()]
+      .map(([ref, total]) => ({ ref, total }))
+      .sort((a, b) => b.total - a.total);
+    return {
+      numPed,
+      facturasEncontradas: facturasDelPedido.map((f) => ({
+        Nfact: f.Nfact,
+        Comentarios: f.Comentarios,
+        Observaciones: f.Observaciones,
+        Fechaini: f.Fechaini,
+      })),
+      totalFacturas: facturasDelPedido.length,
+      totalLineasDetalle: detallesDelPedido.length,
+      resumenPorReferencia,
+      totalGeneral: resumenPorReferencia.reduce((s, r) => s + r.total, 0),
+    };
+  }
+);
+
 // (2026-08-29) Fredy pidió ver, por lote, cuánto entró REALMENTE a cada
 // proceso (no lo que quedó pendiente, sino lo que Busint registró como
 // entrada) — validado a mano contra el lote 7250: "BAJADA DE VINILO" tenía
