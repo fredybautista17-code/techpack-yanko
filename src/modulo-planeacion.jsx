@@ -2796,6 +2796,14 @@ function ProgramadorProcesosView({
   procesos,
   // opcional: texto del renglón "Tus procesos: ..." (default sin cambios).
   etiquetaProcesos,
+  // (2026-09-06, a pedido de Fredy) Nombre del Área Interna de esta
+  // pantalla -- para mostrarle a la líder, arriba de todo, la Auditoría
+  // Busint vs Nómina de su área (antes solo vivía en Áreas → Centro de
+  // Costo Cierre y las líderes no la veían en su "Mi Día"). En
+  // ProgramadorProcesosStandalone es currentUser.areaNomina; en
+  // AreasStandalone (viéndolo como admin) es el área elegida
+  // (areaActual.nombre).
+  area,
   lotesActivos,
   trabajadoresEquipo,
   programaciones,
@@ -3092,6 +3100,7 @@ function ProgramadorProcesosView({
           {etiquetaProcesos || "Tus procesos"}: {misProcesos.length ? misProcesos.join(", ") : "ninguno asignado todavía"}.
         </p>
       </div>
+      <AuditoriaBusintNominaPanel area={area} currentUser={currentUser} />
       {!misProcesos.length && (
         <div style={{ background: C.white, borderRadius: 14, padding: 24, border: `1px solid ${C.border}`, color: C.slate, fontSize: 13, marginBottom: 20 }}>
           {procesos
@@ -3251,6 +3260,7 @@ export function ProgramadorProcesosStandalone({ currentUser, onVolver, onLogout 
         <div style={{ maxWidth: 1400, margin: "0 auto" }}>
           <ProgramadorProcesosView
             currentUser={currentUser}
+            area={currentUser?.areaNomina}
             lotesActivos={lotesActivos}
             trabajadoresEquipo={trabajadoresEquipo}
             programaciones={misProgramaciones}
@@ -4181,6 +4191,102 @@ function ControlCalidadView({ reclamos, onGuardar, onCambiarEstado, onBorrar, is
 // (2026-09-06) Debe coincidir con AREAS_AUDITORIA_BUSINT en functions/index.js
 const AREAS_CON_AUDITORIA_BUSINT = ["ZONA CALOR", "CONTROL DE CALIDAD"];
 
+// (2026-09-06, a pedido de Fredy) Auditoría Busint vs Nómina como
+// componente aparte -- antes vivía solo dentro de CentroCostoCierreView
+// (Áreas → Centro de Costo Cierre) y las líderes con procesos asignados
+// (Anny Beltrán, Sarai Méndez) no la veían en su "Mi Día"
+// (ProgramadorProcesosView), que es la pantalla que de verdad revisan a
+// diario. Ahora se muestra en ambas. `area` es el nombre exacto del Área
+// Interna (nomina_areas / trabajadores.area); si no hay corridas ni está
+// en AREAS_CON_AUDITORIA_BUSINT, no se dibuja nada (igual que antes).
+function AuditoriaBusintNominaPanel({ area, currentUser }) {
+  const [auditoriaHistorial, setAuditoriaHistorial] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "centro_costo_auditoria_busint"), (snap) => {
+      setAuditoriaHistorial(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  const auditoriaArea = useMemo(
+    () => auditoriaHistorial.filter((h) => h.area === area).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")),
+    [auditoriaHistorial, area]
+  );
+  const [auditoriaDetalleAbierto, setAuditoriaDetalleAbierto] = useState(null);
+  const [corriendoAuditoria, setCorriendoAuditoria] = useState(false);
+  async function correrAuditoriaAhora() {
+    setCorriendoAuditoria(true);
+    try {
+      const llamar = httpsCallable(functionsClient, "correrAuditoriaBusintVsNominaAhora");
+      await llamar();
+      alert("Auditoría ejecutada. Los resultados de Zona Calor y Control de Calidad ya están actualizados arriba.");
+    } catch (err) {
+      alert(`No se pudo correr la auditoría: ${err?.message || String(err)}`);
+    } finally {
+      setCorriendoAuditoria(false);
+    }
+  }
+  if (!area || (!AREAS_CON_AUDITORIA_BUSINT.includes(area) && auditoriaArea.length === 0)) return null;
+  return (
+    <>
+      <div style={{ marginBottom: 24, padding: 16, border: `1px solid ${C.border}`, borderRadius: 12, background: C.canvas }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>🔎 Auditoría Busint vs Nómina</div>
+            <div style={{ fontSize: 11, color: C.slate }}>Compara las entradas reales en Busint contra lo registrado en Nómina (Registrar Producción) para esta área. Corre sola todos los días a las 7am.</div>
+          </div>
+          {currentUser?.isAdmin && (
+            <Btn variant="ghost" small onClick={correrAuditoriaAhora} disabled={corriendoAuditoria}>
+              {corriendoAuditoria ? "Corriendo..." : "▶️ Correr auditoría ahora"}
+            </Btn>
+          )}
+        </div>
+        {auditoriaArea.length === 0 ? (
+          <div style={{ fontSize: 12, color: C.slate }}>Aún no hay corridas registradas para esta área.</div>
+        ) : (
+          <Tabla
+            vacio="Sin corridas."
+            columnas={[
+              { key: "fecha", label: "Fecha" },
+              { key: "totalDiscrepancias", label: "Diferencias", align: "right", render: (f) => (
+                  <strong style={{ color: f.totalDiscrepancias > 0 ? C.red : C.green }}>{fmtNum(f.totalDiscrepancias)}</strong>
+                ) },
+            ]}
+            filas={auditoriaArea}
+            onRowClick={setAuditoriaDetalleAbierto}
+          />
+        )}
+      </div>
+      {auditoriaDetalleAbierto && (
+        <Modal title={`Auditoría Busint vs Nómina — ${auditoriaDetalleAbierto.area} — ${auditoriaDetalleAbierto.fecha}`} onClose={() => setAuditoriaDetalleAbierto(null)} width={1180}>
+          {(auditoriaDetalleAbierto.totalDiscrepancias || 0) === 0 ? (
+            <div style={{ fontSize: 12, color: C.slate }}>No se encontraron diferencias en esta corrida.</div>
+          ) : (
+            <Tabla
+              vacio="Sin diferencias."
+              columnas={[
+                { key: "numLote", label: "Lote" },
+                { key: "proceso", label: "Proceso" },
+                { key: "tipo", label: "Tipo", render: (f) => {
+                    const info = infoTipoAuditoria(f.tipo);
+                    return <span style={{ color: info.color, fontWeight: 700 }}>{info.icono} {info.texto}</span>;
+                  } },
+                { key: "entradaBusint", label: "Cant. Busint", align: "right", render: (f) => fmtNum(f.entradaBusint) },
+                { key: "registradoNomina", label: "Cant. Nómina", align: "right", render: (f) => fmtNum(f.registradoNomina) },
+                { key: "diferencia", label: "Dif. Cant.", align: "right", render: (f) => <strong style={{ color: f.diferencia !== 0 ? infoTipoAuditoria(f.tipo).color : C.slate }}>{fmtNum(Math.abs(f.diferencia))}</strong> },
+                { key: "entradaBusintValor", label: "Valor Busint", align: "right", render: (f) => fmtMoney(f.entradaBusintValor) },
+                { key: "registradoNominaValor", label: "Valor Nómina", align: "right", render: (f) => fmtMoney(f.registradoNominaValor) },
+                { key: "diferenciaValor", label: "Dif. Valor", align: "right", render: (f) => <strong style={{ color: f.diferenciaValor !== 0 ? infoTipoAuditoria(f.tipo).color : C.slate }}>{fmtMoney(Math.abs(f.diferenciaValor))}</strong> },
+                { key: "ultimaEntrada", label: "Última fecha" },
+              ]}
+              filas={(auditoriaDetalleAbierto.discrepancias || []).map((d, i) => ({ ...d, id: i }))}
+            />
+          )}
+        </Modal>
+      )}
+    </>
+  );
+}
+
 function CentroCostoCierreView({ area, trabajadores, produccion, currentUser }) {
   const hoy = today();
   const [periodo, setPeriodo] = useState("dia"); // "dia" | "mes" | "anio"
@@ -4289,36 +4395,6 @@ function CentroCostoCierreView({ area, trabajadores, produccion, currentUser }) 
     return () => unsub();
   }, []);
   const historialArea = useMemo(() => historial.filter((h) => h.area === area), [historial, area]);
-  // (2026-09-06) Auditoria Busint vs Nomina -- ver functions/index.js
-  // (correrAuditoriaBusintVsNomina / auditoriaBusintVsNomina). Se guarda un
-  // doc por area+dia en centro_costo_auditoria_busint; aqui solo se lee y se
-  // muestra, y se puede disparar manualmente (solo admins) para probar sin
-  // esperar al horario automatico (7am).
-  const [auditoriaHistorial, setAuditoriaHistorial] = useState([]);
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, "centro_costo_auditoria_busint"), (snap) => {
-      setAuditoriaHistorial(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
-    });
-    return () => unsub();
-  }, []);
-  const auditoriaArea = useMemo(
-    () => auditoriaHistorial.filter((h) => h.area === area).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")),
-    [auditoriaHistorial, area]
-  );
-  const [auditoriaDetalleAbierto, setAuditoriaDetalleAbierto] = useState(null);
-  const [corriendoAuditoria, setCorriendoAuditoria] = useState(false);
-  async function correrAuditoriaAhora() {
-    setCorriendoAuditoria(true);
-    try {
-      const llamar = httpsCallable(functionsClient, "correrAuditoriaBusintVsNominaAhora");
-      await llamar();
-      alert("Auditoría ejecutada. Los resultados de Zona Calor y Control de Calidad ya están actualizados arriba.");
-    } catch (err) {
-      alert(`No se pudo correr la auditoría: ${err?.message || String(err)}`);
-    } finally {
-      setCorriendoAuditoria(false);
-    }
-  }
   const [filtroFecha, setFiltroFecha] = useState("");
   const [filtroTrabajador, setFiltroTrabajador] = useState("");
   const [detalleAbierto, setDetalleAbierto] = useState(null);
@@ -4407,63 +4483,7 @@ function CentroCostoCierreView({ area, trabajadores, produccion, currentUser }) 
       <div style={{ marginBottom: 24 }}>
         <Btn variant="ghost" onClick={guardarCierre}>💾 Guardar cierre de este período</Btn>
       </div>
-      {(AREAS_CON_AUDITORIA_BUSINT.includes(area) || auditoriaArea.length > 0) && (
-        <div style={{ marginBottom: 24, padding: 16, border: `1px solid ${C.border}`, borderRadius: 12, background: C.canvas }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
-            <div>
-              <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>🔎 Auditoría Busint vs Nómina</div>
-              <div style={{ fontSize: 11, color: C.slate }}>Compara las entradas reales en Busint contra lo registrado en Nómina (Registrar Producción) para esta área. Corre sola todos los días a las 7am.</div>
-            </div>
-            {currentUser?.isAdmin && (
-              <Btn variant="ghost" small onClick={correrAuditoriaAhora} disabled={corriendoAuditoria}>
-                {corriendoAuditoria ? "Corriendo..." : "▶️ Correr auditoría ahora"}
-              </Btn>
-            )}
-          </div>
-          {auditoriaArea.length === 0 ? (
-            <div style={{ fontSize: 12, color: C.slate }}>Aún no hay corridas registradas para esta área.</div>
-          ) : (
-            <Tabla
-              vacio="Sin corridas."
-              columnas={[
-                { key: "fecha", label: "Fecha" },
-                { key: "totalDiscrepancias", label: "Diferencias", align: "right", render: (f) => (
-                    <strong style={{ color: f.totalDiscrepancias > 0 ? C.red : C.green }}>{fmtNum(f.totalDiscrepancias)}</strong>
-                  ) },
-              ]}
-              filas={auditoriaArea}
-              onRowClick={setAuditoriaDetalleAbierto}
-            />
-          )}
-        </div>
-      )}
-      {auditoriaDetalleAbierto && (
-        <Modal title={`Auditoría Busint vs Nómina — ${auditoriaDetalleAbierto.area} — ${auditoriaDetalleAbierto.fecha}`} onClose={() => setAuditoriaDetalleAbierto(null)} width={1180}>
-          {(auditoriaDetalleAbierto.totalDiscrepancias || 0) === 0 ? (
-            <div style={{ fontSize: 12, color: C.slate }}>No se encontraron diferencias en esta corrida.</div>
-          ) : (
-            <Tabla
-              vacio="Sin diferencias."
-              columnas={[
-                { key: "numLote", label: "Lote" },
-                { key: "proceso", label: "Proceso" },
-                { key: "tipo", label: "Tipo", render: (f) => {
-                    const info = infoTipoAuditoria(f.tipo);
-                    return <span style={{ color: info.color, fontWeight: 700 }}>{info.icono} {info.texto}</span>;
-                  } },
-                { key: "entradaBusint", label: "Cant. Busint", align: "right", render: (f) => fmtNum(f.entradaBusint) },
-                { key: "registradoNomina", label: "Cant. Nómina", align: "right", render: (f) => fmtNum(f.registradoNomina) },
-                { key: "diferencia", label: "Dif. Cant.", align: "right", render: (f) => <strong style={{ color: f.diferencia !== 0 ? infoTipoAuditoria(f.tipo).color : C.slate }}>{fmtNum(Math.abs(f.diferencia))}</strong> },
-                { key: "entradaBusintValor", label: "Valor Busint", align: "right", render: (f) => fmtMoney(f.entradaBusintValor) },
-                { key: "registradoNominaValor", label: "Valor Nómina", align: "right", render: (f) => fmtMoney(f.registradoNominaValor) },
-                { key: "diferenciaValor", label: "Dif. Valor", align: "right", render: (f) => <strong style={{ color: f.diferenciaValor !== 0 ? infoTipoAuditoria(f.tipo).color : C.slate }}>{fmtMoney(Math.abs(f.diferenciaValor))}</strong> },
-                { key: "ultimaEntrada", label: "Última fecha" },
-              ]}
-              filas={(auditoriaDetalleAbierto.discrepancias || []).map((d, i) => ({ ...d, id: i }))}
-            />
-          )}
-        </Modal>
-      )}
+      <AuditoriaBusintNominaPanel area={area} currentUser={currentUser} />
       <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 18 }}>
         <div>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, marginBottom: 4 }}>Día del cierre guardado</div>
@@ -4800,6 +4820,7 @@ export function AreasStandalone({ currentUser, onVolver, onLogout, puedeCentroCo
               {seccion === "programador" && PERMISO_TAB.programador && (
                 <ProgramadorProcesosView
                   currentUser={currentUser}
+                  area={areaActual?.nombre}
                   procesos={procesosArea}
                   etiquetaProcesos={`Procesos de ${areaActual?.nombre}`}
                   lotesActivos={lotesActivosArea}
