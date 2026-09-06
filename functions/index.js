@@ -1463,7 +1463,13 @@ function resumenMovimientosPorLoteProceso(filasRef, fechasPorNumero, campoNumero
     if (fecha < r.primera) r.primera = fecha;
     if (fecha > r.ultima) r.ultima = fecha;
     r.total += Number(f?.Total) || 0;
-    r.valorTotal += Number(f?.Valortotal) || 0;
+    // (2026-09-06, corregido a pedido de Fredy) "Valortotal" resulto ser
+    // un campo del REPORTE que Fredy consulta dentro de Busint, no de esta
+    // tabla via API -- por eso siempre daba 0 aqui. Se valido con varias
+    // filas reales que Valortotal = Total x CostoFT exactamente en todos
+    // los casos, asi que se calcula directo en vez de depender de un
+    // campo que nunca llega.
+    r.valorTotal += (Number(f?.Total) || 0) * (Number(f?.CostoFT) || 0);
   });
   return [...porClave.values()];
 }
