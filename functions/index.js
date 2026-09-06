@@ -1444,6 +1444,116 @@ exports.getMovimientosProcesoBusintBD = onCall(
     return { entradas, salidas, generadoEn: new Date().toISOString() };
   }
 );
+
+// (2026-09-06, a pedido de Fredy) Auditoria Busint vs Nomina: en Zona Calor
+// y Control de Calidad, si Busint ya registro una ENTRADA real a un
+// proceso de esa area, esa cantidad tiene que quedar registrada en Nomina
+// (Registrar Produccion) -- si no, alguien no metio su produccion. No es
+// una ventana de "ultimos N dias": compara el TOTAL acumulado de Busint
+// contra el TOTAL acumulado en nomina_produccion por Lote+Proceso (ambos
+// lados se van sumando con el tiempo de la misma forma), asi que cualquier
+// faltante -- sin importar de que dia sea -- se detecta y se sigue viendo
+// hasta que alguien lo registre. Para no arrastrar para siempre lotes
+// viejos ya cerrados, solo se avisa de combinaciones Lote+Proceso cuya
+// ULTIMA entrada en Busint sea de los ultimos AUDITORIA_BUSINT_DIAS_RELEVANCIA dias.
+// Que procesos le tocan a cada area sale del mismo campo que ya existe en
+// el Area Interna ("Procesos que cuentan para Centro de Costo") -- ver
+// AreaNominaModal en src/modulo-nomina.jsx. El resultado se guarda en
+// centro_costo_auditoria_busint (lo lee "Centro de Costo Cierre") y, si
+// hay diferencias, se avisa por correo al lider de esa area (usuario con
+// areaNomina == nombre del area); si el area no tiene lider asignado,
+// cae de respaldo a todos los usuarios con isAdmin.
+const AREAS_AUDITORIA_BUSINT = ["ZONA CALOR", "CONTROL DE CALIDAD"];
+const AUDITORIA_BUSINT_DIAS_RELEVANCIA = 30;
+
+async function correrAuditoriaBusintVsNomina() {
+  const hoy = fechaHoyBogota();
+  const limite = new Date();
+  limite.setDate(limite.getDate() - AUDITORIA_BUSINT_DIAS_RELEVANCIA);
+  const fechaLimiteISO = limite.toISOString().slice(0, 10);
+
+  const [areasSnap, trabajadoresSnap, produccionSnap, usersSnap, entradasRef, fechasEntrada] = await Promise.all([
+    db.collection("nomina_areas").get(),
+    db.collection("nomina_trabajadores").get(),
+    db.collection("nomina_produccion").get(),
+    db.collection("users").get(),
+    consultarTablaBusintBDCompleta("bmp - entrada plantaproc ref"),
+    fechasPorDocumentoBusintBD("bmp - entrada plantaproc", ["Entrada", "entrada"]),
+  ]);
+
+  const areas = areasSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
+  const trabajadores = trabajadoresSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
+  const produccion = produccionSnap.docs.map((d) => d.data());
+  const usuarios = usersSnap.docs.map((d) => d.data());
+  const entradas = resumenMovimientosPorLoteProceso(entradasRef, fechasEntrada, "Entrada");
+
+  const resultados = [];
+  for (const nombreArea of AREAS_AUDITORIA_BUSINT) {
+    const area = areas.find((a) => a.nombre === nombreArea);
+    const procesosArea = new Set((area?.procesosCentroCosto || []).map((p) => String(p).trim()));
+    if (!procesosArea.size) {
+      logger.warn(`Auditoria Busint vs Nomina: el area "${nombreArea}" no tiene procesos marcados en "Procesos que cuentan para Centro de Costo" -- no se puede auditar.`);
+      resultados.push({ area: nombreArea, omitida: true, motivo: "sin_procesos_marcados" });
+      continue;
+    }
+    const idsTrabajadoresArea = new Set(trabajadores.filter((t) => (t.area || "") === nombreArea).map((t) => t.id));
+
+    const registradoPorClave = new Map();
+    produccion.forEach((p) => {
+      if (!idsTrabajadoresArea.has(p.trabajadorId)) return;
+      const numLote = String(p.numLote || "").trim();
+      const proceso = String(p.proceso || "").trim();
+      if (!numLote || !proceso) return;
+      const clave = `${numLote}||${proceso}`;
+      registradoPorClave.set(clave, (registradoPorClave.get(clave) || 0) + (Number(p.cantidad) || 0));
+    });
+
+    const discrepancias = [];
+    entradas.forEach((e) => {
+      if (!procesosArea.has(e.proceso)) return;
+      if (e.ultima < fechaLimiteISO) return;
+      const clave = `${e.numLote}||${e.proceso}`;
+      const registrado = registradoPorClave.get(clave) || 0;
+      const diferencia = e.total - registrado;
+      if (diferencia > 0) {
+        discrepancias.push({ numLote: e.numLote, proceso: e.proceso, entradaBusint: e.total, registradoNomina: registrado, diferencia, ultimaEntrada: e.ultima });
+      }
+    });
+    discrepancias.sort((a, b) => b.diferencia - a.diferencia);
+
+    await db.collection("centro_costo_auditoria_busint").doc(`${idNormalizado(nombreArea)}__${hoy}`).set({
+      area: nombreArea,
+      fecha: hoy,
+      generadoEn: new Date().toISOString(),
+      totalDiscrepancias: discrepancias.length,
+      discrepancias,
+    });
+    resultados.push({ area: nombreArea, totalDiscrepancias: discrepancias.length });
+
+    if (discrepancias.length > 0) {
+      let destinatarios = usuarios.filter((u) => u.areaNomina === nombreArea && u.email).map((u) => u.email);
+      if (!destinatarios.length) {
+        destinatarios = usuarios.filter((u) => u.isAdmin && u.email).map((u) => u.email);
+      }
+      if (destinatarios.length) {
+        const transporte = crearTransporte();
+        const filasHtml = discrepancias
+          .map((d) => `<tr><td>${d.numLote}</td><td>${d.proceso}</td><td style="text-align:right">${d.entradaBusint}</td><td style="text-align:right">${d.registradoNomina}</td><td style="text-align:right"><b>${d.diferencia}</b></td></tr>`)
+          .join("");
+        await mandarCorreo(
+          transporte,
+          destinatarios,
+          `ATLAS -- ${nombreArea}: ${discrepancias.length} diferencia(s) de Nomina vs Busint`,
+          `<p>En <b>${nombreArea}</b>, Busint tiene entradas registradas que no calzan con lo registrado en Nomina (Registrar Produccion). Revisa estos lotes/procesos:</p><table border="1" cellpadding="6" style="border-collapse:collapse"><tr><th>Lote</th><th>Proceso</th><th>Entrada Busint</th><th>Registrado Nomina</th><th>Diferencia</th></tr>${filasHtml}</table>`
+        );
+      } else {
+        logger.warn(`Auditoria Busint vs Nomina: ${discrepancias.length} diferencia(s) en "${nombreArea}" pero no se encontro a quien avisar (sin lider con areaNomina y sin admins con correo).`);
+      }
+    }
+  }
+  return { fecha: hoy, resultados };
+}
+
 // (2026-08-30) NUEVA fuente EN VIVO para el tope de pago de Registrar
 // Producción en Nómina — reemplaza al Excel de "Costos Teóricos por
 // Proceso" como fuente principal (decisión de Fredy, 2026-08-30). Se validó
@@ -3622,6 +3732,32 @@ exports.adminCambiarClaveUsuario = onCall(
 const EMAIL_USER = defineSecret("EMAIL_USER");
 const EMAIL_APP_PASSWORD = defineSecret("EMAIL_APP_PASSWORD");
 const nodemailer = require("nodemailer");
+
+exports.correrAuditoriaBusintVsNominaAhora = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, EMAIL_USER, EMAIL_APP_PASSWORD],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    return await correrAuditoriaBusintVsNomina();
+  }
+);
+
+exports.auditoriaBusintVsNomina = onSchedule(
+  {
+    schedule: "every day 07:00",
+    timeZone: "America/Bogota",
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, EMAIL_USER, EMAIL_APP_PASSWORD],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async () => {
+    const resultado = await correrAuditoriaBusintVsNomina();
+    logger.info("Auditoria Busint vs Nomina completada", resultado);
+  }
+);
 
 const RECIPIENTES_APOYO = ["Dayana", "Karen", "Yuliana"];
 const STAGES_TERMINALES = new Set(["enviado_cotizacion", "enviar_cliente", "enviado", "recibido_cliente", "aprobado", "declinado"]);
