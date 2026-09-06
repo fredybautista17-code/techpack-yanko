@@ -3617,26 +3617,37 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     { key: "total", label: "Unidades", align: "right", render: (f) => fmtNum(f.total) },
     { key: "ultima", label: "Última salida", render: (f) => fmtFechaISO(f.ultima) },
   ];
-  // (2026-09-06, a pedido de Fredy) Descarga en Excel de la tabla de
-  // trabajadores por destajo (Trabajador/Área Interna/Unidades/Valor
-  // producido/Costo nómina/Balance) que se ve en Centro de Costo cuando el
-  // área está en modo "Destajo" (Control de Calidad, Zona de Calor, etc.).
+  // (2026-09-06, corregido a pedido de Fredy) Descarga en Excel del botón
+  // principal de Centro de Costo. Antes exportaba una fila POR TRABAJADOR
+  // con las cantidades generales (Unidades/Valor producido/Costo/Balance,
+  // igual a lo que se ve en pantalla); ahora exporta TODOS LOS LOTES --
+  // una fila por cada registro de Registrar Producción de los trabajadores
+  // del área en el período elegido (mismo detalle que el modal de un solo
+  // trabajador, pero de todos a la vez, con el nombre y área de cada uno).
   async function exportarCentroCostoExcel() {
     const XLSX = await import("xlsx");
-    const rows = filas.map((f) => ({
-      Trabajador: f.nombre,
-      "Área Interna": f.area,
-      Unidades: f.unidades,
-      "Valor producido": f.valorProducido,
-      [`Costo nómina (${etiquetaPeriodo})`]: f.sinSueldo ? "sin sueldo" : f.costo,
-      Balance: f.valorProducido - f.costo,
+    const idsTrabajadoresArea = new Set(trabajadoresArea.map((t) => t.id));
+    const nombrePorId = new Map(trabajadoresArea.map((t) => [t.id, t.nombre]));
+    const areaPorId = new Map(trabajadoresArea.map((t) => [t.id, t.area || "Sin asignar"]));
+    const registros = produccionPeriodo
+      .filter((p) => idsTrabajadoresArea.has(p.trabajadorId))
+      .sort((a, b) => (nombrePorId.get(a.trabajadorId) || "").localeCompare(nombrePorId.get(b.trabajadorId) || "") || (a.fecha || "").localeCompare(b.fecha || ""));
+    const rows = registros.map((p) => ({
+      Trabajador: nombrePorId.get(p.trabajadorId) || "",
+      "Área Interna": areaPorId.get(p.trabajadorId) || "",
+      Fecha: p.fecha ? fmtFechaISO(p.fecha) : "",
+      Lote: p.numLote || "",
+      Proceso: p.proceso || "",
+      Referencia: p.referencia || "",
+      Cantidad: p.cantidad,
+      Total: p.total,
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Centro de Costo");
+    XLSX.utils.book_append_sheet(wb, ws, "Centro de Costo - Detalle");
     const areaTexto = (areaSel || "Todas_las_areas").replace(/[^\w-]+/g, "_");
     const periodoTexto = etiquetaPeriodo.replace(/[^\w-]+/g, "_");
-    XLSX.writeFile(wb, `CentroDeCosto_${areaTexto}_${periodoTexto}.xlsx`);
+    XLSX.writeFile(wb, `CentroDeCosto_Detalle_${areaTexto}_${periodoTexto}.xlsx`);
   }
   // (2026-09-06, a pedido de Fredy) Igual que arriba, pero para el detalle
   // de UN trabajador (el modal que se abre al hacer clic en su fila):
