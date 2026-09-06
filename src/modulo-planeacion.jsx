@@ -3617,6 +3617,27 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     { key: "total", label: "Unidades", align: "right", render: (f) => fmtNum(f.total) },
     { key: "ultima", label: "Última salida", render: (f) => fmtFechaISO(f.ultima) },
   ];
+  // (2026-09-06, a pedido de Fredy) Descarga en Excel de la tabla de
+  // trabajadores por destajo (Trabajador/Área Interna/Unidades/Valor
+  // producido/Costo nómina/Balance) que se ve en Centro de Costo cuando el
+  // área está en modo "Destajo" (Control de Calidad, Zona de Calor, etc.).
+  async function exportarCentroCostoExcel() {
+    const XLSX = await import("xlsx");
+    const rows = filas.map((f) => ({
+      Trabajador: f.nombre,
+      "Área Interna": f.area,
+      Unidades: f.unidades,
+      "Valor producido": f.valorProducido,
+      [`Costo nómina (${etiquetaPeriodo})`]: f.sinSueldo ? "sin sueldo" : f.costo,
+      Balance: f.valorProducido - f.costo,
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Centro de Costo");
+    const areaTexto = (areaSel || "Todas_las_areas").replace(/[^\w-]+/g, "_");
+    const periodoTexto = etiquetaPeriodo.replace(/[^\w-]+/g, "_");
+    XLSX.writeFile(wb, `CentroDeCosto_${areaTexto}_${periodoTexto}.xlsx`);
+  }
   return (
     <div>
       <div style={{ marginBottom: 22 }}>
@@ -3745,6 +3766,11 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                 <KPI icon="🆘" label="Total ayudado" value={fmtMoney(totalAyuda)} color={C.red} bg={C.redBg} sub="trabajadores que no llegaron a su sueldo con destajo" />
                 <KPI icon="📈" label="Total excedente" value={fmtMoney(totalExcedente)} color={C.green} bg={C.greenBg} sub="trabajadores que superaron su sueldo con destajo" />
               </div>
+              {filas.length > 0 && (
+                <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+                  <Btn variant="ghost" onClick={exportarCentroCostoExcel}>📥 Descargar Excel</Btn>
+                </div>
+              )}
               <Tabla vacio="No hay trabajadores en esta área." columnas={columnas} filas={filas} onRowClick={setTrabajadorDetalleAbierto} />
               {trabajadorDetalleAbierto && (
                 <Modal title={`${trabajadorDetalleAbierto.nombre} — ${etiquetaPeriodo}`} onClose={() => setTrabajadorDetalleAbierto(null)} width={780}>
