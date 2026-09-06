@@ -109,7 +109,7 @@
  * directo a la colección "pedidos_activos" — una sola fuente de verdad que
  * tanto Pedidos como Corte leen.
  */
-const { onCall, HttpsError, onRequest } = require("firebase-functions/v2/https");
+const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
@@ -4584,53 +4584,3 @@ exports.cierreAutomaticoNocturno = onSchedule(
     await correrCierreAutomaticoNocturno();
   }
 );
-
-// TEMPORAL (2026-09-06, a pedido de Fredy) -- corrige los 3 registros ya
-// guardados en Nomina de "Bajada de Vinilo" del lote 7254 (Jhoneider,
-// Ariana, Victor), que se habian guardado con la cantidad fisica cruda
-// (sumaban 792, el doble del real 396 de Busint) porque el proceso se
-// repartio entre varios trabajadores usando distintos materiales/precios
-// (Vinilo Alta, DTF, Poliamida). Se recalculan usando "cantidad
-// equivalente" = valor pagado / precio maximo del proceso (390, el mismo
-// que Busint reporta como CostoFT para este Lote+Proceso) -- ver la
-// conversacion sobre "modo reparto" en Registrar Produccion. Protegida por
-// un secreto en la URL porque es de un solo uso; borrar esta funcion (y su
-// entrada en el import de arriba si ya no se usa onRequest en ningun otro
-// lado) despues de confirmar que corrigio los 3 registros correctos.
-exports.corregirRepartoLote7254BajadaVinilo = onRequest(async (req, res) => {
-  if (req.query.secreto !== "yanko-fix-7254-2026-09-06") {
-    res.status(403).send("no autorizado");
-    return;
-  }
-  try {
-    const PRECIO_MAXIMO = 390;
-    const snap = await db.collection("nomina_produccion").where("numLote", "in", ["7254", 7254]).get();
-    const resultados = [];
-    for (const doc of snap.docs) {
-      const d = doc.data();
-      const proc = String(d.proceso || "").trim().toUpperCase().replace(/\s+/g, " ");
-      if (proc !== "BAJADA DE VINILO") continue;
-      const valor = Number(d.total) || 0;
-      const cantidadEquivalente = valor / PRECIO_MAXIMO;
-      await doc.ref.update({
-        cantidad: cantidadEquivalente,
-        cantidadOriginal: d.cantidad != null ? d.cantidad : null,
-        precioUnidad: PRECIO_MAXIMO,
-        modoReparto: true,
-        repartoId: "correccion-manual-7254-bajada-vinilo",
-        corregidoEn: new Date().toISOString(),
-        corregidoPor: "correccion automatica (Claude, a pedido de Fredy, 2026-09-06)",
-      });
-      resultados.push({
-        id: doc.id,
-        trabajadorNombre: d.trabajadorNombre || "",
-        cantidadAnterior: d.cantidad,
-        cantidadNueva: cantidadEquivalente,
-        valor,
-      });
-    }
-    res.status(200).json({ ok: true, corregidos: resultados.length, detalle: resultados });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message || String(err) });
-  }
-});
