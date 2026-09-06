@@ -19,7 +19,7 @@ import {
   onSnapshot,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
-import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential, setPersistence, browserSessionPersistence } from "firebase/auth";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -36,6 +36,24 @@ const functionsClient = getFunctions(fbApp);
 // Cliente de Firebase Authentication — usado por el login real (Fase B de la
 // migración de seguridad) y por los flujos de cambio/reseteo de contraseña.
 const auth = getAuth(fbApp);
+// (2026-09-06, a pedido de Fredy) Antes se usaba la persistencia LOCAL por
+// defecto de Firebase Auth: una vez alguien iniciaba sesion en un
+// navegador, quedaba logueado ahi para siempre (sobrevivia cerrar la
+// pestana, cerrar el navegador, reiniciar el computador) hasta darle
+// "Cerrar sesion" a mano. Eso significaba que si alguien compartia un link
+// de ATLAS y lo abrian en un navegador que ya tenia una sesion activa (la
+// de quien mando el link), entraba derecho como esa persona sin pedir
+// clave. Con persistencia de SESION la sesion solo vive mientras esa
+// pestana especifica siga abierta -- cerrar la pestana/el navegador o
+// abrir una pestana nueva (como al abrir un link) vuelve a pedir usuario y
+// clave. Aplica para TODOS los usuarios de ATLAS, no solo para links
+// compartidos -- y de paso, cualquier sesion vieja que ya estuviera
+// guardada con persistencia local no se recupera sola: a todos les va a
+// pedir loguearse de nuevo la primera vez que abran la app tras este
+// cambio.
+setPersistence(auth, browserSessionPersistence).catch((err) => {
+  console.error("No se pudo configurar la persistencia de sesion de Firebase Auth:", err);
+});
 async function fsGet(col) {
   const snap = await getDocs(collection(db, col));
   return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
