@@ -1462,7 +1462,16 @@ exports.getMovimientosProcesoBusintBD = onCall(
 // hay diferencias, se avisa por correo al lider de esa area (usuario con
 // areaNomina == nombre del area); si el area no tiene lider asignado,
 // cae de respaldo a todos los usuarios con isAdmin.
+// (2026-09-06, a pedido de Fredy) La tabla de entradas de Busint mezcla
+// varias "plantas" (columna Codplanta/Nombre) -- la propia (1002,
+// INDUSTRIAS YANKO BC SAS) y plantas externas/contratistas (ej. 1015 DTF
+// INDUSTRIAS YANKO, 1022 SLOAND GROUP SAS, 1004 JUAN CARLOS MONSALVE para
+// Estampacion). Solo la planta propia tiene trabajadores en Nomina, asi
+// que la auditoria descarta cualquier entrada que no sea de esa planta --
+// si no, marcaria como "falta registrar" produccion que en realidad hizo
+// un tercero y que nunca va a estar en Nomina.
 const AREAS_AUDITORIA_BUSINT = ["ZONA CALOR", "CONTROL DE CALIDAD"];
+const CODPLANTA_PROPIA = 1002;
 
 async function correrAuditoriaBusintVsNomina() {
   const hoy = fechaHoyBogota();
@@ -1482,6 +1491,7 @@ async function correrAuditoriaBusintVsNomina() {
   const produccion = produccionSnap.docs.map((d) => d.data());
   const usuarios = usersSnap.docs.map((d) => d.data());
   const entradasDelMes = entradasRef.filter((f) => {
+    if (Number(f?.Codplanta) !== CODPLANTA_PROPIA) return false; // planta externa/contratista -- no cuenta para Nomina
     const num = f?.Entrada;
     if (num === undefined || num === null) return false;
     const fecha = fechasEntrada.get(String(num));
