@@ -3638,6 +3638,27 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     const periodoTexto = etiquetaPeriodo.replace(/[^\w-]+/g, "_");
     XLSX.writeFile(wb, `CentroDeCosto_${areaTexto}_${periodoTexto}.xlsx`);
   }
+  // (2026-09-06, a pedido de Fredy) Igual que arriba, pero para el detalle
+  // de UN trabajador (el modal que se abre al hacer clic en su fila):
+  // Fecha/Lote/Proceso/Referencia/Cantidad/Total.
+  async function exportarDetalleTrabajadorExcel() {
+    if (!trabajadorDetalleAbierto) return;
+    const XLSX = await import("xlsx");
+    const rows = registrosTrabajadorDetalle.map((f) => ({
+      Fecha: f.fecha ? fmtFechaISO(f.fecha) : "",
+      Lote: f.numLote || "",
+      Proceso: f.proceso || "",
+      Referencia: f.referencia || "",
+      Cantidad: f.cantidad,
+      Total: f.total,
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Detalle");
+    const nombreTexto = (trabajadorDetalleAbierto.nombre || "trabajador").replace(/[^\w-]+/g, "_");
+    const periodoTexto = etiquetaPeriodo.replace(/[^\w-]+/g, "_");
+    XLSX.writeFile(wb, `Detalle_${nombreTexto}_${periodoTexto}.xlsx`);
+  }
   return (
     <div>
       <div style={{ marginBottom: 22 }}>
@@ -3774,8 +3795,13 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
               <Tabla vacio="No hay trabajadores en esta área." columnas={columnas} filas={filas} onRowClick={setTrabajadorDetalleAbierto} />
               {trabajadorDetalleAbierto && (
                 <Modal title={`${trabajadorDetalleAbierto.nombre} — ${etiquetaPeriodo}`} onClose={() => setTrabajadorDetalleAbierto(null)} width={780}>
-                  <div style={{ fontSize: 11, color: C.slate, marginBottom: 12 }}>
-                    {trabajadorDetalleAbierto.area} — {fmtNum(trabajadorDetalleAbierto.unidades)} unidades, {fmtMoney(trabajadorDetalleAbierto.valorProducido)} producidos en total este período.
+                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
+                    <div style={{ fontSize: 11, color: C.slate }}>
+                      {trabajadorDetalleAbierto.area} — {fmtNum(trabajadorDetalleAbierto.unidades)} unidades, {fmtMoney(trabajadorDetalleAbierto.valorProducido)} producidos en total este período.
+                    </div>
+                    {registrosTrabajadorDetalle.length > 0 && (
+                      <Btn variant="ghost" onClick={exportarDetalleTrabajadorExcel}>📥 Descargar Excel</Btn>
+                    )}
                   </div>
                   <Tabla
                     vacio="Sin registros de producción en este período."
