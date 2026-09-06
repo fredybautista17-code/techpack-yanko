@@ -4287,6 +4287,94 @@ function AuditoriaBusintNominaPanel({ area, currentUser }) {
   );
 }
 
+// (2026-09-06, a pedido de Fredy) Pantalla "Mi Dia" para personal de
+// Nomina/Talento Humano que revisa la Auditoria Busint vs Nomina de TODAS
+// las areas (no tiene un Area Interna fija como una lider) -- ej. Maria
+// Fernanda Paez, Yuleisi Virginia. Se activa con el mismo checkbox
+// "Entrar directo a Areas (Nomina)" (landingAreas) que ya existe en
+// Usuarios -- ver "isNominaAreasPura" en App.js. En vez de entrar al
+// modulo Areas completo, cae aqui: elige el area con los botones de
+// arriba y ve directo su auditoria, sin tener que navegar por pestanas.
+export function MiDiaNominaStandalone({ currentUser, onLogout }) {
+  const [areas, setAreas] = useState([]);
+  const [auditoriaHistorial, setAuditoriaHistorial] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [areaSel, setAreaSel] = useState(null);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "nomina_areas"), (snap) => {
+      const lista = snap.docs.map((d) => ({ ...d.data(), id: d.id })).sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
+      setAreas(lista);
+      setLoading(false);
+      setAreaSel((prev) => prev || lista.find((a) => AREAS_CON_AUDITORIA_BUSINT.includes(a.nombre))?.nombre || lista[0]?.nombre || null);
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "centro_costo_auditoria_busint"), (snap) => {
+      setAuditoriaHistorial(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  const tieneAuditoria = (nombre) => AREAS_CON_AUDITORIA_BUSINT.includes(nombre) || auditoriaHistorial.some((h) => h.area === nombre);
+  if (loading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.canvas }}>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>☀️</div>
+          <div style={{ color: C.slate }}>Cargando Mi Dia...</div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 32px", background: C.ink }}>
+        <div style={{ flex: 1, fontSize: 14, fontWeight: 800, color: C.white }}>☀️ Mi Dia — {currentUser?.name}</div>
+        {onLogout && (
+          <button onClick={onLogout} style={{ background: "transparent", border: "none", cursor: "pointer", color: "rgba(232,93,74,0.85)", fontWeight: 700, fontSize: 12 }}>
+            ⏏ Cerrar sesion
+          </button>
+        )}
+      </div>
+      <div style={{ padding: "28px 32px" }}>
+        <div style={{ maxWidth: 1400, margin: "0 auto" }}>
+          <div style={{ marginBottom: 22 }}>
+            <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>☀️ Mi Dia</h2>
+            <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>Elige el area para ver su Auditoria Busint vs Nomina.</p>
+          </div>
+          {!areas.length ? (
+            <div style={{ background: C.white, borderRadius: 14, padding: 24, border: `1px solid ${C.border}`, color: C.slate, fontSize: 13 }}>
+              Todavia no hay ninguna Area Interna creada — creala en Nomina → Administrativo → Area Interna.
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 8, marginBottom: 22, flexWrap: "wrap" }}>
+                {areas.map((a) => (
+                  <button
+                    key={a.id}
+                    onClick={() => setAreaSel(a.nombre)}
+                    style={{ padding: "9px 20px", borderRadius: 999, border: `1.5px solid ${areaSel === a.nombre ? C.violet : C.border}`, background: areaSel === a.nombre ? C.violet : C.white, color: areaSel === a.nombre ? "#fff" : C.slate, fontWeight: 800, fontSize: 13, cursor: "pointer", transition: "all 0.15s" }}
+                  >
+                    {a.nombre}
+                  </button>
+                ))}
+              </div>
+              {tieneAuditoria(areaSel) ? (
+                <AuditoriaBusintNominaPanel area={areaSel} currentUser={currentUser} />
+              ) : (
+                <div style={{ background: C.white, borderRadius: 14, padding: 24, border: `1px solid ${C.border}`, color: C.slate, fontSize: 13 }}>
+                  Esta area todavia no tiene corridas de auditoria. Por ahora corre automaticamente solo para Zona Calor y Control de Calidad -- un administrador puede correrla manualmente para otra area desde Areas → Centro de Costo Cierre.
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CentroCostoCierreView({ area, trabajadores, produccion, currentUser }) {
   const hoy = today();
   const [periodo, setPeriodo] = useState("dia"); // "dia" | "mes" | "anio"

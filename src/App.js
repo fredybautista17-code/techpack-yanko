@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import ModuloCorte from "./modulo-corte";
 import ModuloContabilidad from "./modulo-contabilidad";
-import ModuloPlaneacion, { MiDiaStandalone, ProgramadorProcesosStandalone, AreasStandalone } from "./modulo-planeacion";
+import ModuloPlaneacion, { MiDiaStandalone, ProgramadorProcesosStandalone, AreasStandalone, MiDiaNominaStandalone } from "./modulo-planeacion";
 import ModuloPlanta from "./modulo-planta";
 import ModuloBodega from "./modulo-bodega";
 import ModuloNomina from "./modulo-nomina";
@@ -11189,12 +11189,13 @@ function AppInner() {
     !canAccessInformes;
   // (2026-09-06, a pedido de Fredy) Mismo atajo de pantalla completa que
   // "Planeador puro"/"Contabilidad pura" arriba, pero para personal de
-  // Nómina que revisa la Auditoría Busint vs Nómina de TODAS las áreas
-  // (no es líder de una sola área) -- ej. María Fernanda Páez, Yuleisi
-  // Virginia. Se activa marcando el checkbox "Entrar directo a Áreas
-  // (Nómina)" en Usuarios (campo landingAreas). No se le fija un Área
-  // Interna (se deja vacía en su usuario) para que le salga el selector
-  // de todas las áreas en vez de quedar fija a una sola.
+  // Nómina/Talento Humano que revisa la Auditoría Busint vs Nómina de
+  // TODAS las áreas (no es líder de una sola área) -- ej. María Fernanda
+  // Páez, Yuleisi Virginia. Se activa marcando el checkbox "Entrar
+  // directo a Áreas (Nómina)" en Usuarios (campo landingAreas). No se le
+  // fija un Área Interna (se deja vacía en su usuario). En vez de entrar
+  // al módulo Áreas completo, cae en "Mi Día" (MiDiaNominaStandalone):
+  // elige el área con botones y ve directo su auditoría.
   const isNominaAreasPura = !!currentUser?.landingAreas && !currentUser?.isAdmin && canAccessAreas;
   if (appState === "loading") return <LoadingScreen message="Conectando con Firebase..." />;
   if (appState === "login" || !currentUser) return <LoginScreen externalError={loginError} />;
@@ -11205,7 +11206,7 @@ function AppInner() {
     return <ModuloContabilidad currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (isNominaAreasPura) {
-    return <AreasStandalone currentUser={currentUser} puedeCentroCosto={canAccessAreasCentroCosto} puedeEstadisticas={canAccessAreasEstadisticas} puedeReclamos={canAccessAreasReclamos} puedeProgramador={canAccessAreasProgramador} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <MiDiaNominaStandalone currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (canAccessCorte && moduloActivo === "corte") {
     return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} onVolver={() => setModuloActivo("diseno")} puedeAprobarCorte={perms.aprobarCorte} />;
