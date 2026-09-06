@@ -1448,14 +1448,13 @@ exports.getMovimientosProcesoBusintBD = onCall(
 // (2026-09-06, a pedido de Fredy) Auditoria Busint vs Nomina: en Zona Calor
 // y Control de Calidad, si Busint ya registro una ENTRADA real a un
 // proceso de esa area, esa cantidad tiene que quedar registrada en Nomina
-// (Registrar Produccion) -- si no, alguien no metio su produccion. No es
-// una ventana de "ultimos N dias": compara el TOTAL acumulado de Busint
-// contra el TOTAL acumulado en nomina_produccion por Lote+Proceso (ambos
-// lados se van sumando con el tiempo de la misma forma), asi que cualquier
-// faltante -- sin importar de que dia sea -- se detecta y se sigue viendo
-// hasta que alguien lo registre. Para no arrastrar para siempre lotes
-// viejos ya cerrados, solo se avisa de combinaciones Lote+Proceso cuya
-// ULTIMA entrada en Busint sea de los ultimos AUDITORIA_BUSINT_DIAS_RELEVANCIA dias.
+// (Registrar Produccion) -- si no, alguien no metio su produccion.
+// (2026-09-06, ajustado a pedido de Fredy) Compara "lo que lleva del mes":
+// tanto las entradas de Busint como lo registrado en nomina_produccion se
+// filtran al mes en curso (dia 1 hasta hoy, hora Bogota) antes de sumar por
+// Lote+Proceso -- no es un acumulado historico ni una ventana movil de
+// dias. Cada mes arranca en cero: una diferencia que ya se corrigio en un
+// mes anterior no se vuelve a arrastrar al mes siguiente.
 // Que procesos le tocan a cada area sale del mismo campo que ya existe en
 // el Area Interna ("Procesos que cuentan para Centro de Costo") -- ver
 // AreaNominaModal en src/modulo-nomina.jsx. El resultado se guarda en
@@ -1464,13 +1463,10 @@ exports.getMovimientosProcesoBusintBD = onCall(
 // areaNomina == nombre del area); si el area no tiene lider asignado,
 // cae de respaldo a todos los usuarios con isAdmin.
 const AREAS_AUDITORIA_BUSINT = ["ZONA CALOR", "CONTROL DE CALIDAD"];
-const AUDITORIA_BUSINT_DIAS_RELEVANCIA = 30;
 
 async function correrAuditoriaBusintVsNomina() {
   const hoy = fechaHoyBogota();
-  const limite = new Date();
-  limite.setDate(limite.getDate() - AUDITORIA_BUSINT_DIAS_RELEVANCIA);
-  const fechaLimiteISO = limite.toISOString().slice(0, 10);
+  const mesActualISO = hoy.slice(0, 7); // "2026-09" -- lo que lleva del mes en curso (Bogota)
 
   const [areasSnap, trabajadoresSnap, produccionSnap, usersSnap, entradasRef, fechasEntrada] = await Promise.all([
     db.collection("nomina_areas").get(),
@@ -1485,7 +1481,13 @@ async function correrAuditoriaBusintVsNomina() {
   const trabajadores = trabajadoresSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
   const produccion = produccionSnap.docs.map((d) => d.data());
   const usuarios = usersSnap.docs.map((d) => d.data());
-  const entradas = resumenMovimientosPorLoteProceso(entradasRef, fechasEntrada, "Entrada");
+  const entradasDelMes = entradasRef.filter((f) => {
+    const num = f?.Entrada;
+    if (num === undefined || num === null) return false;
+    const fecha = fechasEntrada.get(String(num));
+    return !!fecha && fecha.slice(0, 7) === mesActualISO;
+  });
+  const entradas = resumenMovimientosPorLoteProceso(entradasDelMes, fechasEntrada, "Entrada");
 
   const resultados = [];
   for (const nombreArea of AREAS_AUDITORIA_BUSINT) {
@@ -1501,6 +1503,7 @@ async function correrAuditoriaBusintVsNomina() {
     const registradoPorClave = new Map();
     produccion.forEach((p) => {
       if (!idsTrabajadoresArea.has(p.trabajadorId)) return;
+      if (String(p.fecha || "").slice(0, 7) !== mesActualISO) return;
       const numLote = String(p.numLote || "").trim();
       const proceso = String(p.proceso || "").trim();
       if (!numLote || !proceso) return;
@@ -1511,7 +1514,6 @@ async function correrAuditoriaBusintVsNomina() {
     const discrepancias = [];
     entradas.forEach((e) => {
       if (!procesosArea.has(e.proceso)) return;
-      if (e.ultima < fechaLimiteISO) return;
       const clave = `${e.numLote}||${e.proceso}`;
       const registrado = registradoPorClave.get(clave) || 0;
       const diferencia = e.total - registrado;
@@ -1524,6 +1526,7 @@ async function correrAuditoriaBusintVsNomina() {
     await db.collection("centro_costo_auditoria_busint").doc(`${idNormalizado(nombreArea)}__${hoy}`).set({
       area: nombreArea,
       fecha: hoy,
+      periodo: mesActualISO,
       generadoEn: new Date().toISOString(),
       totalDiscrepancias: discrepancias.length,
       discrepancias,
