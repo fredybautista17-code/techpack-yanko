@@ -2814,6 +2814,20 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   // supere el costo teórico de Busint. Pidió el usuario quitar la tabla fija
   // de precios porque no refleja lo que de verdad se negocia caso a caso.
   const [precioReal, setPrecioReal] = useState("");
+  // (2026-09-06, a pedido de Fredy) "Modo reparto": para procesos como
+  // Bajada de Vinilo que en la practica se reparten entre varios
+  // trabajadores usando distintos materiales/precios (ej. lote 7254:
+  // Vinilo Alta a $300 y $215, DTF a $90, Poliamida a $85), la CANTIDAD
+  // fisica de cada quien no es comparable 1 a 1 contra lo que Busint
+  // reporta para el proceso completo -- pero el VALOR si reconcilia
+  // exacto. En este modo cada trabajador no escribe una cantidad sino el
+  // VALOR que se le paga, y el sistema calcula la "cantidad equivalente"
+  // = valor / precio maximo del proceso (el mismo tope que ya se ve
+  // arriba, ej. Busint en vivo). La SUMA de esas equivalentes si cuadra
+  // con el total real de Busint -- sirve para el tope y las estadisticas
+  // por lote/proceso, no para saber la cantidad fisica de cada persona.
+  const [modoReparto, setModoReparto] = useState(false);
+  const [repartoFilas, setRepartoFilas] = useState([]); // [{ id, trabajadorId, valor }]
   const [guardando, setGuardando] = useState(false);
   // Costo teórico de confección de la referencia (costoFT en Busint) — se
   // usa como tope: el precio/unidad configurado para el proceso nunca puede
@@ -3058,6 +3072,26 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   const totalRegistradoLoteProceso = otrosRegistrosLoteProceso.reduce((acc, p) => acc + (Number(p.cantidad) || 0), 0);
   const cantidadDisponibleLoteProceso = cantCortadaLote > 0 ? Math.max(0, cantCortadaLote - totalRegistradoLoteProceso) : null;
   const excedeCantidadLote = !!(loteAsociado && proceso && cantCortadaLote > 0 && Number(cantidad) > 0 && (totalRegistradoLoteProceso + Number(cantidad)) > cantCortadaLote);
+  // (2026-09-06, a pedido de Fredy) Derivados del "modo reparto" -- ver
+  // comentario junto al estado modoReparto/repartoFilas mas arriba.
+  // precioMaximoReparto es el mismo precio tope que ya se calcula en
+  // costoAplicaA (Busint en vivo > Lote+Proceso > Referencia+Proceso >
+  // Proceso generico) -- se reusa como divisor valor/cantidad.
+  const precioMaximoReparto = costoAplicaA ? Number(costoAplicaA.costoFT) || 0 : 0;
+  function cantidadEquivalenteReparto(valor) {
+    return precioMaximoReparto > 0 ? (Number(valor) || 0) / precioMaximoReparto : 0;
+  }
+  const repartoFilasValidas = repartoFilas.filter((f) => f.trabajadorId && Number(f.valor) > 0);
+  const sumaValorReparto = repartoFilasValidas.reduce((acc, f) => acc + (Number(f.valor) || 0), 0);
+  const sumaEquivalenteReparto = repartoFilasValidas.reduce((acc, f) => acc + cantidadEquivalenteReparto(f.valor), 0);
+  // Igual que registroPrevio, pero por cada fila del reparto -- no se le
+  // puede pagar dos veces a la misma persona este lote+proceso.
+  const repartoConDuplicado = loteAsociado && proceso
+    ? repartoFilasValidas.find((f) => (produccionCompleta || []).some((p) => p.numLote === loteAsociado.numLote && p.proceso === proceso && p.trabajadorId === f.trabajadorId))
+    : null;
+  // Tolerancia de 1 unidad equivalente por redondeos de valores en pesos.
+  const excedeCantidadLoteReparto = !!(loteAsociado && proceso && cantCortadaLote > 0 && (totalRegistradoLoteProceso + sumaEquivalenteReparto) > cantCortadaLote + 1);
+  const puedeGuardarReparto = modoReparto && precioMaximoReparto > 0 && repartoFilasValidas.length > 0 && !guardando && !loteBloqueado && !repartoConDuplicado && !excedeCantidadLoteReparto;
   // (2026-09-03, a pedido de Fredy) Aviso de posible duplicado: mismo
   // trabajador + mismo proceso + misma cantidad + mismo total ya
   // registrado en los últimos 7 días -- a diferencia de
@@ -3191,6 +3225,41 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
       setReferencia("");
       setCantidad("");
       setPrecioReal("");
+      setCostoTeorico(null);
+      setNumLote("");
+      setLoteInfo(null);
+    } finally {
+      setGuardando(false);
+    }
+  }
+  async function guardarReparto() {
+    if (!puedeGuardarReparto) return;
+    setGuardando(true);
+    try {
+      const repartoId = uid();
+      for (const f of repartoFilasValidas) {
+        const trabajador = trabajadores.find((t) => t.id === f.trabajadorId);
+        await onGuardar({
+          id: uid(),
+          trabajadorId: f.trabajadorId,
+          trabajadorNombre: trabajador?.nombre || "",
+          fecha,
+          proceso,
+          referencia: referencia.trim(),
+          numLote: loteInfo?.encontrada && loteInfo.referencia === referencia.trim() ? loteInfo.numLote : null,
+          numPedido: loteInfo?.encontrada && loteInfo.referencia === referencia.trim() ? loteInfo.numPedido : null,
+          cantidad: cantidadEquivalenteReparto(f.valor),
+          precioUnidad: precioMaximoReparto,
+          total: Number(f.valor) || 0,
+          modoReparto: true,
+          repartoId,
+          creadoPor: currentUser?.name || currentUser?.username || "",
+          creadoEn: new Date().toISOString(),
+        });
+      }
+      setReferencia("");
+      setRepartoFilas([]);
+      setModoReparto(false);
       setCostoTeorico(null);
       setNumLote("");
       setLoteInfo(null);
@@ -3341,6 +3410,62 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
         {movimientosLote?.error && (
           <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>No se pudo verificar contra Busint si ya hay una entrada de este proceso: {movimientosLote.error}</div>
         )}
+        {proceso && (
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12, color: C.ink, fontWeight: 600, marginBottom: 10 }}>
+            <input type="checkbox" checked={modoReparto} onChange={(e) => { setModoReparto(e.target.checked); setRepartoFilas([]); }} />
+            Este proceso se repartió entre varios trabajadores (distintos materiales/precios)
+          </label>
+        )}
+        {modoReparto ? (
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>
+              El trabajador de arriba no se usa en este modo -- agrega cada trabajador con su valor abajo. La cantidad de cada uno se calcula sola dividiendo el valor entre el precio máximo (no es la cantidad física real de esa persona, solo sirve para no pasarse del tope y para las estadísticas del lote/proceso).
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 8 }}>
+              Precio máximo (divisor): {precioMaximoReparto > 0 ? fmtMoney(precioMaximoReparto) : "Sin precio máximo todavía -- no se puede repartir"}
+            </div>
+            {repartoFilas.map((f) => {
+              const trabajadorFila = trabajadores.find((t) => t.id === f.trabajadorId);
+              const yaRegistrado = !!(loteAsociado && proceso && f.trabajadorId && (produccionCompleta || []).some((p) => p.numLote === loteAsociado.numLote && p.proceso === proceso && p.trabajadorId === f.trabajadorId));
+              return (
+                <div key={f.id} style={{ marginBottom: 10 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr auto", gap: 8, alignItems: "end" }}>
+                    <Field label="Trabajador">
+                      <FSel value={f.trabajadorId} onChange={(v) => setRepartoFilas((rs) => rs.map((r) => (r.id === f.id ? { ...r, trabajadorId: v } : r)))} options={trabajadoresActivos.map((t) => ({ value: t.id, label: t.nombre }))} />
+                    </Field>
+                    <Field label="Valor Precio Total"><FInput type="number" value={f.valor} onChange={(v) => setRepartoFilas((rs) => rs.map((r) => (r.id === f.id ? { ...r, valor: v } : r)))} placeholder="Lo que se le paga en total" /></Field>
+                    <div style={{ marginBottom: 14 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>Cant. equivalente</div>
+                      <div style={{ padding: "9px 12px", background: C.canvas, borderRadius: 8, fontWeight: 800, color: C.ink, fontSize: 13 }}>{precioMaximoReparto > 0 ? cantidadEquivalenteReparto(f.valor).toFixed(2) : "—"}</div>
+                    </div>
+                    <Btn small variant="secondary" onClick={() => setRepartoFilas((rs) => rs.filter((r) => r.id !== f.id))}>✕</Btn>
+                  </div>
+                  {yaRegistrado && (
+                    <div style={{ fontSize: 11, color: "#b91c1c", fontWeight: 700, marginTop: 2 }}>
+                      A {trabajadorFila?.nombre || "este trabajador"} ya se le pagó este proceso en este lote -- no se le puede pagar dos veces.
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <Btn small variant="secondary" onClick={() => setRepartoFilas((rs) => [...rs, { id: uid(), trabajadorId: "", valor: "" }])} disabled={precioMaximoReparto <= 0}>+ Agregar trabajador</Btn>
+            {repartoFilasValidas.length > 0 && (
+              <div style={{ fontSize: 12, color: C.slate, marginTop: 10 }}>
+                Suma repartida: {fmtMoney(sumaValorReparto)} → {sumaEquivalenteReparto.toFixed(2)} unidades equivalentes{cantCortadaLote > 0 && ` de ${etiquetaCantCortada}`}.
+              </div>
+            )}
+            {excedeCantidadLoteReparto && (
+              <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginTop: 6 }}>
+                Esa suma ({fmtNum(totalRegistradoLoteProceso)} ya registradas + {sumaEquivalenteReparto.toFixed(2)} de este reparto) supera {etiquetaCantCortada} -- no se puede guardar.
+              </div>
+            )}
+            {repartoConDuplicado && (
+              <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginTop: 6 }}>
+                Ya hay una fila con un trabajador que ya cobró este proceso en este lote -- revisa arriba antes de guardar.
+              </div>
+            )}
+          </div>
+        ) : (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12, alignItems: "end" }}>
           <Field label="Cantidad"><FInput type="number" value={cantidad} onChange={setCantidad} /></Field>
           <Field label="Precio real (por unidad)"><FInput type="number" value={precioReal} onChange={setPrecioReal} placeholder="Lo que se le paga" /></Field>
@@ -3355,13 +3480,14 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
             <div style={{ padding: "9px 12px", background: C.canvas, borderRadius: 8, fontWeight: 800, color: C.ink, fontSize: 14 }}>{fmtMoney(total)}</div>
           </div>
         </div>
+        )}
         {!proceso && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>Selecciona un proceso.</div>}
         {excedeCostoTeorico && (
           <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginBottom: 10 }}>
             Ese precio ({fmtMoney(Number(precioReal))}) supera el máximo permitido para este proceso: {fmtMoney(costoAplicaA.costoFT)}. No se puede guardar.
           </div>
         )}
-        <Btn onClick={guardar} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Registrar Producción"}</Btn>
+        <Btn onClick={modoReparto ? guardarReparto : guardar} disabled={modoReparto ? !puedeGuardarReparto : !puedeGuardar}>{guardando ? "Guardando..." : modoReparto ? "Registrar Reparto" : "Registrar Producción"}</Btn>
       </div>
       <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>ÚLTIMOS REGISTROS</div>
       <Tabla
