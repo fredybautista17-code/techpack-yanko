@@ -1458,11 +1458,12 @@ function resumenMovimientosPorLoteProceso(filasRef, fechasPorNumero, campoNumero
     const fecha = num !== undefined && num !== null ? fechasPorNumero.get(String(num)) : undefined;
     if (!fecha) return; // sin cabecera/fecha encontrada — no sirve para cumplido/vencido, se ignora
     const clave = `${numLote}||${proceso}`;
-    if (!porClave.has(clave)) porClave.set(clave, { numLote: String(numLote), proceso, primera: fecha, ultima: fecha, total: 0 });
+    if (!porClave.has(clave)) porClave.set(clave, { numLote: String(numLote), proceso, primera: fecha, ultima: fecha, total: 0, valorTotal: 0 });
     const r = porClave.get(clave);
     if (fecha < r.primera) r.primera = fecha;
     if (fecha > r.ultima) r.ultima = fecha;
     r.total += Number(f?.Total) || 0;
+    r.valorTotal += Number(f?.Valortotal) || 0;
   });
   return [...porClave.values()];
 }
@@ -1591,28 +1592,63 @@ async function correrAuditoriaBusintVsNomina() {
       const proceso = String(p.proceso || "").trim();
       if (!numLote || !proceso) return;
       const clave = `${numLote}||${proceso}`;
-      registradoPorClave.set(clave, (registradoPorClave.get(clave) || 0) + (Number(p.cantidad) || 0));
+      const actual = registradoPorClave.get(clave) || { cantidad: 0, valor: 0, ultima: null };
+      actual.cantidad += Number(p.cantidad) || 0;
+      actual.valor += Number(p.total) || 0;
+      const fechaProd = String(p.fecha || "");
+      if (fechaProd && (!actual.ultima || fechaProd > actual.ultima)) actual.ultima = fechaProd;
+      registradoPorClave.set(clave, actual);
     });
 
-    const discrepancias = [];
+    // (2026-09-06, ampliado a pedido de Fredy) Antes solo se recorrian las
+    // entradas de Busint -- un lote pagado en Nomina que Busint nunca
+    // registro (ej. Linda, lotes 7127/7128, Proceso Adicional Cordon) era
+    // invisible para la auditoria. Ahora se recorren TODAS las claves
+    // lote+proceso que aparecen en Busint O en Nomina, y ademas se compara
+    // tambien el VALOR en pesos -- un caso real (lote 7238) tenia la
+    // cantidad correcta pero se pago con la tarifa de otro proceso.
+    const busintPorClave = new Map();
     entradas.forEach((e) => {
       if (!procesosArea.has(e.proceso)) return;
-      const clave = `${e.numLote}||${e.proceso}`;
-      const registrado = registradoPorClave.get(clave) || 0;
-      const diferencia = e.total - registrado;
-      if (diferencia !== 0) {
-        discrepancias.push({
-          numLote: e.numLote,
-          proceso: e.proceso,
-          entradaBusint: e.total,
-          registradoNomina: registrado,
-          diferencia,
-          tipo: diferencia > 0 ? "falta_registrar" : "sobre_registrado",
-          ultimaEntrada: e.ultima,
-        });
-      }
+      busintPorClave.set(`${e.numLote}||${e.proceso}`, e);
     });
-    discrepancias.sort((a, b) => Math.abs(b.diferencia) - Math.abs(a.diferencia));
+    const clavesRegistradas = [...registradoPorClave.keys()].filter((clave) => procesosArea.has(clave.split("||")[1]));
+    const todasLasClaves = new Set([...busintPorClave.keys(), ...clavesRegistradas]);
+
+    const discrepancias = [];
+    todasLasClaves.forEach((clave) => {
+      const [numLote, proceso] = clave.split("||");
+      const busint = busintPorClave.get(clave);
+      const registrado = registradoPorClave.get(clave) || { cantidad: 0, valor: 0, ultima: null };
+      const entradaBusint = busint?.total || 0;
+      const entradaBusintValor = busint?.valorTotal || 0;
+      const diferencia = entradaBusint - registrado.cantidad;
+      const diferenciaValor = entradaBusintValor - registrado.valor;
+      let tipo = null;
+      if (!busint && registrado.cantidad > 0) {
+        tipo = "sin_entrada_busint";
+      } else if (diferencia > 0) {
+        tipo = "falta_registrar";
+      } else if (diferencia < 0) {
+        tipo = "sobre_registrado";
+      } else if (diferenciaValor !== 0) {
+        tipo = "diferencia_valor";
+      }
+      if (!tipo) return;
+      discrepancias.push({
+        numLote,
+        proceso,
+        entradaBusint,
+        entradaBusintValor,
+        registradoNomina: registrado.cantidad,
+        registradoNominaValor: registrado.valor,
+        diferencia,
+        diferenciaValor,
+        tipo,
+        ultimaEntrada: busint?.ultima || registrado.ultima || null,
+      });
+    });
+    discrepancias.sort((a, b) => (Math.abs(b.diferencia) - Math.abs(a.diferencia)) || (Math.abs(b.diferenciaValor) - Math.abs(a.diferenciaValor)));
 
     await db.collection("centro_costo_auditoria_busint").doc(`${idNormalizado(nombreArea)}__${hoy}`).set({
       area: nombreArea,
@@ -1631,19 +1667,24 @@ async function correrAuditoriaBusintVsNomina() {
       }
       if (destinatarios.length) {
         const transporte = crearTransporte();
+        const ETIQUETAS_AUDITORIA = {
+          falta_registrar: { texto: "Falta registrar", color: "#b91c1c" },
+          sobre_registrado: { texto: "Sobre-registrado", color: "#b45309" },
+          sin_entrada_busint: { texto: "Sin entrada en Busint", color: "#7c3aed" },
+          diferencia_valor: { texto: "Diferencia de valor", color: "#2563eb" },
+        };
+        const fmtMoneyCorreo = (v) => `$${Math.round(Number(v) || 0).toLocaleString("es-CO")}`;
         const filasHtml = discrepancias
           .map((d) => {
-            const esFalta = d.tipo === "falta_registrar";
-            const etiqueta = esFalta ? "Falta registrar" : "Sobre-registrado";
-            const color = esFalta ? "#b91c1c" : "#b45309";
-            return `<tr><td>${d.numLote}</td><td>${d.proceso}</td><td style="color:${color}"><b>${etiqueta}</b></td><td style="text-align:right">${d.entradaBusint}</td><td style="text-align:right">${d.registradoNomina}</td><td style="text-align:right"><b style="color:${color}">${Math.abs(d.diferencia)}</b></td></tr>`;
+            const et = ETIQUETAS_AUDITORIA[d.tipo] || { texto: d.tipo, color: "#334155" };
+            return `<tr><td>${d.numLote}</td><td>${d.proceso}</td><td style="color:${et.color}"><b>${et.texto}</b></td><td style="text-align:right">${d.entradaBusint}</td><td style="text-align:right">${d.registradoNomina}</td><td style="text-align:right"><b style="color:${et.color}">${Math.abs(d.diferencia)}</b></td><td style="text-align:right">${fmtMoneyCorreo(d.entradaBusintValor)}</td><td style="text-align:right">${fmtMoneyCorreo(d.registradoNominaValor)}</td><td style="text-align:right"><b style="color:${et.color}">${fmtMoneyCorreo(Math.abs(d.diferenciaValor))}</b></td></tr>`;
           })
           .join("");
         await mandarCorreo(
           transporte,
           destinatarios,
           `ATLAS -- ${nombreArea}: ${discrepancias.length} diferencia(s) de Nomina vs Busint`,
-          `<p>En <b>${nombreArea}</b>, Busint tiene entradas que no calzan con lo registrado en Nomina (Registrar Produccion) -- ya sea porque falta registrar produccion, o porque quedo registrado de mas (posible doble registro). Revisa estos lotes/procesos:</p><table border="1" cellpadding="6" style="border-collapse:collapse"><tr><th>Lote</th><th>Proceso</th><th>Tipo</th><th>Entrada Busint</th><th>Registrado Nomina</th><th>Diferencia</th></tr>${filasHtml}</table>`
+          `<p>En <b>${nombreArea}</b>, Busint y Nomina (Registrar Produccion) no calzan -- puede ser que falte registrar produccion, que haya quedado registrada de mas, que se haya pagado sin que Busint tenga la entrada, o que la cantidad este bien pero el valor pagado no. Revisa estos lotes/procesos:</p><table border="1" cellpadding="6" style="border-collapse:collapse"><tr><th>Lote</th><th>Proceso</th><th>Tipo</th><th>Cant. Busint</th><th>Cant. Nomina</th><th>Dif. Cant.</th><th>Valor Busint</th><th>Valor Nomina</th><th>Dif. Valor</th></tr>${filasHtml}</table>`
         );
       } else {
         logger.warn(`Auditoria Busint vs Nomina: ${discrepancias.length} diferencia(s) en "${nombreArea}" pero no se encontro a quien avisar (sin lider con areaNomina y sin admins con correo).`);

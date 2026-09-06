@@ -57,6 +57,19 @@ function fmtNum(n) {
 function fmtMoney(n) {
   return "$" + Number(n || 0).toLocaleString("es-CO", { maximumFractionDigits: 0 });
 }
+// (2026-09-06, a pedido de Fredy) Etiqueta + color de cada tipo de
+// diferencia que puede salir en la Auditoria Busint vs Nomina -- ver el
+// comentario junto a "discrepancias" en functions/index.js para el detalle
+// de como se calcula cada tipo.
+function infoTipoAuditoria(tipo) {
+  const M = {
+    falta_registrar: { texto: "Falta registrar", icono: "❌", color: C.red },
+    sobre_registrado: { texto: "Sobre-registrado", icono: "⚠️", color: C.amber },
+    sin_entrada_busint: { texto: "Sin entrada en Busint", icono: "🟣", color: C.violet },
+    diferencia_valor: { texto: "Diferencia de valor", icono: "💲", color: C.blue },
+  };
+  return M[tipo] || { texto: tipo, icono: "❓", color: C.slate };
+}
 // ─── UI ATOMS ─────────────────────────────────────────────────────────────────
 function Btn({ children, onClick, variant = "primary", small, disabled }) {
   const S = {
@@ -4425,7 +4438,7 @@ function CentroCostoCierreView({ area, trabajadores, produccion, currentUser }) 
         </div>
       )}
       {auditoriaDetalleAbierto && (
-        <Modal title={`Auditoría Busint vs Nómina — ${auditoriaDetalleAbierto.area} — ${auditoriaDetalleAbierto.fecha}`} onClose={() => setAuditoriaDetalleAbierto(null)} width={780}>
+        <Modal title={`Auditoría Busint vs Nómina — ${auditoriaDetalleAbierto.area} — ${auditoriaDetalleAbierto.fecha}`} onClose={() => setAuditoriaDetalleAbierto(null)} width={1180}>
           {(auditoriaDetalleAbierto.totalDiscrepancias || 0) === 0 ? (
             <div style={{ fontSize: 12, color: C.slate }}>No se encontraron diferencias en esta corrida.</div>
           ) : (
@@ -4434,15 +4447,17 @@ function CentroCostoCierreView({ area, trabajadores, produccion, currentUser }) 
               columnas={[
                 { key: "numLote", label: "Lote" },
                 { key: "proceso", label: "Proceso" },
-                { key: "tipo", label: "Tipo", render: (f) => (
-                    <span style={{ color: f.tipo === "sobre_registrado" ? C.amber : C.red, fontWeight: 700 }}>
-                      {f.tipo === "sobre_registrado" ? "⚠️ Sobre-registrado" : "❌ Falta registrar"}
-                    </span>
-                  ) },
-                { key: "entradaBusint", label: "Entrada Busint", align: "right", render: (f) => fmtNum(f.entradaBusint) },
-                { key: "registradoNomina", label: "Registrado Nómina", align: "right", render: (f) => fmtNum(f.registradoNomina) },
-                { key: "diferencia", label: "Diferencia", align: "right", render: (f) => <strong style={{ color: f.tipo === "sobre_registrado" ? C.amber : C.red }}>{fmtNum(Math.abs(f.diferencia))}</strong> },
-                { key: "ultimaEntrada", label: "Última entrada" },
+                { key: "tipo", label: "Tipo", render: (f) => {
+                    const info = infoTipoAuditoria(f.tipo);
+                    return <span style={{ color: info.color, fontWeight: 700 }}>{info.icono} {info.texto}</span>;
+                  } },
+                { key: "entradaBusint", label: "Cant. Busint", align: "right", render: (f) => fmtNum(f.entradaBusint) },
+                { key: "registradoNomina", label: "Cant. Nómina", align: "right", render: (f) => fmtNum(f.registradoNomina) },
+                { key: "diferencia", label: "Dif. Cant.", align: "right", render: (f) => <strong style={{ color: f.diferencia !== 0 ? infoTipoAuditoria(f.tipo).color : C.slate }}>{fmtNum(Math.abs(f.diferencia))}</strong> },
+                { key: "entradaBusintValor", label: "Valor Busint", align: "right", render: (f) => fmtMoney(f.entradaBusintValor) },
+                { key: "registradoNominaValor", label: "Valor Nómina", align: "right", render: (f) => fmtMoney(f.registradoNominaValor) },
+                { key: "diferenciaValor", label: "Dif. Valor", align: "right", render: (f) => <strong style={{ color: f.diferenciaValor !== 0 ? infoTipoAuditoria(f.tipo).color : C.slate }}>{fmtMoney(Math.abs(f.diferenciaValor))}</strong> },
+                { key: "ultimaEntrada", label: "Última fecha" },
               ]}
               filas={(auditoriaDetalleAbierto.discrepancias || []).map((d, i) => ({ ...d, id: i }))}
             />
