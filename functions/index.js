@@ -3749,7 +3749,7 @@ exports.adminCrearUsuario = onCall(
   { timeoutSeconds: 60, memory: "256MiB" },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
-    const { name, username, password, role, isAdmin, clienteAsociado, areaNomina, procesosPlaneacion } = request.data || {};
+    const { name, username, password, role, isAdmin, clienteAsociado, areaNomina, procesosPlaneacion, landingAreas } = request.data || {};
     const nombreLimpio = String(name || "").trim();
     const usernameNorm = String(username || "").trim().toLowerCase();
     if (!nombreLimpio || !usernameNorm || !password) {
@@ -3799,6 +3799,12 @@ exports.adminCrearUsuario = onCall(
       // que en Nómina → Administrativo → Procesos (colección
       // nomina_precios_proceso, campo "proceso").
       procesosPlaneacion: Array.isArray(procesosPlaneacion) ? procesosPlaneacion.map((p) => String(p)) : [],
+      // (2026-09-06, a pedido de Fredy) Para personal de Nómina que
+      // revisa la Auditoría Busint vs Nómina de TODAS las áreas (ej.
+      // María Fernanda Páez, Yuleisi Virginia) -- con esto en true, en
+      // vez del menú completo entra derecho al módulo Áreas al iniciar
+      // sesión (ver "isNominaAreasPura" en App.js).
+      landingAreas: !!landingAreas,
     });
     return { id: docRef.id };
   }

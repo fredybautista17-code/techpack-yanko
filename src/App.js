@@ -5669,7 +5669,7 @@ function EditNombreModal({ item, tipo, config, onSave, onClose }) {
 function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesosNomina }) {
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState(null);
-  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "", areaNomina: "", procesosPlaneacion: [] });
+  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false });
   const [changePwdId, setChangePwdId] = useState(null);
   const [newPwd, setNewPwd] = useState("");
   const [showPwd, setShowPwd] = useState(false);
@@ -5704,8 +5704,8 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
     }
     setMigrando(false);
   }
-  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "", areaNomina: "", procesosPlaneacion: [] }); setEditUser(null); setShowForm(true); setError(""); }
-  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [] }); setEditUser(u); setShowForm(true); setError(""); }
+  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false }); setEditUser(null); setShowForm(true); setError(""); }
+  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false }); setEditUser(u); setShowForm(true); setError(""); }
   // Crear usuario nuevo pasa por la Cloud Function `adminCrearUsuario` (Fase
   // B): a diferencia de editar, crear SÍ necesita generar una cuenta real de
   // Firebase Auth para que esa persona pueda entrar — eso no lo puede hacer
@@ -5722,7 +5722,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
       if (!form.name) { setError("El nombre es obligatorio."); return; }
       if (form.email && form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) { setError("El correo no parece válido."); return; }
       const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], avatar } : u)));
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, avatar } : u)));
       setShowForm(false);
       return;
     }
@@ -5734,7 +5734,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
     setCreando(true);
     try {
       const llamar = httpsCallable(functionsClient, "adminCrearUsuario");
-      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado, email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [] });
+      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado, email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas });
       setShowForm(false);
     } catch (err) {
       setError(err?.message || "No se pudo crear el usuario.");
@@ -5903,6 +5903,17 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
               <input type="checkbox" checked={form.isAdmin} onChange={(e) => setForm((f) => ({ ...f, isAdmin: e.target.checked }))} /> Acceso de administrador
             </label>
           </div>
+          {/* (2026-09-06, a pedido de Fredy) Para personal de Nómina que
+              revisa la Auditoría Busint vs Nómina de TODAS las áreas (no es
+              líder de una sola área de planta) -- ej. María Fernanda Páez,
+              Yuleisi Virginia. Ver "isNominaAreasPura" en el componente de
+              nivel superior de este archivo. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: T.ink, fontWeight: 600 }}>
+              <input type="checkbox" checked={!!form.landingAreas} onChange={(e) => setForm((f) => ({ ...f, landingAreas: e.target.checked }))} /> Entrar directo a Áreas (Nómina)
+            </label>
+          </div>
+          <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>En vez del menú completo, al entrar cae derecho al módulo Áreas (Centro de Costo Cierre / Auditoría Busint vs Nómina). Deja "Área Interna" vacía arriba para que le salga el selector de TODAS las áreas en vez de quedar fija a una sola -- y verifica que su rol tenga activado el permiso "Centro de Costo" en 🗂️ Áreas (Admin → Roles).</div>
           {error && <div style={{ marginTop: 12, padding: "8px 12px", background: T.coralBg, borderRadius: 8, fontSize: 13, color: T.coral, fontWeight: 600 }}>⚠ {error}</div>}
           <div style={{ display: "flex", gap: 10, marginTop: 16, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => { setShowForm(false); setError(""); }}>Cancelar</Btn>
@@ -11176,6 +11187,15 @@ function AppInner() {
     !canAccessNomina &&
     !canAccessKpis &&
     !canAccessInformes;
+  // (2026-09-06, a pedido de Fredy) Mismo atajo de pantalla completa que
+  // "Planeador puro"/"Contabilidad pura" arriba, pero para personal de
+  // Nómina que revisa la Auditoría Busint vs Nómina de TODAS las áreas
+  // (no es líder de una sola área) -- ej. María Fernanda Páez, Yuleisi
+  // Virginia. Se activa marcando el checkbox "Entrar directo a Áreas
+  // (Nómina)" en Usuarios (campo landingAreas). No se le fija un Área
+  // Interna (se deja vacía en su usuario) para que le salga el selector
+  // de todas las áreas en vez de quedar fija a una sola.
+  const isNominaAreasPura = !!currentUser?.landingAreas && !currentUser?.isAdmin && canAccessAreas;
   if (appState === "loading") return <LoadingScreen message="Conectando con Firebase..." />;
   if (appState === "login" || !currentUser) return <LoginScreen externalError={loginError} />;
   if (isPlaneadorPuro) {
@@ -11183,6 +11203,9 @@ function AppInner() {
   }
   if (isContabilidadPura) {
     return <ModuloContabilidad currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+  }
+  if (isNominaAreasPura) {
+    return <AreasStandalone currentUser={currentUser} puedeCentroCosto={canAccessAreasCentroCosto} puedeEstadisticas={canAccessAreasEstadisticas} puedeReclamos={canAccessAreasReclamos} puedeProgramador={canAccessAreasProgramador} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (canAccessCorte && moduloActivo === "corte") {
     return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} onVolver={() => setModuloActivo("diseno")} puedeAprobarCorte={perms.aprobarCorte} />;
