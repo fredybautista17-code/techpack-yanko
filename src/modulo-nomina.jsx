@@ -3037,7 +3037,14 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
     ? { costoFT: Number(costoProcesoGenerico.costoTeorico), _ref: referencia.trim(), _origen: "proceso" }
     : null;
   const excedeCostoTeorico = !!(costoAplicaA && Number(precioReal) > costoAplicaA.costoFT);
-  const loteBloqueado = !!(loteAsociado && !loteAsociado.vigente);
+  // (2026-09-06, a pedido de Fredy) Antes esto bloqueaba a CUALQUIERA
+  // de registrar nómina sobre un lote que ya salió terminado a bodega.
+  // Fredy (admin) necesita poder corregir errores ya identificados sobre
+  // lotes que ya se despacharon (ej. una tarifa mal pagada) -- así que
+  // ahora el bloqueo real solo aplica a las líderes; al admin se le
+  // avisa igual (loteTerminado) pero se le deja guardar.
+  const loteTerminado = !!(loteAsociado && !loteAsociado.vigente);
+  const loteBloqueado = loteTerminado && !isAdmin;
   // (2026-08-31) Fredy pidió permitir que un mismo lote+proceso se reparta
   // entre 2 (o más) trabajadores -- el bloqueo de "no pagar dos veces" ahora
   // solo mira si es EL MISMO trabajador quien ya cobró este proceso en este
@@ -3314,9 +3321,11 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
             </div>
           </div>
         )}
-        {loteBloqueado && (
-          <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginBottom: 12 }}>
-            El lote {loteAsociado.numLote} ya salió terminado a bodega — no se puede registrar nómina sobre un lote que ya se terminó.
+        {loteTerminado && (
+          <div style={{ fontSize: 12, color: loteBloqueado ? "#b91c1c" : C.amber, fontWeight: 700, marginBottom: 12 }}>
+            {loteBloqueado
+              ? `El lote ${loteAsociado.numLote} ya salió terminado a bodega — no se puede registrar nómina sobre un lote que ya se terminó.`
+              : `⚠️ El lote ${loteAsociado.numLote} ya salió terminado a bodega. Por ser administrador puedes registrar de todas formas -- verifica que sea intencional (ej. corregir un error ya identificado).`}
           </div>
         )}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
