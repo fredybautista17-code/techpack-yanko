@@ -1463,13 +1463,15 @@ function resumenMovimientosPorLoteProceso(filasRef, fechasPorNumero, campoNumero
     if (fecha < r.primera) r.primera = fecha;
     if (fecha > r.ultima) r.ultima = fecha;
     r.total += Number(f?.Total) || 0;
-    // (2026-09-06, corregido a pedido de Fredy) "Valortotal" resulto ser
-    // un campo del REPORTE que Fredy consulta dentro de Busint, no de esta
-    // tabla via API -- por eso siempre daba 0 aqui. Se valido con varias
-    // filas reales que Valortotal = Total x CostoFT exactamente en todos
-    // los casos, asi que se calcula directo en vez de depender de un
-    // campo que nunca llega.
-    r.valorTotal += (Number(f?.Total) || 0) * (Number(f?.CostoFT) || 0);
+    // (2026-09-06, corregido a pedido de Fredy -- 2do intento) Ni
+    // "Valortotal" ni "CostoFT" son campos reales de esta tabla via API --
+    // son nombres del REPORTE que Fredy consulta dentro de Busint. Se
+    // confirmo con el catalogo crudo ("bmp - entrada plantaproc ref",
+    // filtrado por NumLote=7251) que el campo real del precio por unidad
+    // se llama "Costo" (igual a "Costos", que tambien existe duplicado) --
+    // ej. Entrada 28390, Bajada de Vinilo: Costo=390, Total=432,
+    // 432*390=168.480, exacto contra el valor ya conocido.
+    r.valorTotal += (Number(f?.Total) || 0) * (Number(f?.Costo) || 0);
   });
   return [...porClave.values()];
 }
