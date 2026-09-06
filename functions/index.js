@@ -1477,23 +1477,37 @@ async function correrAuditoriaBusintVsNomina() {
   const hoy = fechaHoyBogota();
   const mesActualISO = hoy.slice(0, 7); // "2026-09" -- lo que lleva del mes en curso (Bogota)
 
-  const [areasSnap, trabajadoresSnap, produccionSnap, usersSnap, entradasRef, fechasEntrada] = await Promise.all([
+  const [areasSnap, trabajadoresSnap, produccionSnap, usersSnap, entradasRef, cabeceraEntradas] = await Promise.all([
     db.collection("nomina_areas").get(),
     db.collection("nomina_trabajadores").get(),
     db.collection("nomina_produccion").get(),
     db.collection("users").get(),
     consultarTablaBusintBDCompleta("bmp - entrada plantaproc ref"),
-    fechasPorDocumentoBusintBD("bmp - entrada plantaproc", ["Entrada", "entrada"]),
+    consultarTablaBusintBDCompleta("bmp - entrada plantaproc"),
   ]);
 
   const areas = areasSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
   const trabajadores = trabajadoresSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
   const produccion = produccionSnap.docs.map((d) => d.data());
   const usuarios = usersSnap.docs.map((d) => d.data());
+  // (2026-09-06, corregido a pedido de Fredy) La tabla de DETALLE ("... ref",
+  // de donde sale entradasRef) NO trae Codplanta -- ese campo solo vive en
+  // la tabla CABECERA ("bmp - entrada plantaproc"), igual que la fecha. Se
+  // cruza por numero de "Entrada", construyendo los dos mapas (fecha y
+  // codplanta) de una sola pasada sobre la cabecera.
+  const fechasEntrada = new Map();
+  const codplantaPorEntrada = new Map();
+  cabeceraEntradas.forEach((f) => {
+    const num = f?.Entrada;
+    if (num === undefined || num === null) return;
+    const fecha = fechaISODesdeCampoBusintBD(f?.Fecha);
+    if (fecha) fechasEntrada.set(String(num), fecha);
+    if (f?.Codplanta !== undefined && f?.Codplanta !== null) codplantaPorEntrada.set(String(num), Number(f.Codplanta));
+  });
   const entradasDelMes = entradasRef.filter((f) => {
-    if (Number(f?.Codplanta) !== CODPLANTA_PROPIA) return false; // planta externa/contratista -- no cuenta para Nomina
     const num = f?.Entrada;
     if (num === undefined || num === null) return false;
+    if (codplantaPorEntrada.get(String(num)) !== CODPLANTA_PROPIA) return false; // planta externa/contratista -- no cuenta para Nomina
     const fecha = fechasEntrada.get(String(num));
     return !!fecha && fecha.slice(0, 7) === mesActualISO;
   });
