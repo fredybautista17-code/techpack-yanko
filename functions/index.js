@@ -1449,6 +1449,12 @@ exports.getMovimientosProcesoBusintBD = onCall(
 // y Control de Calidad, si Busint ya registro una ENTRADA real a un
 // proceso de esa area, esa cantidad tiene que quedar registrada en Nomina
 // (Registrar Produccion) -- si no, alguien no metio su produccion.
+// (2026-09-06, ampliado a pedido de Fredy) Se detectan las DOS direcciones:
+// "falta_registrar" (Busint > Nomina, como antes) y "sobre_registrado"
+// (Nomina > Busint -- por ejemplo dos trabajadores cobrando el mismo lote,
+// caso real encontrado: Lote 7254 BAJADA DE VINILO, Busint 396 vs Nomina
+// 792 registradas entre 3 trabajadores). Antes esta segunda direccion
+// nunca se detectaba porque solo se avisaba cuando diferencia > 0.
 // (2026-09-06, ajustado a pedido de Fredy) Compara "lo que lleva del mes":
 // tanto las entradas de Busint como lo registrado en nomina_produccion se
 // filtran al mes en curso (dia 1 hasta hoy, hora Bogota) antes de sumar por
@@ -1541,11 +1547,19 @@ async function correrAuditoriaBusintVsNomina() {
       const clave = `${e.numLote}||${e.proceso}`;
       const registrado = registradoPorClave.get(clave) || 0;
       const diferencia = e.total - registrado;
-      if (diferencia > 0) {
-        discrepancias.push({ numLote: e.numLote, proceso: e.proceso, entradaBusint: e.total, registradoNomina: registrado, diferencia, ultimaEntrada: e.ultima });
+      if (diferencia !== 0) {
+        discrepancias.push({
+          numLote: e.numLote,
+          proceso: e.proceso,
+          entradaBusint: e.total,
+          registradoNomina: registrado,
+          diferencia,
+          tipo: diferencia > 0 ? "falta_registrar" : "sobre_registrado",
+          ultimaEntrada: e.ultima,
+        });
       }
     });
-    discrepancias.sort((a, b) => b.diferencia - a.diferencia);
+    discrepancias.sort((a, b) => Math.abs(b.diferencia) - Math.abs(a.diferencia));
 
     await db.collection("centro_costo_auditoria_busint").doc(`${idNormalizado(nombreArea)}__${hoy}`).set({
       area: nombreArea,
@@ -1565,13 +1579,18 @@ async function correrAuditoriaBusintVsNomina() {
       if (destinatarios.length) {
         const transporte = crearTransporte();
         const filasHtml = discrepancias
-          .map((d) => `<tr><td>${d.numLote}</td><td>${d.proceso}</td><td style="text-align:right">${d.entradaBusint}</td><td style="text-align:right">${d.registradoNomina}</td><td style="text-align:right"><b>${d.diferencia}</b></td></tr>`)
+          .map((d) => {
+            const esFalta = d.tipo === "falta_registrar";
+            const etiqueta = esFalta ? "Falta registrar" : "Sobre-registrado";
+            const color = esFalta ? "#b91c1c" : "#b45309";
+            return `<tr><td>${d.numLote}</td><td>${d.proceso}</td><td style="color:${color}"><b>${etiqueta}</b></td><td style="text-align:right">${d.entradaBusint}</td><td style="text-align:right">${d.registradoNomina}</td><td style="text-align:right"><b style="color:${color}">${Math.abs(d.diferencia)}</b></td></tr>`;
+          })
           .join("");
         await mandarCorreo(
           transporte,
           destinatarios,
           `ATLAS -- ${nombreArea}: ${discrepancias.length} diferencia(s) de Nomina vs Busint`,
-          `<p>En <b>${nombreArea}</b>, Busint tiene entradas registradas que no calzan con lo registrado en Nomina (Registrar Produccion). Revisa estos lotes/procesos:</p><table border="1" cellpadding="6" style="border-collapse:collapse"><tr><th>Lote</th><th>Proceso</th><th>Entrada Busint</th><th>Registrado Nomina</th><th>Diferencia</th></tr>${filasHtml}</table>`
+          `<p>En <b>${nombreArea}</b>, Busint tiene entradas que no calzan con lo registrado en Nomina (Registrar Produccion) -- ya sea porque falta registrar produccion, o porque quedo registrado de mas (posible doble registro). Revisa estos lotes/procesos:</p><table border="1" cellpadding="6" style="border-collapse:collapse"><tr><th>Lote</th><th>Proceso</th><th>Tipo</th><th>Entrada Busint</th><th>Registrado Nomina</th><th>Diferencia</th></tr>${filasHtml}</table>`
         );
       } else {
         logger.warn(`Auditoria Busint vs Nomina: ${discrepancias.length} diferencia(s) en "${nombreArea}" pero no se encontro a quien avisar (sin lider con areaNomina y sin admins con correo).`);

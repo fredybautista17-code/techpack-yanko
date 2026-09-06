@@ -4434,9 +4434,14 @@ function CentroCostoCierreView({ area, trabajadores, produccion, currentUser }) 
               columnas={[
                 { key: "numLote", label: "Lote" },
                 { key: "proceso", label: "Proceso" },
+                { key: "tipo", label: "Tipo", render: (f) => (
+                    <span style={{ color: f.tipo === "sobre_registrado" ? C.amber : C.red, fontWeight: 700 }}>
+                      {f.tipo === "sobre_registrado" ? "⚠️ Sobre-registrado" : "❌ Falta registrar"}
+                    </span>
+                  ) },
                 { key: "entradaBusint", label: "Entrada Busint", align: "right", render: (f) => fmtNum(f.entradaBusint) },
                 { key: "registradoNomina", label: "Registrado Nómina", align: "right", render: (f) => fmtNum(f.registradoNomina) },
-                { key: "diferencia", label: "Diferencia", align: "right", render: (f) => <strong style={{ color: C.red }}>{fmtNum(f.diferencia)}</strong> },
+                { key: "diferencia", label: "Diferencia", align: "right", render: (f) => <strong style={{ color: f.tipo === "sobre_registrado" ? C.amber : C.red }}>{fmtNum(Math.abs(f.diferencia))}</strong> },
                 { key: "ultimaEntrada", label: "Última entrada" },
               ]}
               filas={(auditoriaDetalleAbierto.discrepancias || []).map((d, i) => ({ ...d, id: i }))}
