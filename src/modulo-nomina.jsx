@@ -2827,7 +2827,7 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   // con el total real de Busint -- sirve para el tope y las estadisticas
   // por lote/proceso, no para saber la cantidad fisica de cada persona.
   const [modoReparto, setModoReparto] = useState(false);
-  const [repartoFilas, setRepartoFilas] = useState([]); // [{ id, trabajadorId, valor }]
+  const [repartoFilas, setRepartoFilas] = useState([]); // [{ id, trabajadorId, cantidad, precio }]
   const [guardando, setGuardando] = useState(false);
   // Costo teórico de confección de la referencia (costoFT en Busint) — se
   // usa como tope: el precio/unidad configurado para el proceso nunca puede
@@ -3081,9 +3081,15 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   function cantidadEquivalenteReparto(valor) {
     return precioMaximoReparto > 0 ? (Number(valor) || 0) / precioMaximoReparto : 0;
   }
-  const repartoFilasValidas = repartoFilas.filter((f) => f.trabajadorId && Number(f.valor) > 0);
-  const sumaValorReparto = repartoFilasValidas.reduce((acc, f) => acc + (Number(f.valor) || 0), 0);
-  const sumaEquivalenteReparto = repartoFilasValidas.reduce((acc, f) => acc + cantidadEquivalenteReparto(f.valor), 0);
+  // (2026-09-06, a pedido de Fredy) La lider coloca cantidad + precio de
+  // cada trabajador -- igual que en el modo normal -- en vez de un valor
+  // total ya calculado; el valor real sale solo de cantidad x precio.
+  function valorFilaReparto(f) {
+    return (Number(f.cantidad) || 0) * (Number(f.precio) || 0);
+  }
+  const repartoFilasValidas = repartoFilas.filter((f) => f.trabajadorId && Number(f.cantidad) > 0 && Number(f.precio) > 0);
+  const sumaValorReparto = repartoFilasValidas.reduce((acc, f) => acc + valorFilaReparto(f), 0);
+  const sumaEquivalenteReparto = repartoFilasValidas.reduce((acc, f) => acc + cantidadEquivalenteReparto(valorFilaReparto(f)), 0);
   // Igual que registroPrevio, pero por cada fila del reparto -- no se le
   // puede pagar dos veces a la misma persona este lote+proceso.
   const repartoConDuplicado = loteAsociado && proceso
@@ -3248,9 +3254,9 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
           referencia: referencia.trim(),
           numLote: loteInfo?.encontrada && loteInfo.referencia === referencia.trim() ? loteInfo.numLote : null,
           numPedido: loteInfo?.encontrada && loteInfo.referencia === referencia.trim() ? loteInfo.numPedido : null,
-          cantidad: cantidadEquivalenteReparto(f.valor),
+          cantidad: cantidadEquivalenteReparto(valorFilaReparto(f)),
           precioUnidad: precioMaximoReparto,
-          total: Number(f.valor) || 0,
+          total: valorFilaReparto(f),
           modoReparto: true,
           repartoId,
           creadoPor: currentUser?.name || currentUser?.username || "",
@@ -3419,7 +3425,7 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
         {modoReparto ? (
           <div style={{ marginBottom: 14 }}>
             <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>
-              El trabajador de arriba no se usa en este modo -- agrega cada trabajador con su valor abajo. La cantidad de cada uno se calcula sola dividiendo el valor entre el precio máximo (no es la cantidad física real de esa persona, solo sirve para no pasarse del tope y para las estadísticas del lote/proceso).
+              El trabajador de arriba no se usa en este modo -- agrega cada trabajador con la cantidad que hizo y el precio de su material. La cantidad equivalente se calcula sola (cantidad x precio, dividido entre el precio máximo) y es la que sirve para no pasarse del tope y para las estadísticas del lote/proceso.
             </div>
             <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 8 }}>
               Precio máximo (divisor): {precioMaximoReparto > 0 ? fmtMoney(precioMaximoReparto) : "Sin precio máximo todavía -- no se puede repartir"}
@@ -3427,16 +3433,18 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
             {repartoFilas.map((f) => {
               const trabajadorFila = trabajadores.find((t) => t.id === f.trabajadorId);
               const yaRegistrado = !!(loteAsociado && proceso && f.trabajadorId && (produccionCompleta || []).some((p) => p.numLote === loteAsociado.numLote && p.proceso === proceso && p.trabajadorId === f.trabajadorId));
+              const valorFila = valorFilaReparto(f);
               return (
                 <div key={f.id} style={{ marginBottom: 10 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr auto", gap: 8, alignItems: "end" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr 0.8fr 0.9fr auto", gap: 8, alignItems: "end" }}>
                     <Field label="Trabajador">
                       <FSel value={f.trabajadorId} onChange={(v) => setRepartoFilas((rs) => rs.map((r) => (r.id === f.id ? { ...r, trabajadorId: v } : r)))} options={trabajadoresActivos.map((t) => ({ value: t.id, label: t.nombre }))} />
                     </Field>
-                    <Field label="Valor Precio Total"><FInput type="number" value={f.valor} onChange={(v) => setRepartoFilas((rs) => rs.map((r) => (r.id === f.id ? { ...r, valor: v } : r)))} placeholder="Lo que se le paga en total" /></Field>
+                    <Field label="Cantidad"><FInput type="number" value={f.cantidad} onChange={(v) => setRepartoFilas((rs) => rs.map((r) => (r.id === f.id ? { ...r, cantidad: v } : r)))} placeholder="Unidades" /></Field>
+                    <Field label="Precio"><FInput type="number" value={f.precio} onChange={(v) => setRepartoFilas((rs) => rs.map((r) => (r.id === f.id ? { ...r, precio: v } : r)))} placeholder="Precio unidad" /></Field>
                     <div style={{ marginBottom: 14 }}>
                       <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>Cant. equivalente</div>
-                      <div style={{ padding: "9px 12px", background: C.canvas, borderRadius: 8, fontWeight: 800, color: C.ink, fontSize: 13 }}>{precioMaximoReparto > 0 ? cantidadEquivalenteReparto(f.valor).toFixed(2) : "—"}</div>
+                      <div style={{ padding: "9px 12px", background: C.canvas, borderRadius: 8, fontWeight: 800, color: C.ink, fontSize: 13 }}>{precioMaximoReparto > 0 ? cantidadEquivalenteReparto(valorFila).toFixed(2) : "—"}{valorFila > 0 ? ` (${fmtMoney(valorFila)})` : ""}</div>
                     </div>
                     <Btn small variant="secondary" onClick={() => setRepartoFilas((rs) => rs.filter((r) => r.id !== f.id))}>✕</Btn>
                   </div>
@@ -3448,7 +3456,7 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
                 </div>
               );
             })}
-            <Btn small variant="secondary" onClick={() => setRepartoFilas((rs) => [...rs, { id: uid(), trabajadorId: "", valor: "" }])} disabled={precioMaximoReparto <= 0}>+ Agregar trabajador</Btn>
+            <Btn small variant="secondary" onClick={() => setRepartoFilas((rs) => [...rs, { id: uid(), trabajadorId: "", cantidad: "", precio: "" }])} disabled={precioMaximoReparto <= 0}>+ Agregar trabajador</Btn>
             {repartoFilasValidas.length > 0 && (
               <div style={{ fontSize: 12, color: C.slate, marginTop: 10 }}>
                 Suma repartida: {fmtMoney(sumaValorReparto)} → {sumaEquivalenteReparto.toFixed(2)} unidades equivalentes{cantCortadaLote > 0 && ` de ${etiquetaCantCortada}`}.
