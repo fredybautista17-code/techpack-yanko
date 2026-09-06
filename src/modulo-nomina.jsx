@@ -2859,6 +2859,11 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   const [modalEditar, setModalEditar] = useState(null);
   const [formEditar, setFormEditar] = useState(null);
   const [guardandoEdicion, setGuardandoEdicion] = useState(false);
+  // (2026-09-06, a pedido de Fredy) Buscar por N° de Lote en "Últimos
+  // registros" -- para poder ubicar y borrar un registro duplicado aunque
+  // no esté entre los 15 más recientes (que es lo que se muestra por
+  // defecto cuando el campo de búsqueda está vacío).
+  const [filtroLoteRegistros, setFiltroLoteRegistros] = useState("");
   async function buscarLote() {
     const n = numLote.trim();
     if (!n) return;
@@ -3273,7 +3278,12 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
       setGuardando(false);
     }
   }
-  const recientes = [...produccion].sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || "")).slice(0, 15);
+  const filtroLoteRegistrosTrim = filtroLoteRegistros.trim();
+  const recientes = filtroLoteRegistrosTrim
+    ? [...produccion]
+        .filter((p) => (p.numLote || "").trim() === filtroLoteRegistrosTrim)
+        .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "") || (b.creadoEn || "").localeCompare(a.creadoEn || ""))
+    : [...produccion].sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || "")).slice(0, 15);
   return (
     <div>
       <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20, marginBottom: 24, maxWidth: 620 }}>
@@ -3497,9 +3507,16 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
         )}
         <Btn onClick={modoReparto ? guardarReparto : guardar} disabled={modoReparto ? !puedeGuardarReparto : !puedeGuardar}>{guardando ? "Guardando..." : modoReparto ? "Registrar Reparto" : "Registrar Producción"}</Btn>
       </div>
-      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>ÚLTIMOS REGISTROS</div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
+        <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>
+          {filtroLoteRegistrosTrim ? `REGISTROS DEL LOTE ${filtroLoteRegistrosTrim} (${recientes.length})` : "ÚLTIMOS REGISTROS"}
+        </div>
+        <div style={{ width: 240 }}>
+          <FInput value={filtroLoteRegistros} onChange={setFiltroLoteRegistros} placeholder="Buscar por N° de Lote" />
+        </div>
+      </div>
       <Tabla
-        vacio="Sin registros de producción todavía."
+        vacio={filtroLoteRegistrosTrim ? "Sin registros de producción para ese lote." : "Sin registros de producción todavía."}
         columnas={[
           { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
           { key: "trabajadorNombre", label: "Trabajador" },
