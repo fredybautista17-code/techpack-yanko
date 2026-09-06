@@ -2953,8 +2953,13 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   // criterio que loteAsociado). Solo mira "entradas": son las que indican
   // que ya se registró producción de ese proceso.
   const movimientosLoteVigente = movimientosLote && !movimientosLote.error && movimientosLote.numLote === numLote.trim() ? movimientosLote : null;
+  // (2026-09-06, corregido a pedido de Fredy) Se usa "entradasPlantaPropia"
+  // (solo Codplanta 1002) en vez de "entradas" (todas las plantas) -- ver
+  // entradasLoteBusintBD en functions/index.js. Antes esto mezclaba
+  // entradas de plantas externas/contratistas (ej. DTF, Sloand) con la
+  // propia, que no tienen nada que ver con lo que se paga en Nomina.
   const entradaBusintProceso = movimientosLoteVigente && proceso
-    ? (movimientosLoteVigente.entradas || []).find((e) => normalizarProceso(e.proceso) === normalizarProceso(proceso) && Number(e.total) > 0)
+    ? (movimientosLoteVigente.entradasPlantaPropia || []).find((e) => normalizarProceso(e.proceso) === normalizarProceso(proceso) && Number(e.total) > 0)
     : null;
   // Si este lote+proceso exacto está en la tabla de Costos Teóricos por
   // Proceso (cargada a mano desde el Excel de Busint), ese valor es más
@@ -3030,7 +3035,26 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   // superar la cantidad cortada del lote (loteInfo.cantCortada). Si el lote
   // no trae cantCortada (dato faltante en Busint), no se aplica el tope —
   // no hay con qué compararlo.
-  const cantCortadaLote = loteAsociado ? Number(loteAsociado.cantCortada) || 0 : 0;
+  // (2026-09-06, corregido a pedido de Fredy) Un proceso puntual puede
+  // haber recibido MENOS unidades que las que se cortaron originalmente
+  // (insumos faltantes, danos en Confeccion -- casos reales confirmados:
+  // Lote 7254 Bajada de Vinilo solo 396 de 432 cortadas; Lote 7225 Postura
+  // Dije/Terminacion solo 126 de 140 cortadas). Por eso, si Busint YA tiene
+  // una entrada real (planta propia) para ESTE proceso puntual, se usa ese
+  // numero como tope -- es mas preciso que el "Cant. Cortada" general del
+  // lote completo. Si todavia no hay ese dato (consulta en curso, o Busint
+  // no tiene aun ninguna entrada de este proceso), se cae de respaldo al
+  // Cant. Cortada general, igual que antes -- mejor un tope de mas que
+  // ningun tope.
+  const cantCortadaEsPorProceso = !!(entradaBusintProceso && Number(entradaBusintProceso.total) > 0);
+  const cantCortadaLote = cantCortadaEsPorProceso
+    ? Number(entradaBusintProceso.total)
+    : loteAsociado
+    ? Number(loteAsociado.cantCortada) || 0
+    : 0;
+  const etiquetaCantCortada = cantCortadaEsPorProceso
+    ? `lo que Busint tiene registrado para este proceso (${fmtNum(cantCortadaLote)})`
+    : `lo cortado del lote (${fmtNum(cantCortadaLote)})`;
   const totalRegistradoLoteProceso = otrosRegistrosLoteProceso.reduce((acc, p) => acc + (Number(p.cantidad) || 0), 0);
   const cantidadDisponibleLoteProceso = cantCortadaLote > 0 ? Math.max(0, cantCortadaLote - totalRegistradoLoteProceso) : null;
   const excedeCantidadLote = !!(loteAsociado && proceso && cantCortadaLote > 0 && Number(cantidad) > 0 && (totalRegistradoLoteProceso + Number(cantidad)) > cantCortadaLote);
@@ -3286,7 +3310,7 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
         {otrosRegistrosLoteProceso.length > 0 && (
           <div style={{ fontSize: 11, color: C.blue, fontWeight: 600, marginBottom: 10, background: C.blueBg, borderRadius: 8, padding: "8px 12px" }}>
             ℹ️ Este proceso del lote {loteAsociado.numLote} ya se repartió con otro(s) trabajador(es): {otrosRegistrosLoteProceso.map((p) => `${p.trabajadorNombre} (${fmtNum(p.cantidad)} und)`).join(", ")}.
-            {cantidadDisponibleLoteProceso != null && ` Quedan ${fmtNum(cantidadDisponibleLoteProceso)} und disponibles de lo cortado (${fmtNum(cantCortadaLote)}).`}
+            {cantidadDisponibleLoteProceso != null && ` Quedan ${fmtNum(cantidadDisponibleLoteProceso)} und disponibles de ${etiquetaCantCortada}.`}
           </div>
         )}
         {/* (2026-08-31) Bloquea puedeGuardar -- la suma entre todos los
@@ -3294,7 +3318,7 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
             cortado. */}
         {excedeCantidadLote && (
           <div style={{ fontSize: 12, color: "#b91c1c", fontWeight: 700, marginBottom: 10 }}>
-            La suma de este proceso en el lote {loteAsociado.numLote} ({fmtNum(totalRegistradoLoteProceso)} ya registradas + {fmtNum(Number(cantidad))} que estás por guardar) supera lo cortado ({fmtNum(cantCortadaLote)} und) — no se puede guardar.
+            La suma de este proceso en el lote {loteAsociado.numLote} ({fmtNum(totalRegistradoLoteProceso)} ya registradas + {fmtNum(Number(cantidad))} que estás por guardar) supera {etiquetaCantCortada} — no se puede guardar.
           </div>
         )}
         {/* (2026-08-31) Aviso informativo -- NO bloquea puedeGuardar. Se

@@ -1322,6 +1322,56 @@ async function entradasOSalidasPorLoteBusintBD(tableName, numLote, campoNumero) 
   });
   return [...porProceso.values()];
 }
+// (2026-09-06, a pedido de Fredy) Igual que arriba pero SOLO para
+// entradas, agrupando dos veces: todas las plantas (igual que antes, para
+// no romper el consumidor existente en Informes -- "Ver entradas/salidas
+// reales") y SOLO planta propia (Codplanta 1002, igual criterio que la
+// auditoria correrAuditoriaBusintVsNomina). La tabla de detalle ("...ref")
+// no trae Codplanta -- se cruza con la cabecera ("bmp - entrada
+// plantaproc") por numero de "Entrada". La version "planta propia" es la
+// que ahora usa Registrar Producción como tope real por Lote+Proceso (ver
+// cantCortadaLote en src/modulo-nomina.jsx): antes ese tope usaba siempre
+// el "Cant. Cortada" general del lote completo (un solo numero para TODOS
+// los procesos), que no sirve cuando un proceso puntual recibió MENOS
+// unidades que las que se cortaron originalmente por insumos faltantes o
+// daños en Confección -- caso real confirmado por Fredy: Lote 7254,
+// Cortado/Descartonado/Espiga Vinilo llegaron a 432 pero Bajada de Vinilo
+// solo a 396; y Lote 7225, cortado 140 pero Postura Dije/Terminación solo
+// 126 (dañadas en Confección, visto en el Kardex).
+async function entradasLoteBusintBD(numLote) {
+  const [entradasRefTodas, cabeceraEntradas] = await Promise.all([
+    consultarTablaBusintBDCompleta("bmp - entrada plantaproc ref"),
+    consultarTablaBusintBDCompleta("bmp - entrada plantaproc"),
+  ]);
+  const codplantaPorEntrada = new Map();
+  cabeceraEntradas.forEach((f) => {
+    const num = f?.Entrada;
+    if (num === undefined || num === null) return;
+    if (f?.Codplanta !== undefined && f?.Codplanta !== null) codplantaPorEntrada.set(String(num), Number(f.Codplanta));
+  });
+  const deEsteLote = entradasRefTodas.filter((f) => String(f?.NumLote) === String(numLote));
+  function agrupar(filas) {
+    const porProceso = new Map();
+    filas.forEach((f) => {
+      const proceso = String(f?.Proceso || "(sin proceso)");
+      if (!porProceso.has(proceso)) porProceso.set(proceso, { proceso, total: 0, filas: 0, numeros: [] });
+      const p = porProceso.get(proceso);
+      p.total += Number(f?.Total) || 0;
+      p.filas += 1;
+      const num = f?.Entrada;
+      if (num !== undefined && num !== null && num !== "") p.numeros.push(num);
+    });
+    return [...porProceso.values()];
+  }
+  const entradas = agrupar(deEsteLote);
+  const deEsteLotePlantaPropia = deEsteLote.filter((f) => {
+    const num = f?.Entrada;
+    if (num === undefined || num === null) return false;
+    return codplantaPorEntrada.get(String(num)) === CODPLANTA_PROPIA;
+  });
+  const entradasPlantaPropia = agrupar(deEsteLotePlantaPropia);
+  return { entradas, entradasPlantaPropia };
+}
 exports.getMovimientosLoteBusintBD = onCall(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
@@ -1333,17 +1383,20 @@ exports.getMovimientosLoteBusintBD = onCall(
     if (!numLote) {
       throw new HttpsError("invalid-argument", "Debes indicar el número de lote.");
     }
-    let entradas, salidas;
+    let entradas, entradasPlantaPropia, salidas;
     try {
-      [entradas, salidas] = await Promise.all([
-        entradasOSalidasPorLoteBusintBD("bmp - entrada plantaproc ref", numLote, "Entrada"),
+      const [entradasInfo, salidasResult] = await Promise.all([
+        entradasLoteBusintBD(numLote),
         entradasOSalidasPorLoteBusintBD("bmp - salida plantaproc ref", numLote, "Salida"),
       ]);
+      entradas = entradasInfo.entradas;
+      entradasPlantaPropia = entradasInfo.entradasPlantaPropia;
+      salidas = salidasResult;
     } catch (err) {
       logger.error("Error consultando Busint BD (getMovimientosLoteBusintBD)", { numLote, error: String(err) });
       throw new HttpsError("unavailable", `No se pudo consultar los movimientos del lote ${numLote}: ${err?.message || String(err)}`);
     }
-    return { numLote, entradas, salidas };
+    return { numLote, entradas, entradasPlantaPropia, salidas };
   }
 );
 // (2026-08-31) Fredy pidió el "Programador de Procesos" para Anny Beltrán
