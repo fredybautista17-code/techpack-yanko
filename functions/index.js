@@ -1526,7 +1526,7 @@ async function entradasLoteBusintBD(numLote) {
   const deEsteLotePlantaPropia = deEsteLote.filter((f) => {
     const num = f?.Entrada;
     if (num === undefined || num === null) return false;
-    return codplantaPorEntrada.get(String(num)) === CODPLANTA_PROPIA;
+    return CODPLANTAS_PROPIAS.has(codplantaPorEntrada.get(String(num)));
   });
   const entradasPlantaPropia = agrupar(deEsteLotePlantaPropia);
   return { entradas, entradasPlantaPropia };
@@ -1690,15 +1690,20 @@ exports.getMovimientosProcesoBusintBD = onCall(
 // areaNomina == nombre del area); si el area no tiene lider asignado,
 // cae de respaldo a todos los usuarios con isAdmin.
 // (2026-09-06, a pedido de Fredy) La tabla de entradas de Busint mezcla
-// varias "plantas" (columna Codplanta/Nombre) -- la propia (1002,
-// INDUSTRIAS YANKO BC SAS) y plantas externas/contratistas (ej. 1015 DTF
-// INDUSTRIAS YANKO, 1022 SLOAND GROUP SAS, 1004 JUAN CARLOS MONSALVE para
-// Estampacion). Solo la planta propia tiene trabajadores en Nomina, asi
-// que la auditoria descarta cualquier entrada que no sea de esa planta --
-// si no, marcaria como "falta registrar" produccion que en realidad hizo
-// un tercero y que nunca va a estar en Nomina.
+// varias "plantas" (columna Codplanta/Nombre) -- las propias (1002
+// INDUSTRIAS YANKO BC SAS y 1021 INDUTEX) y plantas externas/contratistas
+// (ej. 1015 DTF INDUSTRIAS YANKO, 1022 SLOAND GROUP SAS, 1004 JUAN CARLOS
+// MONSALVE para Estampacion). Solo las plantas propias tienen trabajadores
+// en Nomina, asi que la auditoria descarta cualquier entrada que no sea de
+// esas plantas -- si no, marcaria como "falta registrar" produccion que en
+// realidad hizo un tercero y que nunca va a estar en Nomina.
+// (2026-09-07, a pedido de Fredy) Se agrega 1021 (Indutex) como planta
+// propia -- caso real: Lote 7128, Cordon y Terminacion, Busint los tenia
+// registrados bajo la planta 1021 y por eso la auditoria los marcaba como
+// "Sin entrada en Busint" a pesar de que Nomina SI tenia las 238 unidades
+// registradas y coincidian exacto contra Busint.
 const AREAS_AUDITORIA_BUSINT = ["ZONA CALOR", "CONTROL DE CALIDAD"];
-const CODPLANTA_PROPIA = 1002;
+const CODPLANTAS_PROPIAS = new Set([1002, 1021]);
 
 async function correrAuditoriaBusintVsNomina() {
   const hoy = fechaHoyBogota();
@@ -1734,7 +1739,7 @@ async function correrAuditoriaBusintVsNomina() {
   const entradasDelMes = entradasRef.filter((f) => {
     const num = f?.Entrada;
     if (num === undefined || num === null) return false;
-    if (codplantaPorEntrada.get(String(num)) !== CODPLANTA_PROPIA) return false; // planta externa/contratista -- no cuenta para Nomina
+    if (!CODPLANTAS_PROPIAS.has(codplantaPorEntrada.get(String(num)))) return false; // planta externa/contratista -- no cuenta para Nomina
     const fecha = fechasEntrada.get(String(num));
     return !!fecha && fecha.slice(0, 7) === mesActualISO;
   });
