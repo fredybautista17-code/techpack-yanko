@@ -455,10 +455,11 @@ function DespachosDiarioView({ currentUser }) {
     </div>
   );
 }
-function DespachosPorClienteView() {
+function DespachosPorClienteView({ currentUser }) {
   const [mes, setMes] = useState(() => new Date().toISOString().slice(0, 7));
   const [filas, setFilas] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [enviandoPrueba, setEnviandoPrueba] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -471,6 +472,27 @@ function DespachosPorClienteView() {
     });
     return () => unsub();
   }, [mes]);
+
+  // (2026-09-07, a pedido de Fredy) "donde lo puedo ver como se va a
+  // recibir por correo" -- este boton manda YA MISMO (con los datos reales
+  // de este mes) el mismo correo que llega solo todos los dias a las
+  // 6:10pm, para poder verlo en la bandeja sin tener que esperar.
+  async function enviarPrueba() {
+    setEnviandoPrueba(true);
+    try {
+      const r = await httpsCallable(functionsClient, "enviarResumenPorClienteAhora")();
+      const d = r.data || {};
+      if (d.enviado) {
+        alert(`Correo enviado a ${d.destinatarios} destinatario(s) — ${d.clientes} cliente(s), ${fmtNum(d.totalUnidades)} unidades, $${fmtNum(Math.round(d.totalMonto))}.`);
+      } else {
+        alert(d.motivo || "No se envió el correo.");
+      }
+    } catch (err) {
+      alert("No se pudo enviar: " + (err.message || err));
+    } finally {
+      setEnviandoPrueba(false);
+    }
+  }
 
   const porCliente = useMemo(() => {
     const m = new Map();
@@ -499,7 +521,14 @@ function DespachosPorClienteView() {
 
   return (
     <div>
-      <input type="month" value={mes} onChange={(e) => setMes(e.target.value)} style={{ padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", marginBottom: 18 }} />
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
+        <input type="month" value={mes} onChange={(e) => setMes(e.target.value)} style={{ padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+        {currentUser?.isAdmin && (
+          <button onClick={enviarPrueba} disabled={enviandoPrueba} style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontWeight: 700, fontSize: 12, cursor: enviandoPrueba ? "default" : "pointer" }}>
+            {enviandoPrueba ? "Enviando..." : "✉️ Enviar de prueba (resumen del mes)"}
+          </button>
+        )}
+      </div>
       {loading ? (
         <div style={{ padding: 30, textAlign: "center", color: C.slate }}>Cargando...</div>
       ) : (
@@ -691,7 +720,7 @@ function CentroEstadisticasView({ currentUser }) {
         <button onClick={() => setTab("total")} style={{ padding: "9px 18px", borderRadius: 10, border: "none", background: tab === "total" ? C.white : "transparent", color: tab === "total" ? C.ink : C.slate, fontWeight: 800, fontSize: 13, cursor: "pointer", boxShadow: tab === "total" ? "0 1px 4px rgba(15,15,25,0.10)" : "none" }}>📈 Total general</button>
       </div>
       {tab === "diario" && <DespachosDiarioView currentUser={currentUser} />}
-      {tab === "cliente" && <DespachosPorClienteView />}
+      {tab === "cliente" && <DespachosPorClienteView currentUser={currentUser} />}
       {tab === "total" && <DespachosTotalesView />}
     </div>
   );

@@ -4200,15 +4200,7 @@ exports.correoDespachosDiarios = onSchedule(
 // incluido). El acumulado es del mes calendario actual (desde el dia 1
 // hasta hoy) -- si todavia no hay ningun despacho este mes, no se manda
 // nada ese dia.
-exports.correoResumenPorCliente = onSchedule(
-  {
-    schedule: "every day 18:10",
-    timeZone: "America/Bogota",
-    secrets: [EMAIL_USER, EMAIL_APP_PASSWORD],
-    timeoutSeconds: 120,
-    memory: "512MiB",
-  },
-  async () => {
+async function enviarResumenPorClienteCorreo() {
     const hoyDate = new Date();
     const hoy = hoyDate.toISOString().slice(0, 10);
     const inicioMes = new Date(hoyDate.getFullYear(), hoyDate.getMonth(), 1).toISOString().slice(0, 10);
@@ -4221,7 +4213,7 @@ exports.correoResumenPorCliente = onSchedule(
     const despachos = filas.filter((f) => !f.esDevolucion);
     if (!despachos.length) {
       logger.info("correoResumenPorCliente: sin despachos en lo corrido del mes, no se manda correo");
-      return;
+      return { enviado: false, motivo: "Todavía no hay despachos registrados este mes." };
     }
 
     const porCliente = new Map();
@@ -4250,7 +4242,7 @@ exports.correoResumenPorCliente = onSchedule(
     const correos = [...new Set([...lideres, ...admins])];
     if (!correos.length) {
       logger.warn("correoResumenPorCliente: no hay destinatarios con correo cargado, no se manda nada");
-      return;
+      return { enviado: false, motivo: "No hay destinatarios con correo cargado en Usuarios (líderes o administradores)." };
     }
 
     const fmtN = (n) => Number(n || 0).toLocaleString("es-CO");
@@ -4325,6 +4317,31 @@ exports.correoResumenPorCliente = onSchedule(
     const transporte = crearTransporte();
     await mandarCorreo(transporte, correos, `Resumen de despachos por cliente — ${nombreMes} (al ${hoy})`, html);
     logger.info("correoResumenPorCliente enviado", { destinatarios: correos.length, clientes: clientes.length, totalDocumentos, totalUnidades, totalMonto });
+    return { enviado: true, destinatarios: correos.length, clientes: clientes.length, totalDocumentos, totalUnidades, totalMonto };
+}
+
+exports.correoResumenPorCliente = onSchedule(
+  {
+    schedule: "every day 18:10",
+    timeZone: "America/Bogota",
+    secrets: [EMAIL_USER, EMAIL_APP_PASSWORD],
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
+  async () => {
+    await enviarResumenPorClienteCorreo();
+  }
+);
+
+// Boton "Enviar de prueba" en Informes -> Centro de Estadisticas -> Por
+// cliente (mes) (solo admin) -- para ver de una vez como llega el correo
+// (con los datos reales de este mes), sin tener que esperar al envio
+// automatico de las 6:10pm.
+exports.enviarResumenPorClienteAhora = onCall(
+  { secrets: [EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 120, memory: "512MiB" },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    return await enviarResumenPorClienteCorreo();
   }
 );
 
