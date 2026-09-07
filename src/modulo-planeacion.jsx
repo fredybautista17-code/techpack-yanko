@@ -4287,15 +4287,16 @@ function AuditoriaBusintNominaPanel({ area, currentUser }) {
   );
 }
 
-// (2026-09-06, a pedido de Fredy) Pantalla "Mi Dia" para personal de
-// Nomina/Talento Humano que revisa la Auditoria Busint vs Nomina de TODAS
-// las areas (no tiene un Area Interna fija como una lider) -- ej. Maria
-// Fernanda Paez, Yuleisi Virginia. Se activa con el mismo checkbox
-// "Entrar directo a Areas (Nomina)" (landingAreas) que ya existe en
-// Usuarios -- ver "isNominaAreasPura" en App.js. En vez de entrar al
-// modulo Areas completo, cae aqui: elige el area con los botones de
+// (2026-09-06, a pedido de Fredy; ajustado 2026-09-07) Pantalla "Mi Dia"
+// para personal de Nomina/Talento Humano que revisa la Auditoria Busint
+// vs Nomina de TODAS las areas (no tiene un Area Interna fija como una
+// lider) -- ej. Maria Fernanda Paez, Yuleisi Virginia. Se activa con el
+// mismo checkbox "Mostrar Mi Dia" (landingAreas) que ya existe en
+// Usuarios -- ver el boton de "Mi Dia" y moduloActivo === "mi_dia" en
+// App.js. Se llega aqui como un boton mas del menu normal (con Volver),
+// NO como pantalla completa aparte: elige el area con los botones de
 // arriba y ve directo su auditoria, sin tener que navegar por pestanas.
-export function MiDiaNominaStandalone({ currentUser, onLogout }) {
+export function MiDiaNominaStandalone({ currentUser, onVolver, onLogout }) {
   const [areas, setAreas] = useState([]);
   const [auditoriaHistorial, setAuditoriaHistorial] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -4330,6 +4331,11 @@ export function MiDiaNominaStandalone({ currentUser, onLogout }) {
     <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
       <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 32px", background: C.ink }}>
+        {onVolver && (
+          <button onClick={onVolver} style={{ background: "transparent", border: "1px solid rgba(200,184,162,0.3)", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, color: C.seam }}>
+            ← Volver
+          </button>
+        )}
         <div style={{ flex: 1, fontSize: 14, fontWeight: 800, color: C.white }}>☀️ Mi Dia — {currentUser?.name}</div>
         {onLogout && (
           <button onClick={onLogout} style={{ background: "transparent", border: "none", cursor: "pointer", color: "rgba(232,93,74,0.85)", fontWeight: 700, fontSize: 12 }}>

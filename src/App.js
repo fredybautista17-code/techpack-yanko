@@ -5903,17 +5903,21 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
               <input type="checkbox" checked={form.isAdmin} onChange={(e) => setForm((f) => ({ ...f, isAdmin: e.target.checked }))} /> Acceso de administrador
             </label>
           </div>
-          {/* (2026-09-06, a pedido de Fredy) Para personal de Nómina que
-              revisa la Auditoría Busint vs Nómina de TODAS las áreas (no es
-              líder de una sola área de planta) -- ej. María Fernanda Páez,
-              Yuleisi Virginia. Ver "isNominaAreasPura" en el componente de
-              nivel superior de este archivo. */}
+          {/* (2026-09-07, a pedido de Fredy) Para personal de Nómina/
+              Talento Humano que revisa la Auditoría Busint vs Nómina de
+              TODAS las áreas (no es líder de una sola área de planta) --
+              ej. María Fernanda Páez, Yuleisi Virginia. Antes esto la
+              mandaba directo al módulo Áreas en pantalla completa (sin
+              menú); ahora solo le agrega el botón "☀️ Mi Día" a su menú
+              normal (ver moduloActivo === "mi_dia" en el componente de
+              nivel superior de este archivo), así conserva el resto de
+              sus módulos (Nómina, Talento Humano, etc.). */}
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
             <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: T.ink, fontWeight: 600 }}>
-              <input type="checkbox" checked={!!form.landingAreas} onChange={(e) => setForm((f) => ({ ...f, landingAreas: e.target.checked }))} /> Entrar directo a Áreas (Nómina)
+              <input type="checkbox" checked={!!form.landingAreas} onChange={(e) => setForm((f) => ({ ...f, landingAreas: e.target.checked }))} /> Mostrar "☀️ Mi Día" (Auditoría de Nómina, todas las áreas)
             </label>
           </div>
-          <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>En vez del menú completo, al entrar cae derecho al módulo Áreas (Centro de Costo Cierre / Auditoría Busint vs Nómina). Deja "Área Interna" vacía arriba para que le salga el selector de TODAS las áreas en vez de quedar fija a una sola -- y verifica que su rol tenga activado el permiso "Centro de Costo" en 🗂️ Áreas (Admin → Roles).</div>
+          <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Le agrega el botón "☀️ Mi Día" a su menú lateral (sin quitarle nada de lo demás) donde puede elegir cualquier área y ver su Auditoría Busint vs Nómina. Deja "Área Interna" vacía arriba para que le salga el selector de TODAS las áreas en vez de quedar fija a una sola -- y verifica que su rol tenga activado el permiso "Centro de Costo" en 🗂️ Áreas (Admin → Roles).</div>
           {error && <div style={{ marginTop: 12, padding: "8px 12px", background: T.coralBg, borderRadius: 8, fontSize: 13, color: T.coral, fontWeight: 600 }}>⚠ {error}</div>}
           <div style={{ display: "flex", gap: 10, marginTop: 16, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => { setShowForm(false); setError(""); }}>Cancelar</Btn>
@@ -11187,16 +11191,6 @@ function AppInner() {
     !canAccessNomina &&
     !canAccessKpis &&
     !canAccessInformes;
-  // (2026-09-06, a pedido de Fredy) Mismo atajo de pantalla completa que
-  // "Planeador puro"/"Contabilidad pura" arriba, pero para personal de
-  // Nómina/Talento Humano que revisa la Auditoría Busint vs Nómina de
-  // TODAS las áreas (no es líder de una sola área) -- ej. María Fernanda
-  // Páez, Yuleisi Virginia. Se activa marcando el checkbox "Entrar
-  // directo a Áreas (Nómina)" en Usuarios (campo landingAreas). No se le
-  // fija un Área Interna (se deja vacía en su usuario). En vez de entrar
-  // al módulo Áreas completo, cae en "Mi Día" (MiDiaNominaStandalone):
-  // elige el área con botones y ve directo su auditoría.
-  const isNominaAreasPura = !!currentUser?.landingAreas && !currentUser?.isAdmin && canAccessAreas;
   if (appState === "loading") return <LoadingScreen message="Conectando con Firebase..." />;
   if (appState === "login" || !currentUser) return <LoginScreen externalError={loginError} />;
   if (isPlaneadorPuro) {
@@ -11204,9 +11198,6 @@ function AppInner() {
   }
   if (isContabilidadPura) {
     return <ModuloContabilidad currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
-  }
-  if (isNominaAreasPura) {
-    return <MiDiaNominaStandalone currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (canAccessCorte && moduloActivo === "corte") {
     return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} onVolver={() => setModuloActivo("diseno")} puedeAprobarCorte={perms.aprobarCorte} />;
@@ -11229,6 +11220,15 @@ function AppInner() {
     const onLogoutMiDia = () => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); };
     if ((currentUser?.procesosPlaneacion || []).length > 0) {
       return <ProgramadorProcesosStandalone currentUser={currentUser} onVolver={onVolverMiDia} onLogout={onLogoutMiDia} />;
+    }
+    // (2026-09-07, a pedido de Fredy) Para personal de Nómina/Talento
+    // Humano que revisa la Auditoría Busint vs Nómina de TODAS las áreas
+    // (campo landingAreas en Usuarios) -- ej. María Fernanda Páez,
+    // Yuleisi Virginia. Antes esto era un atajo de pantalla completa sin
+    // menú (isNominaAreasPura); ahora es solo este botón dentro de su
+    // menú normal, para que conserven sus demás módulos.
+    if (currentUser?.landingAreas) {
+      return <MiDiaNominaStandalone currentUser={currentUser} onVolver={onVolverMiDia} onLogout={onLogoutMiDia} />;
     }
     return <MiDiaStandalone currentUser={currentUser} onVolver={onVolverMiDia} onLogout={onLogoutMiDia} />;
   }
@@ -11289,8 +11289,14 @@ function AppInner() {
               programar" (Admin → Usuarios) — hoy Anny Beltrán y Sarai
               Méndez — porque Fredy pidió que ellas también vean ahí las
               programaciones de planta y lo que se va a recibir de plantas
-              externas, además de su Programador de Procesos aparte. */}
-          {(/^planeadora?$/i.test(currentUser?.username || currentUser?.name || "") || (currentUser?.procesosPlaneacion || []).length > 0) && (
+              externas, además de su Programador de Procesos aparte.
+              (2026-09-07) También entra cualquier usuario con el
+              checkbox de Nómina/Talento Humano (campo landingAreas) --
+              hoy María Fernanda Páez, Yuleisi Virginia -- para que vean
+              su Auditoría Busint vs Nómina de todas las áreas SIN perder
+              el resto de su menú normal (antes las mandaba a una
+              pantalla de pantalla completa aparte). */}
+          {(/^planeadora?$/i.test(currentUser?.username || currentUser?.name || "") || (currentUser?.procesosPlaneacion || []).length > 0 || currentUser?.landingAreas) && (
             <button onClick={() => setModuloActivo("mi_dia")} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: moduloActivo === "mi_dia" ? T.seam : "transparent", color: moduloActivo === "mi_dia" ? T.ink : "#8888AA", fontWeight: moduloActivo === "mi_dia" ? 800 : 500, fontSize: 13, textAlign: "left", marginBottom: 8 }}><span style={{ fontSize: 15 }}>☀️</span> Mi Día</button>
           )}
           {(currentUser?.procesosPlaneacion || []).length > 0 && (
