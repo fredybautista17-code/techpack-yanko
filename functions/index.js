@@ -684,12 +684,34 @@ async function sincronizarBitacoraDespachos() {
 
   let nuevos = 0;
   let actualizados = 0;
+  let eliminados = 0;
   const coleccion = db.collection("bitacora_despachos");
 
   for (const cliente of resultado.clientes) {
     const tipoCliente = tiposCliente[cliente.codigoCliente] || tiposCliente[cliente.nombreCliente] || "facturado";
     const esConsignacion = tipoCliente === "consignacion";
     const tiposPermitidos = esConsignacion ? TIPOS_BITACORA_CONSIGNACION : TIPOS_BITACORA_FACTURADO;
+
+    // (2026-09-07, a pedido de Fredy) Si un cliente cambia de clasificacion
+    // (ej. Kamila Group paso a Consignacion), los documentos que ya se
+    // habian guardado en la bitacora con el tipo ANTERIOR (ej. Factura)
+    // quedaban huerfanos: nunca se volvian a tocar, pero se seguian sumando
+    // junto con los nuevos de Consignacion -- eso fue lo que duplico el
+    // total de Kamila ($79.8M/5.310 und. en vez de $17.5M/1.114 und.). Antes
+    // de sincronizar los documentos vigentes de este cliente, se borran los
+    // que ya existan en su bitacora pero que ya no le correspondan segun su
+    // clasificacion actual.
+    const filtroCliente = cliente.codigoCliente
+      ? coleccion.where("codigoCliente", "==", cliente.codigoCliente)
+      : coleccion.where("nombreCliente", "==", cliente.nombreCliente);
+    const snapExistentes = await filtroCliente.get();
+    for (const docViejo of snapExistentes.docs) {
+      if (!tiposPermitidos.has(docViejo.data().tipo)) {
+        await docViejo.ref.delete();
+        eliminados++;
+      }
+    }
+
     for (const documento of cliente.documentos) {
       if (!tiposPermitidos.has(documento.tipo)) continue;
       const id = claveBitacoraDespacho(cliente.codigoCliente, documento.numero, documento.numped);
@@ -724,8 +746,8 @@ async function sincronizarBitacoraDespachos() {
       }
     }
   }
-  logger.info("sincronizarBitacoraDespachos completado", { nuevos, actualizados });
-  return { nuevos, actualizados };
+  logger.info("sincronizarBitacoraDespachos completado", { nuevos, actualizados, eliminados });
+  return { nuevos, actualizados, eliminados };
 }
 
 // Boton "Sincronizar ahora" en Informes -> Centro de Estadisticas (solo

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, doc, onSnapshot, query, where, updateDoc } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
@@ -397,7 +397,9 @@ function DespachosDiarioView({ currentUser }) {
   async function sincronizarAhora() {
     setSincronizando(true);
     try {
-      await httpsCallable(functionsClient, "sincronizarBitacoraDespachosAhora")();
+      const r = await httpsCallable(functionsClient, "sincronizarBitacoraDespachosAhora")();
+      const d = r.data || {};
+      alert(`Sincronizado: ${d.nuevos || 0} nuevos, ${d.actualizados || 0} actualizados` + (d.eliminados ? `, ${d.eliminados} duplicados corregidos.` : "."));
     } catch (err) {
       alert("No se pudo sincronizar: " + (err.message || err));
     } finally {
@@ -506,6 +508,179 @@ function DespachosPorClienteView() {
     </div>
   );
 }
+// (2026-09-07, a pedido de Fredy) Grafica sencilla en SVG (sin libreria
+// nueva -- el proyecto no tenia ninguna en package.json, y asi no hay que
+// instalar nada ni pedirle a Fredy que corra npm install) de despachos por
+// dia, sumando TODOS los clientes. Una sola serie (barras), por eso no
+// necesita leyenda -- el titulo de la tarjeta ya dice que se esta viendo.
+// Cada barra tiene su tooltip al pasar el mouse con el valor exacto, y la
+// tabla de abajo deja ver los mismos numeros sin necesidad de pasar el
+// mouse.
+function BarraDespachosPorDia({ dias, metrica }) {
+  const contenedorRef = useRef(null);
+  const [activa, setActiva] = useState(null);
+
+  const valores = dias.map((d) => d[metrica] || 0);
+  const maxValor = Math.max(1, ...valores);
+  const magnitud = Math.pow(10, Math.floor(Math.log10(maxValor / 4 || 1)));
+  const pasoEje = Math.max(1, Math.ceil((maxValor / 4) / magnitud) * magnitud);
+  const techoEje = pasoEje * 4;
+  const ticks = [0, 1, 2, 3, 4].map((i) => pasoEje * i);
+
+  const altoGrafico = 200;
+  const margenSup = 14;
+  const margenIzq = 62;
+  const anchoBarra = 22;
+  const espacioBarra = 12;
+  const saltarEtiqueta = dias.length > 20 ? Math.ceil(dias.length / 15) : 1;
+  const anchoInterno = Math.max(dias.length * (anchoBarra + espacioBarra), 1);
+
+  const fmtMetrica = (v) => (metrica === "monto" ? `$${fmtNum(Math.round(v))}` : fmtNum(v));
+  const fmtFechaCorta = (iso) => { const p = (iso || "").split("-"); return p.length === 3 ? `${p[2]}/${p[1]}` : (iso || ""); };
+  const fmtFechaLarga = (iso) => { const p = (iso || "").split("-"); return p.length === 3 ? `${p[2]}/${p[1]}/${p[0]}` : (iso || ""); };
+
+  return (
+    <div ref={contenedorRef} style={{ position: "relative", overflowX: "auto", paddingBottom: 6 }}>
+      <svg width={margenIzq + anchoInterno + 14} height={altoGrafico + margenSup + 34}>
+        {ticks.map((t, i) => {
+          const y = margenSup + altoGrafico - (t / techoEje) * altoGrafico;
+          return (
+            <g key={i}>
+              <line x1={margenIzq} x2={margenIzq + anchoInterno} y1={y} y2={y} stroke={C.border} strokeWidth={1} />
+              <text x={margenIzq - 10} y={y + 4} textAnchor="end" fontSize={10} fontWeight={700} fill={C.slate}>{fmtNum(t)}</text>
+            </g>
+          );
+        })}
+        {dias.map((d, i) => {
+          const valor = d[metrica] || 0;
+          const alturaBarra = (valor / techoEje) * altoGrafico;
+          const x = margenIzq + i * (anchoBarra + espacioBarra);
+          const y = margenSup + altoGrafico - alturaBarra;
+          const activo = activa && activa.idx === i;
+          const mostrarEtiqueta = i % saltarEtiqueta === 0;
+          return (
+            <g key={d.fecha}>
+              <rect
+                x={x} y={margenSup} width={anchoBarra} height={altoGrafico} fill="transparent"
+                onMouseEnter={() => setActiva({ idx: i, dia: d, x: x + anchoBarra / 2, y })}
+                onMouseLeave={() => setActiva(null)}
+                style={{ cursor: "pointer" }}
+              />
+              <rect x={x} y={y} width={anchoBarra} height={Math.max(alturaBarra, 2)} rx={4} fill={activo ? C.blue : `${C.blue}B3`} />
+              {mostrarEtiqueta && (
+                <text x={x + anchoBarra / 2} y={margenSup + altoGrafico + 18} textAnchor="middle" fontSize={9} fontWeight={700} fill={C.slate}>{fmtFechaCorta(d.fecha)}</text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+      {activa && (
+        <div style={{ position: "absolute", left: Math.max(0, activa.x - 70), top: Math.max(0, activa.y - 54), background: C.ink, color: C.white, borderRadius: 8, padding: "8px 12px", fontSize: 12, pointerEvents: "none", boxShadow: "0 4px 14px rgba(15,15,25,0.22)", whiteSpace: "nowrap", zIndex: 5 }}>
+          <div style={{ fontWeight: 900, fontSize: 14 }}>{fmtMetrica(activa.dia[metrica])}</div>
+          <div style={{ opacity: 0.75, fontSize: 10.5, marginTop: 2 }}>{fmtFechaLarga(activa.dia.fecha)} · {activa.dia.documentos} doc.</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// (2026-09-07, a pedido de Fredy) "de igual manera hacer un dashboard de
+// cuando se a despachado por todos" -- vista de TOTAL general (todos los
+// clientes juntos, sin separar por Consignacion/Facturado): grafica de
+// despachos por dia + tarjetas con los totales del rango.
+function DespachosTotalesView() {
+  const hoyISO = () => new Date().toISOString().slice(0, 10);
+  const hace30ISO = () => { const d = new Date(); d.setDate(d.getDate() - 29); return d.toISOString().slice(0, 10); };
+  const [fechaDesde, setFechaDesde] = useState(hace30ISO);
+  const [fechaHasta, setFechaHasta] = useState(hoyISO);
+  const [metrica, setMetrica] = useState("unidades");
+  const [filas, setFilas] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    const q = query(collection(db, "bitacora_despachos"), where("fecha", ">=", fechaDesde), where("fecha", "<=", fechaHasta));
+    const unsub = onSnapshot(q, (snap) => {
+      setFilas(snap.docs.map((d) => d.data()));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, [fechaDesde, fechaHasta]);
+
+  const { dias, totales } = useMemo(() => {
+    const porDia = new Map();
+    let totalDocumentos = 0, totalUnidades = 0, totalMonto = 0, totalDevueltas = 0;
+    const clientesUnicos = new Set();
+    filas.forEach((f) => {
+      const clave = f.fecha || "";
+      if (!porDia.has(clave)) porDia.set(clave, { fecha: clave, unidades: 0, monto: 0, documentos: 0 });
+      const registro = porDia.get(clave);
+      if (f.esDevolucion) {
+        totalDevueltas += Math.abs(f.unidades || 0);
+      } else {
+        registro.unidades += f.unidades || 0;
+        registro.monto += f.monto || 0;
+        registro.documentos += 1;
+        totalDocumentos += 1;
+        totalUnidades += f.unidades || 0;
+        totalMonto += f.monto || 0;
+        clientesUnicos.add(f.codigoCliente || f.nombreCliente || "");
+      }
+    });
+    const dias = [...porDia.values()].sort((a, b) => a.fecha.localeCompare(b.fecha));
+    return { dias, totales: { totalDocumentos, totalUnidades, totalMonto, totalDevueltas, totalClientes: clientesUnicos.size } };
+  }, [filas]);
+
+  const columnasTabla = [
+    { key: "fecha", label: "Fecha" },
+    { key: "documentos", label: "Documentos", align: "right" },
+    { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
+    { key: "monto", label: "Monto", align: "right", render: (f) => `$${fmtNum(Math.round(f.monto))}` },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 18 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>Desde</span>
+        <input type="date" value={fechaDesde} onChange={(e) => setFechaDesde(e.target.value)} style={{ padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+        <span style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>Hasta</span>
+        <input type="date" value={fechaHasta} onChange={(e) => setFechaHasta(e.target.value)} style={{ padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14, marginBottom: 22 }}>
+        <KPI icon="🏢" label="Clientes despachados" value={totales.totalClientes} color={C.violet} bg={C.violetBg} />
+        <KPI icon="📦" label="Documentos" value={totales.totalDocumentos} color={C.blue} bg={C.blueBg} />
+        <KPI icon="🔢" label="Unidades despachadas" value={fmtNum(totales.totalUnidades)} color={C.ink} bg={C.canvas} />
+        <KPI icon="💰" label="Monto total" value={`$${fmtNum(Math.round(totales.totalMonto))}`} color={C.green} bg={C.greenBg} />
+        {totales.totalDevueltas > 0 && <KPI icon="↩" label="Unidades devueltas" value={fmtNum(totales.totalDevueltas)} color={C.red} bg={C.redBg} />}
+      </div>
+
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: "20px 22px 14px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: C.ink }}>Despachos por día · todos los clientes</div>
+          <div style={{ display: "inline-flex", gap: 4, padding: 4, background: C.canvas, borderRadius: 10, border: `1px solid ${C.border}` }}>
+            <button onClick={() => setMetrica("unidades")} style={{ padding: "6px 14px", borderRadius: 7, border: "none", background: metrica === "unidades" ? C.white : "transparent", color: metrica === "unidades" ? C.ink : C.slate, fontWeight: 800, fontSize: 12, cursor: "pointer", boxShadow: metrica === "unidades" ? "0 1px 3px rgba(15,15,25,0.10)" : "none" }}>Unidades</button>
+            <button onClick={() => setMetrica("monto")} style={{ padding: "6px 14px", borderRadius: 7, border: "none", background: metrica === "monto" ? C.white : "transparent", color: metrica === "monto" ? C.ink : C.slate, fontWeight: 800, fontSize: 12, cursor: "pointer", boxShadow: metrica === "monto" ? "0 1px 3px rgba(15,15,25,0.10)" : "none" }}>Monto</button>
+          </div>
+        </div>
+        {loading ? (
+          <div style={{ padding: 30, textAlign: "center", color: C.slate }}>Cargando...</div>
+        ) : dias.length === 0 ? (
+          <div style={{ padding: 30, textAlign: "center", color: C.slate }}>No hay despachos registrados en este rango.</div>
+        ) : (
+          <BarraDespachosPorDia dias={dias} metrica={metrica} />
+        )}
+      </div>
+
+      {!loading && dias.length > 0 && (
+        <div style={{ marginTop: 18 }}>
+          <Tabla columnas={columnasTabla} filas={[...dias].sort((a, b) => b.fecha.localeCompare(a.fecha))} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CentroEstadisticasView({ currentUser }) {
   const [tab, setTab] = useState("diario");
   return (
@@ -513,8 +688,11 @@ function CentroEstadisticasView({ currentUser }) {
       <div style={{ display: "inline-flex", gap: 4, padding: 5, background: C.canvas, borderRadius: 14, marginBottom: 22, border: `1px solid ${C.border}` }}>
         <button onClick={() => setTab("diario")} style={{ padding: "9px 18px", borderRadius: 10, border: "none", background: tab === "diario" ? C.white : "transparent", color: tab === "diario" ? C.ink : C.slate, fontWeight: 800, fontSize: 13, cursor: "pointer", boxShadow: tab === "diario" ? "0 1px 4px rgba(15,15,25,0.10)" : "none" }}>📦 Despachos diarios</button>
         <button onClick={() => setTab("cliente")} style={{ padding: "9px 18px", borderRadius: 10, border: "none", background: tab === "cliente" ? C.white : "transparent", color: tab === "cliente" ? C.ink : C.slate, fontWeight: 800, fontSize: 13, cursor: "pointer", boxShadow: tab === "cliente" ? "0 1px 4px rgba(15,15,25,0.10)" : "none" }}>👥 Por cliente (mes)</button>
+        <button onClick={() => setTab("total")} style={{ padding: "9px 18px", borderRadius: 10, border: "none", background: tab === "total" ? C.white : "transparent", color: tab === "total" ? C.ink : C.slate, fontWeight: 800, fontSize: 13, cursor: "pointer", boxShadow: tab === "total" ? "0 1px 4px rgba(15,15,25,0.10)" : "none" }}>📈 Total general</button>
       </div>
-      {tab === "diario" ? <DespachosDiarioView currentUser={currentUser} /> : <DespachosPorClienteView />}
+      {tab === "diario" && <DespachosDiarioView currentUser={currentUser} />}
+      {tab === "cliente" && <DespachosPorClienteView />}
+      {tab === "total" && <DespachosTotalesView />}
     </div>
   );
 }
