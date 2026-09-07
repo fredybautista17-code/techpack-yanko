@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { initializeApp, getApps } from "firebase/app";
-import { getFirestore, collection, doc, onSnapshot } from "firebase/firestore";
+import { getFirestore, collection, doc, onSnapshot, query, where, updateDoc } from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -12,6 +13,7 @@ const firebaseConfig = {
 };
 const fbApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
+const functionsClient = getFunctions(fbApp);
 
 // ─── TOKENS (mismos de los demás módulos) ──────────────────────────────────
 const C = {
@@ -339,6 +341,171 @@ function ProximamenteView({ titulo, desc }) {
   );
 }
 
+// ─── CENTRO DE ESTADISTICAS -- Despachos (2026-09-07, a pedido de Fredy) ──
+// Bitacora de despacho: cada documento de facturacion nuevo en Busint (FAC/
+// TEX, y sus devoluciones DTE) llega solo, via la Cloud Function
+// revisarDespachosNuevos -- aqui solo se lee y se completa transportador,
+// guia, si ya llego y la observacion. El correo diario a lideres lo manda
+// aparte correoDespachosDiarios (todos los dias 6pm).
+function BadgeTipoDespacho({ tipo, esDevolucion }) {
+  const cfg = esDevolucion
+    ? { bg: C.redBg, color: C.red, label: "↩ Devolución" }
+    : tipo === "TEX"
+    ? { bg: C.blueBg, color: C.blue, label: "Traslado Externo" }
+    : { bg: C.greenBg, color: C.green, label: "Factura" };
+  return <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 20, background: cfg.bg, color: cfg.color, whiteSpace: "nowrap" }}>{cfg.label}</span>;
+}
+function CampoEditableDespacho({ valor, onGuardar, placeholder }) {
+  const [val, setVal] = useState(valor || "");
+  useEffect(() => { setVal(valor || ""); }, [valor]);
+  return (
+    <input
+      value={val}
+      placeholder={placeholder}
+      onChange={(e) => setVal(e.target.value)}
+      onBlur={() => { if (val !== (valor || "")) onGuardar(val); }}
+      style={{ width: "100%", padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }}
+    />
+  );
+}
+async function guardarCampoDespacho(id, campo, valor) {
+  await updateDoc(doc(db, "bitacora_despachos", id), { [campo]: valor });
+}
+function DespachosDiarioView({ currentUser }) {
+  const [fecha, setFecha] = useState(() => new Date().toISOString().slice(0, 10));
+  const [filas, setFilas] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [sincronizando, setSincronizando] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    const q = query(collection(db, "bitacora_despachos"), where("fecha", "==", fecha));
+    const unsub = onSnapshot(q, (snap) => {
+      setFilas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, [fecha]);
+
+  async function sincronizarAhora() {
+    setSincronizando(true);
+    try {
+      await httpsCallable(functionsClient, "sincronizarBitacoraDespachosAhora")();
+    } catch (err) {
+      alert("No se pudo sincronizar: " + (err.message || err));
+    } finally {
+      setSincronizando(false);
+    }
+  }
+
+  const despachos = [...filas].filter((f) => !f.esDevolucion).sort((a, b) => (b.monto || 0) - (a.monto || 0));
+  const devoluciones = filas.filter((f) => f.esDevolucion);
+  const totalUnidades = despachos.reduce((s, f) => s + (f.unidades || 0), 0);
+  const pendientesGuia = despachos.filter((f) => !f.transportador || !f.guia).length;
+  const llegados = despachos.filter((f) => f.llego).length;
+
+  const columnas = [
+    { key: "nombreCliente", label: "Cliente" },
+    { key: "numero", label: "Documento" },
+    { key: "tipo", label: "Tipo", render: (f) => <BadgeTipoDespacho tipo={f.tipo} esDevolucion={f.esDevolucion} /> },
+    { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
+    { key: "transportador", label: "Transportador", render: (f) => f.esDevolucion ? <span style={{ color: C.slate }}>—</span> : <CampoEditableDespacho valor={f.transportador} placeholder="—" onGuardar={(v) => guardarCampoDespacho(f.id, "transportador", v)} /> },
+    { key: "guia", label: "Guía", render: (f) => f.esDevolucion ? <span style={{ color: C.slate }}>—</span> : <CampoEditableDespacho valor={f.guia} placeholder="—" onGuardar={(v) => guardarCampoDespacho(f.id, "guia", v)} /> },
+    { key: "llego", label: "Llegó", align: "center", render: (f) => f.esDevolucion ? "—" : <input type="checkbox" checked={!!f.llego} onChange={(e) => guardarCampoDespacho(f.id, "llego", e.target.checked)} /> },
+    { key: "observacion", label: "Observación", render: (f) => f.esDevolucion ? <span style={{ color: C.slate }}>—</span> : <CampoEditableDespacho valor={f.observacion} placeholder="Sin novedad" onGuardar={(v) => guardarCampoDespacho(f.id, "observacion", v)} /> },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
+        <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={{ padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+        {currentUser?.isAdmin && (
+          <button onClick={sincronizarAhora} disabled={sincronizando} style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontWeight: 700, fontSize: 12, cursor: sincronizando ? "default" : "pointer" }}>
+            {sincronizando ? "Sincronizando..." : "🔄 Sincronizar ahora"}
+          </button>
+        )}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14, marginBottom: 22 }}>
+        <KPI icon="📦" label="Documentos" value={despachos.length} color={C.blue} bg={C.blueBg} />
+        <KPI icon="🔢" label="Unidades despachadas" value={fmtNum(totalUnidades)} color={C.ink} bg={C.canvas} />
+        <KPI icon="🚚" label="Falta transportador/guía" value={pendientesGuia} color={C.amber} bg={C.amberBg} />
+        <KPI icon="✅" label="Ya llegaron" value={llegados} color={C.green} bg={C.greenBg} />
+        {devoluciones.length > 0 && <KPI icon="↩" label="Devoluciones" value={devoluciones.length} color={C.red} bg={C.redBg} />}
+      </div>
+      {loading ? (
+        <div style={{ padding: 30, textAlign: "center", color: C.slate }}>Cargando...</div>
+      ) : (
+        <Tabla vacio="No hay despachos registrados este día." columnas={columnas} filas={[...despachos, ...devoluciones]} />
+      )}
+    </div>
+  );
+}
+function DespachosPorClienteView() {
+  const [mes, setMes] = useState(() => new Date().toISOString().slice(0, 7));
+  const [filas, setFilas] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    const desde = `${mes}-01`;
+    const hasta = `${mes}-31`;
+    const q = query(collection(db, "bitacora_despachos"), where("fecha", ">=", desde), where("fecha", "<=", hasta));
+    const unsub = onSnapshot(q, (snap) => {
+      setFilas(snap.docs.map((d) => d.data()));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, [mes]);
+
+  const porCliente = useMemo(() => {
+    const m = new Map();
+    filas.forEach((f) => {
+      const clave = f.codigoCliente || f.nombreCliente || "(sin identificar)";
+      if (!m.has(clave)) m.set(clave, { nombreCliente: f.nombreCliente || clave, unidades: 0, monto: 0, devueltas: 0, documentos: 0 });
+      const c = m.get(clave);
+      if (f.esDevolucion) {
+        c.devueltas += Math.abs(f.unidades || 0);
+      } else {
+        c.unidades += f.unidades || 0;
+        c.monto += f.monto || 0;
+        c.documentos += 1;
+      }
+    });
+    return [...m.values()].sort((a, b) => b.unidades - a.unidades);
+  }, [filas]);
+
+  const columnas = [
+    { key: "nombreCliente", label: "Cliente" },
+    { key: "documentos", label: "Documentos", align: "right" },
+    { key: "unidades", label: "Unidades despachadas", align: "right", render: (f) => fmtNum(f.unidades) },
+    { key: "devueltas", label: "Unidades devueltas", align: "right", render: (f) => (f.devueltas ? fmtNum(f.devueltas) : "—") },
+    { key: "monto", label: "Monto", align: "right", render: (f) => `$${fmtNum(Math.round(f.monto))}` },
+  ];
+
+  return (
+    <div>
+      <input type="month" value={mes} onChange={(e) => setMes(e.target.value)} style={{ padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", marginBottom: 18 }} />
+      {loading ? (
+        <div style={{ padding: 30, textAlign: "center", color: C.slate }}>Cargando...</div>
+      ) : (
+        <Tabla vacio="No hay despachos registrados este mes." columnas={columnas} filas={porCliente} />
+      )}
+    </div>
+  );
+}
+function CentroEstadisticasView({ currentUser }) {
+  const [tab, setTab] = useState("diario");
+  return (
+    <div>
+      <div style={{ display: "inline-flex", gap: 4, padding: 5, background: C.canvas, borderRadius: 14, marginBottom: 22, border: `1px solid ${C.border}` }}>
+        <button onClick={() => setTab("diario")} style={{ padding: "9px 18px", borderRadius: 10, border: "none", background: tab === "diario" ? C.white : "transparent", color: tab === "diario" ? C.ink : C.slate, fontWeight: 800, fontSize: 13, cursor: "pointer", boxShadow: tab === "diario" ? "0 1px 4px rgba(15,15,25,0.10)" : "none" }}>📦 Despachos diarios</button>
+        <button onClick={() => setTab("cliente")} style={{ padding: "9px 18px", borderRadius: 10, border: "none", background: tab === "cliente" ? C.white : "transparent", color: tab === "cliente" ? C.ink : C.slate, fontWeight: 800, fontSize: 13, cursor: "pointer", boxShadow: tab === "cliente" ? "0 1px 4px rgba(15,15,25,0.10)" : "none" }}>👥 Por cliente (mes)</button>
+      </div>
+      {tab === "diario" ? <DespachosDiarioView currentUser={currentUser} /> : <DespachosPorClienteView />}
+    </div>
+  );
+}
+
 // ─── RAÍZ DEL MÓDULO ────────────────────────────────────────────────────────
 // Por ahora solo trae el informe de "Vencidos" (Diseño: prototipos +
 // referencias de cápsula), que es lo que ya está construido y probado (es
@@ -367,6 +534,7 @@ export default function ModuloInformes({ currentUser, onVolver, onLogout }) {
   const NAV = [
     { id: "vencidos", icon: "🚩", label: "Vencidos (Diseño)" },
     { id: "cierre_diseno", icon: "🗓", label: "Cierre Mensual (Diseño)" },
+    { id: "centro_estadisticas", icon: "📊", label: "Centro de Estadísticas" },
     { id: "bodega", icon: "📦", label: "Bodega" },
     { id: "corte", icon: "✂", label: "Corte" },
     { id: "contabilidad", icon: "💰", label: "Contabilidad" },
@@ -429,6 +597,7 @@ export default function ModuloInformes({ currentUser, onVolver, onLogout }) {
           <h1 style={{ margin: "0 0 20px", fontSize: 20, fontWeight: 900, color: C.ink }}>{NAV.find((n) => n.id === subView)?.label || ""}</h1>
           {subView === "vencidos" && <VencidosView protos={protos} capsulas={capsulas} stages={stages} />}
           {subView === "cierre_diseno" && <CierreDisenoView historial={historial} protos={protos} capsulas={capsulas} />}
+          {subView === "centro_estadisticas" && <CentroEstadisticasView currentUser={currentUser} />}
           {subView === "bodega" && <ProximamenteView titulo="Informes de Bodega — próximamente" desc="Aquí van a ir los informes de despachos, abonos y saldo. Cuéntame qué necesitas ver primero y lo armamos." />}
           {subView === "corte" && <ProximamenteView titulo="Informes de Corte — próximamente" desc="Aquí van a ir los informes de cumplimiento, tendido y corte. Cuéntame qué necesitas ver primero y lo armamos." />}
           {subView === "contabilidad" && <ProximamenteView titulo="Informes de Contabilidad — próximamente" desc="Aquí van a ir los informes de flujo de caja y cuentas por pagar. Cuéntame qué necesitas ver primero y lo armamos." />}

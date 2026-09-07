@@ -371,18 +371,12 @@ exports.getDocumentosPorPedidoBusint = onCall(
   }
 );
 
-exports.getFacturacionPorClienteBusint = onCall(
-  {
-    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
-    timeoutSeconds: 300,
-    memory: "1GiB",
-  },
-  async (request) => {
-    const { fechaInicio, fechaFin } = request.data || {};
-    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
-    if (!fechaValida(fechaInicio) || !fechaValida(fechaFin)) {
-      throw new HttpsError("invalid-argument", "fechaInicio y fechaFin son obligatorias, en formato AAAA-MM-DD.");
-    }
+// Agrupa la facturacion de Busint por cliente -> documento, aplicando la
+// logica de tipos (FAC/TCO/DTC/TEX/DTE) y el precio de devoluciones sin
+// precio. Extraido de exports.getFacturacionPorClienteBusint (2026-09-07)
+// para poder reusarlo tambien desde la bitacora de despachos
+// (sincronizarBitacoraDespachos) sin duplicar esta logica.
+async function agruparFacturacionPorClienteBusint(fechaInicio, fechaFin) {
     // (2026-08-27) Confirmado con el usuario qué significa cada "tipo" que
     // trae ApiGen_FacturadoBusint (mezclados en el mismo endpoint, Busint
     // no los separa):
@@ -613,6 +607,120 @@ exports.getFacturacionPorClienteBusint = onCall(
       primeraFilaClienteCruda: filasClientes.length ? filasClientes[0] : null,
       totalClientesCruzados: nombrePorCodigo.size,
     };
+}
+
+exports.getFacturacionPorClienteBusint = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    const { fechaInicio, fechaFin } = request.data || {};
+    const fechaValida = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    if (!fechaValida(fechaInicio) || !fechaValida(fechaFin)) {
+      throw new HttpsError("invalid-argument", "fechaInicio y fechaFin son obligatorias, en formato AAAA-MM-DD.");
+    }
+    return await agruparFacturacionPorClienteBusint(fechaInicio, fechaFin);
+  }
+);
+
+// (2026-09-07, a pedido de Fredy) Bitacora de Despacho: cada vez que
+// aparece un documento nuevo de facturacion en Busint (factura FAC o
+// traslado externo TEX, y su devolucion DTE si la hay), se crea sola una
+// fila en Firestore (bitacora_despachos) con la fecha, el cliente y el
+// documento -- lista para que Bodega complete transportador y guia, y
+// despues marque si ya llego y si tuvo alguna observacion. Los traslados
+// en consignacion (TCO/DTC) NO se incluyen todavia porque Busint los trata
+// como un estimado pendiente de decision del cliente, no como una venta
+// facturada de verdad (ver nota en FacturacionClientesView) -- si Fredy
+// tambien los quiere aqui, se agregan despues sin tener que rehacer nada.
+//
+// Se vuelve a sincronizar los ultimos DIAS_VENTANA_BITACORA_DESPACHOS dias
+// en cada corrida (no solo "hoy") por si Busint tarda en reflejar un
+// documento reciente. Es idempotente por documento (mismo cliente+numero+
+// numped siempre cae en el mismo id): solo actualiza los campos que vienen
+// de Busint, nunca pisa transportador/guia/llego/observacion que ya haya
+// llenado alguien a mano.
+function claveBitacoraDespacho(codigoCliente, numero, numped) {
+  const cruda = `${codigoCliente || "sc"}_${numero || "0"}_${numped || "0"}`;
+  return cruda.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 400) || "sin_clave";
+}
+
+const DIAS_VENTANA_BITACORA_DESPACHOS = 15;
+const TIPOS_BITACORA_DESPACHOS = new Set(["FAC", "TEX", "DTE"]);
+
+async function sincronizarBitacoraDespachos() {
+  const hoy = new Date();
+  const desde = new Date(hoy.getTime() - DIAS_VENTANA_BITACORA_DESPACHOS * 86400000);
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const resultado = await agruparFacturacionPorClienteBusint(iso(desde), iso(hoy));
+
+  let nuevos = 0;
+  let actualizados = 0;
+  const coleccion = db.collection("bitacora_despachos");
+
+  for (const cliente of resultado.clientes) {
+    for (const documento of cliente.documentos) {
+      if (!TIPOS_BITACORA_DESPACHOS.has(documento.tipo)) continue;
+      const id = claveBitacoraDespacho(cliente.codigoCliente, documento.numero, documento.numped);
+      const ref = coleccion.doc(id);
+      const camposBusint = {
+        codigoCliente: cliente.codigoCliente || "",
+        nombreCliente: cliente.nombreCliente || "",
+        numero: documento.numero,
+        numped: documento.numped || "",
+        tipo: documento.tipo,
+        esDevolucion: documento.tipo === "DTE",
+        fecha: documento.fecha || null,
+        unidades: documento.unidades,
+        monto: documento.monto,
+        actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      const snap = await ref.get();
+      if (snap.exists) {
+        await ref.set(camposBusint, { merge: true });
+        actualizados++;
+      } else {
+        await ref.set({
+          ...camposBusint,
+          transportador: "",
+          guia: "",
+          llego: false,
+          fechaLlegada: null,
+          observacion: "",
+          creadoEn: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        nuevos++;
+      }
+    }
+  }
+  logger.info("sincronizarBitacoraDespachos completado", { nuevos, actualizados });
+  return { nuevos, actualizados };
+}
+
+// Boton "Sincronizar ahora" en Informes -> Centro de Estadisticas (solo
+// admin) -- para no tener que esperar hasta la proxima corrida programada
+// la primera vez, o si algo se ve desactualizado.
+exports.sincronizarBitacoraDespachosAhora = onCall(
+  { secrets: [BUSINT_TOKEN, BUSINT_BASE_URL], timeoutSeconds: 300, memory: "1GiB" },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    return await sincronizarBitacoraDespachos();
+  }
+);
+
+exports.revisarDespachosNuevos = onSchedule(
+  {
+    schedule: "every 2 hours",
+    timeZone: "America/Bogota",
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async () => {
+    const resultado = await sincronizarBitacoraDespachos();
+    logger.info("revisarDespachosNuevos completado", resultado);
   }
 );
 
@@ -3961,6 +4069,75 @@ async function mandarCorreo(transporte, destinatarios, asunto, textoHtml) {
     html: textoHtml,
   });
 }
+
+// (2026-09-07, a pedido de Fredy) Todos los dias a las 6pm le manda a los
+// lideres (mismo criterio que ya usa "Mi Dia": tener procesosPlaneacion
+// asignado, mas su correo cargado en Usuarios) un resumen de los
+// despachos de HOY que quedaron en la bitacora, con transportador/guia si
+// ya se llenaron. Si no hubo ningun movimiento ese dia no manda nada,
+// para no llenar de correos vacios. Las devoluciones del dia se listan
+// aparte, sin sumarse al total despachado.
+exports.correoDespachosDiarios = onSchedule(
+  {
+    schedule: "every day 18:00",
+    timeZone: "America/Bogota",
+    secrets: [EMAIL_USER, EMAIL_APP_PASSWORD],
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
+  async () => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    const [bitacoraSnap, usersSnap] = await Promise.all([
+      db.collection("bitacora_despachos").where("fecha", "==", hoy).get(),
+      db.collection("users").get(),
+    ]);
+    const filas = bitacoraSnap.docs.map((d) => d.data());
+    const despachos = filas.filter((f) => !f.esDevolucion);
+    const devoluciones = filas.filter((f) => f.esDevolucion);
+    if (!despachos.length && !devoluciones.length) {
+      logger.info("correoDespachosDiarios: sin movimientos hoy, no se manda correo");
+      return;
+    }
+
+    const lideres = usersSnap.docs
+      .map((d) => d.data())
+      .filter((u) => (u.procesosPlaneacion || []).length > 0 && u.email);
+    const correos = lideres.map((u) => u.email);
+    if (!correos.length) {
+      logger.warn("correoDespachosDiarios: no hay lideres con correo cargado en Usuarios, no se manda nada");
+      return;
+    }
+
+    const fmtN = (n) => Number(n || 0).toLocaleString("es-CO");
+    const totalUnidades = despachos.reduce((s, f) => s + (f.unidades || 0), 0);
+    const filasHtml = despachos
+      .slice()
+      .sort((a, b) => (b.monto || 0) - (a.monto || 0))
+      .map(
+        (f) =>
+          `<tr><td>${f.nombreCliente || "(sin cliente)"}</td><td>${f.numero}</td><td style="text-align:right">${fmtN(f.unidades)}</td><td>${f.transportador || "—"}</td><td>${f.guia || "—"}</td></tr>`
+      )
+      .join("");
+    const bloqueDevoluciones = devoluciones.length
+      ? `<h3>Devoluciones de hoy</h3><table border="1" cellpadding="6" style="border-collapse:collapse;width:100%"><tr><th>Cliente</th><th>Documento</th><th>Unidades</th></tr>${devoluciones
+          .map((f) => `<tr><td>${f.nombreCliente || "(sin cliente)"}</td><td>${f.numero}</td><td>${fmtN(f.unidades)}</td></tr>`)
+          .join("")}</table>`
+      : "";
+    const html = `
+      <h2>Despachos del ${hoy}</h2>
+      <p>${despachos.length} documento(s), ${fmtN(totalUnidades)} unidades en total.</p>
+      <table border="1" cellpadding="6" style="border-collapse:collapse;width:100%">
+        <tr><th>Cliente</th><th>Documento</th><th>Unidades</th><th>Transportador</th><th>Guia</th></tr>
+        ${filasHtml}
+      </table>
+      ${bloqueDevoluciones}
+      <p style="color:#888;font-size:12px">Detalle completo en Informes → Centro de Estadisticas → Despachos.</p>
+    `;
+    const transporte = crearTransporte();
+    await mandarCorreo(transporte, correos, `Despachos del ${hoy} — ${despachos.length} documento(s)`, html);
+    logger.info("correoDespachosDiarios enviado", { destinatarios: correos.length, despachos: despachos.length, devoluciones: devoluciones.length });
+  }
+);
 
 async function revisarYAvisarVencidos() {
   const [configSnap, usersSnap, protosSnap, capsulasSnap] = await Promise.all([
