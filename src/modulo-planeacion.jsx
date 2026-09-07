@@ -2844,6 +2844,35 @@ function TablaSuave({ columnas, filas, vacio, onRowClick }) {
   );
 }
 
+// (2026-09-07, a pedido de Fredy) Selector de pestanas tipo "segmented
+// control" -- SOLO para separar "Programar" de "Auditoria" en Mi Dia, sin
+// que se vea todo amontonado en una sola pantalla. Mismos colores de
+// siempre (C.canvas de fondo, C.white/C.ink para la pestana activa).
+function TabMiDia({ activo, onClick, icon, label }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "9px 18px",
+        borderRadius: 10,
+        border: "none",
+        background: activo ? C.white : "transparent",
+        color: activo ? C.ink : C.slate,
+        fontWeight: 800,
+        fontSize: 13,
+        cursor: "pointer",
+        boxShadow: activo ? "0 1px 4px rgba(15,15,25,0.10)" : "none",
+        transition: "all 0.15s",
+      }}
+    >
+      <span style={{ fontSize: 15 }}>{icon}</span> {label}
+    </button>
+  );
+}
+
 function ProgramadorProcesosView({
   currentUser,
   // opcional: si se pasa, se usa en vez de currentUser.procesosPlaneacion —
@@ -2886,6 +2915,10 @@ function ProgramadorProcesosView({
   // (2026-09-03, a pedido de Fredy) Pestaña activa de "Lotes
   // programados" -- "programados" | "vencidos" | "historicos".
   const [tabLotes, setTabLotes] = useState("programados");
+  // (2026-09-07, a pedido de Fredy) Pestana activa de "Mi Dia": Programar
+  // (lo de siempre) o Auditoria (el panel de Auditoria Busint vs Nomina) --
+  // para que no se vea todo amontonado en una sola pantalla.
+  const [pestanaMiDia, setPestanaMiDia] = useState("programar");
   const pendientes = useMemo(() => {
     const filas = [];
     (lotesActivos || []).forEach((l) => {
@@ -3156,7 +3189,6 @@ function ProgramadorProcesosView({
           {etiquetaProcesos || "Tus procesos"}: {misProcesos.length ? misProcesos.join(", ") : "ninguno asignado todavía"}.
         </p>
       </div>
-      <AuditoriaBusintNominaPanel area={area} currentUser={currentUser} />
       {!misProcesos.length && (
         <div style={{ background: C.white, borderRadius: 14, padding: 24, border: `1px solid ${C.border}`, color: C.slate, fontSize: 13, marginBottom: 20 }}>
           {procesos
@@ -3164,36 +3196,46 @@ function ProgramadorProcesosView({
             : "Tu usuario todavía no tiene procesos asignados. Pide a un administrador que te los asigne en Administrador General → Usuarios → \"Procesos que puede programar\"."}
         </div>
       )}
-      {movimientos?.generadoEn && (
-        <div style={{ fontSize: 11, color: C.slate, marginBottom: 14 }}>Cumplimiento actualizado: {fmtFechaHora(movimientos.generadoEn)}</div>
-      )}
-      {!movimientos && (
-        <div style={{ fontSize: 11, color: C.amber, marginBottom: 14 }}>Todavía no se ha consultado el cumplimiento contra Busint en esta sesión (se actualiza desde Estadísticas o Mi Día) — mientras tanto, lo que ya esté registrado en Nómina de todos modos se ve Cumplido.</div>
-      )}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 18, marginBottom: 28 }}>
-        <StatMini icon="📦" label="Pendientes por programar" value={pendientes.length} color={C.blue} bg={C.blueBg} />
-        <StatMini icon="⏳" label="Programados — en tiempo" value={pendientesProg.length} color={C.amber} bg={C.amberBg} />
-        <StatMini icon="✅" label="Cumplidos" value={cumplidos.length} color={C.green} bg={C.greenBg} />
-        <StatMini icon="⚠️" label="Vencidos" value={vencidos.length} color={C.red} bg={C.redBg} />
+      <div style={{ display: "inline-flex", gap: 4, padding: 5, background: C.canvas, borderRadius: 14, marginBottom: 24 }}>
+        <TabMiDia activo={pestanaMiDia === "programar"} onClick={() => setPestanaMiDia("programar")} icon="📋" label="Programar" />
+        <TabMiDia activo={pestanaMiDia === "auditoria"} onClick={() => setPestanaMiDia("auditoria")} icon="🔍" label="Auditoría" />
       </div>
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-          <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>Bodega de tu proceso — pendiente de programar</div>
-          <select value={filtroProceso} onChange={(e) => setFiltroProceso(e.target.value)} style={{ padding: "5px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, fontFamily: "inherit" }}>
-            <option value="">Todos tus procesos</option>
-            {misProcesos.map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
+      {pestanaMiDia === "auditoria" ? (
+        <AuditoriaBusintNominaPanel area={area} currentUser={currentUser} />
+      ) : (
+        <>
+        {movimientos?.generadoEn && (
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 14 }}>Cumplimiento actualizado: {fmtFechaHora(movimientos.generadoEn)}</div>
+        )}
+        {!movimientos && (
+          <div style={{ fontSize: 11, color: C.amber, marginBottom: 14 }}>Todavía no se ha consultado el cumplimiento contra Busint en esta sesión (se actualiza desde Estadísticas o Mi Día) — mientras tanto, lo que ya esté registrado en Nómina de todos modos se ve Cumplido.</div>
+        )}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 18, marginBottom: 28 }}>
+          <StatMini icon="📦" label="Pendientes por programar" value={pendientes.length} color={C.blue} bg={C.blueBg} />
+          <StatMini icon="⏳" label="Programados — en tiempo" value={pendientesProg.length} color={C.amber} bg={C.amberBg} />
+          <StatMini icon="✅" label="Cumplidos" value={cumplidos.length} color={C.green} bg={C.greenBg} />
+          <StatMini icon="⚠️" label="Vencidos" value={vencidos.length} color={C.red} bg={C.redBg} />
         </div>
-        <TablaSuave vacio="No hay lotes pendientes en tus procesos ahora mismo." columnas={columnasPendientes} filas={pendientesFiltrados} />
-      </div>
-      <div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-          {tabLotesBtn("programados", "Lotes programados", pendientesProg.length)}
-          {tabLotesBtn("vencidos", "Vencidos", vencidos.length)}
-          {tabLotesBtn("historicos", "Históricos", cumplidos.length)}
+        <div style={{ marginBottom: 28 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+            <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>Bodega de tu proceso — pendiente de programar</div>
+            <select value={filtroProceso} onChange={(e) => setFiltroProceso(e.target.value)} style={{ padding: "5px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, fontFamily: "inherit" }}>
+              <option value="">Todos tus procesos</option>
+              {misProcesos.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </div>
+          <TablaSuave vacio="No hay lotes pendientes en tus procesos ahora mismo." columnas={columnasPendientes} filas={pendientesFiltrados} />
         </div>
-        <TablaSuave vacio={vacioLotesTab} columnas={columnasProgramados} filas={filasLotesTab} />
-      </div>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+            {tabLotesBtn("programados", "Lotes programados", pendientesProg.length)}
+            {tabLotesBtn("vencidos", "Vencidos", vencidos.length)}
+            {tabLotesBtn("historicos", "Históricos", cumplidos.length)}
+          </div>
+          <TablaSuave vacio={vacioLotesTab} columnas={columnasProgramados} filas={filasLotesTab} />
+        </div>
+        </>
+      )}
     </div>
   );
 }
