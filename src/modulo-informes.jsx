@@ -372,20 +372,27 @@ async function guardarCampoDespacho(id, campo, valor) {
   await updateDoc(doc(db, "bitacora_despachos", id), { [campo]: valor });
 }
 function DespachosDiarioView({ currentUser }) {
-  const [fecha, setFecha] = useState(() => new Date().toISOString().slice(0, 10));
+  // (2026-09-07, a pedido de Fredy) Antes era una sola fecha -- ahora es un
+  // rango (Desde/Hasta) para poder revisar varios días de una vez. Por
+  // defecto los dos quedan en hoy, así que se sigue viendo igual que antes
+  // si no se toca nada.
+  const hoyISO = () => new Date().toISOString().slice(0, 10);
+  const [fechaDesde, setFechaDesde] = useState(hoyISO);
+  const [fechaHasta, setFechaHasta] = useState(hoyISO);
   const [filas, setFilas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sincronizando, setSincronizando] = useState(false);
+  const esRango = fechaDesde !== fechaHasta;
 
   useEffect(() => {
     setLoading(true);
-    const q = query(collection(db, "bitacora_despachos"), where("fecha", "==", fecha));
+    const q = query(collection(db, "bitacora_despachos"), where("fecha", ">=", fechaDesde), where("fecha", "<=", fechaHasta));
     const unsub = onSnapshot(q, (snap) => {
       setFilas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
       setLoading(false);
     });
     return () => unsub();
-  }, [fecha]);
+  }, [fechaDesde, fechaHasta]);
 
   async function sincronizarAhora() {
     setSincronizando(true);
@@ -398,13 +405,14 @@ function DespachosDiarioView({ currentUser }) {
     }
   }
 
-  const despachos = [...filas].filter((f) => !f.esDevolucion).sort((a, b) => (b.monto || 0) - (a.monto || 0));
+  const despachos = [...filas].filter((f) => !f.esDevolucion).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "") || (b.monto || 0) - (a.monto || 0));
   const devoluciones = filas.filter((f) => f.esDevolucion);
   const totalUnidades = despachos.reduce((s, f) => s + (f.unidades || 0), 0);
   const pendientesGuia = despachos.filter((f) => !f.transportador || !f.guia).length;
   const llegados = despachos.filter((f) => f.llego).length;
 
   const columnas = [
+    ...(esRango ? [{ key: "fecha", label: "Fecha" }] : []),
     { key: "nombreCliente", label: "Cliente" },
     { key: "numero", label: "Documento" },
     { key: "tipo", label: "Tipo", render: (f) => <BadgeTipoDespacho tipo={f.tipo} esDevolucion={f.esDevolucion} /> },
@@ -418,7 +426,12 @@ function DespachosDiarioView({ currentUser }) {
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
-        <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={{ padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>Desde</span>
+          <input type="date" value={fechaDesde} onChange={(e) => setFechaDesde(e.target.value)} style={{ padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+          <span style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>Hasta</span>
+          <input type="date" value={fechaHasta} onChange={(e) => setFechaHasta(e.target.value)} style={{ padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+        </div>
         {currentUser?.isAdmin && (
           <button onClick={sincronizarAhora} disabled={sincronizando} style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontWeight: 700, fontSize: 12, cursor: sincronizando ? "default" : "pointer" }}>
             {sincronizando ? "Sincronizando..." : "🔄 Sincronizar ahora"}
@@ -435,7 +448,7 @@ function DespachosDiarioView({ currentUser }) {
       {loading ? (
         <div style={{ padding: 30, textAlign: "center", color: C.slate }}>Cargando...</div>
       ) : (
-        <Tabla vacio="No hay despachos registrados este día." columnas={columnas} filas={[...despachos, ...devoluciones]} />
+        <Tabla vacio="No hay despachos registrados en este rango." columnas={columnas} filas={[...despachos, ...devoluciones]} />
       )}
     </div>
   );

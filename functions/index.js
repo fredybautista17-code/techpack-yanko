@@ -626,15 +626,17 @@ exports.getFacturacionPorClienteBusint = onCall(
 );
 
 // (2026-09-07, a pedido de Fredy) Bitacora de Despacho: cada vez que
-// aparece un documento nuevo de facturacion en Busint (factura FAC o
-// traslado externo TEX, y su devolucion DTE si la hay), se crea sola una
+// aparece un documento nuevo de facturacion en Busint se crea sola una
 // fila en Firestore (bitacora_despachos) con la fecha, el cliente y el
 // documento -- lista para que Bodega complete transportador y guia, y
-// despues marque si ya llego y si tuvo alguna observacion. Los traslados
-// en consignacion (TCO/DTC) NO se incluyen todavia porque Busint los trata
-// como un estimado pendiente de decision del cliente, no como una venta
-// facturada de verdad (ver nota en FacturacionClientesView) -- si Fredy
-// tambien los quiere aqui, se agregan despues sin tener que rehacer nada.
+// despues marque si ya llego y si tuvo alguna observacion. Que tipo de
+// documento cuenta como despacho depende de como Contabilidad clasifico
+// a ese cliente en Facturacion por Cliente (ver
+// obtenerTiposClienteClasificados): un cliente "Consignacion" (ej. Kamila
+// Group) despacha por Traslado en Consignacion (TCO) y su devolucion
+// (DTC); cualquier otro ("Facturado", o sin clasificar todavia) despacha
+// por Factura (FAC), Traslado Externo (TEX) y su devolucion (DTE) -- nunca
+// se mezclan los dos grupos para un mismo cliente.
 //
 // Se vuelve a sincronizar los ultimos DIAS_VENTANA_BITACORA_DESPACHOS dias
 // en cada corrida (no solo "hoy") por si Busint tarda en reflejar un
@@ -648,21 +650,48 @@ function claveBitacoraDespacho(codigoCliente, numero, numped) {
 }
 
 const DIAS_VENTANA_BITACORA_DESPACHOS = 15;
-const TIPOS_BITACORA_DESPACHOS = new Set(["FAC", "TEX", "DTE"]);
+const TIPOS_BITACORA_FACTURADO = new Set(["FAC", "TEX", "DTE"]);
+const TIPOS_BITACORA_CONSIGNACION = new Set(["TCO", "DTC"]);
+
+// (2026-09-07, a pedido de Fredy) Un cliente que Contabilidad ya clasifico
+// como "Consignacion" en Facturacion por Cliente (ej. Kamila Group) despacha
+// por Traslado en Consignacion (TCO) y su devolucion (DTC) -- para ese
+// cliente NUNCA se cuenta Factura ni Traslado Externo en la bitacora, y
+// viceversa para uno "Facturado": nunca se le cuenta TCO/DTC. Mismo criterio
+// (y misma coleccion de Firestore) que ya usa esa pantalla, para no tener
+// dos clasificaciones distintas del mismo cliente en Atlas. Un cliente que
+// todavia no se haya clasificado ahi queda por defecto como "facturado" (el
+// caso mas comun).
+async function obtenerTiposClienteClasificados() {
+  const snap = await db.collection("facturacion_tipo_cliente").get();
+  const mapa = {};
+  snap.docs.forEach((d) => {
+    const data = d.data();
+    if (data.codigoCliente) mapa[data.codigoCliente] = data.tipo;
+    if (data.nombreCliente) mapa[data.nombreCliente] = data.tipo;
+  });
+  return mapa;
+}
 
 async function sincronizarBitacoraDespachos() {
   const hoy = new Date();
   const desde = new Date(hoy.getTime() - DIAS_VENTANA_BITACORA_DESPACHOS * 86400000);
   const iso = (d) => d.toISOString().slice(0, 10);
-  const resultado = await agruparFacturacionPorClienteBusint(iso(desde), iso(hoy));
+  const [resultado, tiposCliente] = await Promise.all([
+    agruparFacturacionPorClienteBusint(iso(desde), iso(hoy)),
+    obtenerTiposClienteClasificados(),
+  ]);
 
   let nuevos = 0;
   let actualizados = 0;
   const coleccion = db.collection("bitacora_despachos");
 
   for (const cliente of resultado.clientes) {
+    const tipoCliente = tiposCliente[cliente.codigoCliente] || tiposCliente[cliente.nombreCliente] || "facturado";
+    const esConsignacion = tipoCliente === "consignacion";
+    const tiposPermitidos = esConsignacion ? TIPOS_BITACORA_CONSIGNACION : TIPOS_BITACORA_FACTURADO;
     for (const documento of cliente.documentos) {
-      if (!TIPOS_BITACORA_DESPACHOS.has(documento.tipo)) continue;
+      if (!tiposPermitidos.has(documento.tipo)) continue;
       const id = claveBitacoraDespacho(cliente.codigoCliente, documento.numero, documento.numped);
       const ref = coleccion.doc(id);
       const camposBusint = {
@@ -671,7 +700,7 @@ async function sincronizarBitacoraDespachos() {
         numero: documento.numero,
         numped: documento.numped || "",
         tipo: documento.tipo,
-        esDevolucion: documento.tipo === "DTE",
+        esDevolucion: documento.tipo === "DTE" || documento.tipo === "DTC",
         fecha: documento.fecha || null,
         unidades: documento.unidades,
         monto: documento.monto,
