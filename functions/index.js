@@ -1789,8 +1789,18 @@ async function correrAuditoriaBusintVsNomina() {
       const registrado = registradoPorClave.get(clave) || { cantidad: 0, valor: 0, ultima: null };
       const entradaBusint = busint?.total || 0;
       const entradaBusintValor = busint?.valorTotal || 0;
-      const diferencia = entradaBusint - registrado.cantidad;
-      const diferenciaValor = entradaBusintValor - registrado.valor;
+      // (2026-09-07, a pedido de Fredy) Lote 7254/BAJADA DE VINILO salio
+      // "Falta registrar" con Cant. Busint = Cant. Nomina = 396 y Dif. = 0
+      // en pantalla -- la resta SIN redondear si daba un numero distinto de
+      // cero (ej. 396 - 395.99999999999994) por el arrastre normal de
+      // decimales al sumar varios registros de nomina/Busint con +=. Se
+      // redondea la diferencia antes de clasificar (2 decimales en
+      // cantidad -- por si alguna vez hay unidades fraccionarias tipo
+      // metros; a peso entero en valor, igual que ya se muestra con
+      // fmtMoney) para que un resto microscopico de la suma en punto
+      // flotante no dispare una alerta falsa.
+      const diferencia = Math.round((entradaBusint - registrado.cantidad) * 100) / 100;
+      const diferenciaValor = Math.round(entradaBusintValor - registrado.valor);
       let tipo = null;
       if (!busint && registrado.cantidad > 0) {
         tipo = "sin_entrada_busint";
