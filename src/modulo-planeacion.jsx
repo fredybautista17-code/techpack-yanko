@@ -2788,6 +2788,62 @@ function estadoProgramacion(fechaProgramada, movEntrada, movSalida) {
   if (fechaProgramada < today()) return "VENCIDO";
   return "PROGRAMADO";
 }
+
+// (2026-09-07, a pedido de Fredy) Version mas minimalista de KPI/Tabla,
+// SOLO para "Mi Dia" / Programador de Procesos y el panel de Auditoria
+// Busint vs Nomina -- se mantienen los mismos colores de siempre (pastel
+// en las tarjetas, franja oscura en el encabezado de las tablas), solo se
+// suavizan bordes/sombras y se da mas espacio, sin tocar los componentes
+// KPI/Tabla compartidos que usa el resto del ERP (Corte, Contabilidad,
+// Bodega, etc.).
+function StatMini({ icon, label, value, color, bg }) {
+  return (
+    <div style={{ background: bg || C.canvas, borderRadius: 16, padding: "20px 20px", boxShadow: "0 1px 3px rgba(15,15,25,0.06)" }}>
+      <div style={{ fontSize: 22, marginBottom: 8 }}>{icon}</div>
+      <div style={{ fontSize: 24, fontWeight: 900, color, lineHeight: 1 }}>{value}</div>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: 6, fontWeight: 600 }}>{label}</div>
+    </div>
+  );
+}
+function TablaSuave({ columnas, filas, vacio, onRowClick }) {
+  const [hoverIdx, setHoverIdx] = useState(null);
+  if (!filas.length) {
+    return <div style={{ textAlign: "center", padding: 44, color: C.slate, fontSize: 13 }}>{vacio || "Sin datos."}</div>;
+  }
+  return (
+    <div style={{ background: C.white, borderRadius: 16, boxShadow: "0 1px 3px rgba(15,15,25,0.06)", overflow: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+        <thead>
+          <tr style={{ background: C.ink, position: "sticky", top: 0 }}>
+            {columnas.map((c) => (
+              <th key={c.key} style={{ padding: "12px 16px", color: C.seam, textAlign: c.align || "left", fontWeight: 700, fontSize: 10, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>
+                {c.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {filas.map((f, i) => (
+            <tr
+              key={f.id ?? i}
+              onClick={onRowClick ? () => onRowClick(f) : undefined}
+              onMouseEnter={() => setHoverIdx(i)}
+              onMouseLeave={() => setHoverIdx(null)}
+              style={{ background: hoverIdx === i ? "rgba(15,15,25,0.045)" : (i % 2 === 0 ? C.canvas : C.white), borderBottom: `1px solid ${C.border}88`, cursor: onRowClick ? "pointer" : "default", transition: "background 0.1s" }}
+            >
+              {columnas.map((c) => (
+                <td key={c.key} style={{ padding: "10px 16px", textAlign: c.align || "left", whiteSpace: "nowrap", color: c.color ? c.color(f) : C.ink }}>
+                  {c.render ? c.render(f) : f[c.key]}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function ProgramadorProcesosView({
   currentUser,
   // opcional: si se pasa, se usa en vez de currentUser.procesosPlaneacion —
@@ -3114,11 +3170,11 @@ function ProgramadorProcesosView({
       {!movimientos && (
         <div style={{ fontSize: 11, color: C.amber, marginBottom: 14 }}>Todavía no se ha consultado el cumplimiento contra Busint en esta sesión (se actualiza desde Estadísticas o Mi Día) — mientras tanto, lo que ya esté registrado en Nómina de todos modos se ve Cumplido.</div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
-        <KPI icon="📦" label="Pendientes por programar" value={pendientes.length} color={C.blue} bg={C.blueBg} />
-        <KPI icon="⏳" label="Programados — en tiempo" value={pendientesProg.length} color={C.amber} bg={C.amberBg} />
-        <KPI icon="✅" label="Cumplidos" value={cumplidos.length} color={C.green} bg={C.greenBg} />
-        <KPI icon="⚠️" label="Vencidos" value={vencidos.length} color={C.red} bg={C.redBg} />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 18, marginBottom: 28 }}>
+        <StatMini icon="📦" label="Pendientes por programar" value={pendientes.length} color={C.blue} bg={C.blueBg} />
+        <StatMini icon="⏳" label="Programados — en tiempo" value={pendientesProg.length} color={C.amber} bg={C.amberBg} />
+        <StatMini icon="✅" label="Cumplidos" value={cumplidos.length} color={C.green} bg={C.greenBg} />
+        <StatMini icon="⚠️" label="Vencidos" value={vencidos.length} color={C.red} bg={C.redBg} />
       </div>
       <div style={{ marginBottom: 28 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
@@ -3128,7 +3184,7 @@ function ProgramadorProcesosView({
             {misProcesos.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </div>
-        <Tabla vacio="No hay lotes pendientes en tus procesos ahora mismo." columnas={columnasPendientes} filas={pendientesFiltrados} />
+        <TablaSuave vacio="No hay lotes pendientes en tus procesos ahora mismo." columnas={columnasPendientes} filas={pendientesFiltrados} />
       </div>
       <div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
@@ -3136,7 +3192,7 @@ function ProgramadorProcesosView({
           {tabLotesBtn("vencidos", "Vencidos", vencidos.length)}
           {tabLotesBtn("historicos", "Históricos", cumplidos.length)}
         </div>
-        <Tabla vacio={vacioLotesTab} columnas={columnasProgramados} filas={filasLotesTab} />
+        <TablaSuave vacio={vacioLotesTab} columnas={columnasProgramados} filas={filasLotesTab} />
       </div>
     </div>
   );
@@ -4243,7 +4299,7 @@ function AuditoriaBusintNominaPanel({ area, currentUser }) {
         {auditoriaArea.length === 0 ? (
           <div style={{ fontSize: 12, color: C.slate }}>Aún no hay corridas registradas para esta área.</div>
         ) : (
-          <Tabla
+          <TablaSuave
             vacio="Sin corridas."
             columnas={[
               { key: "fecha", label: "Fecha" },
@@ -4261,7 +4317,7 @@ function AuditoriaBusintNominaPanel({ area, currentUser }) {
           {(auditoriaDetalleAbierto.totalDiscrepancias || 0) === 0 ? (
             <div style={{ fontSize: 12, color: C.slate }}>No se encontraron diferencias en esta corrida.</div>
           ) : (
-            <Tabla
+            <TablaSuave
               vacio="Sin diferencias."
               columnas={[
                 { key: "numLote", label: "Lote" },
