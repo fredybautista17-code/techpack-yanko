@@ -4190,6 +4190,144 @@ exports.correoDespachosDiarios = onSchedule(
   }
 );
 
+// (2026-09-07, a pedido de Fredy) Segundo correo diario, 10 minutos despues
+// del de arriba (6:10pm, para no chocar con el envio de las 6:00pm): el
+// RESUMEN acumulado del mes por cliente -- los mismos numeros que ya se ven
+// en Informes -> Centro de Estadisticas -> "Por cliente (mes)" (documentos,
+// unidades, monto, y devoluciones aparte), para que de un vistazo se vea
+// como va cada cliente sin tener que entrar a la app. Llega a las mismas
+// lideres del correo de arriba, mas a los usuarios administradores (Fredy
+// incluido). El acumulado es del mes calendario actual (desde el dia 1
+// hasta hoy) -- si todavia no hay ningun despacho este mes, no se manda
+// nada ese dia.
+exports.correoResumenPorCliente = onSchedule(
+  {
+    schedule: "every day 18:10",
+    timeZone: "America/Bogota",
+    secrets: [EMAIL_USER, EMAIL_APP_PASSWORD],
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
+  async () => {
+    const hoyDate = new Date();
+    const hoy = hoyDate.toISOString().slice(0, 10);
+    const inicioMes = new Date(hoyDate.getFullYear(), hoyDate.getMonth(), 1).toISOString().slice(0, 10);
+
+    const [bitacoraSnap, usersSnap] = await Promise.all([
+      db.collection("bitacora_despachos").where("fecha", ">=", inicioMes).where("fecha", "<=", hoy).get(),
+      db.collection("users").get(),
+    ]);
+    const filas = bitacoraSnap.docs.map((d) => d.data());
+    const despachos = filas.filter((f) => !f.esDevolucion);
+    if (!despachos.length) {
+      logger.info("correoResumenPorCliente: sin despachos en lo corrido del mes, no se manda correo");
+      return;
+    }
+
+    const porCliente = new Map();
+    filas.forEach((f) => {
+      const clave = f.codigoCliente || f.nombreCliente || "(sin identificar)";
+      if (!porCliente.has(clave)) porCliente.set(clave, { nombreCliente: f.nombreCliente || clave, documentos: 0, unidades: 0, monto: 0, devueltas: 0 });
+      const c = porCliente.get(clave);
+      if (f.esDevolucion) {
+        c.devueltas += Math.abs(f.unidades || 0);
+      } else {
+        c.documentos += 1;
+        c.unidades += f.unidades || 0;
+        c.monto += f.monto || 0;
+      }
+    });
+    const clientes = [...porCliente.values()].sort((a, b) => b.unidades - a.unidades);
+
+    const totalDocumentos = despachos.length;
+    const totalUnidades = despachos.reduce((s, f) => s + (f.unidades || 0), 0);
+    const totalMonto = despachos.reduce((s, f) => s + (f.monto || 0), 0);
+    const totalClientes = clientes.length;
+
+    const usuarios = usersSnap.docs.map((d) => d.data());
+    const lideres = usuarios.filter((u) => (u.procesosPlaneacion || []).length > 0 && u.email).map((u) => u.email);
+    const admins = usuarios.filter((u) => u.isAdmin && u.email).map((u) => u.email);
+    const correos = [...new Set([...lideres, ...admins])];
+    if (!correos.length) {
+      logger.warn("correoResumenPorCliente: no hay destinatarios con correo cargado, no se manda nada");
+      return;
+    }
+
+    const fmtN = (n) => Number(n || 0).toLocaleString("es-CO");
+    const nombreMes = new Date(hoyDate.getFullYear(), hoyDate.getMonth(), 1).toLocaleDateString("es-CO", { month: "long", year: "numeric" });
+
+    const filasHtml = clientes
+      .map((c) => {
+        const etiqueta = c.devueltas ? ` <span style="display:inline-block;margin-left:6px;font-size:9px;font-weight:800;color:#E85D4A;background:#FDF0EE;border-radius:5px;padding:2px 6px;">${fmtN(c.devueltas)} DEVOL.</span>` : "";
+        return `<tr>
+          <td style="padding:9px 10px;font-size:13px;color:#1A1A2E;border-top:1px solid #E8E2DB;">${c.nombreCliente}${etiqueta}</td>
+          <td align="right" style="padding:9px 10px;font-size:13px;color:#1A1A2E;border-top:1px solid #E8E2DB;">${c.documentos}</td>
+          <td align="right" style="padding:9px 10px;font-size:13px;color:#1A1A2E;border-top:1px solid #E8E2DB;">${fmtN(c.unidades)}</td>
+          <td align="right" style="padding:9px 10px;font-size:13px;color:#1A1A2E;font-weight:800;border-top:1px solid #E8E2DB;">$${fmtN(Math.round(c.monto))}</td>
+        </tr>`;
+      })
+      .join("");
+
+    const html = `
+      <div style="max-width:640px;margin:0 auto;padding:0;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;background:#F7F4F0;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#FFFFFF;border:1px solid #E8E2DB;border-radius:16px;overflow:hidden;">
+        <tr><td style="padding:26px 30px 20px;border-bottom:1px solid #E8E2DB;">
+          <div style="font-size:11px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#5A5A7A;">Industrias Yanko · ATLAS</div>
+          <div style="font-size:20px;font-weight:900;color:#1A1A2E;margin-top:6px;">Resumen de despachos por cliente</div>
+          <div style="font-size:13px;color:#5A5A7A;margin-top:4px;text-transform:capitalize;">${nombreMes} · acumulado al ${hoy}</div>
+        </td></tr>
+        <tr><td style="padding:20px 30px 4px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td width="25%" style="padding:4px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F3EEF9;border-radius:10px;"><tr><td style="padding:12px 10px;text-align:center;">
+              <div style="font-size:18px;font-weight:900;color:#7B5EA7;">${totalClientes}</div>
+              <div style="font-size:9.5px;font-weight:700;color:#5A5A7A;text-transform:uppercase;letter-spacing:0.03em;">Clientes</div>
+            </td></tr></table></td>
+            <td width="25%" style="padding:4px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EBF1F7;border-radius:10px;"><tr><td style="padding:12px 10px;text-align:center;">
+              <div style="font-size:18px;font-weight:900;color:#3D6B9E;">${totalDocumentos}</div>
+              <div style="font-size:9.5px;font-weight:700;color:#5A5A7A;text-transform:uppercase;letter-spacing:0.03em;">Documentos</div>
+            </td></tr></table></td>
+            <td width="25%" style="padding:4px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F7F4F0;border-radius:10px;"><tr><td style="padding:12px 10px;text-align:center;">
+              <div style="font-size:18px;font-weight:900;color:#1A1A2E;">${fmtN(totalUnidades)}</div>
+              <div style="font-size:9.5px;font-weight:700;color:#5A5A7A;text-transform:uppercase;letter-spacing:0.03em;">Unidades</div>
+            </td></tr></table></td>
+            <td width="25%" style="padding:4px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EBF7F2;border-radius:10px;"><tr><td style="padding:12px 10px;text-align:center;">
+              <div style="font-size:16px;font-weight:900;color:#2D9E6B;">$${fmtN(Math.round(totalMonto))}</div>
+              <div style="font-size:9.5px;font-weight:700;color:#5A5A7A;text-transform:uppercase;letter-spacing:0.03em;">Monto total</div>
+            </td></tr></table></td>
+          </tr></table>
+        </td></tr>
+        <tr><td style="padding:18px 30px 26px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+            <tr style="background:#F7F4F0;">
+              <td style="padding:9px 10px;font-size:10px;font-weight:800;color:#5A5A7A;text-transform:uppercase;letter-spacing:0.04em;border-radius:8px 0 0 8px;">Cliente</td>
+              <td align="right" style="padding:9px 10px;font-size:10px;font-weight:800;color:#5A5A7A;text-transform:uppercase;letter-spacing:0.04em;">Doc.</td>
+              <td align="right" style="padding:9px 10px;font-size:10px;font-weight:800;color:#5A5A7A;text-transform:uppercase;letter-spacing:0.04em;">Unidades</td>
+              <td align="right" style="padding:9px 10px;font-size:10px;font-weight:800;color:#5A5A7A;text-transform:uppercase;letter-spacing:0.04em;border-radius:0 8px 8px 0;">Monto</td>
+            </tr>
+            <tr><td colspan="4" style="padding-top:6px;"></td></tr>
+            ${filasHtml}
+            <tr>
+              <td style="padding:12px 10px 4px;font-size:13px;color:#1A1A2E;font-weight:900;border-top:2px solid #1A1A2E;">Total</td>
+              <td align="right" style="padding:12px 10px 4px;font-size:13px;color:#1A1A2E;font-weight:900;border-top:2px solid #1A1A2E;">${totalDocumentos}</td>
+              <td align="right" style="padding:12px 10px 4px;font-size:13px;color:#1A1A2E;font-weight:900;border-top:2px solid #1A1A2E;">${fmtN(totalUnidades)}</td>
+              <td align="right" style="padding:12px 10px 4px;font-size:13px;color:#2D9E6B;font-weight:900;border-top:2px solid #1A1A2E;">$${fmtN(Math.round(totalMonto))}</td>
+            </tr>
+          </table>
+        </td></tr>
+        <tr><td style="padding:16px 30px;background:#F7F4F0;border-top:1px solid #E8E2DB;">
+          <div style="font-size:11px;color:#5A5A7A;">Generado automáticamente por ATLAS a partir de la Bitácora de Despacho.</div>
+          <div style="font-size:11px;color:#5A5A7A;margin-top:4px;">Detalle completo en Informes &rarr; Centro de Estadísticas &rarr; Por cliente (mes).</div>
+        </td></tr>
+      </table>
+      </div>
+    `;
+
+    const transporte = crearTransporte();
+    await mandarCorreo(transporte, correos, `Resumen de despachos por cliente — ${nombreMes} (al ${hoy})`, html);
+    logger.info("correoResumenPorCliente enviado", { destinatarios: correos.length, clientes: clientes.length, totalDocumentos, totalUnidades, totalMonto });
+  }
+);
+
 async function revisarYAvisarVencidos() {
   const [configSnap, usersSnap, protosSnap, capsulasSnap] = await Promise.all([
     db.collection("config").doc("main").get(),
