@@ -933,13 +933,22 @@ async function sincronizarDadoPorCumplidoPendientes() {
     const snap = await ref.get();
     if (snap.exists && snap.data().estado === "aprobado") continue; // ya aprobado -- no se vuelve a tocar
 
+    // Busint retira el lote de ApiGen_PanelControlFlujoOperacional en cuanto queda
+    // facturado/despachado (ese panel solo cubre lotes activos, no es un historico
+    // permanente -- confirmado: no existe otra tabla/endpoint en Busint con este dato
+    // para lotes ya cerrados). Si el panel ya no trae el lote (o trae 0), conservamos
+    // el cantCortada que ya habiamos guardado en una sincronizacion anterior en vez de
+    // sobreescribirlo con 0.
+    const cantCortadaPrevia = Number(snap.data()?.cantCortada) || 0;
+    const cantCortadaFinal = cantCortada > 0 ? cantCortada : cantCortadaPrevia;
+
     const camposBusint = {
       numLote: lote,
       numPedido,
       referencia,
       cliente,
       fecha: fechaMasReciente,
-      cantCortada,
+      cantCortada: cantCortadaFinal,
       cantDespachada: totalUnidades,
       precioVentaUnitario,
       actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
