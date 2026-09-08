@@ -2831,7 +2831,7 @@ function etiquetaDestino(destino) {
   if (destino === "Dubo") return "Segundas Reprogramación";
   return destino;
 }
-export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAccessContabilidad, soloLecturaBodega, onVolver, onLogout }) {
+function DespachoYSaldoView({ currentUser, puedeAprobarDespacho, canAccessContabilidad, soloLecturaBodega, onVolver, onLogout }) {
   const [subView, setSubView] = useState("dashboard");
   const [destino, setDestino] = useState("Venezuela");
   const [despachos, setDespachos] = useState([]);
@@ -3065,3 +3065,246 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
     </div>
   );
 }
+
+// ─── Estado de Despacho: seguimiento de transportador/guía y llegada de los
+// lotes ya Aprobados en Dado por Cumplido (Contabilidad). Vive en Bodega
+// porque es Bodega quien despacha físicamente el lote y quien confirma
+// cuando llega -- lee y escribe la misma colección "dado_por_cumplido_lotes"
+// que ya usa Contabilidad, solo que agrega los campos propios del envío
+// (estadoEnvio, transportador, numeroGuia, fechaEnvio, fechaRecibido). No
+// tiene nada que ver con los despachos a Venezuela/Dubo/Colombia de
+// DespachoYSaldoView -- por eso vive aparte, elegible desde el hub.
+function EstadoDespachoView({ onVolver, onLogout }) {
+  const [lotes, setLotes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [vista, setVista] = useState("porEnviar");
+  const [formEnvio, setFormEnvio] = useState({});
+  const [formRecepcion, setFormRecepcion] = useState({});
+  const [guardandoId, setGuardandoId] = useState(null);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
+      setLotes(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  const aprobados = lotes.filter((l) => l.estado === "aprobado").sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+  const porEnviar = aprobados.filter((l) => !l.estadoEnvio || l.estadoEnvio === "pendiente");
+  const enviados = aprobados.filter((l) => l.estadoEnvio === "enviado");
+  const recibidos = aprobados.filter((l) => l.estadoEnvio === "recibido").sort((a, b) => (b.fechaRecibido || "").localeCompare(a.fechaRecibido || ""));
+
+  function campoEnvio(loteId, campo, valor) {
+    setFormEnvio((f) => ({ ...f, [loteId]: { ...f[loteId], [campo]: valor } }));
+  }
+
+  async function marcarEnviado(lote) {
+    const datos = formEnvio[lote.id] || {};
+    const transportador = (datos.transportador ?? lote.transportador ?? "").trim();
+    const numeroGuia = (datos.numeroGuia ?? lote.numeroGuia ?? "").trim();
+    if (!transportador || !numeroGuia) {
+      alert("Completa Transportador y Número de Guía antes de marcar como enviado.");
+      return;
+    }
+    setGuardandoId(lote.id);
+    try {
+      await fsSave("dado_por_cumplido_lotes", lote.id, {
+        transportador,
+        numeroGuia,
+        estadoEnvio: "enviado",
+        fechaEnvio: today(),
+      });
+    } finally {
+      setGuardandoId(null);
+    }
+  }
+
+  async function marcarRecibido(lote) {
+    const fecha = formRecepcion[lote.id] || today();
+    setGuardandoId(lote.id);
+    try {
+      await fsSave("dado_por_cumplido_lotes", lote.id, {
+        estadoEnvio: "recibido",
+        fechaRecibido: fecha,
+      });
+    } finally {
+      setGuardandoId(null);
+    }
+  }
+
+  if (loading) {
+    return <div style={{ padding: 30, textAlign: "center", color: C.slate }}>Cargando...</div>;
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: "28px 32px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, marginBottom: 4 }}>🚚 Estado de Despacho</div>
+            <div style={{ fontSize: 13, color: C.slate, maxWidth: 640 }}>
+              Lotes ya Aprobados en Dado por Cumplido -- pon transportador y guía para marcarlos como enviados, y confirma cuando lleguen.
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {onVolver && <Btn variant="secondary" small onClick={onVolver}>← Volver a Bodega</Btn>}
+            {onLogout && <Btn variant="ghost" small onClick={onLogout}>⏏ Cerrar sesión</Btn>}
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+          <Btn variant={vista === "porEnviar" ? "primary" : "secondary"} small onClick={() => setVista("porEnviar")}>
+            📦 Por enviar ({porEnviar.length})
+          </Btn>
+          <Btn variant={vista === "enviados" ? "primary" : "secondary"} small onClick={() => setVista("enviados")}>
+            🚚 Enviados ({enviados.length})
+          </Btn>
+          <Btn variant={vista === "recibidos" ? "primary" : "secondary"} small onClick={() => setVista("recibidos")}>
+            ✅ Recibidos ({recibidos.length})
+          </Btn>
+        </div>
+
+        {vista === "porEnviar" &&
+          (!porEnviar.length ? (
+            <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay lotes aprobados esperando envío.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {porEnviar.map((l) => (
+                <div key={l.id} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white }}>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>Lote {l.numLote} — {l.referencia || "(sin referencia)"}</div>
+                  <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>{l.cliente || "(sin cliente)"} · {l.fecha || "(sin fecha)"}</div>
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+                    <div style={{ flex: 1, minWidth: 180 }}>
+                      <Field label="Transportador">
+                        <FInput value={formEnvio[l.id]?.transportador ?? l.transportador ?? ""} onChange={(v) => campoEnvio(l.id, "transportador", v)} placeholder="Ej: Envía, Coordinadora..." />
+                      </Field>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 180 }}>
+                      <Field label="Número de Guía">
+                        <FInput value={formEnvio[l.id]?.numeroGuia ?? l.numeroGuia ?? ""} onChange={(v) => campoEnvio(l.id, "numeroGuia", v)} placeholder="Ej: 123456789" />
+                      </Field>
+                    </div>
+                    <div style={{ marginBottom: 14 }}>
+                      <Btn variant="success" small onClick={() => marcarEnviado(l)} disabled={guardandoId === l.id}>
+                        {guardandoId === l.id ? "Guardando..." : "🚚 Marcar como enviado"}
+                      </Btn>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))}
+
+        {vista === "enviados" &&
+          (!enviados.length ? (
+            <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay lotes enviados esperando llegar.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {enviados.map((l) => (
+                <div key={l.id} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white }}>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>Lote {l.numLote} — {l.referencia || "(sin referencia)"}</div>
+                  <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>{l.cliente || "(sin cliente)"} · Enviado el {l.fechaEnvio || "—"}</div>
+                  <div style={{ fontSize: 12, color: C.ink, marginBottom: 12 }}>
+                    <strong>Transportador:</strong> {l.transportador || "—"} &nbsp;·&nbsp; <strong>Guía:</strong> {l.numeroGuia || "—"}
+                  </div>
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+                    <div style={{ minWidth: 180 }}>
+                      <Field label="Fecha de llegada">
+                        <FInput type="date" value={formRecepcion[l.id] ?? today()} onChange={(v) => setFormRecepcion((f) => ({ ...f, [l.id]: v }))} />
+                      </Field>
+                    </div>
+                    <div style={{ marginBottom: 14 }}>
+                      <Btn variant="success" small onClick={() => marcarRecibido(l)} disabled={guardandoId === l.id}>
+                        {guardandoId === l.id ? "Guardando..." : "✅ Marcar como recibido"}
+                      </Btn>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))}
+
+        {vista === "recibidos" &&
+          (!recibidos.length ? (
+            <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Todavía no hay lotes recibidos.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {recibidos.map((l) => (
+                <div key={l.id} style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }}>
+                  <span><strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia} — {l.cliente}</span>
+                  <span style={{ color: C.slate }}>{l.transportador} · Guía {l.numeroGuia} · Llegó el {l.fechaRecibido}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Punto de entrada de Bodega: antes de caer en Despacho y Saldo (lo que
+// ya existía) o en Estado de Despacho (nuevo), se elige uno de los dos --
+// son dos flujos totalmente distintos (despachos a Venezuela/Dubo/Colombia
+// con su saldo, vs. transportador/guía/llegada de los lotes locales de
+// Dado por Cumplido) que no tiene sentido mezclar en un solo menú.
+function BodegaHubView({ onSeleccionar, onVolver, onLogout }) {
+  return (
+    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
+      <div style={{ fontSize: 15, fontWeight: 900, color: C.ink, marginBottom: 24 }}>📦 Bodega</div>
+      <div style={{ display: "flex", gap: 20, flexWrap: "wrap", justifyContent: "center", maxWidth: 700 }}>
+        <button
+          onClick={() => onSeleccionar("despacho_saldo")}
+          style={{ width: 280, textAlign: "left", padding: 24, borderRadius: 16, border: `1px solid ${C.border}`, background: C.white, cursor: "pointer", fontFamily: "inherit" }}
+        >
+          <div style={{ fontSize: 28, marginBottom: 10 }}>📦</div>
+          <div style={{ fontWeight: 800, fontSize: 16, color: C.ink, marginBottom: 6 }}>Despacho y Saldo</div>
+          <div style={{ fontSize: 12, color: C.slate }}>Despachos a Venezuela, Dubo y Colombia, abonos, saldo Yuliana y estado de cuenta Kamila.</div>
+        </button>
+        <button
+          onClick={() => onSeleccionar("estado_despacho")}
+          style={{ width: 280, textAlign: "left", padding: 24, borderRadius: 16, border: `1px solid ${C.border}`, background: C.white, cursor: "pointer", fontFamily: "inherit" }}
+        >
+          <div style={{ fontSize: 28, marginBottom: 10 }}>🚚</div>
+          <div style={{ fontWeight: 800, fontSize: 16, color: C.ink, marginBottom: 6 }}>Estado de Despacho</div>
+          <div style={{ fontSize: 12, color: C.slate }}>Transportador, guía y llegada de los lotes ya Aprobados en Dado por Cumplido.</div>
+        </button>
+      </div>
+      <div style={{ display: "flex", gap: 16, marginTop: 28 }}>
+        {onVolver && (
+          <button onClick={onVolver} style={{ background: "none", border: "none", color: C.slate, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+            ← Volver al Inicio
+          </button>
+        )}
+        {onLogout && (
+          <button onClick={onLogout} style={{ background: "none", border: "none", color: C.red, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+            ⏏ Cerrar sesión
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAccessContabilidad, soloLecturaBodega, onVolver, onLogout }) {
+  const [vista, setVista] = useState("hub");
+  if (vista === "despacho_saldo") {
+    return (
+      <DespachoYSaldoView
+        currentUser={currentUser}
+        puedeAprobarDespacho={puedeAprobarDespacho}
+        canAccessContabilidad={canAccessContabilidad}
+        soloLecturaBodega={soloLecturaBodega}
+        onVolver={() => setVista("hub")}
+        onLogout={onLogout}
+      />
+    );
+  }
+  if (vista === "estado_despacho") {
+    return <EstadoDespachoView onVolver={() => setVista("hub")} onLogout={onLogout} />;
+  }
+  return <BodegaHubView onSeleccionar={setVista} onVolver={onVolver} onLogout={onLogout} />;
+}
+
