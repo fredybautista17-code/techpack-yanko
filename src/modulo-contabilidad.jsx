@@ -3797,6 +3797,9 @@ function DadoPorCumplidoView({ currentUser }) {
     String(l.cliente || "").toLowerCase().includes(filtroDadoPorCumplido);
   const pendientesFiltrados = pendientes.filter(coincideBusquedaDadoPorCumplido);
   const aprobadosFiltrados = aprobados.filter(coincideBusquedaDadoPorCumplido);
+  const pendientesConFactura = pendientesFiltrados.filter((l) => l.tieneFactura !== false);
+  const pendientesSinFactura = pendientesFiltrados.filter((l) => l.tieneFactura === false);
+  const pendientesOrdenados = [...pendientesConFactura, ...pendientesSinFactura];
 
   if (loading) {
     return <div style={{ padding: 30, textAlign: "center", color: C.slate }}>Cargando...</div>;
@@ -3880,7 +3883,7 @@ function DadoPorCumplidoView({ currentUser }) {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              {pendientesFiltrados.map((l) => {
+              {pendientesOrdenados.map((l, idxPendiente) => {
                 const baseElegida = bases.find((b) => b.id === l.categoriaBaseId);
                 const preview = calcularDadoPorCumplidoPreview({
                   costoRealTotal: l.costoRealTotal,
@@ -3892,12 +3895,23 @@ function DadoPorCumplidoView({ currentUser }) {
                   porcentajeSobreVenta: config.porcentajeSobreVenta,
                   costoDefinitivoManual: l.costoDefinitivoManual ? l.costoDefinitivo : null,
                 });
-                const listoParaAprobar = Number(l.costoRealTotal) > 0 && !!l.categoriaBaseId;
+                const sinFactura = l.tieneFactura === false;
+                const listoParaAprobar = Number(l.costoRealTotal) > 0 && !!l.categoriaBaseId && !sinFactura;
                 return (
-                  <div key={l.id} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white }}>
+                  <Fragment key={l.id}>
+                    {idxPendiente === 0 && pendientesConFactura.length > 0 && (
+                      <div style={{ fontWeight: 800, fontSize: 13, color: C.slate }}>🧾 Con factura ({pendientesConFactura.length})</div>
+                    )}
+                    {idxPendiente === pendientesConFactura.length && pendientesSinFactura.length > 0 && (
+                      <div style={{ fontWeight: 800, fontSize: 13, color: C.slate, marginTop: pendientesConFactura.length ? 6 : 0 }}>⏳ Sin factura todavía ({pendientesSinFactura.length})</div>
+                    )}
+                    <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: sinFactura ? C.canvas : C.white }}>
                     <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
                       <div>
-                        <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>Lote {l.numLote} — {l.referencia || "(sin referencia)"}</div>
+                        <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          Lote {l.numLote} — {l.referencia || "(sin referencia)"}
+                          {sinFactura && <span style={{ fontSize: 11, fontWeight: 700, color: C.amber, background: C.amberBg, padding: "2px 8px", borderRadius: 20 }}>⏳ Sin factura</span>}
+                        </div>
                         <div style={{ fontSize: 12, color: C.slate }}>{l.cliente || "(sin cliente)"} · {l.fecha || "(sin fecha)"}</div>
                       </div>
                       <div style={{ display: "flex", gap: 18, fontSize: 12, color: C.slate, flexWrap: "wrap" }}>
@@ -3965,7 +3979,8 @@ function DadoPorCumplidoView({ currentUser }) {
                         <span>Total BASE: <strong style={{ color: C.ink }}>{fmtPesos(preview.total)}</strong></span>
                       </div>
                     )}
-                  </div>
+                    </div>
+                  </Fragment>
                 );
               })}
             </div>

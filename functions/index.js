@@ -964,6 +964,7 @@ async function sincronizarDadoPorCumplidoPendientes() {
       cantCortada: cantCortadaFinal,
       cantDespachada: totalUnidades,
       precioVentaUnitario,
+      tieneFactura: true,
       actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
     };
     if (snap.exists) {
@@ -980,8 +981,36 @@ async function sincronizarDadoPorCumplidoPendientes() {
       creados++;
     }
   }
-  logger.info("sincronizarDadoPorCumplidoPendientes completado", { creados, actualizados, totalLotesDetectados: facturasPorLote.size });
-  return { creados, actualizados, totalLotesDetectados: facturasPorLote.size };
+  let creadosPorBpt = 0;
+  for (const p of panelFlujo) {
+    const lote = Number(p?.numLote);
+    if (!Number.isFinite(lote) || lote <= 0) continue;
+    const invBpt = Number(p?.invBpt) || 0;
+    if (invBpt <= 0) continue; // solo lotes que ya llegaron a Bodega de Producto Terminado
+    const id = `lote_${lote}`;
+    const ref = coleccion.doc(id);
+    const snap = await ref.get();
+    if (snap.exists) continue; // ya existe (por factura o ya aprobado) -- no se toca ni se duplica
+    await ref.set({
+      numLote: lote,
+      numPedido: null,
+      referencia: p.referencia || "",
+      cliente: p.nombreCliente || "",
+      fecha: null,
+      cantCortada: Number(p.cantCortada) || invBpt,
+      cantDespachada: 0,
+      precioVentaUnitario: 0,
+      tieneFactura: false,
+      costoRealTotal: null,
+      categoriaBaseId: "",
+      estado: "pendiente",
+      creadoEn: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    creadosPorBpt++;
+  }
+
+  logger.info("sincronizarDadoPorCumplidoPendientes completado", { creados, actualizados, creadosPorBpt, totalLotesDetectados: facturasPorLote.size });
+  return { creados, actualizados, creadosPorBpt, totalLotesDetectados: facturasPorLote.size };
 }
 
 // Botón "Buscar lotes nuevos" en Contabilidad -> Dado por Cumplido (solo
@@ -1032,6 +1061,9 @@ exports.aprobarDadoPorCumplido = onCall(
     const datos = snap.data();
     if (datos.estado === "aprobado") {
       throw new HttpsError("failed-precondition", "Este lote ya está aprobado.");
+    }
+    if (datos.tieneFactura === false) {
+      throw new HttpsError("failed-precondition", "Este lote todavía no tiene factura en Busint -- espera a que se facture antes de aprobar.");
     }
     const costoRealTotal = Number(datos.costoRealTotal);
     if (!Number.isFinite(costoRealTotal) || costoRealTotal <= 0) {
