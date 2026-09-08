@@ -3559,7 +3559,6 @@ function DadoPorCumplidoView({ currentUser }) {
         await setDoc(configRef, DADO_POR_CUMPLIDO_PORCENTAJES_SEMILLA, { merge: true });
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin, loading]);
 
   async function sincronizarAhora() {
