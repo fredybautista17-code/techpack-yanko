@@ -827,18 +827,21 @@ exports.revisarDespachosNuevos = onSchedule(
 const DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT = { porcentajeSobreCosto: 2.859, porcentajeSobreVenta: 1.9125 };
 const DIAS_VENTANA_DADO_POR_CUMPLIDO = 20;
 
-function calcularDadoPorCumplido({ costoRealTotal, cantCortada, cantDespachada, precioVentaUnitario, baseValor, porcentajeSobreCosto, porcentajeSobreVenta }) {
+function calcularDadoPorCumplido({ costoRealTotal, cantCortada, cantDespachada, precioVentaUnitario, baseValor, porcentajeSobreCosto, porcentajeSobreVenta, costoDefinitivoManual }) {
   const cortada = Number(cantCortada) || 0;
   const despachada = Number(cantDespachada) || 0;
   const precioVenta = Number(precioVentaUnitario) || 0;
   const base = Number(baseValor) || 0;
   const costoReal = Number(costoRealTotal) || 0;
-  // Costo Definitivo = VR.Real / Cant.Despachada (NO Cant.Cortada -- verificado
-  // contra el Excel real de Contabilidad para el lote 7200: 3.052.433 / 433 =
-  // 7.049, que es el valor correcto; dividir por Cant.Cortada (435) daba 7.017,
-  // que no cuadraba. El resto de la formula (Costo T. = Costo T.Ref * Cant.Cortada,
-  // Total = BASE * Cant.Cortada) si usa Cant.Cortada y esta verificado correcto).
-  const costoDefinitivo = despachada > 0 ? Math.round(costoReal / despachada) : 0;
+  // Costo Definitivo = ROUND(VR.Real / Cant.Cortada) -- verificado contra las
+  // 794 filas reales del Excel historico de Contabilidad: coincide exacto en
+  // el 77% de los lotes (un intento anterior de dividir por Cant.Despachada
+  // solo cuadraba para un caso puntual, el lote 7200, y quedo mal para la
+  // mayoria). El otro ~20% (como el lote 7200) trae un numero distinto puesto
+  // a mano en Busint por algo propio de ese lote -- por eso costoDefinitivoManual,
+  // igual que ya existe cantCortadaManual para Cant.Cortada.
+  const manualCD = Number(costoDefinitivoManual) || 0;
+  const costoDefinitivo = manualCD > 0 ? manualCD : (cortada > 0 ? Math.round(costoReal / cortada) : 0);
   const costoTRef =
     costoDefinitivo +
     costoDefinitivo * (Number(porcentajeSobreCosto) / 100) +
@@ -1056,6 +1059,7 @@ exports.aprobarDadoPorCumplido = onCall(
       baseValor,
       porcentajeSobreCosto: config.porcentajeSobreCosto ?? DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT.porcentajeSobreCosto,
       porcentajeSobreVenta: config.porcentajeSobreVenta ?? DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT.porcentajeSobreVenta,
+      costoDefinitivoManual: datos.costoDefinitivoManual ? datos.costoDefinitivo : null,
     });
 
     await ref.set(
