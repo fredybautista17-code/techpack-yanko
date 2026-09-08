@@ -3529,8 +3529,6 @@ function DadoPorCumplidoView({ currentUser }) {
   const [sincronizando, setSincronizando] = useState(false);
   const [aprobandoId, setAprobandoId] = useState(null);
   const [mostrarConfig, setMostrarConfig] = useState(false);
-  const [importandoHistorico, setImportandoHistorico] = useState(false);
-  const importInputRef = useRef(null);
   const [vistaDadoPorCumplido, setVistaDadoPorCumplido] = useState("pendientes");
   const [busquedaDadoPorCumplido, setBusquedaDadoPorCumplido] = useState("");
   const [subVistaPendientes, setSubVistaPendientes] = useState("conFactura");
@@ -3604,106 +3602,6 @@ function DadoPorCumplidoView({ currentUser }) {
   // marcado como manual, aprobarDadoPorCumplido ya no lo recalcula.
   async function guardarCostoDefinitivoManual(id, valor) {
     await fsSave("dado_por_cumplido_lotes", id, { costoDefinitivo: parseFloat(valor) || 0, costoDefinitivoManual: true });
-  }
-
-  // Importa el Excel histórico "Dado por cumplido" -- crea/actualiza cada
-  // lote (identificado por NRO LOTE) ya como aprobado, con los valores tal
-  // cual vienen en el archivo (no se recalculan). Pensado para correrse una
-  // vez y dejar el histórico completo en el sistema.
-  async function importarHistoricoExcel(e) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    if (!window.confirm('Esto va a crear o actualizar lotes como APROBADOS a partir de este Excel (usando el número de lote como identificador -- si ya existe, se reemplaza). ¿Continuar?')) return;
-    setImportandoHistorico(true);
-    try {
-      const XLSX = await import("xlsx");
-      const buffer = await file.arrayBuffer();
-      const wb = XLSX.read(buffer, { type: "array", cellDates: true });
-      const hoja = wb.Sheets["Dado por cumplido"];
-      if (!hoja) throw new Error('No se encontró la hoja "Dado por cumplido" en el archivo.');
-      const filas = XLSX.utils.sheet_to_json(hoja, { header: 1, raw: true, defval: null });
-      const num = (v) => (typeof v === "number" ? v : parseFloat(v)) || 0;
-      const fechaISO = (v) => (v instanceof Date && !isNaN(v) ? v.toISOString().slice(0, 10) : null);
-
-      const filasLimpias = [];
-      for (let i = 1; i < filas.length; i++) {
-        const r = filas[i] || [];
-        const numLote = Math.round(num(r[1]));
-        if (!numLote) continue;
-        const cantCortada = num(r[3]);
-        const baseValorUsado = num(r[18]);
-        filasLimpias.push({
-          numLote,
-          fecha: fechaISO(r[0]),
-          referencia: String(r[2] || "").trim(),
-          cantCortada,
-          cantDespachada: num(r[4]),
-          vrTeorico: num(r[5]) || null,
-          costoRealTotal: num(r[6]) || null,
-          costoDefinitivo: num(r[7]),
-          costoT: num(r[8]),
-          precioVentaUnitario: num(r[9]),
-          ventaT: num(r[10]),
-          ganancia: num(r[11]),
-          gananciaPctLote: num(r[12]),
-          costoTRef: num(r[13]),
-          gananciaPctRef: num(r[14]),
-          cliente: String(r[15] || "").trim(),
-          observaciones: String(r[17] || "").trim(),
-          baseValorUsado,
-          transporte: num(r[19]) || null,
-          total: baseValorUsado * cantCortada,
-        });
-      }
-      if (!filasLimpias.length) throw new Error("No se encontraron filas con número de lote en el archivo.");
-
-      let escritos = 0;
-      for (let i = 0; i < filasLimpias.length; i += 450) {
-        const grupo = filasLimpias.slice(i, i + 450);
-        const batch = writeBatch(db);
-        grupo.forEach((f) => {
-          const ref = doc(db, "dado_por_cumplido_lotes", `lote_${f.numLote}`);
-          batch.set(ref, {
-            numLote: f.numLote,
-            numPedido: null,
-            referencia: f.referencia,
-            cliente: f.cliente,
-            fecha: f.fecha,
-            cantCortada: f.cantCortada,
-            cantDespachada: f.cantDespachada,
-            vrTeorico: f.vrTeorico,
-            costoRealTotal: f.costoRealTotal,
-            costoDefinitivo: f.costoDefinitivo,
-            costoDefinitivoManual: true,
-            costoTRef: f.costoTRef,
-            costoT: f.costoT,
-            precioVentaUnitario: f.precioVentaUnitario,
-            ventaT: f.ventaT,
-            ganancia: f.ganancia,
-            gananciaPctLote: f.gananciaPctLote,
-            gananciaPctRef: f.gananciaPctRef,
-            observaciones: f.observaciones,
-            baseValorUsado: f.baseValorUsado,
-            transporte: f.transporte,
-            total: f.total,
-            categoriaBaseId: "",
-            estado: "aprobado",
-            aprobadoPor: "importación histórica",
-            origenImportacion: true,
-            creadoEn: serverTimestamp(),
-            fechaAprobacion: serverTimestamp(),
-          });
-          escritos++;
-        });
-        await batch.commit();
-      }
-      alert(`Listo -- se importaron/actualizaron ${escritos} lote(s) histórico(s) como aprobados.`);
-    } catch (err) {
-      alert("No se pudo importar: " + (err?.message || err));
-    } finally {
-      setImportandoHistorico(false);
-    }
   }
 
   // Descarga la pantalla completa (pendientes + aprobados) con la misma
@@ -3822,10 +3720,6 @@ function DadoPorCumplidoView({ currentUser }) {
               {sincronizando ? "Buscando..." : "🔄 Buscar lotes nuevos"}
             </Btn>
             <Btn variant="ghost" small onClick={exportarDadoPorCumplidoExcel}>📥 Descargar Excel</Btn>
-            <input ref={importInputRef} type="file" accept=".xlsx,.xls" onChange={importarHistoricoExcel} style={{ display: "none" }} />
-            <Btn variant="ghost" small onClick={() => importInputRef.current?.click()} disabled={importandoHistorico}>
-              {importandoHistorico ? "Importando..." : "📤 Importar histórico"}
-            </Btn>
           </div>
         )}
       </div>
@@ -4004,6 +3898,141 @@ function DadoPorCumplidoView({ currentUser }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// Sección de Administración -- tareas de una sola vez o poco frecuentes que
+// no hacen parte del flujo diario de Dado por Cumplido (por ahora solo la
+// importación del histórico; es el lugar natural para tareas parecidas
+// en el futuro).
+function AdministracionView({ currentUser }) {
+  const isAdmin = currentUser?.isAdmin;
+  const [importandoHistorico, setImportandoHistorico] = useState(false);
+  const importInputRef = useRef(null);
+
+  // Importa el Excel histórico "Dado por cumplido" -- crea/actualiza cada
+  // lote (identificado por NRO LOTE) ya como aprobado, con los valores tal
+  // cual vienen en el archivo (no se recalculan). Pensado para correrse una
+  // vez y dejar el histórico completo en el sistema.
+  async function importarHistoricoExcel(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!window.confirm('Esto va a crear o actualizar lotes como APROBADOS a partir de este Excel (usando el número de lote como identificador -- si ya existe, se reemplaza). ¿Continuar?')) return;
+    setImportandoHistorico(true);
+    try {
+      const XLSX = await import("xlsx");
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array", cellDates: true });
+      const hoja = wb.Sheets["Dado por cumplido"];
+      if (!hoja) throw new Error('No se encontró la hoja "Dado por cumplido" en el archivo.');
+      const filas = XLSX.utils.sheet_to_json(hoja, { header: 1, raw: true, defval: null });
+      const num = (v) => (typeof v === "number" ? v : parseFloat(v)) || 0;
+      const fechaISO = (v) => (v instanceof Date && !isNaN(v) ? v.toISOString().slice(0, 10) : null);
+
+      const filasLimpias = [];
+      for (let i = 1; i < filas.length; i++) {
+        const r = filas[i] || [];
+        const numLote = Math.round(num(r[1]));
+        if (!numLote) continue;
+        const cantCortada = num(r[3]);
+        const baseValorUsado = num(r[18]);
+        filasLimpias.push({
+          numLote,
+          fecha: fechaISO(r[0]),
+          referencia: String(r[2] || "").trim(),
+          cantCortada,
+          cantDespachada: num(r[4]),
+          vrTeorico: num(r[5]) || null,
+          costoRealTotal: num(r[6]) || null,
+          costoDefinitivo: num(r[7]),
+          costoT: num(r[8]),
+          precioVentaUnitario: num(r[9]),
+          ventaT: num(r[10]),
+          ganancia: num(r[11]),
+          gananciaPctLote: num(r[12]),
+          costoTRef: num(r[13]),
+          gananciaPctRef: num(r[14]),
+          cliente: String(r[15] || "").trim(),
+          observaciones: String(r[17] || "").trim(),
+          baseValorUsado,
+          transporte: num(r[19]) || null,
+          total: baseValorUsado * cantCortada,
+        });
+      }
+      if (!filasLimpias.length) throw new Error("No se encontraron filas con número de lote en el archivo.");
+
+      let escritos = 0;
+      for (let i = 0; i < filasLimpias.length; i += 450) {
+        const grupo = filasLimpias.slice(i, i + 450);
+        const batch = writeBatch(db);
+        grupo.forEach((f) => {
+          const ref = doc(db, "dado_por_cumplido_lotes", `lote_${f.numLote}`);
+          batch.set(ref, {
+            numLote: f.numLote,
+            numPedido: null,
+            referencia: f.referencia,
+            cliente: f.cliente,
+            fecha: f.fecha,
+            cantCortada: f.cantCortada,
+            cantDespachada: f.cantDespachada,
+            vrTeorico: f.vrTeorico,
+            costoRealTotal: f.costoRealTotal,
+            costoDefinitivo: f.costoDefinitivo,
+            costoDefinitivoManual: true,
+            costoTRef: f.costoTRef,
+            costoT: f.costoT,
+            precioVentaUnitario: f.precioVentaUnitario,
+            ventaT: f.ventaT,
+            ganancia: f.ganancia,
+            gananciaPctLote: f.gananciaPctLote,
+            gananciaPctRef: f.gananciaPctRef,
+            observaciones: f.observaciones,
+            baseValorUsado: f.baseValorUsado,
+            transporte: f.transporte,
+            total: f.total,
+            categoriaBaseId: "",
+            estado: "aprobado",
+            aprobadoPor: "importación histórica",
+            origenImportacion: true,
+            creadoEn: serverTimestamp(),
+            fechaAprobacion: serverTimestamp(),
+          });
+          escritos++;
+        });
+        await batch.commit();
+      }
+      alert(`Listo -- se importaron/actualizaron ${escritos} lote(s) histórico(s) como aprobados.`);
+    } catch (err) {
+      alert("No se pudo importar: " + (err?.message || err));
+    } finally {
+      setImportandoHistorico(false);
+    }
+  }
+
+  if (!isAdmin) {
+    return <div style={{ padding: 30, textAlign: "center", color: C.slate }}>Esta sección es solo para administradores.</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, marginBottom: 4 }}>🗂️ Administración</div>
+        <div style={{ fontSize: 13, color: C.slate, maxWidth: 640 }}>
+          Tareas administrativas de Contabilidad -- cargas iniciales o de una sola vez que no hacen parte del trabajo diario.
+        </div>
+      </div>
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white, maxWidth: 460 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 4 }}>📤 Importar histórico de Dado por Cumplido</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>
+          Sube el Excel histórico de "Dado por cumplido" -- crea o actualiza cada lote (por número de lote) ya como aprobado, con los valores tal cual vienen en el archivo.
+        </div>
+        <input ref={importInputRef} type="file" accept=".xlsx,.xls" onChange={importarHistoricoExcel} style={{ display: "none" }} />
+        <Btn variant="secondary" small onClick={() => importInputRef.current?.click()} disabled={importandoHistorico}>
+          {importandoHistorico ? "Importando..." : "📤 Importar histórico"}
+        </Btn>
+      </div>
     </div>
   );
 }
@@ -5254,6 +5283,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     { id: "dado_por_cumplido", icon: "✅", label: "Dado por Cumplido" },
     { id: "cxp", icon: "🧾", label: "Cuentas por Pagar" },
     { id: "programacion_pagos", icon: "🧭", label: "Programación de Pagos" },
+    { id: "administracion", icon: "🗂️", label: "Administración" },
   ];
   if (loading)
     return (
@@ -5513,6 +5543,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
               calendarioCxp={calendarioCxp}
             />
           )}
+          {subView === "administracion" && <AdministracionView currentUser={currentUser} />}
         </div>
       </div>
     </div>
