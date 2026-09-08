@@ -3243,24 +3243,31 @@ function EstadoDespachoView({ onVolver, onLogout }) {
   }
 
   async function descargarBitacora() {
-    const XLSX = await import("xlsx");
-    const filas = [...enviados, ...recibidos].map((l) => ({
-      "Lote": l.numLote,
-      "Referencia": l.referencia || "",
-      "Cliente": l.cliente || "",
-      "Cant. Cortada": l.cantCortada || 0,
-      "Cant. Despachada": l.cantidadDespachadaBodega || 0,
-      "Sacrificios": l.sacrificios || 0,
-      "Segundas": l.segundas || 0,
-      "Cobros": (l.cobrosBodega || []).map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney(c.valor)}`).join(" / "),
-      "Despacho": l.despachoCodigo || "",
-      "Transportador": l.transportador || "",
-      "Guía": l.numeroGuia || "",
-      "Fecha Envío": l.fechaEnvio || "",
-      "Fecha Recibido": l.fechaRecibido || "",
-      "Estado": l.estadoEnvio === "recibido" ? "Recibido" : "Enviado",
-    }));
-    const ws = XLSX.utils.json_to_sheet(filas);
+    const XLSX = await import("xlsx-js-style");
+    const encabezados = ["Lote", "Referencia", "Cliente", "Cant. Cortada", "Cant. Despachada", "Sacrificios", "Segundas", "Cobros", "Despacho", "Transportador", "Guía", "Fecha Envío", "Fecha Recibido", "Estado"];
+    const grid = [encabezados.map((h) => celda(h, ESTILO_HEADER))];
+    [...enviados, ...recibidos].forEach((l) => {
+      const esRecibido = l.estadoEnvio === "recibido";
+      const cobrosTexto = (l.cobrosBodega || []).map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney(c.valor)}`).join(" / ");
+      grid.push([
+        celda(l.numLote || "", ESTILO_DATO),
+        celda(l.referencia || "", ESTILO_DATO),
+        celda(l.cliente || "", ESTILO_DATO),
+        celda(Number(l.cantCortada) || 0, ESTILO_DATO),
+        celda(Number(l.cantidadDespachadaBodega) || 0, ESTILO_DATO),
+        celda(Number(l.sacrificios) || 0, ESTILO_DATO),
+        celda(Number(l.segundas) || 0, ESTILO_DATO),
+        celda(cobrosTexto, ESTILO_DATO),
+        celda(l.despachoCodigo || "", ESTILO_DATO),
+        celda(l.transportador || "", ESTILO_DATO),
+        celda(l.numeroGuia || "", ESTILO_DATO),
+        celda(l.fechaEnvio || "", ESTILO_DATO),
+        celda(l.fechaRecibido || "", ESTILO_DATO),
+        celda(esRecibido ? "Recibido" : "Enviado", esRecibido ? ESTILO_SALDO_VERDE : ESTILO_SUBTOTAL),
+      ]);
+    });
+    const ws = XLSX.utils.aoa_to_sheet(grid);
+    ws["!cols"] = [{ wch: 8 }, { wch: 14 }, { wch: 20 }, { wch: 12 }, { wch: 14 }, { wch: 11 }, { wch: 10 }, { wch: 34 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 13 }, { wch: 11 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Bitácora");
     XLSX.writeFile(wb, `Bitacora Despachos ${today()}.xlsx`);
