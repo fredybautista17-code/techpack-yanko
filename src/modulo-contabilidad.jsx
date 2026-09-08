@@ -3531,6 +3531,7 @@ function DadoPorCumplidoView({ currentUser }) {
   const [mostrarConfig, setMostrarConfig] = useState(false);
   const [importandoHistorico, setImportandoHistorico] = useState(false);
   const importInputRef = useRef(null);
+  const [vistaDadoPorCumplido, setVistaDadoPorCumplido] = useState("pendientes");
 
   useEffect(() => {
     const unsubLotes = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
@@ -3850,10 +3851,17 @@ function DadoPorCumplidoView({ currentUser }) {
 
       <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", gap: 24, alignItems: "start" }}>
-        <div>
-          <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 12 }}>Pendientes ({pendientes.length})</div>
-          {!pendientes.length ? (
+      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+        <Btn variant={vistaDadoPorCumplido === "pendientes" ? "primary" : "secondary"} small onClick={() => setVistaDadoPorCumplido("pendientes")}>
+          Pendientes ({pendientes.length})
+        </Btn>
+        <Btn variant={vistaDadoPorCumplido === "historicos" ? "primary" : "secondary"} small onClick={() => setVistaDadoPorCumplido("historicos")}>
+          Históricos ({aprobados.length})
+        </Btn>
+      </div>
+
+      {vistaDadoPorCumplido === "pendientes" ? (
+          !pendientes.length ? (
             <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay lotes pendientes por revisar.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -3946,22 +3954,18 @@ function DadoPorCumplidoView({ currentUser }) {
                 );
               })}
             </div>
-          )}
+          )
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {aprobados.map((l) => (
+            <div key={l.id} style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }}>
+              <span><strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia} — {l.cliente} — {l.fecha}</span>
+              <span style={{ color: l.ganancia >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtPesos(l.ganancia)} ({fmtPct(l.gananciaPctLote)})</span>
+            </div>
+          ))}
+          {!aprobados.length && <div style={{ fontSize: 12, color: C.slate }}>Todavía no hay lotes históricos.</div>}
         </div>
-
-        <div>
-          <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 12 }}>Aprobados ({aprobados.length})</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {aprobados.map((l) => (
-              <div key={l.id} style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }}>
-                <span><strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia} — {l.cliente} — {l.fecha}</span>
-                <span style={{ color: l.ganancia >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtPesos(l.ganancia)} ({fmtPct(l.gananciaPctLote)})</span>
-              </div>
-            ))}
-            {!aprobados.length && <div style={{ fontSize: 12, color: C.slate }}>Todavía no hay lotes aprobados.</div>}
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   );
 }
