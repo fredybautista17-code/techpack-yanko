@@ -3533,6 +3533,7 @@ function DadoPorCumplidoView({ currentUser }) {
   const importInputRef = useRef(null);
   const [vistaDadoPorCumplido, setVistaDadoPorCumplido] = useState("pendientes");
   const [busquedaDadoPorCumplido, setBusquedaDadoPorCumplido] = useState("");
+  const [subVistaPendientes, setSubVistaPendientes] = useState("conFactura");
 
   useEffect(() => {
     const unsubLotes = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
@@ -3877,13 +3878,26 @@ function DadoPorCumplidoView({ currentUser }) {
       </div>
 
       {vistaDadoPorCumplido === "pendientes" ? (
-          !pendientesFiltrados.length ? (
+        <>
+          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+            <Btn variant={subVistaPendientes === "conFactura" ? "primary" : "secondary"} small onClick={() => setSubVistaPendientes("conFactura")}>
+              🧾 Con factura ({pendientesConFactura.length})
+            </Btn>
+            <Btn variant={subVistaPendientes === "sinFactura" ? "primary" : "secondary"} small onClick={() => setSubVistaPendientes("sinFactura")}>
+              ⏳ Sin factura ({pendientesSinFactura.length})
+            </Btn>
+          </div>
+          {!(subVistaPendientes === "conFactura" ? pendientesConFactura : pendientesSinFactura).length ? (
             <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>
-              {filtroDadoPorCumplido ? "Ningún pendiente coincide con la búsqueda." : "No hay lotes pendientes por revisar."}
+              {filtroDadoPorCumplido
+                ? "Ningún pendiente coincide con la búsqueda."
+                : subVistaPendientes === "conFactura"
+                ? "No hay lotes con factura por revisar."
+                : "No hay lotes sin factura por ahora."}
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              {pendientesOrdenados.map((l, idxPendiente) => {
+              {(subVistaPendientes === "conFactura" ? pendientesConFactura : pendientesSinFactura).map((l) => {
                 const baseElegida = bases.find((b) => b.id === l.categoriaBaseId);
                 const preview = calcularDadoPorCumplidoPreview({
                   costoRealTotal: l.costoRealTotal,
@@ -3898,20 +3912,10 @@ function DadoPorCumplidoView({ currentUser }) {
                 const sinFactura = l.tieneFactura === false;
                 const listoParaAprobar = Number(l.costoRealTotal) > 0 && !!l.categoriaBaseId && !sinFactura;
                 return (
-                  <Fragment key={l.id}>
-                    {idxPendiente === 0 && pendientesConFactura.length > 0 && (
-                      <div style={{ fontWeight: 800, fontSize: 13, color: C.slate }}>🧾 Con factura ({pendientesConFactura.length})</div>
-                    )}
-                    {idxPendiente === pendientesConFactura.length && pendientesSinFactura.length > 0 && (
-                      <div style={{ fontWeight: 800, fontSize: 13, color: C.slate, marginTop: pendientesConFactura.length ? 6 : 0 }}>⏳ Sin factura todavía ({pendientesSinFactura.length})</div>
-                    )}
-                    <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: sinFactura ? C.canvas : C.white }}>
+                  <div key={l.id} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white }}>
                     <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
                       <div>
-                        <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                          Lote {l.numLote} — {l.referencia || "(sin referencia)"}
-                          {sinFactura && <span style={{ fontSize: 11, fontWeight: 700, color: C.amber, background: C.amberBg, padding: "2px 8px", borderRadius: 20 }}>⏳ Sin factura</span>}
-                        </div>
+                        <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>Lote {l.numLote} — {l.referencia || "(sin referencia)"}</div>
                         <div style={{ fontSize: 12, color: C.slate }}>{l.cliente || "(sin cliente)"} · {l.fecha || "(sin fecha)"}</div>
                       </div>
                       <div style={{ display: "flex", gap: 18, fontSize: 12, color: C.slate, flexWrap: "wrap" }}>
@@ -3979,12 +3983,12 @@ function DadoPorCumplidoView({ currentUser }) {
                         <span>Total BASE: <strong style={{ color: C.ink }}>{fmtPesos(preview.total)}</strong></span>
                       </div>
                     )}
-                    </div>
-                  </Fragment>
+                  </div>
                 );
               })}
             </div>
-          )
+          )}
+        </>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {aprobadosFiltrados.map((l) => (
