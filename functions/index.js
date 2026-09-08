@@ -775,6 +775,289 @@ exports.revisarDespachosNuevos = onSchedule(
   }
 );
 
+// ─────────────────────────────────────────────────────────────────────────
+// (2026-09-08, a pedido de Fredy) "Dado por Cumplido" -- Paso 1.
+//
+// Hoy Contabilidad arma a mano, en Excel, un cuadro por lote (cantidad
+// cortada/despachada, costo real, precio de venta, categoria BASE) para
+// saber si un lote dejo ganancia antes de darlo por aprobado. La idea final
+// es que esto reemplace el sync automatico Busint -> bitacora_despachos
+// (sincronizarBitacoraDespachos): nada entraria a la bitacora sin pasar
+// primero por esta aprobacion de Contabilidad.
+//
+// Se llego a las formulas de abajo leyendo las formulas REALES del Excel
+// "DADO POR CUMPLIDO 2026" que compartio Fredy (no son una suposicion):
+//   costoDefinitivo = COSTO_REAL_TOTAL / CANT_CORTADA (redondeado)
+//   costoTRef       = costoDefinitivo + costoDefinitivo*%sobreCosto
+//                      + precioVentaUnitario*%sobreVenta + BASE
+//   costoT          = costoTRef * CANT_CORTADA
+//   ventaT          = precioVentaUnitario * CANT_DESPACHADA
+//   ganancia        = ventaT - costoT
+//   gananciaPctLote = ganancia / ventaT
+//   gananciaPctRef  = (precioVentaUnitario - costoTRef) / precioVentaUnitario
+//   total           = BASE * CANT_CORTADA
+// "VR. TEORICO" del Excel se investigo y NO alimenta ninguna de estas
+// formulas -- por eso no se reconstruye acá.
+//
+// De Busint se trae SOLO. Lo unico manual (Contabilidad, uno por uno) es
+// el Costo Real Total del lote (el mismo numero que ya buscan hoy en la
+// pantalla de Busint "Gerencia - Historico de Lotes y Variacion de
+// Costos" -- no se encontro una tabla/API que lo traiga solo) y la
+// categoria BASE. Los 2 porcentajes de la formula y los valores de cada
+// categoria BASE quedan en Firestore, editables desde la pantalla (ver
+// "config/dado_por_cumplido" y la coleccion "dado_por_cumplido_bases"),
+// para que Fredy los actualice el mismo si cambian, sin tocar código.
+//
+// Como se detecta un lote nuevo SIN que nadie escriba nada: cada factura
+// de Busint trae en el texto libre "Comentarios" algo como "LOTE 7149"
+// (ya validado en getValidacionFacturasBusintBD que esto funciona casi
+// siempre). Se cruza ese numero de lote contra "facturas detalles" (Precio
+// y unidades T2..T36 por Referencia) para sacar cantidad despachada y
+// precio de venta, y contra ApiGen_PanelControlFlujoOperacional (el mismo
+// catalogo de getLoteBusintPorNumero) para la cantidad cortada. Si una
+// factura no trae "LOTE ####" en Comentarios, esa fila no se crea sola --
+// toca que alguien la revise a mano esa vez puntual.
+//
+// IMPORTANTE (Paso 1): por ahora esto NO toca bitacora_despachos ni el
+// sync automatico viejo -- solo calcula y deja el lote marcado "aprobado"
+// en su propia coleccion, para que Fredy compare los numeros contra su
+// Excel antes de confiar en esto. Conectar la aprobacion con la creacion
+// automatica del despacho (y apagar el sync viejo) es el Paso 2, una vez
+// esos numeros queden validados.
+const DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT = { porcentajeSobreCosto: 2.859, porcentajeSobreVenta: 1.9125 };
+const DIAS_VENTANA_DADO_POR_CUMPLIDO = 20;
+
+function calcularDadoPorCumplido({ costoRealTotal, cantCortada, cantDespachada, precioVentaUnitario, baseValor, porcentajeSobreCosto, porcentajeSobreVenta }) {
+  const cortada = Number(cantCortada) || 0;
+  const despachada = Number(cantDespachada) || 0;
+  const precioVenta = Number(precioVentaUnitario) || 0;
+  const base = Number(baseValor) || 0;
+  const costoReal = Number(costoRealTotal) || 0;
+  const costoDefinitivo = cortada > 0 ? Math.round(costoReal / cortada) : 0;
+  const costoTRef =
+    costoDefinitivo +
+    costoDefinitivo * (Number(porcentajeSobreCosto) / 100) +
+    precioVenta * (Number(porcentajeSobreVenta) / 100) +
+    base;
+  const costoT = costoTRef * cortada;
+  const ventaT = precioVenta * despachada;
+  const ganancia = ventaT - costoT;
+  const gananciaPctLote = ventaT !== 0 ? ganancia / ventaT : 0;
+  const gananciaPctRef = precioVenta !== 0 ? (precioVenta - costoTRef) / precioVenta : 0;
+  const total = base * cortada;
+  return { costoDefinitivo, costoTRef, costoT, ventaT, ganancia, gananciaPctLote, gananciaPctRef, total };
+}
+
+async function sincronizarDadoPorCumplidoPendientes() {
+  const desdeISO = new Date(Date.now() - DIAS_VENTANA_DADO_POR_CUMPLIDO * 86400000).toISOString().slice(0, 10);
+
+  let facturas, detalles, panelFlujo;
+  try {
+    [facturas, detalles, panelFlujo] = await Promise.all([
+      consultarTablaBusintBDCompleta("facturas"),
+      consultarTablaBusintBDCompleta("facturas detalles"),
+      consultarCatalogoBusint("ApiGen_PanelControlFlujoOperacional"),
+    ]);
+  } catch (err) {
+    logger.error("Error consultando Busint (sincronizarDadoPorCumplidoPendientes)", { error: String(err) });
+    throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+  }
+
+  const detallesPorNfact = new Map();
+  detalles.forEach((d) => {
+    const nfact = String(d?.Nfact ?? "").trim();
+    if (!nfact) return;
+    if (!detallesPorNfact.has(nfact)) detallesPorNfact.set(nfact, []);
+    detallesPorNfact.get(nfact).push(d);
+  });
+
+  const panelPorLote = new Map();
+  panelFlujo.forEach((p) => {
+    const n = Number(p?.numLote);
+    if (Number.isFinite(n) && n > 0) panelPorLote.set(n, p);
+  });
+
+  // Un mismo lote puede aparecer en mas de una factura (despacho parcial en
+  // varias partes) -- se agrupan TODAS las facturas recientes por el lote
+  // que traen en Comentarios antes de sumar.
+  const facturasPorLote = new Map();
+  facturas.forEach((f) => {
+    const fechaISO = fechaBDaISO(f?.Fechaini) || fechaBDaISO(f?.UFECHA);
+    if (fechaISO && fechaISO < desdeISO) return;
+    const lote = loteDesdeComentarios(f?.Comentarios);
+    if (!lote) return;
+    if (!facturasPorLote.has(lote)) facturasPorLote.set(lote, []);
+    facturasPorLote.get(lote).push(f);
+  });
+
+  let creados = 0;
+  let actualizados = 0;
+  const coleccion = db.collection("dado_por_cumplido_lotes");
+
+  for (const [lote, facturasDelLote] of facturasPorLote) {
+    let totalUnidades = 0;
+    let totalMonto = 0;
+    let refPrincipal = "";
+    let clienteNombre = "";
+    let fechaMasReciente = null;
+    let numPedido = null;
+
+    facturasDelLote.forEach((f) => {
+      const nfact = String(f?.Nfact ?? "").trim();
+      (detallesPorNfact.get(nfact) || []).forEach((d) => {
+        const unidades = TALLAS_VP_BUSINT.reduce((s, t) => s + (Number(d?.[t]) || 0), 0);
+        if (!unidades) return;
+        const precio = Number(d?.Precio) || 0;
+        const desc = Number(d?.Desc) || 0;
+        const precioNeto = precio * (1 - desc / 100);
+        totalUnidades += unidades;
+        totalMonto += unidades * precioNeto;
+        if (!refPrincipal) refPrincipal = String(d?.Ref || "").trim();
+      });
+      if (!clienteNombre) clienteNombre = String(f?.Observaciones || "").trim();
+      if (numPedido == null && f?.Numped != null) numPedido = f.Numped;
+      const fechaISO = fechaBDaISO(f?.Fechaini) || fechaBDaISO(f?.UFECHA);
+      if (fechaISO && (!fechaMasReciente || fechaISO > fechaMasReciente)) fechaMasReciente = fechaISO;
+    });
+
+    if (totalUnidades <= 0) continue;
+
+    const datosPanel = panelPorLote.get(lote);
+    const cantCortada = Number(datosPanel?.cantCortada) || 0;
+    const referencia = refPrincipal || datosPanel?.referencia || "";
+    const cliente = clienteNombre || datosPanel?.nombreCliente || "";
+    const precioVentaUnitario = Math.round((totalMonto / totalUnidades) * 100) / 100;
+
+    const id = `lote_${lote}`;
+    const ref = coleccion.doc(id);
+    const snap = await ref.get();
+    if (snap.exists && snap.data().estado === "aprobado") continue; // ya aprobado -- no se vuelve a tocar
+
+    const camposBusint = {
+      numLote: lote,
+      numPedido,
+      referencia,
+      cliente,
+      fecha: fechaMasReciente,
+      cantCortada,
+      cantDespachada: totalUnidades,
+      precioVentaUnitario,
+      actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    if (snap.exists) {
+      await ref.set(camposBusint, { merge: true });
+      actualizados++;
+    } else {
+      await ref.set({
+        ...camposBusint,
+        costoRealTotal: null,
+        categoriaBaseId: "",
+        estado: "pendiente",
+        creadoEn: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      creados++;
+    }
+  }
+  logger.info("sincronizarDadoPorCumplidoPendientes completado", { creados, actualizados, totalLotesDetectados: facturasPorLote.size });
+  return { creados, actualizados, totalLotesDetectados: facturasPorLote.size };
+}
+
+// Botón "Buscar lotes nuevos" en Contabilidad -> Dado por Cumplido (solo
+// admin) -- para no tener que esperar la corrida programada.
+exports.sincronizarDadoPorCumplidoPendientesAhora = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    return await sincronizarDadoPorCumplidoPendientes();
+  }
+);
+
+exports.revisarDadoPorCumplidoPendientes = onSchedule(
+  {
+    schedule: "every 2 hours",
+    timeZone: "America/Bogota",
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async () => {
+    const resultado = await sincronizarDadoPorCumplidoPendientes();
+    logger.info("revisarDadoPorCumplidoPendientes completado", resultado);
+  }
+);
+
+// Botón "Aprobar" en Contabilidad -> Dado por Cumplido. Recalcula todo del
+// lado del servidor (nunca confía en números que mande el navegador) a
+// partir de lo único que Contabilidad llenó a mano (costoRealTotal,
+// categoriaBaseId) más los porcentajes/BASE configurados en Firestore.
+// (Paso 1: NO crea nada en bitacora_despachos todavía -- ver comentario
+// arriba de sincronizarDadoPorCumplidoPendientes.)
+exports.aprobarDadoPorCumplido = onCall(
+  { timeoutSeconds: 60, memory: "256MiB" },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    }
+    const id = String(request.data?.id || "").trim();
+    if (!id) throw new HttpsError("invalid-argument", "Falta el id del lote.");
+    const ref = db.collection("dado_por_cumplido_lotes").doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) throw new HttpsError("not-found", "No se encontró ese lote.");
+    const datos = snap.data();
+    if (datos.estado === "aprobado") {
+      throw new HttpsError("failed-precondition", "Este lote ya está aprobado.");
+    }
+    const costoRealTotal = Number(datos.costoRealTotal);
+    if (!Number.isFinite(costoRealTotal) || costoRealTotal <= 0) {
+      throw new HttpsError("failed-precondition", "Falta escribir el Costo Real Total antes de aprobar.");
+    }
+    const categoriaBaseId = String(datos.categoriaBaseId || "").trim();
+    if (!categoriaBaseId) {
+      throw new HttpsError("failed-precondition", "Falta elegir la categoría BASE antes de aprobar.");
+    }
+    const [configSnap, baseSnap] = await Promise.all([
+      db.collection("config").doc("dado_por_cumplido").get(),
+      db.collection("dado_por_cumplido_bases").doc(categoriaBaseId).get(),
+    ]);
+    if (!baseSnap.exists) {
+      throw new HttpsError("failed-precondition", "La categoría BASE elegida ya no existe.");
+    }
+    const config = configSnap.exists ? configSnap.data() : DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT;
+    const baseValor = Number(baseSnap.data().valor) || 0;
+
+    const calculo = calcularDadoPorCumplido({
+      costoRealTotal,
+      cantCortada: datos.cantCortada,
+      cantDespachada: datos.cantDespachada,
+      precioVentaUnitario: datos.precioVentaUnitario,
+      baseValor,
+      porcentajeSobreCosto: config.porcentajeSobreCosto ?? DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT.porcentajeSobreCosto,
+      porcentajeSobreVenta: config.porcentajeSobreVenta ?? DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT.porcentajeSobreVenta,
+    });
+
+    await ref.set(
+      {
+        ...calculo,
+        baseValorUsado: baseValor,
+        porcentajeSobreCostoUsado: Number(config.porcentajeSobreCosto ?? DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT.porcentajeSobreCosto),
+        porcentajeSobreVentaUsado: Number(config.porcentajeSobreVenta ?? DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT.porcentajeSobreVenta),
+        estado: "aprobado",
+        aprobadoPor: request.auth?.token?.email || request.auth?.uid || "",
+        fechaAprobacion: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    logger.info("aprobarDadoPorCumplido aprobado", { id, numLote: datos.numLote, ...calculo });
+    return { ok: true, ...calculo };
+  }
+);
+// ─────────────────────────────────────────────────────────────────────────
+
 function cryptoRandomId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }

@@ -3461,6 +3461,300 @@ function FacturacionClientesView() {
     </div>
   );
 }
+// ─── DADO POR CUMPLIDO ──────────────────────────────────────────────────────
+// (2026-09-08, a pedido de Fredy) Paso 1: Contabilidad revisa, lote por
+// lote, si dejó ganancia antes de darlo por aprobado -- reemplaza (más
+// adelante, Paso 2) el Excel que hoy arman a mano. Cantidad cortada,
+// cantidad despachada, cliente, fecha y precio de venta llegan solos desde
+// Busint (ver sincronizarDadoPorCumplidoPendientes en functions/index.js);
+// lo único que se escribe a mano es el Costo Real Total del lote (el mismo
+// número que ya se busca hoy en la pantalla de Busint "Gerencia -
+// Histórico de Lotes y Variación de Costos") y la categoría BASE. Todo lo
+// demás (Costo T., Venta T., Ganancia, Total) se calcula solo, con las
+// fórmulas exactas del Excel "DADO POR CUMPLIDO 2026".
+//
+// Los 2 porcentajes de la fórmula y los valores de cada categoría BASE
+// quedan guardados en Firestore (config/dado_por_cumplido y
+// dado_por_cumplido_bases) para que Fredy los edite él mismo cuando
+// cambien, sin depender de un cambio de código cada vez.
+//
+// OJO (Paso 1): al aprobar un lote todavía NO se crea nada en la bitácora
+// de despachos -- eso es el Paso 2, una vez se comparen estos números
+// contra el Excel real y queden validados.
+const DADO_POR_CUMPLIDO_BASES_SEMILLA = [
+  { id: "indutex", nombre: "Indutex", valor: 1136.68 },
+  { id: "sin_admi", nombre: "Sin Admi", valor: 2017.63 },
+  { id: "sin_admi_sin_diseno", nombre: "Sin Admi Sin Diseño", valor: 1246.63 },
+  { id: "sin_diseno", nombre: "Sin Diseño", valor: 2676.63 },
+];
+const DADO_POR_CUMPLIDO_PORCENTAJES_SEMILLA = { porcentajeSobreCosto: 2.859, porcentajeSobreVenta: 1.9125 };
+
+function calcularDadoPorCumplidoPreview({ costoRealTotal, cantCortada, cantDespachada, precioVentaUnitario, baseValor, porcentajeSobreCosto, porcentajeSobreVenta }) {
+  const cortada = Number(cantCortada) || 0;
+  const despachada = Number(cantDespachada) || 0;
+  const precioVenta = Number(precioVentaUnitario) || 0;
+  const base = Number(baseValor) || 0;
+  const costoReal = Number(costoRealTotal) || 0;
+  const costoDefinitivo = cortada > 0 ? Math.round(costoReal / cortada) : 0;
+  const costoTRef = costoDefinitivo + costoDefinitivo * (Number(porcentajeSobreCosto) / 100) + precioVenta * (Number(porcentajeSobreVenta) / 100) + base;
+  const costoT = costoTRef * cortada;
+  const ventaT = precioVenta * despachada;
+  const ganancia = ventaT - costoT;
+  const gananciaPctLote = ventaT !== 0 ? ganancia / ventaT : 0;
+  const gananciaPctRef = precioVenta !== 0 ? (precioVenta - costoTRef) / precioVenta : 0;
+  const total = base * cortada;
+  return { costoDefinitivo, costoTRef, costoT, ventaT, ganancia, gananciaPctLote, gananciaPctRef, total };
+}
+
+function fmtPesos(n) {
+  return "$" + Math.round(Number(n) || 0).toLocaleString("es-CO");
+}
+function fmtPct(n) {
+  return (Number(n) * 100 || 0).toLocaleString("es-CO", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
+}
+
+function DadoPorCumplidoView({ currentUser }) {
+  const isAdmin = currentUser?.isAdmin;
+  const [lotes, setLotes] = useState([]);
+  const [bases, setBases] = useState([]);
+  const [config, setConfig] = useState(DADO_POR_CUMPLIDO_PORCENTAJES_SEMILLA);
+  const [loading, setLoading] = useState(true);
+  const [sincronizando, setSincronizando] = useState(false);
+  const [aprobandoId, setAprobandoId] = useState(null);
+  const [mostrarConfig, setMostrarConfig] = useState(false);
+  const [mostrarAprobados, setMostrarAprobados] = useState(false);
+
+  useEffect(() => {
+    const unsubLotes = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
+      setLotes(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      setLoading(false);
+    });
+    const unsubBases = onSnapshot(collection(db, "dado_por_cumplido_bases"), (snap) => {
+      setBases(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    const unsubConfig = onSnapshot(doc(db, "config", "dado_por_cumplido"), (snap) => {
+      if (snap.exists()) setConfig(snap.data());
+    });
+    return () => {
+      unsubLotes();
+      unsubBases();
+      unsubConfig();
+    };
+  }, []);
+
+  // Siembra inicial (solo admin, solo si no existe todavía) -- para que la
+  // pantalla funcione desde el primer momento sin tener que ir a crear los
+  // documentos a mano en Firestore.
+  useEffect(() => {
+    if (!isAdmin || loading) return;
+    (async () => {
+      const basesSnap = await getDocs(collection(db, "dado_por_cumplido_bases"));
+      if (basesSnap.empty) {
+        await Promise.all(DADO_POR_CUMPLIDO_BASES_SEMILLA.map((b) => fsSave("dado_por_cumplido_bases", b.id, { nombre: b.nombre, valor: b.valor })));
+      }
+      const configRef = doc(db, "config", "dado_por_cumplido");
+      const configSnap = await getDocs(collection(db, "config"));
+      const yaExiste = configSnap.docs.some((d) => d.id === "dado_por_cumplido");
+      if (!yaExiste) {
+        await setDoc(configRef, DADO_POR_CUMPLIDO_PORCENTAJES_SEMILLA, { merge: true });
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin, loading]);
+
+  async function sincronizarAhora() {
+    setSincronizando(true);
+    try {
+      const llamar = httpsCallable(functionsClient, "sincronizarDadoPorCumplidoPendientesAhora");
+      const resp = await llamar();
+      const d = resp.data || {};
+      alert(`Listo — ${d.creados || 0} lote(s) nuevo(s), ${d.actualizados || 0} actualizado(s) (de ${d.totalLotesDetectados || 0} detectados en facturas recientes).`);
+    } catch (err) {
+      alert("No se pudo buscar lotes nuevos: " + (err?.message || err));
+    } finally {
+      setSincronizando(false);
+    }
+  }
+
+  async function guardarCampo(id, campo, valor) {
+    await fsSave("dado_por_cumplido_lotes", id, { [campo]: valor });
+  }
+
+  async function aprobar(id) {
+    setAprobandoId(id);
+    try {
+      const llamar = httpsCallable(functionsClient, "aprobarDadoPorCumplido");
+      await llamar({ id });
+    } catch (err) {
+      alert("No se pudo aprobar: " + (err?.message || err));
+    } finally {
+      setAprobandoId(null);
+    }
+  }
+
+  async function guardarConfig(campo, valor) {
+    await setDoc(doc(db, "config", "dado_por_cumplido"), { [campo]: valor }, { merge: true });
+  }
+  async function guardarBase(id, campo, valor) {
+    await fsSave("dado_por_cumplido_bases", id, { [campo]: valor });
+  }
+  async function agregarBase() {
+    const nombre = prompt("Nombre de la nueva categoría BASE:");
+    if (!nombre || !nombre.trim()) return;
+    const id = nombre.trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || uid();
+    await fsSave("dado_por_cumplido_bases", id, { nombre: nombre.trim(), valor: 0 });
+  }
+  async function eliminarBase(id) {
+    if (!window.confirm("¿Eliminar esta categoría BASE?")) return;
+    await fsDelete("dado_por_cumplido_bases", id);
+  }
+
+  const pendientes = lotes.filter((l) => l.estado !== "aprobado").sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+  const aprobados = lotes.filter((l) => l.estado === "aprobado").sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+
+  if (loading) {
+    return <div style={{ padding: 30, textAlign: "center", color: C.slate }}>Cargando...</div>;
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 4 }}>
+        <div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, marginBottom: 4 }}>✅ Dado por Cumplido</div>
+          <div style={{ fontSize: 13, color: C.slate, maxWidth: 640 }}>
+            Cada vez que se factura un lote en Busint, aparece aquí solo (revisa las facturas cada 2 horas). Escribe el Costo Real Total (el mismo número que ya buscas en Busint) y elige la categoría BASE — el resto se calcula solo.
+          </div>
+        </div>
+        {isAdmin && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn variant="ghost" small onClick={() => setMostrarConfig((v) => !v)}>⚙️ Configuración</Btn>
+            <Btn variant="secondary" small onClick={sincronizarAhora} disabled={sincronizando}>
+              {sincronizando ? "Buscando..." : "🔄 Buscar lotes nuevos"}
+            </Btn>
+          </div>
+        )}
+      </div>
+
+      {mostrarConfig && isAdmin && (
+        <div style={{ margin: "16px 0", padding: 16, border: `1px solid ${C.border}`, borderRadius: 12, background: C.canvas }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: C.ink, marginBottom: 10 }}>Porcentajes de la fórmula</div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
+            <Field label="% sobre el Costo Definitivo">
+              <FInput type="number" value={config.porcentajeSobreCosto ?? ""} onChange={(v) => guardarConfig("porcentajeSobreCosto", parseFloat(v) || 0)} />
+            </Field>
+            <Field label="% sobre el Precio de Venta">
+              <FInput type="number" value={config.porcentajeSobreVenta ?? ""} onChange={(v) => guardarConfig("porcentajeSobreVenta", parseFloat(v) || 0)} />
+            </Field>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>Categorías BASE</div>
+            <Btn variant="ghost" small onClick={agregarBase}>+ Agregar categoría</Btn>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {bases.map((b) => (
+              <div key={b.id} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <div style={{ flex: 1 }}>
+                  <FInput value={b.nombre || ""} onChange={(v) => guardarBase(b.id, "nombre", v)} />
+                </div>
+                <div style={{ width: 140 }}>
+                  <FInput type="number" value={b.valor ?? ""} onChange={(v) => guardarBase(b.id, "valor", parseFloat(v) || 0)} />
+                </div>
+                <Btn variant="ghost" small onClick={() => eliminarBase(b.id)}>🗑</Btn>
+              </div>
+            ))}
+            {!bases.length && <div style={{ fontSize: 12, color: C.slate }}>Sin categorías todavía.</div>}
+          </div>
+        </div>
+      )}
+
+      <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
+
+      {!pendientes.length ? (
+        <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay lotes pendientes por revisar.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {pendientes.map((l) => {
+            const baseElegida = bases.find((b) => b.id === l.categoriaBaseId);
+            const preview = calcularDadoPorCumplidoPreview({
+              costoRealTotal: l.costoRealTotal,
+              cantCortada: l.cantCortada,
+              cantDespachada: l.cantDespachada,
+              precioVentaUnitario: l.precioVentaUnitario,
+              baseValor: baseElegida?.valor,
+              porcentajeSobreCosto: config.porcentajeSobreCosto,
+              porcentajeSobreVenta: config.porcentajeSobreVenta,
+            });
+            const listoParaAprobar = Number(l.costoRealTotal) > 0 && !!l.categoriaBaseId;
+            return (
+              <div key={l.id} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white }}>
+                <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+                  <div>
+                    <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>Lote {l.numLote} — {l.referencia || "(sin referencia)"}</div>
+                    <div style={{ fontSize: 12, color: C.slate }}>{l.cliente || "(sin cliente)"} · {l.fecha || "(sin fecha)"}</div>
+                  </div>
+                  <div style={{ display: "flex", gap: 18, fontSize: 12, color: C.slate }}>
+                    <span>Cant. Cortada: <strong style={{ color: C.ink }}>{fmtNum(l.cantCortada)}</strong></span>
+                    <span>Cant. Despachada: <strong style={{ color: C.ink }}>{fmtNum(l.cantDespachada)}</strong></span>
+                    <span>Precio Venta U.: <strong style={{ color: C.ink }}>{fmtPesos(l.precioVentaUnitario)}</strong></span>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "end", marginBottom: 12 }}>
+                  <Field label="Costo Real Total (de Busint)">
+                    <FInput type="number" value={l.costoRealTotal ?? ""} onChange={(v) => guardarCampo(l.id, "costoRealTotal", parseFloat(v) || null)} placeholder="Ej: 4841270" />
+                  </Field>
+                  <Field label="Categoría BASE">
+                    <select
+                      value={l.categoriaBaseId || ""}
+                      onChange={(e) => guardarCampo(l.id, "categoriaBaseId", e.target.value)}
+                      style={{ padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", minWidth: 200 }}
+                    >
+                      <option value="">Elegir...</option>
+                      {bases.map((b) => (
+                        <option key={b.id} value={b.id}>{b.nombre} ({fmtPesos(b.valor)})</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Btn onClick={() => aprobar(l.id)} disabled={!listoParaAprobar || aprobandoId === l.id}>
+                    {aprobandoId === l.id ? "Aprobando..." : "✅ Aprobar"}
+                  </Btn>
+                </div>
+                {listoParaAprobar && (
+                  <div style={{ display: "flex", gap: 20, flexWrap: "wrap", padding: 12, background: C.canvas, borderRadius: 8, fontSize: 12, color: C.slate }}>
+                    <span>Costo Definitivo: <strong style={{ color: C.ink }}>{fmtPesos(preview.costoDefinitivo)}</strong></span>
+                    <span>Costo T.: <strong style={{ color: C.ink }}>{fmtPesos(preview.costoT)}</strong></span>
+                    <span>Venta T.: <strong style={{ color: C.ink }}>{fmtPesos(preview.ventaT)}</strong></span>
+                    <span>Ganancia: <strong style={{ color: preview.ganancia >= 0 ? C.green : C.red }}>{fmtPesos(preview.ganancia)} ({fmtPct(preview.gananciaPctLote)})</strong></span>
+                    <span>% Ganancia/Ref.: <strong style={{ color: C.ink }}>{fmtPct(preview.gananciaPctRef)}</strong></span>
+                    <span>Total BASE: <strong style={{ color: C.ink }}>{fmtPesos(preview.total)}</strong></span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={{ height: 1, background: C.border, margin: "24px 0" }} />
+      <button
+        onClick={() => setMostrarAprobados((v) => !v)}
+        style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 700, color: C.slate, padding: 0, marginBottom: 12 }}
+      >
+        {mostrarAprobados ? "▾" : "▸"} Aprobados ({aprobados.length})
+      </button>
+      {mostrarAprobados && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {aprobados.map((l) => (
+            <div key={l.id} style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }}>
+              <span><strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia} — {l.cliente} — {l.fecha}</span>
+              <span style={{ color: l.ganancia >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtPesos(l.ganancia)} ({fmtPct(l.gananciaPctLote)})</span>
+            </div>
+          ))}
+          {!aprobados.length && <div style={{ fontSize: 12, color: C.slate }}>Todavía no hay lotes aprobados.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
 function PresupuestoClientesView({ movimientos, presupuestosCliente, clientesDiseno, onGuardar, onDelete, isAdmin }) {
   const [mes, setMes] = useState(() => today().slice(0, 7));
   const [showAdd, setShowAdd] = useState(false);
@@ -4705,6 +4999,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
     { id: "proyeccion", icon: "🎯", label: "Proyección" },
     { id: "clientes", icon: "🤝", label: "Presupuesto Clientes" },
     { id: "facturacion_clientes", icon: "🧾", label: "Facturación Clientes" },
+    { id: "dado_por_cumplido", icon: "✅", label: "Dado por Cumplido" },
     { id: "cxp", icon: "🧾", label: "Cuentas por Pagar" },
     { id: "programacion_pagos", icon: "🧭", label: "Programación de Pagos" },
   ];
@@ -4942,6 +5237,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
             />
           )}
           {subView === "facturacion_clientes" && <FacturacionClientesView />}
+          {subView === "dado_por_cumplido" && <DadoPorCumplidoView currentUser={currentUser} />}
           {subView === "cxp" && (
             <CuentasPorPagarView
               cortes={cortesCxp}
