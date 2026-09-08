@@ -3529,7 +3529,6 @@ function DadoPorCumplidoView({ currentUser }) {
   const [sincronizando, setSincronizando] = useState(false);
   const [aprobandoId, setAprobandoId] = useState(null);
   const [mostrarConfig, setMostrarConfig] = useState(false);
-  const [mostrarAprobados, setMostrarAprobados] = useState(false);
   const [importandoHistorico, setImportandoHistorico] = useState(false);
   const importInputRef = useRef(null);
 
@@ -3851,119 +3850,118 @@ function DadoPorCumplidoView({ currentUser }) {
 
       <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
 
-      {!pendientes.length ? (
-        <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay lotes pendientes por revisar.</div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {pendientes.map((l) => {
-            const baseElegida = bases.find((b) => b.id === l.categoriaBaseId);
-            const preview = calcularDadoPorCumplidoPreview({
-              costoRealTotal: l.costoRealTotal,
-              cantCortada: l.cantCortada,
-              cantDespachada: l.cantDespachada,
-              precioVentaUnitario: l.precioVentaUnitario,
-              baseValor: baseElegida?.valor,
-              porcentajeSobreCosto: config.porcentajeSobreCosto,
-              porcentajeSobreVenta: config.porcentajeSobreVenta,
-              costoDefinitivoManual: l.costoDefinitivoManual ? l.costoDefinitivo : null,
-            });
-            const listoParaAprobar = Number(l.costoRealTotal) > 0 && !!l.categoriaBaseId;
-            return (
-              <div key={l.id} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white }}>
-                <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-                  <div>
-                    <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>Lote {l.numLote} — {l.referencia || "(sin referencia)"}</div>
-                    <div style={{ fontSize: 12, color: C.slate }}>{l.cliente || "(sin cliente)"} · {l.fecha || "(sin fecha)"}</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", gap: 24, alignItems: "start" }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 12 }}>Pendientes ({pendientes.length})</div>
+          {!pendientes.length ? (
+            <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay lotes pendientes por revisar.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {pendientes.map((l) => {
+                const baseElegida = bases.find((b) => b.id === l.categoriaBaseId);
+                const preview = calcularDadoPorCumplidoPreview({
+                  costoRealTotal: l.costoRealTotal,
+                  cantCortada: l.cantCortada,
+                  cantDespachada: l.cantDespachada,
+                  precioVentaUnitario: l.precioVentaUnitario,
+                  baseValor: baseElegida?.valor,
+                  porcentajeSobreCosto: config.porcentajeSobreCosto,
+                  porcentajeSobreVenta: config.porcentajeSobreVenta,
+                  costoDefinitivoManual: l.costoDefinitivoManual ? l.costoDefinitivo : null,
+                });
+                const listoParaAprobar = Number(l.costoRealTotal) > 0 && !!l.categoriaBaseId;
+                return (
+                  <div key={l.id} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+                      <div>
+                        <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>Lote {l.numLote} — {l.referencia || "(sin referencia)"}</div>
+                        <div style={{ fontSize: 12, color: C.slate }}>{l.cliente || "(sin cliente)"} · {l.fecha || "(sin fecha)"}</div>
+                      </div>
+                      <div style={{ display: "flex", gap: 18, fontSize: 12, color: C.slate, flexWrap: "wrap" }}>
+                        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          Cant. Cortada:
+                          <input
+                            type="number"
+                            value={l.cantCortada ?? ""}
+                            onChange={(e) => guardarCantCortadaManual(l.id, e.target.value)}
+                            title={l.cantCortadaManual ? "Corregido a mano -- ya no se sobreescribe con Busint." : "Si Busint ya no trae este dato (lote facturado hace tiempo), corrígelo aquí usando el reporte \"Seguimiento a Lotes\" de Busint (línea \"Cortado\", columna Entradas)."}
+                            style={{ width: 72, padding: "2px 6px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", fontWeight: 700, color: C.ink }}
+                          />
+                          {l.cantCortadaManual && <span title="Corregido a mano">✍️</span>}
+                        </span>
+                        <span>Cant. Despachada: <strong style={{ color: C.ink }}>{fmtNum(l.cantDespachada)}</strong></span>
+                        <span>Precio Venta U.: <strong style={{ color: C.ink }}>{fmtPesos(l.precioVentaUnitario)}</strong></span>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "end", marginBottom: 12 }}>
+                      <Field label="Costo Real Total (de Busint)">
+                        <FInput type="number" value={l.costoRealTotal ?? ""} onChange={(v) => guardarCampo(l.id, "costoRealTotal", parseFloat(v) || null)} placeholder="Ej: 4841270" />
+                      </Field>
+                      <Field label="VR. Teórico">
+                        <FInput type="number" value={l.vrTeorico ?? ""} onChange={(v) => guardarCampo(l.id, "vrTeorico", parseFloat(v) || null)} placeholder="Ej: 3057754" />
+                      </Field>
+                      <Field label="Transporte">
+                        <FInput type="number" value={l.transporte ?? ""} onChange={(v) => guardarCampo(l.id, "transporte", parseFloat(v) || null)} placeholder="Ej: 220" />
+                      </Field>
+                      <Field label="Observaciones">
+                        <FInput value={l.observaciones ?? ""} onChange={(v) => guardarCampo(l.id, "observaciones", v)} placeholder="Opcional" />
+                      </Field>
+                      <Field label="Categoría BASE">
+                        <select
+                          value={l.categoriaBaseId || ""}
+                          onChange={(e) => guardarCampo(l.id, "categoriaBaseId", e.target.value)}
+                          style={{ padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", minWidth: 200 }}
+                        >
+                          <option value="">Elegir...</option>
+                          {bases.map((b) => (
+                            <option key={b.id} value={b.id}>{b.nombre} ({fmtPesos(b.valor)})</option>
+                          ))}
+                        </select>
+                      </Field>
+                      <Btn onClick={() => aprobar(l.id)} disabled={!listoParaAprobar || aprobandoId === l.id}>
+                        {aprobandoId === l.id ? "Aprobando..." : "✅ Aprobar"}
+                      </Btn>
+                    </div>
+                    {listoParaAprobar && (
+                      <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "center", padding: 12, background: C.canvas, borderRadius: 8, fontSize: 12, color: C.slate }}>
+                        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          Costo Definitivo:
+                          <input
+                            type="number"
+                            value={preview.costoDefinitivo ?? ""}
+                            onChange={(e) => guardarCostoDefinitivoManual(l.id, e.target.value)}
+                            title={l.costoDefinitivoManual ? "Corregido a mano -- ya no se recalcula solo." : "Se calcula solo (VR.Real ÷ Cant.Cortada). Si Busint trae un número distinto para este lote en particular, corrígelo aquí."}
+                            style={{ width: 72, padding: "2px 6px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", fontWeight: 700, color: C.ink, background: C.white }}
+                          />
+                          {l.costoDefinitivoManual && <span title="Corregido a mano">✍️</span>}
+                        </span>
+                        <span>Costo T.: <strong style={{ color: C.ink }}>{fmtPesos(preview.costoT)}</strong></span>
+                        <span>Venta T.: <strong style={{ color: C.ink }}>{fmtPesos(preview.ventaT)}</strong></span>
+                        <span>Ganancia: <strong style={{ color: preview.ganancia >= 0 ? C.green : C.red }}>{fmtPesos(preview.ganancia)} ({fmtPct(preview.gananciaPctLote)})</strong></span>
+                        <span>% Ganancia/Ref.: <strong style={{ color: C.ink }}>{fmtPct(preview.gananciaPctRef)}</strong></span>
+                        <span>Total BASE: <strong style={{ color: C.ink }}>{fmtPesos(preview.total)}</strong></span>
+                      </div>
+                    )}
                   </div>
-                  <div style={{ display: "flex", gap: 18, fontSize: 12, color: C.slate }}>
-                    <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                      Cant. Cortada:
-                      <input
-                        type="number"
-                        value={l.cantCortada ?? ""}
-                        onChange={(e) => guardarCantCortadaManual(l.id, e.target.value)}
-                        title={l.cantCortadaManual ? "Corregido a mano -- ya no se sobreescribe con Busint." : "Si Busint ya no trae este dato (lote facturado hace tiempo), corrígelo aquí usando el reporte \"Seguimiento a Lotes\" de Busint (línea \"Cortado\", columna Entradas)."}
-                        style={{ width: 72, padding: "2px 6px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", fontWeight: 700, color: C.ink }}
-                      />
-                      {l.cantCortadaManual && <span title="Corregido a mano">✍️</span>}
-                    </span>
-                    <span>Cant. Despachada: <strong style={{ color: C.ink }}>{fmtNum(l.cantDespachada)}</strong></span>
-                    <span>Precio Venta U.: <strong style={{ color: C.ink }}>{fmtPesos(l.precioVentaUnitario)}</strong></span>
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "end", marginBottom: 12 }}>
-                  <Field label="Costo Real Total (de Busint)">
-                    <FInput type="number" value={l.costoRealTotal ?? ""} onChange={(v) => guardarCampo(l.id, "costoRealTotal", parseFloat(v) || null)} placeholder="Ej: 4841270" />
-                  </Field>
-                  <Field label="VR. Teórico">
-                    <FInput type="number" value={l.vrTeorico ?? ""} onChange={(v) => guardarCampo(l.id, "vrTeorico", parseFloat(v) || null)} placeholder="Ej: 3057754" />
-                  </Field>
-                  <Field label="Transporte">
-                    <FInput type="number" value={l.transporte ?? ""} onChange={(v) => guardarCampo(l.id, "transporte", parseFloat(v) || null)} placeholder="Ej: 220" />
-                  </Field>
-                  <Field label="Observaciones">
-                    <FInput value={l.observaciones ?? ""} onChange={(v) => guardarCampo(l.id, "observaciones", v)} placeholder="Opcional" />
-                  </Field>
-                  <Field label="Categoría BASE">
-                    <select
-                      value={l.categoriaBaseId || ""}
-                      onChange={(e) => guardarCampo(l.id, "categoriaBaseId", e.target.value)}
-                      style={{ padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", minWidth: 200 }}
-                    >
-                      <option value="">Elegir...</option>
-                      {bases.map((b) => (
-                        <option key={b.id} value={b.id}>{b.nombre} ({fmtPesos(b.valor)})</option>
-                      ))}
-                    </select>
-                  </Field>
-                  <Btn onClick={() => aprobar(l.id)} disabled={!listoParaAprobar || aprobandoId === l.id}>
-                    {aprobandoId === l.id ? "Aprobando..." : "✅ Aprobar"}
-                  </Btn>
-                </div>
-                {listoParaAprobar && (
-                  <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "center", padding: 12, background: C.canvas, borderRadius: 8, fontSize: 12, color: C.slate }}>
-                    <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                      Costo Definitivo:
-                      <input
-                        type="number"
-                        value={preview.costoDefinitivo ?? ""}
-                        onChange={(e) => guardarCostoDefinitivoManual(l.id, e.target.value)}
-                        title={l.costoDefinitivoManual ? "Corregido a mano -- ya no se recalcula solo." : "Se calcula solo (VR.Real ÷ Cant.Cortada). Si Busint trae un número distinto para este lote en particular, corrígelo aquí."}
-                        style={{ width: 72, padding: "2px 6px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", fontWeight: 700, color: C.ink, background: C.white }}
-                      />
-                      {l.costoDefinitivoManual && <span title="Corregido a mano">✍️</span>}
-                    </span>
-                    <span>Costo T.: <strong style={{ color: C.ink }}>{fmtPesos(preview.costoT)}</strong></span>
-                    <span>Venta T.: <strong style={{ color: C.ink }}>{fmtPesos(preview.ventaT)}</strong></span>
-                    <span>Ganancia: <strong style={{ color: preview.ganancia >= 0 ? C.green : C.red }}>{fmtPesos(preview.ganancia)} ({fmtPct(preview.gananciaPctLote)})</strong></span>
-                    <span>% Ganancia/Ref.: <strong style={{ color: C.ink }}>{fmtPct(preview.gananciaPctRef)}</strong></span>
-                    <span>Total BASE: <strong style={{ color: C.ink }}>{fmtPesos(preview.total)}</strong></span>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <div style={{ height: 1, background: C.border, margin: "24px 0" }} />
-      <button
-        onClick={() => setMostrarAprobados((v) => !v)}
-        style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 700, color: C.slate, padding: 0, marginBottom: 12 }}
-      >
-        {mostrarAprobados ? "▾" : "▸"} Aprobados ({aprobados.length})
-      </button>
-      {mostrarAprobados && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {aprobados.map((l) => (
-            <div key={l.id} style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }}>
-              <span><strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia} — {l.cliente} — {l.fecha}</span>
-              <span style={{ color: l.ganancia >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtPesos(l.ganancia)} ({fmtPct(l.gananciaPctLote)})</span>
+                );
+              })}
             </div>
-          ))}
-          {!aprobados.length && <div style={{ fontSize: 12, color: C.slate }}>Todavía no hay lotes aprobados.</div>}
+          )}
         </div>
-      )}
+
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 12 }}>Aprobados ({aprobados.length})</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {aprobados.map((l) => (
+              <div key={l.id} style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }}>
+                <span><strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia} — {l.cliente} — {l.fecha}</span>
+                <span style={{ color: l.ganancia >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtPesos(l.ganancia)} ({fmtPct(l.gananciaPctLote)})</span>
+              </div>
+            ))}
+            {!aprobados.length && <div style={{ fontSize: 12, color: C.slate }}>Todavía no hay lotes aprobados.</div>}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
