@@ -938,9 +938,14 @@ async function sincronizarDadoPorCumplidoPendientes() {
     // permanente -- confirmado: no existe otra tabla/endpoint en Busint con este dato
     // para lotes ya cerrados). Si el panel ya no trae el lote (o trae 0), conservamos
     // el cantCortada que ya habiamos guardado en una sincronizacion anterior en vez de
-    // sobreescribirlo con 0.
-    const cantCortadaPrevia = Number(snap.data()?.cantCortada) || 0;
-    const cantCortadaFinal = cantCortada > 0 ? cantCortada : cantCortadaPrevia;
+    // sobreescribirlo con 0. Y si Contabilidad ya lo corrigio a mano (cantCortadaManual,
+    // usando el reporte "Seguimiento a Lotes" de Busint), ese valor manda siempre --
+    // nunca se vuelve a pisar con lo que traiga (o no traiga) el panel.
+    const datosPrevios = snap.exists ? snap.data() : null;
+    const cantCortadaPrevia = Number(datosPrevios?.cantCortada) || 0;
+    const cantCortadaFinal = datosPrevios?.cantCortadaManual
+      ? cantCortadaPrevia
+      : (cantCortada > 0 ? cantCortada : cantCortadaPrevia);
 
     const camposBusint = {
       numLote: lote,

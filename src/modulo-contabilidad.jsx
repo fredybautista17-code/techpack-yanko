@@ -3579,6 +3579,14 @@ function DadoPorCumplidoView({ currentUser }) {
     await fsSave("dado_por_cumplido_lotes", id, { [campo]: valor });
   }
 
+  // Corrección manual de Cant. Cortada -- para lotes que Busint ya sacó de su
+  // panel de flujo operacional (facturados hace tiempo) y donde por eso no
+  // llega solo. Una vez se marca como manual, la sincronización automática
+  // (cada 2 horas) ya no lo vuelve a pisar -- ver sincronizarDadoPorCumplidoPendientes.
+  async function guardarCantCortadaManual(id, valor) {
+    await fsSave("dado_por_cumplido_lotes", id, { cantCortada: parseFloat(valor) || 0, cantCortadaManual: true });
+  }
+
   async function aprobar(id) {
     setAprobandoId(id);
     try {
@@ -3692,7 +3700,17 @@ function DadoPorCumplidoView({ currentUser }) {
                     <div style={{ fontSize: 12, color: C.slate }}>{l.cliente || "(sin cliente)"} · {l.fecha || "(sin fecha)"}</div>
                   </div>
                   <div style={{ display: "flex", gap: 18, fontSize: 12, color: C.slate }}>
-                    <span>Cant. Cortada: <strong style={{ color: C.ink }}>{fmtNum(l.cantCortada)}</strong></span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      Cant. Cortada:
+                      <input
+                        type="number"
+                        value={l.cantCortada ?? ""}
+                        onChange={(e) => guardarCantCortadaManual(l.id, e.target.value)}
+                        title={l.cantCortadaManual ? "Corregido a mano -- ya no se sobreescribe con Busint." : "Si Busint ya no trae este dato (lote facturado hace tiempo), corrígelo aquí usando el reporte \"Seguimiento a Lotes\" de Busint (línea \"Cortado\", columna Entradas)."}
+                        style={{ width: 72, padding: "2px 6px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", fontWeight: 700, color: C.ink }}
+                      />
+                      {l.cantCortadaManual && <span title="Corregido a mano">✍️</span>}
+                    </span>
                     <span>Cant. Despachada: <strong style={{ color: C.ink }}>{fmtNum(l.cantDespachada)}</strong></span>
                     <span>Precio Venta U.: <strong style={{ color: C.ink }}>{fmtPesos(l.precioVentaUnitario)}</strong></span>
                   </div>
