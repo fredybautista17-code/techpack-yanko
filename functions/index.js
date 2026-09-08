@@ -833,7 +833,12 @@ function calcularDadoPorCumplido({ costoRealTotal, cantCortada, cantDespachada, 
   const precioVenta = Number(precioVentaUnitario) || 0;
   const base = Number(baseValor) || 0;
   const costoReal = Number(costoRealTotal) || 0;
-  const costoDefinitivo = cortada > 0 ? Math.round(costoReal / cortada) : 0;
+  // Costo Definitivo = VR.Real / Cant.Despachada (NO Cant.Cortada -- verificado
+  // contra el Excel real de Contabilidad para el lote 7200: 3.052.433 / 433 =
+  // 7.049, que es el valor correcto; dividir por Cant.Cortada (435) daba 7.017,
+  // que no cuadraba. El resto de la formula (Costo T. = Costo T.Ref * Cant.Cortada,
+  // Total = BASE * Cant.Cortada) si usa Cant.Cortada y esta verificado correcto).
+  const costoDefinitivo = despachada > 0 ? Math.round(costoReal / despachada) : 0;
   const costoTRef =
     costoDefinitivo +
     costoDefinitivo * (Number(porcentajeSobreCosto) / 100) +

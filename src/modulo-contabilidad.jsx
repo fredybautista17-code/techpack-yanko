@@ -3495,7 +3495,9 @@ function calcularDadoPorCumplidoPreview({ costoRealTotal, cantCortada, cantDespa
   const precioVenta = Number(precioVentaUnitario) || 0;
   const base = Number(baseValor) || 0;
   const costoReal = Number(costoRealTotal) || 0;
-  const costoDefinitivo = cortada > 0 ? Math.round(costoReal / cortada) : 0;
+  // Costo Definitivo = VR.Real / Cant.Despachada (NO Cant.Cortada -- ver la
+  // misma nota en functions/index.js, calcularDadoPorCumplido).
+  const costoDefinitivo = despachada > 0 ? Math.round(costoReal / despachada) : 0;
   const costoTRef = costoDefinitivo + costoDefinitivo * (Number(porcentajeSobreCosto) / 100) + precioVenta * (Number(porcentajeSobreVenta) / 100) + base;
   const costoT = costoTRef * cortada;
   const ventaT = precioVenta * despachada;
