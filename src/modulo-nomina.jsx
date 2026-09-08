@@ -307,6 +307,14 @@ const TNS_CODIGOS_CONOCIDOS = [
 function normalizarCedula(v) {
   return String(v || "").trim().split("-")[0].replace(/\D/g, "").replace(/^0+/, "") || "";
 }
+function normalizarNombreParaComparar(v) {
+  return String(v || "")
+    .trim()
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ");
+}
 // Clasificación de nómina (BASE DE DATOS PERSONAL COPIA FINAL, 25/08/2026):
 // Fiscal = nómina completa en TNS (seg. social + parafiscales). Fiscal
 // Destajo = sueldo fijo como Fiscal pero SIN seguridad social, SÍ
@@ -705,6 +713,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS })
   const [form, setForm] = useState({
     nombre: trabajador?.nombre || "",
     cedula: trabajador?.cedula || "",
+    correo: trabajador?.correo || "",
     tarifaHora: trabajador?.tarifaHora ?? "",
     activo: trabajador?.activo ?? true,
     area: trabajador?.area || "Sin asignar",
@@ -722,6 +731,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS })
     onSave({
       nombre: form.nombre.trim(),
       cedula: form.cedula.trim(),
+      correo: form.correo.trim(),
       tarifaHora: Number(form.tarifaHora) || 0,
       activo: !!form.activo,
       area: form.area || "Sin asignar",
@@ -739,6 +749,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS })
     <Modal title={trabajador ? "Editar Trabajador" : "Nuevo Trabajador"} onClose={onClose} width={440}>
       <Field label="Nombre"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Carlos Javier González" /></Field>
       <Field label="Cédula"><FInput value={form.cedula} onChange={set("cedula")} placeholder="Ej: 1004802413" /></Field>
+      <Field label="Correo"><FInput type="email" value={form.correo} onChange={set("correo")} placeholder="Ej: nombre@gmail.com" /></Field>
       <Field label="Área Interna"><FSel value={form.area} onChange={set("area")} options={[...areasNomina.map((a) => a.nombre), "Sin asignar"]} placeholder="Sin asignar" /></Field>
       <Field label="Área TNS"><FSel value={form.areaTNS} onChange={set("areaTNS")} options={areasTNS.map((a) => a.nombre)} placeholder="Sin clasificar" /></Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
@@ -787,6 +798,58 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
   const [modal, setModal] = useState(null); // null | "nuevo" | trabajador
   const [confirmDel, setConfirmDel] = useState(null);
   const [autoResultado, setAutoResultado] = useState(null);
+  const [importandoCorreos, setImportandoCorreos] = useState(false);
+  const [resultadoCorreos, setResultadoCorreos] = useState(null);
+  const importCorreosRef = useRef(null);
+  async function importarCorreosTrabajadores(e) {
+    const archivo = e.target.files?.[0];
+    e.target.value = "";
+    if (!archivo) return;
+    setImportandoCorreos(true);
+    setResultadoCorreos(null);
+    try {
+      const XLSX = await import("xlsx");
+      const buffer = await archivo.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array", cellDates: true });
+      const filas = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" });
+      // Detecta las columnas por encabezado (Cédula / Nombre / Correo); si no
+      // encuentra encabezados reconocibles, asume el orden Cédula, Nombre, Correo.
+      const encabezado = (filas[0] || []).map((h) => normalizarNombreParaComparar(h));
+      let colCedula = encabezado.findIndex((h) => h.includes("CEDULA"));
+      let colNombre = encabezado.findIndex((h) => h.includes("NOMBRE"));
+      let colCorreo = encabezado.findIndex((h) => h.includes("CORREO") || h.includes("EMAIL"));
+      const empiezaEn = colCedula >= 0 || colNombre >= 0 || colCorreo >= 0 ? 1 : 0;
+      if (colCedula < 0) colCedula = 0;
+      if (colNombre < 0) colNombre = 1;
+      if (colCorreo < 0) colCorreo = 2;
+      let actualizados = 0;
+      const sinCoincidencia = [];
+      const revisar = [];
+      for (let i = empiezaEn; i < filas.length; i++) {
+        const fila = filas[i] || [];
+        const cedulaArchivo = String(fila[colCedula] ?? "").trim();
+        const nombreArchivo = String(fila[colNombre] ?? "").trim();
+        const correoArchivo = String(fila[colCorreo] ?? "").trim();
+        if (!cedulaArchivo || !correoArchivo) continue;
+        const cedNorm = normalizarCedula(cedulaArchivo);
+        const existente = trabajadores.find((t) => normalizarCedula(t.cedula) === cedNorm);
+        if (!existente) {
+          sinCoincidencia.push({ cedula: cedulaArchivo, nombre: nombreArchivo });
+          continue;
+        }
+        if (normalizarNombreParaComparar(existente.nombre) !== normalizarNombreParaComparar(nombreArchivo)) {
+          revisar.push({ cedula: cedulaArchivo, nombreArchivo, nombreSistema: existente.nombre });
+          continue;
+        }
+        await onSave({ id: existente.id, correo: correoArchivo });
+        actualizados++;
+      }
+      setResultadoCorreos({ actualizados, sinCoincidencia, revisar });
+    } catch (err) {
+      setResultadoCorreos({ error: err?.message || String(err) });
+    }
+    setImportandoCorreos(false);
+  }
   const ordenados = [...trabajadores].sort((a, b) => a.nombre.localeCompare(b.nombre));
   // Cruza por cédula los 13 códigos TNS ya conocidos contra los Trabajadores
   // de Atlas, y les llena "tnsCodigo" a los que hagan match y todavía no lo
@@ -894,6 +957,39 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
           {fdResultado !== null && <span style={{ fontSize: 12, color: C.slate }}>{fdResultado.creados} creado(s), {fdResultado.actualizados} actualizado(s).</span>}
           <Btn variant="secondary" onClick={cargarDestajoConocidos}>💼 Cargar Destajo (12 conocidos)</Btn>
           {dResultado !== null && <span style={{ fontSize: 12, color: C.slate }}>{dResultado.creados} creado(s), {dResultado.actualizados} actualizado(s).</span>}
+          <input ref={importCorreosRef} type="file" accept=".xlsx,.xls" onChange={importarCorreosTrabajadores} style={{ display: "none" }} />
+          <Btn variant="secondary" onClick={() => importCorreosRef.current?.click()} disabled={importandoCorreos}>
+            {importandoCorreos ? "Importando..." : "📤 Importar correos"}
+          </Btn>
+        </div>
+      )}
+      {resultadoCorreos && (
+        <div style={{ marginBottom: 16, padding: 14, border: `1px solid ${C.border}`, borderRadius: 10, background: C.canvas, fontSize: 12 }}>
+          {resultadoCorreos.error ? (
+            <div style={{ color: C.red, fontWeight: 700 }}>Error importando: {resultadoCorreos.error}</div>
+          ) : (
+            <>
+              <div style={{ fontWeight: 700, color: C.green, marginBottom: resultadoCorreos.sinCoincidencia.length || resultadoCorreos.revisar.length ? 8 : 0 }}>
+                ✅ {resultadoCorreos.actualizados} correo(s) actualizado(s).
+              </div>
+              {resultadoCorreos.revisar.length > 0 && (
+                <div style={{ marginBottom: resultadoCorreos.sinCoincidencia.length ? 8 : 0 }}>
+                  <div style={{ fontWeight: 700, color: C.amber, marginBottom: 4 }}>⚠️ {resultadoCorreos.revisar.length} con la cédula encontrada pero el nombre no concuerda (revisa a mano):</div>
+                  {resultadoCorreos.revisar.map((r, i) => (
+                    <div key={i} style={{ color: C.slate }}>Cédula {r.cedula}: archivo dice "{r.nombreArchivo}", el sistema tiene "{r.nombreSistema}"</div>
+                  ))}
+                </div>
+              )}
+              {resultadoCorreos.sinCoincidencia.length > 0 && (
+                <div>
+                  <div style={{ fontWeight: 700, color: C.red, marginBottom: 4 }}>❌ {resultadoCorreos.sinCoincidencia.length} cédula(s) del archivo sin ningún trabajador registrado:</div>
+                  {resultadoCorreos.sinCoincidencia.map((r, i) => (
+                    <div key={i} style={{ color: C.slate }}>Cédula {r.cedula} — {r.nombre}</div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
       <Tabla
@@ -901,6 +997,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
         columnas={[
           { key: "nombre", label: "Nombre" },
           { key: "cedula", label: "Cédula", render: (f) => f.cedula || "—" },
+          { key: "correo", label: "Correo", render: (f) => f.correo || <span style={{ color: C.slate }}>—</span> },
           { key: "area", label: "Área Interna", render: (f) => f.area || "Sin asignar" },
           { key: "areaTNS", label: "Área TNS", render: (f) => f.areaTNS || <span style={{ color: C.slate }}>—</span> },
           { key: "tipoNomina", label: "Tipo Nómina", render: (f) => f.tipoNomina ? (
