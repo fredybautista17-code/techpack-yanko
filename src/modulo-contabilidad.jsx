@@ -3910,6 +3910,8 @@ function AdministracionView({ currentUser }) {
   const isAdmin = currentUser?.isAdmin;
   const [importandoHistorico, setImportandoHistorico] = useState(false);
   const importInputRef = useRef(null);
+  const [migrandoEnvios, setMigrandoEnvios] = useState(false);
+  const [resultadoMigracionEnvios, setResultadoMigracionEnvios] = useState(null);
 
   // Importa el Excel histórico "Dado por cumplido" -- crea/actualiza cada
   // lote (identificado por NRO LOTE) ya como aprobado, con los valores tal
@@ -4011,6 +4013,41 @@ function AdministracionView({ currentUser }) {
     }
   }
 
+  async function marcarHistoricosComoEnviados() {
+    if (!window.confirm('Esto va a marcar como "Enviado" todos los lotes que ya estaban Aprobados y que todavía no tienen estado de envío (los de antes de que existiera Estado de Despacho en Bodega). No hace falta repetirlo -- una vez que un lote queda marcado, esta acción ya no lo vuelve a tocar. ¿Continuar?')) return;
+    setMigrandoEnvios(true);
+    setResultadoMigracionEnvios(null);
+    try {
+      const snap = await getDocs(collection(db, "dado_por_cumplido_lotes"));
+      const pendientes = snap.docs.filter((d) => {
+        const data = d.data();
+        return data.estado === "aprobado" && !data.estadoEnvio;
+      });
+      let marcados = 0;
+      for (let i = 0; i < pendientes.length; i += 450) {
+        const grupo = pendientes.slice(i, i + 450);
+        const batch = writeBatch(db);
+        grupo.forEach((d) => {
+          batch.set(
+            d.ref,
+            {
+              estadoEnvio: "enviado",
+              fechaEnvio: d.data().fecha || null,
+              observacionesEnvio: "Marcado automáticamente como enviado (lote aprobado antes de activar Estado de Despacho).",
+            },
+            { merge: true }
+          );
+          marcados++;
+        });
+        await batch.commit();
+      }
+      setResultadoMigracionEnvios({ marcados });
+    } catch (err) {
+      setResultadoMigracionEnvios({ error: err?.message || String(err) });
+    }
+    setMigrandoEnvios(false);
+  }
+
   if (!isAdmin) {
     return <div style={{ padding: 30, textAlign: "center", color: C.slate }}>Esta sección es solo para administradores.</div>;
   }
@@ -4032,6 +4069,20 @@ function AdministracionView({ currentUser }) {
         <Btn variant="secondary" small onClick={() => importInputRef.current?.click()} disabled={importandoHistorico}>
           {importandoHistorico ? "Importando..." : "📤 Importar histórico"}
         </Btn>
+      </div>
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white, maxWidth: 460, marginTop: 14 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 4 }}>🚚 Marcar históricos como Enviados</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>
+          Los lotes que ya estaban Aprobados antes de que existiera "Estado de Despacho" en Bodega no tienen transportador ni guía -- ya se despacharon hace tiempo. Esta acción los marca como "Enviados" de una sola vez, para que solo los lotes nuevos entren a la cola de "Por enviar".
+        </div>
+        <Btn variant="secondary" small onClick={marcarHistoricosComoEnviados} disabled={migrandoEnvios}>
+          {migrandoEnvios ? "Marcando..." : "🚚 Marcar históricos como Enviados"}
+        </Btn>
+        {resultadoMigracionEnvios && (
+          <div style={{ marginTop: 10, fontSize: 12, color: resultadoMigracionEnvios.error ? C.red : C.green, fontWeight: 700 }}>
+            {resultadoMigracionEnvios.error ? `Error: ${resultadoMigracionEnvios.error}` : `Listo -- ${resultadoMigracionEnvios.marcados} lote(s) marcado(s) como Enviado.`}
+          </div>
+        )}
       </div>
     </div>
   );

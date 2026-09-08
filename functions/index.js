@@ -909,9 +909,11 @@ async function sincronizarDadoPorCumplidoPendientes() {
     let clienteNombre = "";
     let fechaMasReciente = null;
     let numPedido = null;
+    const numerosFactura = new Set();
 
     facturasDelLote.forEach((f) => {
       const nfact = String(f?.Nfact ?? "").trim();
+      if (nfact) numerosFactura.add(nfact);
       (detallesPorNfact.get(nfact) || []).forEach((d) => {
         const unidades = TALLAS_VP_BUSINT.reduce((s, t) => s + (Number(d?.[t]) || 0), 0);
         if (!unidades) return;
@@ -935,6 +937,7 @@ async function sincronizarDadoPorCumplidoPendientes() {
     const referencia = refPrincipal || datosPanel?.referencia || "";
     const cliente = clienteNombre || datosPanel?.nombreCliente || "";
     const precioVentaUnitario = Math.round((totalMonto / totalUnidades) * 100) / 100;
+    const observacionesFactura = numerosFactura.size ? `Facturado -- Factura(s): ${[...numerosFactura].join(", ")}` : "";
 
     const id = `lote_${lote}`;
     const ref = coleccion.doc(id);
@@ -965,6 +968,7 @@ async function sincronizarDadoPorCumplidoPendientes() {
       cantDespachada: totalUnidades,
       precioVentaUnitario,
       tieneFactura: true,
+      observacionesFactura,
       actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
     };
     if (snap.exists) {
