@@ -3520,6 +3520,24 @@ function fmtPct(n) {
   return (Number(n) * 100 || 0).toLocaleString("es-CO", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
 }
 
+// Estilo del Excel de "Dado por cumplido" (exportarDadoPorCumplidoExcel más
+// abajo) -- usa "xlsx-js-style" en vez de "xlsx" (mismo criterio ya usado en
+// los Excel de Bodega) porque xlsx (SheetJS) gratis no soporta colores de
+// celda. Encabezado azul con letra blanca, filas alternadas para que se lea
+// mejor, y en rojo negrita las filas sin Costo Definitivo todavía (el ~20%
+// que hay que revisar a mano) -- igual a como Fredy ya marca esas filas en
+// su propio Excel.
+const BORDE_FINO_DPC = { style: "thin", color: { rgb: "B7B7B7" } };
+const TODOS_BORDES_DPC = { top: BORDE_FINO_DPC, bottom: BORDE_FINO_DPC, left: BORDE_FINO_DPC, right: BORDE_FINO_DPC };
+const ESTILO_HEADER_DPC = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "1F4E78" } }, alignment: { horizontal: "center", vertical: "center", wrapText: true }, border: TODOS_BORDES_DPC };
+const ESTILO_FILA_DPC = { border: TODOS_BORDES_DPC, alignment: { vertical: "center" } };
+const ESTILO_FILA_ALT_DPC = { fill: { fgColor: { rgb: "F2F6FB" } }, border: TODOS_BORDES_DPC, alignment: { vertical: "center" } };
+const ESTILO_FILA_SIN_COSTO_DPC = { font: { bold: true, color: { rgb: "C0392B" } }, border: TODOS_BORDES_DPC, alignment: { vertical: "center" } };
+const FORMATO_MONEDA_DPC = '"$" #,##0';
+const FORMATO_PORCENTAJE_DPC = "0.00%";
+const COLUMNAS_MONEDA_DPC = new Set(["VR. TEORICO ", "VR. REAL ", "COSTO DEFINITIVO", "COSTO T", "PRECIO VENTA U.", "VENTA T.", "Venta T. - Costo T.", "Costo T. Ref.", "BASE", "TRANSPORTE", "TOTAL"]);
+const COLUMNAS_PORCENTAJE_DPC = new Set(["% Ganancia/Lote", "% Ganancia/Ref."]);
+
 function DadoPorCumplidoView({ currentUser }) {
   const isAdmin = currentUser?.isAdmin;
   const [lotes, setLotes] = useState([]);
@@ -3610,7 +3628,7 @@ function DadoPorCumplidoView({ currentUser }) {
   // lotes aún no aprobados, calcula con la misma fórmula que la vista previa
   // (puede venir incompleto si todavía falta Costo Real Total o Categoría BASE).
   async function exportarDadoPorCumplidoExcel() {
-    const XLSX = await import("xlsx");
+    const XLSX = await import("xlsx-js-style");
     const filas = [...lotes]
       .sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""))
       .map((l) => {
@@ -3653,6 +3671,24 @@ function DadoPorCumplidoView({ currentUser }) {
         };
       });
     const ws = XLSX.utils.json_to_sheet(filas);
+    const encabezados = Object.keys(filas[0] || {});
+    encabezados.forEach((_, c) => {
+      const addr = XLSX.utils.encode_cell({ r: 0, c });
+      if (ws[addr]) ws[addr].s = ESTILO_HEADER_DPC;
+    });
+    filas.forEach((fila, i) => {
+      const r = i + 1; // la fila 0 es el encabezado
+      const sinCostoDefinitivo = !fila["COSTO DEFINITIVO"];
+      encabezados.forEach((h, c) => {
+        const addr = XLSX.utils.encode_cell({ r, c });
+        const cell = ws[addr];
+        if (!cell) return;
+        cell.s = sinCostoDefinitivo ? ESTILO_FILA_SIN_COSTO_DPC : (i % 2 === 1 ? ESTILO_FILA_ALT_DPC : ESTILO_FILA_DPC);
+        if (COLUMNAS_MONEDA_DPC.has(h)) cell.z = FORMATO_MONEDA_DPC;
+        if (COLUMNAS_PORCENTAJE_DPC.has(h)) cell.z = FORMATO_PORCENTAJE_DPC;
+      });
+    });
+    ws["!cols"] = encabezados.map((h) => ({ wch: Math.max(12, h.length + 2) }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Dado por cumplido");
     XLSX.writeFile(wb, `DADO POR CUMPLIDO ${today()}.xlsx`);
