@@ -932,7 +932,117 @@ function MotivosAusenciaView({ motivos, ausencias, isAdmin, onSave, onDelete }) 
     </div>
   );
 }
-function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, zonasNomina }) {
+// (2026-09-09, a pedido de Fredy) Catálogo de Turnos: algunos trabajadores
+// no tienen el horario completo (ej. Jimmi solo lunes/miércoles/viernes de
+// 1:30pm a 4pm, Karen Dayana Delgado lunes a viernes de 7am a 12pm) -- sin
+// esto, el Reporte de Asistencia les contaba como falta días que ni
+// siquiera les correspondía trabajar. Un trabajador SIN turno asignado
+// sigue funcionando exactamente como antes (lunes a viernes + sábado si
+// hay festivo esa semana) -- este catálogo es solo para las excepciones.
+const DIAS_SEMANA_TURNO = ["Lun", "Mar", "Mie", "Jue", "Vie"];
+function labelDiaTurno(d) {
+  return { Lun: "Lunes", Mar: "Martes", Mie: "Miércoles", Jue: "Jueves", Vie: "Viernes" }[d] || d;
+}
+function TurnoModal({ turno, onSave, onClose }) {
+  const [form, setForm] = useState({
+    nombre: turno?.nombre || "",
+    dias: turno?.dias || [...DIAS_SEMANA_TURNO],
+    sabadoSiFestivo: turno?.sabadoSiFestivo ?? true,
+  });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  function toggleDia(d) {
+    setForm((f) => ({ ...f, dias: f.dias.includes(d) ? f.dias.filter((x) => x !== d) : [...f.dias, d] }));
+  }
+  function guardar() {
+    if (!form.nombre.trim()) return;
+    onSave({ nombre: form.nombre.trim(), dias: form.dias, sabadoSiFestivo: !!form.sabadoSiFestivo });
+    onClose();
+  }
+  return (
+    <Modal title={turno ? "Editar Turno" : "Nuevo Turno"} onClose={onClose} width={440}>
+      <Field label="Nombre del turno"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Medio tiempo mañana (7am-12pm)" /></Field>
+      <Field label="Días que le corresponden">
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {DIAS_SEMANA_TURNO.map((d) => (
+            <button key={d} type="button" onClick={() => toggleDia(d)} style={{ padding: "6px 12px", borderRadius: 6, border: `1.5px solid ${form.dias.includes(d) ? C.blue : C.border}`, background: form.dias.includes(d) ? C.blueBg : C.white, color: form.dias.includes(d) ? C.blue : C.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+              {labelDiaTurno(d)}
+            </button>
+          ))}
+        </div>
+      </Field>
+      <Field label="Sábado">
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.slate, cursor: "pointer" }}>
+          <input type="checkbox" checked={form.sabadoSiFestivo} onChange={(e) => set("sabadoSiFestivo")(e.target.checked)} /> Le corresponde el sábado cuando esa semana tiene un festivo entre semana
+        </label>
+      </Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar} disabled={!form.nombre.trim()}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+function TurnosView({ turnos, trabajadores, isAdmin, onSave, onDelete }) {
+  const [modal, setModal] = useState(null); // null | "nuevo" | turno
+  const [confirmDel, setConfirmDel] = useState(null);
+  const ordenados = [...turnos].sort((a, b) => a.nombre.localeCompare(b.nombre));
+  function contarTrabajadores(turnoId) {
+    return trabajadores.filter((t) => t.turnoId === turnoId).length;
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Los turnos definen qué días de la semana le corresponde trabajar a cada persona -- el Reporte de Asistencia usa esto para saber qué días contar como falta. Si un trabajador no tiene turno asignado (en Trabajadores), se le asume el horario completo (lunes a viernes, más sábado cuando esa semana tiene festivo).
+      </div>
+      {modal && (
+        <TurnoModal
+          turno={modal === "nuevo" ? null : modal}
+          onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {confirmDel && (
+        <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Eliminar el turno <strong>{confirmDel.nombre}</strong>?
+            {contarTrabajadores(confirmDel.id) > 0 && (
+              <div style={{ marginTop: 10, color: C.red, fontWeight: 600 }}>⚠️ {contarTrabajadores(confirmDel.id)} trabajador(es) tienen este turno asignado -- les queda sin turno (se les vuelve a asumir el horario completo) hasta que les asignes otro.</div>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={() => { onDelete(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+          </div>
+        </Modal>
+      )}
+      {isAdmin && (
+        <div style={{ marginBottom: 16 }}>
+          <Btn onClick={() => setModal("nuevo")}>+ Nuevo Turno</Btn>
+        </div>
+      )}
+      <Tabla
+        vacio="Sin turnos registrados todavía -- sin turno, se asume el horario completo de siempre."
+        columnas={[
+          { key: "nombre", label: "Turno" },
+          { key: "dias", label: "Días", render: (f) => (f.dias || []).map(labelDiaTurno).join(", ") || "—" },
+          { key: "sabadoSiFestivo", label: "Sábado si hay festivo", render: (f) => f.sabadoSiFestivo ? "Sí" : "No" },
+          { key: "usos", label: "Trabajadores", align: "right", render: (f) => contarTrabajadores(f.id) },
+          ...(isAdmin ? [{
+            key: "acciones", label: "", align: "right",
+            render: (f) => (
+              <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <span onClick={(e) => { e.stopPropagation(); setModal(f); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>Editar</span>
+                <span onClick={(e) => { e.stopPropagation(); setConfirmDel(f); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>
+              </span>
+            ),
+          }] : []),
+        ]}
+        filas={ordenados}
+      />
+    </div>
+  );
+}
+function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, zonasNomina, turnos }) {
   const [form, setForm] = useState({
     nombre: trabajador?.nombre || "",
     cedula: trabajador?.cedula || "",
@@ -946,6 +1056,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     empleador: trabajador?.empleador || "",
     claseRiesgoARL: trabajador?.claseRiesgoARL || "",
     idHuellero: trabajador?.idHuellero || "",
+    turnoId: trabajador?.turnoId || "",
     tipoNomina: trabajador?.tipoNomina || "",
     sueldo: trabajador?.sueldo ?? "",
     auxilioTransporte: trabajador?.auxilioTransporte ?? "",
@@ -981,6 +1092,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       empleador: form.empleador || "",
       claseRiesgoARL: form.claseRiesgoARL || "",
       idHuellero: form.idHuellero.trim(),
+      turnoId: form.turnoId || "",
       tipoNomina: form.tipoNomina || "",
       sueldo: Number(form.sueldo) || 0,
       auxilioTransporte: Number(form.auxilioTransporte) || 0,
@@ -997,6 +1109,12 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       <Field label="ID Huellero (opcional)"><FInput value={form.idHuellero} onChange={set("idHuellero")} placeholder="Ej: 114 -- el ID que trae el reporte del huellero" /></Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
         Vincula a esta persona con su ID en el equipo biométrico -- así el Reporte de Asistencia cruza los días trabajados aunque el nombre esté escrito distinto. Se puede dejar vacío y vincular después, directo desde el Reporte de Asistencia.
+      </div>
+      <Field label="Turno (opcional)">
+        <FSel value={form.turnoId} onChange={set("turnoId")} options={(turnos || []).map((t) => ({ value: t.id, label: t.nombre }))} placeholder="Horario completo (por defecto)" />
+      </Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        Si esta persona no trabaja el horario completo (lunes a viernes + sábado si hay festivo), asígnale acá su turno -- así el Reporte de Asistencia no le cuenta como falta los días que no le corresponden.
       </div>
       <Field label="Área Interna"><FSel value={form.area} onChange={cambiarArea} options={[...areasNomina.map((a) => a.nombre), "Sin asignar"]} placeholder="Sin asignar" /></Field>
       <Field label="Cargo (opcional)">
@@ -1061,7 +1179,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     </Modal>
   );
 }
-function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina, areasTNS, zonasNomina, onSaveArea, onSaveZona }) {
+function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina, areasTNS, zonasNomina, onSaveArea, onSaveZona, turnos }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | trabajador
   const [confirmDel, setConfirmDel] = useState(null);
   const [autoResultado, setAutoResultado] = useState(null);
@@ -1357,6 +1475,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
           areasNomina={areasNomina}
           areasTNS={areasTNS}
           zonasNomina={zonasNomina}
+          turnos={turnos}
           onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
           onClose={() => setModal(null)}
         />
@@ -1485,6 +1604,10 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
           { key: "tarifaHora", label: "Tarifa/Hora", align: "right", render: (f) => fmtMoney(f.tarifaHora) },
           { key: "tnsCodigo", label: "Código TNS", render: (f) => f.tnsCodigo ? <span style={{ color: C.green, fontWeight: 700 }}>{f.tnsCodigo}</span> : <span style={{ color: C.slate }}>—</span> },
           { key: "idHuellero", label: "ID Huellero", render: (f) => f.idHuellero ? <span style={{ color: C.blue, fontWeight: 700 }}>{f.idHuellero}</span> : <span style={{ color: C.slate }}>—</span> },
+          { key: "turnoId", label: "Turno", render: (f) => {
+            const t = (turnos || []).find((tu) => tu.id === f.turnoId);
+            return t ? t.nombre : <span style={{ color: C.slate }}>Horario completo</span>;
+          } },
           { key: "activo", label: "Estado", render: (f) => (
             <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: f.activo ? C.greenBg : C.redBg, color: f.activo ? C.green : C.red }}>
               {f.activo ? "ACTIVO" : "INACTIVO"}
@@ -2546,12 +2669,20 @@ function semanaTuvoFestivo(iso) {
 }
 // Regla confirmada con Fredy (09/09/2026): lunes a viernes siempre se
 // espera que trabajen; domingo nunca; sábado SOLO si esa semana tuvo un
-// festivo entre semana (para reponer).
-function diaEsperado(iso) {
-  const dow = new Date(iso + "T00:00:00").getDay();
+// festivo entre semana (para reponer). (2026-09-09) Si el trabajador tiene
+// un Turno asignado (catálogo Turnos), se usan sus días y su regla de
+// sábado en vez de la regla completa -- así a alguien como Jimmi (solo
+// lunes/miércoles/viernes) no se le cuenta martes/jueves como falta.
+function diaEsperado(iso, turno) {
+  const dow = new Date(iso + "T00:00:00").getDay(); // 0=domingo..6=sábado
   if (dow === 0) return false;
-  if (dow === 6) return semanaTuvoFestivo(iso);
-  return true;
+  if (dow === 6) {
+    const sabadoSiFestivo = turno ? !!turno.sabadoSiFestivo : true;
+    return sabadoSiFestivo && semanaTuvoFestivo(iso);
+  }
+  const diaCodigo = ["Dom", "Lun", "Mar", "Mie", "Jue", "Vie", "Sab"][dow];
+  const dias = turno?.dias || DIAS_SEMANA_TURNO;
+  return dias.includes(diaCodigo);
 }
 function parseHuelleroXLS(aoa) {
   const DT_RE = /^\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}$/;
@@ -2634,7 +2765,7 @@ function listaDeDiasISO(desdeISO, hastaISO) {
   }
   return out;
 }
-function ReporteAsistenciaView({ ausencias, trabajadores, onGuardarTrabajador }) {
+function ReporteAsistenciaView({ ausencias, trabajadores, turnos, onGuardarTrabajador }) {
   const fileRef = useRef(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState("");
@@ -2706,9 +2837,10 @@ function ReporteAsistenciaView({ ausencias, trabajadores, onGuardarTrabajador })
           if (trabajadorDelRegistro && a.trabajadorId) return a.trabajadorId === trabajadorDelRegistro.trabajador.id;
           return normalizarNombreHuellero(a.nombre) === nombreNorm;
         });
+        const turnoDelRegistro = trabajadorDelRegistro ? (turnos || []).find((t) => t.id === trabajadorDelRegistro.trabajador.turnoId) : null;
         const diasSinMarca = diasPeriodo.filter((iso) => {
           if (diasConMarca.has(iso)) return false;
-          if (!diaEsperado(iso)) return false;
+          if (!diaEsperado(iso, turnoDelRegistro)) return false;
           return true;
         });
         const detalle = diasSinMarca.map((iso) => {
@@ -5420,6 +5552,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [zonasNomina, setZonasNomina] = useState([]);
   const [motivosAusencia, setMotivosAusencia] = useState([]);
   const [motivosAusenciaCargado, setMotivosAusenciaCargado] = useState(false);
+  const [turnos, setTurnos] = useState([]);
   const [produccion, setProduccion] = useState([]);
   const [horas, setHoras] = useState([]);
   const [cierres, setCierres] = useState([]);
@@ -5445,6 +5578,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_areas_tns"), (snap) => setAreasTNS(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_zonas"), (snap) => setZonasNomina(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_motivos_ausencia"), (snap) => { setMotivosAusencia(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setMotivosAusenciaCargado(true); }),
+      onSnapshot(collection(db, "nomina_turnos"), (snap) => setTurnos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_produccion"), (snap) => setProduccion(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_horas"), (snap) => setHoras(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_cierres"), (snap) => setCierres(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -5510,6 +5644,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "zonas_nomina", icon: "🪪", label: "Cargo" },
             { id: "areas_tns", icon: "🏛️", label: "Área TNS" },
             { id: "motivos_ausencia", icon: "🏷️", label: "Motivos de Ausencia (catálogo)" },
+            { id: "turnos", icon: "⏱️", label: "Turnos" },
             { id: "trabajadores", icon: "👷", label: "Trabajadores" },
           ] },
         { group: "Novedades", icon: "📣", items: [
@@ -5552,6 +5687,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function borrarZonaNomina(id) { await fsDelete("nomina_zonas", id); }
   async function guardarMotivoAusencia(m) { await fsSave("nomina_motivos_ausencia", m.id, m); }
   async function borrarMotivoAusencia(id) { await fsDelete("nomina_motivos_ausencia", id); }
+  async function guardarTurno(t) { await fsSave("nomina_turnos", t.id, t); }
+  async function borrarTurno(id) { await fsDelete("nomina_turnos", id); }
   // (2026-09-02, a pedido de Fredy) Pareja fija: SOLO Postura Dije
   // encadena con Terminación (nada más). Se dispara siempre que se
   // registre producción de Dije para un trabajador+lote, así el lote no
@@ -5741,18 +5878,19 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
           {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} />}
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} />}
-          {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} />}
+          {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} />}
           {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} isAdmin={isAdmin} onSave={guardarAreaNomina} onDelete={borrarAreaNomina} />}
           {subView === "zonas_nomina" && !areaLider && !soloNovedades && <ZonasNominaView zonas={zonasNomina} areasNomina={areasNomina} trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarZonaNomina} onDelete={borrarZonaNomina} />}
           {subView === "areas_tns" && !areaLider && !soloNovedades && <AreasTnsView areas={areasTNS} trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarAreaTNS} onDelete={borrarAreaTNS} />}
           {subView === "motivos_ausencia" && !areaLider && !soloNovedades && <MotivosAusenciaView motivos={motivosAusencia} ausencias={ausencias} isAdmin={isAdmin} onSave={guardarMotivoAusencia} onDelete={borrarMotivoAusencia} />}
+          {subView === "turnos" && !areaLider && !soloNovedades && <TurnosView turnos={turnos} trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTurno} onDelete={borrarTurno} />}
           {subView === "precios" && !areaLider && !soloNovedades && <PreciosProcesoView precios={precios} isAdmin={isAdmin} onSave={guardarProceso} onDelete={borrarProceso} />}
           {subView === "costos_teorico" && !areaLider && !soloNovedades && <CostosTeoricoProcesoView costos={costosTeoricoProceso} isAdmin={isAdmin} onGuardarLote={guardarCostosTeoricoProcesoLote} onBorrarTodo={vaciarCostosTeoricoProceso} />}
           {subView === "costo_referencia" && !areaLider && !soloNovedades && <ConsultarCostoReferenciaView />}
           {subView === "tns" && !areaLider && !soloNovedades && <TNSConexionView />}
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
-          {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} onGuardarTrabajador={guardarTrabajador} />}
+          {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} turnos={turnos} onGuardarTrabajador={guardarTrabajador} />}
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView trabajadores={trabajadores} faltas={faltasSinJustificar} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
