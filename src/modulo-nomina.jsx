@@ -359,6 +359,71 @@ const DESTAJO_CONOCIDOS = [
   { cedula: "1127350028", nombre: "VICTOR MANUEL ADOLFO PORRAS", area: "ZONA CALOR", sueldo: 1750905, auxilioTransporte: 249095 },
   { cedula: "1092254889", nombre: "JHONEIDER BOTELLO BECERRA", area: "ZONA CALOR", sueldo: 1750905, auxilioTransporte: 249095 },
 ];
+// (2026-09-09, a pedido de Fredy) Personal de Maquila -- archivo "PERSONAL
+// MAQUILA.xlsx" que subió. Todos van al Área Interna "MAQUILA" (se crea
+// sola la primera vez que se cargan, junto con cada Zona Interna que traiga
+// la lista -- ver cargarMaquilaConocidos en TrabajadoresView). Sueldo y
+// auxilio de transporte: el estándar de mínimo + subsidio que ya se usa en
+// el resto de la nómina (1.750.905 / 249.095), salvo 3 excepciones que
+// Fredy dio a mano: JIMMY YESID HERNANDEZ HERNANDEZ ("Yimi") y JULIAN
+// ALBEIRO ATEHORTUA RAMIREZ pasan a Prestación de Servicios con su sueldo
+// propio y sin auxilio de transporte, y CAROLINA RIVERA BUITRAGO mantiene
+// su Tipo de Nómina (Fiscal) pero con sueldo 2.312.200 + auxilio.
+const MAQUILA_CONOCIDOS = [
+  { cedula: "1090478794", nombre: "BELEN TORCOROMA CONDE SANTIAGO", correo: "belentorcoromaconde@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1093773241", nombre: "CARMEN YANETH RIVERA ASCANIO", correo: "yanethrivera556@gmail.com", zona: "PATINADORA DE CONFECCIÓN", tipoNomina: "Fiscal Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "PPT779282", nombre: "CAROLINA DIAZ CRUZ", correo: "frangycarolinadiaz@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "37443339", nombre: "CAROLINA RIVERA BUITRAGO", correo: "karolrivera1081@gmail.com", zona: "LIDER MAQUILA", tipoNomina: "Fiscal", sueldo: 2312200, auxilioTransporte: 249095 },
+  { cedula: "1119180538", nombre: "ERIKA SHIREY DURAN ESPINOSA", correo: "erika.espinosa20001@gmail.com", zona: "ESPIGADORA DE CONFECCIÓN", tipoNomina: "Fiscal Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1090443715", nombre: "GLENDA YAMALI CONTRERAS ORTEGA", correo: "", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1093801727", nombre: "JESUS EMIRIO SANCHEZ RANGEL", correo: "jechus1or@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1090408551", nombre: "JULIA YURY GALVIS SUAREZ", correo: "jygs2703@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "PPT 5875854", nombre: "LAURA NOHEMI FLORES", correo: "laura8flores@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "37390572", nombre: "LEDY YOHENA GARCIA ORDUZ", correo: "", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1004967010", nombre: "LINDA TATIANA MENDOZA PATIÑO", correo: "lindatatianamendoza@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1120362664", nombre: "LIZETH PAOLA SALDARRIAGA BUITRAGO", correo: "paolasaldarriaga548@gmail.com", zona: "REVISADORA DE CONFECIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "37444395", nombre: "LUZ KARINE SANCHEZ ESCOBAR", correo: "luzvalenic@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "60374952", nombre: "MARIA FERNANDA GUERRERO RIASCOS", correo: "maferpeche1975@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1149467366", nombre: "MERYKEY PABON BERNAL", correo: "merykeypabon@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "37197931", nombre: "MIREYA CELIS PACHECO", correo: "mireyacelispacheco@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "60390253", nombre: "MONICA DEL PILAR JIMENENEZ PARRA", correo: "alquemo22@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "49696194", nombre: "NELSY MARTINEZ SALCEDO", correo: "nelsymartinez.02@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "PPT 5525783", nombre: "OLISMAR YSBET GOMEZ TORRES", correo: "olismar1796@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1090467154", nombre: "RUBI PEÑARANDA BACCA", correo: "ruby1993g20@gmail.com", zona: "ESPIGADORA DE CONFECCIÓN", tipoNomina: "Fiscal Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "49663566", nombre: "SANDRA MILENA MAGREGO TORRES", correo: "magregomilena74@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1093752194", nombre: "LEIDY YAJAIRA REYES DURAN", correo: "leidyyajairareyesduran@gmail.com", zona: "PLANCHADO", tipoNomina: "Fiscal Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "PPT 5434574", nombre: "GLEIDYS CAROLINA HUMBRIA GOYO", correo: "gleidys1328@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "60369604", nombre: "MARTHA SALDAÑAZ CONTRERAS", correo: "marthasaldanas.73@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1090392657", nombre: "ELIOT DAVID VEGA GONZALEZ", correo: "vegaeliut39@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1093792379", nombre: "CLAUDIA PATRICIA PORTILLA SALA", correo: "patriciasala787@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1094162259", nombre: "CINDY PAOLA LEAL ROLON", correo: "cindy.leal1117@gmail.com", zona: "REVISADORA DE CONFECIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1093758326", nombre: "YAIRA LICETH PEREZ CARRASCAL", correo: "yairaliceth_123@hotmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "PPT 5443585", nombre: "GLADYS YELITZA HUMBRIA GOYO", correo: "gladyshumbria16@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "37321428", nombre: "MARIA EMMA RUEDAS BARBOSA", correo: "", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1091805089", nombre: "NELLY PATRICIA TRIVIÑO CRISTANCHO", correo: "nelsonjohantoro@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Fiscal", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1093293814", nombre: "JUAN SEBASTIAN PATIÑO RIVERA", correo: "juan355sebas@gmail.com", zona: "ADMINISTRATIVO CONFECCIÓN", tipoNomina: "Fiscal Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1090419237", nombre: "ROSA ELIDA CARRILLO CARRILLO", correo: "rosaelidacarrilocarrillo@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "PPT4949299", nombre: "ALEXANDER JESUS RODRIGUEZ MARIÑO", correo: "jesusrom353@gmail.com", zona: "DESPELUZADOR DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1105789691", nombre: "MANUEL ERNESTO RUEDA SUAREZ", correo: "maetorueda1995@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1094164084", nombre: "YENIFER PAOLA RIVERA ASENCIO", correo: "paolarivera.152211@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1094346937", nombre: "CAMILA ANDREA SUAREZ FUENTES", correo: "camilaandreasuarezfuentes534@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1092339812", nombre: "GERALDIN LEGUIZAMON ORTIZ", correo: "geraldinortiz04@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "PTT 5060907", nombre: "GENESIS KARINA GONZALEZ MARTINEZ", correo: "", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "PTT 7226354", nombre: "JUAN CARLOS GONZALEZ MARTINEZ", correo: "cg6586718@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1032505309", nombre: "YORDAN YAMPIHER ESPINOSA SANABRIA", correo: "yordan.espinosa19@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1093794155", nombre: "PAULA ANDREA MARTINEZ AGUILAR", correo: "paulita9801@hotmail.com", zona: "REVISADORA DE CONFECIÓN", tipoNomina: "Fiscal", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1004879305", nombre: "KAREN YULIANA SUAREZ ESPINEL", correo: "karensua337@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1092357174", nombre: "JULIAN ALBEIRO ATEHORTUA RAMIREZ", correo: "", zona: "MECANICO CONFECCIÓN", tipoNomina: "Prestación de Servicios", sueldo: 2800000, auxilioTransporte: 0 },
+  { cedula: "1093752972", nombre: "JIMMY YESID HERNANDEZ HERNANDEZ", correo: "", zona: "MECANICO CONFECCIÓN", tipoNomina: "Prestación de Servicios", sueldo: 1750000, auxilioTransporte: 0 },
+  { cedula: "PPT 5831508", nombre: "ANA LAURA LEON BOLIVAR", correo: "leonbolivaranalaura@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "CV 23652653", nombre: "ANA GABRIELA PINTO SIFONTES", correo: "pintogabriela799@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1119181812", nombre: "DIANA ESPINOSA TORRES", correo: "diana328039@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "1057612531", nombre: "YERLI PATRICIA GARZONN REY", correo: "yerlypatricia1989@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "PPT 1143588", nombre: "ROBERSY NAILETH REYES DAVILA", correo: "jaikerlyreyes20@gmail.com", zona: "OPERARIO DE CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "37369933", nombre: "VILMA MARIA ANGARITA QUINTERO", correo: "vilmangarita13@gmail.com", zona: "OPERARIO CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "CV 30.057.554", nombre: "ELVIS ALEXANDRO MEJIAS MALAVE", correo: "", zona: "OPERARIO CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+  { cedula: "PPT 6977521", nombre: "KEILA JOHANA BERNAL MONCADA", correo: "bernalkeila993@gmail.com", zona: "REVISADORA DE CONFECIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
+];
 function AreaNominaModal({ area, procesos, onSave, onClose }) {
   const [form, setForm] = useState({
     nombre: area?.nombre || "",
@@ -910,7 +975,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     </Modal>
   );
 }
-function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina, areasTNS, zonasNomina }) {
+function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina, areasTNS, zonasNomina, onSaveArea, onSaveZona }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | trabajador
   const [confirmDel, setConfirmDel] = useState(null);
   const [autoResultado, setAutoResultado] = useState(null);
@@ -1044,6 +1109,57 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
     }
     setDResultado({ creados, actualizados });
   }
+  // (2026-09-09, a pedido de Fredy) Carga el personal de Maquila (ver
+  // MAQUILA_CONOCIDOS arriba): primero se asegura de que exista el Área
+  // Interna "MAQUILA" y cada Zona Interna que traiga la lista (Zona
+  // depende de un Área ya creada -- ver TrabajadorModal), y después crea o
+  // actualiza (por cédula) a cada trabajador, igual que Fiscal Destajo y
+  // Destajo arriba.
+  const [mzResultado, setMzResultado] = useState(null);
+  async function cargarMaquilaConocidos() {
+    let areaMaquila = areasNomina.find((a) => a.nombre === "MAQUILA");
+    let areaCreada = false;
+    if (!areaMaquila) {
+      areaMaquila = { id: uid(), nombre: "MAQUILA" };
+      await onSaveArea({ id: areaMaquila.id, nombre: "MAQUILA", procesosCentroCosto: [], metaDiariaUnidades: null, presupuestoMensualNomina: null, modoMedicion: "", mideReclamosCalidad: false });
+      areaCreada = true;
+    }
+    const zonasNecesarias = [...new Set(MAQUILA_CONOCIDOS.map((p) => p.zona).filter(Boolean))];
+    const zonasYaCreadas = new Set(zonasNomina.filter((z) => z.areaId === areaMaquila.id).map((z) => z.nombre));
+    let zonasCreadas = 0;
+    for (const nombreZona of zonasNecesarias) {
+      if (zonasYaCreadas.has(nombreZona)) continue;
+      await onSaveZona({ id: uid(), nombre: nombreZona, areaId: areaMaquila.id });
+      zonasCreadas++;
+    }
+    let creados = 0, actualizados = 0;
+    for (const p of MAQUILA_CONOCIDOS) {
+      const ced = normalizarCedula(p.cedula);
+      const existente = trabajadores.find((t) => normalizarCedula(t.cedula) === ced);
+      const datos = {
+        nombre: existente?.nombre || p.nombre,
+        cedula: existente?.cedula || p.cedula,
+        correo: existente?.correo || p.correo || "",
+        tarifaHora: existente?.tarifaHora || 0,
+        activo: existente?.activo ?? true,
+        area: "MAQUILA",
+        zona: p.zona || "",
+        areaTNS: existente?.areaTNS || "",
+        tnsCodigo: existente?.tnsCodigo || "",
+        tipoNomina: p.tipoNomina,
+        sueldo: p.sueldo,
+        auxilioTransporte: p.auxilioTransporte,
+      };
+      if (existente) {
+        await onSave({ id: existente.id, ...datos });
+        actualizados++;
+      } else {
+        await onSave({ id: uid(), ...datos });
+        creados++;
+      }
+    }
+    setMzResultado({ creados, actualizados, areaCreada, zonasCreadas });
+  }
   return (
     <div>
       {modal && (
@@ -1074,6 +1190,15 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
           {fdResultado !== null && <span style={{ fontSize: 12, color: C.slate }}>{fdResultado.creados} creado(s), {fdResultado.actualizados} actualizado(s).</span>}
           <Btn variant="secondary" onClick={cargarDestajoConocidos}>💼 Cargar Destajo (12 conocidos)</Btn>
           {dResultado !== null && <span style={{ fontSize: 12, color: C.slate }}>{dResultado.creados} creado(s), {dResultado.actualizados} actualizado(s).</span>}
+          <Btn variant="secondary" onClick={cargarMaquilaConocidos}>🧵 Cargar Maquila (53 conocidos)</Btn>
+          {mzResultado !== null && (
+            <span style={{ fontSize: 12, color: C.slate }}>
+              {mzResultado.creados} creado(s), {mzResultado.actualizados} actualizado(s)
+              {(mzResultado.areaCreada || mzResultado.zonasCreadas > 0) && (
+                <> ({mzResultado.areaCreada ? "Área MAQUILA creada, " : ""}{mzResultado.zonasCreadas} zona(s) creada(s))</>
+              )}.
+            </span>
+          )}
           <input ref={importCorreosRef} type="file" accept=".xlsx,.xls" onChange={importarCorreosTrabajadores} style={{ display: "none" }} />
           <Btn variant="secondary" onClick={() => importCorreosRef.current?.click()} disabled={importandoCorreos}>
             {importandoCorreos ? "Importando..." : "📤 Importar correos"}
@@ -4753,7 +4878,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "produccion" && !soloNovedades && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} costosTeoricoProceso={costosTeoricoProceso} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
           {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
           {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} />}
-          {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} />}
+          {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} />}
           {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} isAdmin={isAdmin} onSave={guardarAreaNomina} onDelete={borrarAreaNomina} />}
           {subView === "zonas_nomina" && !areaLider && !soloNovedades && <ZonasNominaView zonas={zonasNomina} areasNomina={areasNomina} trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarZonaNomina} onDelete={borrarZonaNomina} />}
           {subView === "areas_tns" && !areaLider && !soloNovedades && <AreasTnsView areas={areasTNS} trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarAreaTNS} onDelete={borrarAreaTNS} />}
