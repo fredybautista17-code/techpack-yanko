@@ -1059,6 +1059,10 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
   const [modal, setModal] = useState(null); // null | "nuevo" | trabajador
   const [confirmDel, setConfirmDel] = useState(null);
   const [autoResultado, setAutoResultado] = useState(null);
+  // Un solo flag para las 4 cargas de "conocidos" -- bloquea los 4
+  // botones mientras cualquiera está corriendo, para que un doble clic
+  // (o clic en otro botón a mitad de carga) no vuelva a crear duplicados.
+  const [cargandoConocidos, setCargandoConocidos] = useState(null); // null | "fiscal_destajo" | "destajo" | "maquila" | "fiscal"
   const [importandoCorreos, setImportandoCorreos] = useState(false);
   const [resultadoCorreos, setResultadoCorreos] = useState(null);
   const importCorreosRef = useRef(null);
@@ -1134,60 +1138,72 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
   // catálogo base para la Nómina Fiscal Destajo sin escribirlos a mano.
   const [fdResultado, setFdResultado] = useState(null);
   async function cargarFiscalDestajoConocidos() {
-    let creados = 0, actualizados = 0;
-    for (const p of FISCAL_DESTAJO_CONOCIDOS) {
-      const ced = normalizarCedula(p.cedula);
-      const existente = trabajadores.find((t) => normalizarCedula(t.cedula) === ced);
-      const datos = {
-        nombre: existente?.nombre || p.nombre,
-        cedula: existente?.cedula || p.cedula,
-        tarifaHora: existente?.tarifaHora || 0,
-        activo: existente?.activo ?? true,
-        area: existente?.area || "Sin asignar",
-        tnsCodigo: existente?.tnsCodigo || "",
-        tipoNomina: "Fiscal Destajo",
-        sueldo: p.sueldo,
-        auxilioTransporte: p.auxilioTransporte,
-      };
-      if (existente) {
-        await onSave({ id: existente.id, ...datos });
-        actualizados++;
-      } else {
-        await onSave({ id: uid(), ...datos });
-        creados++;
+    if (cargandoConocidos) return;
+    setCargandoConocidos("fiscal_destajo");
+    try {
+      let creados = 0, actualizados = 0;
+      for (const p of FISCAL_DESTAJO_CONOCIDOS) {
+        const ced = normalizarCedula(p.cedula);
+        const existente = trabajadores.find((t) => normalizarCedula(t.cedula) === ced);
+        const datos = {
+          nombre: existente?.nombre || p.nombre,
+          cedula: existente?.cedula || p.cedula,
+          tarifaHora: existente?.tarifaHora || 0,
+          activo: existente?.activo ?? true,
+          area: existente?.area || "Sin asignar",
+          tnsCodigo: existente?.tnsCodigo || "",
+          tipoNomina: "Fiscal Destajo",
+          sueldo: p.sueldo,
+          auxilioTransporte: p.auxilioTransporte,
+        };
+        if (existente) {
+          await onSave({ id: existente.id, ...datos });
+          actualizados++;
+        } else {
+          await onSave({ id: uid(), ...datos });
+          creados++;
+        }
       }
+      setFdResultado({ creados, actualizados });
+    } finally {
+      setCargandoConocidos(null);
     }
-    setFdResultado({ creados, actualizados });
   }
   // Mismo patron que arriba, pero para tipoNomina "Destajo" (pago por
   // produccion, no lleva seguridad social ni sueldo fijo editable en el
   // formulario -- se guarda igual sueldo/auxilioTransporte de referencia).
   const [dResultado, setDResultado] = useState(null);
   async function cargarDestajoConocidos() {
-    let creados = 0, actualizados = 0;
-    for (const p of DESTAJO_CONOCIDOS) {
-      const ced = normalizarCedula(p.cedula);
-      const existente = trabajadores.find((t) => normalizarCedula(t.cedula) === ced);
-      const datos = {
-        nombre: existente?.nombre || p.nombre,
-        cedula: existente?.cedula || p.cedula,
-        tarifaHora: existente?.tarifaHora || 0,
-        activo: existente?.activo ?? true,
-        area: existente?.area || p.area || "Sin asignar",
-        tnsCodigo: existente?.tnsCodigo || "",
-        tipoNomina: "Destajo",
-        sueldo: p.sueldo,
-        auxilioTransporte: p.auxilioTransporte,
-      };
-      if (existente) {
-        await onSave({ id: existente.id, ...datos });
-        actualizados++;
-      } else {
-        await onSave({ id: uid(), ...datos });
-        creados++;
+    if (cargandoConocidos) return;
+    setCargandoConocidos("destajo");
+    try {
+      let creados = 0, actualizados = 0;
+      for (const p of DESTAJO_CONOCIDOS) {
+        const ced = normalizarCedula(p.cedula);
+        const existente = trabajadores.find((t) => normalizarCedula(t.cedula) === ced);
+        const datos = {
+          nombre: existente?.nombre || p.nombre,
+          cedula: existente?.cedula || p.cedula,
+          tarifaHora: existente?.tarifaHora || 0,
+          activo: existente?.activo ?? true,
+          area: existente?.area || p.area || "Sin asignar",
+          tnsCodigo: existente?.tnsCodigo || "",
+          tipoNomina: "Destajo",
+          sueldo: p.sueldo,
+          auxilioTransporte: p.auxilioTransporte,
+        };
+        if (existente) {
+          await onSave({ id: existente.id, ...datos });
+          actualizados++;
+        } else {
+          await onSave({ id: uid(), ...datos });
+          creados++;
+        }
       }
+      setDResultado({ creados, actualizados });
+    } finally {
+      setCargandoConocidos(null);
     }
-    setDResultado({ creados, actualizados });
   }
   // (2026-09-09, a pedido de Fredy) Carga el personal de Maquila (ver
   // MAQUILA_CONOCIDOS arriba): primero se asegura de que exista el Área
@@ -1197,48 +1213,54 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
   // Destajo arriba.
   const [mzResultado, setMzResultado] = useState(null);
   async function cargarMaquilaConocidos() {
-    let areaMaquila = areasNomina.find((a) => a.nombre === "MAQUILA");
-    let areaCreada = false;
-    if (!areaMaquila) {
-      areaMaquila = { id: uid(), nombre: "MAQUILA" };
-      await onSaveArea({ id: areaMaquila.id, nombre: "MAQUILA", procesosCentroCosto: [], metaDiariaUnidades: null, presupuestoMensualNomina: null, modoMedicion: "", mideReclamosCalidad: false });
-      areaCreada = true;
-    }
-    const zonasNecesarias = [...new Set(MAQUILA_CONOCIDOS.map((p) => p.zona).filter(Boolean))];
-    const zonasYaCreadas = new Set(zonasNomina.filter((z) => z.areaId === areaMaquila.id).map((z) => z.nombre));
-    let zonasCreadas = 0;
-    for (const nombreZona of zonasNecesarias) {
-      if (zonasYaCreadas.has(nombreZona)) continue;
-      await onSaveZona({ id: uid(), nombre: nombreZona, areaId: areaMaquila.id });
-      zonasCreadas++;
-    }
-    let creados = 0, actualizados = 0;
-    for (const p of MAQUILA_CONOCIDOS) {
-      const ced = normalizarCedula(p.cedula);
-      const existente = trabajadores.find((t) => normalizarCedula(t.cedula) === ced);
-      const datos = {
-        nombre: existente?.nombre || p.nombre,
-        cedula: existente?.cedula || p.cedula,
-        correo: existente?.correo || p.correo || "",
-        tarifaHora: existente?.tarifaHora || 0,
-        activo: existente?.activo ?? true,
-        area: "MAQUILA",
-        zona: p.zona || "",
-        areaTNS: existente?.areaTNS || "",
-        tnsCodigo: existente?.tnsCodigo || "",
-        tipoNomina: p.tipoNomina,
-        sueldo: p.sueldo,
-        auxilioTransporte: p.auxilioTransporte,
-      };
-      if (existente) {
-        await onSave({ id: existente.id, ...datos });
-        actualizados++;
-      } else {
-        await onSave({ id: uid(), ...datos });
-        creados++;
+    if (cargandoConocidos) return;
+    setCargandoConocidos("maquila");
+    try {
+      let areaMaquila = areasNomina.find((a) => a.nombre === "MAQUILA");
+      let areaCreada = false;
+      if (!areaMaquila) {
+        areaMaquila = { id: uid(), nombre: "MAQUILA" };
+        await onSaveArea({ id: areaMaquila.id, nombre: "MAQUILA", procesosCentroCosto: [], metaDiariaUnidades: null, presupuestoMensualNomina: null, modoMedicion: "", mideReclamosCalidad: false });
+        areaCreada = true;
       }
+      const zonasNecesarias = [...new Set(MAQUILA_CONOCIDOS.map((p) => p.zona).filter(Boolean))];
+      const zonasYaCreadas = new Set(zonasNomina.filter((z) => z.areaId === areaMaquila.id).map((z) => z.nombre));
+      let zonasCreadas = 0;
+      for (const nombreZona of zonasNecesarias) {
+        if (zonasYaCreadas.has(nombreZona)) continue;
+        await onSaveZona({ id: uid(), nombre: nombreZona, areaId: areaMaquila.id });
+        zonasCreadas++;
+      }
+      let creados = 0, actualizados = 0;
+      for (const p of MAQUILA_CONOCIDOS) {
+        const ced = normalizarCedula(p.cedula);
+        const existente = trabajadores.find((t) => normalizarCedula(t.cedula) === ced);
+        const datos = {
+          nombre: existente?.nombre || p.nombre,
+          cedula: existente?.cedula || p.cedula,
+          correo: existente?.correo || p.correo || "",
+          tarifaHora: existente?.tarifaHora || 0,
+          activo: existente?.activo ?? true,
+          area: "MAQUILA",
+          zona: p.zona || "",
+          areaTNS: existente?.areaTNS || "",
+          tnsCodigo: existente?.tnsCodigo || "",
+          tipoNomina: p.tipoNomina,
+          sueldo: p.sueldo,
+          auxilioTransporte: p.auxilioTransporte,
+        };
+        if (existente) {
+          await onSave({ id: existente.id, ...datos });
+          actualizados++;
+        } else {
+          await onSave({ id: uid(), ...datos });
+          creados++;
+        }
+      }
+      setMzResultado({ creados, actualizados, areaCreada, zonasCreadas });
+    } finally {
+      setCargandoConocidos(null);
     }
-    setMzResultado({ creados, actualizados, areaCreada, zonasCreadas });
   }
   // (2026-09-09, a pedido de Fredy) Carga la Nómina Fiscal completa (ver
   // FISCAL_CONOCIDOS arriba): crea las Áreas Internas que hagan falta,
@@ -1247,60 +1269,80 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
   // Empleador, Cargo, Tipo de Nómina ("Fiscal") y sueldo.
   const [mfResultado, setMfResultado] = useState(null);
   async function cargarFiscalConocidos() {
-    // Mapa local área -> id: arranca con lo que ya existe y se completa
-    // con lo que se cree en esta misma pasada (areasNomina, al venir por
-    // prop, no se refresca sola a mitad de la función).
-    const idsPorArea = new Map(areasNomina.map((a) => [a.nombre, a.id]));
-    let areasCreadas = 0;
-    for (const nombreArea of [...new Set(FISCAL_CONOCIDOS.map((p) => p.area).filter(Boolean))]) {
-      if (idsPorArea.has(nombreArea)) continue;
-      const nuevaId = uid();
-      await onSaveArea({ id: nuevaId, nombre: nombreArea, procesosCentroCosto: [], metaDiariaUnidades: null, presupuestoMensualNomina: null, modoMedicion: "", mideReclamosCalidad: false });
-      idsPorArea.set(nombreArea, nuevaId);
-      areasCreadas++;
-    }
-    const cargosYaCreados = new Set(zonasNomina.map((z) => `${z.areaId}::${z.nombre}`));
-    let cargosCreados = 0;
-    for (const p of FISCAL_CONOCIDOS) {
-      if (!p.cargo) continue;
-      const areaId = idsPorArea.get(p.area);
-      if (!areaId) continue;
-      const clave = `${areaId}::${p.cargo}`;
-      if (cargosYaCreados.has(clave)) continue;
-      await onSaveZona({ id: uid(), nombre: p.cargo, areaId });
-      cargosYaCreados.add(clave);
-      cargosCreados++;
-    }
-    let creados = 0, actualizados = 0;
-    for (const p of FISCAL_CONOCIDOS) {
-      const ced = normalizarCedula(p.cedula);
-      const existente = trabajadores.find((t) => normalizarCedula(t.cedula) === ced);
-      const datos = {
-        nombre: existente?.nombre || p.nombre,
-        cedula: existente?.cedula || p.cedula,
-        correo: existente?.correo || p.correo || "",
-        tarifaHora: existente?.tarifaHora || 0,
-        activo: existente?.activo ?? true,
-        area: p.area,
-        zona: p.cargo || existente?.zona || "",
-        areaTNS: existente?.areaTNS || "",
-        tnsCodigo: existente?.tnsCodigo || "",
-        empleador: p.empleador,
-        claseRiesgoARL: p.empleador === "INDUTEX" ? "II" : "I",
-        tipoNomina: "Fiscal",
-        sueldo: p.sueldo,
-        auxilioTransporte: 249095,
-      };
-      if (existente) {
-        await onSave({ id: existente.id, ...datos });
-        actualizados++;
-      } else {
-        await onSave({ id: uid(), ...datos });
-        creados++;
+    if (cargandoConocidos) return;
+    setCargandoConocidos("fiscal");
+    try {
+      // Mapa local área -> id: arranca con lo que ya existe y se completa
+      // con lo que se cree en esta misma pasada (areasNomina, al venir por
+      // prop, no se refresca sola a mitad de la función).
+      const idsPorArea = new Map(areasNomina.map((a) => [a.nombre, a.id]));
+      let areasCreadas = 0;
+      for (const nombreArea of [...new Set(FISCAL_CONOCIDOS.map((p) => p.area).filter(Boolean))]) {
+        if (idsPorArea.has(nombreArea)) continue;
+        const nuevaId = uid();
+        await onSaveArea({ id: nuevaId, nombre: nombreArea, procesosCentroCosto: [], metaDiariaUnidades: null, presupuestoMensualNomina: null, modoMedicion: "", mideReclamosCalidad: false });
+        idsPorArea.set(nombreArea, nuevaId);
+        areasCreadas++;
       }
+      const cargosYaCreados = new Set(zonasNomina.map((z) => `${z.areaId}::${z.nombre}`));
+      let cargosCreados = 0;
+      for (const p of FISCAL_CONOCIDOS) {
+        if (!p.cargo) continue;
+        const areaId = idsPorArea.get(p.area);
+        if (!areaId) continue;
+        const clave = `${areaId}::${p.cargo}`;
+        if (cargosYaCreados.has(clave)) continue;
+        await onSaveZona({ id: uid(), nombre: p.cargo, areaId });
+        cargosYaCreados.add(clave);
+        cargosCreados++;
+      }
+      let creados = 0, actualizados = 0;
+      for (const p of FISCAL_CONOCIDOS) {
+        const ced = normalizarCedula(p.cedula);
+        const existente = trabajadores.find((t) => normalizarCedula(t.cedula) === ced);
+        const datos = {
+          nombre: existente?.nombre || p.nombre,
+          cedula: existente?.cedula || p.cedula,
+          correo: existente?.correo || p.correo || "",
+          tarifaHora: existente?.tarifaHora || 0,
+          activo: existente?.activo ?? true,
+          area: p.area,
+          zona: p.cargo || existente?.zona || "",
+          areaTNS: existente?.areaTNS || "",
+          tnsCodigo: existente?.tnsCodigo || "",
+          empleador: p.empleador,
+          claseRiesgoARL: p.empleador === "INDUTEX" ? "II" : "I",
+          tipoNomina: "Fiscal",
+          sueldo: p.sueldo,
+          auxilioTransporte: 249095,
+        };
+        if (existente) {
+          await onSave({ id: existente.id, ...datos });
+          actualizados++;
+        } else {
+          await onSave({ id: uid(), ...datos });
+          creados++;
+        }
+      }
+      setMfResultado({ creados, actualizados, areasCreadas, cargosCreados });
+    } finally {
+      setCargandoConocidos(null);
     }
-    setMfResultado({ creados, actualizados, areasCreadas, cargosCreados });
   }
+  // (2026-09-09, a pedido de Fredy) Detecta trabajadores con la misma
+  // cédula -- puede pasar si un botón "Cargar X conocidos" se presionó
+  // dos veces seguidas antes de que la pantalla alcanzara a actualizarse.
+  // Se muestra para que Fredy compare y borre a mano la copia que sobra
+  // (las dos copias pueden tener datos distintos, así que no se borra
+  // sola ninguna).
+  const gruposDuplicados = Object.values(
+    trabajadores.reduce((acc, t) => {
+      const ced = normalizarCedula(t.cedula);
+      if (!ced) return acc;
+      (acc[ced] = acc[ced] || []).push(t);
+      return acc;
+    }, {})
+  ).filter((grupo) => grupo.length > 1);
   return (
     <div>
       {modal && (
@@ -1327,11 +1369,17 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
           <Btn onClick={() => setModal("nuevo")}>+ Nuevo Trabajador</Btn>
           <Btn variant="secondary" onClick={autocompletarCodigosTNS}>🔄 Autocompletar Código TNS (13 conocidos)</Btn>
           {autoResultado !== null && <span style={{ fontSize: 12, color: C.slate }}>{autoResultado} trabajador(es) actualizado(s).</span>}
-          <Btn variant="secondary" onClick={cargarFiscalDestajoConocidos}>💼 Cargar Fiscal Destajo (5 conocidos)</Btn>
+          <Btn variant="secondary" onClick={cargarFiscalDestajoConocidos} disabled={!!cargandoConocidos}>
+            {cargandoConocidos === "fiscal_destajo" ? "⏳ Cargando..." : "💼 Cargar Fiscal Destajo (5 conocidos)"}
+          </Btn>
           {fdResultado !== null && <span style={{ fontSize: 12, color: C.slate }}>{fdResultado.creados} creado(s), {fdResultado.actualizados} actualizado(s).</span>}
-          <Btn variant="secondary" onClick={cargarDestajoConocidos}>💼 Cargar Destajo (12 conocidos)</Btn>
+          <Btn variant="secondary" onClick={cargarDestajoConocidos} disabled={!!cargandoConocidos}>
+            {cargandoConocidos === "destajo" ? "⏳ Cargando..." : "💼 Cargar Destajo (12 conocidos)"}
+          </Btn>
           {dResultado !== null && <span style={{ fontSize: 12, color: C.slate }}>{dResultado.creados} creado(s), {dResultado.actualizados} actualizado(s).</span>}
-          <Btn variant="secondary" onClick={cargarMaquilaConocidos}>🧵 Cargar Maquila (53 conocidos)</Btn>
+          <Btn variant="secondary" onClick={cargarMaquilaConocidos} disabled={!!cargandoConocidos}>
+            {cargandoConocidos === "maquila" ? "⏳ Cargando..." : "🧵 Cargar Maquila (53 conocidos)"}
+          </Btn>
           {mzResultado !== null && (
             <span style={{ fontSize: 12, color: C.slate }}>
               {mzResultado.creados} creado(s), {mzResultado.actualizados} actualizado(s)
@@ -1340,7 +1388,9 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
               )}.
             </span>
           )}
-          <Btn variant="secondary" onClick={cargarFiscalConocidos}>💰 Cargar Fiscal (24 conocidos)</Btn>
+          <Btn variant="secondary" onClick={cargarFiscalConocidos} disabled={!!cargandoConocidos}>
+            {cargandoConocidos === "fiscal" ? "⏳ Cargando..." : "💰 Cargar Fiscal (24 conocidos)"}
+          </Btn>
           {mfResultado !== null && (
             <span style={{ fontSize: 12, color: C.slate }}>
               {mfResultado.creados} creado(s), {mfResultado.actualizados} actualizado(s)
@@ -1382,6 +1432,31 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
               )}
             </>
           )}
+        </div>
+      )}
+      {gruposDuplicados.length > 0 && (
+        <div style={{ marginBottom: 20, padding: 14, border: `1.5px solid ${C.red}`, borderRadius: 10, background: C.redBg }}>
+          <div style={{ fontWeight: 800, color: C.red, marginBottom: 10, fontSize: 13 }}>
+            ⚠️ {gruposDuplicados.length} cédula(s) con más de un trabajador registrado — compara los datos y borra la copia que sobre.
+          </div>
+          {gruposDuplicados.map((grupo) => (
+            <div key={grupo[0].cedula} style={{ marginBottom: 12, paddingBottom: 12, borderBottom: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Cédula {grupo[0].cedula}</div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                {grupo.map((t) => (
+                  <div key={t.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10, fontSize: 12, minWidth: 220 }}>
+                    <div style={{ fontWeight: 700, marginBottom: 4 }}>{t.nombre}</div>
+                    <div style={{ color: C.slate }}>Área: {t.area || "Sin asignar"} · Cargo: {t.zona || "—"}</div>
+                    <div style={{ color: C.slate }}>Tipo: {t.tipoNomina || "—"} · Empleador: {t.empleador || "—"}</div>
+                    <div style={{ color: C.slate }}>Sueldo: {t.sueldo ? fmtMoney(t.sueldo) : "—"} · {t.activo ? "Activo" : "Inactivo"}</div>
+                    <div style={{ marginTop: 6 }}>
+                      <span onClick={() => setConfirmDel(t)} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar esta copia</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       )}
       <Tabla
