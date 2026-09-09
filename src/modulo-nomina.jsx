@@ -370,7 +370,7 @@ const DESTAJO_CONOCIDOS = [
 ];
 // (2026-09-09, a pedido de Fredy) Personal de Maquila -- archivo "PERSONAL
 // MAQUILA.xlsx" que subió. Todos van al Área Interna "MAQUILA" (se crea
-// sola la primera vez que se cargan, junto con cada Zona Interna que traiga
+// sola la primera vez que se cargan, junto con cada Cargo que traiga
 // la lista -- ver cargarMaquilaConocidos en TrabajadoresView). Sueldo y
 // auxilio de transporte: el estándar de mínimo + subsidio que ya se usa en
 // el resto de la nómina (1.750.905 / 249.095), salvo 3 excepciones que
@@ -694,13 +694,15 @@ function AreasTnsView({ areas, trabajadores, isAdmin, onSave, onDelete }) {
     </div>
   );
 }
-// Zona Interna (2026-09-09, a pedido de Fredy): subdivisión DENTRO de un
-// Área Interna, para cuando un área queda demasiado grande (ej.
-// Área=CONFECCIÓN -> Zonas=MÓDULO 1, MÓDULO 2...). Cada zona pertenece a
-// UNA sola Área Interna (colección Firestore "nomina_zonas", { nombre,
-// areaId }). Se guarda en cada trabajador (campo "zona") junto a su Área
-// Interna -- por ahora es solo clasificación, no cambia nada de "líder ve
-// solo su gente" (eso sigue siendo por Área Interna).
+// Cargo (2026-09-09, a pedido de Fredy; arrancó como "Zona Interna" y se
+// renombró el mismo día porque en la práctica siempre se usó para el
+// puesto/rol de cada quien, ej. CORTADOR, LIDER MAQUILA, GERENTE). Cada
+// Cargo pertenece a UNA sola Área Interna (colección Firestore
+// "nomina_zonas", { nombre, areaId } -- el nombre de la colección y del
+// campo del trabajador ("zona") no cambiaron, solo cómo se ve en
+// pantalla). Se guarda en cada trabajador junto a su Área Interna -- por
+// ahora es solo clasificación, no cambia nada de "líder ve solo su
+// gente" (eso sigue siendo por Área Interna).
 function ZonaNominaModal({ zona, areasNomina, onSave, onClose }) {
   const [form, setForm] = useState({ nombre: zona?.nombre || "", areaId: zona?.areaId || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
@@ -710,7 +712,7 @@ function ZonaNominaModal({ zona, areasNomina, onSave, onClose }) {
     onClose();
   }
   return (
-    <Modal title={zona ? "Editar Zona Interna" : "Nueva Zona Interna"} onClose={onClose} width={400}>
+    <Modal title={zona ? "Editar Cargo" : "Nuevo Cargo"} onClose={onClose} width={400}>
       <Field label="Área Interna a la que pertenece">
         <FSel
           value={form.areaId}
@@ -719,9 +721,9 @@ function ZonaNominaModal({ zona, areasNomina, onSave, onClose }) {
           placeholder="Elegir..."
         />
       </Field>
-      <Field label="Nombre de la Zona Interna"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: MÓDULO 1, MÓDULO 2" /></Field>
+      <Field label="Nombre del Cargo"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: CORTADOR, GERENTE, LIDER BODEGA" /></Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
-        Sirve para subdividir un Área Interna demasiado grande. Alimenta el campo "Zona Interna" de cada trabajador -- solo se pueden elegir zonas del Área Interna que ya tenga asignada.
+        El puesto/rol de cada trabajador, agrupado por Área Interna. Alimenta el campo "Cargo" de cada trabajador -- solo se pueden elegir cargos del Área Interna que ya tenga asignada.
       </div>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
@@ -741,7 +743,7 @@ function ZonasNominaView({ zonas, areasNomina, trabajadores, isAdmin, onSave, on
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
-        Subdivisiones dentro de un Área Interna demasiado grande (ej. Área=CONFECCIÓN → Zonas=MÓDULO 1, MÓDULO 2...). Cada zona pertenece a una sola Área Interna, y se usa junto a ella para clasificar al trabajador.
+        El puesto/rol de cada trabajador (ej. CORTADOR, GERENTE, LIDER BODEGA). Cada Cargo pertenece a una sola Área Interna, y se usa junto a ella para clasificar al trabajador.
       </div>
       {modal && (
         <ZonaNominaModal
@@ -754,9 +756,9 @@ function ZonasNominaView({ zonas, areasNomina, trabajadores, isAdmin, onSave, on
       {confirmDel && (
         <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
           <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
-            ¿Eliminar la zona interna <strong>{confirmDel.nombre}</strong> ({nombreArea(confirmDel.areaId)})?
+            ¿Eliminar el cargo <strong>{confirmDel.nombre}</strong> ({nombreArea(confirmDel.areaId)})?
             {contarTrabajadores(confirmDel) > 0 && (
-              <div style={{ marginTop: 10, color: C.red, fontWeight: 600 }}>⚠️ {contarTrabajadores(confirmDel)} trabajador(es) tienen esta zona interna asignada — no se les cambia sola, quedarían con una zona que ya no existe en la lista. Revísalos primero en Trabajadores.</div>
+              <div style={{ marginTop: 10, color: C.red, fontWeight: 600 }}>⚠️ {contarTrabajadores(confirmDel)} trabajador(es) tienen este cargo asignado — no se les cambia solo, quedarían con un cargo que ya no existe en la lista. Revísalos primero en Trabajadores.</div>
             )}
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
@@ -767,14 +769,14 @@ function ZonasNominaView({ zonas, areasNomina, trabajadores, isAdmin, onSave, on
       )}
       {isAdmin && (
         <div style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}>
-          <Btn onClick={() => setModal("nuevo")} disabled={!areasNomina.length}>+ Nueva Zona Interna</Btn>
+          <Btn onClick={() => setModal("nuevo")} disabled={!areasNomina.length}>+ Nuevo Cargo</Btn>
           {!areasNomina.length && <span style={{ fontSize: 12, color: C.slate }}>Primero crea al menos un Área Interna.</span>}
         </div>
       )}
       <Tabla
-        vacio="Sin zonas internas registradas todavía."
+        vacio="Sin cargos registrados todavía."
         columnas={[
-          { key: "nombre", label: "Zona Interna" },
+          { key: "nombre", label: "Cargo" },
           { key: "area", label: "Área Interna", render: (f) => nombreArea(f.areaId) },
           { key: "trabajadores", label: "Trabajadores", align: "right", render: (f) => contarTrabajadores(f) },
           ...(isAdmin ? [{
@@ -893,7 +895,6 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     areaTNS: trabajador?.areaTNS || "",
     tnsCodigo: trabajador?.tnsCodigo || "",
     empleador: trabajador?.empleador || "",
-    cargo: trabajador?.cargo || "",
     tipoNomina: trabajador?.tipoNomina || "",
     sueldo: trabajador?.sueldo ?? "",
     auxilioTransporte: trabajador?.auxilioTransporte ?? "",
@@ -901,10 +902,10 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     cesantiasAcumuladas: trabajador?.cesantiasAcumuladas ?? "",
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
-  // (2026-09-09, a pedido de Fredy) Zona Interna depende de qué Área
-  // Interna se eligió arriba -- si cambian el área a una que no tiene la
-  // zona actual, se limpia sola (evita guardar una combinación área/zona
-  // que ya no tiene sentido).
+  // (2026-09-09, a pedido de Fredy) Cargo depende de qué Área Interna se
+  // eligió arriba -- si cambian el área a una que no tiene el cargo
+  // actual, se limpia solo (evita guardar una combinación área/cargo que
+  // ya no tiene sentido).
   const areaSeleccionadaId = areasNomina.find((a) => a.nombre === form.area)?.id;
   const zonasDelArea = (zonasNomina || []).filter((z) => z.areaId === areaSeleccionadaId);
   function cambiarArea(v) {
@@ -927,7 +928,6 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       areaTNS: form.areaTNS || "",
       tnsCodigo: form.tnsCodigo.trim(),
       empleador: form.empleador || "",
-      cargo: form.cargo.trim(),
       tipoNomina: form.tipoNomina || "",
       sueldo: Number(form.sueldo) || 0,
       auxilioTransporte: Number(form.auxilioTransporte) || 0,
@@ -942,8 +942,8 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       <Field label="Cédula"><FInput value={form.cedula} onChange={set("cedula")} placeholder="Ej: 1004802413" /></Field>
       <Field label="Correo"><FInput type="email" value={form.correo} onChange={set("correo")} placeholder="Ej: nombre@gmail.com" /></Field>
       <Field label="Área Interna"><FSel value={form.area} onChange={cambiarArea} options={[...areasNomina.map((a) => a.nombre), "Sin asignar"]} placeholder="Sin asignar" /></Field>
-      <Field label="Zona Interna (opcional)">
-        <FSel value={form.zona} onChange={set("zona")} options={zonasDelArea.map((z) => z.nombre)} placeholder={zonasDelArea.length ? "Sin asignar" : "Esta área no tiene zonas creadas"} />
+      <Field label="Cargo (opcional)">
+        <FSel value={form.zona} onChange={set("zona")} options={zonasDelArea.map((z) => z.nombre)} placeholder={zonasDelArea.length ? "Sin asignar" : "Esta área no tiene cargos creados"} />
       </Field>
       <Field label="Área TNS"><FSel value={form.areaTNS} onChange={set("areaTNS")} options={areasTNS.map((a) => a.nombre)} placeholder="Sin clasificar" /></Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
@@ -954,10 +954,6 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       </Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
         Cuál de las dos empresas contrata legalmente a esta persona -- para poder ver cuánto se debe pagar de nómina por cada una.
-      </div>
-      <Field label="Cargo (opcional)"><FInput value={form.cargo} onChange={set("cargo")} placeholder="Ej: Gerente, Cortador, Contador..." /></Field>
-      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
-        El puesto/rol de la persona. Es distinto de "Zona Interna" (arriba), que es para subdividir un Área Interna grande en zonas -- no para el cargo de cada quien.
       </div>
       <Field label="Tipo de Nómina">
         <FSel value={form.tipoNomina} onChange={set("tipoNomina")} options={TIPOS_NOMINA} placeholder="Sin clasificar" />
@@ -1134,8 +1130,8 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
   }
   // (2026-09-09, a pedido de Fredy) Carga el personal de Maquila (ver
   // MAQUILA_CONOCIDOS arriba): primero se asegura de que exista el Área
-  // Interna "MAQUILA" y cada Zona Interna que traiga la lista (Zona
-  // depende de un Área ya creada -- ver TrabajadorModal), y después crea o
+  // Interna "MAQUILA" y cada Cargo que traiga la lista (el Cargo depende
+  // de un Área ya creada -- ver TrabajadorModal), y después crea o
   // actualiza (por cédula) a cada trabajador, igual que Fiscal Destajo y
   // Destajo arriba.
   const [mzResultado, setMzResultado] = useState(null);
@@ -1218,7 +1214,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
             <span style={{ fontSize: 12, color: C.slate }}>
               {mzResultado.creados} creado(s), {mzResultado.actualizados} actualizado(s)
               {(mzResultado.areaCreada || mzResultado.zonasCreadas > 0) && (
-                <> ({mzResultado.areaCreada ? "Área MAQUILA creada, " : ""}{mzResultado.zonasCreadas} zona(s) creada(s))</>
+                <> ({mzResultado.areaCreada ? "Área MAQUILA creada, " : ""}{mzResultado.zonasCreadas} cargo(s) creado(s))</>
               )}.
             </span>
           )}
@@ -1264,10 +1260,9 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
           { key: "cedula", label: "Cédula", render: (f) => f.cedula || "—" },
           { key: "correo", label: "Correo", render: (f) => f.correo || <span style={{ color: C.slate }}>—</span> },
           { key: "area", label: "Área Interna", render: (f) => f.area || "Sin asignar" },
-          { key: "zona", label: "Zona Interna", render: (f) => f.zona || <span style={{ color: C.slate }}>—</span> },
+          { key: "zona", label: "Cargo", render: (f) => f.zona || <span style={{ color: C.slate }}>—</span> },
           { key: "areaTNS", label: "Área TNS", render: (f) => f.areaTNS || <span style={{ color: C.slate }}>—</span> },
           { key: "empleador", label: "Empleador", render: (f) => f.empleador || <span style={{ color: C.slate }}>—</span> },
-          { key: "cargo", label: "Cargo", render: (f) => f.cargo || <span style={{ color: C.slate }}>—</span> },
           { key: "tipoNomina", label: "Tipo Nómina", render: (f) => f.tipoNomina ? (
             <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: f.tipoNomina === "Fiscal Destajo" ? C.violetBg : C.blueBg, color: f.tipoNomina === "Fiscal Destajo" ? C.violet : C.blue }}>
               {f.tipoNomina}
@@ -4674,7 +4669,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "novedades_tns", icon: "🧾", label: "Novedades TNS" },
             { id: "precios", icon: "⚙️", label: "Procesos" },
             { id: "areas_nomina", icon: "🏭", label: "Área Interna" },
-            { id: "zonas_nomina", icon: "📍", label: "Zona Interna" },
+            { id: "zonas_nomina", icon: "🪪", label: "Cargo" },
             { id: "areas_tns", icon: "🏛️", label: "Área TNS" },
             { id: "motivos_ausencia", icon: "🏷️", label: "Motivos de Ausencia (catálogo)" },
             { id: "trabajadores", icon: "👷", label: "Trabajadores" },
