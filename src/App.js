@@ -7072,7 +7072,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
     { area: "🏭 Planta", items: [["planta", "Planta"]] },
     { area: "📦 Bodega", items: [["bodega", "Bodega"]] },
-    { area: "👷 Nómina", items: [["nomina", "Completa (todo el módulo)"], ["nomina_novedades", "Solo Novedades"]] },
+    { area: "👷 Nómina", items: [["nomina", "Completa (todo el módulo)"], ["nomina_novedades", "Solo Novedades"], ["nomina_editar_catalogos", "Puede editar catálogos (Trabajadores, Turnos, etc.) sin admin total"]] },
     { area: "🎯 KPIs", items: [["kpis", "KPIs"]] },
     { area: "📋 Informes", items: [["informes", "Informes"]] },
     { area: "🗂️ Áreas", items: [["areas_centro_costo", "Centro de Costo"], ["areas_estadisticas", "Estadísticas"], ["areas_reclamos", "Reclamos"], ["areas_programador", "Programador"]] },
@@ -11045,6 +11045,15 @@ function AppInner() {
   const canAccessNominaNovedades = moduloVisible(userRoleData, "nomina_novedades", currentUser?.isAdmin);
   const canAccessNomina = canAccessNominaCompleta || canAccessNominaNovedades;
   const soloNovedadesNomina = !canAccessNominaCompleta && canAccessNominaNovedades;
+  // "nomina_editar_catalogos" (2026-09-09, a pedido de Fredy): permiso
+  // para editar/crear/borrar en los catálogos administrativos de Nómina
+  // (Trabajadores, Turnos, Motivos de Ausencia, Área Interna, Área TNS,
+  // Cargo, Precios, Costos Teóricos) SIN dar acceso de administrador
+  // total sobre el resto de la app -- a diferencia de "isAdmin", que da
+  // eso Y todo lo demás. Quien lo tenga también necesita "nomina"
+  // completo (o no ser líder de área/solo Novedades) para siquiera ver
+  // el menú "Administrativo" donde viven esas pantallas.
+  const canAccessNominaEditarCatalogos = moduloVisible(userRoleData, "nomina_editar_catalogos", currentUser?.isAdmin);
   // Informes: vista consolidada de "lo que está vencido" en toda la
   // compañía (hoy solo Diseño, se va ampliando a Bodega/Corte/Contabilidad).
   // Es la contraparte en pantalla del aviso automático por correo.
@@ -11242,7 +11251,7 @@ function AppInner() {
     return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} soloLecturaBodega={currentUser?.role === "Cliente"} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "nomina") {
-    return <ModuloNomina currentUser={currentUser} soloNovedades={soloNovedadesNomina} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloNomina currentUser={currentUser} soloNovedades={soloNovedadesNomina} puedeEditarCatalogos={canAccessNominaEditarCatalogos} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "informes") {
     return <ModuloInformes currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;

@@ -5532,7 +5532,7 @@ function HistorialTrabajadorView({ trabajadores, produccion, liquidaciones }) {
     </div>
   );
 }
-export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades }) {
+export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
   // reducido, ya filtrado a su propia gente, en vez del panel completo de
@@ -5609,6 +5609,15 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const nombresMotivosDisponibles = motivosAusencia.length > 0 ? motivosAusencia.map((m) => m.nombre) : MOTIVOS_AUSENCIA;
   const iconoPorMotivo = motivosAusencia.length > 0 ? Object.fromEntries(motivosAusencia.map((m) => [m.nombre, m.icono || "❔"])) : MOTIVO_ICONO;
   const isAdmin = !!currentUser?.isAdmin;
+  // (2026-09-09, a pedido de Fredy) "isAdminCatalogos" -- variante de
+  // isAdmin SOLO para las 8 pantallas administrativas de catalogos
+  // (Trabajadores, Turnos, Motivos de Ausencia, Area Interna, Area TNS,
+  // Cargo, Precios, Costos Teoricos): alguien con el permiso nuevo
+  // "nomina_editar_catalogos" (rol, ver App.js) puede editar/crear/borrar
+  // ahi SIN volverse administrador de toda la app. El resto de la app
+  // (Registrar Produccion/Horas/Resumen/Permisos, y cualquier otro
+  // modulo) sigue usando el isAdmin real, sin cambios.
+  const isAdminCatalogos = isAdmin || !!puedeEditarCatalogos;
   // Menú del admin reacomodado en grupos desplegables (25/08/2026, a pedido
   // del usuario) — pensado para que más adelante, cuando se manejen roles,
   // sea fácil darle a alguien acceso a un grupo completo en vez de ítem por
@@ -5878,14 +5887,14 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
           {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} />}
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} />}
-          {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} />}
-          {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} isAdmin={isAdmin} onSave={guardarAreaNomina} onDelete={borrarAreaNomina} />}
-          {subView === "zonas_nomina" && !areaLider && !soloNovedades && <ZonasNominaView zonas={zonasNomina} areasNomina={areasNomina} trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarZonaNomina} onDelete={borrarZonaNomina} />}
-          {subView === "areas_tns" && !areaLider && !soloNovedades && <AreasTnsView areas={areasTNS} trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarAreaTNS} onDelete={borrarAreaTNS} />}
-          {subView === "motivos_ausencia" && !areaLider && !soloNovedades && <MotivosAusenciaView motivos={motivosAusencia} ausencias={ausencias} isAdmin={isAdmin} onSave={guardarMotivoAusencia} onDelete={borrarMotivoAusencia} />}
-          {subView === "turnos" && !areaLider && !soloNovedades && <TurnosView turnos={turnos} trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTurno} onDelete={borrarTurno} />}
-          {subView === "precios" && !areaLider && !soloNovedades && <PreciosProcesoView precios={precios} isAdmin={isAdmin} onSave={guardarProceso} onDelete={borrarProceso} />}
-          {subView === "costos_teorico" && !areaLider && !soloNovedades && <CostosTeoricoProcesoView costos={costosTeoricoProceso} isAdmin={isAdmin} onGuardarLote={guardarCostosTeoricoProcesoLote} onBorrarTodo={vaciarCostosTeoricoProceso} />}
+          {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} />}
+          {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} isAdmin={isAdminCatalogos} onSave={guardarAreaNomina} onDelete={borrarAreaNomina} />}
+          {subView === "zonas_nomina" && !areaLider && !soloNovedades && <ZonasNominaView zonas={zonasNomina} areasNomina={areasNomina} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarZonaNomina} onDelete={borrarZonaNomina} />}
+          {subView === "areas_tns" && !areaLider && !soloNovedades && <AreasTnsView areas={areasTNS} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarAreaTNS} onDelete={borrarAreaTNS} />}
+          {subView === "motivos_ausencia" && !areaLider && !soloNovedades && <MotivosAusenciaView motivos={motivosAusencia} ausencias={ausencias} isAdmin={isAdminCatalogos} onSave={guardarMotivoAusencia} onDelete={borrarMotivoAusencia} />}
+          {subView === "turnos" && !areaLider && !soloNovedades && <TurnosView turnos={turnos} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTurno} onDelete={borrarTurno} />}
+          {subView === "precios" && !areaLider && !soloNovedades && <PreciosProcesoView precios={precios} isAdmin={isAdminCatalogos} onSave={guardarProceso} onDelete={borrarProceso} />}
+          {subView === "costos_teorico" && !areaLider && !soloNovedades && <CostosTeoricoProcesoView costos={costosTeoricoProceso} isAdmin={isAdminCatalogos} onGuardarLote={guardarCostosTeoricoProcesoLote} onBorrarTodo={vaciarCostosTeoricoProceso} />}
           {subView === "costo_referencia" && !areaLider && !soloNovedades && <ConsultarCostoReferenciaView />}
           {subView === "tns" && !areaLider && !soloNovedades && <TNSConexionView />}
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
