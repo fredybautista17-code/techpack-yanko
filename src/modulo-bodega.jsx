@@ -3587,83 +3587,64 @@ function BodegaHubView({ onSeleccionar, onVolver, onLogout }) {
   const pendientesFacturar = lotesResumen.filter((l) => l.estado !== "aprobado" && l.tieneFactura === false).length;
   const pendientesDespachar = lotesResumen.filter((l) => l.estado === "aprobado" && (!l.estadoEnvio || l.estadoEnvio === "pendiente")).length;
 
+  // Mismas tarjetas que ya usa Planta (HomePlanta) -- icono/número en cuadro
+  // de color, título, descripción y "Entrar →" (o "En vivo" para las que
+  // solo informan). "nav" navega a la pantalla completa correspondiente;
+  // "stat" es solo informativa, no es clicable.
+  const TARJETAS = [
+    { tipo: "nav", id: "despacho_saldo", icon: "📦", label: "Despacho y Saldo", desc: "Venezuela, Dubái y Colombia — abonos y saldos.", color: C.violet, bg: C.violetBg },
+    { tipo: "stat", label: "Pendientes de facturar", desc: "Ya salieron de Calidad, Busint aún no factura.", color: C.amber, bg: C.amberBg, valor: pendientesFacturar },
+    { tipo: "stat", label: "Pendientes de despachar", desc: "Aprobados sin transportador ni guía todavía.", color: C.blue, bg: C.blueBg, valor: pendientesDespachar },
+    { tipo: "nav", id: "estado_despacho", icon: "🚚", label: "Estado de Despacho", desc: "Transportador, guía y llegada.", color: C.green, bg: C.greenBg },
+  ];
+
   return (
-    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24 }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,700;9..144,900&family=Inter:wght@400;500;600;700;800;900&display=swap');
-        *{box-sizing:border-box;}
-        @keyframes bodegaHubPulse { 0%{box-shadow:0 0 0 0 rgba(45,158,107,.45);} 70%{box-shadow:0 0 0 7px rgba(45,158,107,0);} 100%{box-shadow:0 0 0 0 rgba(45,158,107,0);} }
-        .bodegaHub-pulse{ animation: bodegaHubPulse 2.2s infinite; }
-        @media (prefers-reduced-motion: reduce){ .bodegaHub-pulse{ animation:none; } }
-        .bodegaHub-navCard{ transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease; }
-        .bodegaHub-navCard:hover{ transform: translateY(-3px); box-shadow: 0 1px 2px rgba(26,26,46,.05), 0 16px 32px -18px rgba(26,26,46,.28); border-color: ${C.blue}; }
-        .bodegaHub-navCard:hover .bodegaHub-arrow{ transform: translateX(3px); color: ${C.blue}; }
-        .bodegaHub-arrow{ display: inline-block; transition: transform .16s ease, color .16s ease; }
-      `}</style>
-
-      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: C.slate, marginBottom: 8 }}>
-        <span className="bodegaHub-pulse" style={{ width: 7, height: 7, borderRadius: "50%", background: C.green, display: "inline-block" }} />
-        Panel en vivo
-      </div>
-      <div style={{ fontFamily: "'Fraunces',Georgia,serif", fontWeight: 700, fontSize: 32, color: C.ink, display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-        <span style={{ fontSize: 25 }}>📦</span> Bodega
-      </div>
-      <div style={{ fontSize: 13, color: C.slate, marginBottom: 32 }}>Lo que está pendiente ahora mismo</div>
-
-      <div style={{ display: "flex", gap: 18, flexWrap: "wrap", justifyContent: "center", alignItems: "stretch", maxWidth: 920 }}>
-        <button
-          className="bodegaHub-navCard"
-          onClick={() => onSeleccionar("despacho_saldo")}
-          style={{ width: 196, textAlign: "left", padding: 20, borderRadius: 16, border: `1px solid ${C.border}`, background: C.white, cursor: "pointer", fontFamily: "inherit", display: "flex", flexDirection: "column", gap: 12, boxShadow: "0 1px 2px rgba(26,26,46,.05)" }}
-        >
-          <div style={{ width: 38, height: 38, borderRadius: 10, background: C.canvas, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>📦</div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-            <span style={{ fontWeight: 800, fontSize: 13.5, color: C.ink }}>Despacho y Saldo</span>
-            <span className="bodegaHub-arrow" style={{ color: C.slate, fontSize: 13 }}>→</span>
-          </div>
-          <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>Venezuela, Dubái y Colombia — abonos y saldos.</div>
-        </button>
-
-        <div style={{ flex: "1 1 380px", maxWidth: 440, display: "flex", background: C.white, border: `1px solid ${C.border}`, borderRadius: 20, boxShadow: "0 1px 2px rgba(26,26,46,.05), 0 16px 32px -18px rgba(26,26,46,.28)", overflow: "hidden" }}>
-          <div style={{ flex: 1, padding: "22px 20px", display: "flex", flexDirection: "column", gap: 6 }}>
-            <div style={{ width: 36, height: 36, borderRadius: 10, background: C.amberBg, color: C.amber, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, marginBottom: 2 }}>🧾</div>
-            <div style={{ fontSize: 36, fontWeight: 900, color: C.amber, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{pendientesFacturar}</div>
-            <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginTop: 2 }}>Pendientes de facturar</div>
-            <div style={{ fontSize: 10.5, color: C.slate, lineHeight: 1.45 }}>Ya salieron de Calidad, Busint aún no factura.</div>
-          </div>
-          <div style={{ flex: 1, padding: "22px 20px", display: "flex", flexDirection: "column", gap: 6, borderLeft: `1px solid ${C.border}` }}>
-            <div style={{ width: 36, height: 36, borderRadius: 10, background: C.blueBg, color: C.blue, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, marginBottom: 2 }}>🚚</div>
-            <div style={{ fontSize: 36, fontWeight: 900, color: C.blue, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{pendientesDespachar}</div>
-            <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginTop: 2 }}>Pendientes de despachar</div>
-            <div style={{ fontSize: 10.5, color: C.slate, lineHeight: 1.45 }}>Aprobados sin transportador ni guía todavía.</div>
-          </div>
+    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif", padding: 24 }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
+      <div style={{ maxWidth: 1000, margin: "0 auto" }}>
+        <div style={{ marginBottom: 28 }}>
+          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>📦 Bodega</h2>
+          <p style={{ margin: "6px 0 0", fontSize: 14, color: C.slate }}>Lo que está pendiente ahora mismo</p>
         </div>
 
-        <button
-          className="bodegaHub-navCard"
-          onClick={() => onSeleccionar("estado_despacho")}
-          style={{ width: 196, textAlign: "left", padding: 20, borderRadius: 16, border: `1px solid ${C.border}`, background: C.white, cursor: "pointer", fontFamily: "inherit", display: "flex", flexDirection: "column", gap: 12, boxShadow: "0 1px 2px rgba(26,26,46,.05)" }}
-        >
-          <div style={{ width: 38, height: 38, borderRadius: 10, background: C.canvas, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>🚚</div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-            <span style={{ fontWeight: 800, fontSize: 13.5, color: C.ink }}>Estado de Despacho</span>
-            <span className="bodegaHub-arrow" style={{ color: C.slate, fontSize: 13 }}>→</span>
-          </div>
-          <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>Transportador, guía y llegada.</div>
-        </button>
-      </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 16 }}>
+          {TARJETAS.map((t) =>
+            t.tipo === "nav" ? (
+              <div
+                key={t.id}
+                onClick={() => onSeleccionar(t.id)}
+                style={{ background: C.white, borderRadius: 14, padding: 22, border: `1.5px solid ${C.border}`, cursor: "pointer", transition: "all 0.2s" }}
+                onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.borderColor = t.color; }}
+                onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.borderColor = C.border; }}
+              >
+                <div style={{ width: 46, height: 46, borderRadius: 12, background: t.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, marginBottom: 14 }}>{t.icon}</div>
+                <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 6 }}>{t.label}</div>
+                <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5, marginBottom: 12 }}>{t.desc}</div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: t.color }}>Entrar →</div>
+              </div>
+            ) : (
+              <div key={t.label} style={{ background: C.white, borderRadius: 14, padding: 22, border: `1.5px solid ${C.border}` }}>
+                <div style={{ width: 46, height: 46, borderRadius: 12, background: t.bg, color: t.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 900, marginBottom: 14, fontVariantNumeric: "tabular-nums" }}>{t.valor}</div>
+                <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 6 }}>{t.label}</div>
+                <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5, marginBottom: 12 }}>{t.desc}</div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: C.green, background: C.greenBg, padding: "3px 10px", borderRadius: 20, display: "inline-block" }}>● En vivo</div>
+              </div>
+            )
+          )}
+        </div>
 
-      <div style={{ display: "flex", gap: 16, marginTop: 34 }}>
-        {onVolver && (
-          <button onClick={onVolver} style={{ background: "none", border: "none", color: C.slate, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
-            ← Volver al Inicio
-          </button>
-        )}
-        {onLogout && (
-          <button onClick={onLogout} style={{ background: "none", border: "none", color: C.red, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
-            ⏏ Cerrar sesión
-          </button>
-        )}
+        <div style={{ display: "flex", gap: 16, marginTop: 28 }}>
+          {onVolver && (
+            <button onClick={onVolver} style={{ background: "none", border: "none", color: C.slate, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+              ← Volver al Inicio
+            </button>
+          )}
+          {onLogout && (
+            <button onClick={onLogout} style={{ background: "none", border: "none", color: C.red, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+              ⏏ Cerrar sesión
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
