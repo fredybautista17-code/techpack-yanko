@@ -893,6 +893,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     areaTNS: trabajador?.areaTNS || "",
     tnsCodigo: trabajador?.tnsCodigo || "",
     empleador: trabajador?.empleador || "",
+    cargo: trabajador?.cargo || "",
     tipoNomina: trabajador?.tipoNomina || "",
     sueldo: trabajador?.sueldo ?? "",
     auxilioTransporte: trabajador?.auxilioTransporte ?? "",
@@ -926,6 +927,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       areaTNS: form.areaTNS || "",
       tnsCodigo: form.tnsCodigo.trim(),
       empleador: form.empleador || "",
+      cargo: form.cargo.trim(),
       tipoNomina: form.tipoNomina || "",
       sueldo: Number(form.sueldo) || 0,
       auxilioTransporte: Number(form.auxilioTransporte) || 0,
@@ -952,6 +954,10 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       </Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
         Cuál de las dos empresas contrata legalmente a esta persona -- para poder ver cuánto se debe pagar de nómina por cada una.
+      </div>
+      <Field label="Cargo (opcional)"><FInput value={form.cargo} onChange={set("cargo")} placeholder="Ej: Gerente, Cortador, Contador..." /></Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        El puesto/rol de la persona. Es distinto de "Zona Interna" (arriba), que es para subdividir un Área Interna grande en zonas -- no para el cargo de cada quien.
       </div>
       <Field label="Tipo de Nómina">
         <FSel value={form.tipoNomina} onChange={set("tipoNomina")} options={TIPOS_NOMINA} placeholder="Sin clasificar" />
@@ -1261,6 +1267,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
           { key: "zona", label: "Zona Interna", render: (f) => f.zona || <span style={{ color: C.slate }}>—</span> },
           { key: "areaTNS", label: "Área TNS", render: (f) => f.areaTNS || <span style={{ color: C.slate }}>—</span> },
           { key: "empleador", label: "Empleador", render: (f) => f.empleador || <span style={{ color: C.slate }}>—</span> },
+          { key: "cargo", label: "Cargo", render: (f) => f.cargo || <span style={{ color: C.slate }}>—</span> },
           { key: "tipoNomina", label: "Tipo Nómina", render: (f) => f.tipoNomina ? (
             <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: f.tipoNomina === "Fiscal Destajo" ? C.violetBg : C.blueBg, color: f.tipoNomina === "Fiscal Destajo" ? C.violet : C.blue }}>
               {f.tipoNomina}
