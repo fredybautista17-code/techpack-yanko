@@ -3589,42 +3589,71 @@ function BodegaHubView({ onSeleccionar, onVolver, onLogout }) {
 
   return (
     <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24 }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
-      <div style={{ fontSize: 15, fontWeight: 900, color: C.ink, marginBottom: 4 }}>📦 Bodega</div>
-      <div style={{ fontSize: 12, color: C.slate, marginBottom: 28 }}>Lo que está pendiente ahora mismo</div>
-      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", justifyContent: "center", alignItems: "center", maxWidth: 900, marginBottom: 8 }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,700;9..144,900&family=Inter:wght@400;500;600;700;800;900&display=swap');
+        *{box-sizing:border-box;}
+        @keyframes bodegaHubPulse { 0%{box-shadow:0 0 0 0 rgba(45,158,107,.45);} 70%{box-shadow:0 0 0 7px rgba(45,158,107,0);} 100%{box-shadow:0 0 0 0 rgba(45,158,107,0);} }
+        .bodegaHub-pulse{ animation: bodegaHubPulse 2.2s infinite; }
+        @media (prefers-reduced-motion: reduce){ .bodegaHub-pulse{ animation:none; } }
+        .bodegaHub-navCard{ transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease; }
+        .bodegaHub-navCard:hover{ transform: translateY(-3px); box-shadow: 0 1px 2px rgba(26,26,46,.05), 0 16px 32px -18px rgba(26,26,46,.28); border-color: ${C.blue}; }
+        .bodegaHub-navCard:hover .bodegaHub-arrow{ transform: translateX(3px); color: ${C.blue}; }
+        .bodegaHub-arrow{ display: inline-block; transition: transform .16s ease, color .16s ease; }
+      `}</style>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, fontWeight: 700, letterSpacing: "0.09em", textTransform: "uppercase", color: C.slate, marginBottom: 8 }}>
+        <span className="bodegaHub-pulse" style={{ width: 7, height: 7, borderRadius: "50%", background: C.green, display: "inline-block" }} />
+        Panel en vivo
+      </div>
+      <div style={{ fontFamily: "'Fraunces',Georgia,serif", fontWeight: 700, fontSize: 32, color: C.ink, display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+        <span style={{ fontSize: 25 }}>📦</span> Bodega
+      </div>
+      <div style={{ fontSize: 13, color: C.slate, marginBottom: 32 }}>Lo que está pendiente ahora mismo</div>
+
+      <div style={{ display: "flex", gap: 18, flexWrap: "wrap", justifyContent: "center", alignItems: "stretch", maxWidth: 920 }}>
         <button
+          className="bodegaHub-navCard"
           onClick={() => onSeleccionar("despacho_saldo")}
-          style={{ width: 190, textAlign: "left", padding: 18, borderRadius: 14, border: `1px solid ${C.border}`, background: C.white, cursor: "pointer", fontFamily: "inherit" }}
+          style={{ width: 196, textAlign: "left", padding: 20, borderRadius: 16, border: `1px solid ${C.border}`, background: C.white, cursor: "pointer", fontFamily: "inherit", display: "flex", flexDirection: "column", gap: 12, boxShadow: "0 1px 2px rgba(26,26,46,.05)" }}
         >
-          <div style={{ fontSize: 22, marginBottom: 6 }}>📦</div>
-          <div style={{ fontWeight: 800, fontSize: 13.5, color: C.ink, marginBottom: 4 }}>Despacho y Saldo</div>
-          <div style={{ fontSize: 11, color: C.slate }}>Venezuela, Dubo, Colombia, abonos y saldos.</div>
+          <div style={{ width: 38, height: 38, borderRadius: 10, background: C.canvas, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>📦</div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+            <span style={{ fontWeight: 800, fontSize: 13.5, color: C.ink }}>Despacho y Saldo</span>
+            <span className="bodegaHub-arrow" style={{ color: C.slate, fontSize: 13 }}>→</span>
+          </div>
+          <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>Venezuela, Dubái y Colombia — abonos y saldos.</div>
         </button>
 
-        <div style={{ width: 210, padding: "20px 22px", borderRadius: 16, background: C.amberBg, border: `1px solid ${C.border}` }}>
-          <div style={{ fontSize: 24 }}>🧾</div>
-          <div style={{ fontSize: 32, fontWeight: 900, color: C.amber, lineHeight: 1.1, margin: "4px 0 4px", fontVariantNumeric: "tabular-nums" }}>{pendientesFacturar}</div>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink }}>Pendientes de facturar</div>
-          <div style={{ fontSize: 10.5, color: C.slate, marginTop: 2 }}>Ya salieron de Calidad, Busint aún no factura.</div>
-        </div>
-        <div style={{ width: 210, padding: "20px 22px", borderRadius: 16, background: C.blueBg, border: `1px solid ${C.border}` }}>
-          <div style={{ fontSize: 24 }}>🚚</div>
-          <div style={{ fontSize: 32, fontWeight: 900, color: C.blue, lineHeight: 1.1, margin: "4px 0 4px", fontVariantNumeric: "tabular-nums" }}>{pendientesDespachar}</div>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink }}>Pendientes de despachar</div>
-          <div style={{ fontSize: 10.5, color: C.slate, marginTop: 2 }}>Aprobados sin transportador ni guía todavía.</div>
+        <div style={{ flex: "1 1 380px", maxWidth: 440, display: "flex", background: C.white, border: `1px solid ${C.border}`, borderRadius: 20, boxShadow: "0 1px 2px rgba(26,26,46,.05), 0 16px 32px -18px rgba(26,26,46,.28)", overflow: "hidden" }}>
+          <div style={{ flex: 1, padding: "22px 20px", display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: C.amberBg, color: C.amber, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, marginBottom: 2 }}>🧾</div>
+            <div style={{ fontSize: 36, fontWeight: 900, color: C.amber, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{pendientesFacturar}</div>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginTop: 2 }}>Pendientes de facturar</div>
+            <div style={{ fontSize: 10.5, color: C.slate, lineHeight: 1.45 }}>Ya salieron de Calidad, Busint aún no factura.</div>
+          </div>
+          <div style={{ flex: 1, padding: "22px 20px", display: "flex", flexDirection: "column", gap: 6, borderLeft: `1px solid ${C.border}` }}>
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: C.blueBg, color: C.blue, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, marginBottom: 2 }}>🚚</div>
+            <div style={{ fontSize: 36, fontWeight: 900, color: C.blue, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>{pendientesDespachar}</div>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginTop: 2 }}>Pendientes de despachar</div>
+            <div style={{ fontSize: 10.5, color: C.slate, lineHeight: 1.45 }}>Aprobados sin transportador ni guía todavía.</div>
+          </div>
         </div>
 
         <button
+          className="bodegaHub-navCard"
           onClick={() => onSeleccionar("estado_despacho")}
-          style={{ width: 190, textAlign: "left", padding: 18, borderRadius: 14, border: `1px solid ${C.border}`, background: C.white, cursor: "pointer", fontFamily: "inherit" }}
+          style={{ width: 196, textAlign: "left", padding: 20, borderRadius: 16, border: `1px solid ${C.border}`, background: C.white, cursor: "pointer", fontFamily: "inherit", display: "flex", flexDirection: "column", gap: 12, boxShadow: "0 1px 2px rgba(26,26,46,.05)" }}
         >
-          <div style={{ fontSize: 22, marginBottom: 6 }}>🚚</div>
-          <div style={{ fontWeight: 800, fontSize: 13.5, color: C.ink, marginBottom: 4 }}>Estado de Despacho</div>
-          <div style={{ fontSize: 11, color: C.slate }}>Transportador, guía y llegada.</div>
+          <div style={{ width: 38, height: 38, borderRadius: 10, background: C.canvas, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>🚚</div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+            <span style={{ fontWeight: 800, fontSize: 13.5, color: C.ink }}>Estado de Despacho</span>
+            <span className="bodegaHub-arrow" style={{ color: C.slate, fontSize: 13 }}>→</span>
+          </div>
+          <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>Transportador, guía y llegada.</div>
         </button>
       </div>
-      <div style={{ display: "flex", gap: 16, marginTop: 28 }}>
+
+      <div style={{ display: "flex", gap: 16, marginTop: 34 }}>
         {onVolver && (
           <button onClick={onVolver} style={{ background: "none", border: "none", color: C.slate, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
             ← Volver al Inicio
