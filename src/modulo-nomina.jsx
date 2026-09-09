@@ -3615,6 +3615,165 @@ function NominaDestajoView({ trabajadores, produccion, diasTrabajados, liquidaci
   );
 }
 // ─── HISTORIAL DESTAJO (quincenas ya confirmadas) ────────────────────────
+// ─── REPORTE DE NÓMINA POR ÁREA (Fiscal + Fiscal Destajo + Destajo,
+// agrupado por Área Interna y por Empleador) ─────────────────────────────
+// Junta las liquidaciones YA CONFIRMADAS de los 3 tipos de nómina de un
+// período (una quincena, o el mes completo sumando sus 2 quincenas) y las
+// agrupa por Área Interna -- el mismo catálogo que ya usa Trabajadores,
+// no uno aparte (confirmado con Fredy) -- y por Empleador, para responder
+// "cuánto debemos pagar por cada área/empresa". El Área y el Empleador
+// que se usan son los ACTUALES del trabajador (no un snapshot de cuando
+// se confirmó la liquidación), porque esos dos campos no se guardan en
+// el registro de liquidación -- si alguien cambia de área después, el
+// reporte de períodos pasados se ve con su área de HOY, no la de
+// entonces.
+function costoTotalLiquidacion(l) {
+  // "Costo total para la empresa" = lo que se le paga al trabajador +
+  // los aportes patronales de seguridad social (Fiscal) + las
+  // provisiones de prestaciones -- para Fiscal Destajo/Destajo, que no
+  // tienen seguridad social, esos campos no existen y quedan en $0 solos.
+  return (l.netoAPagar || 0)
+    + (l.epsTrabajador || 0) + (l.pensionTrabajador || 0)
+    + (l.pensionEmpleador || 0) + (l.arlEmpleador || 0) + (l.cajaCompensacionEmpleador || 0) + (l.epsEmpleador || 0)
+    + (l.cesantiasPeriodo || 0) + (l.interesesPeriodo || 0) + (l.primaPeriodo || 0) + (l.vacacionesPeriodo || 0);
+}
+function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesFD, liquidacionesD }) {
+  const hoy = new Date();
+  const [tipoPeriodo, setTipoPeriodo] = useState("quincena"); // "quincena" | "mes"
+  const [anio, setAnio] = useState(String(hoy.getFullYear()));
+  const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
+  const [quincena, setQuincena] = useState(hoy.getDate() <= 15 ? "1" : "2");
+  const [areasAbiertas, setAreasAbiertas] = useState({});
+
+  const periodoId = `${anio}-${mes}-Q${quincena}`;
+  function enPeriodo(l) {
+    return tipoPeriodo === "quincena" ? l.periodoId === periodoId : (l.periodoId || "").startsWith(`${anio}-${mes}-`);
+  }
+
+  const filas = [
+    ...liquidacionesF.filter(enPeriodo).map((l) => ({ l, tipoNomina: "Fiscal" })),
+    ...liquidacionesFD.filter(enPeriodo).map((l) => ({ l, tipoNomina: "Fiscal Destajo" })),
+    ...liquidacionesD.filter(enPeriodo).map((l) => ({ l, tipoNomina: "Destajo" })),
+  ].map(({ l, tipoNomina }) => {
+    const trabajador = trabajadores.find((t) => t.id === l.trabajadorId);
+    return {
+      id: `${tipoNomina}__${l.id}`,
+      nombre: l.nombre || trabajador?.nombre || "—",
+      area: trabajador?.area || "Sin asignar",
+      empleador: trabajador?.empleador || "Sin asignar",
+      tipoNomina,
+      netoAPagar: l.netoAPagar || 0,
+      costoTotal: costoTotalLiquidacion(l),
+    };
+  });
+
+  const grupos = [...new Set(filas.map((f) => f.area))]
+    .map((area) => {
+      const filasArea = filas.filter((f) => f.area === area);
+      const empleadores = [...new Set(filasArea.map((f) => f.empleador))].sort();
+      return {
+        area,
+        filas: filasArea,
+        neto: filasArea.reduce((s, f) => s + f.netoAPagar, 0),
+        costo: filasArea.reduce((s, f) => s + f.costoTotal, 0),
+        trabajadores: filasArea.length,
+        porEmpleador: empleadores.map((emp) => {
+          const filasEmp = filasArea.filter((f) => f.empleador === emp);
+          return { empleador: emp, neto: filasEmp.reduce((s, f) => s + f.netoAPagar, 0), costo: filasEmp.reduce((s, f) => s + f.costoTotal, 0) };
+        }),
+      };
+    })
+    .sort((a, b) => b.costo - a.costo);
+
+  const totalGeneral = {
+    trabajadores: filas.length,
+    neto: filas.reduce((s, f) => s + f.netoAPagar, 0),
+    costo: filas.reduce((s, f) => s + f.costoTotal, 0),
+  };
+  const totalPorEmpleador = [...new Set(filas.map((f) => f.empleador))].sort().map((emp) => ({
+    empleador: emp,
+    costo: filas.filter((f) => f.empleador === emp).reduce((s, f) => s + f.costoTotal, 0),
+  }));
+
+  function toggleArea(area) {
+    setAreasAbiertas((prev) => ({ ...prev, [area]: !prev[area] }));
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Junta las liquidaciones YA CONFIRMADAS de Nómina Fiscal, Fiscal Destajo y Destajo del período elegido, agrupadas por Área Interna y por Empleador — para ver cuánto se debe pagar en total y por cada empresa. El Área y Empleador que se muestran son los que tiene HOY cada trabajador.
+      </div>
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Período">
+          <FSel value={tipoPeriodo} onChange={setTipoPeriodo} options={[{ value: "quincena", label: "Una quincena" }, { value: "mes", label: "Mes completo (2 quincenas)" }]} />
+        </Field>
+        <Field label="Año"><FInput type="number" value={anio} onChange={setAnio} /></Field>
+        <Field label="Mes">
+          <FSel value={mes} onChange={setMes} options={Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1).padStart(2, "0"), label: String(i + 1).padStart(2, "0") }))} />
+        </Field>
+        {tipoPeriodo === "quincena" && (
+          <Field label="Quincena">
+            <FSel value={quincena} onChange={setQuincena} options={[{ value: "1", label: "1 (días 1-15)" }, { value: "2", label: "2 (16-fin de mes)" }]} />
+          </Field>
+        )}
+      </div>
+
+      {filas.length === 0 ? (
+        <div style={{ padding: "12px 16px", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, color: C.slate, fontSize: 13, maxWidth: 560 }}>
+          No hay ninguna liquidación confirmada (Fiscal, Fiscal Destajo o Destajo) para este período todavía.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+            <KPI icon="👷" label="Trabajadores incluidos" value={totalGeneral.trabajadores} color={C.blue} bg={C.blueBg} />
+            <KPI icon="💵" label="Neto a Pagar (total)" value={fmtMoney(totalGeneral.neto)} color={C.green} bg={C.greenBg} />
+            <KPI icon="🏛️" label="Costo Total Empresa" value={fmtMoney(totalGeneral.costo)} color={C.violet} bg={C.violetBg} />
+            {totalPorEmpleador.map((e) => (
+              <KPI key={e.empleador} icon="🏢" label={`Costo Total ${e.empleador}`} value={fmtMoney(e.costo)} color={C.amber} bg={C.amberBg} />
+            ))}
+          </div>
+
+          {grupos.map((g) => (
+            <div key={g.area} style={{ marginBottom: 14, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+              <div onClick={() => toggleArea(g.area)} style={{ cursor: "pointer", padding: "12px 16px", background: C.canvas, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 13 }}>{areasAbiertas[g.area] ? "▾" : "▸"}</span>
+                  <strong style={{ fontSize: 14 }}>{g.area}</strong>
+                  <span style={{ fontSize: 12, color: C.slate }}>({g.trabajadores} trabajador{g.trabajadores === 1 ? "" : "es"})</span>
+                </div>
+                <div style={{ display: "flex", gap: 18, fontSize: 12, flexWrap: "wrap", alignItems: "center" }}>
+                  {g.porEmpleador.map((e) => (
+                    <span key={e.empleador} style={{ color: C.slate }}>{e.empleador}: <strong style={{ color: C.ink }}>{fmtMoney(e.costo)}</strong></span>
+                  ))}
+                  <span style={{ color: C.green, fontWeight: 700 }}>Neto: {fmtMoney(g.neto)}</span>
+                  <span style={{ color: C.violet, fontWeight: 800 }}>Costo Total: {fmtMoney(g.costo)}</span>
+                </div>
+              </div>
+              {areasAbiertas[g.area] && (
+                <Tabla
+                  vacio="Sin trabajadores."
+                  columnas={[
+                    { key: "nombre", label: "Nombre" },
+                    { key: "empleador", label: "Empleador" },
+                    { key: "tipoNomina", label: "Tipo Nómina", render: (f) => (
+                      <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: f.tipoNomina === "Fiscal Destajo" ? C.violetBg : f.tipoNomina === "Destajo" ? C.amberBg : C.blueBg, color: f.tipoNomina === "Fiscal Destajo" ? C.violet : f.tipoNomina === "Destajo" ? C.amber : C.blue }}>
+                        {f.tipoNomina}
+                      </span>
+                    ) },
+                    { key: "netoAPagar", label: "Neto a Pagar", align: "right", render: (f) => fmtMoney(f.netoAPagar) },
+                    { key: "costoTotal", label: "Costo Total Empresa", align: "right", render: (f) => <strong>{fmtMoney(f.costoTotal)}</strong> },
+                  ]}
+                  filas={g.filas}
+                />
+              )}
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
 function HistorialDestajoView({ liquidaciones, trabajadores }) {
   const periodos = [...new Set(liquidaciones.map((l) => l.periodoId))].sort().reverse();
   const [periodoFiltro, setPeriodoFiltro] = useState("");
@@ -5204,6 +5363,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "historial_lote", icon: "📦", label: "Historial de Lote" },
             { id: "historial_trabajador", icon: "🧑‍🏭", label: "Historial de Trabajador" },
             { id: "resumen", icon: "💰", label: "Cierre de Quincena" },
+            { id: "reporte_area", icon: "📊", label: "Reporte por Área" },
             { id: "fiscal", icon: "🏛️", label: "Nómina Fiscal" },
             { id: "historial_fiscal", icon: "🗂️", label: "Historial Fiscal" },
             { id: "fiscal_destajo", icon: "💼", label: "Nómina Fiscal Destajo" },
@@ -5422,6 +5582,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "produccion" && !soloNovedades && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} costosTeoricoProceso={costosTeoricoProceso} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
           {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
           {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} />}
+          {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} />}
           {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} isAdmin={isAdmin} onSave={guardarAreaNomina} onDelete={borrarAreaNomina} />}
           {subView === "zonas_nomina" && !areaLider && !soloNovedades && <ZonasNominaView zonas={zonasNomina} areasNomina={areasNomina} trabajadores={trabajadores} isAdmin={isAdmin} onSave={guardarZonaNomina} onDelete={borrarZonaNomina} />}
