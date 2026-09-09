@@ -433,6 +433,40 @@ const MAQUILA_CONOCIDOS = [
   { cedula: "CV 30.057.554", nombre: "ELVIS ALEXANDRO MEJIAS MALAVE", correo: "", zona: "OPERARIO CONFECCIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
   { cedula: "PPT 6977521", nombre: "KEILA JOHANA BERNAL MONCADA", correo: "bernalkeila993@gmail.com", zona: "REVISADORA DE CONFECIÓN", tipoNomina: "Destajo", sueldo: 1750905, auxilioTransporte: 249095 },
 ];
+// (2026-09-09, a pedido de Fredy) Nómina Fiscal completa -- archivo
+// "FISCAL NOMINA.xlsx" que subió, 24 personas con Empleador (YANKO/
+// INDUTEX) y Cargo tal como venían ahí. Dos nombres de Área Interna
+// vinieron distintos a como ya existen en el sistema y se normalizaron
+// (confirmado con Fredy que son la misma área): "CONTROL CALIDAD" ->
+// "CONTROL DE CALIDAD" y "ZONA DE CALOR" -> "ZONA CALOR". El archivo no
+// trae auxilio de transporte -- se usa el estándar (249.095) para los
+// 24, a pedido de Fredy.
+const FISCAL_CONOCIDOS = [
+  { cedula: "37279174", nombre: "ANNY CLARISA BELTRAN JAIMES", correo: "annyclarisabeltran@gmail.com", area: "CONTROL DE CALIDAD", cargo: "LIDER CALIDAD", empleador: "YANKO", sueldo: 2207100 },
+  { cedula: "37443339", nombre: "CAROLINA RIVERA BUITRAGO", correo: "karolrivera1081@gmail.com", area: "MAQUILA", cargo: "LIDER MAQUILA", empleador: "INDUTEX", sueldo: 2312200 },
+  { cedula: "1093792909", nombre: "DANIEL LEONARDO MEJIA CADENA", correo: "m2elmejia@gmail.com", area: "DISEÑO", cargo: "DISEÑADOR SENIOR", empleador: "YANKO", sueldo: 2207100 },
+  { cedula: "1005026197", nombre: "DIEGO ALEJANDRO OCHOA CHACÓN", correo: "ochoadiego777@gmail.com", area: "ADMINISTRATIVO", cargo: "AUXILIAR CONTABLE", empleador: "INDUTEX", sueldo: 1800000 },
+  { cedula: "88260792", nombre: "FREDY ALEXANDER BAUTISTA", correo: "fredybautista17@gmail.com", area: "ADMINISTRATIVO", cargo: "GERENTE", empleador: "YANKO", sueldo: 4000000 },
+  { cedula: "1092353907", nombre: "HUBERT LAIN CANO ANTELIZ", correo: "huvert14k@gmail.com", area: "BODEGA", cargo: "AUXILIAR BODEGA DE TELAS", empleador: "INDUTEX", sueldo: 1900000 },
+  { cedula: "1127349945", nombre: "JENNY SARAI MENDEZ SUAREZ", correo: "jennymendez0211@gmail.com", area: "ZONA CALOR", cargo: "LIDER REPRODUCCIÓN DE DISEÑO", empleador: "YANKO", sueldo: 2400000 },
+  { cedula: "1004866225", nombre: "JESUS ALIRIO BOTELLO BECERRA", correo: "jebotello.19@gmail.com", area: "BODEGA", cargo: "LIDER BODEGA", empleador: "YANKO", sueldo: 2207100 },
+  { cedula: "88243928", nombre: "JOSE ALEXANDER SERRANO OREJUELA", correo: "aserranooreju@gmail.com", area: "CORTE", cargo: "CORTADOR", empleador: "INDUTEX", sueldo: 1750905 },
+  { cedula: "1193480378", nombre: "JOSE DAVID MELO OSORIO", correo: "josedavidmeloosorio@gmail.com", area: "ADMINISTRATIVO", cargo: "RECOGIDA Y DESPACHO", empleador: "INDUTEX", sueldo: 1900000 },
+  { cedula: "1093801939", nombre: "KAREN MICHEL CHACÓN CABALLERO", correo: "karenchacon957@gmail.com", area: "DISEÑO", cargo: "CENTRO DE INFORMACIÓN", empleador: "YANKO", sueldo: 1800000 },
+  { cedula: "88225906", nombre: "LUIS ALFREDO MEDINA FUENTES", correo: "medinafuentesluisalfredo@gmail.com", area: "ADMINISTRATIVO", cargo: "CONSERJE", empleador: "YANKO", sueldo: 1750905 },
+  { cedula: "30050414", nombre: "MARY NELCI BAUTISTA CONTRERAS", correo: "bmariu7@hotmail.com", area: "ADMINISTRATIVO", cargo: "TESORERIA", empleador: "YANKO", sueldo: 3502000 },
+  { cedula: "1090460800", nombre: "YULEISI VIRGINIA MORENO CRUZ", correo: "yulimoreno93@gmail.com", area: "ADMINISTRATIVO", cargo: "LIDER TALENTO HUMANO", empleador: "YANKO", sueldo: 2600000 },
+  { cedula: "37390386", nombre: "YULIANA ANDREA BLETRAN JAIMES", correo: "yulianarqbj@gmail.com", area: "DISEÑO", cargo: "LIDER CREATIVA", empleador: "YANKO", sueldo: 4000000 },
+  { cedula: "1004802413", nombre: "ANDRES ESTEBAN VEGA GONZALEZ", correo: "stevandres27@gmail.com", area: "CORTE", cargo: "CORTADOR", empleador: "INDUTEX", sueldo: 1750905 },
+  { cedula: "1090456022", nombre: "SHIRLEY SABRINA CONTRERAS CRUZ", correo: "sabrinacontrerascruz@gmail.com", area: "DISEÑO", cargo: "DISEÑO GRAFICO", empleador: "INDUTEX", sueldo: 2000000 },
+  { cedula: "1094277949", nombre: "KAREN DAYANA DELGADO VILLAMIZAR", correo: "karenddelgadov@gmail.com", area: "DISEÑO", cargo: "DISEÑO MODAS", empleador: "YANKO", sueldo: 2600000 },
+  { cedula: "1091805089", nombre: "NELLY PATRICIA TRIVIÑO CRISTANCHO", correo: "nelsonjohantoro@gmail.com", area: "MAQUILA", cargo: "OPERARIO DE CONFECCIÓN", empleador: "INDUTEX", sueldo: 1750905 },
+  { cedula: "1090524225", nombre: "DANIELA ALEXANDRA PEÑARANDA COTAMO", correo: "dannycotamo@gmail.com", area: "ADMINISTRATIVO", cargo: "COMMUNITY MANAGER", empleador: "INDUTEX", sueldo: 2100000 },
+  { cedula: "1093794155", nombre: "PAULA ANDREA MARTINEZ AGUILAR", correo: "paulita9801@hotmail.com", area: "MAQUILA", cargo: "REVISADORA DE CONFECIÓN", empleador: "INDUTEX", sueldo: 1750905 },
+  { cedula: "1090507395", nombre: "KEVIN RONALDO CONTRERAS CASTELLANOS", correo: "keconca19@gmail.com", area: "ADMINISTRATIVO", cargo: "CONTADOR", empleador: "YANKO", sueldo: 2200000 },
+  { cedula: "1096949415", nombre: "YESICA TATIANA CORREA PEÑARANDA", correo: "tatacorrea0501@gmail.com", area: "DISEÑO", cargo: "APRENDIZ SENA", empleador: "YANKO", sueldo: 1750905 },
+  { cedula: "60373362", nombre: "BERTA MARIA CONTRERAS VELASCO", correo: "bertacontreras110476@gmail.com", area: "CORTE", cargo: "CORTADOR", empleador: "INDUTEX", sueldo: 1750905 },
+];
 function AreaNominaModal({ area, procesos, onSave, onClose }) {
   const [form, setForm] = useState({
     nombre: area?.nombre || "",
@@ -1179,6 +1213,66 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
     }
     setMzResultado({ creados, actualizados, areaCreada, zonasCreadas });
   }
+  // (2026-09-09, a pedido de Fredy) Carga la Nómina Fiscal completa (ver
+  // FISCAL_CONOCIDOS arriba): crea las Áreas Internas que hagan falta,
+  // crea el Cargo de cada quien bajo su área (igual que Maquila), y
+  // después crea o actualiza (por cédula) a cada trabajador con su
+  // Empleador, Cargo, Tipo de Nómina ("Fiscal") y sueldo.
+  const [mfResultado, setMfResultado] = useState(null);
+  async function cargarFiscalConocidos() {
+    // Mapa local área -> id: arranca con lo que ya existe y se completa
+    // con lo que se cree en esta misma pasada (areasNomina, al venir por
+    // prop, no se refresca sola a mitad de la función).
+    const idsPorArea = new Map(areasNomina.map((a) => [a.nombre, a.id]));
+    let areasCreadas = 0;
+    for (const nombreArea of [...new Set(FISCAL_CONOCIDOS.map((p) => p.area).filter(Boolean))]) {
+      if (idsPorArea.has(nombreArea)) continue;
+      const nuevaId = uid();
+      await onSaveArea({ id: nuevaId, nombre: nombreArea, procesosCentroCosto: [], metaDiariaUnidades: null, presupuestoMensualNomina: null, modoMedicion: "", mideReclamosCalidad: false });
+      idsPorArea.set(nombreArea, nuevaId);
+      areasCreadas++;
+    }
+    const cargosYaCreados = new Set(zonasNomina.map((z) => `${z.areaId}::${z.nombre}`));
+    let cargosCreados = 0;
+    for (const p of FISCAL_CONOCIDOS) {
+      if (!p.cargo) continue;
+      const areaId = idsPorArea.get(p.area);
+      if (!areaId) continue;
+      const clave = `${areaId}::${p.cargo}`;
+      if (cargosYaCreados.has(clave)) continue;
+      await onSaveZona({ id: uid(), nombre: p.cargo, areaId });
+      cargosYaCreados.add(clave);
+      cargosCreados++;
+    }
+    let creados = 0, actualizados = 0;
+    for (const p of FISCAL_CONOCIDOS) {
+      const ced = normalizarCedula(p.cedula);
+      const existente = trabajadores.find((t) => normalizarCedula(t.cedula) === ced);
+      const datos = {
+        nombre: existente?.nombre || p.nombre,
+        cedula: existente?.cedula || p.cedula,
+        correo: existente?.correo || p.correo || "",
+        tarifaHora: existente?.tarifaHora || 0,
+        activo: existente?.activo ?? true,
+        area: p.area,
+        zona: p.cargo || existente?.zona || "",
+        areaTNS: existente?.areaTNS || "",
+        tnsCodigo: existente?.tnsCodigo || "",
+        empleador: p.empleador,
+        tipoNomina: "Fiscal",
+        sueldo: p.sueldo,
+        auxilioTransporte: 249095,
+      };
+      if (existente) {
+        await onSave({ id: existente.id, ...datos });
+        actualizados++;
+      } else {
+        await onSave({ id: uid(), ...datos });
+        creados++;
+      }
+    }
+    setMfResultado({ creados, actualizados, areasCreadas, cargosCreados });
+  }
   return (
     <div>
       {modal && (
@@ -1215,6 +1309,15 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
               {mzResultado.creados} creado(s), {mzResultado.actualizados} actualizado(s)
               {(mzResultado.areaCreada || mzResultado.zonasCreadas > 0) && (
                 <> ({mzResultado.areaCreada ? "Área MAQUILA creada, " : ""}{mzResultado.zonasCreadas} cargo(s) creado(s))</>
+              )}.
+            </span>
+          )}
+          <Btn variant="secondary" onClick={cargarFiscalConocidos}>💰 Cargar Fiscal (24 conocidos)</Btn>
+          {mfResultado !== null && (
+            <span style={{ fontSize: 12, color: C.slate }}>
+              {mfResultado.creados} creado(s), {mfResultado.actualizados} actualizado(s)
+              {(mfResultado.areasCreadas > 0 || mfResultado.cargosCreados > 0) && (
+                <> ({mfResultado.areasCreadas} área(s) creada(s), {mfResultado.cargosCreados} cargo(s) creado(s))</>
               )}.
             </span>
           )}
