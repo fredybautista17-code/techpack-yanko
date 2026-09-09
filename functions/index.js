@@ -114,12 +114,23 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
+const ExcelJS = require("exceljs");
 
 admin.initializeApp();
 const db = admin.firestore();
 
 const BUSINT_TOKEN = defineSecret("BUSINT_TOKEN");
 const BUSINT_BASE_URL = defineSecret("BUSINT_BASE_URL");
+// (2026-09-09) Credenciales de la app de Dropbox para exportar 'Dado por
+// Cumplido' -- se usa refresh token (no un token de acceso directo, que
+// Dropbox ya no deja generar de larga duración) para pedir un access token
+// nuevo en cada corrida. Configurar UNA VEZ desde la terminal:
+//   firebase functions:secrets:set DROPBOX_APP_KEY
+//   firebase functions:secrets:set DROPBOX_APP_SECRET
+//   firebase functions:secrets:set DROPBOX_REFRESH_TOKEN
+const DROPBOX_APP_KEY = defineSecret("DROPBOX_APP_KEY");
+const DROPBOX_APP_SECRET = defineSecret("DROPBOX_APP_SECRET");
+const DROPBOX_REFRESH_TOKEN = defineSecret("DROPBOX_REFRESH_TOKEN");
 // (2026-08-19) API NUEVA de Busint ("BD"), distinta a la de arriba — es la
 // que trae acceso a TODAS las tablas internas de Busint (incluida
 // "planeacion cargas", que es lo que reemplazaría la subida manual de Hoja1
@@ -858,8 +869,9 @@ function calcularDadoPorCumplido({ costoRealTotal, cantCortada, cantDespachada, 
 
 async function sincronizarDadoPorCumplidoPendientes() {
   const desdeISO = new Date(Date.now() - DIAS_VENTANA_DADO_POR_CUMPLIDO * 86400000).toISOString().slice(0, 10);
+  const hoyISO = new Date().toISOString().slice(0, 10);
 
-  let facturas, detalles, panelFlujo;
+  let facturas, detalles, panelFlujo, filasFacturado;
   try {
     [facturas, detalles, panelFlujo] = await Promise.all([
       consultarTablaBusintBDCompleta("facturas"),
@@ -870,6 +882,43 @@ async function sincronizarDadoPorCumplidoPendientes() {
     logger.error("Error consultando Busint (sincronizarDadoPorCumplidoPendientes)", { error: String(err) });
     throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
   }
+  // (2026-09-09, a pedido de Fredy) Clientes como Kamila despachan por
+  // Traslado en Consignacion (TCO) o Traslado Externo (TEX) en vez de
+  // Factura (FAC) -- Busint solo emite la FAC real despues, cuando el
+  // cliente define que vendio de verdad (ver nota en
+  // agruparFacturacionPorClienteBusint). Sin esto, esos lotes se quedaban
+  // esperando indefinidamente en "Sin factura" aunque ya hubieran salido de
+  // bodega. Si esta consulta falla, no se corta toda la sincronizacion --
+  // sigue funcionando solo con facturas (FAC) reales.
+  try {
+    filasFacturado = await consultarFacturadoBusint(desdeISO, hoyISO);
+  } catch (err) {
+    logger.error("Error consultando ApiGen_FacturadoBusint (sincronizarDadoPorCumplidoPendientes)", { error: String(err) });
+    filasFacturado = [];
+  }
+  // Se agrupan TCO + TEX por pedido+referencia, neteando sus devoluciones
+  // (DTC/DTE ya vienen con "cant" negativo en Busint -- mismo criterio ya
+  // usado en agruparFacturacionPorClienteBusint y en Ventas Perdidas para
+  // cruzar ApiGen_FacturadoBusint con un pedido).
+  const trasladosPorPedidoRef = new Map(); // `${numped}__${ref}` -> { unidades, monto, fecha }
+  filasFacturado.forEach((f) => {
+    const tipo = String(f.tipo || "").trim().toUpperCase();
+    if (!["TCO", "TEX", "DTC", "DTE"].includes(tipo)) return;
+    const numped = String(f.numped ?? "").trim();
+    const ref = String(f.ref || "").trim();
+    if (!numped || !ref) return;
+    const cant = Number(f.cant) || 0;
+    const precio = Number(f.precio) || 0;
+    const descPct = Number(f.desc) || 0;
+    const monto = cant * precio * (1 - descPct / 100);
+    const clave = `${numped}__${ref}`;
+    if (!trasladosPorPedidoRef.has(clave)) trasladosPorPedidoRef.set(clave, { unidades: 0, monto: 0, fecha: null });
+    const t = trasladosPorPedidoRef.get(clave);
+    t.unidades += cant;
+    t.monto += monto;
+    const fechaISO = soloFecha(f.fechaFact) || null;
+    if (fechaISO && (!t.fecha || fechaISO > t.fecha)) t.fecha = fechaISO;
+  });
 
   const detallesPorNfact = new Map();
   detalles.forEach((d) => {
@@ -985,6 +1034,57 @@ async function sincronizarDadoPorCumplidoPendientes() {
       creados++;
     }
   }
+  let creadosPorTraslado = 0;
+  let actualizadosPorTraslado = 0;
+  for (const [lote, datosPanel] of panelPorLote) {
+    if (facturasPorLote.has(lote)) continue; // ya se proceso arriba con FAC real -- esa manda siempre
+    const numPedidoPanel = Number(datosPanel?.numPedido) || null;
+    const referenciaPanel = String(datosPanel?.referencia || "").trim();
+    if (!numPedidoPanel || !referenciaPanel) continue;
+    const traslado = trasladosPorPedidoRef.get(`${numPedidoPanel}__${referenciaPanel}`);
+    if (!traslado || traslado.unidades <= 0) continue;
+
+    const id = `lote_${lote}`;
+    const ref = coleccion.doc(id);
+    const snap = await ref.get();
+    if (snap.exists && snap.data().estado === "aprobado") continue; // ya aprobado -- no se vuelve a tocar
+
+    const datosPrevios = snap.exists ? snap.data() : null;
+    const cantCortadaPrevia = Number(datosPrevios?.cantCortada) || 0;
+    const cantCortadaPanel = Number(datosPanel?.cantCortada) || 0;
+    const cantCortadaFinal = datosPrevios?.cantCortadaManual
+      ? cantCortadaPrevia
+      : (cantCortadaPanel > 0 ? cantCortadaPanel : cantCortadaPrevia);
+    const precioVentaUnitario = Math.round((traslado.monto / traslado.unidades) * 100) / 100;
+
+    const camposTraslado = {
+      numLote: lote,
+      numPedido: numPedidoPanel,
+      referencia: referenciaPanel,
+      cliente: datosPanel?.nombreCliente || "",
+      fecha: traslado.fecha,
+      cantCortada: cantCortadaFinal,
+      cantDespachada: traslado.unidades,
+      precioVentaUnitario,
+      tieneFactura: true,
+      observacionesFactura: "Traslado en consignación/externo -- todavía no hay factura real de Busint.",
+      actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    if (snap.exists) {
+      await ref.set(camposTraslado, { merge: true });
+      actualizadosPorTraslado++;
+    } else {
+      await ref.set({
+        ...camposTraslado,
+        costoRealTotal: null,
+        categoriaBaseId: "",
+        estado: "pendiente",
+        creadoEn: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      creadosPorTraslado++;
+    }
+  }
+
   let creadosPorBpt = 0;
   for (const p of panelFlujo) {
     const lote = Number(p?.numLote);
@@ -1013,8 +1113,8 @@ async function sincronizarDadoPorCumplidoPendientes() {
     creadosPorBpt++;
   }
 
-  logger.info("sincronizarDadoPorCumplidoPendientes completado", { creados, actualizados, creadosPorBpt, totalLotesDetectados: facturasPorLote.size });
-  return { creados, actualizados, creadosPorBpt, totalLotesDetectados: facturasPorLote.size };
+  logger.info("sincronizarDadoPorCumplidoPendientes completado", { creados, actualizados, creadosPorBpt, creadosPorTraslado, actualizadosPorTraslado, totalLotesDetectados: facturasPorLote.size });
+  return { creados, actualizados, creadosPorBpt, creadosPorTraslado, actualizadosPorTraslado, totalLotesDetectados: facturasPorLote.size };
 }
 
 // Botón "Buscar lotes nuevos" en Contabilidad -> Dado por Cumplido (solo
@@ -1116,6 +1216,151 @@ exports.aprobarDadoPorCumplido = onCall(
   }
 );
 // ─────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────
+// (2026-09-09, a pedido de Fredy) Exportar "Dado por Cumplido" a Excel y
+// subirlo a Dropbox -- reemplaza el cuadro que Contabilidad armaba a mano
+// en Excel para revisar ganancia por lote. Se sobrescribe SIEMPRE el mismo
+// archivo en Dropbox (misma ruta) para que cada mañana ya esté el más
+// reciente. Incluye TODOS los lotes (pendientes + aprobados) -- así se ve
+// también qué falta por revisar, no solo el histórico ya aprobado.
+const DROPBOX_RUTA_DADO_POR_CUMPLIDO = "/2026/Dado por cumplido/DadoPorCumplido.xlsx";
+
+async function obtenerTokenAccesoDropbox() {
+  const resp = await fetch("https://api.dropbox.com/oauth2/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: DROPBOX_REFRESH_TOKEN.value(),
+      client_id: DROPBOX_APP_KEY.value(),
+      client_secret: DROPBOX_APP_SECRET.value(),
+    }),
+  });
+  if (!resp.ok) {
+    const texto = await resp.text().catch(() => "");
+    throw new Error(`Dropbox no autorizó el refresh token (${resp.status}): ${texto}`);
+  }
+  const datos = await resp.json();
+  return datos.access_token;
+}
+
+async function subirArchivoADropbox(buffer, rutaDestino) {
+  const accessToken = await obtenerTokenAccesoDropbox();
+  const resp = await fetch("https://content.dropboxapi.com/2/files/upload", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/octet-stream",
+      "Dropbox-API-Arg": JSON.stringify({ path: rutaDestino, mode: "overwrite", mute: true }),
+    },
+    body: buffer,
+  });
+  if (!resp.ok) {
+    const texto = await resp.text().catch(() => "");
+    throw new Error(`Dropbox respondió ${resp.status} al subir el archivo: ${texto}`);
+  }
+  return resp.json();
+}
+
+const DADO_POR_CUMPLIDO_COLUMNAS = [
+  { header: "Lote", key: "numLote", width: 10 },
+  { header: "Pedido", key: "numPedido", width: 12 },
+  { header: "Referencia", key: "referencia", width: 16 },
+  { header: "Cliente", key: "cliente", width: 26 },
+  { header: "Fecha", key: "fecha", width: 12 },
+  { header: "Cant. Cortada", key: "cantCortada", width: 14 },
+  { header: "Cant. Despachada", key: "cantDespachada", width: 16 },
+  { header: "Precio Venta Unit.", key: "precioVentaUnitario", width: 16 },
+  { header: "Costo Real Total", key: "costoRealTotal", width: 16 },
+  { header: "Costo Definitivo", key: "costoDefinitivo", width: 16 },
+  { header: "Costo T Ref", key: "costoTRef", width: 14 },
+  { header: "Costo T", key: "costoT", width: 14 },
+  { header: "Venta T", key: "ventaT", width: 14 },
+  { header: "Ganancia", key: "ganancia", width: 14 },
+  { header: "% Ganancia Lote", key: "gananciaPctLote", width: 16 },
+  { header: "% Ganancia Ref", key: "gananciaPctRef", width: 16 },
+  { header: "Base x Cortada (Total)", key: "total", width: 20 },
+  { header: "Categoría BASE", key: "categoriaBaseId", width: 16 },
+  { header: "Estado", key: "estado", width: 12 },
+  { header: "Aprobado Por", key: "aprobadoPor", width: 22 },
+];
+
+async function generarExcelDadoPorCumplido() {
+  const snap = await db.collection("dado_por_cumplido_lotes").orderBy("numLote", "desc").get();
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Dado por Cumplido");
+  ws.columns = DADO_POR_CUMPLIDO_COLUMNAS;
+  ws.getRow(1).font = { bold: true };
+  snap.docs.forEach((doc) => {
+    const d = doc.data();
+    ws.addRow({
+      numLote: d.numLote ?? "",
+      numPedido: d.numPedido ?? "",
+      referencia: d.referencia || "",
+      cliente: d.cliente || "",
+      fecha: d.fecha || "",
+      cantCortada: d.cantCortada ?? "",
+      cantDespachada: d.cantDespachada ?? "",
+      precioVentaUnitario: d.precioVentaUnitario ?? "",
+      costoRealTotal: d.costoRealTotal ?? "",
+      costoDefinitivo: d.costoDefinitivo ?? "",
+      costoTRef: d.costoTRef ?? "",
+      costoT: d.costoT ?? "",
+      ventaT: d.ventaT ?? "",
+      ganancia: d.ganancia ?? "",
+      gananciaPctLote: d.gananciaPctLote ?? "",
+      gananciaPctRef: d.gananciaPctRef ?? "",
+      total: d.total ?? "",
+      categoriaBaseId: d.categoriaBaseId || "",
+      estado: d.estado || "",
+      aprobadoPor: d.aprobadoPor || "",
+    });
+  });
+  const buffer = await wb.xlsx.writeBuffer();
+  return { buffer, totalLotes: snap.size };
+}
+
+async function exportarDadoPorCumplidoADropbox() {
+  const { buffer, totalLotes } = await generarExcelDadoPorCumplido();
+  await subirArchivoADropbox(buffer, DROPBOX_RUTA_DADO_POR_CUMPLIDO);
+  logger.info("exportarDadoPorCumplidoADropbox completado", { totalLotes, ruta: DROPBOX_RUTA_DADO_POR_CUMPLIDO });
+  return { ok: true, totalLotes, ruta: DROPBOX_RUTA_DADO_POR_CUMPLIDO };
+}
+
+// Botón manual "Descargar y subir a Dropbox ahora" en Contabilidad -> Dado
+// por Cumplido (solo admin) -- para probar sin esperar al horario de las
+// 6:00 a.m.
+exports.exportarDadoPorCumplidoADropboxAhora = onCall(
+  {
+    secrets: [DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN],
+    timeoutSeconds: 120,
+    memory: "256MiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    return await exportarDadoPorCumplidoADropbox();
+  }
+);
+
+// Corre sola todos los días a las 6:00 a.m. hora Bogotá -- genera el Excel
+// de "Dado por Cumplido" (todos los lotes, pendientes + aprobados) y lo
+// sobrescribe siempre en la misma ruta de Dropbox.
+exports.exportarDadoPorCumplidoADropboxDiario = onSchedule(
+  {
+    schedule: "0 6 * * *",
+    timeZone: "America/Bogota",
+    secrets: [DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN],
+    timeoutSeconds: 120,
+    memory: "256MiB",
+  },
+  async () => {
+    const resultado = await exportarDadoPorCumplidoADropbox();
+    logger.info("exportarDadoPorCumplidoADropboxDiario completado", resultado);
+  }
+);
+// ─────────────────────────────────────────────────────────────────────────
+
 
 function cryptoRandomId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
