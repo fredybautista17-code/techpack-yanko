@@ -945,6 +945,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     tnsCodigo: trabajador?.tnsCodigo || "",
     empleador: trabajador?.empleador || "",
     claseRiesgoARL: trabajador?.claseRiesgoARL || "",
+    idHuellero: trabajador?.idHuellero || "",
     tipoNomina: trabajador?.tipoNomina || "",
     sueldo: trabajador?.sueldo ?? "",
     auxilioTransporte: trabajador?.auxilioTransporte ?? "",
@@ -979,6 +980,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       tnsCodigo: form.tnsCodigo.trim(),
       empleador: form.empleador || "",
       claseRiesgoARL: form.claseRiesgoARL || "",
+      idHuellero: form.idHuellero.trim(),
       tipoNomina: form.tipoNomina || "",
       sueldo: Number(form.sueldo) || 0,
       auxilioTransporte: Number(form.auxilioTransporte) || 0,
@@ -992,6 +994,10 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       <Field label="Nombre"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Carlos Javier González" /></Field>
       <Field label="Cédula"><FInput value={form.cedula} onChange={set("cedula")} placeholder="Ej: 1004802413" /></Field>
       <Field label="Correo"><FInput type="email" value={form.correo} onChange={set("correo")} placeholder="Ej: nombre@gmail.com" /></Field>
+      <Field label="ID Huellero (opcional)"><FInput value={form.idHuellero} onChange={set("idHuellero")} placeholder="Ej: 114 -- el ID que trae el reporte del huellero" /></Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        Vincula a esta persona con su ID en el equipo biométrico -- así el Reporte de Asistencia cruza los días trabajados aunque el nombre esté escrito distinto. Se puede dejar vacío y vincular después, directo desde el Reporte de Asistencia.
+      </div>
       <Field label="Área Interna"><FSel value={form.area} onChange={cambiarArea} options={[...areasNomina.map((a) => a.nombre), "Sin asignar"]} placeholder="Sin asignar" /></Field>
       <Field label="Cargo (opcional)">
         <FSel value={form.zona} onChange={set("zona")} options={zonasDelArea.map((z) => z.nombre)} placeholder={zonasDelArea.length ? "Sin asignar" : "Esta área no tiene cargos creados"} />
@@ -1478,6 +1484,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
           { key: "sueldo", label: "Sueldo", align: "right", render: (f) => f.sueldo ? fmtMoney(f.sueldo) : "—" },
           { key: "tarifaHora", label: "Tarifa/Hora", align: "right", render: (f) => fmtMoney(f.tarifaHora) },
           { key: "tnsCodigo", label: "Código TNS", render: (f) => f.tnsCodigo ? <span style={{ color: C.green, fontWeight: 700 }}>{f.tnsCodigo}</span> : <span style={{ color: C.slate }}>—</span> },
+          { key: "idHuellero", label: "ID Huellero", render: (f) => f.idHuellero ? <span style={{ color: C.blue, fontWeight: 700 }}>{f.idHuellero}</span> : <span style={{ color: C.slate }}>—</span> },
           { key: "activo", label: "Estado", render: (f) => (
             <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: f.activo ? C.greenBg : C.redBg, color: f.activo ? C.green : C.red }}>
               {f.activo ? "ACTIVO" : "INACTIVO"}
@@ -2480,6 +2487,72 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
 function normalizarNombreHuellero(s) {
   return String(s || "").trim().toUpperCase().replace(/\s+/g, " ");
 }
+// (2026-09-09, a pedido de Fredy) El huellero a veces guarda a la misma
+// persona con un nombre corto/informal (ej. "KAREN DELGADO") o hasta con
+// el ID pegado al nombre (ej. "PAULA MARTINEZ 141"), mientras que en
+// Trabajadores está el nombre legal completo (ej. "KAREN DAYANA DELGADO
+// VILLAMIZAR"). Esto se usa SOLO como aviso de coincidencia cuando ya se
+// vinculó por ID Huellero (ver coincideHuellero) -- no reemplaza el cruce
+// por nombre exacto que se sigue usando cuando la persona todavía no tiene
+// un ID Huellero asignado.
+function nombresSeParecen(nombreHuellero, nombreTrabajador) {
+  const palabras = normalizarNombreHuellero(nombreHuellero).split(" ").filter((p) => p && !/^\d+$/.test(p));
+  if (!palabras.length) return false;
+  const delTrabajador = new Set(normalizarNombreHuellero(nombreTrabajador).split(" ").filter(Boolean));
+  return palabras.every((p) => delTrabajador.has(p));
+}
+// Cruce entre un registro ya guardado del huellero (una falta sin
+// justificar o un día trabajado, con nombreNorm y opcionalmente
+// idHuellero) y un Trabajador de Atlas. Si el trabajador ya tiene ID
+// Huellero asignado, el cruce es SOLO por ese ID (no por nombre, así el
+// nombre esté escrito distinto o cambie con el tiempo); si todavía no
+// tiene ID asignado, cae al cruce por nombre exacto de siempre.
+function coincideHuellero(registro, trabajador, nombreNormTrabajador) {
+  if (trabajador.idHuellero) {
+    return registro.idHuellero != null && String(registro.idHuellero).trim() !== "" && String(registro.idHuellero).trim() === String(trabajador.idHuellero).trim();
+  }
+  return registro.nombreNorm === nombreNormTrabajador;
+}
+// Festivos de Colombia -- fijos acá porque cambian cada año según la Ley
+// Emiliani (varios festivos religiosos se corren al lunes siguiente). Hay
+// que agregar los del año que sigue cuando se sepan (Fredy se encarga de
+// pedirlo). Se usan para la regla de "días esperados": lunes a viernes
+// siempre, sábado solo si esa semana tuvo un festivo entre semana, domingo
+// nunca.
+const FESTIVOS_COLOMBIA_2026 = [
+  "2026-01-01", "2026-01-12", "2026-03-23", "2026-04-02", "2026-04-03",
+  "2026-05-01", "2026-05-18", "2026-06-08", "2026-06-15", "2026-06-29",
+  "2026-07-13", "2026-07-20", "2026-08-07", "2026-08-17", "2026-10-12",
+  "2026-11-02", "2026-11-16", "2026-12-08", "2026-12-25",
+];
+function esFestivoColombia(iso) {
+  return FESTIVOS_COLOMBIA_2026.includes(iso);
+}
+function lunesDeLaSemana(iso) {
+  const d = new Date(iso + "T00:00:00");
+  const dow = d.getDay(); // 0=domingo..6=sábado
+  const diff = dow === 0 ? -6 : 1 - dow;
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+function semanaTuvoFestivo(iso) {
+  const lunes = new Date(lunesDeLaSemana(iso) + "T00:00:00");
+  for (let i = 0; i < 6; i++) { // lunes a sábado
+    const d = new Date(lunes);
+    d.setDate(lunes.getDate() + i);
+    if (esFestivoColombia(d.toISOString().slice(0, 10))) return true;
+  }
+  return false;
+}
+// Regla confirmada con Fredy (09/09/2026): lunes a viernes siempre se
+// espera que trabajen; domingo nunca; sábado SOLO si esa semana tuvo un
+// festivo entre semana (para reponer).
+function diaEsperado(iso) {
+  const dow = new Date(iso + "T00:00:00").getDay();
+  if (dow === 0) return false;
+  if (dow === 6) return semanaTuvoFestivo(iso);
+  return true;
+}
 function parseHuelleroXLS(aoa) {
   const DT_RE = /^\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}$/;
   function celda(v) {
@@ -2523,9 +2596,20 @@ function parseHuelleroXLS(aoa) {
       if (DT_RE.test(vals[i])) {
         let j = i + 1;
         while (j < vals.length && vals[j] === "") j++;
-        const tipo = j < vals.length && (vals[j] === "Entrada" || vals[j] === "Salida") ? vals[j] : "?";
+        const etiquetaHuellero = j < vals.length && (vals[j] === "Entrada" || vals[j] === "Salida") ? vals[j] : "?";
+        // (2026-09-09, a pedido de Fredy) A los trabajadores se les olvida
+        // marcar bien -- a veces le dan "Salida" en la mañana o "Entrada"
+        // en la noche. La hora real no miente: antes de mediodía siempre
+        // es Entrada, de 4pm en adelante siempre es Salida, sin importar
+        // lo que haya marcado el huellero. Lo que caiga entre 12:00m y
+        // 4:00pm se deja tal como lo reportó el huellero (ej. permisos o
+        // salidas de almuerzo). Esto NO cambia cómo se cuentan los "días
+        // trabajados" (que solo miran si hubo alguna marca ese día) -- es
+        // para que el dato de tipo de marca quede limpio.
+        const hora = Number(vals[i].slice(11, 13));
+        const tipo = hora < 12 ? "Entrada" : hora >= 16 ? "Salida" : etiquetaHuellero;
         cur.marcas.push({ fechaHora: vals[i], tipo });
-        i = tipo !== "?" ? j + 1 : i + 1;
+        i = etiquetaHuellero !== "?" ? j + 1 : i + 1;
       } else {
         i++;
       }
@@ -2550,13 +2634,43 @@ function listaDeDiasISO(desdeISO, hastaISO) {
   }
   return out;
 }
-function ReporteAsistenciaView({ ausencias, trabajadores }) {
+function ReporteAsistenciaView({ ausencias, trabajadores, onGuardarTrabajador }) {
   const fileRef = useRef(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState("");
   const [reporte, setReporte] = useState(null); // { desde, hasta, filas }
-  const [excluirDomingos, setExcluirDomingos] = useState(true);
   const [soloConFaltas, setSoloConFaltas] = useState(true);
+  // Vinculación manual ID Huellero <-> Trabajador para quienes no cruzan
+  // ni por ID ni por nombre exacto (ver trabajadorDe más abajo).
+  const [seleccionVinculo, setSeleccionVinculo] = useState({}); // { [idHuellero]: trabajadorId }
+  const [vinculando, setVinculando] = useState(null); // idHuellero en proceso
+  // Cruza un registro del huellero (id + nombre) contra Trabajadores:
+  // primero por ID Huellero ya asignado (con aviso si el nombre ya no se
+  // parece -- posible ID reasignado a otra persona), y si no tiene ID
+  // asignado, por nombre exacto (como antes). Si el nombre exacto coincide
+  // con más de un trabajador, no asigna nadie (evita cargarle la
+  // asistencia de una persona a otra por homónimos).
+  function trabajadorDe(fila) {
+    const porId = trabajadores.find((t) => t.idHuellero && String(t.idHuellero).trim() === String(fila.id).trim());
+    if (porId) return { trabajador: porId, viaId: true, nombreCoincide: nombresSeParecen(fila.nombre, porId.nombre) };
+    const nombreNorm = normalizarNombreHuellero(fila.nombre);
+    const candidatos = trabajadores.filter((t) => normalizarNombreHuellero(t.nombre) === nombreNorm);
+    if (candidatos.length === 1) return { trabajador: candidatos[0], viaId: false, nombreCoincide: true };
+    return null;
+  }
+  async function vincular(fila) {
+    const trabajadorId = seleccionVinculo[fila.id];
+    if (!trabajadorId) return;
+    const trabajador = trabajadores.find((t) => t.id === trabajadorId);
+    if (!trabajador || !onGuardarTrabajador) return;
+    setVinculando(fila.id);
+    try {
+      await onGuardarTrabajador({ ...trabajador, idHuellero: fila.id });
+      setSeleccionVinculo((s) => { const n = { ...s }; delete n[fila.id]; return n; });
+    } finally {
+      setVinculando(null);
+    }
+  }
 
   async function handleFile(e) {
     const file = e.target.files?.[0];
@@ -2582,10 +2696,19 @@ function ReporteAsistenciaView({ ausencias, trabajadores }) {
       const filas = empleados.map((emp) => {
         const diasConMarca = new Set(emp.marcas.map((m) => m.fechaHora.split(" ")[0]).map((f) => fechaHuelleroAISO(f)));
         const nombreNorm = normalizarNombreHuellero(emp.nombre);
-        const ausenciasPersona = ausencias.filter((a) => normalizarNombreHuellero(a.nombre) === nombreNorm);
+        // Si ya se sabe a qué trabajador corresponde este registro del
+        // huellero (por ID o por nombre exacto), cruza las ausencias por
+        // trabajadorId cuando la ausencia se registró eligiéndolo de la
+        // lista -- más confiable que comparar nombres cuando el huellero
+        // usa un nombre corto. Si no, cae al cruce por nombre de siempre.
+        const trabajadorDelRegistro = trabajadorDe({ id: emp.id, nombre: emp.nombre });
+        const ausenciasPersona = ausencias.filter((a) => {
+          if (trabajadorDelRegistro && a.trabajadorId) return a.trabajadorId === trabajadorDelRegistro.trabajador.id;
+          return normalizarNombreHuellero(a.nombre) === nombreNorm;
+        });
         const diasSinMarca = diasPeriodo.filter((iso) => {
           if (diasConMarca.has(iso)) return false;
-          if (excluirDomingos && new Date(iso + "T00:00:00").getDay() === 0) return false;
+          if (!diaEsperado(iso)) return false;
           return true;
         });
         const detalle = diasSinMarca.map((iso) => {
@@ -2638,6 +2761,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores }) {
           batch.set(doc(db, "nomina_faltas_sin_justificar", id), {
             nombre: f.nombre,
             nombreNorm,
+            idHuellero: f.id,
             fecha: d.fecha,
             origen: "huellero",
             cargadoEn: new Date().toISOString(),
@@ -2672,6 +2796,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores }) {
           batch.set(doc(db, "nomina_dias_trabajados", id), {
             nombre: f.nombre,
             nombreNorm,
+            idHuellero: f.id,
             fecha,
             origen: "huellero",
             cargadoEn: new Date().toISOString(),
@@ -2689,6 +2814,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores }) {
   const filasMostradas = reporte ? reporte.filas.filter((f) => !soloConFaltas || f.sinJustificar > 0).sort((a, b) => b.sinJustificar - a.sinJustificar) : [];
   const totalSinJustificar = reporte ? reporte.filas.reduce((s, f) => s + f.sinJustificar, 0) : 0;
   const personasConFaltas = reporte ? reporte.filas.filter((f) => f.sinJustificar > 0).length : 0;
+  const sinVincular = reporte ? reporte.filas.filter((f) => !trabajadorDe(f)) : [];
   const motivosCount = {};
   if (reporte) {
     for (const f of reporte.filas) {
@@ -2750,17 +2876,49 @@ function ReporteAsistenciaView({ ausencias, trabajadores }) {
 
           <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12 }}>
             <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.slate, cursor: "pointer" }}>
-              <input type="checkbox" checked={excluirDomingos} onChange={(e) => setExcluirDomingos(e.target.checked)} /> No contar domingos como falta
-            </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.slate, cursor: "pointer" }}>
               <input type="checkbox" checked={soloConFaltas} onChange={(e) => setSoloConFaltas(e.target.checked)} /> Mostrar solo quienes tienen faltas sin justificar
             </label>
           </div>
+          <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 16 }}>
+            Domingo nunca cuenta como falta. Sábado solo cuenta si esa semana tuvo un festivo entre semana (para reponer) -- si no, tampoco cuenta.
+          </div>
+
+          {sinVincular.length > 0 && (
+            <div style={{ padding: 14, border: `1.5px solid ${C.amber}`, borderRadius: 10, background: C.amberBg, marginBottom: 16 }}>
+              <div style={{ fontWeight: 800, color: C.amber, marginBottom: 10, fontSize: 13 }}>
+                ⚠ {sinVincular.length} persona(s) del huellero no se pudieron vincular a un trabajador -- vincúlalas una vez y quedan resueltas para siempre en las próximas subidas.
+              </div>
+              {sinVincular.map((f) => (
+                <div key={f.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 12, minWidth: 220 }}>ID {f.id} — {f.nombre}</span>
+                  <div style={{ width: 260 }}>
+                    <FSel
+                      value={seleccionVinculo[f.id] || ""}
+                      onChange={(v) => setSeleccionVinculo((s) => ({ ...s, [f.id]: v }))}
+                      options={trabajadores.slice().sort((a, b) => a.nombre.localeCompare(b.nombre)).map((t) => ({ value: t.id, label: `${t.nombre}${t.cedula ? ` (${t.cedula})` : ""}` }))}
+                      placeholder="Elegir trabajador..."
+                    />
+                  </div>
+                  <Btn variant="secondary" onClick={() => vincular(f)} disabled={!seleccionVinculo[f.id] || vinculando === f.id}>
+                    {vinculando === f.id ? "Vinculando..." : "Vincular"}
+                  </Btn>
+                </div>
+              ))}
+            </div>
+          )}
 
           <Tabla
             vacio="Nadie con faltas sin justificar en este período 🎉"
             columnas={[
               { key: "nombre", label: "Nombre" },
+              { key: "vinculo", label: "Vinculado a", render: (f) => {
+                const v = trabajadorDe(f);
+                if (!v) return <span style={{ color: C.red, fontWeight: 700 }}>Sin vincular</span>;
+                if (v.viaId && !v.nombreCoincide) {
+                  return <span style={{ color: C.amber, fontWeight: 700 }} title={`El huellero reporta "${f.nombre}" pero el ID ${f.id} está vinculado a ${v.trabajador.nombre} -- revisa si el ID fue reasignado a otra persona.`}>⚠ {v.trabajador.nombre}</span>;
+                }
+                return <span style={{ color: C.green }}>{v.trabajador.nombre}</span>;
+              } },
               { key: "depto", label: "Departamento" },
               { key: "diasConMarca", label: "Días con marca", align: "right" },
               { key: "diasSinMarca", label: "Días sin marca", align: "right" },
@@ -2899,8 +3057,8 @@ function NominaFiscalView({ trabajadores, faltas, diasTrabajados, liquidaciones,
   function calcular() {
     const filas = personas.map((t) => {
       const nombreNorm = normalizarNombreHuellero(t.nombre);
-      const dias = faltas.filter((f) => f.nombreNorm === nombreNorm && f.fecha >= inicio && f.fecha <= fin).length;
-      const diasTrabajadosCount = diasTrabajados.filter((d) => d.nombreNorm === nombreNorm && d.fecha >= inicio && d.fecha <= fin).length;
+      const dias = faltas.filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= inicio && f.fecha <= fin).length;
+      const diasTrabajadosCount = diasTrabajados.filter((d) => coincideHuellero(d, t, nombreNorm) && d.fecha >= inicio && d.fecha <= fin).length;
       return { trabajador: t, calculo: { ...calcularLiquidacionFiscal(t, dias), diasTrabajados: diasTrabajadosCount } };
     });
     setResultados(filas);
@@ -3138,11 +3296,11 @@ function NominaFiscalDestajoView({ trabajadores, faltas, diasTrabajados, liquida
   function calcular() {
     const filas = personas.map((t) => {
       const nombreNorm = normalizarNombreHuellero(t.nombre);
-      const dias = faltas.filter((f) => f.nombreNorm === nombreNorm && f.fecha >= inicio && f.fecha <= fin).length;
+      const dias = faltas.filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= inicio && f.fecha <= fin).length;
       // (2026-08-31) Dias trabajados = dias CON marca en el huellero dentro
       // de la quincena -- solo informativo/verificacion (pedido de Fredy),
       // no reemplaza ni toca el descuento por inasistencia de arriba.
-      const diasTrabajadosCount = diasTrabajados.filter((d) => d.nombreNorm === nombreNorm && d.fecha >= inicio && d.fecha <= fin).length;
+      const diasTrabajadosCount = diasTrabajados.filter((d) => coincideHuellero(d, t, nombreNorm) && d.fecha >= inicio && d.fecha <= fin).length;
       return { trabajador: t, calculo: { ...calcularLiquidacionFiscalDestajo(t, dias), diasTrabajados: diasTrabajadosCount } };
     });
     setResultados(filas);
@@ -3519,7 +3677,7 @@ function NominaDestajoView({ trabajadores, produccion, diasTrabajados, liquidaci
       // suma real de produccion registrada (confirmado 30/08/2026) -- esto
       // NO reemplaza ni afecta esa formula.
       const nombreNorm = normalizarNombreHuellero(t.nombre);
-      const diasTrabajadosCount = diasTrabajados.filter((d) => d.nombreNorm === nombreNorm && d.fecha >= inicio && d.fecha <= fin).length;
+      const diasTrabajadosCount = diasTrabajados.filter((d) => coincideHuellero(d, t, nombreNorm) && d.fecha >= inicio && d.fecha <= fin).length;
       return { trabajador: t, calculo: { ...calcularLiquidacionDestajo(t, netoProduccion), diasTrabajados: diasTrabajadosCount } };
     });
     setResultados(filas);
@@ -5594,7 +5752,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "tns" && !areaLider && !soloNovedades && <TNSConexionView />}
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
-          {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} />}
+          {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} onGuardarTrabajador={guardarTrabajador} />}
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView trabajadores={trabajadores} faltas={faltasSinJustificar} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
