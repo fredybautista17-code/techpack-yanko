@@ -1286,6 +1286,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
         areaTNS: existente?.areaTNS || "",
         tnsCodigo: existente?.tnsCodigo || "",
         empleador: p.empleador,
+        claseRiesgoARL: p.empleador === "INDUTEX" ? "II" : "I",
         tipoNomina: "Fiscal",
         sueldo: p.sueldo,
         auxilioTransporte: 249095,
