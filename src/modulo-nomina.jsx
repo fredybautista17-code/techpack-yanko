@@ -2740,6 +2740,292 @@ function rangoQuincena(anio, mes, quincena) {
   const ultimoDia = new Date(Number(anio), Number(mes), 0).getDate();
   return { inicio: `${anio}-${mm}-16`, fin: `${anio}-${mm}-${String(ultimoDia).padStart(2, "0")}` };
 }
+// ─── NÓMINA FISCAL (sueldo fijo CON seguridad social real -- EPS/pensión/
+// ARL/caja de compensación) ─────────────────────────────────────────────
+// Reglas confirmadas con Fredy (09/09/2026) contra su cuadro de referencia
+// (CONSERGE, sueldo=SMMLV=$1.750.905, auxilio=$249.095, verificado número
+// por número):
+//  - EPS trabajador 4% y Pensión trabajador 4% se DESCUENTAN del neto a
+//    pagar -- a diferencia de Fiscal Destajo/Destajo, que no tienen esto.
+//  - Pensión empleador 12%, Caja de Compensación (COMFANORTE) empleador
+//    4% y ARL empleador (según la Clase de Riesgo de cada trabajador, ver
+//    CLASES_RIESGO_ARL más arriba) son COSTO de la empresa, no se
+//    descuentan a nadie.
+//  - EPS empleador queda en $0 -- exonerada por la Ley 1607 de 2012 para
+//    personas jurídicas (el ejemplo de Fredy trae "N/A" en esa columna).
+//  - Todas las bases de seguridad social son sobre el sueldo YA de la
+//    quincena (descontado por inasistencia), nunca sobre el auxilio.
+//  - El auxilio de transporte NO aplica si el sueldo mensual supera 2
+//    SMMLV (confirmado: "el auxilio mayo a dos 2 salarios no se les
+//    paga") -- se valida acá mismo, sin importar lo que tenga guardado
+//    el trabajador.
+//  - Las provisiones de prestaciones (cesantías/intereses/prima/
+//    vacaciones) usan la misma fórmula ya corregida de Nómina Destajo:
+//    cesantías y prima sobre (sueldo+auxilio) de la quincena, intereses =
+//    cesantías del MISMO período x 12% (no saldo acumulado), vacaciones
+//    solo sobre el sueldo -- coincide exacto con el cuadro de Fredy.
+//  - Todo lo que manda Fredy en su cuadro es MENSUAL y se divide entre 2
+//    para la quincena (confirmado: "todo lo que mande es mensual y se
+//    divide en 2") -- igual que Fiscal Destajo.
+//  - El descuento por inasistencia (sueldo/30 x días) también aplica acá
+//    (confirmado: "los descuento se aplican tambien").
+const TASA_EPS_TRABAJADOR = 0.04;
+const TASA_PENSION_TRABAJADOR = 0.04;
+const TASA_PENSION_EMPLEADOR = 0.12;
+const TASA_CAJA_COMPENSACION_EMPLEADOR = 0.04;
+// SMMLV y auxilio de transporte vigentes en Colombia -- actualizar estos
+// dos números cada enero cuando cambien por decreto.
+const SMMLV_2026 = 1750905;
+const AUXILIO_TRANSPORTE_2026 = 249095;
+const TOPE_SUELDO_PARA_AUXILIO = SMMLV_2026 * 2;
+function calcularLiquidacionFiscal(trabajador, diasInasistencia) {
+  const sueldo = Number(trabajador.sueldo) || 0;
+  const auxilioMensual = sueldo > TOPE_SUELDO_PARA_AUXILIO ? 0 : (Number(trabajador.auxilioTransporte) || 0);
+  const descuentoSueldo = (sueldo / 30) * diasInasistencia;
+  const descuentoAuxilio = (auxilioMensual / 30) * diasInasistencia;
+  const sueldoQuincena = Math.max(0, sueldo / 2 - descuentoSueldo);
+  const auxilioQuincena = Math.max(0, auxilioMensual / 2 - descuentoAuxilio);
+  const epsTrabajador = sueldoQuincena * TASA_EPS_TRABAJADOR;
+  const pensionTrabajador = sueldoQuincena * TASA_PENSION_TRABAJADOR;
+  const pensionEmpleador = sueldoQuincena * TASA_PENSION_EMPLEADOR;
+  const tasaARL = TASA_ARL_POR_CLASE[trabajador.claseRiesgoARL] || 0;
+  const arlEmpleador = sueldoQuincena * tasaARL;
+  const cajaCompensacionEmpleador = sueldoQuincena * TASA_CAJA_COMPENSACION_EMPLEADOR;
+  const epsEmpleador = 0;
+  const saldoCesantiasInicio = Number(trabajador.cesantiasAcumuladas) || 0;
+  const baseConAuxilio = sueldoQuincena + auxilioQuincena;
+  const cesantiasPeriodo = baseConAuxilio * TASA_CESANTIAS_MENSUAL;
+  const interesesPeriodo = cesantiasPeriodo * TASA_INTERES_CESANTIAS_ANUAL;
+  const primaPeriodo = baseConAuxilio * TASA_PRIMA_MENSUAL;
+  const vacacionesPeriodo = sueldoQuincena * TASA_VACACIONES_MENSUAL;
+  return {
+    diasInasistencia, descuentoSueldo, descuentoAuxilio, sueldoQuincena, auxilioQuincena,
+    epsTrabajador, pensionTrabajador, pensionEmpleador, arlEmpleador, cajaCompensacionEmpleador, epsEmpleador,
+    netoAPagar: sueldoQuincena + auxilioQuincena - epsTrabajador - pensionTrabajador,
+    cesantiasPeriodo, interesesPeriodo, primaPeriodo, vacacionesPeriodo,
+    saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
+  };
+}
+function NominaFiscalView({ trabajadores, faltas, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion }) {
+  const hoy = new Date();
+  const [anio, setAnio] = useState(String(hoy.getFullYear()));
+  const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
+  const [quincena, setQuincena] = useState(hoy.getDate() <= 15 ? "1" : "2");
+  const [resultados, setResultados] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const [guardadoOk, setGuardadoOk] = useState(false);
+
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal" && t.activo !== false);
+  const periodoId = `${anio}-${mes}-Q${quincena}`;
+  const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
+  const { inicio, fin } = rangoQuincena(anio, mes, quincena);
+  const sinClaseARL = personas.filter((t) => !t.claseRiesgoARL);
+
+  function calcular() {
+    const filas = personas.map((t) => {
+      const nombreNorm = normalizarNombreHuellero(t.nombre);
+      const dias = faltas.filter((f) => f.nombreNorm === nombreNorm && f.fecha >= inicio && f.fecha <= fin).length;
+      const diasTrabajadosCount = diasTrabajados.filter((d) => d.nombreNorm === nombreNorm && d.fecha >= inicio && d.fecha <= fin).length;
+      return { trabajador: t, calculo: { ...calcularLiquidacionFiscal(t, dias), diasTrabajados: diasTrabajadosCount } };
+    });
+    setResultados(filas);
+    setGuardadoOk(false);
+  }
+
+  async function confirmarYGuardar() {
+    if (!resultados) return;
+    setGuardando(true);
+    try {
+      for (const { trabajador, calculo } of resultados) {
+        await onGuardarLiquidacion({
+          id: `${trabajador.id}__${periodoId}`,
+          periodoId, trabajadorId: trabajador.id, nombre: trabajador.nombre,
+          inicio, fin, ...calculo,
+          confirmadaEn: new Date().toISOString(),
+        });
+        await onGuardarTrabajador({ ...trabajador, cesantiasAcumuladas: calculo.saldoCesantiasFin });
+      }
+      setGuardadoOk(true);
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  const totales = resultados ? resultados.reduce((s, r) => ({
+    neto: s.neto + r.calculo.netoAPagar,
+    epsTrabajador: s.epsTrabajador + r.calculo.epsTrabajador,
+    pensionTrabajador: s.pensionTrabajador + r.calculo.pensionTrabajador,
+    pensionEmpleador: s.pensionEmpleador + r.calculo.pensionEmpleador,
+    arlEmpleador: s.arlEmpleador + r.calculo.arlEmpleador,
+    cajaCompensacionEmpleador: s.cajaCompensacionEmpleador + r.calculo.cajaCompensacionEmpleador,
+    cesantias: s.cesantias + r.calculo.cesantiasPeriodo,
+    intereses: s.intereses + r.calculo.interesesPeriodo,
+    prima: s.prima + r.calculo.primaPeriodo,
+    vacaciones: s.vacaciones + r.calculo.vacacionesPeriodo,
+  }), { neto: 0, epsTrabajador: 0, pensionTrabajador: 0, pensionEmpleador: 0, arlEmpleador: 0, cajaCompensacionEmpleador: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Liquidación quincenal de los trabajadores "Fiscal" (sueldo fijo, CON seguridad social real: EPS y pensión descontados al trabajador, más pensión/ARL/caja de compensación a cargo de la empresa) — se hospeda acá en Atlas, no se envía a TNS. Los días de inasistencia sin justificar salen solos de lo que guardaste en Reporte de Asistencia.
+      </div>
+      {personas.length === 0 && (
+        <div style={{ padding: "12px 16px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          Nadie tiene tipo de nómina "Fiscal" todavía. Ve a Trabajadores → "💰 Cargar Fiscal (24 conocidos)".
+        </div>
+      )}
+      {sinClaseARL.length > 0 && (
+        <div style={{ padding: "12px 16px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          ⚠ {sinClaseARL.length} trabajador(es) Fiscal no tienen Clase de Riesgo ARL asignada todavía ({sinClaseARL.map((t) => t.nombre).join(", ")}) — su ARL va a salir en $0 hasta que se la asignes en Trabajadores.
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Año"><FInput type="number" value={anio} onChange={setAnio} /></Field>
+        <Field label="Mes">
+          <FSel value={mes} onChange={setMes} options={Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1).padStart(2, "0"), label: String(i + 1).padStart(2, "0") }))} />
+        </Field>
+        <Field label="Quincena">
+          <FSel value={quincena} onChange={setQuincena} options={[{ value: "1", label: "1 (días 1-15)" }, { value: "2", label: "2 (16-fin de mes)" }]} />
+        </Field>
+        <Btn onClick={calcular} disabled={personas.length === 0}>🧮 Calcular</Btn>
+      </div>
+
+      {yaLiquidado && (
+        <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          ⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.
+        </div>
+      )}
+
+      {resultados && (
+        <>
+          <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+            <KPI icon="💵" label="Neto a pagar (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
+            <KPI icon="📉" label="EPS + Pensión trabajador (descontado)" value={fmtMoney(totales.epsTrabajador + totales.pensionTrabajador)} color={C.red} bg={C.redBg} />
+            <KPI icon="🏛️" label="Pensión + ARL + Caja (costo empresa)" value={fmtMoney(totales.pensionEmpleador + totales.arlEmpleador + totales.cajaCompensacionEmpleador)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="🏖️" label="Vacaciones (provisión)" value={fmtMoney(totales.vacaciones)} color={C.amber} bg={C.amberBg} />
+          </div>
+          <Tabla
+            vacio="Sin resultados."
+            columnas={[
+              { key: "nombre", label: "Nombre", render: (f) => f.trabajador.nombre },
+              { key: "claseRiesgoARL", label: "Clase ARL", render: (f) => f.trabajador.claseRiesgoARL ? labelClaseARL(f.trabajador.claseRiesgoARL) : <span style={{ color: C.slate }}>Sin asignar</span> },
+              { key: "dias", label: "Días sin justificar", align: "right", render: (f) => (
+                <span style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green }}>{f.calculo.diasInasistencia}</span>
+              ) },
+              { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
+                <span style={{ fontWeight: 700, color: C.green }}>{f.calculo.diasTrabajados}</span>
+              ) },
+              { key: "sueldoQuincena", label: "Sueldo quincena", align: "right", render: (f) => fmtMoney(f.calculo.sueldoQuincena) },
+              { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.calculo.auxilioQuincena) },
+              { key: "epsTrabajador", label: "EPS trab. (-4%)", align: "right", render: (f) => <span style={{ color: C.red }}>-{fmtMoney(f.calculo.epsTrabajador)}</span> },
+              { key: "pensionTrabajador", label: "Pensión trab. (-4%)", align: "right", render: (f) => <span style={{ color: C.red }}>-{fmtMoney(f.calculo.pensionTrabajador)}</span> },
+              { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
+              { key: "pensionEmpleador", label: "Pensión empresa (12%)", align: "right", render: (f) => fmtMoney(f.calculo.pensionEmpleador) },
+              { key: "arlEmpleador", label: "ARL empresa", align: "right", render: (f) => fmtMoney(f.calculo.arlEmpleador) },
+              { key: "cajaCompensacionEmpleador", label: "Caja Comp. (4%)", align: "right", render: (f) => fmtMoney(f.calculo.cajaCompensacionEmpleador) },
+              { key: "cesantiasPeriodo", label: "Cesantías (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.cesantiasPeriodo) },
+              { key: "interesesPeriodo", label: "Intereses cesantías", align: "right", render: (f) => fmtMoney(f.calculo.interesesPeriodo) },
+              { key: "primaPeriodo", label: "Prima (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.primaPeriodo) },
+              { key: "vacacionesPeriodo", label: "Vacaciones (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.vacacionesPeriodo) },
+            ]}
+            filas={resultados}
+          />
+          <div style={{ marginTop: 16 }}>
+            <Btn onClick={confirmarYGuardar} disabled={guardando}>
+              {guardando ? "Guardando..." : "✅ Confirmar y guardar liquidación de la quincena"}
+            </Btn>
+            {guardadoOk && <span style={{ marginLeft: 10, fontSize: 12, color: C.green, fontWeight: 700 }}>✅ Liquidación guardada — el acumulado de cesantías de cada uno ya quedó actualizado.</span>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+// ─── HISTORIAL FISCAL (quincenas ya confirmadas) ──────────────────────────
+function HistorialFiscalView({ liquidaciones, trabajadores }) {
+  const periodos = [...new Set(liquidaciones.map((l) => l.periodoId))].sort().reverse();
+  const [periodoFiltro, setPeriodoFiltro] = useState("");
+  const filas = [...liquidaciones]
+    .filter((l) => !periodoFiltro || l.periodoId === periodoFiltro)
+    .sort((a, b) => (b.periodoId || "").localeCompare(a.periodoId || "") || (a.nombre || "").localeCompare(b.nombre || ""));
+  const totales = filas.reduce((s, l) => ({
+    neto: s.neto + (l.netoAPagar || 0),
+    epsTrabajador: s.epsTrabajador + (l.epsTrabajador || 0),
+    pensionTrabajador: s.pensionTrabajador + (l.pensionTrabajador || 0),
+    pensionEmpleador: s.pensionEmpleador + (l.pensionEmpleador || 0),
+    arlEmpleador: s.arlEmpleador + (l.arlEmpleador || 0),
+    cajaCompensacionEmpleador: s.cajaCompensacionEmpleador + (l.cajaCompensacionEmpleador || 0),
+    cesantias: s.cesantias + (l.cesantiasPeriodo || 0),
+    intereses: s.intereses + (l.interesesPeriodo || 0),
+    prima: s.prima + (l.primaPeriodo || 0),
+    vacaciones: s.vacaciones + (l.vacacionesPeriodo || 0),
+  }), { neto: 0, epsTrabajador: 0, pensionTrabajador: 0, pensionEmpleador: 0, arlEmpleador: 0, cajaCompensacionEmpleador: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 });
+  function descargarRecibo(l) {
+    const trabajador = (trabajadores || []).find((t) => t.id === l.trabajadorId);
+    exportReciboLiquidacionHTML({ tipoNomina: "Fiscal", trabajador, liquidacion: l });
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Todas las quincenas de Nómina Fiscal ya confirmadas y guardadas — para consultar o comparar períodos pasados.
+      </div>
+      {liquidaciones.length === 0 ? (
+        <div style={{ padding: "12px 16px", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, color: C.slate, fontSize: 13, maxWidth: 480 }}>
+          Todavía no hay ninguna quincena confirmada. Ve a "Nómina Fiscal", calcula una y dale "Confirmar y guardar".
+        </div>
+      ) : (
+        <>
+          <div style={{ marginBottom: 16, maxWidth: 260 }}>
+            <Field label="Filtrar por período">
+              <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
+            </Field>
+          </div>
+          <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+            <KPI icon="💵" label="Neto pagado (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
+            <KPI icon="📉" label="EPS + Pensión trabajador (descontado)" value={fmtMoney(totales.epsTrabajador + totales.pensionTrabajador)} color={C.red} bg={C.redBg} />
+            <KPI icon="🏛️" label="Pensión + ARL + Caja (costo empresa)" value={fmtMoney(totales.pensionEmpleador + totales.arlEmpleador + totales.cajaCompensacionEmpleador)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="📈" label="Intereses cesantías" value={fmtMoney(totales.intereses)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="🏖️" label="Vacaciones (provisión)" value={fmtMoney(totales.vacaciones)} color={C.amber} bg={C.amberBg} />
+          </div>
+          <Tabla
+            vacio="Sin resultados para este período."
+            columnas={[
+              { key: "periodoId", label: "Período" },
+              { key: "nombre", label: "Nombre" },
+              { key: "diasInasistencia", label: "Días sin justificar", align: "right", render: (f) => (
+                <span style={{ fontWeight: 700, color: f.diasInasistencia > 0 ? C.red : C.green }}>{f.diasInasistencia || 0}</span>
+              ) },
+              { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
+                <span style={{ fontWeight: 700, color: C.green }}>{f.diasTrabajados == null ? "—" : f.diasTrabajados}</span>
+              ) },
+              { key: "sueldoQuincena", label: "Sueldo quincena", align: "right", render: (f) => fmtMoney(f.sueldoQuincena) },
+              { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.auxilioQuincena) },
+              { key: "epsTrabajador", label: "EPS trab.", align: "right", render: (f) => <span style={{ color: C.red }}>-{fmtMoney(f.epsTrabajador)}</span> },
+              { key: "pensionTrabajador", label: "Pensión trab.", align: "right", render: (f) => <span style={{ color: C.red }}>-{fmtMoney(f.pensionTrabajador)}</span> },
+              { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.netoAPagar)}</strong> },
+              { key: "pensionEmpleador", label: "Pensión empresa", align: "right", render: (f) => fmtMoney(f.pensionEmpleador) },
+              { key: "arlEmpleador", label: "ARL empresa", align: "right", render: (f) => fmtMoney(f.arlEmpleador) },
+              { key: "cajaCompensacionEmpleador", label: "Caja Comp.", align: "right", render: (f) => fmtMoney(f.cajaCompensacionEmpleador) },
+              { key: "cesantiasPeriodo", label: "Cesantías (prov.)", align: "right", render: (f) => fmtMoney(f.cesantiasPeriodo) },
+              { key: "interesesPeriodo", label: "Intereses cesantías", align: "right", render: (f) => fmtMoney(f.interesesPeriodo) },
+              { key: "primaPeriodo", label: "Prima (prov.)", align: "right", render: (f) => fmtMoney(f.primaPeriodo) },
+              { key: "vacacionesPeriodo", label: "Vacaciones (prov.)", align: "right", render: (f) => fmtMoney(f.vacacionesPeriodo) },
+              { key: "confirmadaEn", label: "Confirmada", render: (f) => f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : "—" },
+              { key: "acciones", label: "", align: "right", render: (f) => (
+                <span onClick={() => descargarRecibo(f)} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }} title="Descargar recibo de liquidación">🖨</span>
+              ) },
+            ]}
+            filas={filas}
+          />
+        </>
+      )}
+    </div>
+  );
+}
 function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia) {
   const sueldo = Number(trabajador.sueldo) || 0;
   const auxilio = Number(trabajador.auxilioTransporte) || 0;
@@ -2884,13 +3170,26 @@ function NominaFiscalDestajoView({ trabajadores, faltas, diasTrabajados, liquida
 function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
   const fechaGen = new Date().toISOString().slice(0, 10);
   const esFiscal = tipoNomina === "Fiscal Destajo";
+  const esFiscalConSegSocial = tipoNomina === "Fiscal";
   const nombre = trabajador?.nombre || liquidacion.nombre || "—";
   const cedula = trabajador?.cedula || "—";
   const area = trabajador?.area || "—";
   const sueldoBasico = Number(trabajador?.sueldo) || 0;
   const auxilioBasico = Number(trabajador?.auxilioTransporte) || 0;
   const totalPrestaciones = (liquidacion.cesantiasPeriodo || 0) + (liquidacion.interesesPeriodo || 0) + (liquidacion.primaPeriodo || 0) + (liquidacion.vacacionesPeriodo || 0);
-  const filasPago = esFiscal
+  const totalAportesPatronales = (liquidacion.pensionEmpleador || 0) + (liquidacion.arlEmpleador || 0) + (liquidacion.cajaCompensacionEmpleador || 0);
+  const filasPago = esFiscalConSegSocial
+    ? `
+      <tr><td>Sueldo básico (mensual)</td><td style="text-align:right">${fmtMoney(sueldoBasico)}</td></tr>
+      <tr><td>Auxilio de transporte (mensual)</td><td style="text-align:right">${fmtMoney(auxilioBasico)}</td></tr>
+      <tr><td>Días sin justificar</td><td style="text-align:right">${liquidacion.diasInasistencia || 0}</td></tr>
+      <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasTrabajados == null ? "—" : liquidacion.diasTrabajados}</td></tr>
+      <tr><td>Descuento por inasistencia</td><td style="text-align:right;color:#B23A48">-${fmtMoney((liquidacion.descuentoSueldo || 0) + (liquidacion.descuentoAuxilio || 0))}</td></tr>
+      <tr><td>Sueldo quincena</td><td style="text-align:right">${fmtMoney(liquidacion.sueldoQuincena)}</td></tr>
+      <tr><td>Auxilio quincena</td><td style="text-align:right">${fmtMoney(liquidacion.auxilioQuincena)}</td></tr>
+      <tr><td>EPS trabajador (4%)</td><td style="text-align:right;color:#B23A48">-${fmtMoney(liquidacion.epsTrabajador)}</td></tr>
+      <tr><td>Pensión trabajador (4%)</td><td style="text-align:right;color:#B23A48">-${fmtMoney(liquidacion.pensionTrabajador)}</td></tr>`
+    : esFiscal
     ? `
       <tr><td>Sueldo básico (mensual)</td><td style="text-align:right">${fmtMoney(sueldoBasico)}</td></tr>
       <tr><td>Auxilio de transporte (mensual)</td><td style="text-align:right">${fmtMoney(auxilioBasico)}</td></tr>
@@ -2903,6 +3202,17 @@ function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
       <tr><td>Producción registrada en la quincena</td><td style="text-align:right">${fmtMoney(liquidacion.netoAPagar)}</td></tr>
       <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasTrabajados == null ? "—" : liquidacion.diasTrabajados}</td></tr>
       <tr><td colspan="2" style="color:#5A5A7A;font-size:11px;padding-top:2px">Sueldo básico de referencia: ${fmtMoney(sueldoBasico)} · Auxilio de referencia: ${fmtMoney(auxilioBasico)} — solo se usan para calcular las prestaciones sociales, no hacen parte del pago.</td></tr>`;
+  const seccionAportesPatronales = esFiscalConSegSocial ? `
+    <div class="section-title">🏛️ Aportes patronales de seguridad social (a cargo de la empresa, no se descuentan)</div>
+    <table><tbody>
+      <tr><td>Pensión empleador (12%)</td><td style="text-align:right">${fmtMoney(liquidacion.pensionEmpleador)}</td></tr>
+      <tr><td>ARL empleador</td><td style="text-align:right">${fmtMoney(liquidacion.arlEmpleador)}</td></tr>
+      <tr><td>Caja de Compensación (4%)</td><td style="text-align:right">${fmtMoney(liquidacion.cajaCompensacionEmpleador)}</td></tr>
+      <tr><td>EPS empleador</td><td style="text-align:right;color:#5A5A7A">Exonerada (Ley 1607/2012)</td></tr>
+    </tbody></table>` : "";
+  const totalCardAportesPatronales = esFiscalConSegSocial
+    ? `<div class="total-card" style="background:#FBEFE3;color:#C47C1A"><label>Aportes Patronales Seg. Social</label><div class="val">${fmtMoney(totalAportesPatronales)}</div></div>`
+    : "";
   const html = `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -2957,6 +3267,7 @@ function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
     </div>
     <div class="section-title">💰 Pago de la quincena</div>
     <table><tbody>${filasPago}</tbody></table>
+    ${seccionAportesPatronales}
     <div class="section-title">📦 Prestaciones sociales (provisión de esta quincena)</div>
     <table><tbody>
       <tr><td>Cesantías</td><td style="text-align:right">${fmtMoney(liquidacion.cesantiasPeriodo)}</td></tr>
@@ -2968,6 +3279,7 @@ function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
     <div class="totales">
       <div class="total-card" style="background:#EBF7F2;color:#2D9E6B"><label>Neto a Pagar</label><div class="val">${fmtMoney(liquidacion.netoAPagar)}</div></div>
       <div class="total-card" style="background:#F3EEF9;color:#7B5EA7"><label>Total Prestaciones Provisionadas</label><div class="val">${fmtMoney(totalPrestaciones)}</div></div>
+      ${totalCardAportesPatronales}
     </div>
     <div class="firma">
       <div>Firma del Trabajador</div>
@@ -4723,6 +5035,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [ausencias, setAusencias] = useState([]);
   const [faltasSinJustificar, setFaltasSinJustificar] = useState([]);
   const [diasTrabajadosHuellero, setDiasTrabajadosHuellero] = useState([]);
+  const [liquidacionesF, setLiquidacionesF] = useState([]);
   const [liquidacionesFD, setLiquidacionesFD] = useState([]);
   const [liquidacionesD, setLiquidacionesD] = useState([]);
   // (2026-09-02, a pedido de Fredy) Solo para el encadenamiento automático
@@ -4747,6 +5060,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_ausencias"), (snap) => setAusencias(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_faltas_sin_justificar"), (snap) => setFaltasSinJustificar(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_dias_trabajados"), (snap) => setDiasTrabajadosHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_fiscal_liquidaciones"), (snap) => setLiquidacionesF(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_fiscal_destajo_liquidaciones"), (snap) => setLiquidacionesFD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "users"), (snap) => setUsuariosApp(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -4815,6 +5129,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "historial_lote", icon: "📦", label: "Historial de Lote" },
             { id: "historial_trabajador", icon: "🧑‍🏭", label: "Historial de Trabajador" },
             { id: "resumen", icon: "💰", label: "Cierre de Quincena" },
+            { id: "fiscal", icon: "🏛️", label: "Nómina Fiscal" },
+            { id: "historial_fiscal", icon: "🗂️", label: "Historial Fiscal" },
             { id: "fiscal_destajo", icon: "💼", label: "Nómina Fiscal Destajo" },
             { id: "historial_fiscal_destajo", icon: "🗂️", label: "Historial Fiscal Destajo" },
             { id: "destajo", icon: "💼", label: "Nómina Destajo" },
@@ -4890,6 +5206,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function borrarHoras(id) { await fsDelete("nomina_horas", id); }
   async function guardarAusencia(a) { await fsSave("nomina_ausencias", a.id, a); }
   async function borrarAusencia(id) { await fsDelete("nomina_ausencias", id); }
+  async function guardarLiquidacionF(l) { await fsSave("nomina_fiscal_liquidaciones", l.id, l); }
   async function guardarLiquidacionFD(l) { await fsSave("nomina_fiscal_destajo_liquidaciones", l.id, l); }
   async function guardarLiquidacionD(l) { await fsSave("nomina_destajo_liquidaciones", l.id, l); }
   // Sube en lote (upsert por "{numLote}_{PROCESO}") las filas del Excel de
@@ -5043,6 +5360,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} />}
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
+          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView trabajadores={trabajadores} faltas={faltasSinJustificar} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} />}
+          {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
           {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} />}
           {subView === "historial_fiscal_destajo" && !areaLider && !soloNovedades && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
           {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView trabajadores={trabajadores} produccion={produccion} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} />}
