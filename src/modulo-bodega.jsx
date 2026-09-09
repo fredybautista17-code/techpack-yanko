@@ -3572,26 +3572,56 @@ function EstadoDespachoView({ onVolver, onLogout }) {
 // con su saldo, vs. transportador/guía/llegada de los lotes locales de
 // Dado por Cumplido) que no tiene sentido mezclar en un solo menú.
 function BodegaHubView({ onSeleccionar, onVolver, onLogout }) {
+  const [lotesResumen, setLotesResumen] = useState([]);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
+      setLotesResumen(snap.docs.map((d) => d.data()));
+    });
+    return () => unsub();
+  }, []);
+
+  // Mismos criterios que ya usan las pantallas de Dado por Cumplido y
+  // Estado de Despacho -- este resumen solo repite esos conteos para verlos
+  // de un vistazo antes de entrar, no inventa una regla nueva.
+  const pendientesFacturar = lotesResumen.filter((l) => l.estado !== "aprobado" && l.tieneFactura === false).length;
+  const pendientesDespachar = lotesResumen.filter((l) => l.estado === "aprobado" && (!l.estadoEnvio || l.estadoEnvio === "pendiente")).length;
+
   return (
     <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24 }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
-      <div style={{ fontSize: 15, fontWeight: 900, color: C.ink, marginBottom: 24 }}>📦 Bodega</div>
-      <div style={{ display: "flex", gap: 20, flexWrap: "wrap", justifyContent: "center", maxWidth: 700 }}>
+      <div style={{ fontSize: 15, fontWeight: 900, color: C.ink, marginBottom: 4 }}>📦 Bodega</div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 28 }}>Lo que está pendiente ahora mismo</div>
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", justifyContent: "center", alignItems: "center", maxWidth: 900, marginBottom: 8 }}>
         <button
           onClick={() => onSeleccionar("despacho_saldo")}
-          style={{ width: 280, textAlign: "left", padding: 24, borderRadius: 16, border: `1px solid ${C.border}`, background: C.white, cursor: "pointer", fontFamily: "inherit" }}
+          style={{ width: 190, textAlign: "left", padding: 18, borderRadius: 14, border: `1px solid ${C.border}`, background: C.white, cursor: "pointer", fontFamily: "inherit" }}
         >
-          <div style={{ fontSize: 28, marginBottom: 10 }}>📦</div>
-          <div style={{ fontWeight: 800, fontSize: 16, color: C.ink, marginBottom: 6 }}>Despacho y Saldo</div>
-          <div style={{ fontSize: 12, color: C.slate }}>Despachos a Venezuela, Dubo y Colombia, abonos, saldo Yuliana y estado de cuenta Kamila.</div>
+          <div style={{ fontSize: 22, marginBottom: 6 }}>📦</div>
+          <div style={{ fontWeight: 800, fontSize: 13.5, color: C.ink, marginBottom: 4 }}>Despacho y Saldo</div>
+          <div style={{ fontSize: 11, color: C.slate }}>Venezuela, Dubo, Colombia, abonos y saldos.</div>
         </button>
+
+        <div style={{ width: 210, padding: "20px 22px", borderRadius: 16, background: C.amberBg, border: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 24 }}>🧾</div>
+          <div style={{ fontSize: 32, fontWeight: 900, color: C.amber, lineHeight: 1.1, margin: "4px 0 4px", fontVariantNumeric: "tabular-nums" }}>{pendientesFacturar}</div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink }}>Pendientes de facturar</div>
+          <div style={{ fontSize: 10.5, color: C.slate, marginTop: 2 }}>Ya salieron de Calidad, Busint aún no factura.</div>
+        </div>
+        <div style={{ width: 210, padding: "20px 22px", borderRadius: 16, background: C.blueBg, border: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 24 }}>🚚</div>
+          <div style={{ fontSize: 32, fontWeight: 900, color: C.blue, lineHeight: 1.1, margin: "4px 0 4px", fontVariantNumeric: "tabular-nums" }}>{pendientesDespachar}</div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink }}>Pendientes de despachar</div>
+          <div style={{ fontSize: 10.5, color: C.slate, marginTop: 2 }}>Aprobados sin transportador ni guía todavía.</div>
+        </div>
+
         <button
           onClick={() => onSeleccionar("estado_despacho")}
-          style={{ width: 280, textAlign: "left", padding: 24, borderRadius: 16, border: `1px solid ${C.border}`, background: C.white, cursor: "pointer", fontFamily: "inherit" }}
+          style={{ width: 190, textAlign: "left", padding: 18, borderRadius: 14, border: `1px solid ${C.border}`, background: C.white, cursor: "pointer", fontFamily: "inherit" }}
         >
-          <div style={{ fontSize: 28, marginBottom: 10 }}>🚚</div>
-          <div style={{ fontWeight: 800, fontSize: 16, color: C.ink, marginBottom: 6 }}>Estado de Despacho</div>
-          <div style={{ fontSize: 12, color: C.slate }}>Transportador, guía y llegada de los lotes ya Aprobados en Dado por Cumplido.</div>
+          <div style={{ fontSize: 22, marginBottom: 6 }}>🚚</div>
+          <div style={{ fontWeight: 800, fontSize: 13.5, color: C.ink, marginBottom: 4 }}>Estado de Despacho</div>
+          <div style={{ fontSize: 11, color: C.slate }}>Transportador, guía y llegada.</div>
         </button>
       </div>
       <div style={{ display: "flex", gap: 16, marginTop: 28 }}>
