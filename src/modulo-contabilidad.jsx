@@ -3532,6 +3532,7 @@ function DadoPorCumplidoView({ currentUser }) {
   const [vistaDadoPorCumplido, setVistaDadoPorCumplido] = useState("pendientes");
   const [busquedaDadoPorCumplido, setBusquedaDadoPorCumplido] = useState("");
   const [subVistaPendientes, setSubVistaPendientes] = useState("conFactura");
+  const [vaciandoHistorico, setVaciandoHistorico] = useState(false);
 
   useEffect(() => {
     const unsubLotes = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
@@ -3657,6 +3658,92 @@ function DadoPorCumplidoView({ currentUser }) {
     XLSX.writeFile(wb, `DADO POR CUMPLIDO ${today()}.xlsx`);
   }
 
+  // Respaldo en Excel de lotes del historial -- se descarga automático justo
+  // antes de mandarlos a la Papelera (eliminarLoteHistorico/
+  // vaciarHistoricoCompleto más abajo), con toda la información del lote
+  // (incluyendo factura, envío y bodega) para que quede una copia aparte
+  // además de la que ya se puede restaurar desde la Papelera.
+  async function descargarExcelLotes(lotesArr, nombreArchivo) {
+    const XLSX = await import("xlsx");
+    const filas = lotesArr.map((l) => ({
+      "FECHA": l.fecha || "",
+      "NRO LOTE": l.numLote,
+      "REFERENCIA": l.referencia || "",
+      "CLIENTE": l.cliente || "",
+      "CANT. CORTADA": l.cantCortada ?? "",
+      "CANT. DESPACHADA": l.cantDespachada ?? "",
+      "VR. TEORICO": l.vrTeorico ?? "",
+      "VR. REAL": l.costoRealTotal ?? "",
+      "COSTO DEFINITIVO": l.costoDefinitivo ?? "",
+      "COSTO T": l.costoT ?? "",
+      "PRECIO VENTA U.": l.precioVentaUnitario ?? "",
+      "VENTA T.": l.ventaT ?? "",
+      "GANANCIA": l.ganancia ?? "",
+      "% GANANCIA/LOTE": l.gananciaPctLote ?? "",
+      "COSTO T. REF.": l.costoTRef ?? "",
+      "% GANANCIA/REF.": l.gananciaPctRef ?? "",
+      "BASE": l.baseValorUsado ?? "",
+      "TRANSPORTE": l.transporte ?? "",
+      "TOTAL": l.total ?? "",
+      "OBSERVACIONES": l.observaciones || "",
+      "OBSERVACIONES FACTURA": l.observacionesFactura || "",
+      "ESTADO ENVÍO": l.estadoEnvio === "recibido" ? "Recibido" : l.estadoEnvio === "enviado" ? "Enviado" : "",
+      "TRANSPORTADOR": l.transportador || "",
+      "GUÍA": l.numeroGuia || "",
+      "FECHA ENVÍO": l.fechaEnvio || "",
+      "FECHA RECIBIDO": l.fechaRecibido || "",
+      "DESPACHO": l.despachoCodigo || "",
+      "CANT. DESPACHADA BODEGA": l.cantidadDespachadaBodega ?? "",
+      "SACRIFICIOS": l.sacrificios ?? "",
+      "SEGUNDAS": l.segundas ?? "",
+      "COBROS": (l.cobrosBodega || []).map((c) => `${c.trabajadorNombre} (${c.tipo}): ${c.valor}`).join(" / "),
+      "OBSERVACIONES ENVÍO": l.observacionesEnvio || "",
+    }));
+    const ws2 = XLSX.utils.json_to_sheet(filas);
+    const wb2 = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb2, ws2, "Respaldo");
+    XLSX.writeFile(wb2, nombreArchivo);
+  }
+
+  // Borrado suave (Papelera): "eliminar" desde Históricos nunca borra el
+  // lote de Firestore, solo lo marca con eliminado:true -- así queda
+  // recuperable desde Administración → Papelera, y un error de más siempre
+  // se puede deshacer desde ahí.
+  async function eliminarLoteHistorico(l) {
+    if (!window.confirm(`¿Eliminar el lote ${l.numLote} del historial? Se descarga un respaldo en Excel y queda en la Papelera (Administración) por si hay que restaurarlo. ¿Continuar?`)) return;
+    await descargarExcelLotes([l], `Respaldo Lote ${l.numLote} ${today()}.xlsx`);
+    await fsSave("dado_por_cumplido_lotes", l.id, {
+      eliminado: true,
+      eliminadoEn: new Date().toISOString(),
+      eliminadoPor: currentUser?.name || "",
+    });
+  }
+
+  // Vacía Históricos completo de una sola vez -- mismo mecanismo (respaldo +
+  // Papelera), aplicado a todos los lotes aprobados visibles en ese momento.
+  async function vaciarHistoricoCompleto() {
+    if (!aprobados.length) return;
+    if (!window.confirm(`Esto va a mover ${aprobados.length} lote(s) del historial completo a la Papelera (Administración) y descargar antes un respaldo en Excel con todos ellos. Quedan recuperables desde ahí. ¿Continuar?`)) return;
+    setVaciandoHistorico(true);
+    try {
+      await descargarExcelLotes(aprobados, `Respaldo Historico Dado por Cumplido ${today()}.xlsx`);
+      const eliminadoEn = new Date().toISOString();
+      const eliminadoPor = currentUser?.name || "";
+      for (let i = 0; i < aprobados.length; i += 450) {
+        const grupo = aprobados.slice(i, i + 450);
+        const batch = writeBatch(db);
+        grupo.forEach((l) => {
+          batch.set(doc(db, "dado_por_cumplido_lotes", l.id), { eliminado: true, eliminadoEn, eliminadoPor }, { merge: true });
+        });
+        await batch.commit();
+      }
+      alert(`Listo -- ${aprobados.length} lote(s) movido(s) a la Papelera.`);
+    } catch (err) {
+      alert("No se pudo vaciar el historial: " + (err?.message || err));
+    }
+    setVaciandoHistorico(false);
+  }
+
   async function aprobar(id) {
     setAprobandoId(id);
     try {
@@ -3687,7 +3774,7 @@ function DadoPorCumplidoView({ currentUser }) {
   }
 
   const pendientes = lotes.filter((l) => l.estado !== "aprobado").sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
-  const aprobados = lotes.filter((l) => l.estado === "aprobado").sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+  const aprobados = lotes.filter((l) => l.estado === "aprobado" && !l.eliminado).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
   const filtroDadoPorCumplido = busquedaDadoPorCumplido.trim().toLowerCase();
   const coincideBusquedaDadoPorCumplido = (l) =>
     !filtroDadoPorCumplido ||
@@ -3885,10 +3972,22 @@ function DadoPorCumplidoView({ currentUser }) {
         </>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {isAdmin && aprobados.length > 0 && (
+            <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 4 }}>
+              <Btn variant="danger" small onClick={vaciarHistoricoCompleto} disabled={vaciandoHistorico}>
+                {vaciandoHistorico ? "Vaciando..." : "🗑 Vaciar historial completo"}
+              </Btn>
+            </div>
+          )}
           {aprobadosFiltrados.map((l) => (
             <div key={l.id} style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }}>
               <span><strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia} — {l.cliente} — {l.fecha}</span>
-              <span style={{ color: l.ganancia >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtPesos(l.ganancia)} ({fmtPct(l.gananciaPctLote)})</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                <span style={{ color: l.ganancia >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtPesos(l.ganancia)} ({fmtPct(l.gananciaPctLote)})</span>
+                {isAdmin && (
+                  <Btn variant="ghost" small onClick={() => eliminarLoteHistorico(l)}>🗑</Btn>
+                )}
+              </div>
             </div>
           ))}
           {!aprobadosFiltrados.length && (
@@ -3912,6 +4011,35 @@ function AdministracionView({ currentUser }) {
   const importInputRef = useRef(null);
   const [migrandoEnvios, setMigrandoEnvios] = useState(false);
   const [resultadoMigracionEnvios, setResultadoMigracionEnvios] = useState(null);
+  const [lotesEliminados, setLotesEliminados] = useState([]);
+  const [confirmPurgaLote, setConfirmPurgaLote] = useState(null);
+
+  // Papelera de Históricos (Dado por Cumplido) -- lotes marcados con
+  // eliminado:true desde Históricos (ver eliminarLoteHistorico/
+  // vaciarHistoricoCompleto en DadoPorCumplidoView). Nunca se borran de
+  // Firestore al "eliminarlos" desde ahí, solo se esconden de esa vista --
+  // acá se restauran, o sí se borran para siempre (irreversible).
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
+      setLotesEliminados(
+        snap.docs
+          .map((d) => ({ ...d.data(), id: d.id }))
+          .filter((l) => l.eliminado)
+          .sort((a, b) => (b.eliminadoEn || "").localeCompare(a.eliminadoEn || ""))
+      );
+    });
+    return () => unsub();
+  }, []);
+
+  async function restaurarLoteHistorico(id) {
+    await fsSave("dado_por_cumplido_lotes", id, { eliminado: false });
+  }
+
+  async function purgarLoteHistoricoDefinitivo() {
+    if (!confirmPurgaLote) return;
+    await fsDelete("dado_por_cumplido_lotes", confirmPurgaLote.id);
+    setConfirmPurgaLote(null);
+  }
 
   // Importa el Excel histórico "Dado por cumplido" -- crea/actualiza cada
   // lote (identificado por NRO LOTE) ya como aprobado, con los valores tal
@@ -4084,6 +4212,44 @@ function AdministracionView({ currentUser }) {
           </div>
         )}
       </div>
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white, maxWidth: 640, marginTop: 14 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 4 }}>🗑 Papelera -- Históricos eliminados ({lotesEliminados.length})</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>
+          Lotes que se eliminaron desde Históricos (Dado por Cumplido). Quedan aquí recuperables -- restáuralos o bórralos para siempre.
+        </div>
+        {!lotesEliminados.length ? (
+          <div style={{ fontSize: 12, color: C.slate }}>La papelera está vacía.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {lotesEliminados.map((l) => (
+              <div key={l.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, padding: "10px 14px", background: C.canvas, borderRadius: 8, border: `1px solid ${C.border}` }}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>Lote {l.numLote} — {l.referencia || "(sin referencia)"}</div>
+                  <div style={{ fontSize: 11.5, color: C.slate, marginTop: 2 }}>
+                    {l.cliente || ""} · Eliminado {l.eliminadoEn ? new Date(l.eliminadoEn).toLocaleString("es-CO") : "—"}{l.eliminadoPor ? ` por ${l.eliminadoPor}` : ""}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Btn variant="success" small onClick={() => restaurarLoteHistorico(l.id)}>↩ Restaurar</Btn>
+                  <Btn variant="danger" small onClick={() => setConfirmPurgaLote({ id: l.id, numLote: l.numLote })}>🗑 Eliminar definitivamente</Btn>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {confirmPurgaLote && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: C.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: C.red, marginBottom: 12 }}>⚠ Eliminar definitivamente</div>
+            <div style={{ fontSize: 14, color: C.ink, marginBottom: 24 }}>¿Eliminar el lote <strong>{confirmPurgaLote.numLote}</strong> para siempre? Esta vez sí es irreversible -- ya no queda en la Papelera.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmPurgaLote(null)}>Cancelar</Btn>
+              <Btn variant="danger" onClick={purgarLoteHistoricoDefinitivo}>Sí, eliminar para siempre</Btn>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
