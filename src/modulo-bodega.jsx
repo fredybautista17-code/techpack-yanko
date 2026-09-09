@@ -3593,8 +3593,8 @@ function BodegaHubView({ onSeleccionar, onVolver, onLogout }) {
   // "stat" es solo informativa, no es clicable.
   const TARJETAS = [
     { tipo: "nav", id: "despacho_saldo", icon: "📦", label: "Despacho y Saldo", desc: "Venezuela, Dubái y Colombia — abonos y saldos.", color: C.violet, bg: C.violetBg },
-    { tipo: "stat", label: "Pendientes de facturar", desc: "Ya salieron de Calidad, Busint aún no factura.", color: C.amber, bg: C.amberBg, valor: pendientesFacturar },
-    { tipo: "stat", label: "Pendientes de despachar", desc: "Aprobados sin transportador ni guía todavía.", color: C.blue, bg: C.blueBg, valor: pendientesDespachar },
+    { tipo: "stat", icon: "🧾", label: "Pendientes de facturar", desc: "Ya salieron de Calidad, Busint aún no factura.", color: C.amber, bg: C.amberBg, valor: pendientesFacturar, unidad: pendientesFacturar === 1 ? "lote" : "lotes" },
+    { tipo: "stat", icon: "⏳", label: "Pendientes de despachar", desc: "Aprobados sin transportador ni guía todavía.", color: C.blue, bg: C.blueBg, valor: pendientesDespachar, unidad: pendientesDespachar === 1 ? "lote" : "lotes" },
     { tipo: "nav", id: "estado_despacho", icon: "🚚", label: "Estado de Despacho", desc: "Transportador, guía y llegada.", color: C.green, bg: C.greenBg },
   ];
 
@@ -3613,21 +3613,30 @@ function BodegaHubView({ onSeleccionar, onVolver, onLogout }) {
               <div
                 key={t.id}
                 onClick={() => onSeleccionar(t.id)}
-                style={{ background: C.white, borderRadius: 14, padding: 22, border: `1.5px solid ${C.border}`, cursor: "pointer", transition: "all 0.2s" }}
+                style={{ position: "relative", overflow: "hidden", background: C.white, borderRadius: 14, padding: 22, border: `1.5px solid ${C.border}`, cursor: "pointer", transition: "all 0.2s" }}
                 onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.borderColor = t.color; }}
                 onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.borderColor = C.border; }}
               >
-                <div style={{ width: 46, height: 46, borderRadius: 12, background: t.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, marginBottom: 14 }}>{t.icon}</div>
-                <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 6 }}>{t.label}</div>
-                <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5, marginBottom: 12 }}>{t.desc}</div>
-                <div style={{ fontSize: 12, fontWeight: 700, color: t.color }}>Entrar →</div>
+                <div style={{ position: "absolute", top: -30, right: -30, width: 110, height: 110, borderRadius: "50%", background: t.bg, opacity: 0.6, pointerEvents: "none" }} />
+                <div style={{ position: "relative", zIndex: 1 }}>
+                  <div style={{ width: 46, height: 46, borderRadius: 12, background: t.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, marginBottom: 14 }}>{t.icon}</div>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 6 }}>{t.label}</div>
+                  <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5, marginBottom: 12 }}>{t.desc}</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: t.color }}>Entrar →</div>
+                </div>
               </div>
             ) : (
-              <div key={t.label} style={{ background: C.white, borderRadius: 14, padding: 22, border: `1.5px solid ${C.border}` }}>
-                <div style={{ width: 46, height: 46, borderRadius: 12, background: t.bg, color: t.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 900, marginBottom: 14, fontVariantNumeric: "tabular-nums" }}>{t.valor}</div>
-                <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 6 }}>{t.label}</div>
-                <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5, marginBottom: 12 }}>{t.desc}</div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: C.green, background: C.greenBg, padding: "3px 10px", borderRadius: 20, display: "inline-block" }}>● En vivo</div>
+              <div key={t.label} style={{ position: "relative", overflow: "hidden", background: C.white, borderRadius: 14, padding: 22, border: `1.5px solid ${C.border}` }}>
+                <div style={{ position: "absolute", top: -30, right: -30, width: 110, height: 110, borderRadius: "50%", background: t.bg, opacity: 0.6, pointerEvents: "none" }} />
+                <div style={{ position: "relative", zIndex: 1 }}>
+                  <div style={{ width: 46, height: 46, borderRadius: 12, background: t.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, marginBottom: 14 }}>{t.icon}</div>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: C.ink, marginBottom: 6 }}>{t.label}</div>
+                  <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5, marginBottom: 12 }}>{t.desc}</div>
+                  <div style={{ background: t.bg, borderRadius: 10, padding: "10px 14px" }}>
+                    <div style={{ fontSize: 26, fontWeight: 900, color: t.color, fontVariantNumeric: "tabular-nums", lineHeight: 1.1 }}>{t.valor}</div>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: t.color, opacity: 0.85 }}>{t.unidad}</div>
+                  </div>
+                </div>
               </div>
             )
           )}
