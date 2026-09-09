@@ -3818,6 +3818,7 @@ exports.getCargaPlaneacionDesdeBusintGen = onCall(
           invPlanta: Number(f.invPlanta) || 0,
           invBPT: Number(f.invBpt) || 0,
           invSemiterminado: Number(f.invSemiterminado) || 0,
+          invProceso: Number(f.invProceso) || 0,
           fechaEntregaConfISO: normFecha(f.fechaEntregaConf),
           fechaEntBPTISO: normFecha(f.fechaEntBpt),
           fechaEntregaPedidoISO: normFecha(f.fechaEntregaPedido),

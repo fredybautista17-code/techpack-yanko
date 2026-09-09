@@ -279,8 +279,8 @@ function estadoDe(dias) {
 // reciente entre los pendientes; si hay empate prefiere "TERMINACION", si no
 // el último. Si no hay ningún pendiente, toma el bloque con la salida más
 // reciente de todos (mismo criterio de empate).
-function calcularProcesoDondeQuedo(procesos, invSemiterminado) {
-  if (!(invSemiterminado > 0)) return { proceso: "", ultimaSalida: null, sinSalida: true };
+function calcularProcesoDondeQuedo(procesos, unidadesFueraDeBodega) {
+  if (!(unidadesFueraDeBodega > 0)) return { proceso: "", planta: "", ultimaSalida: null, sinSalida: true };
   const pend = procesos.map((p) => (esFechaValida(p.salida) && !esFechaValida(p.entrega) ? p.salida : null));
   const pendValidas = pend.filter(esFechaValida);
   const mp = pendValidas.length ? new Date(Math.max(...pendValidas.map((d) => d.getTime()))) : null;
@@ -290,7 +290,7 @@ function calcularProcesoDondeQuedo(procesos, invSemiterminado) {
   const base = mp ? pend : sals;
   const baseValidas = base.filter(esFechaValida);
   const mx = baseValidas.length ? new Date(Math.max(...baseValidas.map((d) => d.getTime()))) : null;
-  let proceso = "";
+  let proceso = "", planta = "";
   if (mx) {
     const tieIdx = [];
     base.forEach((v, i) => {
@@ -299,9 +299,22 @@ function calcularProcesoDondeQuedo(procesos, invSemiterminado) {
     const termIdx = tieIdx.find((i) => procesos[i].nombre === "TERMINACION");
     const pos = termIdx !== undefined ? termIdx : tieIdx[tieIdx.length - 1];
     proceso = pos !== undefined ? procesos[pos].nombre || "" : "";
+    planta = pos !== undefined ? procesos[pos].planta || "" : "";
   }
   const ultimaSalida = mp || maxSal || null;
-  return { proceso, ultimaSalida, sinSalida: !mp && !maxSal };
+  return { proceso, planta, ultimaSalida, sinSalida: !mp && !maxSal };
+}
+// (2026-09-09, a pedido de Fredy) Plantas propias vs externas/contratistas
+// para el proceso donde quedó represado un lote -- mismo concepto que ya
+// existe para Nómina (CODPLANTAS_PROPIAS en functions/index.js), pero acá
+// se identifica por NOMBRE porque es lo único que trae, por proceso, el
+// catálogo de Busint (ApiGen_PanelControlFlujoOperacional): no expone el
+// Codplanta numérico a este nivel. Confirmado con Fredy: "SUBLIMACION
+// IND-YKO" (código 1018 en Busint) es planta PROPIA, no contratista --
+// agregar acá cualquier otra planta propia que aparezca represada.
+const PLANTAS_PROCESO_PROPIAS = new Set(["SUBLIMACION IND-YKO"]);
+function plantaProcesoEsPropia(nombrePlanta) {
+  return PLANTAS_PROCESO_PROPIAS.has(String(nombrePlanta || "").trim().toUpperCase());
 }
 // Agrupa las filas crudas de Hoja1 (2 por lote) en un objeto por lote, con
 // todas las columnas de apoyo (DN, DO, DR, DS, DT, DU, DV, DW, DX) ya
@@ -406,9 +419,16 @@ function construirLotesDesdeBusintGen(filasBusint) {
       entrega: isoToLocalDate(p.fechaEntrada),
       inventario: Number(p.inventario) || 0,
     }));
-    const { proceso: procesoDondeQuedo, ultimaSalida, sinSalida } = calcularProcesoDondeQuedo(procesos, f.invSemiterminado);
+    // (2026-09-09, a pedido de Fredy) Busint separa "Semiterminado" (en una
+    // bodega propia) de "Inv Proceso" (afuera, en alguno de los 15 procesos
+    // con nombre -- incluye plantas externas como Sublimación/1018). Para
+    // Atlas los dos son lo mismo: trabajo que todavía no volvió, así que se
+    // suman acá una sola vez -- de ahí en adelante todo el archivo sigue
+    // viendo un solo "invSemiterminado", sin tener que tocar cada reporte.
+    const invSemiterminadoTotal = (Number(f.invSemiterminado) || 0) + (Number(f.invProceso) || 0);
+    const { proceso: procesoDondeQuedo, planta: procesoDondeQuedoPlanta, ultimaSalida, sinSalida } = calcularProcesoDondeQuedo(procesos, invSemiterminadoTotal);
     let ultimaSalidaTexto = "";
-    if (f.invSemiterminado > 0) ultimaSalidaTexto = sinSalida ? "Sin salida" : fmtFecha(ultimaSalida);
+    if (invSemiterminadoTotal > 0) ultimaSalidaTexto = sinSalida ? "Sin salida" : fmtFecha(ultimaSalida);
     // (2026-08-29) Ver comentario arriba: se guardan las fechas de cada
     // proceso ya como texto (no como Date) para que sobrevivan el viaje por
     // Firestore igual que ultimaSalidaTexto.
@@ -425,7 +445,7 @@ function construirLotesDesdeBusintGen(filasBusint) {
         : f.nombreCliente;
     let ubicacionActual = "Sin inventario", unidadesUbicacion = 0;
     if (f.invBPT > 0) { ubicacionActual = "BPT"; unidadesUbicacion = f.invBPT; }
-    else if (f.invSemiterminado > 0) { ubicacionActual = "Semiterminado"; unidadesUbicacion = f.invSemiterminado; }
+    else if (invSemiterminadoTotal > 0) { ubicacionActual = "Semiterminado"; unidadesUbicacion = invSemiterminadoTotal; }
     else if (f.invPlanta > 0) { ubicacionActual = "Planta"; unidadesUbicacion = f.invPlanta; }
     else if (f.invBMP > 0) { ubicacionActual = "BMP"; unidadesUbicacion = f.invBMP; }
     else if (f.invCorte > 0) { ubicacionActual = "Corte"; unidadesUbicacion = f.invCorte; }
@@ -445,11 +465,12 @@ function construirLotesDesdeBusintGen(filasBusint) {
       invBMP: f.invBMP,
       invPlanta: f.invPlanta,
       invBPT: f.invBPT,
-      invSemiterminado: f.invSemiterminado,
+      invSemiterminado: invSemiterminadoTotal,
       fechaEntregaConfISO: f.fechaEntregaConfISO,
       fechaEntBPTISO: f.fechaEntBPTISO,
       fechaEntregaPedidoISO: f.fechaEntregaPedidoISO,
       procesoDondeQuedo,
+      procesoDondeQuedoPlanta,
       ultimaSalidaTexto,
       semanaEntregaISO,
       ubicacionActual,
@@ -481,6 +502,7 @@ function generarSeguimientoSemiterminado(lotes) {
       categoria: l.categoria,
       unidades: l.invSemiterminado,
       procesoDondeQuedo: l.procesoDondeQuedo || "(Sin proceso)",
+      planta: l.procesoDondeQuedoPlanta || "",
       ultimaSalida: l.ultimaSalidaTexto,
       nombreCliente: l.nombreCliente || "(Sin cliente)",
     }))
@@ -1299,6 +1321,14 @@ function BloqueSeguimientoSemiterminado({ data }) {
         vacio="Sin lotes para este filtro."
         columnas={[
           { key: "procesoDondeQuedo", label: "Proceso Donde Quedó" },
+          { key: "planta", label: "Planta", render: (f) => f.planta ? (
+            <span>
+              {f.planta}{" "}
+              <strong style={{ color: plantaProcesoEsPropia(f.planta) ? C.green : C.amber }}>
+                ({plantaProcesoEsPropia(f.planta) ? "Interna" : "Externa"})
+              </strong>
+            </span>
+          ) : <span style={{ color: C.slate }}>—</span> },
           { key: "nombreCliente", label: "Cliente" },
           { key: "numLote", label: "Num Lote", align: "right" },
           { key: "referencia", label: "Referencia" },
