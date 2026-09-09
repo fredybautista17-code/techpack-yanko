@@ -331,6 +331,21 @@ const TIPOS_NOMINA = ["Fiscal", "Fiscal Destajo", "Destajo", "Prestación de Ser
 // Firestore) porque son solo estas dos, igual que Tipo de Nómina. Sirve
 // para poder ver cuánto se debe pagar de nómina separado por empresa.
 const EMPLEADORES = ["YANKO", "INDUTEX"];
+// (2026-09-09, a pedido de Fredy) Clase de Riesgo ARL -- define qué tasa de
+// ARL paga la empresa por cada trabajador Fiscal (varía persona por
+// persona, no por Cargo -- confirmado con Fredy). Tasas oficiales de
+// Colombia (Decreto 1607/2002).
+const CLASES_RIESGO_ARL = [
+  { value: "I", label: "I (0.522%)" },
+  { value: "II", label: "II (1.044%)" },
+  { value: "III", label: "III (2.436%)" },
+  { value: "IV", label: "IV (4.35%)" },
+  { value: "V", label: "V (6.96%)" },
+];
+const TASA_ARL_POR_CLASE = { I: 0.00522, II: 0.01044, III: 0.02436, IV: 0.0435, V: 0.0696 };
+function labelClaseARL(clase) {
+  return CLASES_RIESGO_ARL.find((c) => c.value === clase)?.label || clase;
+}
 // Los 5 de "Fiscal Destajo" identificados en BASE DE DATOS PERSONAL COPIA
 // FINAL (todos EMPRESA=YANKO) — botón de abajo los crea/actualiza en
 // Trabajadores de un solo clic, con su sueldo y auxilio real del archivo.
@@ -929,6 +944,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     areaTNS: trabajador?.areaTNS || "",
     tnsCodigo: trabajador?.tnsCodigo || "",
     empleador: trabajador?.empleador || "",
+    claseRiesgoARL: trabajador?.claseRiesgoARL || "",
     tipoNomina: trabajador?.tipoNomina || "",
     sueldo: trabajador?.sueldo ?? "",
     auxilioTransporte: trabajador?.auxilioTransporte ?? "",
@@ -962,6 +978,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       areaTNS: form.areaTNS || "",
       tnsCodigo: form.tnsCodigo.trim(),
       empleador: form.empleador || "",
+      claseRiesgoARL: form.claseRiesgoARL || "",
       tipoNomina: form.tipoNomina || "",
       sueldo: Number(form.sueldo) || 0,
       auxilioTransporte: Number(form.auxilioTransporte) || 0,
@@ -992,7 +1009,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       <Field label="Tipo de Nómina">
         <FSel value={form.tipoNomina} onChange={set("tipoNomina")} options={TIPOS_NOMINA} placeholder="Sin clasificar" />
       </Field>
-      {(form.tipoNomina === "Fiscal Destajo" || form.tipoNomina === "Destajo") && (
+      {(form.tipoNomina === "Fiscal" || form.tipoNomina === "Fiscal Destajo" || form.tipoNomina === "Destajo") && (
         <>
           <Field label="Sueldo mensual fijo"><FInput type="number" value={form.sueldo} onChange={set("sueldo")} placeholder="Ej: 1750905" /></Field>
           <Field label="Auxilio de transporte mensual"><FInput type="number" value={form.auxilioTransporte} onChange={set("auxilioTransporte")} placeholder="Ej: 249095" /></Field>
@@ -1002,6 +1019,16 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
           </Field>
           <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
             Si ya sabes cuánto lleva acumulado en cesantías antes de septiembre, ponlo acá para que los intereses se calculen bien desde el arranque. Si no lo sabes, déjalo en 0 y ajústalo cuando lo tengas.
+          </div>
+        </>
+      )}
+      {form.tipoNomina === "Fiscal" && (
+        <>
+          <Field label="Clase de Riesgo ARL">
+            <FSel value={form.claseRiesgoARL} onChange={set("claseRiesgoARL")} options={CLASES_RIESGO_ARL} placeholder="Sin asignar" />
+          </Field>
+          <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+            Define la tasa de ARL que paga la empresa por esta persona (según el riesgo de su labor) -- la necesita Nómina Fiscal para calcular cuánto se debe pagar.
           </div>
         </>
       )}
@@ -1371,6 +1398,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
               {f.tipoNomina}
             </span>
           ) : <span style={{ color: C.slate }}>—</span> },
+          { key: "claseRiesgoARL", label: "Clase ARL", render: (f) => f.claseRiesgoARL ? labelClaseARL(f.claseRiesgoARL) : <span style={{ color: C.slate }}>—</span> },
           { key: "sueldo", label: "Sueldo", align: "right", render: (f) => f.sueldo ? fmtMoney(f.sueldo) : "—" },
           { key: "tarifaHora", label: "Tarifa/Hora", align: "right", render: (f) => fmtMoney(f.tarifaHora) },
           { key: "tnsCodigo", label: "Código TNS", render: (f) => f.tnsCodigo ? <span style={{ color: C.green, fontWeight: 700 }}>{f.tnsCodigo}</span> : <span style={{ color: C.slate }}>—</span> },
