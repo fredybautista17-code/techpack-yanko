@@ -250,11 +250,15 @@ function Tabla({ columnas, filas, vacio, onRowClick }) {
               onClick={onRowClick ? () => onRowClick(f) : undefined}
               style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}`, cursor: onRowClick ? "pointer" : "default" }}
             >
-              {columnas.map((c) => (
-                <td key={c.key} style={{ padding: "7px 12px", textAlign: c.align || "left", whiteSpace: "nowrap", color: c.color ? c.color(f) : C.ink }}>
-                  {c.render ? c.render(f) : f[c.key]}
-                </td>
-              ))}
+              {columnas.map((c) => {
+                const valor = f[c.key];
+                const esObjeto = valor !== null && typeof valor === "object";
+                return (
+                  <td key={c.key} style={{ padding: "7px 12px", textAlign: c.align || "left", whiteSpace: "nowrap", color: c.color ? c.color(f) : C.ink }}>
+                    {c.render ? c.render(f) : esObjeto ? JSON.stringify(valor) : valor}
+                  </td>
+                );
+              })}
             </tr>
           ))}
         </tbody>
