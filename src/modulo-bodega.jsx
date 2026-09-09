@@ -6,6 +6,7 @@ import {
   doc,
   setDoc,
   deleteDoc,
+  deleteField,
   onSnapshot,
   writeBatch,
   runTransaction,
@@ -3089,6 +3090,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
   const [formEnvio, setFormEnvio] = useState({});
   const [formRecepcion, setFormRecepcion] = useState({});
   const [guardandoId, setGuardandoId] = useState(null);
+  const [vaciando, setVaciando] = useState(false);
 
   useEffect(() => {
     const unsubLotes = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
@@ -3273,6 +3275,97 @@ function EstadoDespachoView({ onVolver, onLogout }) {
     XLSX.writeFile(wb, `Bitacora Despachos ${today()}.xlsx`);
   }
 
+  async function vaciarEstadoDespacho() {
+    const afectados = lotes.filter(
+      (l) =>
+        l.estadoEnvio ||
+        l.despachoId ||
+        l.despachoCodigo ||
+        l.transportador ||
+        l.numeroGuia ||
+        l.cantidadDespachadaBodega ||
+        l.sacrificios ||
+        l.segundas ||
+        (l.cobrosBodega && l.cobrosBodega.length) ||
+        l.observacionesEnvio
+    );
+    if (!despachos.length && !afectados.length) {
+      alert("No hay nada que vaciar -- Estado de Despacho ya está vacío.");
+      return;
+    }
+    if (
+      !window.confirm(
+        `Esto va a descargar un respaldo en Excel y después borrar TODOS los despachos (${despachos.length}) y limpiar el envío de ${afectados.length} lote(s) (transportador, guía, cantidades, sacrificios, segundas, cobros) -- vuelven a "Por enviar" como si nunca se hubieran tocado, y el consecutivo de despacho vuelve a 0. Esto no se puede deshacer desde la app -- solo queda el respaldo en Excel. ¿Continuar?`
+      )
+    )
+      return;
+    setVaciando(true);
+    try {
+      const XLSX = await import("xlsx");
+      const filasDespachos = despachos.map((d) => ({ "Código": d.codigo || "", "Creado": d.creadoEn || "" }));
+      const filasLotes = afectados.map((l) => ({
+        "Lote": l.numLote || "",
+        "Referencia": l.referencia || "",
+        "Cliente": l.cliente || "",
+        "Cant. Cortada": l.cantCortada ?? "",
+        "Cant. Despachada Bodega": l.cantidadDespachadaBodega ?? "",
+        "Sacrificios": l.sacrificios ?? "",
+        "Segundas": l.segundas ?? "",
+        "Cobros": (l.cobrosBodega || []).map((c) => `${c.trabajadorNombre} (${c.tipo}): ${c.valor}`).join(" / "),
+        "Despacho": l.despachoCodigo || "",
+        "Transportador": l.transportador || "",
+        "Guía": l.numeroGuia || "",
+        "Fecha Envío": l.fechaEnvio || "",
+        "Fecha Recibido": l.fechaRecibido || "",
+        "Estado Envío": l.estadoEnvio || "",
+        "Observaciones Envío": l.observacionesEnvio || "",
+      }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filasDespachos), "Despachos");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filasLotes), "Lotes");
+      XLSX.writeFile(wb, `Respaldo Estado de Despacho ${today()}.xlsx`);
+
+      for (let i = 0; i < despachos.length; i += 450) {
+        const grupo = despachos.slice(i, i + 450);
+        const batch = writeBatch(db);
+        grupo.forEach((d) => batch.delete(doc(db, "bodega_despachos", d.id)));
+        await batch.commit();
+      }
+      await setDoc(doc(db, "contadores", "bodega_despachos"), { ultimo: 0 }, { merge: true });
+
+      for (let i = 0; i < afectados.length; i += 450) {
+        const grupo = afectados.slice(i, i + 450);
+        const batch = writeBatch(db);
+        grupo.forEach((l) => {
+          batch.set(
+            doc(db, "dado_por_cumplido_lotes", l.id),
+            {
+              estadoEnvio: deleteField(),
+              transportador: deleteField(),
+              numeroGuia: deleteField(),
+              fechaEnvio: deleteField(),
+              fechaRecibido: deleteField(),
+              cantidadDespachadaBodega: deleteField(),
+              sacrificios: deleteField(),
+              segundas: deleteField(),
+              cobrosBodega: deleteField(),
+              despachoId: deleteField(),
+              despachoCodigo: deleteField(),
+              observacionesEnvio: deleteField(),
+            },
+            { merge: true }
+          );
+        });
+        await batch.commit();
+      }
+      setDespachoActivoId("");
+      alert(`Listo -- se descargó el respaldo, se borraron ${despachos.length} despacho(s) y se limpiaron ${afectados.length} lote(s).`);
+    } catch (err) {
+      alert("No se pudo vaciar Estado de Despacho: " + (err?.message || err));
+    }
+    setVaciando(false);
+  }
+
   const despachoActivo = despachos.find((d) => d.id === despachoActivoId);
 
   if (loading) {
@@ -3292,6 +3385,9 @@ function EstadoDespachoView({ onVolver, onLogout }) {
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <Btn variant="ghost" small onClick={descargarBitacora}>📥 Descargar bitácora</Btn>
+            <Btn variant="danger" small onClick={vaciarEstadoDespacho} disabled={vaciando}>
+              {vaciando ? "Vaciando..." : "🗑 Vaciar Estado de Despacho"}
+            </Btn>
             {onVolver && <Btn variant="secondary" small onClick={onVolver}>← Volver a Bodega</Btn>}
             {onLogout && <Btn variant="ghost" small onClick={onLogout}>⏏ Cerrar sesión</Btn>}
           </div>
