@@ -3105,6 +3105,16 @@ function EstadoDespachoView({ onVolver, onLogout }) {
   const [facturaNuevo, setFacturaNuevo] = useState("");
   const [creandoDespacho, setCreandoDespacho] = useState(false);
 
+  // (2026-09-09, a pedido de Fredy) Catálogo de transportadoras -- antes
+  // "Transportador" era texto libre y cada quien lo escribía distinto
+  // (p.ej. "Envia" vs "Envía" vs "ENVIA"). Ahora se elige de una lista
+  // guardada en Firestore (bodega_transportadoras), con opción de agregar
+  // una nueva ahí mismo si no está.
+  const [transportadoras, setTransportadoras] = useState([]);
+  const [mostrarNuevaTransportadora, setMostrarNuevaTransportadora] = useState(false);
+  const [nombreTransportadoraNueva, setNombreTransportadoraNueva] = useState("");
+  const [guardandoTransportadora, setGuardandoTransportadora] = useState(false);
+
   useEffect(() => {
     const unsubLotes = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
       setLotes(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
@@ -3116,10 +3126,14 @@ function EstadoDespachoView({ onVolver, onLogout }) {
     const unsubDespachos = onSnapshot(collection(db, "bodega_despachos"), (snap) => {
       setDespachos(snap.docs.map((d) => ({ ...d.data(), id: d.id })).sort((a, b) => (b.codigo || "").localeCompare(a.codigo || "")));
     });
+    const unsubTransportadoras = onSnapshot(collection(db, "bodega_transportadoras"), (snap) => {
+      setTransportadoras(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
     return () => {
       unsubLotes();
       unsubTrabajadores();
       unsubDespachos();
+      unsubTransportadoras();
     };
   }, []);
 
@@ -3209,6 +3223,31 @@ function EstadoDespachoView({ onVolver, onLogout }) {
       setVista("porEnviar");
     } finally {
       setCreandoDespacho(false);
+    }
+  }
+
+  // Agrega una transportadora nueva al catálogo (si el nombre ya existe,
+  // solo la selecciona -- evita duplicados por escribirla de nuevo) y la
+  // deja elegida de una vez para el despacho que se está armando.
+  async function agregarTransportadora() {
+    const nombre = nombreTransportadoraNueva.trim();
+    if (!nombre) return;
+    const yaExiste = transportadoras.some((t) => (t.nombre || "").trim().toLowerCase() === nombre.toLowerCase());
+    if (yaExiste) {
+      setTransportadorNuevo(nombre);
+      setNombreTransportadoraNueva("");
+      setMostrarNuevaTransportadora(false);
+      return;
+    }
+    setGuardandoTransportadora(true);
+    try {
+      const ref = doc(collection(db, "bodega_transportadoras"));
+      await setDoc(ref, { nombre, creadoEn: today() });
+      setTransportadorNuevo(nombre);
+      setNombreTransportadoraNueva("");
+      setMostrarNuevaTransportadora(false);
+    } finally {
+      setGuardandoTransportadora(false);
     }
   }
 
@@ -3484,8 +3523,30 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                   <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
                     <div style={{ flex: 1, minWidth: 160 }}>
                       <Field label="Transportador">
-                        <FInput value={transportadorNuevo} onChange={setTransportadorNuevo} placeholder="Ej: Envía, Coordinadora..." />
+                        <select
+                          value={transportadorNuevo}
+                          onChange={(e) => setTransportadorNuevo(e.target.value)}
+                          style={{ width: "100%", padding: "9px 10px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 13, color: C.ink, background: C.white, fontFamily: "inherit" }}
+                        >
+                          <option value="">Selecciona...</option>
+                          {[...transportadoras].sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "")).map((t) => (
+                            <option key={t.id} value={t.nombre}>{t.nombre}</option>
+                          ))}
+                        </select>
                       </Field>
+                      {!mostrarNuevaTransportadora ? (
+                        <div onClick={() => setMostrarNuevaTransportadora(true)} style={{ marginTop: 6, fontSize: 11, color: C.violet, fontWeight: 700, cursor: "pointer" }}>+ Nueva transportadora</div>
+                      ) : (
+                        <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+                          <div style={{ flex: 1 }}>
+                            <FInput value={nombreTransportadoraNueva} onChange={setNombreTransportadoraNueva} placeholder="Nombre de la transportadora" />
+                          </div>
+                          <Btn variant="secondary" small onClick={agregarTransportadora} disabled={guardandoTransportadora || !nombreTransportadoraNueva.trim()}>
+                            {guardandoTransportadora ? "..." : "Guardar"}
+                          </Btn>
+                          <span onClick={() => { setMostrarNuevaTransportadora(false); setNombreTransportadoraNueva(""); }} style={{ cursor: "pointer", color: C.red, fontSize: 16, fontWeight: 700 }}>✕</span>
+                        </div>
+                      )}
                     </div>
                     <div style={{ flex: 1, minWidth: 160 }}>
                       <Field label="Número de Guía">
