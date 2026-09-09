@@ -326,6 +326,11 @@ function normalizarNombreParaComparar(v) {
 // proceso/producción (ya existe en Registrar Producción). Prestación de
 // Servicios = fuera de nómina.
 const TIPOS_NOMINA = ["Fiscal", "Fiscal Destajo", "Destajo", "Prestación de Servicios"];
+// (2026-09-09, a pedido de Fredy) Empleador -- cuál de las dos empresas
+// contrata legalmente a cada trabajador. Es lista fija (no catálogo en
+// Firestore) porque son solo estas dos, igual que Tipo de Nómina. Sirve
+// para poder ver cuánto se debe pagar de nómina separado por empresa.
+const EMPLEADORES = ["YANKO", "INDUTEX"];
 // Los 5 de "Fiscal Destajo" identificados en BASE DE DATOS PERSONAL COPIA
 // FINAL (todos EMPRESA=YANKO) — botón de abajo los crea/actualiza en
 // Trabajadores de un solo clic, con su sueldo y auxilio real del archivo.
@@ -887,6 +892,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     zona: trabajador?.zona || "",
     areaTNS: trabajador?.areaTNS || "",
     tnsCodigo: trabajador?.tnsCodigo || "",
+    empleador: trabajador?.empleador || "",
     tipoNomina: trabajador?.tipoNomina || "",
     sueldo: trabajador?.sueldo ?? "",
     auxilioTransporte: trabajador?.auxilioTransporte ?? "",
@@ -919,6 +925,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       zona: form.zona || "",
       areaTNS: form.areaTNS || "",
       tnsCodigo: form.tnsCodigo.trim(),
+      empleador: form.empleador || "",
       tipoNomina: form.tipoNomina || "",
       sueldo: Number(form.sueldo) || 0,
       auxilioTransporte: Number(form.auxilioTransporte) || 0,
@@ -939,6 +946,12 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       <Field label="Área TNS"><FSel value={form.areaTNS} onChange={set("areaTNS")} options={areasTNS.map((a) => a.nombre)} placeholder="Sin clasificar" /></Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
         "Área Interna" es la clasificación propia de la planta (los líderes ven solo a su gente por ahí). "Área TNS" es la que ya usa TNS (Operativa/Administrativo/Diseño) — sirve para cruzar cuando llegue el archivo de TNS.
+      </div>
+      <Field label="Empleador">
+        <FSel value={form.empleador} onChange={set("empleador")} options={EMPLEADORES} placeholder="Sin asignar" />
+      </Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        Cuál de las dos empresas contrata legalmente a esta persona -- para poder ver cuánto se debe pagar de nómina por cada una.
       </div>
       <Field label="Tipo de Nómina">
         <FSel value={form.tipoNomina} onChange={set("tipoNomina")} options={TIPOS_NOMINA} placeholder="Sin clasificar" />
@@ -1247,6 +1260,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
           { key: "area", label: "Área Interna", render: (f) => f.area || "Sin asignar" },
           { key: "zona", label: "Zona Interna", render: (f) => f.zona || <span style={{ color: C.slate }}>—</span> },
           { key: "areaTNS", label: "Área TNS", render: (f) => f.areaTNS || <span style={{ color: C.slate }}>—</span> },
+          { key: "empleador", label: "Empleador", render: (f) => f.empleador || <span style={{ color: C.slate }}>—</span> },
           { key: "tipoNomina", label: "Tipo Nómina", render: (f) => f.tipoNomina ? (
             <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: f.tipoNomina === "Fiscal Destajo" ? C.violetBg : C.blueBg, color: f.tipoNomina === "Fiscal Destajo" ? C.violet : C.blue }}>
               {f.tipoNomina}
