@@ -1487,6 +1487,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     auxilioTransporte: trabajador?.auxilioTransporte ?? "",
     fechaIngreso: trabajador?.fechaIngreso || "",
     cesantiasAcumuladas: trabajador?.cesantiasAcumuladas ?? "",
+    medirComoBaseAdministrativa: trabajador?.medirComoBaseAdministrativa ?? false,
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   // (2026-09-09, a pedido de Fredy) Cargo depende de qué Área Interna se
@@ -1524,6 +1525,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       auxilioTransporte: Number(form.auxilioTransporte) || 0,
       fechaIngreso: form.fechaIngreso || "",
       cesantiasAcumuladas: Number(form.cesantiasAcumuladas) || 0,
+      medirComoBaseAdministrativa: !!form.medirComoBaseAdministrativa,
     });
     onClose();
   }
@@ -1554,6 +1556,15 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       <Field label="Cargo (opcional)">
         <FSel value={form.zona} onChange={set("zona")} options={zonasDelArea.map((z) => z.nombre)} placeholder={zonasDelArea.length ? "Sin asignar" : "Esta área no tiene cargos creados"} />
       </Field>
+      <Field label="Centro de Costo">
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input type="checkbox" id="medirComoBaseAdministrativa" checked={!!form.medirComoBaseAdministrativa} onChange={(e) => set("medirComoBaseAdministrativa")(e.target.checked)} />
+          <label htmlFor="medirComoBaseAdministrativa" style={{ fontSize: 12.5, color: C.ink, cursor: "pointer" }}>Medir en Base Administrativa (no en el Destajo de su área)</label>
+        </div>
+      </Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        Para líderes de un área que mide por Destajo (ej. Control de Calidad, Zona Calor) cuyo sueldo no debería contarse contra la producción de su gente. No cambia su Área Interna -- solo hace que en Centro de Costo aparezca en "👑 Líderes (Base Administrativa)" en vez del Destajo de su área.
+      </div>
       <Field label="Área TNS"><FSel value={form.areaTNS} onChange={set("areaTNS")} options={areasTNS.map((a) => a.nombre)} placeholder="Sin clasificar" /></Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
         "Área Interna" es la clasificación propia de la planta (los líderes ven solo a su gente por ahí). "Área TNS" es la que ya usa TNS (Operativa/Administrativo/Diseño) — sirve para cruzar cuando llegue el archivo de TNS.

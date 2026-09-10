@@ -3573,13 +3573,16 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   // automático de antes -- con procesos marcados = Busint, sin marcar =
   // Destajo -- así ninguna área que Fredy no haya reclasificado cambia
   // de comportamiento por este cambio.
-  const modoMedicion = !areaSel
-    ? "destajo"
-    : areaSeleccionada?.modoMedicion
-    ? areaSeleccionada.modoMedicion
-    : procesosApoyo.length > 0
-    ? "busint_unidades"
-    : "destajo";
+  const modoMedicion =
+    areaSel === "__lideres_base_admin__"
+      ? "base_dado_por_cumplido"
+      : !areaSel
+      ? "destajo"
+      : areaSeleccionada?.modoMedicion
+      ? areaSeleccionada.modoMedicion
+      : procesosApoyo.length > 0
+      ? "busint_unidades"
+      : "destajo";
   const fechaReferenciaPeriodo = useMemo(() => {
     if (periodo === "dia") return fechaDia;
     if (periodo === "rango") return fechaRangoFin;
@@ -3589,7 +3592,9 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   }, [periodo, fechaDia, anioSel, mesSel, fechaRangoFin]);
   const trabajadoresArea = useMemo(() => {
     const activos = (trabajadores || []).filter((t) => t.activo !== false);
-    return areaSel ? activos.filter((t) => areaEnFecha(t, fechaReferenciaPeriodo) === areaSel) : activos;
+    if (areaSel === "__lideres_base_admin__") return activos.filter((t) => t.medirComoBaseAdministrativa);
+    const sinLideresBaseAdmin = activos.filter((t) => !t.medirComoBaseAdministrativa);
+    return areaSel ? sinLideresBaseAdmin.filter((t) => areaEnFecha(t, fechaReferenciaPeriodo) === areaSel) : sinLideresBaseAdmin;
   }, [trabajadores, areaSel, fechaReferenciaPeriodo]);
   const produccionPeriodo = useMemo(
     () => (produccion || []).filter((p) => enPeriodo(p.fecha)),
@@ -3925,6 +3930,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
         ) : (
           <select value={areaSel} onChange={(e) => setAreaSel(e.target.value)} style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, marginLeft: "auto" }}>
             <option value="">Todas las áreas</option>
+            <option value="__lideres_base_admin__">👑 Líderes (Base Administrativa)</option>
             {(areasNomina || []).map((a) => <option key={a.id} value={a.nombre}>{a.nombre}</option>)}
           </select>
         )}
