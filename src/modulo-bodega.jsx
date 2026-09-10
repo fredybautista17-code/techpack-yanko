@@ -221,6 +221,24 @@ function EstadoBadge({ estado }) {
     </span>
   );
 }
+// (2026-09-10, a pedido de Fredy) Etapa de Contabilidad de un lote de Dado
+// por Cumplido, vista desde Bodega -- mismo criterio que ya usa Contabilidad
+// ahí mismo (pestañas "Con factura"/"Sin factura" + estado "aprobado"), para
+// saber de un vistazo si falta que Busint facture, que Contabilidad apruebe,
+// o si ya está listo para que Bodega lo despache.
+function EtapaContabilidadBadge({ lote }) {
+  const etapa =
+    lote?.estado === "aprobado"
+      ? { bg: C.greenBg, color: C.green, label: "📤 Por enviar" }
+      : lote?.tieneFactura === false
+      ? { bg: C.amberBg, color: C.amber, label: "⏳ Por facturar" }
+      : { bg: C.blueBg, color: C.blue, label: "🧾 Por aprobar" };
+  return (
+    <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: etapa.bg, color: etapa.color, whiteSpace: "nowrap" }}>
+      {etapa.label}
+    </span>
+  );
+}
 function Tabla({ columnas, filas, vacio, onRowClick }) {
   if (!filas.length) {
     return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>{vacio || "Sin datos."}</div>;
@@ -3609,7 +3627,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                             {lotesCliente.map((l) => (
                               <label key={l.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: C.ink, cursor: bloqueado ? "not-allowed" : "pointer", padding: "6px 10px", border: `1px solid ${C.border}`, borderRadius: 8, background: loteSeleccionIds.includes(l.id) ? C.violetBg : C.white }}>
                                 <input type="checkbox" checked={loteSeleccionIds.includes(l.id)} disabled={bloqueado} onChange={() => alternarSeleccionLote(l.id)} />
-                                <strong>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"} · Cant. Cortada: {l.cantCortada ?? "—"}
+                                <strong>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"} · Cant. Cortada: {l.cantCortada ?? "—"} <EtapaContabilidadBadge lote={l} />
                               </label>
                             ))}
                           </div>
@@ -3669,7 +3687,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                       const cuadra = !cantCortada || !suma || suma === cantCortada;
                       return (
                         <div key={l.id} style={{ padding: 12, border: `1px solid ${C.border}`, borderRadius: 10, background: C.canvas }}>
-                          <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>Lote {l.numLote} — {l.referencia || "(sin referencia)"}</div>
+                          <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>Lote {l.numLote} — {l.referencia || "(sin referencia)"} <EtapaContabilidadBadge lote={l} /></div>
                           <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>Cant. Cortada: <strong>{cantCortada}</strong></div>
                           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 4 }}>
                             <div style={{ width: 150 }}>
@@ -3763,7 +3781,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {lotesGrupo.map((l) => (
                       <div key={l.id} style={{ fontSize: 12, color: C.ink, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8, background: C.canvas }}>
-                        <strong>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"} · Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
+                        <strong>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"} <EtapaContabilidadBadge lote={l} /> · Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
                         {!!(l.cobrosBodega || []).length && <> · Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney(c.valor)}`).join(" / ")}</>}
                       </div>
                     ))}
@@ -3781,7 +3799,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
               {recibidos.map((l) => (
                 <div key={l.id} style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }}>
                   <span>
-                    <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia} — {l.cliente}
+                    <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia} — {l.cliente} <EtapaContabilidadBadge lote={l} />
                     {l.despachoCodigo ? <> · {l.despachoCodigo}</> : null}
                   </span>
                   <span style={{ color: C.slate }}>{l.transportador} · Guía {l.numeroGuia} · Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0} · Llegó el {l.fechaRecibido}</span>
@@ -3953,11 +3971,7 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
                     <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>Lote {loteEncontrado.numLote} — {loteEncontrado.referencia || "(sin referencia)"}</div>
                     <div style={{ fontSize: 12, color: C.slate }}>
                       Cliente: <strong>{loteEncontrado.cliente || "—"}</strong> · Cant. Cortada: <strong>{cantCortada || "—"}</strong>
-                      {loteEncontrado.estado === "aprobado" ? (
-                        <span style={{ marginLeft: 8, color: C.green, fontWeight: 700 }}>✓ Aprobado</span>
-                      ) : (
-                        <span style={{ marginLeft: 8, color: C.amber, fontWeight: 700 }}>⏳ Aún no aprobado</span>
-                      )}
+                      <span style={{ marginLeft: 8 }}><EtapaContabilidadBadge lote={loteEncontrado} /></span>
                     </div>
                   </div>
 
@@ -4040,7 +4054,7 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
                 style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, cursor: "pointer", background: C.white }}
               >
                 <span>
-                  <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"} — {l.cliente || "—"}
+                  <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"} — {l.cliente || "—"} <EtapaContabilidadBadge lote={l} />
                 </span>
                 <span style={{ color: C.slate }}>
                   Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
