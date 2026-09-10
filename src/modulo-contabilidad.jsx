@@ -4050,6 +4050,8 @@ function AdministracionView({ currentUser }) {
   const [resultadoMigracionEnvios, setResultadoMigracionEnvios] = useState(null);
   const [lotesEliminados, setLotesEliminados] = useState([]);
   const [confirmPurgaLote, setConfirmPurgaLote] = useState(null);
+  const [confirmPurgaTodo, setConfirmPurgaTodo] = useState(false);
+  const [purgandoTodo, setPurgandoTodo] = useState(false);
 
   // Papelera de Históricos (Dado por Cumplido) -- lotes marcados con
   // eliminado:true desde Históricos (ver eliminarLoteHistorico/
@@ -4078,6 +4080,57 @@ function AdministracionView({ currentUser }) {
     setConfirmPurgaLote(null);
   }
 
+  // Respaldo en Excel de los lotes de la Papelera -- se descarga antes de
+  // purgarlos todos de una sola vez (ver purgarTodoHistoricoDefinitivo mas
+  // abajo), para no perder esta informacion al borrarla para siempre.
+  async function descargarExcelLotesPapelera(lotesArr) {
+    const XLSX = await import("xlsx");
+    const filas = lotesArr.map((l) => ({
+      "FECHA": l.fecha || "",
+      "NRO LOTE": l.numLote,
+      "REFERENCIA": l.referencia || "",
+      "CLIENTE": l.cliente || "",
+      "CANT. CORTADA": l.cantCortada ?? "",
+      "CANT. DESPACHADA": l.cantDespachada ?? "",
+      "COSTO DEFINITIVO": l.costoDefinitivo ?? "",
+      "PRECIO VENTA U.": l.precioVentaUnitario ?? "",
+      "VENTA T.": l.ventaT ?? "",
+      "GANANCIA": l.ganancia ?? "",
+      "OBSERVACIONES": l.observaciones || "",
+      "ELIMINADO EN": l.eliminadoEn ? new Date(l.eliminadoEn).toLocaleString("es-CO") : "",
+      "ELIMINADO POR": l.eliminadoPor || "",
+    }));
+    const ws = XLSX.utils.json_to_sheet(filas);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Papelera");
+    XLSX.writeFile(wb, `Respaldo Papelera Dado por Cumplido ${today()}.xlsx`);
+  }
+
+  // Purga TODA la Papelera de una sola vez (irreversible) -- descarga
+  // primero un respaldo en Excel con todos los lotes, y despues los borra
+  // de Firestore en bloques de 450 (limite de un writeBatch). A pedido de
+  // Fredy (2026-09-10): antes solo se podia purgar lote por lote, y con
+  // cientos de lotes acumulados en la Papelera eso no era viable.
+  async function purgarTodoHistoricoDefinitivo() {
+    if (!lotesEliminados.length) return;
+    setPurgandoTodo(true);
+    try {
+      await descargarExcelLotesPapelera(lotesEliminados);
+      for (let i = 0; i < lotesEliminados.length; i += 450) {
+        const grupo = lotesEliminados.slice(i, i + 450);
+        const batch = writeBatch(db);
+        grupo.forEach((l) => {
+          batch.delete(doc(db, "dado_por_cumplido_lotes", l.id));
+        });
+        await batch.commit();
+      }
+      setConfirmPurgaTodo(false);
+      alert(`Listo -- se borraron ${lotesEliminados.length} lote(s) de la Papelera para siempre.`);
+    } catch (err) {
+      alert("No se pudo vaciar la Papelera: " + (err?.message || err));
+    }
+    setPurgandoTodo(false);
+  }
   // Importa el Excel histórico "Dado por cumplido" -- crea/actualiza cada
   // lote (identificado por NRO LOTE) ya como aprobado, con los valores tal
   // cual vienen en el archivo (no se recalculan). Pensado para correrse una
@@ -4250,7 +4303,12 @@ function AdministracionView({ currentUser }) {
         )}
       </div>
       <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white, maxWidth: 640, marginTop: 14 }}>
-        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 4 }}>🗑 Papelera -- Históricos eliminados ({lotesEliminados.length})</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>🗑 Papelera -- Históricos eliminados ({lotesEliminados.length})</div>
+          {!!lotesEliminados.length && (
+            <Btn variant="danger" small onClick={() => setConfirmPurgaTodo(true)}>🗑 Eliminar todos definitivamente ({lotesEliminados.length})</Btn>
+          )}
+        </div>
         <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>
           Lotes que se eliminaron desde Históricos (Dado por Cumplido). Quedan aquí recuperables -- restáuralos o bórralos para siempre.
         </div>
@@ -4283,6 +4341,22 @@ function AdministracionView({ currentUser }) {
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
               <Btn variant="secondary" onClick={() => setConfirmPurgaLote(null)}>Cancelar</Btn>
               <Btn variant="danger" onClick={purgarLoteHistoricoDefinitivo}>Sí, eliminar para siempre</Btn>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmPurgaTodo && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: C.white, borderRadius: 14, padding: 32, maxWidth: 420, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: C.red, marginBottom: 12 }}>⚠ Eliminar TODA la Papelera</div>
+            <div style={{ fontSize: 14, color: C.ink, marginBottom: 24 }}>
+              ¿Eliminar los <strong>{lotesEliminados.length}</strong> lote(s) de la Papelera para siempre? Antes se descarga un respaldo en Excel con todos. Esta vez sí es irreversible -- ya no quedan en la Papelera.
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <Btn variant="secondary" onClick={() => setConfirmPurgaTodo(false)} disabled={purgandoTodo}>Cancelar</Btn>
+              <Btn variant="danger" onClick={purgarTodoHistoricoDefinitivo} disabled={purgandoTodo}>
+                {purgandoTodo ? "Borrando..." : `Sí, eliminar los ${lotesEliminados.length} para siempre`}
+              </Btn>
             </div>
           </div>
         </div>
