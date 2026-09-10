@@ -3285,7 +3285,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
   function agregarCobro(loteId) {
     setFormEnvio((f) => {
       const actual = f[loteId] || {};
-      const cobros = [...cobrosBaseFormulario(actual, loteId), { trabajadorId: "", tipo: "", valor: "" }];
+      const cobros = [...cobrosBaseFormulario(actual, loteId), { trabajadorId: "", tipo: "", cantidad: "", valor: "" }];
       return { ...f, [loteId]: { ...actual, cobros } };
     });
   }
@@ -3345,6 +3345,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
             trabajadorId: c.trabajadorId,
             trabajadorNombre: trabajadores.find((t) => t.id === c.trabajadorId)?.nombre || "",
             tipo: (c.tipo || "").trim(),
+            cantidad: Number(c.cantidad) || 0,
             valor: Number(c.valor) || 0,
             fecha: c.fecha || today(),
             cobrado: c.cobrado === true,
@@ -3693,7 +3694,9 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                             </div>
                           )}
                           <div>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>Cobros (opcional)</div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>
+                              Cobros (opcional){datos.cobros.length > 0 ? ` — ${datos.cobros.length} agregado${datos.cobros.length === 1 ? "" : "s"}` : ""}
+                            </div>
                             {(datos.cobros || []).map((c, idx) => (
                               <div key={idx} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
                                 <select
@@ -3708,6 +3711,9 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                                 </select>
                                 <div style={{ width: 200 }}>
                                   <FInput value={c.tipo} onChange={(v) => actualizarCobro(l.id, idx, "tipo", v)} placeholder="Motivo del cobro" />
+                                </div>
+                                <div style={{ width: 110 }}>
+                                  <FInput type="number" value={c.cantidad} onChange={(v) => actualizarCobro(l.id, idx, "cantidad", v)} placeholder="Cantidad" />
                                 </div>
                                 <div style={{ width: 130 }}>
                                   <FInput type="number" value={c.valor} onChange={(v) => actualizarCobro(l.id, idx, "valor", v)} placeholder="Valor" />
@@ -3855,7 +3861,7 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
   }
 
   function agregarCobroForm() {
-    setForm((f) => ({ ...f, cobros: [...f.cobros, { trabajadorId: "", tipo: "", valor: "" }] }));
+    setForm((f) => ({ ...f, cobros: [...f.cobros, { trabajadorId: "", tipo: "", cantidad: "", valor: "" }] }));
   }
 
   function actualizarCobroForm(idx, campo, valor) {
@@ -3876,6 +3882,7 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
           trabajadorId: c.trabajadorId,
           trabajadorNombre: trabajadores.find((t) => t.id === c.trabajadorId)?.nombre || "",
           tipo: (c.tipo || "").trim(),
+          cantidad: Number(c.cantidad) || 0,
           valor: Number(c.valor) || 0,
           fecha: c.fecha || today(),
           cobrado: c.cobrado === true,
@@ -3978,7 +3985,9 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
                   )}
 
                   <div style={{ marginTop: 6, marginBottom: 16 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>Cobros (opcional)</div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>
+                      Cobros (opcional){form.cobros.length > 0 ? ` — ${form.cobros.length} agregado${form.cobros.length === 1 ? "" : "s"}` : ""}
+                    </div>
                     {form.cobros.map((c, idx) => (
                       <div key={idx} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
                         <select
@@ -3993,6 +4002,9 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
                         </select>
                         <div style={{ width: 200 }}>
                           <FInput value={c.tipo} onChange={(v) => actualizarCobroForm(idx, "tipo", v)} placeholder="Motivo del cobro" />
+                        </div>
+                        <div style={{ width: 110 }}>
+                          <FInput type="number" value={c.cantidad} onChange={(v) => actualizarCobroForm(idx, "cantidad", v)} placeholder="Cantidad" />
                         </div>
                         <div style={{ width: 130 }}>
                           <FInput type="number" value={c.valor} onChange={(v) => actualizarCobroForm(idx, "valor", v)} placeholder="Valor" />
