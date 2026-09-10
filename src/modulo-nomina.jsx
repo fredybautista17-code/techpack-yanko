@@ -1627,6 +1627,8 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
 function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina, areasTNS, zonasNomina, onSaveArea, onSaveZona, turnos, gruposTrabajo }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | trabajador
   const [confirmDel, setConfirmDel] = useState(null);
+  const [busqueda, setBusqueda] = useState("");
+  const [mostrarMasOpciones, setMostrarMasOpciones] = useState(false);
   const [autoResultado, setAutoResultado] = useState(null);
   // Un solo flag para las 4 cargas de "conocidos" -- bloquea los 4
   // botones mientras cualquiera está corriendo, para que un doble clic
@@ -1722,6 +1724,10 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
     setImportandoCorreos(false);
   }
   const ordenados = [...trabajadores].sort((a, b) => a.nombre.localeCompare(b.nombre));
+  const busquedaNorm = normalizarNombreParaComparar(busqueda);
+  const ordenadosFiltrados = busquedaNorm
+    ? ordenados.filter((t) => normalizarNombreParaComparar(t.nombre).includes(busquedaNorm) || String(t.cedula || "").includes(busqueda.trim()))
+    : ordenados;
   // Cruza por cédula los 13 códigos TNS ya conocidos contra los Trabajadores
   // de Atlas, y les llena "tnsCodigo" a los que hagan match y todavía no lo
   // tengan puesto — así no hay que escribirlos a mano uno por uno.
@@ -2018,8 +2024,23 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
         </Modal>
       )}
       {isAdmin && (
-        <div style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ marginBottom: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <Btn onClick={() => setModal("nuevo")}>+ Nuevo Trabajador</Btn>
+          <div style={{ position: "relative", flex: "0 1 260px", minWidth: 180 }}>
+            <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: C.slate, pointerEvents: "none" }}>🔍</span>
+            <input
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              placeholder="Buscar por nombre o cédula..."
+              style={{ width: "100%", padding: "9px 12px 9px 30px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", outline: "none" }}
+            />
+          </div>
+          <Btn variant="secondary" onClick={() => exportarTrabajadoresExcel(trabajadores, turnos)}>📥 Descargar Excel</Btn>
+          <Btn variant="ghost" onClick={() => setMostrarMasOpciones((v) => !v)}>{mostrarMasOpciones ? "▲ Menos opciones" : "⚙ Más opciones"}</Btn>
+        </div>
+      )}
+      {isAdmin && mostrarMasOpciones && (
+        <div style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: 12, border: `1px dashed ${C.border}`, borderRadius: 10, background: C.canvas }}>
           <Btn variant="secondary" onClick={autocompletarCodigosTNS}>🔄 Autocompletar Código TNS (13 conocidos)</Btn>
           {autoResultado !== null && <span style={{ fontSize: 12, color: C.slate }}>{autoResultado} trabajador(es) actualizado(s).</span>}
           <Btn variant="secondary" onClick={cargarFiscalDestajoConocidos} disabled={!!cargandoConocidos}>
@@ -2056,7 +2077,6 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
           <Btn variant="secondary" onClick={() => importCorreosRef.current?.click()} disabled={importandoCorreos}>
             {importandoCorreos ? "Importando..." : "📤 Importar correos"}
           </Btn>
-          <Btn variant="secondary" onClick={() => exportarTrabajadoresExcel(trabajadores, turnos)}>📥 Descargar Excel</Btn>
           <input ref={subirExcelRef} type="file" accept=".xlsx,.xls" onChange={handleSubirExcelTrabajadores} style={{ display: "none" }} />
           <Btn variant="secondary" onClick={() => subirExcelRef.current?.click()} disabled={subiendoExcel}>
             {subiendoExcel ? "Leyendo..." : "📤 Subir Excel modificado"}
@@ -2161,7 +2181,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
             ),
           }] : []),
         ]}
-        filas={ordenados}
+        filas={ordenadosFiltrados}
       />
     </div>
   );
