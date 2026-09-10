@@ -1188,6 +1188,279 @@ function TurnosView({ turnos, trabajadores, isAdmin, onSave, onDelete }) {
     </div>
   );
 }
+// (2026-09-10, a pedido de Fredy) Excel de Trabajadores: exportar "bonito"
+// con colores para poder editar varios datos a la vez fuera de Atlas, y
+// volver a subir el mismo archivo para aplicar los cambios. Definicion
+// UNICA de columnas -- la usan tanto el export como el import, para que
+// nunca queden desincronizadas.
+// - "ID Huellero" se exporta solo de referencia (se ve gris en el Excel) --
+//   el import NUNCA la lee, se sigue vinculando aparte desde Reporte de
+//   Asistencia (decision de Fredy, para no romper ese vinculo por accidente).
+// - Una celda vacia en el Excel subido = "no tocar ese campo" (nunca se
+//   interpreta como borrar/poner en 0).
+// - Cedulas del archivo que no correspondan a ningun trabajador existente
+//   se ignoran (decision de Fredy) -- no crean trabajadores nuevos.
+// - Antes de guardar nada se arma una vista previa (campo por campo, por
+//   trabajador) que Fredy tiene que confirmar a mano.
+const COLUMNAS_EXCEL_TRABAJADORES = [
+  { campo: "nombre", label: "Nombre", tipo: "texto" },
+  { campo: "cedula", label: "Cédula", tipo: "texto" },
+  { campo: "correo", label: "Correo", tipo: "texto" },
+  { campo: "area", label: "Área Interna", tipo: "catalogo_area" },
+  { campo: "zona", label: "Cargo", tipo: "catalogo_cargo" },
+  { campo: "areaTNS", label: "Área TNS", tipo: "catalogo_areaTNS" },
+  { campo: "empleador", label: "Empleador", tipo: "catalogo_empleador" },
+  { campo: "tipoNomina", label: "Tipo Nómina", tipo: "catalogo_tipoNomina" },
+  { campo: "claseRiesgoARL", label: "Clase ARL", tipo: "catalogo_claseARL" },
+  { campo: "sueldo", label: "Sueldo", tipo: "numero" },
+  { campo: "auxilioTransporte", label: "Auxilio de Transporte", tipo: "numero" },
+  { campo: "fechaIngreso", label: "Fecha de Ingreso (AAAA-MM-DD)", tipo: "fecha" },
+  { campo: "cesantiasAcumuladas", label: "Cesantías Acumuladas", tipo: "numero" },
+  { campo: "tarifaHora", label: "Tarifa por Hora", tipo: "numero" },
+  { campo: "tnsCodigo", label: "Código TNS", tipo: "texto" },
+  { campo: "turnoId", label: "Turno", tipo: "catalogo_turno" },
+  { campo: "activo", label: "Estado", tipo: "estado" },
+  { campo: "idHuellero", label: "ID Huellero (no editar aquí)", tipo: "protegido" },
+];
+async function exportarTrabajadoresExcel(trabajadores, turnos) {
+  const XLSX = await import("xlsx-js-style");
+  const ordenados = [...trabajadores].sort((a, b) => a.nombre.localeCompare(b.nombre));
+  const nombreTurno = (id) => (turnos || []).find((t) => t.id === id)?.nombre || "";
+  const rgb = (hex) => hex.replace("#", "");
+  const valorCelda = (t, col) => {
+    switch (col.campo) {
+      case "sueldo":
+      case "auxilioTransporte":
+      case "cesantiasAcumuladas":
+      case "tarifaHora":
+        return Number(t[col.campo] || 0);
+      case "activo":
+        return t.activo ? "Activo" : "Inactivo";
+      case "turnoId":
+        return nombreTurno(t.turnoId) || "Horario completo";
+      default:
+        return t[col.campo] || "";
+    }
+  };
+  const encabezados = COLUMNAS_EXCEL_TRABAJADORES.map((c) => c.label);
+  const filas = ordenados.map((t) => COLUMNAS_EXCEL_TRABAJADORES.map((c) => valorCelda(t, c)));
+  const wsData = [encabezados, ...filas];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  ws["!cols"] = COLUMNAS_EXCEL_TRABAJADORES.map((c) => ({ wch: Math.max(14, c.label.length + 2) }));
+  ws["!freeze"] = { xSplit: 0, ySplit: 1 };
+  const THIN = { style: "thin", color: { rgb: rgb(C.border) } };
+  const BOX = { top: THIN, bottom: THIN, left: THIN, right: THIN };
+  const idxProtegida = COLUMNAS_EXCEL_TRABAJADORES.findIndex((c) => c.tipo === "protegido");
+  const idxEstado = COLUMNAS_EXCEL_TRABAJADORES.findIndex((c) => c.tipo === "estado");
+  for (let r = 0; r < wsData.length; r++) {
+    for (let c = 0; c < COLUMNAS_EXCEL_TRABAJADORES.length; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (!ws[addr]) ws[addr] = { t: "s", v: "" };
+      let style = { border: BOX, alignment: { vertical: "center", horizontal: "left", wrapText: false } };
+      if (r === 0) {
+        style.font = { bold: true, sz: 11, color: { rgb: "FFFFFF" } };
+        style.fill = { patternType: "solid", fgColor: { rgb: rgb(C.ink) } };
+        style.alignment.horizontal = "center";
+      } else if (c === idxProtegida) {
+        style.fill = { patternType: "solid", fgColor: { rgb: "EDEDED" } };
+        style.font = { color: { rgb: "8A8A8A" }, italic: true };
+      } else if (c === idxEstado) {
+        const esActivo = wsData[r][c] === "Activo";
+        style.fill = { patternType: "solid", fgColor: { rgb: rgb(esActivo ? C.greenBg : C.redBg) } };
+        style.font = { bold: true, color: { rgb: rgb(esActivo ? C.green : C.red) } };
+        style.alignment.horizontal = "center";
+      } else {
+        style.fill = { patternType: "solid", fgColor: { rgb: r % 2 === 0 ? rgb(C.canvas) : "FFFFFF" } };
+      }
+      ws[addr].s = style;
+    }
+  }
+  ws["!rows"] = wsData.map((_, i) => (i === 0 ? { hpt: 22 } : { hpt: 18 }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Trabajadores");
+  XLSX.writeFile(wb, `Trabajadores_${today()}.xlsx`);
+}
+// Encuentra en la fila de encabezado del Excel el indice de cada columna de
+// COLUMNAS_EXCEL_TRABAJADORES comparando el texto (sin tildes/mayusculas,
+// ignorando la aclaracion entre parentesis) -- asi el orden de columnas no
+// importa y el import no se rompe si Fredy borra una columna que no le
+// interesa tocar.
+function mapearColumnasExcel(filaEncabezado) {
+  const norm = (filaEncabezado || []).map((h) => normalizarNombreParaComparar(h));
+  const indices = {};
+  COLUMNAS_EXCEL_TRABAJADORES.forEach((col) => {
+    const clave = normalizarNombreParaComparar(col.label).split(" (")[0];
+    indices[col.campo] = norm.findIndex((h) => h === clave);
+  });
+  return indices;
+}
+function valorActualMostrar(col, trabajador, ctx) {
+  switch (col.tipo) {
+    case "numero":
+      return fmtNum(trabajador[col.campo] || 0);
+    case "estado":
+      return trabajador.activo ? "Activo" : "Inactivo";
+    case "catalogo_claseARL":
+      return trabajador.claseRiesgoARL ? labelClaseARL(trabajador.claseRiesgoARL) : "—";
+    case "catalogo_turno":
+      return (ctx.turnos || []).find((t) => t.id === trabajador.turnoId)?.nombre || "Horario completo";
+    default:
+      return trabajador[col.campo] || "—";
+  }
+}
+// Decide que hacer con UNA celda del Excel subido: null = no toca nada
+// (celda vacia o igual a lo que ya hay), { cambio } = valor nuevo valido,
+// { advertencia } = el texto no se pudo interpretar (no se aplica, se
+// avisa en la vista previa).
+function resolverCeldaExcel(col, valorCrudo, trabajador, ctx) {
+  const texto = String(valorCrudo ?? "").trim();
+  if (col.tipo === "protegido") return null;
+  if (col.tipo === "numero") {
+    if (texto === "") return null;
+    const num = Number(String(texto).replace(/[^0-9.-]/g, ""));
+    if (Number.isNaN(num)) return { advertencia: `"${texto}" no es un número válido` };
+    if (Number(trabajador[col.campo] || 0) === num) return null;
+    return { cambio: { valor: num, mostrar: fmtNum(num) } };
+  }
+  if (col.tipo === "estado") {
+    if (texto === "") return null;
+    const t = normalizarNombreParaComparar(texto);
+    let val;
+    if (t.startsWith("ACTIVO") || t === "SI" || t === "TRUE") val = true;
+    else if (t.startsWith("INACTIVO") || t === "NO" || t === "FALSE") val = false;
+    else return { advertencia: `Estado "${texto}" no reconocido (usa Activo/Inactivo)` };
+    if (!!trabajador.activo === val) return null;
+    return { cambio: { valor: val, mostrar: val ? "Activo" : "Inactivo" } };
+  }
+  if (col.tipo === "fecha") {
+    if (texto === "") return null;
+    // Si Excel convirtió la celda en fecha real (numero de serie) al
+    // editarla -- pasa seguido aunque se haya exportado como texto -- se
+    // reconstruye el AAAA-MM-DD en vez de marcarla como error.
+    let fechaTexto = texto;
+    if (/^\d+(\.\d+)?$/.test(texto)) {
+      const serie = Number(texto);
+      const d = new Date(Math.round((serie - 25569) * 86400000));
+      if (!Number.isNaN(d.getTime())) fechaTexto = d.toISOString().slice(0, 10);
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaTexto)) return { advertencia: `Fecha "${texto}" no tiene el formato AAAA-MM-DD` };
+    if ((trabajador.fechaIngreso || "") === fechaTexto) return null;
+    return { cambio: { valor: fechaTexto, mostrar: fechaTexto } };
+  }
+  if (col.tipo === "catalogo_area") {
+    if (texto === "") return null;
+    if (normalizarNombreParaComparar(trabajador.area) === normalizarNombreParaComparar(texto)) return null;
+    const match = ctx.areasNomina.find((a) => normalizarNombreParaComparar(a.nombre) === normalizarNombreParaComparar(texto));
+    if (!match) return { advertencia: `Área Interna "${texto}" no existe en el catálogo` };
+    return { cambio: { valor: match.nombre, mostrar: match.nombre } };
+  }
+  if (col.tipo === "catalogo_areaTNS") {
+    if (texto === "") return null;
+    if (normalizarNombreParaComparar(trabajador.areaTNS) === normalizarNombreParaComparar(texto)) return null;
+    const match = ctx.areasTNS.find((a) => normalizarNombreParaComparar(a.nombre) === normalizarNombreParaComparar(texto));
+    if (!match) return { advertencia: `Área TNS "${texto}" no existe en el catálogo` };
+    return { cambio: { valor: match.nombre, mostrar: match.nombre } };
+  }
+  if (col.tipo === "catalogo_cargo") {
+    if (texto === "") return null;
+    if (normalizarNombreParaComparar(trabajador.zona) === normalizarNombreParaComparar(texto)) return null;
+    const nombreAreaFinal = ctx.areaFinal || trabajador.area;
+    const areaId = ctx.areasNomina.find((a) => normalizarNombreParaComparar(a.nombre) === normalizarNombreParaComparar(nombreAreaFinal))?.id;
+    const match = (ctx.zonasNomina || []).find((z) => z.areaId === areaId && normalizarNombreParaComparar(z.nombre) === normalizarNombreParaComparar(texto));
+    if (!match) return { advertencia: `Cargo "${texto}" no existe dentro del Área "${nombreAreaFinal}"` };
+    return { cambio: { valor: match.nombre, mostrar: match.nombre } };
+  }
+  if (col.tipo === "catalogo_empleador") {
+    if (texto === "") return null;
+    if (normalizarNombreParaComparar(trabajador.empleador) === normalizarNombreParaComparar(texto)) return null;
+    const match = EMPLEADORES.find((e) => normalizarNombreParaComparar(e) === normalizarNombreParaComparar(texto));
+    if (!match) return { advertencia: `Empleador "${texto}" no es válido (usa YANKO o INDUTEX)` };
+    return { cambio: { valor: match, mostrar: match } };
+  }
+  if (col.tipo === "catalogo_tipoNomina") {
+    if (texto === "") return null;
+    if (normalizarNombreParaComparar(trabajador.tipoNomina) === normalizarNombreParaComparar(texto)) return null;
+    const match = TIPOS_NOMINA.find((tp) => normalizarNombreParaComparar(tp) === normalizarNombreParaComparar(texto));
+    if (!match) return { advertencia: `Tipo de Nómina "${texto}" no es válido` };
+    return { cambio: { valor: match, mostrar: match } };
+  }
+  if (col.tipo === "catalogo_claseARL") {
+    if (texto === "") return null;
+    if (normalizarNombreParaComparar(trabajador.claseRiesgoARL || "") === normalizarNombreParaComparar(texto)) return null;
+    const match = CLASES_RIESGO_ARL.find((c) => normalizarNombreParaComparar(c.value) === normalizarNombreParaComparar(texto) || normalizarNombreParaComparar(c.label) === normalizarNombreParaComparar(texto));
+    if (!match) return { advertencia: `Clase ARL "${texto}" no es válida (usa I, II, III, IV o V)` };
+    if (match.value === trabajador.claseRiesgoARL) return null;
+    return { cambio: { valor: match.value, mostrar: match.label } };
+  }
+  if (col.tipo === "catalogo_turno") {
+    if (texto === "") return null;
+    const turnoActualNombre = (ctx.turnos || []).find((t) => t.id === trabajador.turnoId)?.nombre || "";
+    if (normalizarNombreParaComparar(texto).includes("HORARIO COMPLETO")) {
+      if (!trabajador.turnoId) return null;
+      return { cambio: { valor: "", mostrar: "Horario completo" } };
+    }
+    if (normalizarNombreParaComparar(turnoActualNombre) === normalizarNombreParaComparar(texto)) return null;
+    const match = (ctx.turnos || []).find((t) => normalizarNombreParaComparar(t.nombre) === normalizarNombreParaComparar(texto));
+    if (!match) return { advertencia: `Turno "${texto}" no existe en el catálogo` };
+    return { cambio: { valor: match.id, mostrar: match.nombre } };
+  }
+  if (texto === "") return null;
+  if (String(trabajador[col.campo] || "").trim() === texto) return null;
+  return { cambio: { valor: texto, mostrar: texto } };
+}
+// Lee las filas crudas del Excel (header:1) y arma la vista previa: por
+// cada trabajador que matcheo por cedula, la lista de campos que
+// realmente cambian (con su valor anterior y nuevo ya para mostrar) y las
+// advertencias que no se pudieron aplicar.
+function analizarExcelTrabajadores(filasArchivo, trabajadores, ctx) {
+  const indices = mapearColumnasExcel(filasArchivo[0] || []);
+  if (indices.cedula < 0) {
+    return { error: "No se encontró la columna \"Cédula\" en el archivo -- no se puede identificar a quién pertenece cada fila." };
+  }
+  const columnasNoEncontradas = COLUMNAS_EXCEL_TRABAJADORES.filter((c) => indices[c.campo] < 0 && c.tipo !== "protegido").map((c) => c.label);
+  const filasResultado = [];
+  const sinCoincidencia = [];
+  for (let r = 1; r < filasArchivo.length; r++) {
+    const fila = filasArchivo[r] || [];
+    const cedulaArchivo = String(fila[indices.cedula] ?? "").trim();
+    if (!cedulaArchivo) continue;
+    const cedNorm = normalizarCedula(cedulaArchivo);
+    const trabajador = trabajadores.find((t) => normalizarCedula(t.cedula) === cedNorm);
+    if (!trabajador) {
+      sinCoincidencia.push({ cedula: cedulaArchivo, nombre: indices.nombre >= 0 ? String(fila[indices.nombre] ?? "").trim() : "" });
+      continue;
+    }
+    let areaFinalTexto = trabajador.area;
+    if (indices.area >= 0) {
+      const crudo = String(fila[indices.area] ?? "").trim();
+      if (crudo) areaFinalTexto = crudo;
+    }
+    const cambios = [];
+    const advertencias = [];
+    for (const col of COLUMNAS_EXCEL_TRABAJADORES) {
+      const idx = indices[col.campo];
+      if (idx < 0 || col.tipo === "protegido") continue;
+      const r2 = resolverCeldaExcel(col, fila[idx], trabajador, { ...ctx, areaFinal: areaFinalTexto });
+      if (!r2) continue;
+      if (r2.advertencia) advertencias.push({ campo: col.label, motivo: r2.advertencia });
+      else cambios.push({ campo: col.label, campoKey: col.campo, anterior: valorActualMostrar(col, trabajador, ctx), nuevo: r2.cambio.mostrar, valor: r2.cambio.valor });
+    }
+    if (cambios.length === 0 && advertencias.length === 0) continue;
+    filasResultado.push({ id: trabajador.id, nombre: trabajador.nombre, cedula: trabajador.cedula, cambios, advertencias });
+  }
+  return { filas: filasResultado, sinCoincidencia, columnasNoEncontradas };
+}
+async function aplicarCambiosExcelTrabajadores(filasConCambios, onSave) {
+  let actualizados = 0;
+  for (const f of filasConCambios) {
+    if (!f.cambios.length) continue;
+    const datos = {};
+    f.cambios.forEach((c) => { datos[c.campoKey] = c.valor; });
+    await onSave({ id: f.id, ...datos });
+    actualizados++;
+  }
+  return actualizados;
+}
 function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, zonasNomina, turnos, gruposTrabajo }) {
   const [form, setForm] = useState({
     nombre: trabajador?.nombre || "",
@@ -1345,6 +1618,43 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
   const [importandoCorreos, setImportandoCorreos] = useState(false);
   const [resultadoCorreos, setResultadoCorreos] = useState(null);
   const importCorreosRef = useRef(null);
+  // (2026-09-10, a pedido de Fredy) Descargar/subir Excel de Trabajadores
+  // con cambios masivos -- ver helpers COLUMNAS_EXCEL_TRABAJADORES /
+  // exportarTrabajadoresExcel / analizarExcelTrabajadores más arriba.
+  const [subiendoExcel, setSubiendoExcel] = useState(false);
+  const [previewExcel, setPreviewExcel] = useState(null);
+  const [aplicandoExcel, setAplicandoExcel] = useState(false);
+  const [resultadoExcel, setResultadoExcel] = useState(null);
+  const subirExcelRef = useRef(null);
+  async function handleSubirExcelTrabajadores(e) {
+    const archivo = e.target.files?.[0];
+    e.target.value = "";
+    if (!archivo) return;
+    setSubiendoExcel(true);
+    setResultadoExcel(null);
+    try {
+      const XLSX = await import("xlsx");
+      const buffer = await archivo.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array", cellDates: false });
+      const filasArchivo = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" });
+      const analisis = analizarExcelTrabajadores(filasArchivo, trabajadores, { areasNomina, zonasNomina, areasTNS, turnos });
+      setPreviewExcel(analisis);
+    } catch (err) {
+      setPreviewExcel({ error: err?.message || String(err) });
+    }
+    setSubiendoExcel(false);
+  }
+  async function confirmarCambiosExcel() {
+    if (!previewExcel?.filas?.length) { setPreviewExcel(null); return; }
+    setAplicandoExcel(true);
+    try {
+      const actualizados = await aplicarCambiosExcelTrabajadores(previewExcel.filas, onSave);
+      setResultadoExcel({ actualizados });
+    } finally {
+      setAplicandoExcel(false);
+      setPreviewExcel(null);
+    }
+  }
   async function importarCorreosTrabajadores(e) {
     const archivo = e.target.files?.[0];
     e.target.value = "";
@@ -1645,6 +1955,51 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
           </div>
         </Modal>
       )}
+      {previewExcel && (
+        <Modal title="Vista previa de cambios del Excel" onClose={() => setPreviewExcel(null)} width={640}>
+          {previewExcel.error ? (
+            <div style={{ color: C.red, fontWeight: 700, marginBottom: 16 }}>Error leyendo el archivo: {previewExcel.error}</div>
+          ) : (
+            <>
+              {previewExcel.columnasNoEncontradas?.length > 0 && (
+                <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>
+                  No se encontraron estas columnas en el archivo (no se tocan): {previewExcel.columnasNoEncontradas.join(", ")}.
+                </div>
+              )}
+              {previewExcel.filas.length === 0 ? (
+                <div style={{ fontSize: 13, color: C.slate, marginBottom: 16 }}>No hay cambios que aplicar -- ningún dato quedó distinto al que ya está en el sistema.</div>
+              ) : (
+                <div style={{ maxHeight: 400, overflowY: "auto", marginBottom: 16 }}>
+                  {previewExcel.filas.map((f) => (
+                    <div key={f.id} style={{ marginBottom: 14, paddingBottom: 14, borderBottom: `1px solid ${C.border}` }}>
+                      <div style={{ fontWeight: 700, color: C.ink, marginBottom: 6 }}>{f.nombre} <span style={{ color: C.slate, fontWeight: 400 }}>· Cédula {f.cedula}</span></div>
+                      {f.cambios.map((c, i) => (
+                        <div key={i} style={{ fontSize: 12, color: C.ink, marginBottom: 2 }}>
+                          <strong>{c.campo}:</strong> <span style={{ color: C.slate }}>{c.anterior}</span> → <span style={{ color: C.green, fontWeight: 700 }}>{c.nuevo}</span>
+                        </div>
+                      ))}
+                      {f.advertencias.map((a, i) => (
+                        <div key={i} style={{ fontSize: 12, color: C.amber, marginBottom: 2 }}>⚠️ {a.campo}: {a.motivo} -- no se aplica.</div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {previewExcel.sinCoincidencia?.length > 0 && (
+                <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
+                  {previewExcel.sinCoincidencia.length} fila(s) con una cédula que no corresponde a ningún trabajador -- se ignoran: {previewExcel.sinCoincidencia.map((s) => s.cedula).join(", ")}.
+                </div>
+              )}
+            </>
+          )}
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setPreviewExcel(null)}>Cancelar</Btn>
+            {!previewExcel.error && previewExcel.filas?.length > 0 && (
+              <Btn onClick={confirmarCambiosExcel} disabled={aplicandoExcel}>{aplicandoExcel ? "Guardando..." : `Confirmar y guardar (${previewExcel.filas.length})`}</Btn>
+            )}
+          </div>
+        </Modal>
+      )}
       {isAdmin && (
         <div style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <Btn onClick={() => setModal("nuevo")}>+ Nuevo Trabajador</Btn>
@@ -1684,6 +2039,11 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
           <Btn variant="secondary" onClick={() => importCorreosRef.current?.click()} disabled={importandoCorreos}>
             {importandoCorreos ? "Importando..." : "📤 Importar correos"}
           </Btn>
+          <Btn variant="secondary" onClick={() => exportarTrabajadoresExcel(trabajadores, turnos)}>📥 Descargar Excel</Btn>
+          <input ref={subirExcelRef} type="file" accept=".xlsx,.xls" onChange={handleSubirExcelTrabajadores} style={{ display: "none" }} />
+          <Btn variant="secondary" onClick={() => subirExcelRef.current?.click()} disabled={subiendoExcel}>
+            {subiendoExcel ? "Leyendo..." : "📤 Subir Excel modificado"}
+          </Btn>
         </div>
       )}
       {resultadoCorreos && (
@@ -1713,6 +2073,11 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
               )}
             </>
           )}
+        </div>
+      )}
+      {resultadoExcel && (
+        <div style={{ marginBottom: 16, padding: 14, border: `1px solid ${C.border}`, borderRadius: 10, background: C.canvas, fontSize: 12 }}>
+          <div style={{ fontWeight: 700, color: C.green }}>✅ {resultadoExcel.actualizados} trabajador(es) actualizado(s) desde el Excel.</div>
         </div>
       )}
       {gruposDuplicados.length > 0 && (
