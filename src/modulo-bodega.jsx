@@ -3079,6 +3079,23 @@ function DespachoYSaldoView({ currentUser, puedeAprobarDespacho, canAccessContab
 // colección nueva "bodega_despachos" para los despachos. No tiene nada que
 // ver con los despachos a Venezuela/Dubo/Colombia de DespachoYSaldoView --
 // por eso vive aparte, elegible desde el hub.
+//
+// (2026-09-10, a pedido de Fredy) formEnvio nacia vacio cada vez -- si
+// alguien (p.ej. Contabilidad en Despachos Generales) ya habia guardado
+// cantidadDespachadaBodega/sacrificios/segundas/cobrosBodega en el lote,
+// esta pantalla no los mostraba, y si Jesus marcaba el despacho como
+// enviado sin volver a escribirlos, se guardaban en blanco/0 encima de lo
+// que ya habia. Esta funcion siempre recupera primero lo que ya esta en
+// el lote, y solo usa el valor local si el usuario lo toco en esta sesion.
+function datosEnvioLote(l, formEnvio) {
+  const local = formEnvio[l.id] || {};
+  return {
+    cantidadDespachadaBodega: local.cantidadDespachadaBodega !== undefined ? local.cantidadDespachadaBodega : (l.cantidadDespachadaBodega ?? ""),
+    sacrificios: local.sacrificios !== undefined ? local.sacrificios : (l.sacrificios ?? ""),
+    segundas: local.segundas !== undefined ? local.segundas : (l.segundas ?? ""),
+    cobros: local.cobros !== undefined ? local.cobros : (l.cobrosBodega || []).map((c) => ({ ...c })),
+  };
+}
 function EstadoDespachoView({ onVolver, onLogout }) {
   const [lotes, setLotes] = useState([]);
   const [trabajadores, setTrabajadores] = useState([]);
@@ -3255,10 +3272,20 @@ function EstadoDespachoView({ onVolver, onLogout }) {
     setFormEnvio((f) => ({ ...f, [loteId]: { ...f[loteId], [campo]: valor } }));
   }
 
+  // (2026-09-10) Si formEnvio todavia no tiene cobros para este lote,
+  // arranca de lo que ya este guardado en cobrosBodega (por ejemplo, lo que
+  // Contabilidad ya escribio en Despachos Generales) en vez de una lista
+  // vacia -- asi el primer "+ Agregar cobro"/edicion de Jesus no empieza
+  // borrando lo que ya habia.
+  function cobrosBaseFormulario(actual, loteId) {
+    if (actual.cobros !== undefined) return actual.cobros;
+    return (lotes.find((l) => l.id === loteId)?.cobrosBodega || []).map((c) => ({ ...c }));
+  }
+
   function agregarCobro(loteId) {
     setFormEnvio((f) => {
       const actual = f[loteId] || {};
-      const cobros = [...(actual.cobros || []), { trabajadorId: "", tipo: "", valor: "" }];
+      const cobros = [...cobrosBaseFormulario(actual, loteId), { trabajadorId: "", tipo: "", valor: "" }];
       return { ...f, [loteId]: { ...actual, cobros } };
     });
   }
@@ -3266,7 +3293,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
   function actualizarCobro(loteId, idx, campo, valor) {
     setFormEnvio((f) => {
       const actual = f[loteId] || {};
-      const cobros = (actual.cobros || []).map((c, i) => (i === idx ? { ...c, [campo]: valor } : c));
+      const cobros = cobrosBaseFormulario(actual, loteId).map((c, i) => (i === idx ? { ...c, [campo]: valor } : c));
       return { ...f, [loteId]: { ...actual, cobros } };
     });
   }
@@ -3274,7 +3301,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
   function quitarCobro(loteId, idx) {
     setFormEnvio((f) => {
       const actual = f[loteId] || {};
-      const cobros = (actual.cobros || []).filter((_, i) => i !== idx);
+      const cobros = cobrosBaseFormulario(actual, loteId).filter((_, i) => i !== idx);
       return { ...f, [loteId]: { ...actual, cobros } };
     });
   }
@@ -3293,7 +3320,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
     if (!lotesDelDespacho.length) return;
     const despacho = despachos.find((d) => d.id === despachoId);
     for (const l of lotesDelDespacho) {
-      const datos = formEnvio[l.id] || {};
+      const datos = datosEnvioLote(l, formEnvio);
       const cantidadDespachadaBodega = Number(datos.cantidadDespachadaBodega) || 0;
       const sacrificios = Number(datos.sacrificios) || 0;
       const segundas = Number(datos.segundas) || 0;
@@ -3311,7 +3338,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
     try {
       const batch = writeBatch(db);
       lotesDelDespacho.forEach((l) => {
-        const datos = formEnvio[l.id] || {};
+        const datos = datosEnvioLote(l, formEnvio);
         const cobros = (datos.cobros || [])
           .filter((c) => c.trabajadorId && Number(c.valor) > 0)
           .map((c) => ({
@@ -3319,6 +3346,9 @@ function EstadoDespachoView({ onVolver, onLogout }) {
             trabajadorNombre: trabajadores.find((t) => t.id === c.trabajadorId)?.nombre || "",
             tipo: (c.tipo || "").trim(),
             valor: Number(c.valor) || 0,
+            fecha: c.fecha || today(),
+            cobrado: c.cobrado === true,
+            ...(c.periodoIdCobrado ? { periodoIdCobrado: c.periodoIdCobrado } : {}),
           }));
         batch.set(
           doc(db, "dado_por_cumplido_lotes", l.id),
@@ -3629,7 +3659,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                     {lotesGrupo.map((l) => {
-                      const datos = formEnvio[l.id] || {};
+                      const datos = datosEnvioLote(l, formEnvio);
                       const cantCortada = Number(l.cantCortada) || 0;
                       const suma = (Number(datos.cantidadDespachadaBodega) || 0) + (Number(datos.sacrificios) || 0) + (Number(datos.segundas) || 0);
                       const cuadra = !cantCortada || !suma || suma === cantCortada;
@@ -3679,6 +3709,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                                 <div style={{ width: 130 }}>
                                   <FInput type="number" value={c.valor} onChange={(v) => actualizarCobro(l.id, idx, "valor", v)} placeholder="Valor" />
                                 </div>
+                                {c.cobrado && <span style={{ fontSize: 11, color: C.green, fontWeight: 700 }}>✓ Ya cobrado en Nómina</span>}
                                 <span onClick={() => quitarCobro(l.id, idx)} style={{ cursor: "pointer", color: C.red, fontSize: 12, fontWeight: 700 }}>✕ Quitar</span>
                               </div>
                             ))}
@@ -3754,6 +3785,258 @@ function EstadoDespachoView({ onVolver, onLogout }) {
   );
 }
 
+// ─── Despachos Generales: aca Contabilidad registra, apenas se sepa, lo
+// que se despacho de un lote (Cant. Despachada, Sacrificios, Segundas y
+// Cobros) -- ANTES de que Jesus organice el despacho fisico (transportador/
+// guia) en Estado de Despacho. Escribe directo en el mismo documento de
+// dado_por_cumplido_lotes que ya usan Dado por Cumplido y Estado de
+// Despacho, asi que no duplica nada: cuando Jesus complete su parte
+// (marcarDespachoComoEnviado, via datosEnvioLote), ambas partes quedan
+// juntas en el mismo lote sin pisarse.
+function DespachosGeneralesView({ onVolver, onLogout }) {
+  const [lotes, setLotes] = useState([]);
+  const [trabajadores, setTrabajadores] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [mostrarNuevo, setMostrarNuevo] = useState(false);
+  const [busquedaLote, setBusquedaLote] = useState("");
+  const [loteEncontrado, setLoteEncontrado] = useState(null);
+  const [form, setForm] = useState({ cantidadDespachadaBodega: "", sacrificios: "", segundas: "", cobros: [] });
+  const [guardando, setGuardando] = useState(false);
+  const [guardadoOk, setGuardadoOk] = useState(false);
+
+  useEffect(() => {
+    const unsubLotes = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
+      setLotes(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      setLoading(false);
+    });
+    const unsubTrabajadores = onSnapshot(collection(db, "nomina_trabajadores"), (snap) => {
+      setTrabajadores(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => {
+      unsubLotes();
+      unsubTrabajadores();
+    };
+  }, []);
+
+  // Ya registrados: cualquier lote donde Contabilidad ya escribio algo aca
+  // (cantidadDespachadaBodega definido) -- para el listado de consulta de
+  // abajo, mas reciente primero.
+  const yaRegistrados = lotes
+    .filter((l) => l.cantidadDespachadaBodega !== undefined)
+    .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+
+  function cargarLoteEnFormulario(l) {
+    setLoteEncontrado(l);
+    setForm({
+      cantidadDespachadaBodega: l.cantidadDespachadaBodega ?? "",
+      sacrificios: l.sacrificios ?? "",
+      segundas: l.segundas ?? "",
+      cobros: (l.cobrosBodega || []).map((c) => ({ ...c })),
+    });
+    setGuardadoOk(false);
+  }
+
+  function buscarLote() {
+    const num = busquedaLote.trim();
+    if (!num) return;
+    const encontrado = lotes.find((l) => String(l.numLote || "").trim() === num);
+    if (!encontrado) {
+      alert(`No se encontró ningún lote con el número "${num}".`);
+      return;
+    }
+    cargarLoteEnFormulario(encontrado);
+  }
+
+  function campoForm(campo, valor) {
+    setForm((f) => ({ ...f, [campo]: valor }));
+  }
+
+  function agregarCobroForm() {
+    setForm((f) => ({ ...f, cobros: [...f.cobros, { trabajadorId: "", tipo: "", valor: "" }] }));
+  }
+
+  function actualizarCobroForm(idx, campo, valor) {
+    setForm((f) => ({ ...f, cobros: f.cobros.map((c, i) => (i === idx ? { ...c, [campo]: valor } : c)) }));
+  }
+
+  function quitarCobroForm(idx) {
+    setForm((f) => ({ ...f, cobros: f.cobros.filter((_, i) => i !== idx) }));
+  }
+
+  async function guardar() {
+    if (!loteEncontrado) return;
+    setGuardando(true);
+    try {
+      const cobros = form.cobros
+        .filter((c) => c.trabajadorId && Number(c.valor) > 0)
+        .map((c) => ({
+          trabajadorId: c.trabajadorId,
+          trabajadorNombre: trabajadores.find((t) => t.id === c.trabajadorId)?.nombre || "",
+          tipo: (c.tipo || "").trim(),
+          valor: Number(c.valor) || 0,
+          fecha: c.fecha || today(),
+          cobrado: c.cobrado === true,
+          ...(c.periodoIdCobrado ? { periodoIdCobrado: c.periodoIdCobrado } : {}),
+        }));
+      await fsSave("dado_por_cumplido_lotes", loteEncontrado.id, {
+        cantidadDespachadaBodega: Number(form.cantidadDespachadaBodega) || 0,
+        sacrificios: Number(form.sacrificios) || 0,
+        segundas: Number(form.segundas) || 0,
+        cobrosBodega: cobros,
+      });
+      setGuardadoOk(true);
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  function nuevoRegistro() {
+    setMostrarNuevo(true);
+    setBusquedaLote("");
+    setLoteEncontrado(null);
+    setForm({ cantidadDespachadaBodega: "", sacrificios: "", segundas: "", cobros: [] });
+    setGuardadoOk(false);
+  }
+
+  const cantCortada = Number(loteEncontrado?.cantCortada) || 0;
+  const suma = (Number(form.cantidadDespachadaBodega) || 0) + (Number(form.sacrificios) || 0) + (Number(form.segundas) || 0);
+  const cuadra = !cantCortada || !suma || suma === cantCortada;
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
+      <div style={{ maxWidth: 780, margin: "0 auto", padding: "28px 32px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, marginBottom: 4 }}>📋 Despachos Generales</div>
+            <div style={{ fontSize: 13, color: C.slate, maxWidth: 680 }}>
+              Registra lo que se despachó de un lote (Cant. Despachada, Sacrificios, Segundas y Cobros) apenas se sepa — no hace falta esperar a que Bodega organice el despacho físico.
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {onVolver && <Btn variant="secondary" small onClick={onVolver}>← Volver a Bodega</Btn>}
+            {onLogout && <Btn variant="ghost" small onClick={onLogout}>⏏ Cerrar sesión</Btn>}
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <Btn variant={mostrarNuevo ? "secondary" : "primary"} small onClick={() => (mostrarNuevo ? setMostrarNuevo(false) : nuevoRegistro())}>
+            {mostrarNuevo ? "✕ Cerrar" : "+ Nuevo Despacho"}
+          </Btn>
+          {mostrarNuevo && (
+            <div style={{ marginTop: 10, padding: 16, border: `1px solid ${C.border}`, borderRadius: 12, background: C.white }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginBottom: 14 }}>
+                <div style={{ flex: 1, maxWidth: 260 }}>
+                  <Field label="🔍 Buscar Lote">
+                    <FInput value={busquedaLote} onChange={setBusquedaLote} placeholder="Número de lote" onEnter={buscarLote} />
+                  </Field>
+                </div>
+                <Btn variant="secondary" small onClick={buscarLote} disabled={!busquedaLote.trim()}>Buscar</Btn>
+              </div>
+
+              {loteEncontrado && (
+                <>
+                  <div style={{ padding: 12, border: `1px solid ${C.border}`, borderRadius: 10, background: C.canvas, marginBottom: 14 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: C.ink }}>Lote {loteEncontrado.numLote} — {loteEncontrado.referencia || "(sin referencia)"}</div>
+                    <div style={{ fontSize: 12, color: C.slate }}>
+                      Cliente: <strong>{loteEncontrado.cliente || "—"}</strong> · Cant. Cortada: <strong>{cantCortada || "—"}</strong>
+                      {loteEncontrado.estado === "aprobado" ? (
+                        <span style={{ marginLeft: 8, color: C.green, fontWeight: 700 }}>✓ Aprobado</span>
+                      ) : (
+                        <span style={{ marginLeft: 8, color: C.amber, fontWeight: 700 }}>⏳ Aún no aprobado</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 4 }}>
+                    <div style={{ width: 150 }}>
+                      <Field label="Cant. Despachada">
+                        <FInput type="number" value={form.cantidadDespachadaBodega} onChange={(v) => campoForm("cantidadDespachadaBodega", v)} placeholder="0" />
+                      </Field>
+                    </div>
+                    <div style={{ width: 150 }}>
+                      <Field label="Sacrificios">
+                        <FInput type="number" value={form.sacrificios} onChange={(v) => campoForm("sacrificios", v)} placeholder="0" />
+                      </Field>
+                    </div>
+                    <div style={{ width: 150 }}>
+                      <Field label="Segundas">
+                        <FInput type="number" value={form.segundas} onChange={(v) => campoForm("segundas", v)} placeholder="0" />
+                      </Field>
+                    </div>
+                  </div>
+                  {!cuadra && (
+                    <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginBottom: 10 }}>
+                      Despachada + Sacrificios + Segundas debe dar {cantCortada} (ahora suma {suma}).
+                    </div>
+                  )}
+
+                  <div style={{ marginTop: 6, marginBottom: 16 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>Cobros (opcional)</div>
+                    {form.cobros.map((c, idx) => (
+                      <div key={idx} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
+                        <select
+                          value={c.trabajadorId}
+                          onChange={(e) => actualizarCobroForm(idx, "trabajadorId", e.target.value)}
+                          style={{ padding: "7px 10px", borderRadius: 8, border: `1.5px solid ${C.border}`, fontSize: 13, color: C.ink, background: C.white, fontFamily: "inherit", minWidth: 180 }}
+                        >
+                          <option value="">Trabajador...</option>
+                          {[...trabajadores].sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "")).map((t) => (
+                            <option key={t.id} value={t.id}>{t.nombre}</option>
+                          ))}
+                        </select>
+                        <div style={{ width: 200 }}>
+                          <FInput value={c.tipo} onChange={(v) => actualizarCobroForm(idx, "tipo", v)} placeholder="Motivo del cobro" />
+                        </div>
+                        <div style={{ width: 130 }}>
+                          <FInput type="number" value={c.valor} onChange={(v) => actualizarCobroForm(idx, "valor", v)} placeholder="Valor" />
+                        </div>
+                        {c.cobrado && <span style={{ fontSize: 11, color: C.green, fontWeight: 700 }}>✓ Ya cobrado en Nómina</span>}
+                        <span onClick={() => quitarCobroForm(idx)} style={{ cursor: "pointer", color: C.red, fontSize: 12, fontWeight: 700 }}>✕ Quitar</span>
+                      </div>
+                    ))}
+                    <Btn variant="ghost" small onClick={agregarCobroForm}>+ Agregar cobro</Btn>
+                  </div>
+
+                  <Btn variant="success" small onClick={guardar} disabled={guardando}>
+                    {guardando ? "Guardando..." : "💾 Guardar"}
+                  </Btn>
+                  {guardadoOk && <span style={{ marginLeft: 10, fontSize: 12, color: C.green, fontWeight: 700 }}>✅ Guardado.</span>}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.ink, marginBottom: 10 }}>Ya registrados ({yaRegistrados.length})</div>
+        {loading ? (
+          <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Cargando...</div>
+        ) : !yaRegistrados.length ? (
+          <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Todavía no se ha registrado ningún despacho aquí.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {yaRegistrados.map((l) => (
+              <div
+                key={l.id}
+                onClick={() => { setMostrarNuevo(true); setBusquedaLote(String(l.numLote || "")); cargarLoteEnFormulario(l); }}
+                style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, cursor: "pointer", background: C.white }}
+              >
+                <span>
+                  <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"} — {l.cliente || "—"}
+                </span>
+                <span style={{ color: C.slate }}>
+                  Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
+                  {!!(l.cobrosBodega || []).length && <> · Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney(c.valor)}`).join(" / ")}</>}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Punto de entrada de Bodega: antes de caer en Despacho y Saldo (lo que
 // ya existía) o en Estado de Despacho (nuevo), se elige uno de los dos --
 // son dos flujos totalmente distintos (despachos a Venezuela/Dubo/Colombia
@@ -3783,6 +4066,7 @@ function BodegaHubView({ onSeleccionar, onVolver, onLogout }) {
     { tipo: "nav", id: "despacho_saldo", icon: "📦", label: "Despacho y Saldo", desc: "Venezuela, Dubái y Colombia — abonos y saldos.", color: C.violet, bg: C.violetBg },
     { tipo: "stat", icon: "🧾", label: "Pendientes de facturar", desc: "Ya salieron de Calidad, Busint aún no factura.", color: C.amber, bg: C.amberBg, valor: pendientesFacturar, unidad: pendientesFacturar === 1 ? "lote" : "lotes" },
     { tipo: "stat", icon: "⏳", label: "Pendientes de despachar", desc: "Aprobados sin transportador ni guía todavía.", color: C.blue, bg: C.blueBg, valor: pendientesDespachar, unidad: pendientesDespachar === 1 ? "lote" : "lotes" },
+    { tipo: "nav", id: "despachos_generales", icon: "📋", label: "Despachos Generales", desc: "Contabilidad registra lo despachado, sacrificios, segundas y cobros.", color: C.red, bg: C.redBg },
     { tipo: "nav", id: "estado_despacho", icon: "🚚", label: "Estado de Despacho", desc: "Transportador, guía y llegada.", color: C.green, bg: C.greenBg },
   ];
 
@@ -3860,6 +4144,9 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
         onLogout={onLogout}
       />
     );
+  }
+  if (vista === "despachos_generales") {
+    return <DespachosGeneralesView onVolver={() => setVista("hub")} onLogout={onLogout} />;
   }
   if (vista === "estado_despacho") {
     return <EstadoDespachoView onVolver={() => setVista("hub")} onLogout={onLogout} />;
