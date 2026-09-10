@@ -3180,8 +3180,18 @@ function EstadoDespachoView({ onVolver, onLogout }) {
   // enviado/recibido como antes.
   const sinDespacho = aprobados.filter((l) => !l.despachoId && !l.estadoEnvio);
   const porEnviar = aprobados.filter((l) => l.despachoId && (!l.estadoEnvio || l.estadoEnvio === "pendiente"));
-  const enviados = aprobados.filter((l) => l.estadoEnvio === "enviado");
-  const recibidos = aprobados.filter((l) => l.estadoEnvio === "recibido").sort((a, b) => (b.fechaRecibido || "").localeCompare(a.fechaRecibido || ""));
+  // (2026-09-10, a pedido de Fredy) "Enviados" se habia vuelto un listado
+  // que solo crecia (812 lotes acumulados desde siempre) porque nadie
+  // marcaba "recibido". En vez de reescribir cientos de documentos viejos,
+  // se archivan por fecha de corte: todo lo enviado hasta esta fecha se ve
+  // directo en Historial (antes "Recibidos"); de ahi en adelante,
+  // "Enviados" solo tiene lo que de verdad sigue en camino, y pasa a
+  // Historial en cuanto se marca como recibido (como ya funcionaba).
+  const CORTE_HISTORIAL_ENVIOS = "2026-09-09";
+  const enviados = aprobados.filter((l) => l.estadoEnvio === "enviado" && (l.fechaEnvio || "") > CORTE_HISTORIAL_ENVIOS);
+  const recibidos = aprobados
+    .filter((l) => l.estadoEnvio === "recibido" || (l.estadoEnvio === "enviado" && (l.fechaEnvio || "") <= CORTE_HISTORIAL_ENVIOS))
+    .sort((a, b) => (b.fechaRecibido || b.fechaEnvio || "").localeCompare(a.fechaRecibido || a.fechaEnvio || ""));
 
   // Un despacho es de un solo cliente -- en cuanto se marca el primer
   // lote, los demás clientes quedan bloqueados en el panel de selección.
@@ -3412,6 +3422,45 @@ function EstadoDespachoView({ onVolver, onLogout }) {
       lotesDelDespacho.forEach((l) => {
         batch.set(doc(db, "dado_por_cumplido_lotes", l.id), { estadoEnvio: "recibido", fechaRecibido: fecha }, { merge: true });
       });
+      await batch.commit();
+    } finally {
+      setGuardandoId(null);
+    }
+  }
+
+  // (2026-09-10, a pedido de Fredy) Por si se arma un despacho por error --
+  // antes de enviarlo, o incluso ya enviado. Borra el despacho y libera los
+  // lotes que tenia adentro (quedan "sin despacho" otra vez, listos para
+  // agruparse en uno nuevo). Lo que ya se habia registrado en Despachos
+  // Generales (cantidad despachada, sacrificios, segundas, cobros) NO se
+  // borra, solo se desarma el despacho en si.
+  async function eliminarDespacho(despachoId) {
+    const despacho = despachos.find((d) => d.id === despachoId);
+    const lotesDelDespacho = lotes.filter((l) => l.despachoId === despachoId);
+    if (
+      !window.confirm(
+        `¿Eliminar el despacho ${despacho?.codigo || despachoId}? Los ${lotesDelDespacho.length} lote(s) que tiene adentro quedarán sin despacho (sin transportador/guía/estado de envío) -- lo que ya hayas registrado en Despachos Generales no se pierde.`
+      )
+    )
+      return;
+    setGuardandoId(despachoId);
+    try {
+      const batch = writeBatch(db);
+      lotesDelDespacho.forEach((l) => {
+        batch.set(
+          doc(db, "dado_por_cumplido_lotes", l.id),
+          {
+            despachoId: deleteField(),
+            despachoCodigo: deleteField(),
+            estadoEnvio: deleteField(),
+            fechaEnvio: deleteField(),
+            transportador: deleteField(),
+            numeroGuia: deleteField(),
+          },
+          { merge: true }
+        );
+      });
+      batch.delete(doc(db, "bodega_despachos", despachoId));
       await batch.commit();
     } finally {
       setGuardandoId(null);
@@ -3659,7 +3708,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
             🚚 Enviados ({enviados.length})
           </Btn>
           <Btn variant={vista === "recibidos" ? "primary" : "secondary"} small onClick={() => setVista("recibidos")}>
-            ✅ Recibidos ({recibidos.length})
+            🗄️ Historial ({recibidos.length})
           </Btn>
         </div>
 
@@ -3669,10 +3718,10 @@ function EstadoDespachoView({ onVolver, onLogout }) {
               {sinDespacho.length ? 'No hay despachos organizados todavía -- usa "➕ Crear despacho" arriba.' : "No hay lotes aprobados esperando envío."}
             </div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               {gruposPorEnviar.map(({ despacho, despachoId, lotesGrupo }) => (
-                <div key={despachoId} style={{ border: `1.5px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 14, paddingBottom: 12, borderBottom: `1px solid ${C.border}` }}>
+                <div key={despachoId} style={{ border: `1.5px solid ${C.border}`, borderRadius: 12, padding: 12, background: C.white }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 10, paddingBottom: 8, borderBottom: `1px solid ${C.border}` }}>
                     <div>
                       <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>{despacho?.codigo || "(despacho)"} — {despacho?.cliente || "(sin cliente)"}</div>
                       <div style={{ fontSize: 12, color: C.slate }}>
@@ -3680,11 +3729,16 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                         {despacho?.numeroFactura ? <> · Factura {despacho.numeroFactura}</> : null}
                       </div>
                     </div>
-                    <Btn variant="success" small onClick={() => marcarDespachoComoEnviado(despachoId)} disabled={guardandoId === despachoId}>
-                      {guardandoId === despachoId ? "Guardando..." : "🚚 Marcar despacho como enviado"}
-                    </Btn>
+                    <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                      <Btn variant="success" small onClick={() => marcarDespachoComoEnviado(despachoId)} disabled={guardandoId === despachoId}>
+                        {guardandoId === despachoId ? "Guardando..." : "🚚 Marcar despacho como enviado"}
+                      </Btn>
+                      <Btn variant="ghost" small onClick={() => eliminarDespacho(despachoId)} disabled={guardandoId === despachoId}>
+                        🗑️ Eliminar
+                      </Btn>
+                    </div>
                   </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                     {lotesGrupo.map((l) => {
                       const datos = datosEnvioLote(l, formEnvio);
                       const cantCortada = Number(l.cantCortada) || 0;
@@ -3761,10 +3815,10 @@ function EstadoDespachoView({ onVolver, onLogout }) {
           (!gruposEnviados.length ? (
             <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay lotes enviados esperando llegar.</div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               {gruposEnviados.map(({ despacho, despachoId, lotesGrupo }) => (
-                <div key={despachoId} style={{ border: `1.5px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 14, paddingBottom: 12, borderBottom: `1px solid ${C.border}` }}>
+                <div key={despachoId} style={{ border: `1.5px solid ${C.border}`, borderRadius: 12, padding: 12, background: C.white }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 10, paddingBottom: 8, borderBottom: `1px solid ${C.border}` }}>
                     <div>
                       <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>{despacho?.codigo || "(despacho)"} — {despacho?.cliente || "(sin cliente)"}</div>
                       <div style={{ fontSize: 12, color: C.slate }}>
@@ -3773,18 +3827,21 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                         {" "}· Enviado el {lotesGrupo[0]?.fechaEnvio || "—"}
                       </div>
                     </div>
-                    <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
-                      <div style={{ minWidth: 160 }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+                      <div style={{ minWidth: 150 }}>
                         <Field label="Fecha de llegada">
                           <FInput type="date" value={fechaRecepcionPorDespacho[despachoId] ?? today()} onChange={(v) => setFechaRecepcionPorDespacho((f) => ({ ...f, [despachoId]: v }))} />
                         </Field>
                       </div>
                       <Btn variant="success" small onClick={() => marcarDespachoComoRecibido(despachoId)} disabled={guardandoId === despachoId}>
-                        {guardandoId === despachoId ? "Guardando..." : "✅ Marcar despacho como recibido"}
+                        {guardandoId === despachoId ? "Guardando..." : "✅ Marcar como recibido"}
+                      </Btn>
+                      <Btn variant="ghost" small onClick={() => eliminarDespacho(despachoId)} disabled={guardandoId === despachoId}>
+                        🗑️ Eliminar
                       </Btn>
                     </div>
                   </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                     {lotesGrupo.map((l) => (
                       <div key={l.id} style={{ fontSize: 12, color: C.ink, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8, background: C.canvas }}>
                         <strong>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"} <EtapaContabilidadBadge lote={l} /> · Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
@@ -3799,7 +3856,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
 
         {vista === "recibidos" &&
           (!recibidos.length ? (
-            <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Todavía no hay lotes recibidos.</div>
+            <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Todavía no hay nada en el historial.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {recibidos.map((l) => (
@@ -3808,7 +3865,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                     <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia} — {l.cliente} <EtapaContabilidadBadge lote={l} />
                     {l.despachoCodigo ? <> · {l.despachoCodigo}</> : null}
                   </span>
-                  <span style={{ color: C.slate }}>{l.transportador} · Guía {l.numeroGuia} · Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0} · Llegó el {l.fechaRecibido}</span>
+                  <span style={{ color: C.slate }}>{l.transportador} · Guía {l.numeroGuia} · Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0} · Llegó el {l.fechaRecibido || l.fechaEnvio || "—"}</span>
                 </div>
               ))}
             </div>
@@ -3851,11 +3908,16 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
     };
   }, []);
 
-  // Ya registrados: cualquier lote donde Contabilidad ya escribio algo aca
-  // (cantidadDespachadaBodega definido) -- para el listado de consulta de
-  // abajo, mas reciente primero.
-  const yaRegistrados = lotes
-    .filter((l) => l.cantidadDespachadaBodega !== undefined)
+  // (2026-09-10, a pedido de Fredy) "Ya registrados" se estaba llenando
+  // para siempre con TODO lo que Contabilidad hubiera escrito aca
+  // (cantidadDespachadaBodega definido), aunque el lote ya llevara rato
+  // despachado/recibido en Estado de Despacho. Se separa en dos: lo que
+  // todavia sigue su curso (activo) y lo que ya quedo cerrado (historial).
+  const registradosActivos = lotes
+    .filter((l) => l.cantidadDespachadaBodega !== undefined && l.estadoEnvio !== "enviado" && l.estadoEnvio !== "recibido")
+    .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+  const registradosHistorial = lotes
+    .filter((l) => l.cantidadDespachadaBodega !== undefined && (l.estadoEnvio === "enviado" || l.estadoEnvio === "recibido"))
     .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
 
   function cargarLoteEnFormulario(l) {
@@ -4047,18 +4109,41 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
           )}
         </div>
 
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.ink, marginBottom: 10 }}>Ya registrados ({yaRegistrados.length})</div>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.ink, marginBottom: 10 }}>Ya registrados ({registradosActivos.length})</div>
         {loading ? (
           <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Cargando...</div>
-        ) : !yaRegistrados.length ? (
+        ) : !registradosActivos.length ? (
           <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Todavía no se ha registrado ningún despacho aquí.</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {yaRegistrados.map((l) => (
+            {registradosActivos.map((l) => (
               <div
                 key={l.id}
                 onClick={() => { setMostrarNuevo(true); setBusquedaLote(String(l.numLote || "")); cargarLoteEnFormulario(l); }}
                 style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, cursor: "pointer", background: C.white }}
+              >
+                <span>
+                  <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"} — {l.cliente || "—"} <EtapaContabilidadBadge lote={l} />
+                </span>
+                <span style={{ color: C.slate }}>
+                  Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
+                  {!!(l.cobrosBodega || []).length && <> · Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney(c.valor)}`).join(" / ")}</>}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.ink, marginTop: 24, marginBottom: 10 }}>🗄️ Historial ({registradosHistorial.length})</div>
+        {!registradosHistorial.length ? (
+          <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Todavía no hay nada en el historial.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {registradosHistorial.map((l) => (
+              <div
+                key={l.id}
+                onClick={() => { setMostrarNuevo(true); setBusquedaLote(String(l.numLote || "")); cargarLoteEnFormulario(l); }}
+                style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, cursor: "pointer", background: C.canvas }}
               >
                 <span>
                   <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"} — {l.cliente || "—"} <EtapaContabilidadBadge lote={l} />
