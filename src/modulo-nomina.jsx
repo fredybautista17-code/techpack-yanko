@@ -4414,7 +4414,7 @@ function calcularLiquidacionDestajo(trabajador, netoProduccion) {
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
 }
-function NominaDestajoView({ trabajadores, produccion, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados }) {
+function NominaDestajoView({ trabajadores, produccion, faltas, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -4440,10 +4440,15 @@ function NominaDestajoView({ trabajadores, produccion, diasTrabajados, liquidaci
       // NO reemplaza ni afecta esa formula.
       const nombreNorm = normalizarNombreHuellero(t.nombre);
       const diasTrabajadosCount = diasTrabajados.filter((d) => coincideHuellero(d, t, nombreNorm) && d.fecha >= inicio && d.fecha <= fin).length;
+      // (2026-09-10, a pedido de Fredy) Dias sin justificar, igual que en
+      // Nomina Fiscal/Fiscal Destajo -- SOLO informativo, para comparar
+      // despues contra lo reportado por el Estado. NO se usa para descontar
+      // nada de netoAPagar (Destajo se paga por produccion, sin cambios).
+      const diasInasistencia = faltas.filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= inicio && f.fecha <= fin).length;
       const base = calcularLiquidacionDestajo(t, netoProduccion);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
-      return { trabajador: t, calculo: { ...base, diasTrabajados: diasTrabajadosCount, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar - descuentoCobros } };
+      return { trabajador: t, calculo: { ...base, diasInasistencia, diasTrabajados: diasTrabajadosCount, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar - descuentoCobros } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -4518,6 +4523,9 @@ function NominaDestajoView({ trabajadores, produccion, diasTrabajados, liquidaci
             vacio="Sin resultados."
             columnas={[
               { key: "nombre", label: "Nombre", render: (f) => f.trabajador.nombre },
+              { key: "diasInasistencia", label: "Días sin justificar", align: "right", render: (f) => (
+                <span style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green }}>{f.calculo.diasInasistencia}</span>
+              ) },
               { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
                 <span style={{ fontWeight: 700, color: C.green }}>{f.calculo.diasTrabajados}</span>
               ) },
@@ -4750,6 +4758,9 @@ function HistorialDestajoView({ liquidaciones, trabajadores }) {
             columnas={[
               { key: "periodoId", label: "Período" },
               { key: "nombre", label: "Nombre" },
+              { key: "diasInasistencia", label: "Días sin justificar", align: "right", render: (f) => (
+                <span style={{ fontWeight: 700, color: f.diasInasistencia > 0 ? C.red : C.green }}>{f.diasInasistencia || 0}</span>
+              ) },
               { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
                 <span style={{ fontWeight: 700, color: C.green }}>{f.diasTrabajados == null ? "—" : f.diasTrabajados}</span>
               ) },
@@ -6655,7 +6666,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
           {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
           {subView === "historial_fiscal_destajo" && !areaLider && !soloNovedades && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
-          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView trabajadores={trabajadores} produccion={produccion} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
+          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
           {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobros} trabajadores={trabajadores} />}
           {subView === "historial_lote" && !soloNovedades && <HistorialLoteView produccion={produccion} />}
