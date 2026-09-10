@@ -4232,14 +4232,29 @@ function AdministracionView({ currentUser }) {
   }
 
   async function marcarHistoricosComoEnviados() {
-    if (!window.confirm('Esto va a marcar como "Enviado" todos los lotes que ya estaban Aprobados y que todavía no tienen estado de envío (los de antes de que existiera Estado de Despacho en Bodega). No hace falta repetirlo -- una vez que un lote queda marcado, esta acción ya no lo vuelve a tocar. ¿Continuar?')) return;
+    const excluirRaw = window.prompt('¿Hay algún lote que NO se deba marcar como "Enviado" (por ejemplo, uno que ya vas a procesar por Estado de Despacho)? Escribe el/los número(s) de lote separados por coma, o déjalo vacío si ninguno.', '');
+    if (excluirRaw === null) return;
+    const excluirSet = new Set(
+      excluirRaw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    );
+    if (
+      !window.confirm(
+        'Esto va a marcar como "Enviado" todos los lotes que ya estaban Aprobados y que todavía no tienen estado de envío (los de antes de que existiera Estado de Despacho en Bodega)' +
+          (excluirSet.size ? `, EXCEPTO el/los lote(s) ${[...excluirSet].join(", ")}` : "") +
+          '. No hace falta repetirlo -- una vez que un lote queda marcado, esta acción ya no lo vuelve a tocar. ¿Continuar?'
+      )
+    )
+      return;
     setMigrandoEnvios(true);
     setResultadoMigracionEnvios(null);
     try {
       const snap = await getDocs(collection(db, "dado_por_cumplido_lotes"));
       const pendientes = snap.docs.filter((d) => {
         const data = d.data();
-        return data.estado === "aprobado" && !data.estadoEnvio;
+        return data.estado === "aprobado" && !data.estadoEnvio && !excluirSet.has(String(data.numLote || "").trim());
       });
       let marcados = 0;
       for (let i = 0; i < pendientes.length; i += 450) {
