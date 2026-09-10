@@ -3342,13 +3342,18 @@ function EstadoDespachoView({ onVolver, onLogout }) {
       const cantidadDespachadaBodega = Number(datos.cantidadDespachadaBodega) || 0;
       const sacrificios = Number(datos.sacrificios) || 0;
       const segundas = Number(datos.segundas) || 0;
+      // (2026-09-10, a pedido de Fredy) Un Cobro con Cantidad > 0 tambien
+      // explica unidades que faltan (ej. una prenda perdida que se le cobra
+      // a un trabajador) -- cuenta igual que Sacrificios/Segundas para que
+      // el lote cuadre contra Cant. Cortada.
+      const sumaCobros = (datos.cobros || []).reduce((s, c) => s + (Number(c.cantidad) || 0), 0);
       const cantCortada = Number(l.cantCortada) || 0;
       if (!cantidadDespachadaBodega) {
         alert(`Falta la Cantidad Despachada del lote ${l.numLote}.`);
         return;
       }
-      if (cantCortada > 0 && cantidadDespachadaBodega + sacrificios + segundas !== cantCortada) {
-        alert(`Lote ${l.numLote}: Despachada + Sacrificios + Segundas debe dar ${cantCortada} (ahora suma ${cantidadDespachadaBodega + sacrificios + segundas}).`);
+      if (cantCortada > 0 && cantidadDespachadaBodega + sacrificios + segundas + sumaCobros !== cantCortada) {
+        alert(`Lote ${l.numLote}: Despachada + Sacrificios + Segundas + Cobros debe dar ${cantCortada} (ahora suma ${cantidadDespachadaBodega + sacrificios + segundas + sumaCobros}).`);
         return;
       }
     }
@@ -3683,7 +3688,8 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                     {lotesGrupo.map((l) => {
                       const datos = datosEnvioLote(l, formEnvio);
                       const cantCortada = Number(l.cantCortada) || 0;
-                      const suma = (Number(datos.cantidadDespachadaBodega) || 0) + (Number(datos.sacrificios) || 0) + (Number(datos.segundas) || 0);
+                      const sumaCobros = (datos.cobros || []).reduce((s, c) => s + (Number(c.cantidad) || 0), 0);
+                      const suma = (Number(datos.cantidadDespachadaBodega) || 0) + (Number(datos.sacrificios) || 0) + (Number(datos.segundas) || 0) + sumaCobros;
                       const cuadra = !cantCortada || !suma || suma === cantCortada;
                       return (
                         <div key={l.id} style={{ padding: 12, border: `1px solid ${C.border}`, borderRadius: 10, background: C.canvas }}>
@@ -3708,7 +3714,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                           </div>
                           {!cuadra && (
                             <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginBottom: 10 }}>
-                              Despachada + Sacrificios + Segundas debe dar {cantCortada} (ahora suma {suma}).
+                              Despachada + Sacrificios + Segundas + Cobros debe dar {cantCortada} (ahora suma {suma}).
                             </div>
                           )}
                           <div>
@@ -3927,7 +3933,8 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
   }
 
   const cantCortada = Number(loteEncontrado?.cantCortada) || 0;
-  const suma = (Number(form.cantidadDespachadaBodega) || 0) + (Number(form.sacrificios) || 0) + (Number(form.segundas) || 0);
+  const sumaCobros = (form.cobros || []).reduce((s, c) => s + (Number(c.cantidad) || 0), 0);
+  const suma = (Number(form.cantidadDespachadaBodega) || 0) + (Number(form.sacrificios) || 0) + (Number(form.segundas) || 0) + sumaCobros;
   const cuadra = !cantCortada || !suma || suma === cantCortada;
 
   return (
@@ -3994,7 +4001,7 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
                   </div>
                   {!cuadra && (
                     <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginBottom: 10 }}>
-                      Despachada + Sacrificios + Segundas debe dar {cantCortada} (ahora suma {suma}).
+                      Despachada + Sacrificios + Segundas + Cobros debe dar {cantCortada} (ahora suma {suma}).
                     </div>
                   )}
 
