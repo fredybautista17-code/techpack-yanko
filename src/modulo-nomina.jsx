@@ -184,7 +184,12 @@ function FInput({ value, onChange, placeholder, type = "text" }) {
     />
   );
 }
-function FSel({ value, onChange, options, placeholder = "Seleccionar..." }) {
+function FSel({ value, onChange, options, groups, placeholder = "Seleccionar..." }) {
+  // `groups` (2026-09-09, a pedido de Fredy, ver "Grupo de Trabajo" más
+  // abajo): opcional, [{ label, options: [...] }, ...] -- se pinta como
+  // <optgroup> después de `options` (que sigue siendo la lista plana de
+  // siempre). Ningún llamado existente pasa `groups`, así que esto no
+  // cambia nada de lo que ya funciona.
   return (
     <select
       value={value || ""}
@@ -194,6 +199,13 @@ function FSel({ value, onChange, options, placeholder = "Seleccionar..." }) {
       <option value="">{placeholder}</option>
       {(options || []).map((o) => (
         <option key={o.value ?? o} value={o.value ?? o}>{o.label ?? o}</option>
+      ))}
+      {(groups || []).map((g) => (
+        <optgroup key={g.label} label={g.label}>
+          {g.options.map((o) => (
+            <option key={o.value ?? o} value={o.value ?? o}>{o.label ?? o}</option>
+          ))}
+        </optgroup>
       ))}
     </select>
   );
@@ -482,9 +494,128 @@ const FISCAL_CONOCIDOS = [
   { cedula: "1096949415", nombre: "YESICA TATIANA CORREA PEÑARANDA", correo: "tatacorrea0501@gmail.com", area: "DISEÑO", cargo: "APRENDIZ SENA", empleador: "YANKO", sueldo: 1750905 },
   { cedula: "60373362", nombre: "BERTA MARIA CONTRERAS VELASCO", correo: "bertacontreras110476@gmail.com", area: "CORTE", cargo: "CORTADOR", empleador: "INDUTEX", sueldo: 1750905 },
 ];
-function AreaNominaModal({ area, procesos, onSave, onClose }) {
+// Grupo de Trabajo (2026-09-09, a pedido de Fredy): nivel arriba de Área
+// Interna, para organizar varias áreas relacionadas bajo un mismo grupo
+// (ej. "Administrativo" = Contabilidad + Diseño, "Operativo" = Zona de
+// Calor + Corte + Bodega + Control de Calidad). Puramente organizativo/
+// visual por ahora -- no dispara ningún cálculo ni permiso nuevo, solo
+// ordena y agrupa cómo se ven las Áreas Internas (esta pantalla) y sus
+// selectores en Trabajadores y Cargo.
+function GrupoTrabajoModal({ grupo, onSave, onClose }) {
+  const [form, setForm] = useState({ nombre: grupo?.nombre || "" });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  function guardar() {
+    if (!form.nombre.trim()) return;
+    onSave({ nombre: form.nombre.trim() });
+    onClose();
+  }
+  return (
+    <Modal title={grupo ? "Editar Grupo de Trabajo" : "Nuevo Grupo de Trabajo"} onClose={onClose} width={400}>
+      <Field label="Nombre del Grupo de Trabajo"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Administrativo, Operativo" /></Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        Agrupa varias Áreas Internas relacionadas (ej. Operativo = Zona de Calor + Corte + Bodega + Control de Calidad). Es solo organizativo: no cambia ningún cálculo ni permiso, solo ordena cómo se ven las Áreas Internas y los desplegables de Trabajadores/Cargo.
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar} disabled={!form.nombre.trim()}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+function GruposTrabajoView({ grupos, areasNomina, isAdmin, onSave, onDelete }) {
+  const [modal, setModal] = useState(null); // null | "nuevo" | grupo
+  const [confirmDel, setConfirmDel] = useState(null);
+  const ordenados = [...grupos].sort((a, b) => a.nombre.localeCompare(b.nombre));
+  function contarAreas(grupoId) {
+    return (areasNomina || []).filter((a) => a.grupoTrabajoId === grupoId).length;
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Agrupa varias Áreas Internas bajo un mismo grupo (ej. "Administrativo", "Operativo") para organizarlas mejor. Asigna cada Área Interna a un grupo desde Administrativo → Área Interna.
+      </div>
+      {modal && (
+        <GrupoTrabajoModal
+          grupo={modal === "nuevo" ? null : modal}
+          onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {confirmDel && (
+        <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Eliminar el grupo de trabajo <strong>{confirmDel.nombre}</strong>?
+            {contarAreas(confirmDel.id) > 0 && (
+              <div style={{ marginTop: 10, color: C.red, fontWeight: 600 }}>⚠️ {contarAreas(confirmDel.id)} área(s) interna(s) tienen este grupo asignado -- quedarían sin grupo ("Sin grupo") hasta que les asignes otro.</div>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={() => { onDelete(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+          </div>
+        </Modal>
+      )}
+      {isAdmin && (
+        <div style={{ marginBottom: 16 }}>
+          <Btn onClick={() => setModal("nuevo")}>+ Nuevo Grupo de Trabajo</Btn>
+        </div>
+      )}
+      <Tabla
+        vacio="Sin grupos de trabajo registrados todavía."
+        columnas={[
+          { key: "nombre", label: "Grupo de Trabajo" },
+          { key: "areas", label: "Áreas Internas", align: "right", render: (f) => contarAreas(f.id) },
+          ...(isAdmin ? [{
+            key: "acciones", label: "", align: "right",
+            render: (f) => (
+              <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <span onClick={(e) => { e.stopPropagation(); setModal(f); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>Editar</span>
+                <span onClick={(e) => { e.stopPropagation(); setConfirmDel(f); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>
+              </span>
+            ),
+          }] : []),
+        ]}
+        filas={ordenados}
+      />
+    </div>
+  );
+}
+// Agrupa una lista de Áreas Internas por su Grupo de Trabajo, lista para
+// pasarle a FSel como `groups`. Devuelve null si todavía no existe NINGÚN
+// grupo de trabajo -- así el llamador cae al `options` plano de siempre,
+// sin cambiar nada hasta que Fredy cree su primer grupo. `valueKey` es
+// "id" (Cargo, que guarda areaId) o "nombre" (Trabajador, que guarda el
+// nombre del área directamente).
+function agruparAreasParaSelect(areasNomina, gruposTrabajo, valueKey) {
+  if (!gruposTrabajo || !gruposTrabajo.length) return null;
+  const porGrupo = new Map();
+  const sinGrupo = [];
+  (areasNomina || []).forEach((a) => {
+    const g = a.grupoTrabajoId && gruposTrabajo.find((gr) => gr.id === a.grupoTrabajoId);
+    if (g) {
+      if (!porGrupo.has(g.id)) porGrupo.set(g.id, []);
+      porGrupo.get(g.id).push(a);
+    } else {
+      sinGrupo.push(a);
+    }
+  });
+  const aOpcion = (a) => ({ value: a[valueKey], label: a.nombre });
+  const grupos = [...gruposTrabajo]
+    .filter((g) => porGrupo.has(g.id))
+    .sort((a, b) => a.nombre.localeCompare(b.nombre))
+    .map((g) => ({
+      label: g.nombre,
+      options: porGrupo.get(g.id).sort((a, b) => a.nombre.localeCompare(b.nombre)).map(aOpcion),
+    }));
+  if (sinGrupo.length) {
+    grupos.push({ label: "Sin grupo", options: sinGrupo.sort((a, b) => a.nombre.localeCompare(b.nombre)).map(aOpcion) });
+  }
+  return grupos;
+}
+function AreaNominaModal({ area, procesos, grupos, onSave, onClose }) {
   const [form, setForm] = useState({
     nombre: area?.nombre || "",
+    grupoTrabajoId: area?.grupoTrabajoId || "",
     procesosCentroCosto: area?.procesosCentroCosto || [],
     metaDiariaUnidades: area?.metaDiariaUnidades ?? "",
     presupuestoMensualNomina: area?.presupuestoMensualNomina ?? "",
@@ -496,6 +627,7 @@ function AreaNominaModal({ area, procesos, onSave, onClose }) {
     if (!form.nombre.trim()) return;
     onSave({
       nombre: form.nombre.trim(),
+      grupoTrabajoId: form.grupoTrabajoId || "",
       procesosCentroCosto: form.procesosCentroCosto,
       metaDiariaUnidades: form.metaDiariaUnidades === "" ? null : Number(form.metaDiariaUnidades) || 0,
       presupuestoMensualNomina: form.presupuestoMensualNomina === "" ? null : Number(form.presupuestoMensualNomina) || 0,
@@ -509,6 +641,12 @@ function AreaNominaModal({ area, procesos, onSave, onClose }) {
       <Field label="Nombre del Área Interna"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: ZONA CALOR, EMPAQUE, ADMINISTRATIVO, CONTROL DE CALIDAD" /></Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
         Esta lista alimenta el campo "Área Interna" de cada trabajador y el área que se le asigna a un líder en Usuarios. Es distinta de "Área TNS" (Operativa/Administrativo/Diseño, más abajo en Administrativo).
+      </div>
+      <Field label="Grupo de Trabajo (opcional)">
+        <FSel value={form.grupoTrabajoId} onChange={set("grupoTrabajoId")} options={[...(grupos || [])].sort((a, b) => a.nombre.localeCompare(b.nombre)).map((g) => ({ value: g.id, label: g.nombre }))} placeholder="Sin grupo" />
+      </Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        Organiza esta área dentro de un grupo más amplio (ej. "Operativo", "Administrativo") -- puramente visual, no cambia ningún cálculo. Créalos en Administrativo → Grupos de Trabajo.
       </div>
       {/* (2026-09-02, a pedido de Fredy) Presupuesto mensual de nómina del
           área -- Centro de Costo (Planeación) lo compara contra el costo
@@ -594,10 +732,13 @@ function AreaNominaModal({ area, procesos, onSave, onClose }) {
     </Modal>
   );
 }
-function AreasNominaView({ areas, trabajadores, procesos, isAdmin, onSave, onDelete }) {
+function AreasNominaView({ areas, trabajadores, procesos, grupos, isAdmin, onSave, onDelete }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | area
   const [confirmDel, setConfirmDel] = useState(null);
-  const ordenadas = [...areas].sort((a, b) => a.nombre.localeCompare(b.nombre));
+  const nombreGrupo = (grupoId) => (grupos || []).find((g) => g.id === grupoId)?.nombre || null;
+  // Se ordena agrupado (grupo primero, área después) en vez de puramente
+  // alfabético -- las áreas sin grupo quedan al final ("Sin grupo").
+  const ordenadas = [...areas].sort((a, b) => (nombreGrupo(a.grupoTrabajoId) || "zzz_sin_grupo").localeCompare(nombreGrupo(b.grupoTrabajoId) || "zzz_sin_grupo") || a.nombre.localeCompare(b.nombre));
   function contarTrabajadores(nombre) {
     return (trabajadores || []).filter((t) => (t.area || "Sin asignar") === nombre).length;
   }
@@ -610,6 +751,7 @@ function AreasNominaView({ areas, trabajadores, procesos, isAdmin, onSave, onDel
         <AreaNominaModal
           area={modal === "nuevo" ? null : modal}
           procesos={procesos}
+          grupos={grupos}
           onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
           onClose={() => setModal(null)}
         />
@@ -637,6 +779,7 @@ function AreasNominaView({ areas, trabajadores, procesos, isAdmin, onSave, onDel
         vacio="Sin áreas internas registradas todavía."
         columnas={[
           { key: "nombre", label: "Área Interna" },
+          { key: "grupo", label: "Grupo de Trabajo", render: (f) => nombreGrupo(f.grupoTrabajoId) || <span style={{ color: C.slate }}>Sin grupo</span> },
           { key: "trabajadores", label: "Trabajadores", align: "right", render: (f) => contarTrabajadores(f.nombre) },
           ...(isAdmin ? [{
             key: "acciones", label: "", align: "right",
@@ -752,9 +895,10 @@ function AreasTnsView({ areas, trabajadores, isAdmin, onSave, onDelete }) {
 // pantalla). Se guarda en cada trabajador junto a su Área Interna -- por
 // ahora es solo clasificación, no cambia nada de "líder ve solo su
 // gente" (eso sigue siendo por Área Interna).
-function ZonaNominaModal({ zona, areasNomina, onSave, onClose }) {
+function ZonaNominaModal({ zona, areasNomina, gruposTrabajo, onSave, onClose }) {
   const [form, setForm] = useState({ nombre: zona?.nombre || "", areaId: zona?.areaId || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  const gruposParaSelect = agruparAreasParaSelect(areasNomina, gruposTrabajo, "id");
   function guardar() {
     if (!form.nombre.trim() || !form.areaId) return;
     onSave({ nombre: form.nombre.trim(), areaId: form.areaId });
@@ -766,7 +910,8 @@ function ZonaNominaModal({ zona, areasNomina, onSave, onClose }) {
         <FSel
           value={form.areaId}
           onChange={set("areaId")}
-          options={[...areasNomina].sort((a, b) => a.nombre.localeCompare(b.nombre)).map((a) => ({ value: a.id, label: a.nombre }))}
+          options={gruposParaSelect ? undefined : [...areasNomina].sort((a, b) => a.nombre.localeCompare(b.nombre)).map((a) => ({ value: a.id, label: a.nombre }))}
+          groups={gruposParaSelect || undefined}
           placeholder="Elegir..."
         />
       </Field>
@@ -781,7 +926,7 @@ function ZonaNominaModal({ zona, areasNomina, onSave, onClose }) {
     </Modal>
   );
 }
-function ZonasNominaView({ zonas, areasNomina, trabajadores, isAdmin, onSave, onDelete }) {
+function ZonasNominaView({ zonas, areasNomina, gruposTrabajo, trabajadores, isAdmin, onSave, onDelete }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | zona
   const [confirmDel, setConfirmDel] = useState(null);
   const nombreArea = (areaId) => areasNomina.find((a) => a.id === areaId)?.nombre || "(área borrada)";
@@ -798,6 +943,7 @@ function ZonasNominaView({ zonas, areasNomina, trabajadores, isAdmin, onSave, on
         <ZonaNominaModal
           zona={modal === "nuevo" ? null : modal}
           areasNomina={areasNomina}
+          gruposTrabajo={gruposTrabajo}
           onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
           onClose={() => setModal(null)}
         />
@@ -1042,7 +1188,7 @@ function TurnosView({ turnos, trabajadores, isAdmin, onSave, onDelete }) {
     </div>
   );
 }
-function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, zonasNomina, turnos }) {
+function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, zonasNomina, turnos, gruposTrabajo }) {
   const [form, setForm] = useState({
     nombre: trabajador?.nombre || "",
     cedula: trabajador?.cedula || "",
@@ -1070,6 +1216,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
   // ya no tiene sentido).
   const areaSeleccionadaId = areasNomina.find((a) => a.nombre === form.area)?.id;
   const zonasDelArea = (zonasNomina || []).filter((z) => z.areaId === areaSeleccionadaId);
+  const gruposAreaParaSelect = agruparAreasParaSelect(areasNomina, gruposTrabajo, "nombre");
   function cambiarArea(v) {
     setForm((f) => {
       const nuevaAreaId = areasNomina.find((a) => a.nombre === v)?.id;
@@ -1116,7 +1263,15 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
         Si esta persona no trabaja el horario completo (lunes a viernes + sábado si hay festivo), asígnale acá su turno -- así el Reporte de Asistencia no le cuenta como falta los días que no le corresponden.
       </div>
-      <Field label="Área Interna"><FSel value={form.area} onChange={cambiarArea} options={[...areasNomina.map((a) => a.nombre), "Sin asignar"]} placeholder="Sin asignar" /></Field>
+      <Field label="Área Interna">
+        <FSel
+          value={form.area}
+          onChange={cambiarArea}
+          options={gruposAreaParaSelect ? ["Sin asignar"] : [...areasNomina.map((a) => a.nombre), "Sin asignar"]}
+          groups={gruposAreaParaSelect || undefined}
+          placeholder="Sin asignar"
+        />
+      </Field>
       <Field label="Cargo (opcional)">
         <FSel value={form.zona} onChange={set("zona")} options={zonasDelArea.map((z) => z.nombre)} placeholder={zonasDelArea.length ? "Sin asignar" : "Esta área no tiene cargos creados"} />
       </Field>
@@ -1179,7 +1334,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     </Modal>
   );
 }
-function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina, areasTNS, zonasNomina, onSaveArea, onSaveZona, turnos }) {
+function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina, areasTNS, zonasNomina, onSaveArea, onSaveZona, turnos, gruposTrabajo }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | trabajador
   const [confirmDel, setConfirmDel] = useState(null);
   const [autoResultado, setAutoResultado] = useState(null);
@@ -1476,6 +1631,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
           areasTNS={areasTNS}
           zonasNomina={zonasNomina}
           turnos={turnos}
+          gruposTrabajo={gruposTrabajo}
           onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
           onClose={() => setModal(null)}
         />
@@ -5553,6 +5709,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [motivosAusencia, setMotivosAusencia] = useState([]);
   const [motivosAusenciaCargado, setMotivosAusenciaCargado] = useState(false);
   const [turnos, setTurnos] = useState([]);
+  const [gruposTrabajo, setGruposTrabajo] = useState([]);
   const [produccion, setProduccion] = useState([]);
   const [horas, setHoras] = useState([]);
   const [cierres, setCierres] = useState([]);
@@ -5579,6 +5736,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_zonas"), (snap) => setZonasNomina(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_motivos_ausencia"), (snap) => { setMotivosAusencia(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setMotivosAusenciaCargado(true); }),
       onSnapshot(collection(db, "nomina_turnos"), (snap) => setTurnos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_grupos_trabajo"), (snap) => setGruposTrabajo(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_produccion"), (snap) => setProduccion(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_horas"), (snap) => setHoras(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_cierres"), (snap) => setCierres(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -5649,6 +5807,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "tns", icon: "🔌", label: "Conexión TNS" },
             { id: "novedades_tns", icon: "🧾", label: "Novedades TNS" },
             { id: "precios", icon: "⚙️", label: "Procesos" },
+            { id: "grupos_trabajo", icon: "🧩", label: "Grupos de Trabajo" },
             { id: "areas_nomina", icon: "🏭", label: "Área Interna" },
             { id: "zonas_nomina", icon: "🪪", label: "Cargo" },
             { id: "areas_tns", icon: "🏛️", label: "Área TNS" },
@@ -5698,6 +5857,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function borrarMotivoAusencia(id) { await fsDelete("nomina_motivos_ausencia", id); }
   async function guardarTurno(t) { await fsSave("nomina_turnos", t.id, t); }
   async function borrarTurno(id) { await fsDelete("nomina_turnos", id); }
+  async function guardarGrupoTrabajo(g) { await fsSave("nomina_grupos_trabajo", g.id, g); }
+  async function borrarGrupoTrabajo(id) { await fsDelete("nomina_grupos_trabajo", id); }
   // (2026-09-02, a pedido de Fredy) Pareja fija: SOLO Postura Dije
   // encadena con Terminación (nada más). Se dispara siempre que se
   // registre producción de Dije para un trabajador+lote, así el lote no
@@ -5887,9 +6048,10 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
           {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} />}
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} />}
-          {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} />}
-          {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} isAdmin={isAdminCatalogos} onSave={guardarAreaNomina} onDelete={borrarAreaNomina} />}
-          {subView === "zonas_nomina" && !areaLider && !soloNovedades && <ZonasNominaView zonas={zonasNomina} areasNomina={areasNomina} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarZonaNomina} onDelete={borrarZonaNomina} />}
+          {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
+          {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
+          {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} grupos={gruposTrabajo} isAdmin={isAdminCatalogos} onSave={guardarAreaNomina} onDelete={borrarAreaNomina} />}
+          {subView === "zonas_nomina" && !areaLider && !soloNovedades && <ZonasNominaView zonas={zonasNomina} areasNomina={areasNomina} gruposTrabajo={gruposTrabajo} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarZonaNomina} onDelete={borrarZonaNomina} />}
           {subView === "areas_tns" && !areaLider && !soloNovedades && <AreasTnsView areas={areasTNS} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarAreaTNS} onDelete={borrarAreaTNS} />}
           {subView === "motivos_ausencia" && !areaLider && !soloNovedades && <MotivosAusenciaView motivos={motivosAusencia} ausencias={ausencias} isAdmin={isAdminCatalogos} onSave={guardarMotivoAusencia} onDelete={borrarMotivoAusencia} />}
           {subView === "turnos" && !areaLider && !soloNovedades && <TurnosView turnos={turnos} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTurno} onDelete={borrarTurno} />}
