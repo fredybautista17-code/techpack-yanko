@@ -3772,7 +3772,57 @@ function calcularLiquidacionFiscal(trabajador, diasInasistencia) {
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
 }
-function NominaFiscalView({ trabajadores, faltas, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados }) {
+// (2026-09-10, a pedido de Fredy) Se abre al hacer clic en "Días sin
+// justificar" de un trabajador -- lista cada fecha marcada como falta en
+// la quincena. Si ya existe una ausencia registrada que la cubre (se
+// revisa en vivo, por si se registró después de guardar el huellero), se
+// muestra el motivo y se puede quitar de la lista de faltas. Si no tiene
+// ninguna, deja agregarle una con el mismo listado predeterminado de
+// Motivos de siempre -- en cuanto se guarda, esa fecha deja de contar
+// como falta sin justificar sin tener que volver a subir el huellero.
+function DetalleDiasSinJustificarModal({ trabajador, fechas, ausencias, trabajadores, motivosDisponibles, onJustificar, onLimpiar, onClose }) {
+  const [fechaEnEdicion, setFechaEnEdicion] = useState(null);
+  function ausenciaDe(fecha) {
+    return (ausencias || []).find((a) => a.trabajadorId === trabajador.id && a.fechaInicio <= fecha && fecha <= a.fechaFin);
+  }
+  return (
+    <Modal title={`Días sin justificar — ${trabajador.nombre}`} onClose={onClose} width={460}>
+      {fechaEnEdicion && (
+        <AusenciaModal
+          trabajadores={trabajadores}
+          motivosDisponibles={motivosDisponibles}
+          trabajadorIdSugerido={trabajador.id}
+          fechaInicioSugerida={fechaEnEdicion}
+          onSave={(data) => { onJustificar(data, fechaEnEdicion); setFechaEnEdicion(null); }}
+          onClose={() => setFechaEnEdicion(null)}
+        />
+      )}
+      {!fechas.length ? (
+        <div style={{ fontSize: 13, color: C.slate }}>No hay días sin justificar en esta quincena. 🎉</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {fechas.map((fecha) => {
+            const ausencia = ausenciaDe(fecha);
+            return (
+              <div key={fecha} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8 }}>
+                <span style={{ fontWeight: 700, color: C.ink }}>{fmtFechaISO(fecha)}</span>
+                {ausencia ? (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ fontSize: 12, color: C.green, fontWeight: 700 }}>✅ {ausencia.motivo}{ausencia.observaciones ? ` — ${ausencia.observaciones}` : ""}</span>
+                    <span onClick={() => onLimpiar(fecha)} style={{ cursor: "pointer", color: C.slate, fontSize: 11 }} title="Ya está justificada -- quitarla de la lista de faltas">🧹 Quitar</span>
+                  </div>
+                ) : (
+                  <Btn variant="ghost" small onClick={() => setFechaEnEdicion(fecha)}>+ Agregar justificación</Btn>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Modal>
+  );
+}
+function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -3780,6 +3830,7 @@ function NominaFiscalView({ trabajadores, faltas, diasTrabajados, liquidaciones,
   const [resultados, setResultados] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
+  const [detalleFaltas, setDetalleFaltas] = useState(null); // { trabajador, fechas }
 
   const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal" && t.activo !== false);
   const periodoId = `${anio}-${mes}-Q${quincena}`;
@@ -3790,12 +3841,13 @@ function NominaFiscalView({ trabajadores, faltas, diasTrabajados, liquidaciones,
   function calcular() {
     const filas = personas.map((t) => {
       const nombreNorm = normalizarNombreHuellero(t.nombre);
-      const dias = faltas.filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= inicio && f.fecha <= fin).length;
+      const faltasDetalle = faltas.filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= inicio && f.fecha <= fin);
+      const dias = faltasDetalle.length;
       const diasTrabajadosCount = diasTrabajados.filter((d) => coincideHuellero(d, t, nombreNorm) && d.fecha >= inicio && d.fecha <= fin).length;
       const base = calcularLiquidacionFiscal(t, dias);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
-      return { trabajador: t, calculo: { ...base, diasTrabajados: diasTrabajadosCount, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar - descuentoCobros } };
+      return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar - descuentoCobros } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -3837,6 +3889,18 @@ function NominaFiscalView({ trabajadores, faltas, diasTrabajados, liquidaciones,
 
   return (
     <div>
+      {detalleFaltas && (
+        <DetalleDiasSinJustificarModal
+          trabajador={detalleFaltas.trabajador}
+          fechas={detalleFaltas.fechas}
+          ausencias={ausencias}
+          trabajadores={trabajadores}
+          motivosDisponibles={motivosDisponibles}
+          onJustificar={(data, fecha) => onJustificarFalta(data, normalizarNombreHuellero(detalleFaltas.trabajador.nombre), fecha)}
+          onLimpiar={(fecha) => onLimpiarFaltaJustificada(normalizarNombreHuellero(detalleFaltas.trabajador.nombre), fecha)}
+          onClose={() => setDetalleFaltas(null)}
+        />
+      )}
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
         Liquidación quincenal de los trabajadores "Fiscal" (sueldo fijo, CON seguridad social real: EPS y pensión descontados al trabajador, más pensión/ARL/caja de compensación a cargo de la empresa) — se hospeda acá en Atlas, no se envía a TNS. Los días de inasistencia sin justificar salen solos de lo que guardaste en Reporte de Asistencia.
       </div>
@@ -3884,7 +3948,7 @@ function NominaFiscalView({ trabajadores, faltas, diasTrabajados, liquidaciones,
               { key: "nombre", label: "Nombre", render: (f) => f.trabajador.nombre },
               { key: "claseRiesgoARL", label: "Clase ARL", render: (f) => f.trabajador.claseRiesgoARL ? labelClaseARL(f.trabajador.claseRiesgoARL) : <span style={{ color: C.slate }}>Sin asignar</span> },
               { key: "dias", label: "Días sin justificar", align: "right", render: (f) => (
-                <span style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green }}>{f.calculo.diasInasistencia}</span>
+                <span onClick={() => setDetalleFaltas({ trabajador: f.trabajador, fechas: f.calculo.fechasFalta || [] })} style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green, cursor: "pointer", textDecoration: "underline" }} title="Ver el detalle de las fechas">{f.calculo.diasInasistencia}</span>
               ) },
               { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
                 <span style={{ fontWeight: 700, color: C.green }}>{f.calculo.diasTrabajados}</span>
@@ -4024,7 +4088,7 @@ function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia) {
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
 }
-function NominaFiscalDestajoView({ trabajadores, faltas, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados }) {
+function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -4032,6 +4096,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, diasTrabajados, liquida
   const [resultados, setResultados] = useState(null); // null | [{trabajador, calculo}]
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
+  const [detalleFaltas, setDetalleFaltas] = useState(null); // { trabajador, fechas }
 
   const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal Destajo" && t.activo !== false);
   const periodoId = `${anio}-${mes}-Q${quincena}`;
@@ -4041,7 +4106,8 @@ function NominaFiscalDestajoView({ trabajadores, faltas, diasTrabajados, liquida
   function calcular() {
     const filas = personas.map((t) => {
       const nombreNorm = normalizarNombreHuellero(t.nombre);
-      const dias = faltas.filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= inicio && f.fecha <= fin).length;
+      const faltasDetalle = faltas.filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= inicio && f.fecha <= fin);
+      const dias = faltasDetalle.length;
       // (2026-08-31) Dias trabajados = dias CON marca en el huellero dentro
       // de la quincena -- solo informativo/verificacion (pedido de Fredy),
       // no reemplaza ni toca el descuento por inasistencia de arriba.
@@ -4049,7 +4115,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, diasTrabajados, liquida
       const base = calcularLiquidacionFiscalDestajo(t, dias);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
-      return { trabajador: t, calculo: { ...base, diasTrabajados: diasTrabajadosCount, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar - descuentoCobros } };
+      return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar - descuentoCobros } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -4086,6 +4152,18 @@ function NominaFiscalDestajoView({ trabajadores, faltas, diasTrabajados, liquida
 
   return (
     <div>
+      {detalleFaltas && (
+        <DetalleDiasSinJustificarModal
+          trabajador={detalleFaltas.trabajador}
+          fechas={detalleFaltas.fechas}
+          ausencias={ausencias}
+          trabajadores={trabajadores}
+          motivosDisponibles={motivosDisponibles}
+          onJustificar={(data, fecha) => onJustificarFalta(data, normalizarNombreHuellero(detalleFaltas.trabajador.nombre), fecha)}
+          onLimpiar={(fecha) => onLimpiarFaltaJustificada(normalizarNombreHuellero(detalleFaltas.trabajador.nombre), fecha)}
+          onClose={() => setDetalleFaltas(null)}
+        />
+      )}
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
         Liquidación quincenal de los trabajadores "Fiscal Destajo" (sueldo fijo, sin seguridad social, con parafiscales) — se hospeda acá en Atlas, no se envía a TNS. Los días de inasistencia sin justificar salen solos de lo que guardaste en Reporte de Asistencia.
       </div>
@@ -4125,7 +4203,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, diasTrabajados, liquida
             columnas={[
               { key: "nombre", label: "Nombre", render: (f) => f.trabajador.nombre },
               { key: "dias", label: "Días sin justificar", align: "right", render: (f) => (
-                <span style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green }}>{f.calculo.diasInasistencia}</span>
+                <span onClick={() => setDetalleFaltas({ trabajador: f.trabajador, fechas: f.calculo.fechasFalta || [] })} style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green, cursor: "pointer", textDecoration: "underline" }} title="Ver el detalle de las fechas">{f.calculo.diasInasistencia}</span>
               ) },
               { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
                 <span style={{ fontWeight: 700, color: C.green }}>{f.calculo.diasTrabajados}</span>
@@ -4414,7 +4492,7 @@ function calcularLiquidacionDestajo(trabajador, netoProduccion) {
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
 }
-function NominaDestajoView({ trabajadores, produccion, faltas, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados }) {
+function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -4422,6 +4500,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, diasTrabajados, l
   const [resultados, setResultados] = useState(null); // null | [{trabajador, calculo}]
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
+  const [detalleFaltas, setDetalleFaltas] = useState(null); // { trabajador, fechas }
 
   const personas = trabajadores.filter((t) => t.tipoNomina === "Destajo" && t.activo !== false);
   const periodoId = `${anio}-${mes}-Q${quincena}`;
@@ -4444,11 +4523,12 @@ function NominaDestajoView({ trabajadores, produccion, faltas, diasTrabajados, l
       // Nomina Fiscal/Fiscal Destajo -- SOLO informativo, para comparar
       // despues contra lo reportado por el Estado. NO se usa para descontar
       // nada de netoAPagar (Destajo se paga por produccion, sin cambios).
-      const diasInasistencia = faltas.filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= inicio && f.fecha <= fin).length;
+      const faltasDetalle = faltas.filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= inicio && f.fecha <= fin);
+      const diasInasistencia = faltasDetalle.length;
       const base = calcularLiquidacionDestajo(t, netoProduccion);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
-      return { trabajador: t, calculo: { ...base, diasInasistencia, diasTrabajados: diasTrabajadosCount, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar - descuentoCobros } };
+      return { trabajador: t, calculo: { ...base, diasInasistencia, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar - descuentoCobros } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -4485,6 +4565,18 @@ function NominaDestajoView({ trabajadores, produccion, faltas, diasTrabajados, l
 
   return (
     <div>
+      {detalleFaltas && (
+        <DetalleDiasSinJustificarModal
+          trabajador={detalleFaltas.trabajador}
+          fechas={detalleFaltas.fechas}
+          ausencias={ausencias}
+          trabajadores={trabajadores}
+          motivosDisponibles={motivosDisponibles}
+          onJustificar={(data, fecha) => onJustificarFalta(data, normalizarNombreHuellero(detalleFaltas.trabajador.nombre), fecha)}
+          onLimpiar={(fecha) => onLimpiarFaltaJustificada(normalizarNombreHuellero(detalleFaltas.trabajador.nombre), fecha)}
+          onClose={() => setDetalleFaltas(null)}
+        />
+      )}
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
         Liquidación quincenal de los trabajadores "Destajo" (se les paga lo que produjeron, registrado en Registrar Producción) — acá se junta ese total con las prestaciones que se provisionan (cesantías, prima, vacaciones) sobre su sueldo de referencia. No se envía a TNS.
       </div>
@@ -4524,7 +4616,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, diasTrabajados, l
             columnas={[
               { key: "nombre", label: "Nombre", render: (f) => f.trabajador.nombre },
               { key: "diasInasistencia", label: "Días sin justificar", align: "right", render: (f) => (
-                <span style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green }}>{f.calculo.diasInasistencia}</span>
+                <span onClick={() => setDetalleFaltas({ trabajador: f.trabajador, fechas: f.calculo.fechasFalta || [] })} style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green, cursor: "pointer", textDecoration: "underline" }} title="Ver el detalle de las fechas">{f.calculo.diasInasistencia}</span>
               ) },
               { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
                 <span style={{ fontWeight: 700, color: C.green }}>{f.calculo.diasTrabajados}</span>
@@ -6479,6 +6571,22 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function borrarHoras(id) { await fsDelete("nomina_horas", id); }
   async function guardarAusencia(a) { await fsSave("nomina_ausencias", a.id, a); }
   async function borrarAusencia(id) { await fsDelete("nomina_ausencias", id); }
+  // (2026-09-10, a pedido de Fredy) Justificar una falta desde el detalle
+  // de "Días sin justificar" en Nómina -- guarda la ausencia (mismo
+  // patrón de id/registradoPor que AusenciasView/PermisosCalendarioView) y
+  // borra el registro guardado en Reporte de Asistencia para esa fecha,
+  // asi deja de contar de inmediato, sin tener que volver a subir el
+  // huellero.
+  async function justificarFaltaDesdeNomina(data, nombreNorm, fecha) {
+    await guardarAusencia({ id: uid(), ...data, registradoPor: currentUser?.name || currentUser?.username || "", registradoEn: new Date().toISOString() });
+    await fsDelete("nomina_faltas_sin_justificar", `${nombreNorm}__${fecha}`);
+  }
+  // Cuando la falta YA tenia una ausencia que la cubria (se registro
+  // despues de guardar el huellero) -- solo limpia el registro de falta,
+  // no crea una ausencia nueva.
+  async function limpiarFaltaYaJustificada(nombreNorm, fecha) {
+    await fsDelete("nomina_faltas_sin_justificar", `${nombreNorm}__${fecha}`);
+  }
   async function guardarLiquidacionF(l) { await fsSave("nomina_fiscal_liquidaciones", l.id, l); }
   async function guardarLiquidacionFD(l) { await fsSave("nomina_fiscal_destajo_liquidaciones", l.id, l); }
   async function guardarLiquidacionD(l) { await fsSave("nomina_destajo_liquidaciones", l.id, l); }
@@ -6662,11 +6770,11 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} turnos={turnos} onGuardarTrabajador={guardarTrabajador} />}
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
-          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView trabajadores={trabajadores} faltas={faltasSinJustificar} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
+          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
-          {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
+          {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
           {subView === "historial_fiscal_destajo" && !areaLider && !soloNovedades && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
-          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
+          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
           {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobros} trabajadores={trabajadores} />}
           {subView === "historial_lote" && !soloNovedades && <HistorialLoteView produccion={produccion} />}
