@@ -4036,6 +4036,33 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
     </div>
   );
 }
+// ─── Control de Despacho: junta "Despachos Generales" (Contabilidad
+// registra lo despachado) y "Estado de Despacho" (Jesus organiza
+// transportador/guia/llegada) bajo una sola entrada del hub, con pestañas
+// para pasar de una a otra -- a pedido de Fredy (2026-09-10), en vez de
+// ser dos tarjetas separadas en el menu principal de Bodega.
+function ControlDespachoView({ onVolver, onLogout }) {
+  const [sub, setSub] = useState("generales"); // "generales" | "estado"
+  return (
+    <div style={{ background: C.canvas }}>
+      <div style={{ maxWidth: 980, margin: "0 auto", padding: "20px 32px 0" }}>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn variant={sub === "generales" ? "primary" : "secondary"} small onClick={() => setSub("generales")}>
+            📋 Despachos Generales
+          </Btn>
+          <Btn variant={sub === "estado" ? "primary" : "secondary"} small onClick={() => setSub("estado")}>
+            🚚 Estado de Despacho
+          </Btn>
+        </div>
+      </div>
+      {sub === "generales" ? (
+        <DespachosGeneralesView onVolver={onVolver} onLogout={onLogout} />
+      ) : (
+        <EstadoDespachoView onVolver={onVolver} onLogout={onLogout} />
+      )}
+    </div>
+  );
+}
 
 // ─── Punto de entrada de Bodega: antes de caer en Despacho y Saldo (lo que
 // ya existía) o en Estado de Despacho (nuevo), se elige uno de los dos --
@@ -4043,31 +4070,13 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
 // con su saldo, vs. transportador/guía/llegada de los lotes locales de
 // Dado por Cumplido) que no tiene sentido mezclar en un solo menú.
 function BodegaHubView({ onSeleccionar, onVolver, onLogout }) {
-  const [lotesResumen, setLotesResumen] = useState([]);
-
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
-      setLotesResumen(snap.docs.map((d) => d.data()));
-    });
-    return () => unsub();
-  }, []);
-
-  // Mismos criterios que ya usan las pantallas de Dado por Cumplido y
-  // Estado de Despacho -- este resumen solo repite esos conteos para verlos
-  // de un vistazo antes de entrar, no inventa una regla nueva.
-  const pendientesFacturar = lotesResumen.filter((l) => l.estado !== "aprobado" && l.tieneFactura === false).length;
-  const pendientesDespachar = lotesResumen.filter((l) => l.estado === "aprobado" && (!l.estadoEnvio || l.estadoEnvio === "pendiente")).length;
-
-  // Mismas tarjetas que ya usa Planta (HomePlanta) -- icono/número en cuadro
-  // de color, título, descripción y "Entrar →" (o "En vivo" para las que
-  // solo informan). "nav" navega a la pantalla completa correspondiente;
-  // "stat" es solo informativa, no es clicable.
+  // (2026-09-10, a pedido de Fredy) El hub queda con solo 2 tarjetas --
+  // "Control de Despacho" junta adentro (con pestañas) lo que antes eran
+  // "Despachos Generales" y "Estado de Despacho" por separado, y las dos
+  // tarjetas de conteo (Pendientes de facturar/despachar) se quitan.
   const TARJETAS = [
     { tipo: "nav", id: "despacho_saldo", icon: "📦", label: "Despacho y Saldo", desc: "Venezuela, Dubái y Colombia — abonos y saldos.", color: C.violet, bg: C.violetBg },
-    { tipo: "stat", icon: "🧾", label: "Pendientes de facturar", desc: "Ya salieron de Calidad, Busint aún no factura.", color: C.amber, bg: C.amberBg, valor: pendientesFacturar, unidad: pendientesFacturar === 1 ? "lote" : "lotes" },
-    { tipo: "stat", icon: "⏳", label: "Pendientes de despachar", desc: "Aprobados sin transportador ni guía todavía.", color: C.blue, bg: C.blueBg, valor: pendientesDespachar, unidad: pendientesDespachar === 1 ? "lote" : "lotes" },
-    { tipo: "nav", id: "despachos_generales", icon: "📋", label: "Despachos Generales", desc: "Contabilidad registra lo despachado, sacrificios, segundas y cobros.", color: C.red, bg: C.redBg },
-    { tipo: "nav", id: "estado_despacho", icon: "🚚", label: "Estado de Despacho", desc: "Transportador, guía y llegada.", color: C.green, bg: C.greenBg },
+    { tipo: "nav", id: "control_despacho", icon: "🎛️", label: "Control de Despacho", desc: "Despachos Generales y Estado de Despacho.", color: C.green, bg: C.greenBg },
   ];
 
   return (
@@ -4145,11 +4154,8 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
       />
     );
   }
-  if (vista === "despachos_generales") {
-    return <DespachosGeneralesView onVolver={() => setVista("hub")} onLogout={onLogout} />;
-  }
-  if (vista === "estado_despacho") {
-    return <EstadoDespachoView onVolver={() => setVista("hub")} onLogout={onLogout} />;
+  if (vista === "control_despacho") {
+    return <ControlDespachoView onVolver={() => setVista("hub")} onLogout={onLogout} />;
   }
   return <BodegaHubView onSeleccionar={setVista} onVolver={onVolver} onLogout={onLogout} />;
 }
