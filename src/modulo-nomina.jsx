@@ -668,8 +668,13 @@ function AreaNominaModal({ area, procesos, grupos, onSave, onClose }) {
           Corte, Confección, y también Zona de Calor y Control de Calidad),
           Despachado (compara el costo de nómina del área contra el
           despachado TOTAL de toda la empresa, de Facturación Clientes --
-          para Administrativo y Bodega), o Unidades movidas en Busint (el
-          modo viejo, por proceso marcado abajo + meta diaria). "Automático"
+          para Administrativo y Bodega), Unidades movidas en Busint (el
+          modo viejo, por proceso marcado abajo + meta diaria), o Base
+          Administrativa (2026-09-10, a pedido de Fredy: para áreas que no
+          producen ni despachan nada medible -- Gerencia, Contabilidad,
+          Diseño -- compara el costo de nómina del área contra la BASE que
+          ya se cobra en cada lote de Dado por Cumplido, pensada
+          justamente para cubrir esos gastos administrativos). "Automático"
           (dejar en blanco) mantiene el comportamiento de antes para
           cualquier área que todavía no se haya reclasificado: con procesos
           marcados = Busint, sin marcar = Destajo. */}
@@ -683,10 +688,11 @@ function AreaNominaModal({ area, procesos, grupos, onSave, onClose }) {
           <option value="destajo">Destajo (Valor producido / Balance)</option>
           <option value="despachado">Despachado (Facturación Clientes)</option>
           <option value="busint_unidades">Unidades movidas en Busint (por proceso)</option>
+          <option value="base_dado_por_cumplido">Base Administrativa (Dado por Cumplido)</option>
         </select>
       </Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
-        "Despachado" y "Unidades movidas en Busint" no usan la tabla de trabajadores por destajo -- "Despachado" tampoco usa los procesos ni la meta de abajo, esos campos son solo para "Unidades movidas en Busint" (o "Automático" con procesos marcados).
+        "Despachado", "Unidades movidas en Busint" y "Base Administrativa" no usan la tabla de trabajadores por destajo -- ninguna de las tres usa los procesos ni la meta de abajo, esos campos son solo para "Unidades movidas en Busint" (o "Automático" con procesos marcados).
       </div>
       <Field label="Procesos que cuentan para Centro de Costo (opcional)">
         <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, maxHeight: 160, overflowY: "auto" }}>

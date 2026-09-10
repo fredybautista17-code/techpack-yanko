@@ -3730,6 +3730,40 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     });
     return () => unsub();
   }, []);
+  // (2026-09-10, a pedido de Fredy) Modo "Base Administrativa" (Gerencia,
+  // Contabilidad, Diseño...): el costo de nómina del área se compara
+  // contra la BASE que ya se cobra en cada lote de Dado por Cumplido
+  // (Base × Cantidad Cortada, el campo "total" que ya calcula cada lote
+  // al aprobarse) -- esa base está pensada justamente para cubrir estos
+  // gastos administrativos, a diferencia de la Ganancia final (que ya
+  // tiene la base restada). Se agrupa por la fecha en que se APROBÓ el
+  // lote (no la fecha del lote), a pedido explícito de Fredy. Lectura en
+  // vivo, aparte de Contabilidad -- no duplica ni modifica nada de ahí.
+  const [lotesDadoPorCumplido, setLotesDadoPorCumplido] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
+      const filas = snap.docs
+        .map((d) => d.data())
+        .filter((l) => l.estado === "aprobado" && !l.eliminado)
+        .map((l) => ({
+          total: Number(l.total) || 0,
+          fechaAprobacion: l.fechaAprobacion?.toDate ? l.fechaAprobacion.toDate().toISOString().slice(0, 10) : null,
+        }))
+        .filter((l) => l.fechaAprobacion);
+      setLotesDadoPorCumplido(filas);
+    });
+    return () => unsub();
+  }, []);
+  const baseAdministrativaPeriodo = useMemo(
+    () => lotesDadoPorCumplido.filter((l) => enPeriodo(l.fechaAprobacion)).reduce((s, l) => s + l.total, 0),
+    [lotesDadoPorCumplido, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]
+  );
+  const lotesBaseAdministrativaPeriodo = useMemo(
+    () => lotesDadoPorCumplido.filter((l) => enPeriodo(l.fechaAprobacion)).length,
+    [lotesDadoPorCumplido, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]
+  );
+  const balanceBaseAdministrativa = baseAdministrativaPeriodo - costoAreaApoyo;
+  const pctCoberturaBaseAdministrativa = costoAreaApoyo > 0 ? (baseAdministrativaPeriodo / costoAreaApoyo) * 100 : 0;
   const [despachadoData, setDespachadoData] = useState(null);
   const [cargandoDespachado, setCargandoDespachado] = useState(false);
   function rangoFechasPeriodo() {
@@ -3855,6 +3889,8 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
             ? "Nómina del área versus unidades reales movidas (Busint) en sus procesos — pensado para áreas de sueldo fijo sin Registrar Producción."
             : modoMedicion === "despachado"
             ? "Nómina del área versus el despachado total de la empresa (Facturación Clientes) — pensado para áreas de sueldo fijo sin producción ni procesos propios que medir, como Administrativo o Bodega."
+            : modoMedicion === "base_dado_por_cumplido"
+            ? "Nómina del área versus la Base cobrada en los lotes de Dado por Cumplido aprobados — pensado para áreas administrativas (Gerencia, Contabilidad, Diseño) que esa Base ya está pensada para cubrir."
             : "Nómina que hay que pagar en cada área versus el valor de lo que cada trabajador está produciendo (Registrar Producción de Nómina, valorado con el precio máximo vigente por proceso)."}
         </p>
       </div>
@@ -3957,6 +3993,22 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
               </div>
               {clientesSinClasificarDespachado > 0 && (
                 <div style={{ fontSize: 11, color: C.amber }}>⚠ {clientesSinClasificarDespachado} cliente(s) sin clasificar (Facturado/Consignación) en Facturación Clientes — no cuentan todavía en el despachado total.</div>
+              )}
+            </>
+          ) : modoMedicion === "base_dado_por_cumplido" ? (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 }}>
+                <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(costoAreaApoyo)} color={C.violet} bg={C.violetBg} />
+                <KPI icon="💰" label={`Presupuesto (${etiquetaPeriodo})`} value={presupuestoPeriodoArea > 0 ? fmtMoney(presupuestoPeriodoArea) : "Sin presupuesto"} color={C.slate} bg={C.canvas} />
+                {presupuestoPeriodoArea > 0 && (
+                  <KPI icon={dentroPresupuesto ? "✅" : "⚠️"} label="Presupuesto nómina" value={`${pctPresupuesto.toFixed(0)}%`} color={dentroPresupuesto ? C.green : C.red} bg={dentroPresupuesto ? C.greenBg : C.redBg} sub={dentroPresupuesto ? "✓ Dentro del presupuesto" : "⚠ Se pasó del presupuesto"} />
+                )}
+                <KPI icon="🧾" label={`Base cobrada (${etiquetaPeriodo})`} value={fmtMoney(baseAdministrativaPeriodo)} color={C.blue} bg={C.blueBg} sub={`${fmtNum(lotesBaseAdministrativaPeriodo)} lote(s) aprobado(s)`} />
+                <KPI icon={balanceBaseAdministrativa >= 0 ? "✅" : "⚠️"} label="Balance (Base − Costo)" value={fmtMoney(balanceBaseAdministrativa)} color={balanceBaseAdministrativa >= 0 ? C.green : C.red} bg={balanceBaseAdministrativa >= 0 ? C.greenBg : C.redBg} />
+                <KPI icon="📊" label="% Cobertura" value={costoAreaApoyo > 0 ? `${pctCoberturaBaseAdministrativa.toFixed(0)}%` : "—"} color={C.ink} bg={C.canvas} sub="de la nómina del área, cubierta por la Base" />
+              </div>
+              {!lotesBaseAdministrativaPeriodo && (
+                <div style={{ fontSize: 11, color: C.amber }}>⚠ No hay lotes de Dado por Cumplido aprobados con fecha de aprobación en este período.</div>
               )}
             </>
           ) : (
