@@ -4075,14 +4075,18 @@ function ControlDespachoView({ onVolver, onLogout }) {
 // son dos flujos totalmente distintos (despachos a Venezuela/Dubo/Colombia
 // con su saldo, vs. transportador/guía/llegada de los lotes locales de
 // Dado por Cumplido) que no tiene sentido mezclar en un solo menú.
-function BodegaHubView({ onSeleccionar, onVolver, onLogout }) {
+function BodegaHubView({ onSeleccionar, onVolver, onLogout, puedeVerControlDespacho }) {
   // (2026-09-10, a pedido de Fredy) El hub queda con solo 2 tarjetas --
   // "Control de Despacho" junta adentro (con pestañas) lo que antes eran
   // "Despachos Generales" y "Estado de Despacho" por separado, y las dos
   // tarjetas de conteo (Pendientes de facturar/despachar) se quitan.
+  // (2026-09-10, a pedido de Fredy) "Control de Despacho" ahora es opcional
+  // por rol -- solo aparece si puedeVerControlDespacho viene en true (permiso
+  // "control_despacho" en Roles, o Administrador). Algunos roles deben ver
+  // unicamente "Despacho y Saldo".
   const TARJETAS = [
     { tipo: "nav", id: "despacho_saldo", icon: "📦", label: "Despacho y Saldo", desc: "Venezuela, Dubái y Colombia — abonos y saldos.", color: C.violet, bg: C.violetBg },
-    { tipo: "nav", id: "control_despacho", icon: "🎛️", label: "Control de Despacho", desc: "Despachos Generales y Estado de Despacho.", color: C.green, bg: C.greenBg },
+    ...(puedeVerControlDespacho ? [{ tipo: "nav", id: "control_despacho", icon: "🎛️", label: "Control de Despacho", desc: "Despachos Generales y Estado de Despacho.", color: C.green, bg: C.greenBg }] : []),
   ];
 
   return (
@@ -4146,8 +4150,12 @@ function BodegaHubView({ onSeleccionar, onVolver, onLogout }) {
   );
 }
 
-export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAccessContabilidad, soloLecturaBodega, onVolver, onLogout }) {
+export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAccessContabilidad, soloLecturaBodega, puedeVerControlDespacho, onVolver, onLogout }) {
   const [vista, setVista] = useState("hub");
+  // Administrador siempre ve "Control de Despacho" aunque el rol no tenga
+  // el permiso "control_despacho" -- igual que el resto de banderas de
+  // Bodega en este componente.
+  const puedeControlDespacho = !!currentUser?.isAdmin || !!puedeVerControlDespacho;
   if (vista === "despacho_saldo") {
     return (
       <DespachoYSaldoView
@@ -4160,9 +4168,9 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
       />
     );
   }
-  if (vista === "control_despacho") {
+  if (vista === "control_despacho" && puedeControlDespacho) {
     return <ControlDespachoView onVolver={() => setVista("hub")} onLogout={onLogout} />;
   }
-  return <BodegaHubView onSeleccionar={setVista} onVolver={onVolver} onLogout={onLogout} />;
+  return <BodegaHubView onSeleccionar={setVista} onVolver={onVolver} onLogout={onLogout} puedeVerControlDespacho={puedeControlDespacho} />;
 }
 
