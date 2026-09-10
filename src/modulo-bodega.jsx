@@ -3520,14 +3520,17 @@ function EstadoDespachoView({ onVolver, onLogout }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
+    <div style={{ minHeight: "100vh", background: `linear-gradient(180deg, ${C.greenBg} 0%, ${C.canvas} 260px)`, fontFamily: "'Inter',-apple-system,sans-serif" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
       <div style={{ maxWidth: 980, margin: "0 auto", padding: "28px 32px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 20 }}>
-          <div>
-            <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, marginBottom: 4 }}>🚚 Estado de Despacho</div>
-            <div style={{ fontSize: 13, color: C.slate, maxWidth: 680 }}>
-              Lotes ya Aprobados en Dado por Cumplido -- completa transportador, guía y la bitácora para marcarlos como enviados, y confirma cuando lleguen.
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <div style={{ width: 48, height: 48, borderRadius: 12, background: C.greenBg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, flexShrink: 0 }}>🚚</div>
+            <div>
+              <div style={{ fontSize: 22, fontWeight: 900, color: C.ink, marginBottom: 4 }}>Estado de Despacho</div>
+              <div style={{ fontSize: 13, color: C.slate, maxWidth: 680 }}>
+                Lotes ya Aprobados en Dado por Cumplido -- completa transportador, guía y la bitácora para marcarlos como enviados, y confirma cuando lleguen.
+              </div>
             </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
@@ -3903,14 +3906,17 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
   const cuadra = !cantCortada || !suma || suma === cantCortada;
 
   return (
-    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
+    <div style={{ minHeight: "100vh", background: `linear-gradient(180deg, ${C.redBg} 0%, ${C.canvas} 260px)`, fontFamily: "'Inter',-apple-system,sans-serif" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
       <div style={{ maxWidth: 780, margin: "0 auto", padding: "28px 32px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 20 }}>
-          <div>
-            <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, marginBottom: 4 }}>📋 Despachos Generales</div>
-            <div style={{ fontSize: 13, color: C.slate, maxWidth: 680 }}>
-              Registra lo que se despachó de un lote (Cant. Despachada, Sacrificios, Segundas y Cobros) apenas se sepa — no hace falta esperar a que Bodega organice el despacho físico.
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <div style={{ width: 48, height: 48, borderRadius: 12, background: C.redBg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, flexShrink: 0 }}>📋</div>
+            <div>
+              <div style={{ fontSize: 22, fontWeight: 900, color: C.ink, marginBottom: 4 }}>Despachos Generales</div>
+              <div style={{ fontSize: 13, color: C.slate, maxWidth: 680 }}>
+                Registra lo que se despachó de un lote (Cant. Despachada, Sacrificios, Segundas y Cobros) apenas se sepa — no hace falta esperar a que Bodega organice el despacho físico.
+              </div>
             </div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
