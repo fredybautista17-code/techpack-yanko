@@ -3513,6 +3513,16 @@ function calcularDadoPorCumplidoPreview({ costoRealTotal, cantCortada, cantDespa
   return { costoDefinitivo, costoTRef, costoT, ventaT, ganancia, gananciaPctLote, gananciaPctRef, total };
 }
 
+// (2026-09-10, a pedido de Fredy) Cuando Bodega ya registro en "Despachos
+// Generales" cuanto se despacho de verdad de este lote, ese numero manda
+// sobre el que llega sincronizado de Busint -- ver bitacora del caso
+// 7231/7235 (una sola factura de Busint junto dos lotes y le sumo el total
+// combinado a uno solo). Mismo criterio en functions/index.js,
+// despachadaEfectivaLote (aprobarDadoPorCumplido usa esa version server-side).
+function despachadaEfectiva(l) {
+  return l?.cantidadDespachadaBodega !== undefined ? (Number(l.cantidadDespachadaBodega) || 0) : (Number(l?.cantDespachada) || 0);
+}
+
 function fmtPesos(n) {
   return "$" + Math.round(Number(n) || 0).toLocaleString("es-CO");
 }
@@ -3616,6 +3626,15 @@ function DadoPorCumplidoView({ currentUser }) {
     await fsSave("dado_por_cumplido_lotes", id, { cantCortada: parseFloat(valor) || 0, cantCortadaManual: true });
   }
 
+  // Corrección manual de Cant. Despachada -- para cuando Busint todavía no
+  // trae el número correcto de este lote (p.ej. juntó dos lotes en una sola
+  // factura) y Bodega tampoco lo ha registrado aún en Despachos Generales.
+  // En cuanto Bodega SÍ lo registre ahí, ese valor manda sobre este -- ver
+  // despachadaEfectiva más arriba.
+  async function guardarCantDespachadaManual(id, valor) {
+    await fsSave("dado_por_cumplido_lotes", id, { cantDespachada: parseFloat(valor) || 0, cantDespachadaManual: true });
+  }
+
   // Corrección manual de Costo Definitivo -- para el ~20% de lotes donde
   // Busint trae un número distinto al de la fórmula (VR.Real ÷ Cant.Cortada)
   // por algo propio de ese lote. Igual que cantCortadaManual, una vez
@@ -3639,14 +3658,14 @@ function DadoPorCumplidoView({ currentUser }) {
           const preview = calcularDadoPorCumplidoPreview({
             costoRealTotal: l.costoRealTotal,
             cantCortada: l.cantCortada,
-            cantDespachada: l.cantDespachada,
+            cantDespachada: despachadaEfectiva(l),
             precioVentaUnitario: l.precioVentaUnitario,
             baseValor: baseElegida?.valor,
             porcentajeSobreCosto: config.porcentajeSobreCosto,
             porcentajeSobreVenta: config.porcentajeSobreVenta,
             costoDefinitivoManual: l.costoDefinitivoManual ? l.costoDefinitivo : null,
           });
-          datos = { ...l, ...preview, baseValorUsado: baseElegida?.valor ?? l.baseValorUsado };
+          datos = { ...l, ...preview, cantDespachada: despachadaEfectiva(l), baseValorUsado: baseElegida?.valor ?? l.baseValorUsado };
         }
         return {
           "FECHA": datos.fecha || "",
@@ -3917,10 +3936,13 @@ function DadoPorCumplidoView({ currentUser }) {
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               {(subVistaPendientes === "conFactura" ? pendientesConFactura : pendientesSinFactura).map((l) => {
                 const baseElegida = bases.find((b) => b.id === l.categoriaBaseId);
+                const tieneDespachadaBodega = l.cantidadDespachadaBodega !== undefined;
+                const despachadaMostrada = despachadaEfectiva(l);
+                const despachadaSospechosa = !tieneDespachadaBodega && Number(l.cantCortada) > 0 && despachadaMostrada > Number(l.cantCortada);
                 const preview = calcularDadoPorCumplidoPreview({
                   costoRealTotal: l.costoRealTotal,
                   cantCortada: l.cantCortada,
-                  cantDespachada: l.cantDespachada,
+                  cantDespachada: despachadaMostrada,
                   precioVentaUnitario: l.precioVentaUnitario,
                   baseValor: baseElegida?.valor,
                   porcentajeSobreCosto: config.porcentajeSobreCosto,
@@ -3948,10 +3970,34 @@ function DadoPorCumplidoView({ currentUser }) {
                           />
                           {l.cantCortadaManual && <span title="Corregido a mano">✍️</span>}
                         </span>
-                        <span>Cant. Despachada: <strong style={{ color: C.ink }}>{fmtNum(l.cantDespachada)}</strong></span>
+                        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          Cant. Despachada:
+                          {tieneDespachadaBodega ? (
+                            <>
+                              <strong style={{ color: C.ink }}>{fmtNum(despachadaMostrada)}</strong>
+                              <span title="Viene de lo que Bodega ya registró en Despachos Generales (validado contra Sacrificios + Segundas)." style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>📦 Desp. Generales</span>
+                            </>
+                          ) : (
+                            <>
+                              <input
+                                type="number"
+                                value={l.cantDespachada ?? ""}
+                                onChange={(e) => guardarCantDespachadaManual(l.id, e.target.value)}
+                                title={l.cantDespachadaManual ? "Corregido a mano -- ya no se sobreescribe con Busint." : "Estimado automático de Busint -- Bodega todavía no lo registra en Despachos Generales. Si Busint juntó varios lotes en una sola factura, corrígelo aquí."}
+                                style={{ width: 72, padding: "2px 6px", border: `1px solid ${despachadaSospechosa ? C.red : C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", fontWeight: 700, color: C.ink }}
+                              />
+                              {l.cantDespachadaManual && <span title="Corregido a mano">✍️</span>}
+                            </>
+                          )}
+                        </span>
                         <span>Precio Venta U.: <strong style={{ color: C.ink }}>{fmtPesos(l.precioVentaUnitario)}</strong></span>
                       </div>
                     </div>
+                    {despachadaSospechosa && (
+                      <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginBottom: 10 }}>
+                        ⚠ Cant. Despachada ({fmtNum(despachadaMostrada)}) es mayor que Cant. Cortada ({fmtNum(l.cantCortada)}) — puede que Busint haya juntado varios lotes en una sola factura. Corrígela arriba, o espera a que Bodega la registre en Despachos Generales.
+                      </div>
+                    )}
                     <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "end", marginBottom: 12 }}>
                       <Field label="Costo Real Total (de Busint)">
                         <FInput type="number" value={l.costoRealTotal ?? ""} onChange={(v) => guardarCampo(l.id, "costoRealTotal", parseFloat(v) || null)} placeholder="Ej: 4841270" />

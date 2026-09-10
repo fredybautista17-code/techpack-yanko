@@ -867,6 +867,15 @@ function calcularDadoPorCumplido({ costoRealTotal, cantCortada, cantDespachada, 
   return { costoDefinitivo, costoTRef, costoT, ventaT, ganancia, gananciaPctLote, gananciaPctRef, total };
 }
 
+// (2026-09-10, a pedido de Fredy) Ver la misma nota en modulo-contabilidad.jsx,
+// despachadaEfectiva -- cuando Bodega ya registro en "Despachos Generales"
+// cuanto se despacho de verdad de este lote, ese numero manda sobre el que
+// llega sincronizado de Busint (que a veces junta dos lotes en una sola
+// factura y le suma el total combinado a uno solo).
+function despachadaEfectivaLote(datos) {
+  return datos?.cantidadDespachadaBodega !== undefined ? (Number(datos.cantidadDespachadaBodega) || 0) : (Number(datos?.cantDespachada) || 0);
+}
+
 async function sincronizarDadoPorCumplidoPendientes() {
   const desdeISO = new Date(Date.now() - DIAS_VENTANA_DADO_POR_CUMPLIDO * 86400000).toISOString().slice(0, 10);
   const hoyISO = new Date().toISOString().slice(0, 10);
@@ -1006,6 +1015,12 @@ async function sincronizarDadoPorCumplidoPendientes() {
     const cantCortadaFinal = datosPrevios?.cantCortadaManual
       ? cantCortadaPrevia
       : (cantCortada > 0 ? cantCortada : cantCortadaPrevia);
+    // (2026-09-10, a pedido de Fredy) Igual que cantCortadaManual -- si
+    // Contabilidad ya corrigio Cant.Despachada a mano (p.ej. porque Busint
+    // junto dos lotes en una sola factura), esa correccion manda siempre.
+    const cantDespachadaFinal = datosPrevios?.cantDespachadaManual
+      ? Number(datosPrevios?.cantDespachada) || 0
+      : totalUnidades;
 
     const camposBusint = {
       numLote: lote,
@@ -1014,7 +1029,7 @@ async function sincronizarDadoPorCumplidoPendientes() {
       cliente,
       fecha: fechaMasReciente,
       cantCortada: cantCortadaFinal,
-      cantDespachada: totalUnidades,
+      cantDespachada: cantDespachadaFinal,
       precioVentaUnitario,
       tieneFactura: true,
       observacionesFactura,
@@ -1055,6 +1070,11 @@ async function sincronizarDadoPorCumplidoPendientes() {
     const cantCortadaFinal = datosPrevios?.cantCortadaManual
       ? cantCortadaPrevia
       : (cantCortadaPanel > 0 ? cantCortadaPanel : cantCortadaPrevia);
+    // (2026-09-10, a pedido de Fredy) Mismo criterio que en la rama de
+    // facturas (FAC) reales, unas lineas arriba.
+    const cantDespachadaFinal = datosPrevios?.cantDespachadaManual
+      ? Number(datosPrevios?.cantDespachada) || 0
+      : traslado.unidades;
     const precioVentaUnitario = Math.round((traslado.monto / traslado.unidades) * 100) / 100;
 
     const camposTraslado = {
@@ -1064,7 +1084,7 @@ async function sincronizarDadoPorCumplidoPendientes() {
       cliente: datosPanel?.nombreCliente || "",
       fecha: traslado.fecha,
       cantCortada: cantCortadaFinal,
-      cantDespachada: traslado.unidades,
+      cantDespachada: cantDespachadaFinal,
       precioVentaUnitario,
       tieneFactura: true,
       observacionesFactura: "Traslado en consignación/externo -- todavía no hay factura real de Busint.",
@@ -1187,10 +1207,11 @@ exports.aprobarDadoPorCumplido = onCall(
     const config = configSnap.exists ? configSnap.data() : DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT;
     const baseValor = Number(baseSnap.data().valor) || 0;
 
+    const cantDespachadaEfectiva = despachadaEfectivaLote(datos);
     const calculo = calcularDadoPorCumplido({
       costoRealTotal,
       cantCortada: datos.cantCortada,
-      cantDespachada: datos.cantDespachada,
+      cantDespachada: cantDespachadaEfectiva,
       precioVentaUnitario: datos.precioVentaUnitario,
       baseValor,
       porcentajeSobreCosto: config.porcentajeSobreCosto ?? DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT.porcentajeSobreCosto,
@@ -1201,6 +1222,11 @@ exports.aprobarDadoPorCumplido = onCall(
     await ref.set(
       {
         ...calculo,
+        // Se congela aquí el número que de verdad se usó para calcular Venta T./
+        // Ganancia (el de Despachos Generales si Bodega ya lo había registrado)
+        // -- de ahora en más la sincronización con Busint ya no toca este lote
+        // (estado === "aprobado"), así que este queda como el valor definitivo.
+        cantDespachada: cantDespachadaEfectiva,
         baseValorUsado: baseValor,
         porcentajeSobreCostoUsado: Number(config.porcentajeSobreCosto ?? DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT.porcentajeSobreCosto),
         porcentajeSobreVentaUsado: Number(config.porcentajeSobreVenta ?? DADO_POR_CUMPLIDO_PORCENTAJES_DEFAULT.porcentajeSobreVenta),
