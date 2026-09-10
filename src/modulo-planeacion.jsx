@@ -425,7 +425,17 @@ function construirLotesDesdeBusintGen(filasBusint) {
     // Atlas los dos son lo mismo: trabajo que todavía no volvió, así que se
     // suman acá una sola vez -- de ahí en adelante todo el archivo sigue
     // viendo un solo "invSemiterminado", sin tener que tocar cada reporte.
-    const invSemiterminadoTotal = (Number(f.invSemiterminado) || 0) + (Number(f.invProceso) || 0);
+    const invSemiterminadoRaw = Number(f.invSemiterminado) || 0;
+    const invProcesoRaw = Number(f.invProceso) || 0;
+    // (2026-09-10, a pedido de Fredy, caso lote 7259) Si los dos números son
+    // EXACTAMENTE iguales, es casi seguro que Busint esté reportando el mismo
+    // trabajo represado dos veces (una vez en su bodega general de
+    // Semiterminado y otra en el proceso con nombre donde quedó) -- que
+    // coincidan hasta la unidad por pura casualidad, si de verdad fueran dos
+    // partes distintas del lote, es prácticamente imposible. Si son
+    // distintos, SÍ se suman (reparto real: una parte en la bodega general,
+    // otra afuera en un proceso -- ver conversación con Fredy).
+    const invSemiterminadoTotal = invSemiterminadoRaw === invProcesoRaw ? invSemiterminadoRaw : invSemiterminadoRaw + invProcesoRaw;
     const { proceso: procesoDondeQuedo, planta: procesoDondeQuedoPlanta, ultimaSalida, sinSalida } = calcularProcesoDondeQuedo(procesos, invSemiterminadoTotal);
     let ultimaSalidaTexto = "";
     if (invSemiterminadoTotal > 0) ultimaSalidaTexto = sinSalida ? "Sin salida" : fmtFecha(ultimaSalida);
