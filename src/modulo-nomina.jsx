@@ -6335,7 +6335,19 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const produccionVisible = areaLider ? produccion.filter((p) => trabajadoresVisibles.some((t) => t.id === p.trabajadorId)) : produccion;
   const horasVisibles = areaLider ? horas.filter((h) => trabajadoresVisibles.some((t) => t.id === h.trabajadorId)) : horas;
   const ausenciasVisibles = areaLider ? ausencias.filter((a) => trabajadoresVisibles.some((t) => t.id === a.trabajadorId)) : ausencias;
-  async function guardarTrabajador(t) { await fsSave("nomina_trabajadores", t.id, t); }
+  async function guardarTrabajador(t) {
+    const actual = trabajadores.find((x) => x.id === t.id);
+    if (actual && t.area !== undefined && (t.area || "Sin asignar") !== (actual.area || "Sin asignar")) {
+      const hoy = today();
+      const previo = actual.historialAreas || [];
+      const tramoAbierto = previo.length && !previo[previo.length - 1].hasta;
+      const cerrado = tramoAbierto
+        ? previo.slice(0, -1).concat([{ ...previo[previo.length - 1], hasta: hoy }])
+        : previo.concat([{ area: actual.area || "Sin asignar", desde: null, hasta: hoy }]);
+      t = { ...t, historialAreas: cerrado.concat([{ area: t.area || "Sin asignar", desde: hoy, hasta: null }]) };
+    }
+    await fsSave("nomina_trabajadores", t.id, t);
+  }
   async function borrarTrabajador(id) { await fsDelete("nomina_trabajadores", id); }
   async function guardarProceso(p) { await fsSave("nomina_precios_proceso", p.id, p); }
   async function borrarProceso(id) { await fsDelete("nomina_precios_proceso", id); }

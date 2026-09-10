@@ -3430,6 +3430,24 @@ function diasHabiles(mes, anio) {
 }
 const DIAS_LABORALES_MES = 20;
 const MESES_CORTOS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+// Dado el historial de Areas Internas de un trabajador (guardado
+// automaticamente por guardarTrabajador en modulo-nomina.jsx cada vez
+// que le cambian el Area), dice en cual estaba en una fecha puntual --
+// para que Centro de Costo de un mes/anio pasado no le atribuya a la
+// persona el Area de HOY si para ese entonces estaba en otra (a pedido
+// de Fredy 2026-09-10, caso Andres Felipe Becerra). Sin historial
+// (nunca le han cambiado el Area desde que existe este campo), cae de
+// vuelta al Area actual -- no cambia nada para quien nunca se ha movido.
+function areaEnFecha(t, fechaISO) {
+  const historial = t?.historialAreas;
+  if (!historial || !historial.length) return t?.area || "Sin asignar";
+  for (const tramo of historial) {
+    const desdeOk = !tramo.desde || fechaISO >= tramo.desde;
+    const hastaOk = !tramo.hasta || fechaISO <= tramo.hasta;
+    if (desdeOk && hastaOk) return tramo.area || "Sin asignar";
+  }
+  return historial[0]?.area || t?.area || "Sin asignar";
+}
 function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movimientos, cargandoMovimientos, onActualizarMovimientos, reclamosCalidad, areaFija }) {
   const hoy = today();
   const [periodo, setPeriodo] = useState("mes"); // "dia" | "mes" | "anio"
@@ -3562,10 +3580,17 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     : procesosApoyo.length > 0
     ? "busint_unidades"
     : "destajo";
+  const fechaReferenciaPeriodo = useMemo(() => {
+    if (periodo === "dia") return fechaDia;
+    if (periodo === "rango") return fechaRangoFin;
+    if (periodo === "anio") return `${anioSel}-12-31`;
+    const ultimoDia = new Date(anioSel, mesSel, 0).getDate();
+    return `${anioSel}-${String(mesSel).padStart(2, "0")}-${String(ultimoDia).padStart(2, "0")}`;
+  }, [periodo, fechaDia, anioSel, mesSel, fechaRangoFin]);
   const trabajadoresArea = useMemo(() => {
     const activos = (trabajadores || []).filter((t) => t.activo !== false);
-    return areaSel ? activos.filter((t) => (t.area || "Sin asignar") === areaSel) : activos;
-  }, [trabajadores, areaSel]);
+    return areaSel ? activos.filter((t) => areaEnFecha(t, fechaReferenciaPeriodo) === areaSel) : activos;
+  }, [trabajadores, areaSel, fechaReferenciaPeriodo]);
   const produccionPeriodo = useMemo(
     () => (produccion || []).filter((p) => enPeriodo(p.fecha)),
     [produccion, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]

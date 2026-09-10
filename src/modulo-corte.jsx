@@ -4085,6 +4085,17 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
       },
     });
   }
+  function setFechaSalida(id, fecha) {
+    onSave({
+      ...config,
+      nomina: {
+        ...config.nomina,
+        trabajadores: trabajadores.map((t) =>
+          t.id === id ? { ...t, fechaSalida: fecha || "" } : t
+        ),
+      },
+    });
+  }
   // Importar nómina desde Excel: actualiza el sueldo de quien ya esté
   // registrado (comparando por nombre, sin importar mayúsculas/tildes de
   // más o menos espacios) y AGREGA como nuevo a quien no exista todavía. NO
@@ -4527,14 +4538,21 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
                 alignItems: "center",
                 gap: 12,
                 padding: "12px 16px",
-                background: C.canvas,
+                background: t.fechaSalida ? C.amberBg : C.canvas,
                 borderRadius: 10,
                 marginBottom: 8,
                 border: `1px solid ${C.border}`,
               }}
             >
-              <div style={{ flex: 1, fontWeight: 700, color: C.ink }}>
-                👤 {t.nombre}
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, color: C.ink }}>
+                  👤 {t.nombre}
+                </div>
+                {t.fechaSalida && (
+                  <div style={{ fontSize: 11, fontWeight: 700, color: C.amber, marginTop: 2 }}>
+                    Salida: {fmtFechaISO(t.fechaSalida)} -- no cuenta en Centro de Costo desde esa fecha
+                  </div>
+                )}
               </div>
               <input
                 type="number"
@@ -4550,8 +4568,33 @@ function AdminCorte({ config, onSave, onReiniciarCortes, currentUser, ultimaCarg
                   fontFamily: "inherit",
                 }}
               />
+              <div>
+                <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: C.slate, marginBottom: 2, textTransform: "uppercase" }}>
+                  Fecha salida
+                </label>
+                <input
+                  type="date"
+                  value={t.fechaSalida || ""}
+                  onChange={(e) => setFechaSalida(t.id, e.target.value)}
+                  style={{
+                    width: 150,
+                    padding: "6px 10px",
+                    border: `1.5px solid ${C.border}`,
+                    borderRadius: 8,
+                    fontSize: 12,
+                    fontFamily: "inherit",
+                  }}
+                />
+              </div>
               <button
-                onClick={() => delTrabajador(t.id)}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `Esto borra a ${t.nombre} de TODOS los meses (pasados y futuros) del Centro de Costo de Corte, no solo de hoy en adelante -- usa esto solo si lo agregaste por error. Si lo que quieres es que deje de contar de aquí en adelante porque ya no está en Corte, mejor ponle una Fecha de salida en vez de eliminarlo. ¿Seguro que quieres ELIMINARLO por completo?`
+                    )
+                  )
+                    delTrabajador(t.id);
+                }}
                 style={{
                   background: C.redBg,
                   border: "none",
@@ -8356,7 +8399,9 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin }) {
     const ingreso = cortesDia.reduce((s, c) => s + (c.ingresoCorte || 0), 0);
     const [y, m] = fechaISO.split("-").map(Number);
     const dh = diasHabiles(m, y) || 1;
-    const costo = (trabajadores || []).reduce((s, t) => s + (t.sueldo || 0) / dh, 0);
+    const costo = (trabajadores || [])
+      .filter((t) => !t.fechaSalida || fechaISO <= t.fechaSalida)
+      .reduce((s, t) => s + (t.sueldo || 0) / dh, 0);
     return {
       ingreso,
       costo,
@@ -8376,6 +8421,17 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin }) {
     if (periodo === "mes") return fechaISO.slice(0, 7) === `${anioSel}-${String(mesSel).padStart(2, "0")}`;
     if (periodo === "anio") return fechaISO.slice(0, 4) === String(anioSel);
     return false;
+  }
+  // Un trabajador cuenta en el Centro de Costo del periodo elegido si no
+  // tiene fecha de salida, o si esa fecha cae DENTRO o DESPUES del periodo
+  // (osea que todavia estaba en Corte durante ese Dia/Mes/Anio). No se
+  // prorratea dentro del mes/anio -- misma aproximacion que ya usa el
+  // resto de este Centro de Costo.
+  function trabajadorActivoPeriodo(t) {
+    if (!t.fechaSalida) return true;
+    if (periodo === "dia") return fechaDia <= t.fechaSalida;
+    if (periodo === "anio") return String(anioSel) <= t.fechaSalida.slice(0, 4);
+    return `${anioSel}-${String(mesSel).padStart(2, "0")}` <= t.fechaSalida.slice(0, 7);
   }
   // Costo de nómina para el periodo elegido, a partir del sueldo mensual
   // actual de cada trabajador (no hay histórico de nómina por mes guardado).
@@ -8401,7 +8457,7 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin }) {
   });
   const filas = [];
   const usados = new Set();
-  (trabajadores || []).forEach((t) => {
+  (trabajadores || []).filter(trabajadorActivoPeriodo).forEach((t) => {
     const key = norm(t.nombre);
     const datos = porCortador.get(key);
     filas.push({
