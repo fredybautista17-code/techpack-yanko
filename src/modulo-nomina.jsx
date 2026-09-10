@@ -3327,7 +3327,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, onGuardarTraba
   const fileRef = useRef(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState("");
-  const [reporte, setReporte] = useState(null); // { desde, hasta, filas }
+  const [reporte, setReporte] = useState(null); // { desde, hasta, diasPeriodo, filas }
   const [soloConFaltas, setSoloConFaltas] = useState(true);
   // Vinculación manual ID Huellero <-> Trabajador para quienes no cruzan
   // ni por ID ni por nombre exacto (ver trabajadorDe más abajo).
@@ -3423,7 +3423,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, onGuardarTraba
         };
       });
 
-      setReporte({ desde, hasta, filas });
+      setReporte({ desde, hasta, diasPeriodo, filas });
     } catch (err) {
       setError(err?.message || String(err));
     } finally {
@@ -3445,18 +3445,30 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, onGuardarTraba
       let n = 0;
       for (const f of reporte.filas) {
         const nombreNorm = normalizarNombreHuellero(f.nombre);
-        for (const d of f.detalle) {
-          if (d.motivo) continue; // solo se guardan los SIN justificar
-          const id = `${nombreNorm}__${d.fecha}`;
-          batch.set(doc(db, "nomina_faltas_sin_justificar", id), {
-            nombre: f.nombre,
-            nombreNorm,
-            idHuellero: f.id,
-            fecha: d.fecha,
-            origen: "huellero",
-            cargadoEn: new Date().toISOString(),
-          });
-          n++;
+        const sinJustificarSet = new Set(f.detalle.filter((d) => !d.motivo).map((d) => d.fecha));
+        // (2026-09-10, a pedido de Fredy, caso Kevin Contreras) El rango de
+        // fechas de ESTE archivo es la verdad completa para esos dias: se
+        // recorren TODAS las fechas del periodo (no solo las que hoy salen
+        // sin justificar) y se borra cualquier falta que hubiera quedado
+        // guardada de una carga anterior en una fecha que hoy ya no aplica
+        // -- si no, una falta vieja/erronea se queda para siempre aunque se
+        // suba despues un archivo que la desmienta.
+        for (const fecha of reporte.diasPeriodo) {
+          const id = `${nombreNorm}__${fecha}`;
+          const ref = doc(db, "nomina_faltas_sin_justificar", id);
+          if (sinJustificarSet.has(fecha)) {
+            batch.set(ref, {
+              nombre: f.nombre,
+              nombreNorm,
+              idHuellero: f.id,
+              fecha,
+              origen: "huellero",
+              cargadoEn: new Date().toISOString(),
+            });
+            n++;
+          } else {
+            batch.delete(ref);
+          }
         }
       }
       await batch.commit();
@@ -3481,17 +3493,26 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, onGuardarTraba
       let n = 0;
       for (const f of reporte.filas) {
         const nombreNorm = normalizarNombreHuellero(f.nombre);
-        for (const fecha of f.diasConMarcaLista) {
+        const diasConMarcaSet = new Set(f.diasConMarcaLista);
+        // (2026-09-10) Mismo criterio que guardarFaltasEnAtlas: el rango de
+        // este archivo reemplaza por completo lo que hubiera guardado de
+        // antes para esta persona en esas fechas.
+        for (const fecha of reporte.diasPeriodo) {
           const id = `${nombreNorm}__${fecha}`;
-          batch.set(doc(db, "nomina_dias_trabajados", id), {
-            nombre: f.nombre,
-            nombreNorm,
-            idHuellero: f.id,
-            fecha,
-            origen: "huellero",
-            cargadoEn: new Date().toISOString(),
-          });
-          n++;
+          const ref = doc(db, "nomina_dias_trabajados", id);
+          if (diasConMarcaSet.has(fecha)) {
+            batch.set(ref, {
+              nombre: f.nombre,
+              nombreNorm,
+              idHuellero: f.id,
+              fecha,
+              origen: "huellero",
+              cargadoEn: new Date().toISOString(),
+            });
+            n++;
+          } else {
+            batch.delete(ref);
+          }
         }
       }
       await batch.commit();
