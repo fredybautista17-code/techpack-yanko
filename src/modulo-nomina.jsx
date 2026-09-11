@@ -3744,11 +3744,30 @@ function cobrosPendientesDeTrabajador(lotesConCobros, trabajadorId) {
 function sumaCobrosPendientes(cobrosDetalle) {
   return (cobrosDetalle || []).reduce((s, c) => s + (Number(c.valor) || 0), 0);
 }
-function calcularLiquidacionFiscal(trabajador, diasInasistencia) {
+// (2026-09-11, a pedido de Fredy) Motivos de ausencia que tambien suspenden
+// el pago del auxilio de transporte (ademas de las faltas sin justificar,
+// que ya no lo pagan). Igual que las faltas, estos dias se descuentan SOLO
+// del auxilio, nunca del sueldo.
+const MOTIVOS_SIN_AUXILIO_TRANSPORTE = ["Vacaciones", "Licencia No Remunerada", "Licencia Maternidad/Paternidad", "Luto"];
+function diasSinAuxilioTransporte(ausencias, trabajadorId, inicio, fin) {
+  const dias = new Set();
+  (ausencias || []).forEach((a) => {
+    if (a.trabajadorId !== trabajadorId) return;
+    if (!MOTIVOS_SIN_AUXILIO_TRANSPORTE.includes(a.motivo)) return;
+    listaDeDiasISO(a.fechaInicio, a.fechaFin).forEach((fecha) => {
+      if (fecha >= inicio && fecha <= fin) dias.add(fecha);
+    });
+  });
+  return dias.size;
+}
+function calcularLiquidacionFiscal(trabajador, diasInasistencia, diasSinAuxilio = 0) {
   const sueldo = Number(trabajador.sueldo) || 0;
   const auxilioMensual = sueldo > TOPE_SUELDO_PARA_AUXILIO ? 0 : (Number(trabajador.auxilioTransporte) || 0);
   const descuentoSueldo = (sueldo / 30) * diasInasistencia;
-  const descuentoAuxilio = (auxilioMensual / 30) * diasInasistencia;
+  // (2026-09-11) El auxilio tambien se descuenta por dias de ausencias que
+  // no lo pagan (vacaciones, licencia no remunerada, licencia de
+  // maternidad/paternidad, luto) -- el sueldo NO se toca por esto.
+  const descuentoAuxilio = (auxilioMensual / 30) * (diasInasistencia + diasSinAuxilio);
   const sueldoQuincena = Math.max(0, sueldo / 2 - descuentoSueldo);
   const auxilioQuincena = Math.max(0, auxilioMensual / 2 - descuentoAuxilio);
   const epsTrabajador = sueldoQuincena * TASA_EPS_TRABAJADOR;
@@ -3765,7 +3784,7 @@ function calcularLiquidacionFiscal(trabajador, diasInasistencia) {
   const primaPeriodo = baseConAuxilio * TASA_PRIMA_MENSUAL;
   const vacacionesPeriodo = sueldoQuincena * TASA_VACACIONES_MENSUAL;
   return {
-    diasInasistencia, descuentoSueldo, descuentoAuxilio, sueldoQuincena, auxilioQuincena,
+    diasInasistencia, diasSinAuxilio, descuentoSueldo, descuentoAuxilio, sueldoQuincena, auxilioQuincena,
     epsTrabajador, pensionTrabajador, pensionEmpleador, arlEmpleador, cajaCompensacionEmpleador, epsEmpleador,
     netoAPagar: sueldoQuincena + auxilioQuincena - epsTrabajador - pensionTrabajador,
     cesantiasPeriodo, interesesPeriodo, primaPeriodo, vacacionesPeriodo,
@@ -3844,7 +3863,8 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       const faltasDetalle = faltas.filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= inicio && f.fecha <= fin);
       const dias = faltasDetalle.length;
       const diasTrabajadosCount = diasTrabajados.filter((d) => coincideHuellero(d, t, nombreNorm) && d.fecha >= inicio && d.fecha <= fin).length;
-      const base = calcularLiquidacionFiscal(t, dias);
+      const diasSinAuxilio = diasSinAuxilioTransporte(ausencias, t.id, inicio, fin);
+      const base = calcularLiquidacionFiscal(t, dias, diasSinAuxilio);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
       return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar - descuentoCobros } };
@@ -3952,6 +3972,9 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
               ) },
               { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
                 <span style={{ fontWeight: 700, color: C.green }}>{f.calculo.diasTrabajados}</span>
+              ) },
+              { key: "diasSinAuxilio", label: "Días sin aux. transporte", align: "right", render: (f) => (
+                <span style={{ fontWeight: 700, color: f.calculo.diasSinAuxilio > 0 ? C.amber : C.slate }}>{f.calculo.diasSinAuxilio || 0}</span>
               ) },
               { key: "sueldoQuincena", label: "Sueldo quincena", align: "right", render: (f) => fmtMoney(f.calculo.sueldoQuincena) },
               { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.calculo.auxilioQuincena) },
@@ -4068,11 +4091,14 @@ function HistorialFiscalView({ liquidaciones, trabajadores }) {
     </div>
   );
 }
-function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia) {
+function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia, diasSinAuxilio = 0) {
   const sueldo = Number(trabajador.sueldo) || 0;
   const auxilio = Number(trabajador.auxilioTransporte) || 0;
   const descuentoSueldo = (sueldo / 30) * diasInasistencia;
-  const descuentoAuxilio = (auxilio / 30) * diasInasistencia;
+  // (2026-09-11) Mismo criterio que calcularLiquidacionFiscal: el auxilio
+  // tambien se descuenta por dias de ausencias que no lo pagan -- el
+  // sueldo no se toca por esto.
+  const descuentoAuxilio = (auxilio / 30) * (diasInasistencia + diasSinAuxilio);
   const sueldoQuincena = Math.max(0, sueldo / 2 - descuentoSueldo);
   const auxilioQuincena = Math.max(0, auxilio / 2 - descuentoAuxilio);
   const saldoCesantiasInicio = Number(trabajador.cesantiasAcumuladas) || 0;
@@ -4082,7 +4108,7 @@ function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia) {
   const primaPeriodo = baseParafiscales * TASA_PRIMA_MENSUAL;
   const vacacionesPeriodo = baseParafiscales * TASA_VACACIONES_MENSUAL;
   return {
-    diasInasistencia, descuentoSueldo, descuentoAuxilio, sueldoQuincena, auxilioQuincena,
+    diasInasistencia, diasSinAuxilio, descuentoSueldo, descuentoAuxilio, sueldoQuincena, auxilioQuincena,
     netoAPagar: sueldoQuincena + auxilioQuincena,
     cesantiasPeriodo, interesesPeriodo, primaPeriodo, vacacionesPeriodo,
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
@@ -4112,7 +4138,8 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
       // de la quincena -- solo informativo/verificacion (pedido de Fredy),
       // no reemplaza ni toca el descuento por inasistencia de arriba.
       const diasTrabajadosCount = diasTrabajados.filter((d) => coincideHuellero(d, t, nombreNorm) && d.fecha >= inicio && d.fecha <= fin).length;
-      const base = calcularLiquidacionFiscalDestajo(t, dias);
+      const diasSinAuxilio = diasSinAuxilioTransporte(ausencias, t.id, inicio, fin);
+      const base = calcularLiquidacionFiscalDestajo(t, dias, diasSinAuxilio);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
       return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar - descuentoCobros } };
@@ -4207,6 +4234,9 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
               ) },
               { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
                 <span style={{ fontWeight: 700, color: C.green }}>{f.calculo.diasTrabajados}</span>
+              ) },
+              { key: "diasSinAuxilio", label: "Días sin aux. transporte", align: "right", render: (f) => (
+                <span style={{ fontWeight: 700, color: f.calculo.diasSinAuxilio > 0 ? C.amber : C.slate }}>{f.calculo.diasSinAuxilio || 0}</span>
               ) },
               { key: "sueldoQuincena", label: "Sueldo quincena", align: "right", render: (f) => fmtMoney(f.calculo.sueldoQuincena) },
               { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.calculo.auxilioQuincena) },
