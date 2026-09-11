@@ -4203,7 +4203,7 @@ function BodegaHubView({ onSeleccionar, onVolver, onLogout, puedeVerControlDespa
   // "control_despacho" en Roles, o Administrador). Algunos roles deben ver
   // unicamente "Despacho y Saldo".
   const TARJETAS = [
-    { tipo: "nav", id: "despacho_saldo", icon: "📦", label: "Despacho y Saldo", desc: "Venezuela, Dubái y Colombia — abonos y saldos.", color: C.violet, bg: C.violetBg },
+    { tipo: "nav", id: "despacho_saldo", icon: "📦", label: "Despacho y Saldo", desc: "Abonos y saldos.", color: C.violet, bg: C.violetBg },
     ...(puedeVerControlDespacho ? [{ tipo: "nav", id: "control_despacho", icon: "🎛️", label: "Control de Despacho", desc: "Despachos Generales y Estado de Despacho.", color: C.green, bg: C.greenBg }] : []),
   ];
 
