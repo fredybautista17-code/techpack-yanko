@@ -4252,7 +4252,126 @@ function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia, diasSinA
 // liquidar. Cubre Nomina Fiscal y Nomina Fiscal Destajo (las unicas que
 // tienen estos descuentos reales); Destajo no aplica porque se paga por
 // produccion, no por dias.
-function NovedadesQuincenaView({ trabajadores, faltas, ausencias, turnos }) {
+// (2026-09-13, a pedido de Fredy) Carga historica de novedades de enero a
+// agosto de 2026 -- antes de esa fecha Atlas no registraba nomina en vivo,
+// asi que Ausencias no tiene esos dias (no remunerados y vacaciones) y la
+// Liquidacion de Trabajador no los puede contar. Este archivo (2 hojas)
+// deja subirlos de una vez, por trabajador. Los prestamos son un tercer
+// dato que se aprovecha para cargar en el mismo archivo -- por ahora son
+// solo informativos (no se descuentan de nada todavia).
+const HOJA_NOVEDADES_HISTORICO = "Novedades";
+const HOJA_PRESTAMOS_HISTORICO = "Prestamos";
+async function descargarPlantillaHistorico(trabajadores) {
+  const XLSX = await import("xlsx-js-style");
+  const wb = XLSX.utils.book_new();
+  const encNovedades = ["Cédula", "Nombre (referencia)", "Motivo", "Fecha Inicio (AAAA-MM-DD)", "Fecha Fin (AAAA-MM-DD)"];
+  const wsNovedades = XLSX.utils.aoa_to_sheet([encNovedades, ["1004802413", "Ejemplo Nombre", "Licencia No Remunerada", "2026-03-10", "2026-03-12"]]);
+  wsNovedades["!cols"] = encNovedades.map((h) => ({ wch: Math.max(16, h.length + 2) }));
+  XLSX.utils.book_append_sheet(wb, wsNovedades, HOJA_NOVEDADES_HISTORICO);
+  const encPrestamos = ["Cédula", "Nombre (referencia)", "Monto", "Fecha (AAAA-MM-DD)", "Observación"];
+  const wsPrestamos = XLSX.utils.aoa_to_sheet([encPrestamos, ["1004802413", "Ejemplo Nombre", "200000", "2026-05-15", "Adelanto de nómina"]]);
+  wsPrestamos["!cols"] = encPrestamos.map((h) => ({ wch: Math.max(16, h.length + 2) }));
+  XLSX.utils.book_append_sheet(wb, wsPrestamos, HOJA_PRESTAMOS_HISTORICO);
+  const encRef = ["Cédula", "Nombre", "Tipo Nómina"];
+  const filasRef = [...trabajadores].sort((a, b) => a.nombre.localeCompare(b.nombre)).map((t) => [t.cedula || "", t.nombre, t.tipoNomina || ""]);
+  const wsRef = XLSX.utils.aoa_to_sheet([encRef, ...filasRef]);
+  wsRef["!cols"] = encRef.map((h) => ({ wch: Math.max(16, h.length + 2) }));
+  XLSX.utils.book_append_sheet(wb, wsRef, "Trabajadores (referencia)");
+  XLSX.writeFile(wb, "Plantilla_Novedades_Historicas.xlsx");
+}
+function hojaPorNombre(wb, nombre) {
+  const clave = wb.SheetNames.find((k) => normalizarNombreParaComparar(k) === normalizarNombreParaComparar(nombre));
+  return clave ? wb.Sheets[clave] : null;
+}
+function analizarNovedadesHistoricas(filasHoja, trabajadores, motivosDisponibles) {
+  const validas = [];
+  const errores = [];
+  for (let r = 1; r < filasHoja.length; r++) {
+    const fila = filasHoja[r] || [];
+    const cedula = String(fila[0] ?? "").trim();
+    if (!cedula) continue;
+    const motivoTexto = String(fila[2] ?? "").trim();
+    const fechaInicio = String(fila[3] ?? "").trim();
+    const fechaFin = String(fila[4] ?? "").trim();
+    const trabajador = trabajadores.find((t) => normalizarCedula(t.cedula) === normalizarCedula(cedula));
+    if (!trabajador) { errores.push({ fila: r + 1, error: `Cédula "${cedula}" no corresponde a ningún trabajador` }); continue; }
+    const motivo = motivosDisponibles.find((m) => normalizarNombreParaComparar(m) === normalizarNombreParaComparar(motivoTexto));
+    if (!motivo) { errores.push({ fila: r + 1, error: `Motivo "${motivoTexto}" no existe en el catálogo (fila de ${trabajador.nombre})` }); continue; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaInicio) || !/^\d{4}-\d{2}-\d{2}$/.test(fechaFin)) { errores.push({ fila: r + 1, error: `Fechas inválidas (fila de ${trabajador.nombre}) -- usa AAAA-MM-DD` }); continue; }
+    if (fechaFin < fechaInicio) { errores.push({ fila: r + 1, error: `Fecha Fin es anterior a Fecha Inicio (fila de ${trabajador.nombre})` }); continue; }
+    validas.push({ trabajadorId: trabajador.id, nombre: trabajador.nombre, motivo, fechaInicio, fechaFin });
+  }
+  return { validas, errores };
+}
+function analizarPrestamosHistoricos(filasHoja, trabajadores) {
+  const validas = [];
+  const errores = [];
+  for (let r = 1; r < filasHoja.length; r++) {
+    const fila = filasHoja[r] || [];
+    const cedula = String(fila[0] ?? "").trim();
+    if (!cedula) continue;
+    const monto = Number(String(fila[2] ?? "").replace(/[^0-9.-]/g, ""));
+    const fecha = String(fila[3] ?? "").trim();
+    const observacion = String(fila[4] ?? "").trim();
+    const trabajador = trabajadores.find((t) => normalizarCedula(t.cedula) === normalizarCedula(cedula));
+    if (!trabajador) { errores.push({ fila: r + 1, error: `Cédula "${cedula}" no corresponde a ningún trabajador` }); continue; }
+    if (!monto || Number.isNaN(monto) || monto <= 0) { errores.push({ fila: r + 1, error: `Monto inválido (fila de ${trabajador.nombre})` }); continue; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) { errores.push({ fila: r + 1, error: `Fecha inválida (fila de ${trabajador.nombre}) -- usa AAAA-MM-DD` }); continue; }
+    validas.push({ trabajadorId: trabajador.id, nombre: trabajador.nombre, monto, fecha, observacion });
+  }
+  return { validas, errores };
+}
+function NovedadesQuincenaView({ trabajadores, faltas, ausencias, turnos, motivosDisponibles, currentUser, onGuardarAusencia, onGuardarPrestamo }) {
+  const fileHistoricoRef = useRef(null);
+  const [analizandoHistorico, setAnalizandoHistorico] = useState(false);
+  const [previewHistorico, setPreviewHistorico] = useState(null); // { novedades, prestamos } | { error }
+  const [cargandoHistorico, setCargandoHistorico] = useState(false);
+  const [resultadoHistorico, setResultadoHistorico] = useState(null);
+  async function handleSubirHistorico(e) {
+    const archivo = e.target.files?.[0];
+    e.target.value = "";
+    if (!archivo) return;
+    setAnalizandoHistorico(true);
+    setResultadoHistorico(null);
+    try {
+      const XLSX = await import("xlsx");
+      const buffer = await archivo.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array", cellDates: false });
+      const hojaNovedades = hojaPorNombre(wb, HOJA_NOVEDADES_HISTORICO);
+      const hojaPrestamos = hojaPorNombre(wb, HOJA_PRESTAMOS_HISTORICO);
+      if (!hojaNovedades && !hojaPrestamos) {
+        setPreviewHistorico({ error: `No se encontraron las hojas "${HOJA_NOVEDADES_HISTORICO}" ni "${HOJA_PRESTAMOS_HISTORICO}" en el archivo -- descarga la plantilla y no cambies los nombres de las hojas.` });
+      } else {
+        const filasNovedades = hojaNovedades ? XLSX.utils.sheet_to_json(hojaNovedades, { header: 1, raw: true, defval: "" }) : [];
+        const filasPrestamos = hojaPrestamos ? XLSX.utils.sheet_to_json(hojaPrestamos, { header: 1, raw: true, defval: "" }) : [];
+        setPreviewHistorico({
+          novedades: analizarNovedadesHistoricas(filasNovedades, trabajadores, motivosDisponibles),
+          prestamos: analizarPrestamosHistoricos(filasPrestamos, trabajadores),
+        });
+      }
+    } catch (err) {
+      setPreviewHistorico({ error: err?.message || String(err) });
+    }
+    setAnalizandoHistorico(false);
+  }
+  async function confirmarCargaHistorico() {
+    if (!previewHistorico || previewHistorico.error) return;
+    setCargandoHistorico(true);
+    try {
+      const quien = currentUser?.name || currentUser?.username || "";
+      const ahora = new Date().toISOString();
+      for (const n of previewHistorico.novedades.validas) {
+        await onGuardarAusencia({ id: uid(), trabajadorId: n.trabajadorId, nombre: n.nombre, motivo: n.motivo, fechaInicio: n.fechaInicio, fechaFin: n.fechaFin, registradoPor: quien, registradoEn: ahora, origen: "carga_historica" });
+      }
+      for (const p of previewHistorico.prestamos.validas) {
+        await onGuardarPrestamo({ id: uid(), trabajadorId: p.trabajadorId, nombre: p.nombre, monto: p.monto, fecha: p.fecha, observacion: p.observacion, registradoPor: quien, registradoEn: ahora, origen: "carga_historica" });
+      }
+      setResultadoHistorico({ novedades: previewHistorico.novedades.validas.length, prestamos: previewHistorico.prestamos.validas.length });
+    } finally {
+      setCargandoHistorico(false);
+      setPreviewHistorico(null);
+    }
+  }
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -4347,6 +4466,114 @@ function NovedadesQuincenaView({ trabajadores, faltas, ausencias, turnos }) {
           />
         </>
       )}
+      <div style={{ marginTop: 36, paddingTop: 24, borderTop: `1px solid ${C.border}` }}>
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Carga de novedades históricas (antes de septiembre 2026)</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, maxWidth: 780 }}>
+          Atlas solo registra novedades en vivo desde el 1 de septiembre de 2026. Sube acá, por trabajador, los días no remunerados y de vacaciones de enero a agosto -- se agregan directo a Ausencias, igual que si los hubieras registrado a mano, para que la Liquidación de Trabajador los tenga en cuenta. De paso puedes cargar préstamos anteriores a esa fecha (solo informativos por ahora).
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+          <Btn variant="secondary" onClick={() => descargarPlantillaHistorico(trabajadores)}>📥 Descargar plantilla</Btn>
+          <Btn variant="secondary" onClick={() => fileHistoricoRef.current?.click()} disabled={analizandoHistorico}>{analizandoHistorico ? "Leyendo…" : "📤 Subir archivo"}</Btn>
+          <input ref={fileHistoricoRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={handleSubirHistorico} />
+        </div>
+        {resultadoHistorico && (
+          <div style={{ fontSize: 12, color: C.green, fontWeight: 700, marginBottom: 10 }}>✅ Se cargaron {resultadoHistorico.novedades} novedad(es) y {resultadoHistorico.prestamos} préstamo(s).</div>
+        )}
+        {previewHistorico?.error && (
+          <div style={{ fontSize: 12, color: C.red, marginBottom: 10 }}>{previewHistorico.error}</div>
+        )}
+        {previewHistorico && !previewHistorico.error && (
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: 14, maxWidth: 780 }}>
+            <div style={{ display: "flex", gap: 14, marginBottom: 10, flexWrap: "wrap" }}>
+              <KPI icon="📅" label="Novedades a cargar" value={previewHistorico.novedades.validas.length} color={C.green} bg={C.greenBg} />
+              <KPI icon="💵" label="Préstamos a cargar" value={previewHistorico.prestamos.validas.length} color={C.green} bg={C.greenBg} />
+              <KPI icon="⚠️" label="Filas con error" value={previewHistorico.novedades.errores.length + previewHistorico.prestamos.errores.length} color={C.red} bg={C.redBg} />
+            </div>
+            {[...previewHistorico.novedades.errores, ...previewHistorico.prestamos.errores].length > 0 && (
+              <div style={{ fontSize: 11.5, color: C.red, marginBottom: 10, maxHeight: 160, overflowY: "auto" }}>
+                {[...previewHistorico.novedades.errores, ...previewHistorico.prestamos.errores].map((e, i) => (
+                  <div key={i}>Fila {e.fila}: {e.error}</div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10 }}>
+              <Btn onClick={confirmarCargaHistorico} disabled={cargandoHistorico || (previewHistorico.novedades.validas.length === 0 && previewHistorico.prestamos.validas.length === 0)}>{cargandoHistorico ? "Cargando…" : "✅ Confirmar carga"}</Btn>
+              <Btn variant="secondary" onClick={() => setPreviewHistorico(null)}>Cancelar</Btn>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+// (2026-09-13, a pedido de Fredy) Prestamos a trabajadores -- por ahora
+// SOLO informativo (no se descuenta automaticamente de ningun calculo,
+// ni de la nomina quincenal ni de la Liquidacion de Trabajador). Sirve
+// para tener a la vista cuanto se le ha prestado a alguien.
+function PrestamosView({ trabajadores, prestamos, onGuardar, onBorrar, currentUser }) {
+  const [trabajadorId, setTrabajadorId] = useState("");
+  const [monto, setMonto] = useState("");
+  const [fecha, setFecha] = useState(today());
+  const [observacion, setObservacion] = useState("");
+  const [filtroTrabajador, setFiltroTrabajador] = useState("");
+  const [confirmDel, setConfirmDel] = useState(null);
+  function registrar() {
+    if (!trabajadorId || !Number(monto)) return;
+    const t = trabajadores.find((x) => x.id === trabajadorId);
+    onGuardar({
+      id: uid(), trabajadorId, nombre: t?.nombre || "", monto: Number(monto) || 0, fecha, observacion: observacion.trim(),
+      registradoPor: currentUser?.name || currentUser?.username || "", registradoEn: new Date().toISOString(),
+    });
+    setMonto("");
+    setObservacion("");
+  }
+  const filas = (filtroTrabajador ? prestamos.filter((p) => p.trabajadorId === filtroTrabajador) : prestamos)
+    .slice().sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+  const total = filas.reduce((s, p) => s + (Number(p.monto) || 0), 0);
+  return (
+    <div>
+      {confirmDel && (
+        <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Eliminar el préstamo de <strong>{fmtMoney(confirmDel.monto)}</strong> a <strong>{confirmDel.nombre}</strong>?
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={() => { onBorrar(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+          </div>
+        </Modal>
+      )}
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Registro de préstamos a trabajadores -- por ahora es solo informativo, no se descuenta automáticamente de la nómina ni de la Liquidación de Trabajador.
+      </div>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 20, border: `1px solid ${C.border}`, borderRadius: 8, padding: 14 }}>
+        <Field label="Trabajador">
+          <FSel value={trabajadorId} onChange={setTrabajadorId} options={[{ value: "", label: "Selecciona..." }, ...trabajadores.map((t) => ({ value: t.id, label: t.nombre }))]} />
+        </Field>
+        <Field label="Monto"><FInput type="number" value={monto} onChange={setMonto} placeholder="Ej: 200000" /></Field>
+        <Field label="Fecha"><FInput type="date" value={fecha} onChange={setFecha} /></Field>
+        <Field label="Observación (opcional)"><FInput value={observacion} onChange={setObservacion} placeholder="Ej: Adelanto de nómina" /></Field>
+        <Btn onClick={registrar} disabled={!trabajadorId || !Number(monto)}>➕ Registrar préstamo</Btn>
+      </div>
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 14, flexWrap: "wrap" }}>
+        <Field label="Filtrar por trabajador (opcional)">
+          <FSel value={filtroTrabajador} onChange={setFiltroTrabajador} options={[{ value: "", label: "Todos" }, ...trabajadores.map((t) => ({ value: t.id, label: t.nombre }))]} />
+        </Field>
+        <KPI icon="💵" label="Total" value={fmtMoney(total)} color={C.violet} bg={C.violetBg} />
+      </div>
+      <Tabla
+        vacio="Sin préstamos registrados."
+        columnas={[
+          { key: "nombre", label: "Trabajador" },
+          { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+          { key: "monto", label: "Monto", align: "right", render: (f) => <strong>{fmtMoney(f.monto)}</strong> },
+          { key: "observacion", label: "Observación", render: (f) => f.observacion || "—" },
+          { key: "acciones", label: "", render: (f) => (
+            <Btn small variant="secondary" onClick={() => setConfirmDel(f)}>🗑️ Borrar</Btn>
+          ) },
+        ]}
+        filas={filas}
+      />
     </div>
   );
 }
@@ -6620,7 +6847,7 @@ const TIPOS_NOMINA_LIQUIDABLES = ["Fiscal", "Fiscal Destajo", "Destajo"];
 // Fiscal, Fiscal Destajo y Destajo. Al guardar, ademas de dejar el
 // registro en el historial, marca al trabajador como Inactivo y le queda
 // guardada la fecha de retiro en su ficha.
-function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, areasNomina, onGuardarLiquidacionRetiro, onGuardarTrabajador }) {
+function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, prestamos, areasNomina, onGuardarLiquidacionRetiro, onGuardarTrabajador }) {
   const [areaFiltro, setAreaFiltro] = useState("");
   const [trabajadorId, setTrabajadorId] = useState("");
   const [fechaRetiro, setFechaRetiro] = useState("");
@@ -6689,6 +6916,10 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, a
       {trabajador && (
         <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
           {trabajador.tipoNomina} · Área: {trabajador.area || "Sin asignar"} · Ingreso: {trabajador.fechaIngreso ? fmtFechaISO(trabajador.fechaIngreso) : "—"}
+          {(() => {
+            const totalPrestamos = (prestamos || []).filter((p) => p.trabajadorId === trabajador.id).reduce((s, p) => s + (Number(p.monto) || 0), 0);
+            return totalPrestamos > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}> · Préstamos registrados: {fmtMoney(totalPrestamos)} (informativo, no se descuenta acá)</span> : null;
+          })()}
         </div>
       )}
       {trabajadorId && fechaRetiro && (
@@ -6769,6 +7000,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [liquidacionesFD, setLiquidacionesFD] = useState([]);
   const [liquidacionesD, setLiquidacionesD] = useState([]);
   const [liquidacionesRetiro, setLiquidacionesRetiro] = useState([]);
+  const [prestamos, setPrestamos] = useState([]);
   // (2026-09-10, a pedido de Fredy) Cobros que Bodega registra contra un
   // trabajador (Despachos Generales / Estado de Despacho) -- Nomina los lee
   // de la MISMA coleccion que ya usa Bodega/Contabilidad, sin duplicar nada.
@@ -6801,6 +7033,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_fiscal_destajo_liquidaciones"), (snap) => setLiquidacionesFD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_liquidaciones_retiro"), (snap) => setLiquidacionesRetiro(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_prestamos"), (snap) => setPrestamos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => setLotesConCobros(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "users"), (snap) => setUsuariosApp(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "planeacion_programacion_procesos"), (snap) => setProgramacionesProcesos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -6878,6 +7111,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           ] },
         { group: "Liquidaciones", icon: "🧮", items: [
             { id: "liquidacion_retiro", icon: "📄", label: "Liquidación de Trabajador" },
+            { id: "prestamos", icon: "💵", label: "Préstamos" },
           ] },
         { group: "Reporte de Nómina", icon: "📊", items: [
             { id: "historial_lote", icon: "📦", label: "Historial de Lote" },
@@ -6998,6 +7232,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function guardarLiquidacionFD(l) { await fsSave("nomina_fiscal_destajo_liquidaciones", l.id, l); }
   async function guardarLiquidacionD(l) { await fsSave("nomina_destajo_liquidaciones", l.id, l); }
   async function guardarLiquidacionRetiro(l) { await fsSave("nomina_liquidaciones_retiro", l.id, l); }
+  async function guardarPrestamo(p) { await fsSave("nomina_prestamos", p.id, p); }
+  async function borrarPrestamo(id) { await fsDelete("nomina_prestamos", id); }
   // (2026-09-10, "Design B" confirmado por Fredy) Al confirmar una
   // liquidacion que incluyo descuentoCobros > 0, esto marca esos cobros
   // especificos (y SOLO esos -- los demas cobros del mismo lote, de otros
@@ -7175,8 +7411,9 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "costo_referencia" && !areaLider && !soloNovedades && <ConsultarCostoReferenciaView />}
           {subView === "tns" && !areaLider && !soloNovedades && <TNSConexionView />}
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
-          {subView === "novedades_quincena" && !areaLider && !soloNovedades && <NovedadesQuincenaView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} />}
-          {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} liquidacionesRetiro={liquidacionesRetiro} areasNomina={areasNomina} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} />}
+          {subView === "novedades_quincena" && !areaLider && !soloNovedades && <NovedadesQuincenaView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} motivosDisponibles={nombresMotivosDisponibles} currentUser={currentUser} onGuardarAusencia={guardarAusencia} onGuardarPrestamo={guardarPrestamo} />}
+          {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} />}
+          {subView === "prestamos" && !areaLider && !soloNovedades && <PrestamosView trabajadores={trabajadores} prestamos={prestamos} onGuardar={guardarPrestamo} onBorrar={borrarPrestamo} currentUser={currentUser} />}
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} turnos={turnos} onGuardarTrabajador={guardarTrabajador} />}
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
