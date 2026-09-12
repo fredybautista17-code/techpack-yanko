@@ -1,0 +1,20 @@
+# (2026-09-12) Normaliza los finales de línea de todo el proyecto a LF
+# dentro del repositorio, sin importar si se edita desde Windows, Mac o
+# Linux. Esto evita el aviso de Git sobre "conversión de finales de línea"
+# y los diffs gigantes que salían cuando un archivo (como modulo-nomina.jsx)
+# terminaba con una mezcla de CRLF y LF por ediciones acumuladas.
+* text=auto eol=lf
+
+# Binarios -- nunca se les debe tocar el final de línea.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.pdf binary
+*.xlsx binary
+*.xls binary
