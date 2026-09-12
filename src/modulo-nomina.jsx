@@ -6967,6 +6967,78 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, p
     </div>
   );
 }
+// (2026-09-13, a pedido de Fredy) Provision de prestaciones sociales "hasta
+// hoy" -- para presupuesto/reserva, NO es una liquidacion real: no marca a
+// nadie como Inactivo ni guarda nada, solo calcula (con la misma formula de
+// Liquidacion de Trabajador) cuanto se deberia tener provisionado HOY si
+// se liquidara a cada trabajador activo en este momento. Se puede filtrar
+// por Area Interna para ver el presupuesto de una sola area.
+function ProvisionLiquidacionesView({ trabajadores, ausencias, areasNomina }) {
+  const [areaFiltro, setAreaFiltro] = useState("");
+  const [resultado, setResultado] = useState(null); // null | [{trabajador, calculo}]
+  const personas = trabajadores.filter((t) =>
+    TIPOS_NOMINA_LIQUIDABLES.includes(t.tipoNomina) && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro)
+  );
+  const sinFechaIngreso = personas.filter((t) => !t.fechaIngreso);
+  function calcular() {
+    const hoy = today();
+    const filas = personas.filter((t) => t.fechaIngreso).map((t) => ({ trabajador: t, calculo: calcularLiquidacionRetiro(t, hoy, ausencias) }));
+    filas.sort((a, b) => b.calculo.totalAPagar - a.calculo.totalAPagar);
+    setResultado(filas);
+  }
+  const totales = resultado ? resultado.reduce((s, f) => ({
+    cesantias: s.cesantias + f.calculo.cesantias,
+    intereses: s.intereses + f.calculo.intereses,
+    prima: s.prima + f.calculo.prima,
+    vacaciones: s.vacaciones + f.calculo.vacaciones,
+    total: s.total + f.calculo.totalAPagar,
+  }), { cesantias: 0, intereses: 0, prima: 0, vacaciones: 0, total: 0 }) : null;
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 820 }}>
+        Cuánto se debería tener provisionado HOY en cesantías, intereses, prima y vacaciones si se liquidara en este momento a los trabajadores activos (Fiscal, Fiscal Destajo y Destajo) -- para presupuesto y provisión, no para retirar a nadie. Filtra por área si quieres el presupuesto de una sola área.
+      </div>
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Área (opcional, para filtrar)">
+          <FSel value={areaFiltro} onChange={(v) => { setAreaFiltro(v); setResultado(null); }} options={(areasNomina || []).map((a) => a.nombre)} placeholder="Todas las áreas" />
+        </Field>
+        <Btn onClick={calcular} disabled={personas.length === 0}>🧮 Calcular provisión</Btn>
+      </div>
+      {sinFechaIngreso.length > 0 && (
+        <div style={{ fontSize: 11.5, color: C.amber, marginBottom: 16, maxWidth: 820 }}>
+          ⚠️ {sinFechaIngreso.length} trabajador(es) sin Fecha de Ingreso registrada no se incluyen: {sinFechaIngreso.map((t) => t.nombre).join(", ")}.
+        </div>
+      )}
+      {resultado && (
+        <>
+          <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+            <KPI icon="👷" label="Trabajadores incluidos" value={fmtNum(resultado.length)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="💰" label="Cesantías" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="📈" label="Intereses" value={fmtMoney(totales.intereses)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="🎁" label="Prima" value={fmtMoney(totales.prima)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="🏖️" label="Vacaciones" value={fmtMoney(totales.vacaciones)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="✅" label="Total a provisionar" value={fmtMoney(totales.total)} color={C.green} bg={C.greenBg} />
+          </div>
+          <Tabla
+            vacio="Sin trabajadores para calcular."
+            columnas={[
+              { key: "nombre", label: "Trabajador", render: (f) => f.trabajador.nombre },
+              { key: "area", label: "Área", render: (f) => f.trabajador.area || "Sin asignar" },
+              { key: "tipoNomina", label: "Tipo Nómina", render: (f) => f.trabajador.tipoNomina },
+              { key: "diasBase", label: "Días", align: "right", render: (f) => fmtNum(f.calculo.diasBase) },
+              { key: "cesantias", label: "Cesantías", align: "right", render: (f) => fmtMoney(f.calculo.cesantias) },
+              { key: "intereses", label: "Intereses", align: "right", render: (f) => fmtMoney(f.calculo.intereses) },
+              { key: "prima", label: "Prima", align: "right", render: (f) => fmtMoney(f.calculo.prima) },
+              { key: "vacaciones", label: "Vacaciones", align: "right", render: (f) => fmtMoney(f.calculo.vacaciones) },
+              { key: "total", label: "Total", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.totalAPagar)}</strong> },
+            ]}
+            filas={resultado}
+          />
+        </>
+      )}
+    </div>
+  );
+}
 export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
@@ -7111,6 +7183,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           ] },
         { group: "Liquidaciones", icon: "🧮", items: [
             { id: "liquidacion_retiro", icon: "📄", label: "Liquidación de Trabajador" },
+            { id: "provision_liquidaciones", icon: "📊", label: "Provisión (hasta hoy)" },
             { id: "prestamos", icon: "💵", label: "Préstamos" },
           ] },
         { group: "Reporte de Nómina", icon: "📊", items: [
@@ -7413,6 +7486,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
           {subView === "novedades_quincena" && !areaLider && !soloNovedades && <NovedadesQuincenaView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} motivosDisponibles={nombresMotivosDisponibles} currentUser={currentUser} onGuardarAusencia={guardarAusencia} onGuardarPrestamo={guardarPrestamo} />}
           {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} />}
+          {subView === "provision_liquidaciones" && !areaLider && !soloNovedades && <ProvisionLiquidacionesView trabajadores={trabajadores} ausencias={ausencias} areasNomina={areasNomina} />}
           {subView === "prestamos" && !areaLider && !soloNovedades && <PrestamosView trabajadores={trabajadores} prestamos={prestamos} onGuardar={guardarPrestamo} onBorrar={borrarPrestamo} currentUser={currentUser} />}
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} turnos={turnos} onGuardarTrabajador={guardarTrabajador} />}
