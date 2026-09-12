@@ -1221,6 +1221,7 @@ const COLUMNAS_EXCEL_TRABAJADORES = [
   { campo: "sueldo", label: "Sueldo", tipo: "numero" },
   { campo: "auxilioTransporte", label: "Auxilio de Transporte", tipo: "numero" },
   { campo: "fechaIngreso", label: "Fecha de Ingreso (AAAA-MM-DD)", tipo: "fecha" },
+  { campo: "fechaRetiro", label: "Fecha de Retiro (AAAA-MM-DD)", tipo: "fecha" },
   { campo: "cesantiasAcumuladas", label: "Cesantías Acumuladas", tipo: "numero" },
   { campo: "tarifaHora", label: "Tarifa por Hora", tipo: "numero" },
   { campo: "tnsCodigo", label: "Código TNS", tipo: "texto" },
@@ -1350,7 +1351,7 @@ function resolverCeldaExcel(col, valorCrudo, trabajador, ctx) {
       if (!Number.isNaN(d.getTime())) fechaTexto = d.toISOString().slice(0, 10);
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaTexto)) return { advertencia: `Fecha "${texto}" no tiene el formato AAAA-MM-DD` };
-    if ((trabajador.fechaIngreso || "") === fechaTexto) return null;
+    if ((trabajador[col.campo] || "") === fechaTexto) return null;
     return { cambio: { valor: fechaTexto, mostrar: fechaTexto } };
   }
   if (col.tipo === "catalogo_area") {
@@ -1486,6 +1487,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     sueldo: trabajador?.sueldo ?? "",
     auxilioTransporte: trabajador?.auxilioTransporte ?? "",
     fechaIngreso: trabajador?.fechaIngreso || "",
+    fechaRetiro: trabajador?.fechaRetiro || "",
     cesantiasAcumuladas: trabajador?.cesantiasAcumuladas ?? "",
     medirComoBaseAdministrativa: trabajador?.medirComoBaseAdministrativa ?? false,
   });
@@ -1524,6 +1526,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       sueldo: Number(form.sueldo) || 0,
       auxilioTransporte: Number(form.auxilioTransporte) || 0,
       fechaIngreso: form.fechaIngreso || "",
+      fechaRetiro: form.fechaRetiro || "",
       cesantiasAcumuladas: Number(form.cesantiasAcumuladas) || 0,
       medirComoBaseAdministrativa: !!form.medirComoBaseAdministrativa,
     });
@@ -1589,6 +1592,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
           <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
             Si ya sabes cuánto lleva acumulado en cesantías antes de septiembre, ponlo acá para que los intereses se calculen bien desde el arranque. Si no lo sabes, déjalo en 0 y ajústalo cuando lo tengas.
           </div>
+          <Field label="Fecha de retiro (si ya no trabaja aquí)"><FInput type="date" value={form.fechaRetiro} onChange={set("fechaRetiro")} /></Field>
         </>
       )}
       {form.tipoNomina === "Fiscal" && (
@@ -3771,6 +3775,116 @@ function diasHabilesDeAusencias(ausencias, motivos, trabajador, turno, inicio, f
     });
   });
   return dias.size;
+}
+// (2026-09-13, a pedido de Fredy) Liquidacion de prestaciones sociales al
+// retiro de un trabajador -- ver LiquidacionRetiroView mas abajo. Cuenta,
+// dentro de [desde, hasta], los dias de CALENDARIO (no solo habiles: un
+// permiso no remunerado descuenta antiguedad todos los dias que dure,
+// incluidos fines de semana) que caen dentro de alguna ausencia con
+// motivo en `motivos`.
+function diasCalendarioPorMotivos(ausencias, trabajadorId, motivos, desde, hasta) {
+  const dias = new Set();
+  (ausencias || []).forEach((a) => {
+    if (a.trabajadorId !== trabajadorId) return;
+    if (!motivos.includes(a.motivo)) return;
+    listaDeDiasISO(a.fechaInicio, a.fechaFin).forEach((fecha) => {
+      if (fecha < desde || fecha > hasta) return;
+      dias.add(fecha);
+    });
+  });
+  return dias.size;
+}
+function diasCalendarioSinSueldo(ausencias, trabajadorId, desde, hasta) {
+  return diasCalendarioPorMotivos(ausencias, trabajadorId, MOTIVOS_SIN_SUELDO, desde, hasta);
+}
+// Parte [desde, hasta] en tramos de UN anio calendario (1 ene -> 31 dic) y
+// en tramos de UN semestre calendario (ene-jun / jul-dic). Cesantias e
+// intereses se causan por anio y la prima por semestre -- calcular todo
+// el tiempo trabajado de una sola vez (en vez de tramo por tramo)
+// sobrestimaria el interes en alguien con varios anios de antiguedad,
+// porque aplicaria el 12% sobre TODO el saldo final como si hubiera
+// estado quieto ahi desde el primer dia.
+function siguienteDiaISO(iso) {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+function segmentosPorAnio(desde, hasta) {
+  const segmentos = [];
+  let ini = desde;
+  while (ini <= hasta) {
+    const finTramo = `${ini.slice(0, 4)}-12-31`;
+    const fin = finTramo < hasta ? finTramo : hasta;
+    segmentos.push({ desde: ini, hasta: fin });
+    ini = siguienteDiaISO(fin);
+  }
+  return segmentos;
+}
+function segmentosPorSemestre(desde, hasta) {
+  const segmentos = [];
+  let ini = desde;
+  while (ini <= hasta) {
+    const anio = ini.slice(0, 4);
+    const mes = Number(ini.slice(5, 7));
+    const finTramo = mes <= 6 ? `${anio}-06-30` : `${anio}-12-31`;
+    const fin = finTramo < hasta ? finTramo : hasta;
+    segmentos.push({ desde: ini, hasta: fin });
+    ini = siguienteDiaISO(fin);
+  }
+  return segmentos;
+}
+// Liquidacion completa desde la Fecha de Ingreso real del trabajador
+// (guardada en su ficha) hasta la fecha de corte (retiro, o "hoy" para
+// una provision) -- ya NO depende de lo que se haya calculado quincena a
+// quincena dentro de Atlas, se calcula directo con las formulas de ley:
+//   Cesantias = (sueldo + auxilio) x dias trabajados / 360, por ANIO.
+//   Intereses = cesantias del anio x dias de ese anio x 12% / 360.
+//   Prima = (sueldo + auxilio) x dias trabajados / 360, por SEMESTRE.
+//   Vacaciones = sueldo x dias trabajados / 720, menos lo que ya se le
+//   pago en dias de vacaciones que ya disfruto (para no pagarlos 2 veces).
+// "Dias trabajados" en cada tramo = dias de calendario del tramo menos
+// los dias de Licencia No Remunerada (unica ausencia que no genera
+// prestaciones) que caigan en ese tramo -- esto depende de que Ausencias
+// tenga el dato completo desde la Fecha de Ingreso; los periodos
+// anteriores al 1 de septiembre de 2026 (cuando Atlas empezo a registrar
+// nomina en vivo) solo quedan completos si se cargaron con el archivo
+// historico (enero-agosto).
+function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias) {
+  const fechaIngreso = trabajador.fechaIngreso || fechaCorte;
+  const esDestajo = trabajador.tipoNomina === "Destajo";
+  // (2026-08-30, ya validado por Fredy en Nomina Destajo) Los 12
+  // trabajadores de tipo "Destajo" tienen sueldo/auxilio guardados como
+  // el valor QUINCENAL directo, no mensual como Fiscal/Fiscal Destajo.
+  const sueldoMensual = (Number(trabajador.sueldo) || 0) * (esDestajo ? 2 : 1);
+  const auxilioMensualBruto = (Number(trabajador.auxilioTransporte) || 0) * (esDestajo ? 2 : 1);
+  const auxilioMensual = !esDestajo && sueldoMensual > TOPE_SUELDO_PARA_AUXILIO ? 0 : auxilioMensualBruto;
+  const baseConAuxilio = sueldoMensual + auxilioMensual;
+  function diasTrabajadosDelTramo(desde, hasta) {
+    const calendario = listaDeDiasISO(desde, hasta).length;
+    const sinSueldo = diasCalendarioSinSueldo(ausencias, trabajador.id, desde, hasta);
+    return Math.max(0, calendario - sinSueldo);
+  }
+  let cesantias = 0;
+  let intereses = 0;
+  segmentosPorAnio(fechaIngreso, fechaCorte).forEach(({ desde, hasta }) => {
+    const dias = diasTrabajadosDelTramo(desde, hasta);
+    const cesantiasTramo = (baseConAuxilio * dias) / 360;
+    cesantias += cesantiasTramo;
+    intereses += (cesantiasTramo * dias * TASA_INTERES_CESANTIAS_ANUAL) / 360;
+  });
+  let prima = 0;
+  segmentosPorSemestre(fechaIngreso, fechaCorte).forEach(({ desde, hasta }) => {
+    prima += (baseConAuxilio * diasTrabajadosDelTramo(desde, hasta)) / 360;
+  });
+  const diasCalendario = listaDeDiasISO(fechaIngreso, fechaCorte).length;
+  const diasBase = diasTrabajadosDelTramo(fechaIngreso, fechaCorte);
+  const diasNoRemunerados = diasCalendario - diasBase;
+  const vacacionesAcumuladas = (sueldoMensual * diasBase) / 720;
+  const diasVacacionesTomados = diasCalendarioPorMotivos(ausencias, trabajador.id, ["Vacaciones"], fechaIngreso, fechaCorte);
+  const valorVacacionesTomadas = (sueldoMensual / 30) * diasVacacionesTomados;
+  const vacaciones = Math.max(0, vacacionesAcumuladas - valorVacacionesTomadas);
+  const totalAPagar = cesantias + intereses + prima + vacaciones;
+  return { fechaIngreso, fechaCorte, diasCalendario, diasNoRemunerados, diasBase, diasVacacionesTomados, cesantias, intereses, prima, vacaciones, totalAPagar };
 }
 function calcularLiquidacionFiscal(trabajador, diasInasistencia, diasSinAuxilio = 0, diasSinSueldo = 0) {
   const sueldo = Number(trabajador.sueldo) || 0;
@@ -6433,7 +6547,8 @@ function periodoQuincenaDeFecha(fecha) {
   const quincena = Number(dia) <= 15 ? "1" : "2";
   return `${anio}-${mes}-Q${quincena}`;
 }
-function HistorialTrabajadorView({ trabajadores, produccion, liquidaciones }) {
+function HistorialTrabajadorView({ trabajadores, produccion, liquidaciones, areasNomina }) {
+  const [areaFiltro, setAreaFiltro] = useState("");
   const [trabajadorId, setTrabajadorId] = useState("");
   const trabajador = trabajadores.find((t) => t.id === trabajadorId);
   const esDestajo = trabajador?.tipoNomina === "Destajo";
@@ -6449,15 +6564,21 @@ function HistorialTrabajadorView({ trabajadores, produccion, liquidaciones }) {
   const totalHistorico = registros.reduce((s, r) => s + (Number(r.total) || 0), 0);
   const totalPendiente = registrosConEstado.filter((r) => !r._liquidado).reduce((s, r) => s + (Number(r.total) || 0), 0);
   const lotesDistintos = new Set(registros.map((r) => r.numLote).filter(Boolean)).size;
+  const trabajadoresFiltrados = areaFiltro ? trabajadores.filter((t) => (t.area || "Sin asignar") === areaFiltro) : trabajadores;
 
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
         Elige un trabajador para ver todo lo que ha registrado en Registrar Producción, en todos los lotes -- si es de tipo "Destajo", cada registro se marca según si ya quedó dentro de una quincena de Nómina Destajo ya confirmada o si sigue pendiente de liquidar.
       </div>
-      <Field label="Trabajador">
-        <FSel value={trabajadorId} onChange={setTrabajadorId} options={[{ value: "", label: "Selecciona..." }, ...trabajadores.map((t) => ({ value: t.id, label: t.nombre }))]} />
-      </Field>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+        <Field label="Área (opcional, para filtrar)">
+          <FSel value={areaFiltro} onChange={(v) => { setAreaFiltro(v); setTrabajadorId(""); }} options={(areasNomina || []).map((a) => a.nombre)} placeholder="Todas las áreas" />
+        </Field>
+        <Field label="Trabajador">
+          <FSel value={trabajadorId} onChange={setTrabajadorId} options={[{ value: "", label: "Selecciona..." }, ...trabajadoresFiltrados.map((t) => ({ value: t.id, label: t.nombre }))]} />
+        </Field>
+      </div>
       {trabajadorId && (
         <>
           <div style={{ display: "flex", gap: 14, margin: "16px 0", flexWrap: "wrap" }}>
@@ -6488,6 +6609,129 @@ function HistorialTrabajadorView({ trabajadores, produccion, liquidaciones }) {
             />
           )}
         </>
+      )}
+    </div>
+  );
+}
+const TIPOS_NOMINA_LIQUIDABLES = ["Fiscal", "Fiscal Destajo", "Destajo"];
+// (2026-09-13, a pedido de Fredy) Liquidacion de prestaciones sociales al
+// retiro de un trabajador (cesantias, intereses, prima, vacaciones) desde
+// su Fecha de Ingreso real hasta la fecha de retiro que se indique -- para
+// Fiscal, Fiscal Destajo y Destajo. Al guardar, ademas de dejar el
+// registro en el historial, marca al trabajador como Inactivo y le queda
+// guardada la fecha de retiro en su ficha.
+function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, areasNomina, onGuardarLiquidacionRetiro, onGuardarTrabajador }) {
+  const [areaFiltro, setAreaFiltro] = useState("");
+  const [trabajadorId, setTrabajadorId] = useState("");
+  const [fechaRetiro, setFechaRetiro] = useState("");
+  const [resultado, setResultado] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const [guardadoOk, setGuardadoOk] = useState(false);
+
+  const personas = trabajadores.filter((t) => TIPOS_NOMINA_LIQUIDABLES.includes(t.tipoNomina) && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro));
+  const trabajador = trabajadores.find((t) => t.id === trabajadorId);
+
+  function elegirTrabajador(id) {
+    setTrabajadorId(id);
+    const t = trabajadores.find((x) => x.id === id);
+    setFechaRetiro(t?.fechaRetiro || today());
+    setResultado(null);
+    setGuardadoOk(false);
+  }
+
+  function calcular() {
+    if (!trabajador || !fechaRetiro || !trabajador.fechaIngreso) return;
+    setResultado(calcularLiquidacionRetiro(trabajador, fechaRetiro, ausencias));
+    setGuardadoOk(false);
+  }
+
+  async function guardar() {
+    if (!resultado || !trabajador) return;
+    setGuardando(true);
+    try {
+      await onGuardarLiquidacionRetiro({
+        id: `${trabajador.id}__retiro`,
+        trabajadorId: trabajador.id,
+        nombre: trabajador.nombre,
+        tipoNomina: trabajador.tipoNomina,
+        area: trabajador.area || "Sin asignar",
+        ...resultado,
+        generadaEn: new Date().toISOString(),
+      });
+      await onGuardarTrabajador({ ...trabajador, fechaRetiro, activo: false });
+      setGuardadoOk(true);
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 820 }}>
+        Calcula la liquidación de prestaciones sociales (cesantías, intereses de cesantías, prima de servicios y vacaciones) de un trabajador desde su fecha de ingreso hasta la fecha de retiro que indiques. Aplica para Fiscal, Fiscal Destajo y Destajo.
+      </div>
+      <div style={{ fontSize: 11.5, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 12px", marginBottom: 16, maxWidth: 820 }}>
+        ⚠️ Cesantías, intereses, prima y vacaciones se calculan con las fórmulas de ley sobre todo el tiempo trabajado desde la Fecha de Ingreso, restando los días de Licencia No Remunerada y descontando de vacaciones los días que la persona ya disfrutó -- todo según lo que tengas registrado en Ausencias. Si el trabajador tiene antigüedad anterior al 1 de septiembre de 2026 (cuando Atlas empezó a registrar novedades en vivo) y ese periodo no está cargado todavía, el cálculo no lo tiene en cuenta hasta que subas el archivo histórico de enero-agosto. Valida el resultado con tu contador o abogado laboral antes de usarlo para una liquidación real.
+      </div>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+        <Field label="Área (opcional, para filtrar)">
+          <FSel value={areaFiltro} onChange={(v) => { setAreaFiltro(v); setTrabajadorId(""); setResultado(null); }} options={(areasNomina || []).map((a) => a.nombre)} placeholder="Todas las áreas" />
+        </Field>
+        <Field label="Trabajador">
+          <FSel value={trabajadorId} onChange={elegirTrabajador} options={[{ value: "", label: "Selecciona..." }, ...personas.map((t) => ({ value: t.id, label: t.nombre }))]} />
+        </Field>
+        {trabajadorId && (
+          <Field label="Fecha de retiro">
+            <FInput type="date" value={fechaRetiro} onChange={(v) => { setFechaRetiro(v); setResultado(null); setGuardadoOk(false); }} />
+          </Field>
+        )}
+      </div>
+      {trabajador && (
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
+          {trabajador.tipoNomina} · Área: {trabajador.area || "Sin asignar"} · Ingreso: {trabajador.fechaIngreso ? fmtFechaISO(trabajador.fechaIngreso) : "—"}
+        </div>
+      )}
+      {trabajadorId && fechaRetiro && (
+        <div style={{ marginBottom: 20 }}>
+          <Btn onClick={calcular} disabled={!trabajador?.fechaIngreso}>🧮 Calcular liquidación</Btn>
+          {!trabajador?.fechaIngreso && <div style={{ fontSize: 11, color: C.red, marginTop: 6 }}>Este trabajador no tiene Fecha de Ingreso registrada -- no se puede calcular sin ella.</div>}
+        </div>
+      )}
+      {resultado && (
+        <>
+          <div style={{ display: "flex", gap: 14, marginBottom: 16, flexWrap: "wrap" }}>
+            <KPI icon="📅" label="Días trabajados" value={fmtNum(resultado.diasBase)} color={C.blue} bg={C.blueBg} sub={resultado.diasNoRemunerados > 0 ? `${resultado.diasNoRemunerados} días sin sueldo descontados` : undefined} />
+            <KPI icon="🏖️" label="Días de vacaciones ya tomados" value={fmtNum(resultado.diasVacacionesTomados)} color={C.slate} bg={C.canvas} />
+            <KPI icon="💰" label="Cesantías" value={fmtMoney(resultado.cesantias)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="📈" label="Intereses de cesantías" value={fmtMoney(resultado.intereses)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="🎁" label="Prima de servicios" value={fmtMoney(resultado.prima)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="🏖️" label="Vacaciones" value={fmtMoney(resultado.vacaciones)} color={C.violet} bg={C.violetBg} />
+            <KPI icon="✅" label="Total a pagar" value={fmtMoney(resultado.totalAPagar)} color={C.green} bg={C.greenBg} />
+          </div>
+          {!guardadoOk ? (
+            <Btn onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "💾 Guardar liquidación"}</Btn>
+          ) : (
+            <div style={{ fontSize: 12, color: C.green, fontWeight: 700 }}>✅ Liquidación guardada. {trabajador.nombre} quedó marcado como Inactivo con fecha de retiro {fmtFechaISO(fechaRetiro)}.</div>
+          )}
+        </>
+      )}
+      {liquidacionesRetiro && liquidacionesRetiro.length > 0 && (
+        <div style={{ marginTop: 32 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Historial de liquidaciones</div>
+          <Tabla
+            vacio="Sin liquidaciones guardadas."
+            columnas={[
+              { key: "nombre", label: "Trabajador" },
+              { key: "tipoNomina", label: "Tipo Nómina" },
+              { key: "area", label: "Área" },
+              { key: "fechaIngreso", label: "Ingreso", render: (f) => fmtFechaISO(f.fechaIngreso) },
+              { key: "fechaCorte", label: "Retiro", render: (f) => fmtFechaISO(f.fechaCorte) },
+              { key: "totalAPagar", label: "Total", align: "right", render: (f) => <strong>{fmtMoney(f.totalAPagar)}</strong> },
+              { key: "generadaEn", label: "Generada", render: (f) => (f.generadaEn ? new Date(f.generadaEn).toLocaleString("es-CO") : "—") },
+            ]}
+            filas={[...liquidacionesRetiro].sort((a, b) => (b.generadaEn || "").localeCompare(a.generadaEn || ""))}
+          />
+        </div>
       )}
     </div>
   );
@@ -6524,6 +6768,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [liquidacionesF, setLiquidacionesF] = useState([]);
   const [liquidacionesFD, setLiquidacionesFD] = useState([]);
   const [liquidacionesD, setLiquidacionesD] = useState([]);
+  const [liquidacionesRetiro, setLiquidacionesRetiro] = useState([]);
   // (2026-09-10, a pedido de Fredy) Cobros que Bodega registra contra un
   // trabajador (Despachos Generales / Estado de Despacho) -- Nomina los lee
   // de la MISMA coleccion que ya usa Bodega/Contabilidad, sin duplicar nada.
@@ -6555,6 +6800,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_fiscal_liquidaciones"), (snap) => setLiquidacionesF(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_fiscal_destajo_liquidaciones"), (snap) => setLiquidacionesFD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_liquidaciones_retiro"), (snap) => setLiquidacionesRetiro(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => setLotesConCobros(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "users"), (snap) => setUsuariosApp(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "planeacion_programacion_procesos"), (snap) => setProgramacionesProcesos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -6629,6 +6875,9 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
             { id: "asistencia", icon: "📊", label: "Reporte de Asistencia" },
             { id: "novedades_quincena", icon: "🧾", label: "Listado de Novedades (quincena)" },
+          ] },
+        { group: "Liquidaciones", icon: "🧮", items: [
+            { id: "liquidacion_retiro", icon: "📄", label: "Liquidación de Trabajador" },
           ] },
         { group: "Reporte de Nómina", icon: "📊", items: [
             { id: "historial_lote", icon: "📦", label: "Historial de Lote" },
@@ -6748,6 +6997,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function guardarLiquidacionF(l) { await fsSave("nomina_fiscal_liquidaciones", l.id, l); }
   async function guardarLiquidacionFD(l) { await fsSave("nomina_fiscal_destajo_liquidaciones", l.id, l); }
   async function guardarLiquidacionD(l) { await fsSave("nomina_destajo_liquidaciones", l.id, l); }
+  async function guardarLiquidacionRetiro(l) { await fsSave("nomina_liquidaciones_retiro", l.id, l); }
   // (2026-09-10, "Design B" confirmado por Fredy) Al confirmar una
   // liquidacion que incluyo descuentoCobros > 0, esto marca esos cobros
   // especificos (y SOLO esos -- los demas cobros del mismo lote, de otros
@@ -6926,6 +7176,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "tns" && !areaLider && !soloNovedades && <TNSConexionView />}
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
           {subView === "novedades_quincena" && !areaLider && !soloNovedades && <NovedadesQuincenaView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} />}
+          {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} liquidacionesRetiro={liquidacionesRetiro} areasNomina={areasNomina} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} />}
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} turnos={turnos} onGuardarTrabajador={guardarTrabajador} />}
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
@@ -6937,7 +7188,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
           {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobros} trabajadores={trabajadores} />}
           {subView === "historial_lote" && !soloNovedades && <HistorialLoteView produccion={produccion} />}
-          {subView === "historial_trabajador" && !soloNovedades && <HistorialTrabajadorView trabajadores={trabajadoresVisibles} produccion={produccionVisible} liquidaciones={liquidacionesD} />}
+          {subView === "historial_trabajador" && !soloNovedades && <HistorialTrabajadorView trabajadores={trabajadoresVisibles} produccion={produccionVisible} liquidaciones={liquidacionesD} areasNomina={areasNomina} />}
         </div>
       </div>
     </div>
