@@ -3886,6 +3886,41 @@ function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias) {
   const totalAPagar = cesantias + intereses + prima + vacaciones;
   return { fechaIngreso, fechaCorte, diasCalendario, diasNoRemunerados, diasBase, diasVacacionesTomados, cesantias, intereses, prima, vacaciones, totalAPagar };
 }
+// (2026-09-13, a pedido de Fredy) Cesantias/intereses de un trabajador
+// Fiscal se deben consignar al fondo antes del 14 de febrero del anio
+// SIGUIENTE al que se causaron. Antes de esa fecha en un anio dado,
+// todavia se debe el del anio anterior (el plazo no ha vencido); despues
+// del 14 de febrero, ya se esta acumulando el del anio en curso.
+function anioSugeridoParaCesantias() {
+  const hoy = new Date();
+  const anioActual = hoy.getFullYear();
+  const antesDelPlazo = hoy.getMonth() + 1 < 2 || (hoy.getMonth() + 1 === 2 && hoy.getDate() < 14);
+  return antesDelPlazo ? anioActual - 1 : anioActual;
+}
+// Cesantias + intereses causados SOLO dentro de un anio calendario dado
+// (no toda la antiguedad) -- para saber cuanto se debe consignar el 14 de
+// febrero siguiente. Recorta al rango real: desde la Fecha de Ingreso (si
+// entro a mitad de ese anio) hasta hoy (si el anio todavia no termina) o
+// hasta el 31 de diciembre de ese anio (si ya paso).
+function calcularCesantiasDelAnio(trabajador, anio, ausencias) {
+  if (!trabajador.fechaIngreso) return null;
+  const desdeAnio = `${anio}-01-01`;
+  const hastaAnio = `${anio}-12-31`;
+  const hoyISO = today();
+  const desde = trabajador.fechaIngreso > desdeAnio ? trabajador.fechaIngreso : desdeAnio;
+  const hastaTope = hoyISO < hastaAnio ? hoyISO : hastaAnio;
+  if (desde > hastaTope) return { dias: 0, cesantias: 0, intereses: 0, total: 0, sinDatos: true };
+  const sueldoMensual = Number(trabajador.sueldo) || 0;
+  const auxilioMensualBruto = Number(trabajador.auxilioTransporte) || 0;
+  const auxilioMensual = sueldoMensual > TOPE_SUELDO_PARA_AUXILIO ? 0 : auxilioMensualBruto;
+  const baseConAuxilio = sueldoMensual + auxilioMensual;
+  const calendario = listaDeDiasISO(desde, hastaTope).length;
+  const sinSueldo = diasCalendarioSinSueldo(ausencias, trabajador.id, desde, hastaTope);
+  const dias = Math.max(0, calendario - sinSueldo);
+  const cesantias = (baseConAuxilio * dias) / 360;
+  const intereses = (cesantias * dias * TASA_INTERES_CESANTIAS_ANUAL) / 360;
+  return { dias, cesantias, intereses, total: cesantias + intereses, incompleto: hastaTope < hastaAnio };
+}
 function calcularLiquidacionFiscal(trabajador, diasInasistencia, diasSinAuxilio = 0, diasSinSueldo = 0) {
   const sueldo = Number(trabajador.sueldo) || 0;
   const auxilioMensual = sueldo > TOPE_SUELDO_PARA_AUXILIO ? 0 : (Number(trabajador.auxilioTransporte) || 0);
@@ -6851,6 +6886,7 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, p
   const [areaFiltro, setAreaFiltro] = useState("");
   const [trabajadorId, setTrabajadorId] = useState("");
   const [fechaRetiro, setFechaRetiro] = useState("");
+  const [anioCesantias, setAnioCesantias] = useState(anioSugeridoParaCesantias());
   const [resultado, setResultado] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
@@ -6922,6 +6958,34 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, p
           })()}
         </div>
       )}
+      {trabajador && trabajador.tipoNomina === "Fiscal" && (() => {
+        const proyeccion = calcularCesantiasDelAnio(trabajador, anioCesantias, ausencias);
+        return (
+          <div style={{ border: `1px solid ${C.blue}`, background: C.blueBg, borderRadius: 8, padding: 14, marginBottom: 20, maxWidth: 560 }}>
+            <div style={{ fontWeight: 700, fontSize: 12.5, color: C.blue, marginBottom: 8 }}>📅 Cesantías e intereses para el 14 de febrero</div>
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 10, flexWrap: "wrap" }}>
+              <Field label="Año causado">
+                <FInput type="number" value={String(anioCesantias)} onChange={(v) => setAnioCesantias(Number(v) || anioCesantias)} />
+              </Field>
+            </div>
+            {!proyeccion ? (
+              <div style={{ fontSize: 11, color: C.red }}>Este trabajador no tiene Fecha de Ingreso registrada.</div>
+            ) : proyeccion.sinDatos ? (
+              <div style={{ fontSize: 11, color: C.slate }}>{trabajador.nombre} no había ingresado todavía en {anioCesantias}.</div>
+            ) : (
+              <>
+                <div style={{ fontSize: 13, color: C.ink, marginBottom: 4 }}>Cesantías {anioCesantias}: <strong>{fmtMoney(proyeccion.cesantias)}</strong></div>
+                <div style={{ fontSize: 13, color: C.ink, marginBottom: 4 }}>Intereses {anioCesantias}: <strong>{fmtMoney(proyeccion.intereses)}</strong></div>
+                <div style={{ fontSize: 14, color: C.ink, fontWeight: 700, marginBottom: 8 }}>Total a consignar: {fmtMoney(proyeccion.total)}</div>
+                <div style={{ fontSize: 11, color: C.slate }}>
+                  Por ley, se debe consignar al fondo de cesantías antes del <strong>14 de febrero de {anioCesantias + 1}</strong>.
+                  {proyeccion.incompleto ? " Este valor es lo acumulado hasta hoy -- si sigue trabajando con el mismo sueldo hasta el 31 de diciembre, el total final será un poco mayor." : ""}
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })()}
       {trabajadorId && fechaRetiro && (
         <div style={{ marginBottom: 20 }}>
           <Btn onClick={calcular} disabled={!trabajador?.fechaIngreso}>🧮 Calcular liquidación</Btn>
