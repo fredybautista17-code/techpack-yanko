@@ -3744,29 +3744,41 @@ function cobrosPendientesDeTrabajador(lotesConCobros, trabajadorId) {
 function sumaCobrosPendientes(cobrosDetalle) {
   return (cobrosDetalle || []).reduce((s, c) => s + (Number(c.valor) || 0), 0);
 }
-// (2026-09-11, a pedido de Fredy) Motivos de ausencia que tambien suspenden
-// el pago del auxilio de transporte (ademas de las faltas sin justificar,
-// que ya no lo pagan). Igual que las faltas, estos dias se descuentan SOLO
-// del auxilio, nunca del sueldo.
+// (2026-09-11/12, a pedido de Fredy) Motivos de ausencia que suspenden el
+// pago del auxilio de transporte (ademas de las faltas sin justificar, que
+// ya no lo pagan). De estos, Licencia No Remunerada es la unica que
+// TAMBIEN suspende el sueldo -- es la unica de las cuatro que es,
+// literalmente, sin remuneracion (las otras tres son licencias pagadas
+// por ley: vacaciones, maternidad/paternidad y luto).
 const MOTIVOS_SIN_AUXILIO_TRANSPORTE = ["Vacaciones", "Licencia No Remunerada", "Licencia Maternidad/Paternidad", "Luto"];
-function diasSinAuxilioTransporte(ausencias, trabajadorId, inicio, fin) {
+const MOTIVOS_SIN_SUELDO = ["Licencia No Remunerada"];
+// (2026-09-12) Cuenta, dentro de [inicio, fin], los dias HABILES reales del
+// trabajador (mismo criterio de diaEsperado que usa el Reporte de
+// Asistencia -- respeta su turno si tiene uno especial) que caen dentro de
+// alguna ausencia con motivo en `motivos`. Antes se contaban todos los
+// dias de CALENDARIO entre fechaInicio y fechaFin, lo que inflaba el
+// conteo cuando la ausencia cruzaba un fin de semana (ej. viernes a lunes
+// contaba 4 dias en vez de 2 -- caso Jairo Capacho, 2026-09-11).
+function diasHabilesDeAusencias(ausencias, motivos, trabajador, turno, inicio, fin) {
   const dias = new Set();
   (ausencias || []).forEach((a) => {
-    if (a.trabajadorId !== trabajadorId) return;
-    if (!MOTIVOS_SIN_AUXILIO_TRANSPORTE.includes(a.motivo)) return;
+    if (a.trabajadorId !== trabajador.id) return;
+    if (!motivos.includes(a.motivo)) return;
     listaDeDiasISO(a.fechaInicio, a.fechaFin).forEach((fecha) => {
-      if (fecha >= inicio && fecha <= fin) dias.add(fecha);
+      if (fecha < inicio || fecha > fin) return;
+      if (!diaEsperado(fecha, turno)) return;
+      dias.add(fecha);
     });
   });
   return dias.size;
 }
-function calcularLiquidacionFiscal(trabajador, diasInasistencia, diasSinAuxilio = 0) {
+function calcularLiquidacionFiscal(trabajador, diasInasistencia, diasSinAuxilio = 0, diasSinSueldo = 0) {
   const sueldo = Number(trabajador.sueldo) || 0;
   const auxilioMensual = sueldo > TOPE_SUELDO_PARA_AUXILIO ? 0 : (Number(trabajador.auxilioTransporte) || 0);
-  const descuentoSueldo = (sueldo / 30) * diasInasistencia;
-  // (2026-09-11) El auxilio tambien se descuenta por dias de ausencias que
-  // no lo pagan (vacaciones, licencia no remunerada, licencia de
-  // maternidad/paternidad, luto) -- el sueldo NO se toca por esto.
+  // (2026-09-12) diasSinSueldo son los dias de Licencia No Remunerada --
+  // la unica ausencia que tambien deja de pagar sueldo (las demas del
+  // listado de arriba solo afectan el auxilio de transporte).
+  const descuentoSueldo = (sueldo / 30) * (diasInasistencia + diasSinSueldo);
   const descuentoAuxilio = (auxilioMensual / 30) * (diasInasistencia + diasSinAuxilio);
   const sueldoQuincena = Math.max(0, sueldo / 2 - descuentoSueldo);
   const auxilioQuincena = Math.max(0, auxilioMensual / 2 - descuentoAuxilio);
@@ -3784,7 +3796,7 @@ function calcularLiquidacionFiscal(trabajador, diasInasistencia, diasSinAuxilio 
   const primaPeriodo = baseConAuxilio * TASA_PRIMA_MENSUAL;
   const vacacionesPeriodo = sueldoQuincena * TASA_VACACIONES_MENSUAL;
   return {
-    diasInasistencia, diasSinAuxilio, descuentoSueldo, descuentoAuxilio, sueldoQuincena, auxilioQuincena,
+    diasInasistencia, diasSinAuxilio, diasSinSueldo, descuentoSueldo, descuentoAuxilio, sueldoQuincena, auxilioQuincena,
     epsTrabajador, pensionTrabajador, pensionEmpleador, arlEmpleador, cajaCompensacionEmpleador, epsEmpleador,
     netoAPagar: sueldoQuincena + auxilioQuincena - epsTrabajador - pensionTrabajador,
     cesantiasPeriodo, interesesPeriodo, primaPeriodo, vacacionesPeriodo,
@@ -3841,7 +3853,7 @@ function DetalleDiasSinJustificarModal({ trabajador, fechas, ausencias, trabajad
     </Modal>
   );
 }
-function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados }) {
+function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -3863,8 +3875,10 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       const faltasDetalle = faltas.filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= inicio && f.fecha <= fin);
       const dias = faltasDetalle.length;
       const diasTrabajadosCount = diasTrabajados.filter((d) => coincideHuellero(d, t, nombreNorm) && d.fecha >= inicio && d.fecha <= fin).length;
-      const diasSinAuxilio = diasSinAuxilioTransporte(ausencias, t.id, inicio, fin);
-      const base = calcularLiquidacionFiscal(t, dias, diasSinAuxilio);
+      const turno = (turnos || []).find((tu) => tu.id === t.turnoId);
+      const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, inicio, fin);
+      const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin);
+      const base = calcularLiquidacionFiscal(t, dias, diasSinAuxilio, diasSinSueldo);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
       return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar - descuentoCobros } };
@@ -3975,6 +3989,9 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
               ) },
               { key: "diasSinAuxilio", label: "Días sin aux. transporte", align: "right", render: (f) => (
                 <span style={{ fontWeight: 700, color: f.calculo.diasSinAuxilio > 0 ? C.amber : C.slate }}>{f.calculo.diasSinAuxilio || 0}</span>
+              ) },
+              { key: "diasSinSueldo", label: "Días sin sueldo (lic. no remun.)", align: "right", render: (f) => (
+                <span style={{ fontWeight: 700, color: f.calculo.diasSinSueldo > 0 ? C.red : C.slate }}>{f.calculo.diasSinSueldo || 0}</span>
               ) },
               { key: "sueldoQuincena", label: "Sueldo quincena", align: "right", render: (f) => fmtMoney(f.calculo.sueldoQuincena) },
               { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.calculo.auxilioQuincena) },
@@ -4091,13 +4108,13 @@ function HistorialFiscalView({ liquidaciones, trabajadores }) {
     </div>
   );
 }
-function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia, diasSinAuxilio = 0) {
+function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia, diasSinAuxilio = 0, diasSinSueldo = 0) {
   const sueldo = Number(trabajador.sueldo) || 0;
   const auxilio = Number(trabajador.auxilioTransporte) || 0;
-  const descuentoSueldo = (sueldo / 30) * diasInasistencia;
-  // (2026-09-11) Mismo criterio que calcularLiquidacionFiscal: el auxilio
-  // tambien se descuenta por dias de ausencias que no lo pagan -- el
-  // sueldo no se toca por esto.
+  // (2026-09-12) Mismo criterio que calcularLiquidacionFiscal: diasSinSueldo
+  // son los dias de Licencia No Remunerada (la unica ausencia que tambien
+  // deja de pagar sueldo, no solo auxilio).
+  const descuentoSueldo = (sueldo / 30) * (diasInasistencia + diasSinSueldo);
   const descuentoAuxilio = (auxilio / 30) * (diasInasistencia + diasSinAuxilio);
   const sueldoQuincena = Math.max(0, sueldo / 2 - descuentoSueldo);
   const auxilioQuincena = Math.max(0, auxilio / 2 - descuentoAuxilio);
@@ -4108,13 +4125,118 @@ function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia, diasSinA
   const primaPeriodo = baseParafiscales * TASA_PRIMA_MENSUAL;
   const vacacionesPeriodo = baseParafiscales * TASA_VACACIONES_MENSUAL;
   return {
-    diasInasistencia, diasSinAuxilio, descuentoSueldo, descuentoAuxilio, sueldoQuincena, auxilioQuincena,
+    diasInasistencia, diasSinAuxilio, diasSinSueldo, descuentoSueldo, descuentoAuxilio, sueldoQuincena, auxilioQuincena,
     netoAPagar: sueldoQuincena + auxilioQuincena,
     cesantiasPeriodo, interesesPeriodo, primaPeriodo, vacacionesPeriodo,
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
 }
-function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados }) {
+// (2026-09-12, a pedido de Fredy) Listado de todas las novedades (faltas
+// sin justificar del huellero + ausencias registradas) de una quincena,
+// con el descuento que cada una genera en sueldo y/o auxilio de
+// transporte -- para poder verificar todo de un vistazo antes de
+// liquidar. Cubre Nomina Fiscal y Nomina Fiscal Destajo (las unicas que
+// tienen estos descuentos reales); Destajo no aplica porque se paga por
+// produccion, no por dias.
+function NovedadesQuincenaView({ trabajadores, faltas, ausencias, turnos }) {
+  const hoy = new Date();
+  const [anio, setAnio] = useState(String(hoy.getFullYear()));
+  const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
+  const [quincena, setQuincena] = useState(hoy.getDate() <= 15 ? "1" : "2");
+  const [filas, setFilas] = useState(null);
+
+  const personas = trabajadores.filter((t) => (t.tipoNomina === "Fiscal" || t.tipoNomina === "Fiscal Destajo") && t.activo !== false);
+  const { inicio, fin } = rangoQuincena(anio, mes, quincena);
+
+  function calcular() {
+    const out = [];
+    personas.forEach((t) => {
+      const nombreNorm = normalizarNombreHuellero(t.nombre);
+      const turno = (turnos || []).find((tu) => tu.id === t.turnoId);
+      const sueldo = Number(t.sueldo) || 0;
+      const auxilioMensual = sueldo > TOPE_SUELDO_PARA_AUXILIO ? 0 : (Number(t.auxilioTransporte) || 0);
+      const valorDiaSueldo = sueldo / 30;
+      const valorDiaAuxilio = auxilioMensual / 30;
+
+      // 1) Faltas sin justificar del huellero -- afectan sueldo Y auxilio.
+      const faltasDetalle = faltas.filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= inicio && f.fecha <= fin);
+      if (faltasDetalle.length) {
+        const dias = faltasDetalle.length;
+        out.push({
+          trabajador: t, motivo: "Falta sin justificar", fechas: faltasDetalle.map((f) => f.fecha).sort(), dias,
+          descuentoSueldo: valorDiaSueldo * dias, descuentoAuxilio: valorDiaAuxilio * dias,
+        });
+      }
+
+      // 2) Ausencias registradas que caen (aunque sea parcialmente) en la
+      // quincena -- una fila por ausencia, contando solo los dias habiles
+      // de ESTA quincena.
+      (ausencias || []).filter((a) => a.trabajadorId === t.id && a.fechaInicio <= fin && a.fechaFin >= inicio).forEach((a) => {
+        const diasAusencia = listaDeDiasISO(a.fechaInicio, a.fechaFin).filter((f) => f >= inicio && f <= fin && diaEsperado(f, turno));
+        if (!diasAusencia.length) return;
+        const afectaAuxilio = MOTIVOS_SIN_AUXILIO_TRANSPORTE.includes(a.motivo);
+        const afectaSueldo = MOTIVOS_SIN_SUELDO.includes(a.motivo);
+        out.push({
+          trabajador: t, motivo: a.motivo, fechas: diasAusencia, dias: diasAusencia.length,
+          descuentoSueldo: afectaSueldo ? valorDiaSueldo * diasAusencia.length : 0,
+          descuentoAuxilio: afectaAuxilio ? valorDiaAuxilio * diasAusencia.length : 0,
+        });
+      });
+    });
+    out.sort((a, b) => a.trabajador.nombre.localeCompare(b.trabajador.nombre) || a.fechas[0].localeCompare(b.fechas[0]));
+    setFilas(out);
+  }
+
+  const totales = filas ? filas.reduce((s, f) => ({
+    descuentoSueldo: s.descuentoSueldo + f.descuentoSueldo,
+    descuentoAuxilio: s.descuentoAuxilio + f.descuentoAuxilio,
+  }), { descuentoSueldo: 0, descuentoAuxilio: 0 }) : null;
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Todas las novedades (faltas sin justificar y ausencias registradas) de los trabajadores Fiscal y Fiscal Destajo en la quincena elegida, con el descuento que cada una genera en sueldo y/o auxilio de transporte. Solo informativo -- no reemplaza el cálculo de cada nómina.
+      </div>
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Año"><FInput type="number" value={anio} onChange={setAnio} /></Field>
+        <Field label="Mes">
+          <FSel value={mes} onChange={setMes} options={Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1).padStart(2, "0"), label: String(i + 1).padStart(2, "0") }))} />
+        </Field>
+        <Field label="Quincena">
+          <FSel value={quincena} onChange={setQuincena} options={[{ value: "1", label: "1 (días 1-15)" }, { value: "2", label: "2 (16-fin de mes)" }]} />
+        </Field>
+        <Btn onClick={calcular} disabled={personas.length === 0}>🔍 Buscar novedades</Btn>
+      </div>
+
+      {filas && (
+        <>
+          <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+            <KPI icon="📣" label="Novedades encontradas" value={filas.length} color={C.violet} bg={C.violetBg} />
+            <KPI icon="💸" label="Total descuento sueldo" value={fmtMoney(totales.descuentoSueldo)} color={C.red} bg={C.redBg} />
+            <KPI icon="🚌" label="Total descuento aux. transporte" value={fmtMoney(totales.descuentoAuxilio)} color={C.amber} bg={C.amberBg} />
+          </div>
+          <Tabla
+            vacio="No hay novedades en esta quincena."
+            filas={filas}
+            columnas={[
+              { key: "nombre", label: "Nombre", render: (f) => f.trabajador.nombre },
+              { key: "motivo", label: "Motivo", render: (f) => f.motivo },
+              { key: "fechas", label: "Fechas", render: (f) => f.fechas.map((iso) => fmtFechaISO(iso)).join(", ") },
+              { key: "dias", label: "Días", align: "right", render: (f) => f.dias },
+              { key: "descuentoSueldo", label: "Descuento sueldo", align: "right", render: (f) => (
+                <span style={{ color: f.descuentoSueldo > 0 ? C.red : C.slate, fontWeight: f.descuentoSueldo > 0 ? 700 : 400 }}>{fmtMoney(f.descuentoSueldo)}</span>
+              ) },
+              { key: "descuentoAuxilio", label: "Descuento aux. transporte", align: "right", render: (f) => (
+                <span style={{ color: f.descuentoAuxilio > 0 ? C.amber : C.slate, fontWeight: f.descuentoAuxilio > 0 ? 700 : 400 }}>{fmtMoney(f.descuentoAuxilio)}</span>
+              ) },
+            ]}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -4138,8 +4260,10 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
       // de la quincena -- solo informativo/verificacion (pedido de Fredy),
       // no reemplaza ni toca el descuento por inasistencia de arriba.
       const diasTrabajadosCount = diasTrabajados.filter((d) => coincideHuellero(d, t, nombreNorm) && d.fecha >= inicio && d.fecha <= fin).length;
-      const diasSinAuxilio = diasSinAuxilioTransporte(ausencias, t.id, inicio, fin);
-      const base = calcularLiquidacionFiscalDestajo(t, dias, diasSinAuxilio);
+      const turno = (turnos || []).find((tu) => tu.id === t.turnoId);
+      const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, inicio, fin);
+      const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin);
+      const base = calcularLiquidacionFiscalDestajo(t, dias, diasSinAuxilio, diasSinSueldo);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
       return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar - descuentoCobros } };
@@ -4237,6 +4361,9 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
               ) },
               { key: "diasSinAuxilio", label: "Días sin aux. transporte", align: "right", render: (f) => (
                 <span style={{ fontWeight: 700, color: f.calculo.diasSinAuxilio > 0 ? C.amber : C.slate }}>{f.calculo.diasSinAuxilio || 0}</span>
+              ) },
+              { key: "diasSinSueldo", label: "Días sin sueldo (lic. no remun.)", align: "right", render: (f) => (
+                <span style={{ fontWeight: 700, color: f.calculo.diasSinSueldo > 0 ? C.red : C.slate }}>{f.calculo.diasSinSueldo || 0}</span>
               ) },
               { key: "sueldoQuincena", label: "Sueldo quincena", align: "right", render: (f) => fmtMoney(f.calculo.sueldoQuincena) },
               { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.calculo.auxilioQuincena) },
@@ -6501,6 +6628,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
             { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
             { id: "asistencia", icon: "📊", label: "Reporte de Asistencia" },
+            { id: "novedades_quincena", icon: "🧾", label: "Listado de Novedades (quincena)" },
           ] },
         { group: "Reporte de Nómina", icon: "📊", items: [
             { id: "historial_lote", icon: "📦", label: "Historial de Lote" },
@@ -6797,12 +6925,13 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "costo_referencia" && !areaLider && !soloNovedades && <ConsultarCostoReferenciaView />}
           {subView === "tns" && !areaLider && !soloNovedades && <TNSConexionView />}
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
+          {subView === "novedades_quincena" && !areaLider && !soloNovedades && <NovedadesQuincenaView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} />}
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} turnos={turnos} onGuardarTrabajador={guardarTrabajador} />}
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
-          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
+          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
-          {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
+          {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} />}
           {subView === "historial_fiscal_destajo" && !areaLider && !soloNovedades && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
           {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
