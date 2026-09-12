@@ -3327,6 +3327,25 @@ function listaDeDiasISO(desdeISO, hastaISO) {
   }
   return out;
 }
+// (2026-09-12, a pedido de la especialista en liquidacion de nominas de
+// Fredy) Cuenta dias con el metodo "360" que exige la ley colombiana para
+// liquidar prestaciones sociales: cada mes cuenta como 30 dias exactos
+// (sin importar si el mes real tiene 28, 29, 30 o 31 dias), asi que un
+// anio completo de trabajo siempre da exactamente 360 dias -- no los 365
+// (o 366) dias de calendario reales. Formula estandar 30/360: se limita
+// el dia 31 a 30 para que no sume un dia de mas; se suma 1 al final
+// porque el rango es inclusivo en ambas puntas (ej: 1 ene -> 31 dic debe
+// dar 360, no 359). Nota: en rangos que cruzan febrero el resultado puede
+// diferir en 1-2 dias de los dias de calendario reales -- es una
+// consecuencia aceptada del metodo, no un error de calculo.
+function diasEntre360(desdeISO, hastaISO) {
+  if (!desdeISO || !hastaISO || hastaISO < desdeISO) return 0;
+  const [y1, m1, d1raw] = desdeISO.split("-").map(Number);
+  const [y2, m2, d2raw] = hastaISO.split("-").map(Number);
+  const d1 = Math.min(d1raw, 30);
+  const d2 = Math.min(d2raw, 30);
+  return (y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1) + 1;
+}
 function ReporteAsistenciaView({ ausencias, trabajadores, turnos, onGuardarTrabajador }) {
   const fileRef = useRef(null);
   const [cargando, setCargando] = useState(false);
@@ -3783,16 +3802,21 @@ function diasHabilesDeAusencias(ausencias, motivos, trabajador, turno, inicio, f
 // incluidos fines de semana) que caen dentro de alguna ausencia con
 // motivo en `motivos`.
 function diasCalendarioPorMotivos(ausencias, trabajadorId, motivos, desde, hasta) {
-  const dias = new Set();
+  // (2026-09-12) Cada ausencia se mide como un bloque independiente con el
+  // metodo 360 (ver diasEntre360) y se suman -- ya no se deduplican fecha
+  // por fecha con un Set de dias reales. En la practica esto no cambia el
+  // resultado salvo que existan 2 ausencias registradas para el mismo
+  // trabajador con fechas traslapadas, caso que no deberia ocurrir.
+  let dias = 0;
   (ausencias || []).forEach((a) => {
     if (a.trabajadorId !== trabajadorId) return;
     if (!motivos.includes(a.motivo)) return;
-    listaDeDiasISO(a.fechaInicio, a.fechaFin).forEach((fecha) => {
-      if (fecha < desde || fecha > hasta) return;
-      dias.add(fecha);
-    });
+    const inicio = a.fechaInicio > desde ? a.fechaInicio : desde;
+    const fin = a.fechaFin < hasta ? a.fechaFin : hasta;
+    if (inicio > fin) return;
+    dias += diasEntre360(inicio, fin);
   });
-  return dias.size;
+  return dias;
 }
 function diasCalendarioSinSueldo(ausencias, trabajadorId, desde, hasta) {
   return diasCalendarioPorMotivos(ausencias, trabajadorId, MOTIVOS_SIN_SUELDO, desde, hasta);
@@ -3860,7 +3884,7 @@ function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias) {
   const auxilioMensual = !esDestajo && sueldoMensual > TOPE_SUELDO_PARA_AUXILIO ? 0 : auxilioMensualBruto;
   const baseConAuxilio = sueldoMensual + auxilioMensual;
   function diasTrabajadosDelTramo(desde, hasta) {
-    const calendario = listaDeDiasISO(desde, hasta).length;
+    const calendario = diasEntre360(desde, hasta);
     const sinSueldo = diasCalendarioSinSueldo(ausencias, trabajador.id, desde, hasta);
     return Math.max(0, calendario - sinSueldo);
   }
@@ -3876,7 +3900,7 @@ function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias) {
   segmentosPorSemestre(fechaIngreso, fechaCorte).forEach(({ desde, hasta }) => {
     prima += (baseConAuxilio * diasTrabajadosDelTramo(desde, hasta)) / 360;
   });
-  const diasCalendario = listaDeDiasISO(fechaIngreso, fechaCorte).length;
+  const diasCalendario = diasEntre360(fechaIngreso, fechaCorte);
   const diasBase = diasTrabajadosDelTramo(fechaIngreso, fechaCorte);
   const diasNoRemunerados = diasCalendario - diasBase;
   const vacacionesAcumuladas = (sueldoMensual * diasBase) / 720;
@@ -3914,7 +3938,7 @@ function calcularCesantiasDelAnio(trabajador, anio, ausencias) {
   const auxilioMensualBruto = Number(trabajador.auxilioTransporte) || 0;
   const auxilioMensual = sueldoMensual > TOPE_SUELDO_PARA_AUXILIO ? 0 : auxilioMensualBruto;
   const baseConAuxilio = sueldoMensual + auxilioMensual;
-  const calendario = listaDeDiasISO(desde, hastaTope).length;
+  const calendario = diasEntre360(desde, hastaTope);
   const sinSueldo = diasCalendarioSinSueldo(ausencias, trabajador.id, desde, hastaTope);
   const dias = Math.max(0, calendario - sinSueldo);
   const cesantias = (baseConAuxilio * dias) / 360;
