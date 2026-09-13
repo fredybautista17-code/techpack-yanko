@@ -6955,13 +6955,99 @@ function HistorialTrabajadorView({ trabajadores, produccion, liquidaciones, area
   );
 }
 const TIPOS_NOMINA_LIQUIDABLES = ["Fiscal", "Fiscal Destajo", "Destajo"];
+// (2026-09-14, a pedido de Fredy) Carga masiva de trabajadores que YA se
+// retiraron antes de existir en Atlas -- no estan en Trabajadores todavia.
+// Se crean como Inactivo y se les calcula/guarda su liquidacion de una vez,
+// con la MISMA formula de calcularLiquidacionRetiro. Si tuvieron vacaciones
+// tomadas o licencia no remunerada durante su tiempo trabajado, se pueden
+// indicar como un rango de fechas opcional en la misma plantilla -- se
+// crean como Ausencias reales (igual que la carga de novedades historicas
+// de arriba) para que el calculo las descuente correctamente.
+const HOJA_RETIROS_HISTORICO = "Retiros";
+async function descargarPlantillaRetirosHistoricos(areasNomina) {
+  const XLSX = await import("xlsx-js-style");
+  const wb = XLSX.utils.book_new();
+  const enc = ["Cédula", "Nombre completo", "Tipo Nómina", "Área Interna", "Fecha de Ingreso (AAAA-MM-DD)", "Fecha de Retiro (AAAA-MM-DD)", "Sueldo", "Auxilio de Transporte", "Vacaciones Tomadas - Inicio (AAAA-MM-DD, opcional)", "Vacaciones Tomadas - Fin (AAAA-MM-DD, opcional)", "Licencia No Remunerada - Inicio (AAAA-MM-DD, opcional)", "Licencia No Remunerada - Fin (AAAA-MM-DD, opcional)"];
+  const ejemplo = ["1004802413", "Ejemplo Nombre", "Fiscal", "Bodega", "2022-03-01", "2026-06-15", "1750905", "249095", "2025-12-15", "2025-12-29", "", ""];
+  const ws = XLSX.utils.aoa_to_sheet([enc, ejemplo]);
+  ws["!cols"] = enc.map((h) => ({ wch: Math.max(16, h.length + 2) }));
+  XLSX.utils.book_append_sheet(wb, ws, HOJA_RETIROS_HISTORICO);
+  const encRef = ["Tipos de Nómina válidos", "", "Áreas Internas existentes"];
+  const filasRef = Array.from({ length: Math.max(TIPOS_NOMINA_LIQUIDABLES.length, (areasNomina || []).length, 1) }, (_, i) => [
+    TIPOS_NOMINA_LIQUIDABLES[i] || "", "", (areasNomina || [])[i]?.nombre || "",
+  ]);
+  const wsRef = XLSX.utils.aoa_to_sheet([encRef, ...filasRef]);
+  wsRef["!cols"] = [{ wch: 24 }, { wch: 4 }, { wch: 24 }];
+  XLSX.utils.book_append_sheet(wb, wsRef, "Referencia");
+  XLSX.writeFile(wb, "Plantilla_Retiros_Historicos.xlsx");
+}
+// Valida un par opcional de fechas (Vacaciones Tomadas o Licencia No
+// Remunerada): las dos vacias es valido (no tuvo), solo una es error, y si
+// vienen las dos deben ser AAAA-MM-DD, Fin >= Inicio, y caer dentro de
+// [fechaIngreso, fechaRetiro] del trabajador de esa fila.
+function validarRangoFechasOpcional(inicio, fin, fechaIngreso, fechaRetiro, etiqueta, nombreFila) {
+  if (!inicio && !fin) return { ok: true, inicio: "", fin: "" };
+  if (!inicio || !fin) return { ok: false, error: `${etiqueta}: debes dar Inicio y Fin, o dejar ambas vacías (fila de ${nombreFila})` };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(inicio) || !/^\d{4}-\d{2}-\d{2}$/.test(fin)) return { ok: false, error: `${etiqueta}: fechas inválidas -- usa AAAA-MM-DD (fila de ${nombreFila})` };
+  if (fin < inicio) return { ok: false, error: `${etiqueta}: la fecha Fin es anterior a la fecha Inicio (fila de ${nombreFila})` };
+  if (inicio < fechaIngreso || fin > fechaRetiro) return { ok: false, error: `${etiqueta}: las fechas deben estar entre la Fecha de Ingreso y la Fecha de Retiro (fila de ${nombreFila})` };
+  return { ok: true, inicio, fin };
+}
+function analizarRetirosHistoricos(filasHoja, trabajadoresExistentes, areasNomina) {
+  const validas = [];
+  const errores = [];
+  const cedulasEnArchivo = new Set();
+  for (let r = 1; r < filasHoja.length; r++) {
+    const fila = filasHoja[r] || [];
+    const cedula = String(fila[0] ?? "").trim();
+    if (!cedula) continue;
+    const nombre = String(fila[1] ?? "").trim();
+    const tipoNomina = String(fila[2] ?? "").trim();
+    const area = String(fila[3] ?? "").trim();
+    const fechaIngreso = String(fila[4] ?? "").trim();
+    const fechaRetiro = String(fila[5] ?? "").trim();
+    const sueldo = Number(String(fila[6] ?? "").replace(/[^0-9.-]/g, ""));
+    const auxilioTransporte = fila[7] === "" || fila[7] == null ? 0 : Number(String(fila[7]).replace(/[^0-9.-]/g, ""));
+    const vacIni = String(fila[8] ?? "").trim();
+    const vacFin = String(fila[9] ?? "").trim();
+    const licIni = String(fila[10] ?? "").trim();
+    const licFin = String(fila[11] ?? "").trim();
+    const cedNorm = normalizarCedula(cedula);
+    const etiqueta = nombre || cedula;
+    if (!nombre) { errores.push({ fila: r + 1, error: `Falta el Nombre (cédula ${cedula})` }); continue; }
+    if (trabajadoresExistentes.some((t) => normalizarCedula(t.cedula) === cedNorm)) { errores.push({ fila: r + 1, error: `Cédula "${cedula}" ya existe en Trabajadores -- si ya está en Atlas, usa el formulario de arriba en vez de esta plantilla (fila de ${etiqueta})` }); continue; }
+    if (cedulasEnArchivo.has(cedNorm)) { errores.push({ fila: r + 1, error: `Cédula "${cedula}" está repetida en el archivo (fila de ${etiqueta})` }); continue; }
+    if (!TIPOS_NOMINA_LIQUIDABLES.includes(tipoNomina)) { errores.push({ fila: r + 1, error: `Tipo Nómina "${tipoNomina}" no es válido -- debe ser Fiscal, Fiscal Destajo o Destajo (fila de ${etiqueta})` }); continue; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaIngreso) || !/^\d{4}-\d{2}-\d{2}$/.test(fechaRetiro)) { errores.push({ fila: r + 1, error: `Fecha de Ingreso o de Retiro inválida -- usa AAAA-MM-DD (fila de ${etiqueta})` }); continue; }
+    if (fechaRetiro < fechaIngreso) { errores.push({ fila: r + 1, error: `Fecha de Retiro es anterior a la Fecha de Ingreso (fila de ${etiqueta})` }); continue; }
+    if (!sueldo || Number.isNaN(sueldo) || sueldo <= 0) { errores.push({ fila: r + 1, error: `Sueldo inválido (fila de ${etiqueta})` }); continue; }
+    if (Number.isNaN(auxilioTransporte)) { errores.push({ fila: r + 1, error: `Auxilio de Transporte inválido (fila de ${etiqueta})` }); continue; }
+    const rVac = validarRangoFechasOpcional(vacIni, vacFin, fechaIngreso, fechaRetiro, "Vacaciones Tomadas", etiqueta);
+    if (!rVac.ok) { errores.push({ fila: r + 1, error: rVac.error }); continue; }
+    const rLic = validarRangoFechasOpcional(licIni, licFin, fechaIngreso, fechaRetiro, "Licencia No Remunerada", etiqueta);
+    if (!rLic.ok) { errores.push({ fila: r + 1, error: rLic.error }); continue; }
+    const areaFinal = area || "Sin asignar";
+    if (area && !(areasNomina || []).some((a) => normalizarNombreParaComparar(a.nombre) === normalizarNombreParaComparar(area))) {
+      errores.push({ fila: r + 1, error: `Área "${area}" no existe todavía en Área Interna -- créala primero en Administrativo → Área Interna, o deja la celda vacía (fila de ${etiqueta})` });
+      continue;
+    }
+    cedulasEnArchivo.add(cedNorm);
+    const trabajadorTmp = { id: uid(), nombre, cedula, tipoNomina, area: areaFinal, fechaIngreso, sueldo, auxilioTransporte };
+    const ausenciasTmp = [];
+    if (rVac.inicio) ausenciasTmp.push({ trabajadorId: trabajadorTmp.id, motivo: "Vacaciones", fechaInicio: rVac.inicio, fechaFin: rVac.fin });
+    if (rLic.inicio) ausenciasTmp.push({ trabajadorId: trabajadorTmp.id, motivo: "Licencia No Remunerada", fechaInicio: rLic.inicio, fechaFin: rLic.fin });
+    const calculo = calcularLiquidacionRetiro(trabajadorTmp, fechaRetiro, ausenciasTmp);
+    validas.push({ trabajador: trabajadorTmp, fechaRetiro, ausenciasTmp, calculo });
+  }
+  return { validas, errores };
+}
 // (2026-09-13, a pedido de Fredy) Liquidacion de prestaciones sociales al
 // retiro de un trabajador (cesantias, intereses, prima, vacaciones) desde
 // su Fecha de Ingreso real hasta la fecha de retiro que se indique -- para
 // Fiscal, Fiscal Destajo y Destajo. Al guardar, ademas de dejar el
 // registro en el historial, marca al trabajador como Inactivo y le queda
 // guardada la fecha de retiro en su ficha.
-function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, prestamos, areasNomina, onGuardarLiquidacionRetiro, onGuardarTrabajador }) {
+function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, prestamos, areasNomina, onGuardarLiquidacionRetiro, onGuardarTrabajador, onGuardarAusencia, currentUser }) {
   const [areaFiltro, setAreaFiltro] = useState("");
   const [trabajadorId, setTrabajadorId] = useState("");
   const [fechaRetiro, setFechaRetiro] = useState("");
@@ -6969,9 +7055,24 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, p
   const [resultado, setResultado] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
+  // (2026-09-14, a pedido de Fredy) Filtro por año del historial de
+  // liquidaciones de mas abajo -- por defecto el año actual, para que al
+  // entrar vea de una lo pagado este año; "Todos los años" para ver todo.
+  const [anioFiltroHistorial, setAnioFiltroHistorial] = useState(String(new Date().getFullYear()));
+  // Carga masiva de retiros historicos (ver mas abajo) -- helpers arriba,
+  // justo despues de TIPOS_NOMINA_LIQUIDABLES.
+  const fileRetirosRef = useRef(null);
+  const [analizandoRetiros, setAnalizandoRetiros] = useState(false);
+  const [previewRetiros, setPreviewRetiros] = useState(null); // { validas, errores } | { error }
+  const [cargandoRetiros, setCargandoRetiros] = useState(false);
+  const [resultadoRetiros, setResultadoRetiros] = useState(null);
 
   const personas = trabajadores.filter((t) => TIPOS_NOMINA_LIQUIDABLES.includes(t.tipoNomina) && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro));
   const trabajador = trabajadores.find((t) => t.id === trabajadorId);
+  const aniosHistorial = [...new Set((liquidacionesRetiro || []).map((f) => (f.fechaCorte || "").slice(0, 4)).filter(Boolean))].sort().reverse();
+  const historialFiltrado = (liquidacionesRetiro || [])
+    .filter((f) => !anioFiltroHistorial || (f.fechaCorte || "").slice(0, 4) === anioFiltroHistorial)
+    .filter((f) => !areaFiltro || (f.area || "Sin asignar") === areaFiltro);
 
   function elegirTrabajador(id) {
     setTrabajadorId(id);
@@ -7004,6 +7105,56 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, p
       setGuardadoOk(true);
     } finally {
       setGuardando(false);
+    }
+  }
+
+  async function handleSubirRetirosHistoricos(e) {
+    const archivo = e.target.files?.[0];
+    e.target.value = "";
+    if (!archivo) return;
+    setAnalizandoRetiros(true);
+    setResultadoRetiros(null);
+    try {
+      const XLSX = await import("xlsx");
+      const buffer = await archivo.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array", cellDates: false });
+      const hoja = hojaPorNombre(wb, HOJA_RETIROS_HISTORICO) || wb.Sheets[wb.SheetNames[0]];
+      const filasHoja = XLSX.utils.sheet_to_json(hoja, { header: 1, raw: true, defval: "" });
+      setPreviewRetiros(analizarRetirosHistoricos(filasHoja, trabajadores, areasNomina));
+    } catch (err) {
+      setPreviewRetiros({ error: err?.message || String(err) });
+    }
+    setAnalizandoRetiros(false);
+  }
+
+  async function confirmarCargaRetirosHistoricos() {
+    if (!previewRetiros || previewRetiros.error || !previewRetiros.validas.length) return;
+    setCargandoRetiros(true);
+    try {
+      const quien = currentUser?.name || currentUser?.username || "";
+      const ahora = new Date().toISOString();
+      let creados = 0;
+      for (const v of previewRetiros.validas) {
+        await onGuardarTrabajador({ ...v.trabajador, fechaRetiro: v.fechaRetiro, activo: false, origen: "carga_historica_retiro" });
+        for (const a of v.ausenciasTmp) {
+          await onGuardarAusencia({ id: uid(), ...a, nombre: v.trabajador.nombre, registradoPor: quien, registradoEn: ahora, origen: "carga_historica_retiro" });
+        }
+        await onGuardarLiquidacionRetiro({
+          id: `${v.trabajador.id}__retiro`,
+          trabajadorId: v.trabajador.id,
+          nombre: v.trabajador.nombre,
+          tipoNomina: v.trabajador.tipoNomina,
+          area: v.trabajador.area,
+          ...v.calculo,
+          generadaEn: ahora,
+          origen: "carga_historica_retiro",
+        });
+        creados++;
+      }
+      setResultadoRetiros({ creados });
+    } finally {
+      setCargandoRetiros(false);
+      setPreviewRetiros(null);
     }
   }
 
@@ -7091,9 +7242,14 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, p
       )}
       {liquidacionesRetiro && liquidacionesRetiro.length > 0 && (
         <div style={{ marginTop: 32 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Historial de liquidaciones</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 10 }}>
+            <div style={{ fontWeight: 700, fontSize: 13 }}>Historial de liquidaciones</div>
+            <div style={{ maxWidth: 200 }}>
+              <FSel value={anioFiltroHistorial} onChange={setAnioFiltroHistorial} options={aniosHistorial} placeholder="Todos los años" />
+            </div>
+          </div>
           <Tabla
-            vacio="Sin liquidaciones guardadas."
+            vacio="Sin liquidaciones guardadas con estos filtros."
             columnas={[
               { key: "nombre", label: "Trabajador" },
               { key: "tipoNomina", label: "Tipo Nómina" },
@@ -7103,10 +7259,61 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, p
               { key: "totalAPagar", label: "Total", align: "right", render: (f) => <strong>{fmtMoney(f.totalAPagar)}</strong> },
               { key: "generadaEn", label: "Generada", render: (f) => (f.generadaEn ? new Date(f.generadaEn).toLocaleString("es-CO") : "—") },
             ]}
-            filas={[...liquidacionesRetiro].sort((a, b) => (b.generadaEn || "").localeCompare(a.generadaEn || ""))}
+            filas={[...historialFiltrado].sort((a, b) => (b.generadaEn || "").localeCompare(a.generadaEn || ""))}
           />
         </div>
       )}
+      <div style={{ marginTop: 36, paddingTop: 24, borderTop: `1px solid ${C.border}` }}>
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Carga de retiros históricos (trabajadores que ya se retiraron y no están en Atlas)</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, maxWidth: 820 }}>
+          Para trabajadores que se retiraron antes de existir en Atlas: sube acá sus datos básicos y su fecha de retiro -- Atlas los crea como Inactivo y calcula su liquidación con la misma fórmula de arriba, dejándola en el historial. Si tuvieron vacaciones tomadas o licencia no remunerada durante su tiempo trabajado, indica esas fechas en la misma plantilla para que se descuenten del cálculo.
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+          <Btn variant="secondary" onClick={() => descargarPlantillaRetirosHistoricos(areasNomina)}>📥 Descargar plantilla</Btn>
+          <Btn variant="secondary" onClick={() => fileRetirosRef.current?.click()} disabled={analizandoRetiros}>{analizandoRetiros ? "Leyendo…" : "📤 Subir archivo"}</Btn>
+          <input ref={fileRetirosRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={handleSubirRetirosHistoricos} />
+        </div>
+        {resultadoRetiros && (
+          <div style={{ fontSize: 12, color: C.green, fontWeight: 700, marginBottom: 10 }}>✅ Se crearon {resultadoRetiros.creados} trabajador(es) con su liquidación en el historial.</div>
+        )}
+        {previewRetiros?.error && (
+          <div style={{ fontSize: 12, color: C.red, marginBottom: 10 }}>{previewRetiros.error}</div>
+        )}
+        {previewRetiros && !previewRetiros.error && (
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: 14 }}>
+            <div style={{ display: "flex", gap: 14, marginBottom: 10, flexWrap: "wrap" }}>
+              <KPI icon="👷" label="Trabajadores a crear" value={previewRetiros.validas.length} color={C.green} bg={C.greenBg} />
+              <KPI icon="✅" label="Total a registrar" value={fmtMoney(previewRetiros.validas.reduce((s, v) => s + v.calculo.totalAPagar, 0))} color={C.violet} bg={C.violetBg} />
+              <KPI icon="⚠️" label="Filas con error" value={previewRetiros.errores.length} color={C.red} bg={C.redBg} />
+            </div>
+            {previewRetiros.errores.length > 0 && (
+              <div style={{ fontSize: 11.5, color: C.red, marginBottom: 10, maxHeight: 160, overflowY: "auto" }}>
+                {previewRetiros.errores.map((e, i) => (<div key={i}>Fila {e.fila}: {e.error}</div>))}
+              </div>
+            )}
+            {previewRetiros.validas.length > 0 && (
+              <div style={{ marginBottom: 10, overflowX: "auto" }}>
+                <Tabla
+                  columnas={[
+                    { key: "nombre", label: "Trabajador", render: (v) => v.trabajador.nombre },
+                    { key: "tipoNomina", label: "Tipo Nómina", render: (v) => v.trabajador.tipoNomina },
+                    { key: "area", label: "Área", render: (v) => v.trabajador.area },
+                    { key: "fechaIngreso", label: "Ingreso", render: (v) => fmtFechaISO(v.trabajador.fechaIngreso) },
+                    { key: "fechaRetiro", label: "Retiro", render: (v) => fmtFechaISO(v.fechaRetiro) },
+                    { key: "novedades", label: "Vacaciones / Licencia", render: (v) => (v.ausenciasTmp.length ? v.ausenciasTmp.map((a) => `${a.motivo}: ${fmtFechaISO(a.fechaInicio)}–${fmtFechaISO(a.fechaFin)}`).join(" · ") : "—") },
+                    { key: "total", label: "Total calculado", align: "right", render: (v) => <strong>{fmtMoney(v.calculo.totalAPagar)}</strong> },
+                  ]}
+                  filas={previewRetiros.validas}
+                />
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10 }}>
+              <Btn onClick={confirmarCargaRetirosHistoricos} disabled={cargandoRetiros || previewRetiros.validas.length === 0}>{cargandoRetiros ? "Cargando…" : "✅ Confirmar carga"}</Btn>
+              <Btn variant="secondary" onClick={() => setPreviewRetiros(null)}>Cancelar</Btn>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -7118,14 +7325,18 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, p
 // por Area Interna para ver el presupuesto de una sola area.
 function ProvisionLiquidacionesView({ trabajadores, ausencias, areasNomina }) {
   const [areaFiltro, setAreaFiltro] = useState("");
+  // (2026-09-14, a pedido de Fredy) Antes esto SIEMPRE calculaba a la
+  // fecha de HOY -- ahora se puede elegir cualquier fecha de corte (ej:
+  // 31 de diciembre) para ver cuanto se deberia tener provisionado a esa
+  // fecha, no solo a hoy.
+  const [fechaCorte, setFechaCorte] = useState(today());
   const [resultado, setResultado] = useState(null); // null | [{trabajador, calculo}]
   const personas = trabajadores.filter((t) =>
     TIPOS_NOMINA_LIQUIDABLES.includes(t.tipoNomina) && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro)
   );
   const sinFechaIngreso = personas.filter((t) => !t.fechaIngreso);
   function calcular() {
-    const hoy = today();
-    const filas = personas.filter((t) => t.fechaIngreso).map((t) => ({ trabajador: t, calculo: calcularLiquidacionRetiro(t, hoy, ausencias) }));
+    const filas = personas.filter((t) => t.fechaIngreso).map((t) => ({ trabajador: t, calculo: calcularLiquidacionRetiro(t, fechaCorte, ausencias) }));
     filas.sort((a, b) => b.calculo.totalAPagar - a.calculo.totalAPagar);
     setResultado(filas);
   }
@@ -7139,9 +7350,12 @@ function ProvisionLiquidacionesView({ trabajadores, ausencias, areasNomina }) {
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 820 }}>
-        Cuánto se debería tener provisionado HOY en cesantías, intereses, prima y vacaciones si se liquidara en este momento a los trabajadores activos (Fiscal, Fiscal Destajo y Destajo) -- para presupuesto y provisión, no para retirar a nadie. Filtra por área si quieres el presupuesto de una sola área.
+        Cuánto se debería tener provisionado en cesantías, intereses, prima y vacaciones si se liquidara a los trabajadores activos (Fiscal, Fiscal Destajo y Destajo) a la fecha de corte que elijas -- para presupuesto y provisión, no para retirar a nadie. Por defecto es hoy, pero puedes poner cualquier fecha (ej: 31 de diciembre) para ver la provisión proyectada a ese día. Filtra por área si quieres el presupuesto de una sola área.
       </div>
       <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Fecha de corte">
+          <FInput type="date" value={fechaCorte} onChange={(v) => { setFechaCorte(v); setResultado(null); }} />
+        </Field>
         <Field label="Área (opcional, para filtrar)">
           <FSel value={areaFiltro} onChange={(v) => { setAreaFiltro(v); setResultado(null); }} options={(areasNomina || []).map((a) => a.nombre)} placeholder="Todas las áreas" />
         </Field>
@@ -7658,7 +7872,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "tns" && !areaLider && !soloNovedades && <TNSConexionView />}
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
           {subView === "novedades_quincena" && !areaLider && !soloNovedades && <NovedadesQuincenaView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} motivosDisponibles={nombresMotivosDisponibles} currentUser={currentUser} onGuardarAusencia={guardarAusencia} onGuardarPrestamo={guardarPrestamo} />}
-          {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} />}
+          {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} onGuardarAusencia={guardarAusencia} currentUser={currentUser} />}
           {subView === "provision_liquidaciones" && !areaLider && !soloNovedades && <ProvisionLiquidacionesView trabajadores={trabajadores} ausencias={ausencias} areasNomina={areasNomina} />}
           {subView === "prestamos" && !areaLider && !soloNovedades && <PrestamosView trabajadores={trabajadores} prestamos={prestamos} onGuardar={guardarPrestamo} onBorrar={borrarPrestamo} currentUser={currentUser} />}
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
