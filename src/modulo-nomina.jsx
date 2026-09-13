@@ -4026,7 +4026,7 @@ function DetalleDiasSinJustificarModal({ trabajador, fechas, ausencias, trabajad
     </Modal>
   );
 }
-function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos }) {
+function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, areasNomina }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -4036,7 +4036,8 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
   const [guardadoOk, setGuardadoOk] = useState(false);
   const [detalleFaltas, setDetalleFaltas] = useState(null); // { trabajador, fechas }
 
-  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal" && t.activo !== false);
+  const [areaFiltro, setAreaFiltro] = useState("");
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
@@ -4122,6 +4123,9 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
         </div>
       )}
       <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Área (opcional, para filtrar)">
+          <FSel value={areaFiltro} onChange={setAreaFiltro} options={(areasNomina || []).map((a) => a.nombre)} placeholder="Todas las áreas" />
+        </Field>
         <Field label="Año"><FInput type="number" value={anio} onChange={setAnio} /></Field>
         <Field label="Mes">
           <FSel value={mes} onChange={setMes} options={Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1).padStart(2, "0"), label: String(i + 1).padStart(2, "0") }))} />
@@ -5049,7 +5053,7 @@ function calcularLiquidacionDestajo(trabajador, netoProduccion) {
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
 }
-function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados }) {
+function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, areasNomina }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -5059,7 +5063,8 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
   const [guardadoOk, setGuardadoOk] = useState(false);
   const [detalleFaltas, setDetalleFaltas] = useState(null); // { trabajador, fechas }
 
-  const personas = trabajadores.filter((t) => t.tipoNomina === "Destajo" && t.activo !== false);
+  const [areaFiltro, setAreaFiltro] = useState("");
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Destajo" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
@@ -5143,6 +5148,9 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
         </div>
       )}
       <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Área (opcional, para filtrar)">
+          <FSel value={areaFiltro} onChange={setAreaFiltro} options={(areasNomina || []).map((a) => a.nombre)} placeholder="Todas las áreas" />
+        </Field>
         <Field label="Año"><FInput type="number" value={anio} onChange={setAnio} /></Field>
         <Field label="Mes">
           <FSel value={mes} onChange={setMes} options={Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1).padStart(2, "0"), label: String(i + 1).padStart(2, "0") }))} />
@@ -5434,6 +5442,10 @@ function HistorialDestajoView({ liquidaciones, trabajadores }) {
 // ─── DEDUCCIONES (cobros de Bodega, descuento automatico en Nomina) ──────
 function DeduccionesNominaView({ lotesConCobros, trabajadores }) {
   const [filtroEstado, setFiltroEstado] = useState("");
+  // (2026-09-12, a pedido de Fredy) Se guarda por trabajador -- un clic
+  // abre el detalle de cada cobro en una ventana aparte, en vez de una
+  // tabla plana con un renglón por cobro.
+  const [trabajadorAbierto, setTrabajadorAbierto] = useState(null);
   const filas = [];
   (lotesConCobros || []).forEach((l) => {
     (l.cobrosBodega || []).forEach((c, idx) => {
@@ -5441,6 +5453,7 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores }) {
         id: `${l.id}__${idx}`,
         numLote: l.numLote,
         referencia: l.referencia,
+        trabajadorId: c.trabajadorId || "",
         trabajadorNombre: c.trabajadorNombre || (trabajadores || []).find((t) => t.id === c.trabajadorId)?.nombre || "—",
         tipo: c.tipo || "—",
         valor: Number(c.valor) || 0,
@@ -5455,10 +5468,44 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores }) {
     .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
   const totalPendiente = filas.filter((f) => !f.cobrado).reduce((s, f) => s + f.valor, 0);
   const totalCobrado = filas.filter((f) => f.cobrado).reduce((s, f) => s + f.valor, 0);
+  const porTrabajador = useMemo(() => {
+    const mapa = new Map();
+    filasFiltradas.forEach((f) => {
+      const key = f.trabajadorId || f.trabajadorNombre;
+      if (!mapa.has(key)) mapa.set(key, { key, nombre: f.trabajadorNombre, pendiente: 0, cobrado: 0, cantidad: 0, cobros: [] });
+      const g = mapa.get(key);
+      if (f.cobrado) g.cobrado += f.valor; else g.pendiente += f.valor;
+      g.cantidad += 1;
+      g.cobros.push(f);
+    });
+    return [...mapa.values()]
+      .map((g) => ({ ...g, total: g.pendiente + g.cobrado }))
+      .sort((a, b) => b.pendiente - a.pendiente || b.total - a.total);
+  }, [filasFiltradas]);
   return (
     <div>
+      {trabajadorAbierto && (
+        <Modal title={`Deducciones de "${trabajadorAbierto.nombre}"`} onClose={() => setTrabajadorAbierto(null)} width={720}>
+          <Tabla
+            vacio="Sin cobros registrados."
+            columnas={[
+              { key: "numLote", label: "Lote", render: (f) => f.numLote || "—" },
+              { key: "referencia", label: "Referencia", render: (f) => f.referencia || "—" },
+              { key: "tipo", label: "Motivo" },
+              { key: "valor", label: "Valor", align: "right", render: (f) => fmtMoney(f.valor) },
+              { key: "fecha", label: "Fecha del cobro", render: (f) => (f.fecha ? fmtFechaISO(f.fecha) : "—") },
+              { key: "estado", label: "Estado", render: (f) => (f.cobrado ? (
+                <span style={{ color: C.green, fontWeight: 700 }}>Cobrado en {f.periodoIdCobrado || "—"}</span>
+              ) : (
+                <span style={{ color: C.amber, fontWeight: 700 }}>Pendiente de cobrar</span>
+              )) },
+            ]}
+            filas={trabajadorAbierto.cobros}
+          />
+        </Modal>
+      )}
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
-        Todos los cobros que Bodega registró contra un trabajador (Despachos Generales / Estado de Despacho) — se descuentan solos de la SIGUIENTE liquidación de ese trabajador, sin importar cuánto tiempo llevaban esperando.
+        Todos los cobros que Bodega registró contra un trabajador (Despachos Generales / Estado de Despacho) — se descuentan solos de la SIGUIENTE liquidación de ese trabajador, sin importar cuánto tiempo llevaban esperando. Clic en un trabajador para ver el detalle de cada cobro suyo.
       </div>
       <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
         <KPI icon="⏳" label="Pendiente de cobrar" value={fmtMoney(totalPendiente)} color={C.amber} bg={C.amberBg} />
@@ -5469,22 +5516,18 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores }) {
           <FSel value={filtroEstado} onChange={setFiltroEstado} options={[{ value: "pendiente", label: "Pendiente de cobrar" }, { value: "cobrado", label: "Cobrado" }]} placeholder="Todos" />
         </Field>
       </div>
+      <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Clic en un trabajador para ver el detalle de sus cobros.</div>
       <Tabla
         vacio="No hay cobros de Bodega registrados."
+        onRowClick={(f) => setTrabajadorAbierto(f)}
         columnas={[
-          { key: "numLote", label: "Lote", render: (f) => f.numLote || "—" },
-          { key: "referencia", label: "Referencia", render: (f) => f.referencia || "—" },
-          { key: "trabajadorNombre", label: "Trabajador" },
-          { key: "tipo", label: "Motivo" },
-          { key: "valor", label: "Valor", align: "right", render: (f) => fmtMoney(f.valor) },
-          { key: "fecha", label: "Fecha del cobro", render: (f) => (f.fecha ? fmtFechaISO(f.fecha) : "—") },
-          { key: "estado", label: "Estado", render: (f) => (f.cobrado ? (
-            <span style={{ color: C.green, fontWeight: 700 }}>Cobrado en {f.periodoIdCobrado || "—"}</span>
-          ) : (
-            <span style={{ color: C.amber, fontWeight: 700 }}>Pendiente de cobrar</span>
-          )) },
+          { key: "nombre", label: "Trabajador" },
+          { key: "cantidad", label: "Cobros", align: "right", render: (f) => fmtNum(f.cantidad) },
+          { key: "pendiente", label: "Pendiente", align: "right", render: (f) => <span style={{ color: f.pendiente > 0 ? C.amber : C.slate, fontWeight: 700 }}>{fmtMoney(f.pendiente)}</span> },
+          { key: "cobrado", label: "Cobrado", align: "right", render: (f) => <span style={{ color: C.green, fontWeight: 700 }}>{fmtMoney(f.cobrado)}</span> },
+          { key: "total", label: "Total", align: "right", render: (f) => <strong>{fmtMoney(f.total)}</strong> },
         ]}
-        filas={filasFiltradas}
+        filas={porTrabajador}
       />
     </div>
   );
@@ -6471,21 +6514,28 @@ function exportDesprendiblePagoHTML({ trabajador, desde, hasta, label, produccio
 function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, cierres, onCerrar, onReabrir }) {
   const [qOffset, setQOffset] = useState(0);
   const [trabajadorAbierto, setTrabajadorAbierto] = useState(null);
+  // (2026-09-12, a pedido de Fredy) Cierre de Quincena ahora es POR TIPO de
+  // nómina (Fiscal / Fiscal Destajo / Destajo) -- antes juntaba a todos sin
+  // distinguir, y no quedaba claro cuál se estaba viendo o cerrando. Cada
+  // tipo se calcula y se cierra de forma independiente.
+  const [tipoSel, setTipoSel] = useState("Destajo");
   const { desde, hasta, label } = quincenaDe(qOffset);
   const prodQuincena = produccion.filter((p) => p.fecha >= desde && p.fecha <= hasta);
   const horasQuincena = horas.filter((h) => h.fecha >= desde && h.fecha <= hasta);
-  const cierre = (cierres || []).find((c) => c.desde === desde);
+  const cierre = (cierres || []).find((c) => c.desde === desde && c.tipoNomina === tipoSel);
   const porTrabajador = useMemo(() => {
+    const trabajadoresTipo = trabajadores.filter((t) => t.tipoNomina === tipoSel);
+    const idsTipo = new Set(trabajadoresTipo.map((t) => t.id));
     const mapa = new Map();
-    trabajadores.forEach((t) => mapa.set(t.id, { trabajadorId: t.id, nombre: t.nombre, totalProduccion: 0, totalHoras: 0, unidades: 0, horasCant: 0 }));
+    trabajadoresTipo.forEach((t) => mapa.set(t.id, { trabajadorId: t.id, nombre: t.nombre, totalProduccion: 0, totalHoras: 0, unidades: 0, horasCant: 0 }));
     prodQuincena.forEach((p) => {
-      if (!mapa.has(p.trabajadorId)) mapa.set(p.trabajadorId, { trabajadorId: p.trabajadorId, nombre: p.trabajadorNombre, totalProduccion: 0, totalHoras: 0, unidades: 0, horasCant: 0 });
+      if (!idsTipo.has(p.trabajadorId)) return;
       const g = mapa.get(p.trabajadorId);
       g.totalProduccion += p.total || 0;
       g.unidades += p.cantidad || 0;
     });
     horasQuincena.forEach((h) => {
-      if (!mapa.has(h.trabajadorId)) mapa.set(h.trabajadorId, { trabajadorId: h.trabajadorId, nombre: h.trabajadorNombre, totalProduccion: 0, totalHoras: 0, unidades: 0, horasCant: 0 });
+      if (!idsTipo.has(h.trabajadorId)) return;
       const g = mapa.get(h.trabajadorId);
       g.totalHoras += h.total || 0;
       g.horasCant += h.horas || 0;
@@ -6494,7 +6544,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, cierres,
       .map((g) => ({ ...g, totalGeneral: g.totalProduccion + g.totalHoras }))
       .filter((g) => g.totalGeneral > 0 || g.unidades > 0 || g.horasCant > 0)
       .sort((a, b) => b.totalGeneral - a.totalGeneral);
-  }, [trabajadores, prodQuincena, horasQuincena]);
+  }, [trabajadores, tipoSel, prodQuincena, horasQuincena]);
   const totalQuincena = porTrabajador.reduce((s, g) => s + g.totalGeneral, 0);
   const detalleAbierto = trabajadorAbierto
     ? {
@@ -6506,7 +6556,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, cierres,
     const XLSX = await import("xlsx");
     const wb = XLSX.utils.book_new();
     const filas = [
-      ["RESUMEN NÓMINA — QUINCENA", `${fmtFechaISO(desde)} — ${fmtFechaISO(hasta)}`],
+      [`RESUMEN NÓMINA ${tipoSel.toUpperCase()} — QUINCENA`, `${fmtFechaISO(desde)} — ${fmtFechaISO(hasta)}`],
       [],
       ["Trabajador", "Unidades", "Total Producción", "Horas", "Total Horas", "Total a Pagar"],
       ...porTrabajador.map((g) => [g.nombre, g.unidades, g.totalProduccion, g.horasCant, g.totalHoras, g.totalGeneral]),
@@ -6515,7 +6565,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, cierres,
     ];
     const ws = XLSX.utils.aoa_to_sheet(filas);
     XLSX.utils.book_append_sheet(wb, ws, "Resumen Nómina");
-    XLSX.writeFile(wb, `Nomina_${desde}_a_${hasta}.xlsx`);
+    XLSX.writeFile(wb, `Nomina_${tipoSel.replace(/\s+/g, "")}_${desde}_a_${hasta}.xlsx`);
   }
   // Arma y descarga el desprendible de UN trabajador puntual de la quincena
   // activa — se usa tanto desde el botón dentro del detalle como desde el
@@ -6567,9 +6617,14 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, cierres,
           />
         </Modal>
       )}
+      <div style={{ marginBottom: 14, maxWidth: 260 }}>
+        <Field label="Nómina">
+          <FSel value={tipoSel} onChange={setTipoSel} options={[{ value: "Fiscal", label: "Fiscal" }, { value: "Fiscal Destajo", label: "Fiscal Destajo" }, { value: "Destajo", label: "Destajo" }]} />
+        </Field>
+      </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <button onClick={() => setQOffset((o) => o - 1)} style={{ padding: "6px 12px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: C.ink }}>← Anterior</button>
-        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{label}</div>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{label} — {tipoSel}</div>
         <button onClick={() => setQOffset((o) => o + 1)} style={{ padding: "6px 12px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: C.ink }}>Siguiente →</button>
       </div>
       {cierre && (
@@ -6585,7 +6640,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, cierres,
       <div style={{ marginBottom: 14, display: "flex", gap: 10 }}>
         <Btn variant="secondary" small onClick={exportarExcel} disabled={!porTrabajador.length}>⬇ Exportar a Excel</Btn>
         {isAdmin && !cierre && (
-          <Btn small onClick={() => onCerrar({ desde, hasta, label, totalQuincena, porTrabajador })} disabled={!porTrabajador.length}>🔒 Cerrar Quincena</Btn>
+          <Btn small onClick={() => onCerrar({ desde, hasta, label, totalQuincena, porTrabajador, tipoNomina: tipoSel })} disabled={!porTrabajador.length}>🔒 Cerrar Quincena</Btn>
         )}
       </div>
       <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Clic en un trabajador para ver el desglose de su quincena.</div>
@@ -7140,6 +7195,10 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // tocado (no está en este objeto), se abre solo si contiene el subView
   // activo; una vez el usuario le da clic, queda como él lo dejó.
   const [gruposAbiertos, setGruposAbiertos] = useState({});
+  // (2026-09-12, a pedido de Fredy) Igual que gruposAbiertos, pero para el
+  // Historial que se despliega/colapsa DEBAJO de Nómina Fiscal/Fiscal
+  // Destajo/Destajo al hacerles clic -- ver NAV, propiedad `historial`.
+  const [historialesAbiertos, setHistorialesAbiertos] = useState({});
   const [trabajadores, setTrabajadores] = useState([]);
   const [precios, setPrecios] = useState([]);
   const [areasNomina, setAreasNomina] = useState([]);
@@ -7268,6 +7327,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
             { id: "asistencia", icon: "📊", label: "Reporte de Asistencia" },
             { id: "novedades_quincena", icon: "🧾", label: "Listado de Novedades (quincena)" },
+            { id: "deducciones", icon: "🧾", label: "Deducciones" },
           ] },
         { group: "Liquidaciones", icon: "🧮", items: [
             { id: "liquidacion_retiro", icon: "📄", label: "Liquidación de Trabajador" },
@@ -7279,19 +7339,15 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "historial_trabajador", icon: "🧑‍🏭", label: "Historial de Trabajador" },
             { id: "resumen", icon: "💰", label: "Cierre de Quincena" },
             { id: "reporte_area", icon: "📊", label: "Reporte por Área" },
-            { id: "fiscal", icon: "🏛️", label: "Nómina Fiscal" },
-            { id: "historial_fiscal", icon: "🗂️", label: "Historial Fiscal" },
-            { id: "fiscal_destajo", icon: "💼", label: "Nómina Fiscal Destajo" },
-            { id: "historial_fiscal_destajo", icon: "🗂️", label: "Historial Fiscal Destajo" },
-            { id: "destajo", icon: "💼", label: "Nómina Destajo" },
-            { id: "historial_destajo", icon: "🗂️", label: "Historial Destajo" },
-            { id: "deducciones", icon: "🧾", label: "Deducciones" },
+            { id: "fiscal", icon: "🏛️", label: "Nómina Fiscal", historial: { id: "historial_fiscal", icon: "🗂️", label: "Historial Fiscal" } },
+            { id: "fiscal_destajo", icon: "💼", label: "Nómina Fiscal Destajo", historial: { id: "historial_fiscal_destajo", icon: "🗂️", label: "Historial Fiscal Destajo" } },
+            { id: "destajo", icon: "💼", label: "Nómina Destajo", historial: { id: "historial_destajo", icon: "🗂️", label: "Historial Destajo" } },
           ] },
       ];
   // Versión "aplanada" del menú (sin grupos) — sirve para buscar el label
   // del subView activo para el título de la página, sin importar si ese
   // ítem está suelto o adentro de un grupo.
-  const NAV_PLANO = NAV.flatMap((item) => (item.items ? item.items : [item]));
+  const NAV_PLANO = NAV.flatMap((item) => (item.items ? item.items : [item])).flatMap((item) => (item.historial ? [item, item.historial] : [item]));
   // Con líder de área, todo lo que ve/registra queda limitado a su propia
   // gente — así Anny no ve ni toca la producción de Sarai y viceversa.
   const trabajadoresVisibles = areaLider ? trabajadores.filter((t) => (t.area || "Sin asignar") === areaLider) : trabajadores;
@@ -7452,11 +7508,13 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // "Cerrar Quincena" guarda una foto (snapshot) de los totales por
   // trabajador al momento del cierre — eso es lo que consulta Talento
   // Humano, sin depender de que nadie transcriba nada a mano. El id del
-  // documento es la fecha "desde" (única por quincena), así que cerrar dos
-  // veces la misma simplemente sobreescribe el mismo cierre.
-  async function guardarCierre({ desde, hasta, label, totalQuincena, porTrabajador }) {
-    await fsSave("nomina_cierres", desde, {
-      desde, hasta, label, totalQuincena,
+  // documento es la fecha "desde" + el tipo de nómina (única por quincena
+  // Y tipo, ver cambio 2026-09-12) así que cerrar dos veces la misma
+  // simplemente sobreescribe el mismo cierre de ese tipo, sin afectar a
+  // los otros dos tipos de esa misma quincena.
+  async function guardarCierre({ desde, hasta, label, totalQuincena, porTrabajador, tipoNomina }) {
+    await fsSave("nomina_cierres", `${desde}__${tipoNomina}`, {
+      desde, hasta, label, totalQuincena, tipoNomina,
       porTrabajador,
       cerradoPor: currentUser?.name || currentUser?.username || "",
       cerradoEn: new Date().toISOString(),
@@ -7520,6 +7578,33 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
                 </div>
               );
             }
+            if (item.historial) {
+              const active = subView === item.id;
+              const historialActivo = subView === item.historial.id;
+              const abierto = historialesAbiertos[item.id] ?? historialActivo;
+              return (
+                <div key={item.id}>
+                  <button
+                    onClick={() => { setSubView(item.id); setHistorialesAbiertos((h) => ({ ...h, [item.id]: !abierto })); }}
+                    style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", border: "none", borderRadius: 8, cursor: "pointer", background: active ? "#C8B8A2" : "transparent", color: active ? C.ink : "#8888AA", fontWeight: active ? 800 : 500, fontSize: 13, textAlign: "left" }}
+                  >
+                    <span style={{ fontSize: 14 }}>{item.icon}</span>
+                    <span style={{ flex: 1 }}>{item.label}</span>
+                    <span style={{ fontSize: 11 }}>{abierto ? "▾" : "▸"}</span>
+                  </button>
+                  {abierto && (
+                    <button
+                      key={item.historial.id}
+                      onClick={() => setSubView(item.historial.id)}
+                      style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px 9px 26px", border: "none", borderRadius: 8, cursor: "pointer", background: historialActivo ? "#C8B8A2" : "transparent", color: historialActivo ? C.ink : "#8888AA", fontWeight: historialActivo ? 800 : 500, fontSize: 13, textAlign: "left" }}
+                    >
+                      <span style={{ fontSize: 14 }}>{item.historial.icon}</span>
+                      <span style={{ flex: 1 }}>{item.historial.label}</span>
+                    </button>
+                  )}
+                </div>
+              );
+            }
             const active = subView === item.id;
             return (
               <button
@@ -7579,11 +7664,11 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} turnos={turnos} onGuardarTrabajador={guardarTrabajador} />}
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
-          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} />}
+          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
           {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} />}
           {subView === "historial_fiscal_destajo" && !areaLider && !soloNovedades && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
-          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
+          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
           {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobros} trabajadores={trabajadores} />}
           {subView === "historial_lote" && !soloNovedades && <HistorialLoteView produccion={produccion} />}
