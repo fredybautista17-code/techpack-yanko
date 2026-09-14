@@ -3756,6 +3756,10 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   // fecha, lote, proceso, referencia, cantidad y total de cada registro
   // (la suma de estos es "Unidades"/"Valor producido" de su fila).
   const [trabajadorDetalleAbierto, setTrabajadorDetalleAbierto] = useState(null);
+  // (2026-09-14, a pedido de Fredy) Modal para ver, por nombre, quienes son
+  // los trabajadores que cuentan en el "Reparto por Despacho" -- antes solo
+  // se veia el conteo ("4 de 20"), sin saber quienes son.
+  const [mostrarTrabajadoresReparto, setMostrarTrabajadoresReparto] = useState(false);
   const registrosTrabajadorDetalle = trabajadorDetalleAbierto
     ? produccionPeriodo
         .filter((p) => p.trabajadorId === trabajadorDetalleAbierto.id)
@@ -3870,6 +3874,17 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     return activos.filter((t) => areasEnRepartoDespacho.includes(areaEnFecha(t, fechaReferenciaPeriodo)));
   }, [trabajadores, areasEnRepartoDespacho, fechaReferenciaPeriodo]);
   const totalTrabajadoresReparto = trabajadoresEnRepartoDespacho.length;
+  const trabajadoresRepartoPorArea = useMemo(() => {
+    const grupos = new Map();
+    trabajadoresEnRepartoDespacho.forEach((t) => {
+      const area = areaEnFecha(t, fechaReferenciaPeriodo) || "(sin área)";
+      if (!grupos.has(area)) grupos.set(area, []);
+      grupos.get(area).push(t);
+    });
+    return [...grupos.entries()]
+      .map(([area, lista]) => ({ area, lista: [...lista].sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "")) }))
+      .sort((a, b) => a.area.localeCompare(b.area));
+  }, [trabajadoresEnRepartoDespacho, fechaReferenciaPeriodo]);
   const trabajadoresEstaAreaReparto = trabajadoresArea.length;
   const pctParticipacionReparto = totalTrabajadoresReparto > 0 ? (trabajadoresEstaAreaReparto / totalTrabajadoresReparto) * 100 : 0;
   const valorAsignadoAreaReparto = valorGeneradoDespachoPeriodo * (pctParticipacionReparto / 100);
@@ -4142,7 +4157,35 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
               {areasEnRepartoDespacho.length > 0 && (
                 <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>
                   <strong style={{ color: C.ink }}>Áreas en el reparto ({areasEnRepartoDespacho.length}):</strong> {areasEnRepartoDespacho.join(", ")}
+                  {totalTrabajadoresReparto > 0 && (
+                    <>
+                      {" · "}
+                      <span onClick={() => setMostrarTrabajadoresReparto(true)} style={{ color: C.blue, fontWeight: 700, cursor: "pointer" }}>
+                        👥 Ver los {totalTrabajadoresReparto} trabajadores
+                      </span>
+                    </>
+                  )}
                 </div>
+              )}
+              {mostrarTrabajadoresReparto && (
+                <Modal title={`Trabajadores en el reparto (${totalTrabajadoresReparto})`} onClose={() => setMostrarTrabajadoresReparto(false)} width={520}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                    {trabajadoresRepartoPorArea.map(({ area, lista }) => (
+                      <div key={area}>
+                        <div style={{ fontSize: 12, fontWeight: 800, color: area === areaSel ? C.blue : C.ink, marginBottom: 6 }}>
+                          {area === areaSel ? "⭐ " : ""}{area} ({lista.length})
+                        </div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                          {lista.map((t) => (
+                            <span key={t.id} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 20, background: area === areaSel ? C.blueBg : C.canvas, color: C.ink }}>
+                              {t.nombre}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Modal>
               )}
               {totalTrabajadoresReparto === 0 && (
                 <div style={{ fontSize: 11, color: C.amber }}>⚠ Ninguna área tiene marcado el modo "Reparto por Despacho" todavía (Nómina → Administrativo → Área Interna) — sin eso no hay entre quién repartir.</div>
