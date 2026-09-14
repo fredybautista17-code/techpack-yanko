@@ -6973,6 +6973,93 @@ function SincronizarLineasBusintBtn({ config, onUpdateConfig }) {
     </div>
   );
 }
+// (2026-09-14, a pedido de Fredy) Panel de solo lectura: qué tareas
+// automáticas hay programadas (correos + sincronizaciones), cada cuánto
+// corren, y -- para las que mandan correo -- quién las recibiría HOY según
+// los datos actuales de Usuarios. Los horarios están fijos en el backend
+// (cambiarlos requiere pedir un cambio de código); los destinatarios sí se
+// calculan en vivo cada vez que se abre o se actualiza este panel.
+function NotificacionesProgramadasPanel() {
+  const [cargando, setCargando] = useState(true);
+  const [datos, setDatos] = useState(null);
+  const [error, setError] = useState("");
+
+  async function cargar() {
+    setCargando(true);
+    setError("");
+    try {
+      const llamar = httpsCallable(functionsClient, "obtenerResumenNotificacionesProgramadas");
+      const resp = await llamar();
+      setDatos(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo cargar el resumen de notificaciones.");
+    } finally {
+      setCargando(false);
+    }
+  }
+  useEffect(() => { cargar(); }, []);
+
+  function Chip({ nombre, correo }) {
+    const sinCorreo = !correo || String(correo).startsWith("⚠");
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", background: sinCorreo ? T.coralBg || "#fdecea" : T.canvas, borderRadius: 20, border: `1px solid ${T.border}` }}>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: T.ink }}>{nombre}</span>
+        <span style={{ fontSize: 11.5, color: sinCorreo ? T.coral : T.slate }}>{correo || "sin correo"}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>Notificaciones automáticas</div>
+          <div style={{ fontSize: 12.5, color: T.slate, marginTop: 4 }}>Qué está programado en ATLAS, cada cuánto corre, y a quién le llegaría cada correo hoy según Usuarios.</div>
+        </div>
+        <Btn variant="secondary" small onClick={cargar} disabled={cargando}>🔄 {cargando ? "Actualizando…" : "Actualizar"}</Btn>
+      </div>
+      {error && <div style={{ padding: "10px 14px", background: T.coralBg || "#fdecea", borderRadius: 8, fontSize: 13, color: T.coral, fontWeight: 600, marginBottom: 16 }}>{error}</div>}
+      {cargando && !datos ? (
+        <div style={{ fontSize: 13, color: T.slate, fontStyle: "italic" }}>Cargando…</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {(datos?.tareas || []).map((t) => (
+            <div key={t.id} style={{ padding: "14px 16px", background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
+                <span style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{t.nombre}</span>
+                <span style={{ padding: "2px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: t.tipo === "correo" ? T.denimBg : T.amberBg, color: t.tipo === "correo" ? T.denim : T.amber }}>
+                  {t.tipo === "correo" ? "✉ Correo" : "🔄 Sincronización"}
+                </span>
+                <span style={{ fontSize: 12, color: T.slate, fontWeight: 600 }}>{t.horario}</span>
+              </div>
+              <div style={{ fontSize: 12.5, color: T.slate, marginBottom: t.tipo === "correo" ? 10 : 0 }}>{t.descripcion}</div>
+              {t.tipo === "correo" && t.destinatariosPorArea && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {t.destinatariosPorArea.map((a) => (
+                    <div key={a.area}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4, textTransform: "uppercase" }}>
+                        {a.area}{a.usaRespaldoAdmin ? " (nadie asignado — cae en administradores)" : ""}
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {a.destinatarios.length ? a.destinatarios.map((d) => <Chip key={d.correo} nombre={d.nombre} correo={d.correo} />) : <span style={{ fontSize: 12, color: T.slate, fontStyle: "italic" }}>Nadie con correo cargado.</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {t.tipo === "correo" && t.destinatarios && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {t.destinatarios.length ? t.destinatarios.map((d) => <Chip key={d.correo || d.nombre} nombre={d.nombre} correo={d.correo} />) : <span style={{ fontSize: 12, color: T.slate, fontStyle: "italic" }}>Nadie con correo cargado.</span>}
+                </div>
+              )}
+              {t.nota && <div style={{ fontSize: 11.5, color: T.slate, fontStyle: "italic", marginTop: 8 }}>{t.nota}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsulas, onUpdateProto, onUpdateCapsula, onDeleteProto, onDeleteCapsula, onRestaurarProto, onRestaurarCapsula, onRestaurarRef, onPurgarProto, onPurgarCapsula, onPurgarRef, isAdmin, areasNomina, procesosNomina }) {
   const [tab, setTab] = useState("etapas");
   const [newItem, setNewItem] = useState("");
@@ -7077,7 +7164,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     { area: "📋 Informes", items: [["informes", "Informes"]] },
     { area: "🗂️ Áreas", items: [["areas_centro_costo", "Centro de Costo"], ["areas_estadisticas", "Estadísticas"], ["areas_reclamos", "Reclamos"], ["areas_programador", "Programador"]] },
   ];
-  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["papelera", "🗑 Papelera"], ["busint_test", "🔌 Busint (prueba)"]];
+  const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["notificaciones", "🔔 Notificaciones"], ["papelera", "🗑 Papelera"], ["busint_test", "🔌 Busint (prueba)"]];
   const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", grupo: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
   // Si tiene valor, el formulario de arriba está EDITANDO esa fila (en vez
   // de crear una nueva) — así se puede corregir, por ejemplo, una fila que
@@ -7514,6 +7601,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
           </div>
         )}
         {tab === "usuarios" && <UsersTab users={users} onUpdateUsers={onUpdateUsers} config={config} isAdmin={isAdmin} areasNomina={areasNomina} procesosNomina={procesosNomina} />}
+        {tab === "notificaciones" && <NotificacionesProgramadasPanel />}
         {tab === "clientes" && <ClientesTab config={config} onUpdateConfig={onUpdateConfig} />}
         {tab === "contenido" && (
           <div>

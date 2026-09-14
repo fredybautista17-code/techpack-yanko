@@ -4801,6 +4801,107 @@ async function mandarCorreo(transporte, destinatarios, asunto, textoHtml) {
   });
 }
 
+// (2026-09-14, a pedido de Fredy) Panel de solo lectura en Administración ->
+// Notificaciones automáticas: enumera las tareas programadas del sistema
+// (correos + sincronizaciones) y, para las que mandan correo, calcula EN
+// VIVO quién las recibiría hoy según los datos actuales de Usuarios -- así
+// no hay que leer el código ni preguntar cada vez que algo cambia en
+// Usuarios. Los horarios y la lista de tareas son fijos aquí (cambiarlos
+// requiere editar código y desplegar), pero los destinatarios sí reflejan
+// el estado real de la base de datos en el momento de la consulta.
+exports.obtenerResumenNotificacionesProgramadas = onCall({ timeoutSeconds: 60, memory: "256MiB" }, async (request) => {
+  await verificarLlamadorEsAdmin(request);
+
+  const usersSnap = await db.collection("users").get();
+  const usuarios = usersSnap.docs.map((d) => d.data());
+  const paraDestino = (lista) => lista.map((u) => ({ nombre: u.name || "(sin nombre)", correo: u.email }));
+
+  const lideres = usuarios.filter((u) => (u.procesosPlaneacion || []).length > 0 && u.email);
+  const admins = usuarios.filter((u) => u.isAdmin && u.email);
+  const destinatariosResumenCliente = [...new Map([...lideres, ...admins].map((u) => [u.email, u])).values()];
+
+  const destinatariosPorArea = AREAS_AUDITORIA_BUSINT.map((nombreArea) => {
+    const asignados = usuarios.filter((u) => u.areaNomina === nombreArea && u.email);
+    return {
+      area: nombreArea,
+      usaRespaldoAdmin: asignados.length === 0,
+      destinatarios: asignados.length ? paraDestino(asignados) : paraDestino(admins),
+    };
+  });
+
+  const apoyoDiseno = RECIPIENTES_APOYO.map((nombre) => {
+    const correo = buscarCorreoPorNombre(nombre, usuarios);
+    return { nombre, correo: correo || "⚠ sin correo cargado en Usuarios" };
+  });
+
+  return {
+    generadoEn: new Date().toISOString(),
+    tareas: [
+      {
+        id: "revisarDespachosNuevos",
+        nombre: "Revisar despachos nuevos",
+        descripcion: "Sincroniza la bitácora de despachos desde Busint.",
+        horario: "Cada 2 horas",
+        tipo: "sincronizacion",
+      },
+      {
+        id: "revisarDadoPorCumplidoPendientes",
+        nombre: "Revisar Dado por Cumplido pendientes",
+        descripcion: "Busca lotes nuevos para Dado por Cumplido.",
+        horario: "Cada 2 horas",
+        tipo: "sincronizacion",
+      },
+      {
+        id: "exportarDadoPorCumplidoADropboxDiario",
+        nombre: "Exportar Dado por Cumplido a Dropbox",
+        descripcion: "Genera el Excel de Dado por Cumplido y lo sube (sobrescribe) a Dropbox.",
+        horario: "Todos los días 6:00 a.m.",
+        tipo: "sincronizacion",
+      },
+      {
+        id: "cierreAutomaticoNocturno",
+        nombre: "Cierre automático nocturno",
+        descripcion: "Guarda el cierre del día para las áreas en modo Destajo.",
+        horario: "Todos los días 10:00 p.m.",
+        tipo: "sincronizacion",
+      },
+      {
+        id: "auditoriaBusintVsNomina",
+        nombre: "Auditoría Busint vs. Nómina",
+        descripcion: 'Cruza Busint contra Nómina por centro de costo; si hay discrepancias, avisa a quien tenga esa área asignada (o a los administradores si nadie la tiene).',
+        horario: "Todos los días 7:00 a.m.",
+        tipo: "correo",
+        destinatariosPorArea,
+      },
+      {
+        id: "correoDespachosDiarios",
+        nombre: "Resumen de despachos del día",
+        descripcion: "Si hubo movimientos en la bitácora hoy, manda el resumen a los líderes de Planeación.",
+        horario: "Todos los días 6:00 p.m.",
+        tipo: "correo",
+        destinatarios: paraDestino(lideres),
+      },
+      {
+        id: "correoResumenPorCliente",
+        nombre: "Resumen de despachos por cliente (mes)",
+        descripcion: "Resumen mensual de despachos por cliente, para líderes de Planeación y administradores.",
+        horario: "Todos los días 6:10 p.m.",
+        tipo: "correo",
+        destinatarios: paraDestino(destinatariosResumenCliente),
+      },
+      {
+        id: "avisarVencidos",
+        nombre: "Avisos de vencidos en Diseño",
+        descripcion: "Por cada prototipo/referencia vencido, avisa a la diseñadora responsable y al grupo de apoyo.",
+        horario: "Todos los días 8:00 a.m.",
+        tipo: "correo",
+        destinatarios: apoyoDiseno,
+        nota: "Además de este grupo fijo de apoyo, cada aviso también le llega a la diseñadora responsable del prototipo/referencia específico -- eso varía cada día según a quién se le venza algo.",
+      },
+    ],
+  };
+});
+
 // (2026-09-07, a pedido de Fredy) Todos los dias a las 6pm le manda a los
 // lideres (mismo criterio que ya usa "Mi Dia": tener procesosPlaneacion
 // asignado, mas su correo cargado en Usuarios) un resumen de los
