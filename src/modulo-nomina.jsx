@@ -892,6 +892,90 @@ function AreasTnsView({ areas, trabajadores, isAdmin, onSave, onDelete }) {
     </div>
   );
 }
+// Tipo de Contrato (2026-09-14, a pedido de Fredy): igual que Área TNS,
+// una lista editable por el admin (Administrativo -> Tipo de Contrato,
+// colección Firestore "nomina_tipos_contrato") en vez de una lista fija en
+// el código -- así Fredy puede agregar/renombrar tipos (ej. "Obra o
+// Labor") sin que haya que tocar código. Arranca sembrada con "Término
+// Fijo" y "Término Indefinido" (ver auto-siembra en ModuloNomina, mismo
+// patrón que Motivos de Ausencia). Se guarda en cada trabajador (campo
+// "tipoContrato").
+function TipoContratoModal({ tipo, onSave, onClose }) {
+  const [form, setForm] = useState({ nombre: tipo?.nombre || "" });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  function guardar() {
+    if (!form.nombre.trim()) return;
+    onSave({ nombre: form.nombre.trim() });
+    onClose();
+  }
+  return (
+    <Modal title={tipo ? "Editar Tipo de Contrato" : "Nuevo Tipo de Contrato"} onClose={onClose} width={400}>
+      <Field label="Nombre del Tipo de Contrato"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Término Fijo, Término Indefinido, Obra o Labor" /></Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar} disabled={!form.nombre.trim()}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+function TiposContratoView({ tipos, trabajadores, isAdmin, onSave, onDelete }) {
+  const [modal, setModal] = useState(null); // null | "nuevo" | tipo
+  const [confirmDel, setConfirmDel] = useState(null);
+  const ordenados = [...tipos].sort((a, b) => a.nombre.localeCompare(b.nombre));
+  function contarTrabajadores(nombre) {
+    return (trabajadores || []).filter((t) => t.tipoContrato === nombre).length;
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Tipos de contrato (Término Fijo, Término Indefinido, etc.) para clasificar a cada trabajador -- agrega o edita los que necesites, se reflejan de una vez en la ficha de Trabajadores.
+      </div>
+      {modal && (
+        <TipoContratoModal
+          tipo={modal === "nuevo" ? null : modal}
+          onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {confirmDel && (
+        <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Eliminar el tipo de contrato <strong>{confirmDel.nombre}</strong>?
+            {contarTrabajadores(confirmDel.nombre) > 0 && (
+              <div style={{ marginTop: 10, color: C.red, fontWeight: 600 }}>⚠️ {contarTrabajadores(confirmDel.nombre)} trabajador(es) tienen este tipo de contrato asignado -- no se les cambia solo, quedarían con un tipo que ya no existe en la lista. Revísalos primero en Trabajadores.</div>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={() => { onDelete(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+          </div>
+        </Modal>
+      )}
+      {isAdmin && (
+        <div style={{ marginBottom: 16 }}>
+          <Btn onClick={() => setModal("nuevo")}>+ Nuevo Tipo de Contrato</Btn>
+        </div>
+      )}
+      <Tabla
+        vacio="Sin tipos de contrato registrados todavía."
+        columnas={[
+          { key: "nombre", label: "Tipo de Contrato" },
+          { key: "trabajadores", label: "Trabajadores", align: "right", render: (f) => contarTrabajadores(f.nombre) },
+          ...(isAdmin ? [{
+            key: "acciones", label: "", align: "right",
+            render: (f) => (
+              <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <span onClick={(e) => { e.stopPropagation(); setModal(f); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>Editar</span>
+                <span onClick={(e) => { e.stopPropagation(); setConfirmDel(f); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>
+              </span>
+            ),
+          }] : []),
+        ]}
+        filas={ordenados}
+      />
+    </div>
+  );
+}
 // Cargo (2026-09-09, a pedido de Fredy; arrancó como "Zona Interna" y se
 // renombró el mismo día porque en la práctica siempre se usó para el
 // puesto/rol de cada quien, ej. CORTADOR, LIDER MAQUILA, GERENTE). Cada
@@ -1217,6 +1301,7 @@ const COLUMNAS_EXCEL_TRABAJADORES = [
   { campo: "areaTNS", label: "Área TNS", tipo: "catalogo_areaTNS" },
   { campo: "empleador", label: "Empleador", tipo: "catalogo_empleador" },
   { campo: "tipoNomina", label: "Tipo Nómina", tipo: "catalogo_tipoNomina" },
+  { campo: "tipoContrato", label: "Tipo de Contrato", tipo: "catalogo_tipoContrato" },
   { campo: "claseRiesgoARL", label: "Clase ARL", tipo: "catalogo_claseARL" },
   { campo: "sueldo", label: "Sueldo", tipo: "numero" },
   { campo: "auxilioTransporte", label: "Auxilio de Transporte", tipo: "numero" },
@@ -1391,6 +1476,13 @@ function resolverCeldaExcel(col, valorCrudo, trabajador, ctx) {
     if (!match) return { advertencia: `Tipo de Nómina "${texto}" no es válido` };
     return { cambio: { valor: match, mostrar: match } };
   }
+  if (col.tipo === "catalogo_tipoContrato") {
+    if (texto === "") return null;
+    if (normalizarNombreParaComparar(trabajador.tipoContrato || "") === normalizarNombreParaComparar(texto)) return null;
+    const match = (ctx.tiposContrato || []).find((tc) => normalizarNombreParaComparar(tc.nombre) === normalizarNombreParaComparar(texto));
+    if (!match) return { advertencia: `Tipo de Contrato "${texto}" no existe en el catálogo` };
+    return { cambio: { valor: match.nombre, mostrar: match.nombre } };
+  }
   if (col.tipo === "catalogo_claseARL") {
     if (texto === "") return null;
     if (normalizarNombreParaComparar(trabajador.claseRiesgoARL || "") === normalizarNombreParaComparar(texto)) return null;
@@ -1468,7 +1560,7 @@ async function aplicarCambiosExcelTrabajadores(filasConCambios, onSave) {
   }
   return actualizados;
 }
-function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, zonasNomina, turnos, gruposTrabajo }) {
+function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, zonasNomina, tiposContrato, turnos, gruposTrabajo }) {
   const [form, setForm] = useState({
     nombre: trabajador?.nombre || "",
     cedula: trabajador?.cedula || "",
@@ -1484,6 +1576,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     idHuellero: trabajador?.idHuellero || "",
     turnoId: trabajador?.turnoId || "",
     tipoNomina: trabajador?.tipoNomina || "",
+    tipoContrato: trabajador ? (trabajador.tipoContrato || "") : "Término Fijo",
     sueldo: trabajador?.sueldo ?? "",
     auxilioTransporte: trabajador?.auxilioTransporte ?? "",
     fechaIngreso: trabajador?.fechaIngreso || "",
@@ -1523,6 +1616,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       idHuellero: form.idHuellero.trim(),
       turnoId: form.turnoId || "",
       tipoNomina: form.tipoNomina || "",
+      tipoContrato: form.tipoContrato || "",
       sueldo: Number(form.sueldo) || 0,
       auxilioTransporte: Number(form.auxilioTransporte) || 0,
       fechaIngreso: form.fechaIngreso || "",
@@ -1581,6 +1675,9 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       <Field label="Tipo de Nómina">
         <FSel value={form.tipoNomina} onChange={set("tipoNomina")} options={TIPOS_NOMINA} placeholder="Sin clasificar" />
       </Field>
+      <Field label="Tipo de Contrato">
+        <FSel value={form.tipoContrato} onChange={set("tipoContrato")} options={(tiposContrato || []).map((tc) => tc.nombre)} placeholder="Sin clasificar" />
+      </Field>
       {(form.tipoNomina === "Fiscal" || form.tipoNomina === "Fiscal Destajo" || form.tipoNomina === "Destajo") && (
         <>
           <Field label="Sueldo mensual fijo"><FInput type="number" value={form.sueldo} onChange={set("sueldo")} placeholder="Ej: 1750905" /></Field>
@@ -1628,7 +1725,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     </Modal>
   );
 }
-function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina, areasTNS, zonasNomina, onSaveArea, onSaveZona, turnos, gruposTrabajo }) {
+function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina, areasTNS, zonasNomina, tiposContrato, onSaveArea, onSaveZona, turnos, gruposTrabajo }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | trabajador
   const [confirmDel, setConfirmDel] = useState(null);
   const [busqueda, setBusqueda] = useState("");
@@ -1660,7 +1757,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
       const buffer = await archivo.arrayBuffer();
       const wb = XLSX.read(buffer, { type: "array", cellDates: false });
       const filasArchivo = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" });
-      const analisis = analizarExcelTrabajadores(filasArchivo, trabajadores, { areasNomina, zonasNomina, areasTNS, turnos });
+      const analisis = analizarExcelTrabajadores(filasArchivo, trabajadores, { areasNomina, zonasNomina, areasTNS, turnos, tiposContrato });
       setPreviewExcel(analisis);
     } catch (err) {
       setPreviewExcel({ error: err?.message || String(err) });
@@ -1967,6 +2064,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
           areasNomina={areasNomina}
           areasTNS={areasTNS}
           zonasNomina={zonasNomina}
+          tiposContrato={tiposContrato}
           turnos={turnos}
           gruposTrabajo={gruposTrabajo}
           onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
@@ -2161,6 +2259,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
               {f.tipoNomina}
             </span>
           ) : <span style={{ color: C.slate }}>—</span> },
+          { key: "tipoContrato", label: "Tipo Contrato", render: (f) => f.tipoContrato || <span style={{ color: C.slate }}>—</span> },
           { key: "claseRiesgoARL", label: "Clase ARL", render: (f) => f.claseRiesgoARL ? labelClaseARL(f.claseRiesgoARL) : <span style={{ color: C.slate }}>—</span> },
           { key: "sueldo", label: "Sueldo", align: "right", render: (f) => f.sueldo ? fmtMoney(f.sueldo) : "—" },
           { key: "tarifaHora", label: "Tarifa/Hora", align: "right", render: (f) => fmtMoney(f.tarifaHora) },
@@ -7418,6 +7517,10 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [areasNomina, setAreasNomina] = useState([]);
   const [areasTNS, setAreasTNS] = useState([]);
   const [zonasNomina, setZonasNomina] = useState([]);
+  // (2026-09-14, a pedido de Fredy) Tipo de Contrato -- catalogo editable
+  // igual que Area TNS, ver TiposContratoView mas arriba.
+  const [tiposContrato, setTiposContrato] = useState([]);
+  const [tiposContratoCargado, setTiposContratoCargado] = useState(false);
   const [motivosAusencia, setMotivosAusencia] = useState([]);
   const [motivosAusenciaCargado, setMotivosAusenciaCargado] = useState(false);
   const [turnos, setTurnos] = useState([]);
@@ -7451,6 +7554,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_precios_proceso"), (snap) => setPrecios(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_areas"), (snap) => setAreasNomina(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_areas_tns"), (snap) => setAreasTNS(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_tipos_contrato"), (snap) => { setTiposContrato(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setTiposContratoCargado(true); }),
       onSnapshot(collection(db, "nomina_zonas"), (snap) => setZonasNomina(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_motivos_ausencia"), (snap) => { setMotivosAusencia(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setMotivosAusenciaCargado(true); }),
       onSnapshot(collection(db, "nomina_turnos"), (snap) => setTurnos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -7485,6 +7589,32 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
     motivosSeedHechoRef.current = true;
     MOTIVOS_AUSENCIA_DEFAULT.forEach((m, i) => { fsSave("nomina_motivos_ausencia", `motivo_${i}`, m); });
   }, [motivosAusenciaCargado, motivosAusencia]);
+  // (2026-09-14, a pedido de Fredy) Igual patron que los Motivos de
+  // Ausencia -- si la coleccion todavia esta vacia, la siembra con
+  // "Término Fijo" y "Término Indefinido" para que el desplegable no
+  // arranque vacio; Fredy agrega/renombra los que quiera despues desde
+  // Administrativo -> Tipo de Contrato.
+  const tiposContratoSeedHechoRef = useRef(false);
+  useEffect(() => {
+    if (!tiposContratoCargado || tiposContrato.length > 0 || tiposContratoSeedHechoRef.current) return;
+    tiposContratoSeedHechoRef.current = true;
+    ["Término Fijo", "Término Indefinido"].forEach((nombre, i) => { fsSave("nomina_tipos_contrato", `tipo_contrato_${i}`, { nombre }); });
+  }, [tiposContratoCargado, tiposContrato]);
+  // (2026-09-14, a pedido de Fredy) Migracion automatica: todos los
+  // trabajadores que ya existian antes de que existiera el campo "Tipo de
+  // Contrato" quedan sin valor -- Fredy pidio que TODOS queden como
+  // "Término Fijo" por defecto (el los reclasifica despues a "Término
+  // Indefinido" donde corresponda). Corre una sola vez por carga de la
+  // app; es segura de repetir porque un trabajador ya clasificado no
+  // vuelve a calificar.
+  const migracionTipoContratoHechaRef = useRef(false);
+  useEffect(() => {
+    if (loading || migracionTipoContratoHechaRef.current) return;
+    migracionTipoContratoHechaRef.current = true;
+    trabajadores.filter((t) => !t.tipoContrato).forEach((t) => {
+      fsSave("nomina_trabajadores", t.id, { tipoContrato: "Término Fijo" });
+    });
+  }, [loading, trabajadores]);
   const nombresMotivosDisponibles = motivosAusencia.length > 0 ? motivosAusencia.map((m) => m.nombre) : MOTIVOS_AUSENCIA;
   const iconoPorMotivo = motivosAusencia.length > 0 ? Object.fromEntries(motivosAusencia.map((m) => [m.nombre, m.icono || "❔"])) : MOTIVO_ICONO;
   const isAdmin = !!currentUser?.isAdmin;
@@ -7532,6 +7662,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "areas_nomina", icon: "🏭", label: "Área Interna" },
             { id: "zonas_nomina", icon: "🪪", label: "Cargo" },
             { id: "areas_tns", icon: "🏛️", label: "Área TNS" },
+            { id: "tipos_contrato", icon: "📋", label: "Tipo de Contrato" },
             { id: "motivos_ausencia", icon: "🏷️", label: "Motivos de Ausencia (catálogo)" },
             { id: "turnos", icon: "⏱️", label: "Turnos" },
             { id: "trabajadores", icon: "👷", label: "Trabajadores" },
@@ -7588,6 +7719,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function borrarAreaNomina(id) { await fsDelete("nomina_areas", id); }
   async function guardarAreaTNS(a) { await fsSave("nomina_areas_tns", a.id, a); }
   async function borrarAreaTNS(id) { await fsDelete("nomina_areas_tns", id); }
+  async function guardarTipoContrato(t) { await fsSave("nomina_tipos_contrato", t.id, t); }
+  async function borrarTipoContrato(id) { await fsDelete("nomina_tipos_contrato", id); }
   async function guardarZonaNomina(z) { await fsSave("nomina_zonas", z.id, z); }
   async function borrarZonaNomina(id) { await fsDelete("nomina_zonas", id); }
   async function guardarMotivoAusencia(m) { await fsSave("nomina_motivos_ausencia", m.id, m); }
@@ -7859,11 +7992,12 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
           {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} />}
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} />}
-          {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
+          {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
           {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
           {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} grupos={gruposTrabajo} isAdmin={isAdminCatalogos} onSave={guardarAreaNomina} onDelete={borrarAreaNomina} />}
           {subView === "zonas_nomina" && !areaLider && !soloNovedades && <ZonasNominaView zonas={zonasNomina} areasNomina={areasNomina} gruposTrabajo={gruposTrabajo} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarZonaNomina} onDelete={borrarZonaNomina} />}
           {subView === "areas_tns" && !areaLider && !soloNovedades && <AreasTnsView areas={areasTNS} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarAreaTNS} onDelete={borrarAreaTNS} />}
+          {subView === "tipos_contrato" && !areaLider && !soloNovedades && <TiposContratoView tipos={tiposContrato} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTipoContrato} onDelete={borrarTipoContrato} />}
           {subView === "motivos_ausencia" && !areaLider && !soloNovedades && <MotivosAusenciaView motivos={motivosAusencia} ausencias={ausencias} isAdmin={isAdminCatalogos} onSave={guardarMotivoAusencia} onDelete={borrarMotivoAusencia} />}
           {subView === "turnos" && !areaLider && !soloNovedades && <TurnosView turnos={turnos} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTurno} onDelete={borrarTurno} />}
           {subView === "precios" && !areaLider && !soloNovedades && <PreciosProcesoView precios={precios} isAdmin={isAdminCatalogos} onSave={guardarProceso} onDelete={borrarProceso} />}

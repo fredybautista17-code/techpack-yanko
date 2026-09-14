@@ -1250,7 +1250,7 @@ exports.aprobarDadoPorCumplido = onCall(
 // archivo en Dropbox (misma ruta) para que cada mañana ya esté el más
 // reciente. Incluye TODOS los lotes (pendientes + aprobados) -- así se ve
 // también qué falta por revisar, no solo el histórico ya aprobado.
-const DROPBOX_RUTA_DADO_POR_CUMPLIDO = "/2026/Dado por cumplido/DadoPorCumplido.xlsx";
+const DROPBOX_RUTA_DADO_POR_CUMPLIDO = "/Dado por cumplido/2026/DADO POR CUMPLIDO 2026.xlsx";
 
 async function obtenerTokenAccesoDropbox() {
   const resp = await fetch("https://api.dropbox.com/oauth2/token", {
