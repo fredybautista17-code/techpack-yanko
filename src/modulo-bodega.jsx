@@ -3562,6 +3562,30 @@ function EstadoDespachoView({ onVolver, onLogout }) {
       setRevirtiendoLoteId(null);
     }
   }
+  // (2026-09-14, a pedido de Fredy) Para lotes que quedaron marcados
+  // Enviado/Recibido sin que en realidad se les haya armado un despacho de
+  // verdad (transportador, guia, cantidad despachada) -- los deja
+  // completamente limpios para que vuelvan a "Sin despacho" y se les pueda
+  // hacer el despacho real desde cero.
+  async function revertirLoteASinDespacho(lote) {
+    if (
+      !window.confirm(`¿Devolver el lote ${lote.numLote} a "Sin despacho"? Quedará disponible para armarle un despacho real (transportador, guía) desde cero.`)
+    )
+      return;
+    setRevirtiendoLoteId(lote.id);
+    try {
+      await fsSave("dado_por_cumplido_lotes", lote.id, {
+        estadoEnvio: deleteField(),
+        fechaEnvio: deleteField(),
+        fechaRecibido: deleteField(),
+        despachoId: deleteField(),
+        despachoCodigo: deleteField(),
+      });
+      setLoteDetalle(null);
+    } finally {
+      setRevirtiendoLoteId(null);
+    }
+  }
 
   // (2026-09-10, a pedido de Fredy) Por si se arma un despacho por error --
   // antes de enviarlo, o incluso ya enviado. Borra el despacho y libera los
@@ -4123,10 +4147,15 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                       </div>
                     </div>
                   )}
-                  {loteDetalle.estadoEnvio === "recibido" && (
-                    <div style={{ display: "flex", justifyContent: "flex-end", borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
-                      <Btn variant="ghost" small onClick={() => revertirLoteAEnviado(loteDetalle)} disabled={revirtiendoLoteId === loteDetalle.id}>
-                        {revirtiendoLoteId === loteDetalle.id ? "Revirtiendo..." : "↩️ Revertir a Enviado"}
+                  {(loteDetalle.estadoEnvio === "recibido" || loteDetalle.estadoEnvio === "enviado") && (
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap", borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
+                      {loteDetalle.estadoEnvio === "recibido" && (
+                        <Btn variant="ghost" small onClick={() => revertirLoteAEnviado(loteDetalle)} disabled={revirtiendoLoteId === loteDetalle.id}>
+                          {revirtiendoLoteId === loteDetalle.id ? "Revirtiendo..." : "↩️ Revertir a Enviado"}
+                        </Btn>
+                      )}
+                      <Btn variant="ghost" small onClick={() => revertirLoteASinDespacho(loteDetalle)} disabled={revirtiendoLoteId === loteDetalle.id}>
+                        {revirtiendoLoteId === loteDetalle.id ? "Revirtiendo..." : "↩️↩️ Devolver a Sin Despacho"}
                       </Btn>
                     </div>
                   )}
