@@ -54,6 +54,14 @@ function uid() {
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
+// (2026-09-14, a pedido de Fredy) Fecha de corte para los rangos rapidos
+// del Historial (Ultimos 7/30/90 dias) -- evita cargar de una vez listas
+// de cientos o miles de lotes que solo van a crecer con el tiempo.
+function fechaMenosDias(dias) {
+  const d = new Date();
+  d.setDate(d.getDate() - dias);
+  return d.toISOString().slice(0, 10);
+}
 function fmtNum(n) {
   return Number(n || 0).toLocaleString("es-CO");
 }
@@ -277,7 +285,26 @@ function ChipStat({ label, value }) {
     </span>
   );
 }
-function Tabla({ columnas, filas, vacio, onRowClick }) {
+// (2026-09-14, a pedido de Fredy) Celda numerica para la tabla del
+// Historial: los ceros (que son la mayoria) se ven atenuados para que lo
+// que si tiene valor resalte a simple vista.
+function CeldaNum({ valor }) {
+  const v = Number(valor) || 0;
+  return <span style={{ color: v === 0 ? C.slate : C.ink, fontWeight: v === 0 ? 400 : 700 }}>{v}</span>;
+}
+// Version compacta de EstadoEnvioBadge para filas de tabla (punto de
+// color + texto, en vez del badge/pill que ocupa mas espacio).
+function EstadoEnvioDot({ lote }) {
+  const recibido = lote?.estadoEnvio === "recibido";
+  const color = recibido ? C.green : C.blue;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontWeight: 700, fontSize: 11.5, color, whiteSpace: "nowrap" }}>
+      <span style={{ width: 7, height: 7, borderRadius: "50%", background: color, display: "inline-block", flexShrink: 0 }} />
+      {recibido ? "Recibido" : "Enviado"}
+    </span>
+  );
+}
+function Tabla({ columnas, filas, vacio, onRowClick, sortKey, sortDir, onSort }) {
   if (!filas.length) {
     return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>{vacio || "Sin datos."}</div>;
   }
@@ -287,8 +314,13 @@ function Tabla({ columnas, filas, vacio, onRowClick }) {
         <thead>
           <tr style={{ background: C.ink, position: "sticky", top: 0 }}>
             {columnas.map((c) => (
-              <th key={c.key} style={{ padding: "9px 12px", color: C.seam, textAlign: c.align || "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
+              <th
+                key={c.key}
+                onClick={c.sortable && onSort ? () => onSort(c.key) : undefined}
+                style={{ padding: "9px 12px", color: C.seam, textAlign: c.align || "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap", cursor: c.sortable && onSort ? "pointer" : "default" }}
+              >
                 {c.label}
+                {c.sortable && sortKey === c.key ? (sortDir === 1 ? " ▲" : " ▼") : ""}
               </th>
             ))}
           </tr>
@@ -3174,6 +3206,14 @@ function EstadoDespachoView({ onVolver, onLogout }) {
   const [histDesde, setHistDesde] = useState("");
   const [histHasta, setHistHasta] = useState("");
   const [histEstado, setHistEstado] = useState("todos");
+  // (2026-09-14, a pedido de Fredy) El Historial ya tiene 810+ lotes y solo
+  // va a seguir creciendo -- en vez de listas de tarjetas, se muestra como
+  // tabla compacta, ordenable, y por defecto solo se cargan los ultimos 30
+  // dias (con "Cargar mas" para el resto) en vez de todo de una vez.
+  const [histRangoDias, setHistRangoDias] = useState(30);
+  const [histSortKey, setHistSortKey] = useState("fecha");
+  const [histSortDir, setHistSortDir] = useState(-1);
+  const [histVisibles, setHistVisibles] = useState(50);
 
   // (2026-09-09, rediseño a pedido de Fredy) Panel de "Crear despacho":
   // antes, "Nuevo despacho" solo generaba un código vacío y uno lo dejaba
@@ -3242,10 +3282,11 @@ function EstadoDespachoView({ onVolver, onLogout }) {
   const recibidos = aprobados
     .filter((l) => l.estadoEnvio === "recibido" || (l.estadoEnvio === "enviado" && (l.fechaEnvio || "") <= CORTE_HISTORIAL_ENVIOS))
     .sort((a, b) => (b.fechaRecibido || b.fechaEnvio || "").localeCompare(a.fechaRecibido || a.fechaEnvio || ""));
+  const histDesdeEfectivo = histDesde || (histRangoDias > 0 ? fechaMenosDias(histRangoDias) : "");
   const recibidosFiltrados = recibidos.filter((l) => {
     if (histEstado !== "todos" && l.estadoEnvio !== histEstado) return false;
     const fechaRef = l.fechaRecibido || l.fechaEnvio || l.fecha || "";
-    if (histDesde && fechaRef < histDesde) return false;
+    if (histDesdeEfectivo && fechaRef < histDesdeEfectivo) return false;
     if (histHasta && fechaRef > histHasta) return false;
     if (histBusqueda.trim()) {
       const q = histBusqueda.trim().toLowerCase();
@@ -3255,6 +3296,13 @@ function EstadoDespachoView({ onVolver, onLogout }) {
     }
     return true;
   });
+  const recibidosOrdenados = [...recibidosFiltrados].sort((a, b) => {
+    if (histSortKey === "numLote") return histSortDir * (Number(a.numLote) - Number(b.numLote));
+    const fa = a.fechaRecibido || a.fechaEnvio || a.fecha || "";
+    const fb = b.fechaRecibido || b.fechaEnvio || b.fecha || "";
+    return histSortDir * fa.localeCompare(fb);
+  });
+  const recibidosVisibles = recibidosOrdenados.slice(0, histVisibles);
 
   // Un despacho es de un solo cliente -- en cuanto se marca el primer
   // lote, los demás clientes quedan bloqueados en el panel de selección.
@@ -3935,58 +3983,88 @@ function EstadoDespachoView({ onVolver, onLogout }) {
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 10, padding: "12px 14px", border: `1px solid ${C.border}`, borderRadius: 10, background: C.white, marginBottom: 12 }}>
               <div style={{ flex: 1, minWidth: 160 }}>
                 <Field label="Buscar">
-                  <FInput value={histBusqueda} onChange={setHistBusqueda} placeholder="Número de lote o cliente..." />
+                  <FInput value={histBusqueda} onChange={(v) => { setHistBusqueda(v); setHistVisibles(50); }} placeholder="Número de lote o cliente..." />
                 </Field>
               </div>
               <div style={{ width: 150 }}>
                 <Field label="Desde">
-                  <FInput type="date" value={histDesde} onChange={setHistDesde} />
+                  <FInput type="date" value={histDesde} onChange={(v) => { setHistDesde(v); setHistRangoDias(0); setHistVisibles(50); }} />
                 </Field>
               </div>
               <div style={{ width: 150 }}>
                 <Field label="Hasta">
-                  <FInput type="date" value={histHasta} onChange={setHistHasta} />
+                  <FInput type="date" value={histHasta} onChange={(v) => { setHistHasta(v); setHistRangoDias(0); setHistVisibles(50); }} />
                 </Field>
               </div>
-              {(histBusqueda || histDesde || histHasta || histEstado !== "todos") && (
+              {(histBusqueda || histDesde || histHasta || histEstado !== "todos" || histRangoDias !== 30) && (
                 <span
-                  onClick={() => { setHistBusqueda(""); setHistDesde(""); setHistHasta(""); setHistEstado("todos"); }}
+                  onClick={() => { setHistBusqueda(""); setHistDesde(""); setHistHasta(""); setHistEstado("todos"); setHistRangoDias(30); setHistVisibles(50); }}
                   style={{ cursor: "pointer", color: C.blue, fontSize: 12, fontWeight: 700, padding: "8px 4px" }}
                 >
                   Limpiar
                 </span>
               )}
             </div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-              {[
-                { key: "todos", label: `Todos (${recibidos.length})` },
-                { key: "enviado", label: `🚚 Enviados (${recibidos.filter((r) => r.estadoEnvio === "enviado").length})` },
-                { key: "recibido", label: `✅ Recibidos (${recibidos.filter((r) => r.estadoEnvio === "recibido").length})` },
-              ].map((op) => (
-                <span
-                  key={op.key}
-                  onClick={() => setHistEstado(op.key)}
-                  style={{ cursor: "pointer", padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700, background: histEstado === op.key ? C.white : "transparent", color: histEstado === op.key ? C.ink : C.slate, border: `1px solid ${histEstado === op.key ? C.border : "transparent"}`, boxShadow: histEstado === op.key ? "0 1px 3px rgba(0,0,0,0.08)" : "none" }}
-                >
-                  {op.label}
-                </span>
-              ))}
-            </div>
-            {!recibidosFiltrados.length ? (
-              <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>
-                {recibidos.length ? "Ningún registro coincide con el filtro." : "Todavía no hay nada en el historial."}
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {recibidosFiltrados.map((l) => (
-                  <div key={l.id} style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }}>
-                    <span>
-                      <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> · {l.fecha ? fmtFechaISO(l.fecha) : "—"} — {l.referencia} — {l.cliente} <EstadoEnvioBadge lote={l} />
-                      {l.despachoCodigo ? <> · {l.despachoCodigo}</> : null}
+            <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <div style={{ display: "inline-flex", background: C.canvas, borderRadius: 10, padding: 3, gap: 2 }}>
+                  {[{ d: 7, l: "Últimos 7 días" }, { d: 30, l: "Últimos 30 días" }, { d: 90, l: "Últimos 90 días" }, { d: 0, l: "Todo" }].map((op) => {
+                    const activo = histRangoDias === op.d && !histDesde && !histHasta;
+                    return (
+                      <span
+                        key={op.d}
+                        onClick={() => { setHistRangoDias(op.d); setHistDesde(""); setHistHasta(""); setHistVisibles(50); }}
+                        style={{ cursor: "pointer", padding: "6px 12px", borderRadius: 8, fontSize: 11.5, fontWeight: 700, background: activo ? C.white : "transparent", color: activo ? C.ink : C.slate, boxShadow: activo ? "0 1px 3px rgba(0,0,0,0.08)" : "none" }}
+                      >
+                        {op.l}
+                      </span>
+                    );
+                  })}
+                </div>
+                <div style={{ display: "inline-flex", background: C.canvas, borderRadius: 10, padding: 3, gap: 2 }}>
+                  {[
+                    { key: "todos", label: `Todos (${recibidos.length})` },
+                    { key: "enviado", label: `🚚 Enviados (${recibidos.filter((r) => r.estadoEnvio === "enviado").length})` },
+                    { key: "recibido", label: `✅ Recibidos (${recibidos.filter((r) => r.estadoEnvio === "recibido").length})` },
+                  ].map((op) => (
+                    <span
+                      key={op.key}
+                      onClick={() => { setHistEstado(op.key); setHistVisibles(50); }}
+                      style={{ cursor: "pointer", padding: "6px 12px", borderRadius: 8, fontSize: 11.5, fontWeight: 700, background: histEstado === op.key ? C.white : "transparent", color: histEstado === op.key ? C.ink : C.slate, boxShadow: histEstado === op.key ? "0 1px 3px rgba(0,0,0,0.08)" : "none" }}
+                    >
+                      {op.label}
                     </span>
-                    <span style={{ color: C.slate }}>{l.transportador} · Guía {l.numeroGuia} · Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0} · Llegó el {l.fechaRecibido || l.fechaEnvio || "—"}</span>
-                  </div>
-                ))}
+                  ))}
+                </div>
+              </div>
+              <span style={{ fontSize: 12, color: C.slate, fontWeight: 600 }}>
+                Mostrando {recibidosVisibles.length} de {recibidosFiltrados.length}{recibidosFiltrados.length !== recibidos.length ? ` (de ${recibidos.length} en total)` : ""}
+              </span>
+            </div>
+            <Tabla
+              sortKey={histSortKey}
+              sortDir={histSortDir}
+              onSort={(key) => { setHistSortDir((d) => (histSortKey === key ? d * -1 : key === "numLote" ? 1 : -1)); setHistSortKey(key); }}
+              vacio={recibidos.length ? "Ningún registro coincide con el filtro." : "Todavía no hay nada en el historial."}
+              filas={recibidosVisibles}
+              columnas={[
+                { key: "numLote", label: "Lote", sortable: true, render: (l) => <strong>{l.numLote}</strong> },
+                { key: "fecha", label: "Fecha", sortable: true, render: (l) => (l.fecha ? fmtFechaISO(l.fecha) : "—") },
+                { key: "cliente", label: "Cliente", render: (l) => l.cliente || "—" },
+                { key: "estadoEnvio", label: "Estado", render: (l) => <EstadoEnvioDot lote={l} /> },
+                { key: "transportador", label: "Transportador", render: (l) => l.transportador || "—" },
+                { key: "numeroGuia", label: "Guía", render: (l) => l.numeroGuia || "—" },
+                { key: "cantidadDespachadaBodega", label: "Despachada", align: "right", render: (l) => <CeldaNum valor={l.cantidadDespachadaBodega} /> },
+                { key: "sacrificios", label: "Sacrificios", align: "right", render: (l) => <CeldaNum valor={l.sacrificios} /> },
+                { key: "segundas", label: "Segundas", align: "right", render: (l) => <CeldaNum valor={l.segundas} /> },
+                { key: "llego", label: "Llegó", render: (l) => (l.fechaRecibido || l.fechaEnvio ? fmtFechaISO(l.fechaRecibido || l.fechaEnvio) : "—") },
+              ]}
+            />
+            {recibidosVisibles.length < recibidosFiltrados.length && (
+              <div style={{ display: "flex", justifyContent: "center", padding: 14 }}>
+                <Btn variant="secondary" small onClick={() => setHistVisibles((v) => v + 50)}>
+                  Cargar 50 más ({recibidosFiltrados.length - recibidosVisibles.length} restantes)
+                </Btn>
               </div>
             )}
           </>
