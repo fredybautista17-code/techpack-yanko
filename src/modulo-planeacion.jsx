@@ -3458,6 +3458,51 @@ function areaEnFecha(t, fechaISO) {
   }
   return historial[0]?.area || t?.area || "Sin asignar";
 }
+// (2026-09-14, a pedido de Fredy) Provision mensual de prestaciones
+// sociales + aportes patronales, para sumar al costo de nomina del
+// Centro de Costo (ver costoMensualCompletoCC mas abajo). Tasas
+// duplicadas desde modulo-nomina.jsx -- mantener iguales si cambian alla.
+const SMMLV_2026_CC = 1750905;
+const TOPE_SUELDO_PARA_AUXILIO_CC = SMMLV_2026_CC * 2;
+const TASA_CESANTIAS_MENSUAL_CC = 0.0833;
+const TASA_PRIMA_MENSUAL_CC = 0.0833;
+const TASA_VACACIONES_MENSUAL_CC = 0.0417;
+const TASA_INTERES_CESANTIAS_ANUAL_CC = 0.12;
+const TASA_PENSION_EMPLEADOR_CC = 0.12;
+const TASA_CAJA_COMPENSACION_EMPLEADOR_CC = 0.04;
+const TASA_ARL_POR_CLASE_CC = { I: 0.00522, II: 0.01044, III: 0.02436, IV: 0.0435, V: 0.0696 };
+// Costo mensual COMPLETO de un trabajador: sueldo + auxilio + provision
+// de prestaciones sociales + aportes patronales -- para saber cuanto le
+// cuesta de verdad a la empresa cada mes, no solo el sueldo. Prestaciones
+// sociales aplican a Fiscal, Fiscal Destajo y Destajo (todos acumulan
+// cesantias/prima/vacaciones); aportes patronales (pension, ARL, caja de
+// compensacion) SOLO a Fiscal, el unico tipo con seguridad social real
+// (Fiscal Destajo y Destajo no la tienen, confirmado en Nomina). Fiscal
+// Destajo calcula prestaciones solo sobre el sueldo (sin auxilio), igual
+// que en su liquidacion real -- los demas suman sueldo + auxilio. Fiscal
+// Destajo tambien calcula los intereses de cesantias distinto: sobre el
+// SALDO YA ACUMULADO (cesantiasAcumuladas del trabajador), igual que en
+// su liquidacion real -- no sobre lo que se acumula este mes.
+function costoMensualCompletoCC(t) {
+  const sueldo = Number(t?.sueldo) || 0;
+  if (!sueldo) return 0;
+  const auxilio = sueldo > TOPE_SUELDO_PARA_AUXILIO_CC ? 0 : (Number(t.auxilioTransporte) || 0);
+  const esFiscalDestajo = t.tipoNomina === "Fiscal Destajo";
+  const baseCesantiasPrima = esFiscalDestajo ? sueldo : (sueldo + auxilio);
+  const cesantias = baseCesantiasPrima * TASA_CESANTIAS_MENSUAL_CC;
+  const intereses = esFiscalDestajo
+    ? (Number(t.cesantiasAcumuladas) || 0) * (TASA_INTERES_CESANTIAS_ANUAL_CC / 12)
+    : cesantias * TASA_INTERES_CESANTIAS_ANUAL_CC;
+  const prima = baseCesantiasPrima * TASA_PRIMA_MENSUAL_CC;
+  const vacaciones = sueldo * TASA_VACACIONES_MENSUAL_CC;
+  const prestaciones = cesantias + intereses + prima + vacaciones;
+  let aportesPatronales = 0;
+  if (t.tipoNomina === "Fiscal") {
+    const tasaARL = TASA_ARL_POR_CLASE_CC[t.claseRiesgoARL] || 0;
+    aportesPatronales = sueldo * (TASA_PENSION_EMPLEADOR_CC + tasaARL + TASA_CAJA_COMPENSACION_EMPLEADOR_CC);
+  }
+  return sueldo + auxilio + prestaciones + aportesPatronales;
+}
 function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movimientos, cargandoMovimientos, onActualizarMovimientos, reclamosCalidad, areaFija }) {
   const hoy = today();
   const [periodo, setPeriodo] = useState("mes"); // "dia" | "mes" | "anio"
@@ -3674,7 +3719,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   const metaPeriodoApoyo = metaPeriodo(metaDiariaApoyo);
   const pctCumplimientoApoyo = metaPeriodoApoyo > 0 ? (unidadesMovidasApoyo / metaPeriodoApoyo) * 100 : 0;
   const estadoApoyo = metaPeriodoApoyo > 0 ? (unidadesMovidasApoyo >= metaPeriodoApoyo ? "ok" : "bad") : null;
-  const costoAreaApoyo = trabajadoresArea.reduce((s, t) => s + (t.sueldo ? costoPeriodo((Number(t.sueldo) || 0) + (Number(t.auxilioTransporte) || 0)) : 0), 0);
+  const costoAreaApoyo = trabajadoresArea.reduce((s, t) => s + costoPeriodo(costoMensualCompletoCC(t)), 0);
   // (2026-09-02, a pedido de Fredy) Presupuesto de nómina del área vs. el
   // costo real -- aplica sin importar si el área mide por unidades
   // (modoApoyo) o por $ producido, por eso usa "costoAreaApoyo" o
