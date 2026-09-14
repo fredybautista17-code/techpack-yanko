@@ -4139,6 +4139,11 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                 <KPI icon={balanceReparto >= 0 ? "✅" : "⚠️"} label="Balance (Asignado − Costo)" value={fmtMoney(balanceReparto)} color={balanceReparto >= 0 ? C.green : C.red} bg={balanceReparto >= 0 ? C.greenBg : C.redBg} />
                 <KPI icon="📊" label="% Cobertura" value={costoAreaApoyo > 0 ? `${pctCoberturaReparto.toFixed(0)}%` : "—"} color={C.ink} bg={C.canvas} sub="de la nómina del área, cubierta por lo asignado" />
               </div>
+              {areasEnRepartoDespacho.length > 0 && (
+                <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>
+                  <strong style={{ color: C.ink }}>Áreas en el reparto ({areasEnRepartoDespacho.length}):</strong> {areasEnRepartoDespacho.join(", ")}
+                </div>
+              )}
               {totalTrabajadoresReparto === 0 && (
                 <div style={{ fontSize: 11, color: C.amber }}>⚠ Ninguna área tiene marcado el modo "Reparto por Despacho" todavía (Nómina → Administrativo → Área Interna) — sin eso no hay entre quién repartir.</div>
               )}
