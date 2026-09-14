@@ -2369,7 +2369,7 @@ exports.getMovimientosProcesoBusintBD = onCall(
 const AREAS_AUDITORIA_BUSINT = ["ZONA CALOR", "CONTROL DE CALIDAD"];
 const CODPLANTAS_PROPIAS = new Set([1002, 1021]);
 
-async function correrAuditoriaBusintVsNomina() {
+async function correrAuditoriaBusintVsNomina({ inmediato = false } = {}) {
   const hoy = fechaHoyBogota();
   const mesActualISO = hoy.slice(0, 7); // "2026-09" -- lo que lleva del mes en curso (Bogota)
 
@@ -2520,7 +2520,6 @@ async function correrAuditoriaBusintVsNomina() {
       }
       destinatarios = [...new Set([...destinatarios, ...extrasAuditoria])];
       if (destinatarios.length) {
-        const transporte = crearTransporte();
         const ETIQUETAS_AUDITORIA = {
           falta_registrar: { texto: "Falta registrar", color: "#b91c1c" },
           sobre_registrado: { texto: "Sobre-registrado", color: "#b45309" },
@@ -2534,12 +2533,19 @@ async function correrAuditoriaBusintVsNomina() {
             return `<tr><td>${d.numLote}</td><td>${d.proceso}</td><td style="color:${et.color}"><b>${et.texto}</b></td><td style="text-align:right">${d.entradaBusint}</td><td style="text-align:right">${d.registradoNomina}</td><td style="text-align:right"><b style="color:${et.color}">${Math.abs(d.diferencia)}</b></td><td style="text-align:right">${fmtMoneyCorreo(d.entradaBusintValor)}</td><td style="text-align:right">${fmtMoneyCorreo(d.registradoNominaValor)}</td><td style="text-align:right"><b style="color:${et.color}">${fmtMoneyCorreo(Math.abs(d.diferenciaValor))}</b></td></tr>`;
           })
           .join("");
-        await mandarCorreo(
-          transporte,
-          destinatarios,
-          `ATLAS -- ${nombreArea}: ${discrepancias.length} diferencia(s) de Nomina vs Busint`,
-          `<p>En <b>${nombreArea}</b>, Busint y Nomina (Registrar Produccion) no calzan -- puede ser que falte registrar produccion, que haya quedado registrada de mas, que se haya pagado sin que Busint tenga la entrada, o que la cantidad este bien pero el valor pagado no. Revisa estos lotes/procesos:</p><table border="1" cellpadding="6" style="border-collapse:collapse"><tr><th>Lote</th><th>Proceso</th><th>Tipo</th><th>Cant. Busint</th><th>Cant. Nomina</th><th>Dif. Cant.</th><th>Valor Busint</th><th>Valor Nomina</th><th>Dif. Valor</th></tr>${filasHtml}</table>`
-        );
+        const asuntoAuditoria = `ATLAS -- ${nombreArea}: ${discrepancias.length} diferencia(s) de Nomina vs Busint`;
+        const htmlAuditoria = `<p>En <b>${nombreArea}</b>, Busint y Nomina (Registrar Produccion) no calzan -- puede ser que falte registrar produccion, que haya quedado registrada de mas, que se haya pagado sin que Busint tenga la entrada, o que la cantidad este bien pero el valor pagado no. Revisa estos lotes/procesos:</p><table border="1" cellpadding="6" style="border-collapse:collapse"><tr><th>Lote</th><th>Proceso</th><th>Tipo</th><th>Cant. Busint</th><th>Cant. Nomina</th><th>Dif. Cant.</th><th>Valor Busint</th><th>Valor Nomina</th><th>Dif. Valor</th></tr>${filasHtml}</table>`;
+        if (inmediato) {
+          const transporte = crearTransporte();
+          await mandarCorreo(transporte, destinatarios, asuntoAuditoria, htmlAuditoria);
+        } else {
+          await agregarSeccionNotificacion({
+            correos: destinatarios,
+            titulo: asuntoAuditoria,
+            horaOrigen: "7:00 a.m. · Auditoría Busint vs. Nómina",
+            html: htmlAuditoria,
+          });
+        }
       } else {
         logger.warn(`Auditoria Busint vs Nomina: ${discrepancias.length} diferencia(s) en "${nombreArea}" pero no se encontro a quien avisar (sin lider con areaNomina y sin admins con correo).`);
       }
@@ -4742,7 +4748,7 @@ exports.correrAuditoriaBusintVsNominaAhora = onCall(
   },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
-    return await correrAuditoriaBusintVsNomina();
+    return await correrAuditoriaBusintVsNomina({ inmediato: true });
   }
 );
 
@@ -4755,12 +4761,43 @@ exports.auditoriaBusintVsNomina = onSchedule(
     memory: "1GiB",
   },
   async () => {
-    const resultado = await correrAuditoriaBusintVsNomina();
+    const resultado = await correrAuditoriaBusintVsNomina({ inmediato: false });
     logger.info("Auditoria Busint vs Nomina completada", resultado);
   }
 );
 
 const RECIPIENTES_APOYO = ["Dayana", "Karen", "Yuliana"];
+
+// (2026-09-14, a pedido de Fredy) Reporte diario de asistencia -- estas 3
+// personas ven TODO el personal (todas las áreas juntas), no solo un área
+// puntual: Fredy (admin), y Yuleisi Moreno / María Fernanda Páez porque
+// aunque en Usuarios tengan asignadas áreas puntuales (Contabilidad y
+// Tesorería, Talento Humano, Mantenimiento), su rol es transversal. Cada
+// líder de un área específica (Control de Calidad, Zona Calor, Bodega,
+// Corte, Diseño, etc.) sigue viendo SOLO su área -- eso se resuelve en vivo
+// contra "Área Interna" en Usuarios, igual que ya hace la Auditoría Busint
+// vs. Nómina, así que no hay que tocar código si cambia quién es líder.
+const DESTINATARIOS_ASISTENCIA_COMPLETA = ["Fredy Bautista", "Yuleisi Moreno", "Maria Fernanda Paez"];
+
+function normalizarNombreAsistencia(s) {
+  return String(s || "").trim().toUpperCase().replace(/\s+/g, " ");
+}
+
+// Cruza un registro ya guardado de "nomina_dias_trabajados" (viene de
+// Reporte de Asistencia, origen huellero) contra un Trabajador de Atlas --
+// mismo criterio que usa el frontend (trabajadorDe en modulo-nomina.jsx):
+// primero por ID Huellero si el trabajador ya tiene uno asignado, si no por
+// nombre normalizado exacto (y solo si hay un único candidato, para no
+// mezclar homónimos).
+function trabajadorDeAsistencia(registro, trabajadores) {
+  if (registro.idHuellero) {
+    const porId = trabajadores.find((t) => t.idHuellero && String(t.idHuellero).trim() === String(registro.idHuellero).trim());
+    if (porId) return porId;
+  }
+  const nombreNorm = registro.nombreNorm || normalizarNombreAsistencia(registro.nombre);
+  const candidatos = trabajadores.filter((t) => normalizarNombreAsistencia(t.nombre) === nombreNorm);
+  return candidatos.length === 1 ? candidatos[0] : null;
+}
 const STAGES_TERMINALES = new Set(["enviado_cotizacion", "enviar_cliente", "enviado", "recibido_cliente", "aprobado", "declinado"]);
 
 function diasDesde(iso) {
@@ -4809,6 +4846,33 @@ async function mandarCorreo(transporte, destinatarios, asunto, textoHtml) {
   });
 }
 
+// (2026-09-14, a pedido de Fredy) En vez de mandar un correo separado por
+// cada notificación (auditoría 7am, vencidos 8am, despachos 6pm, resumen
+// por cliente 6:10pm), cada una de esas corridas GUARDA su contenido como
+// una "sección" del día en vez de mandarlo de una vez. A las 7:00 p.m.,
+// `enviarResumenDiarioNotificaciones` junta todas las secciones del día,
+// las agrupa por destinatario, y le manda a cada quien UN SOLO correo con
+// todo adentro (cada sección con su título y la hora en que se generó) --
+// así nadie recibe varios correos sueltos en el día. Los botones "Ahora"
+// (pruebas manuales, ej. "Enviar de prueba" en Resumen por cliente) NO
+// pasan por acá -- siguen mandando de una vez, como siempre.
+async function agregarSeccionNotificacion({ correos, titulo, horaOrigen, html }) {
+  const destinos = [...new Set((correos || []).filter(Boolean))];
+  if (!destinos.length) return;
+  const fecha = fechaHoyBogota();
+  await db
+    .collection("notificaciones_diarias")
+    .doc(fecha)
+    .collection("secciones")
+    .add({
+      correos: destinos,
+      titulo: titulo || "",
+      horaOrigen: horaOrigen || "",
+      html: html || "",
+      creadoEn: new Date().toISOString(),
+    });
+}
+
 // (2026-09-14, a pedido de Fredy) Panel de solo lectura en Administración ->
 // Notificaciones automáticas: enumera las tareas programadas del sistema
 // (correos + sincronizaciones) y, para las que mandan correo, calcula EN
@@ -4820,9 +4884,10 @@ async function mandarCorreo(transporte, destinatarios, asunto, textoHtml) {
 exports.obtenerResumenNotificacionesProgramadas = onCall({ timeoutSeconds: 60, memory: "256MiB" }, async (request) => {
   await verificarLlamadorEsAdmin(request);
 
-  const [usersSnap, configSnap] = await Promise.all([
+  const [usersSnap, configSnap, areasSnap] = await Promise.all([
     db.collection("users").get(),
     db.collection("config").doc("main").get(),
+    db.collection("nomina_areas").get(),
   ]);
   const usuarios = usersSnap.docs.map((d) => d.data());
   const paraDestino = (lista) => lista.map((u) => ({ nombre: u.name || "(sin nombre)", correo: u.email }));
@@ -4846,6 +4911,17 @@ exports.obtenerResumenNotificacionesProgramadas = onCall({ timeoutSeconds: 60, m
     const correo = buscarCorreoPorNombre(nombre, usuarios);
     return { nombre, correo: correo || "⚠ sin correo cargado en Usuarios" };
   });
+
+  const asistenciaCompleta = DESTINATARIOS_ASISTENCIA_COMPLETA.map((nombre) => {
+    const correo = buscarCorreoPorNombre(nombre, usuarios);
+    return { nombre, correo: correo || "⚠ sin correo cargado en Usuarios" };
+  });
+  const correosAsistenciaCompleta = new Set(asistenciaCompleta.map((d) => d.correo).filter((c) => c && !c.startsWith("⚠")));
+  const todasLasAreas = areasSnap.docs.map((d) => d.data());
+  const destinatariosPorAreaAsistencia = todasLasAreas.map((a) => {
+    const asignados = usuarios.filter((u) => u.areaNomina === a.nombre && u.email && !correosAsistenciaCompleta.has(u.email));
+    return { area: a.nombre, destinatarios: paraDestino(asignados) };
+  }).filter((a) => a.destinatarios.length);
 
   return {
     generadoEn: new Date().toISOString(),
@@ -4882,7 +4958,7 @@ exports.obtenerResumenNotificacionesProgramadas = onCall({ timeoutSeconds: 60, m
         id: "auditoriaBusintVsNomina",
         nombre: "Auditoría Busint vs. Nómina",
         descripcion: 'Cruza Busint contra Nómina por centro de costo; si hay discrepancias, avisa a quien tenga esa área asignada (o a los administradores si nadie la tiene).',
-        horario: "Todos los días 7:00 a.m.",
+        horario: "Se calcula 7:00 a.m. · se envía en el resumen consolidado de las 7:00 p.m.",
         tipo: "correo",
         destinatariosPorArea,
         destinatariosExtra: extrasDe("auditoriaBusintVsNomina"),
@@ -4891,7 +4967,7 @@ exports.obtenerResumenNotificacionesProgramadas = onCall({ timeoutSeconds: 60, m
         id: "correoDespachosDiarios",
         nombre: "Resumen de despachos del día",
         descripcion: "Si hubo movimientos en la bitácora hoy, manda el resumen a los líderes de Planeación.",
-        horario: "Todos los días 6:00 p.m.",
+        horario: "Se calcula 6:00 p.m. · se envía en el resumen consolidado de las 7:00 p.m.",
         tipo: "correo",
         destinatarios: paraDestino(lideres),
         destinatariosExtra: extrasDe("correoDespachosDiarios"),
@@ -4900,7 +4976,7 @@ exports.obtenerResumenNotificacionesProgramadas = onCall({ timeoutSeconds: 60, m
         id: "correoResumenPorCliente",
         nombre: "Resumen de despachos por cliente (mes)",
         descripcion: "Resumen mensual de despachos por cliente, para líderes de Planeación y administradores.",
-        horario: "Todos los días 6:10 p.m.",
+        horario: "Se calcula 6:10 p.m. · se envía en el resumen consolidado de las 7:00 p.m.",
         tipo: "correo",
         destinatarios: paraDestino(destinatariosResumenCliente),
         destinatariosExtra: extrasDe("correoResumenPorCliente"),
@@ -4909,11 +4985,29 @@ exports.obtenerResumenNotificacionesProgramadas = onCall({ timeoutSeconds: 60, m
         id: "avisarVencidos",
         nombre: "Avisos de vencidos en Diseño",
         descripcion: "Por cada prototipo/referencia vencido, avisa a la diseñadora responsable y al grupo de apoyo.",
-        horario: "Todos los días 8:00 a.m.",
+        horario: "Se calcula 8:00 a.m. · se envía en el resumen consolidado de las 7:00 p.m.",
         tipo: "correo",
         destinatarios: apoyoDiseno,
         destinatariosExtra: extrasDe("avisarVencidos"),
         nota: "Además de este grupo fijo de apoyo, cada aviso también le llega a la diseñadora responsable del prototipo/referencia específico -- eso varía cada día según a quién se le venza algo.",
+      },
+      {
+        id: "asistenciaDiaria",
+        nombre: "Reporte diario de asistencia",
+        descripcion: "Cruza lo guardado en Nómina → Reporte de Asistencia (huellero) de hoy contra los trabajadores activos de cada Área Interna. Cada líder ve solo su área; este grupo ve todo el personal junto.",
+        horario: "Todos los días 9:00 a.m. (correo aparte, no entra en el resumen de las 7:00 p.m.)",
+        tipo: "correo",
+        destinatariosPorArea: destinatariosPorAreaAsistencia,
+        destinatarios: asistenciaCompleta,
+        destinatariosExtra: extrasDe("asistenciaDiaria"),
+        nota: "Este grupo (Fredy, Yuleisi Moreno, María Fernanda Páez) recibe TODAS las áreas juntas en un solo correo, no solo la suya.",
+      },
+      {
+        id: "enviarResumenDiarioNotificaciones",
+        nombre: "Envío consolidado del resumen diario",
+        descripcion: "Junta todo lo de arriba (auditoría, despachos, resumen por cliente, vencidos en Diseño) y le manda a cada destinatario UN SOLO correo con todas sus secciones del día, en vez de varios correos sueltos. Si alguien no tuvo nada ese día, no recibe nada.",
+        horario: "Todos los días 7:00 p.m.",
+        tipo: "sincronizacion",
       },
     ],
   };
@@ -4988,9 +5082,13 @@ exports.correoDespachosDiarios = onSchedule(
       ${bloqueDevoluciones}
       <p style="color:#888;font-size:12px">Detalle completo en Informes → Centro de Estadisticas → Despachos.</p>
     `;
-    const transporte = crearTransporte();
-    await mandarCorreo(transporte, correos, `Despachos del ${hoy} — ${despachos.length} documento(s)`, html);
-    logger.info("correoDespachosDiarios enviado", { destinatarios: correos.length, despachos: despachos.length, devoluciones: devoluciones.length });
+    await agregarSeccionNotificacion({
+      correos,
+      titulo: `Despachos del ${hoy} — ${despachos.length} documento(s)`,
+      horaOrigen: "6:00 p.m. · Resumen de despachos del día",
+      html,
+    });
+    logger.info("correoDespachosDiarios agregado al resumen diario", { destinatarios: correos.length, despachos: despachos.length, devoluciones: devoluciones.length });
   }
 );
 
@@ -5004,7 +5102,7 @@ exports.correoDespachosDiarios = onSchedule(
 // incluido). El acumulado es del mes calendario actual (desde el dia 1
 // hasta hoy) -- si todavia no hay ningun despacho este mes, no se manda
 // nada ese dia.
-async function enviarResumenPorClienteCorreo() {
+async function enviarResumenPorClienteCorreo({ inmediato = true } = {}) {
     const hoyDate = new Date();
     const hoy = hoyDate.toISOString().slice(0, 10);
     const inicioMes = new Date(hoyDate.getFullYear(), hoyDate.getMonth(), 1).toISOString().slice(0, 10);
@@ -5124,9 +5222,19 @@ async function enviarResumenPorClienteCorreo() {
       </div>
     `;
 
-    const transporte = crearTransporte();
-    await mandarCorreo(transporte, correos, `Resumen de despachos por cliente — ${nombreMes} (al ${hoy})`, html);
-    logger.info("correoResumenPorCliente enviado", { destinatarios: correos.length, clientes: clientes.length, totalDocumentos, totalUnidades, totalMonto });
+    const asuntoResumenCliente = `Resumen de despachos por cliente — ${nombreMes} (al ${hoy})`;
+    if (inmediato) {
+      const transporte = crearTransporte();
+      await mandarCorreo(transporte, correos, asuntoResumenCliente, html);
+    } else {
+      await agregarSeccionNotificacion({
+        correos,
+        titulo: asuntoResumenCliente,
+        horaOrigen: "6:10 p.m. · Resumen de despachos por cliente (mes)",
+        html,
+      });
+    }
+    logger.info("correoResumenPorCliente procesado", { inmediato, destinatarios: correos.length, clientes: clientes.length, totalDocumentos, totalUnidades, totalMonto });
     return { enviado: true, destinatarios: correos.length, clientes: clientes.length, totalDocumentos, totalUnidades, totalMonto };
 }
 
@@ -5139,7 +5247,7 @@ exports.correoResumenPorCliente = onSchedule(
     memory: "512MiB",
   },
   async () => {
-    await enviarResumenPorClienteCorreo();
+    await enviarResumenPorClienteCorreo({ inmediato: false });
   }
 );
 
@@ -5151,7 +5259,7 @@ exports.enviarResumenPorClienteAhora = onCall(
   { secrets: [EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 120, memory: "512MiB" },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
-    return await enviarResumenPorClienteCorreo();
+    return await enviarResumenPorClienteCorreo({ inmediato: true });
   }
 );
 
@@ -5177,8 +5285,8 @@ async function revisarYAvisarVencidos() {
     logger.warn("No se encontró correo para todos los destinatarios de apoyo (Dayana/Karen/Yuliana) — revisa que tengan correo cargado en Administración → Usuarios.");
   }
 
-  const transporte = crearTransporte();
   let avisosEnviados = 0;
+  const HORA_ORIGEN_VENCIDOS = "8:00 a.m. · Avisos de vencidos en Diseño";
 
   // ── Prototipos ──
   for (const doc of protosSnap.docs) {
@@ -5190,18 +5298,18 @@ async function revisarYAvisarVencidos() {
     const nombreItem = `${item.name || "Prototipo"}${item.reference ? ` (${item.reference})` : ""}`;
     const etapaLabel = stages.find((s) => s.id === item.currentStage)?.label || item.currentStage;
 
-    await mandarCorreo(
-      transporte,
-      [correoDisenadora],
-      `⏰ ${nombreItem} va atrasado en ${etapaLabel}`,
-      `<p>Hola ${item.assignedTo || ""},</p><p>El prototipo <strong>${nombreItem}</strong> lleva más días de los previstos en la etapa de <strong>${etapaLabel}</strong>.</p><p>¡Vamos, tú puedes avanzarlo! 💪</p>`
-    );
-    await mandarCorreo(
-      transporte,
-      correosApoyo,
-      `⏰ ${nombreItem} necesita una mano — atrasado en ${etapaLabel}`,
-      `<p>Hola,</p><p>Ayudemos a <strong>${item.assignedTo || "la diseñadora"}</strong> — el prototipo <strong>${nombreItem}</strong> está retrasado en la etapa de <strong>${etapaLabel}</strong>.</p><p>¿Vemos entre todas cómo destrabarlo?</p>`
-    );
+    await agregarSeccionNotificacion({
+      correos: [correoDisenadora],
+      titulo: `⏰ ${nombreItem} va atrasado en ${etapaLabel}`,
+      horaOrigen: HORA_ORIGEN_VENCIDOS,
+      html: `<p>Hola ${item.assignedTo || ""},</p><p>El prototipo <strong>${nombreItem}</strong> lleva más días de los previstos en la etapa de <strong>${etapaLabel}</strong>.</p><p>¡Vamos, tú puedes avanzarlo! 💪</p>`,
+    });
+    await agregarSeccionNotificacion({
+      correos: correosApoyo,
+      titulo: `⏰ ${nombreItem} necesita una mano — atrasado en ${etapaLabel}`,
+      horaOrigen: HORA_ORIGEN_VENCIDOS,
+      html: `<p>Hola,</p><p>Ayudemos a <strong>${item.assignedTo || "la diseñadora"}</strong> — el prototipo <strong>${nombreItem}</strong> está retrasado en la etapa de <strong>${etapaLabel}</strong>.</p><p>¿Vemos entre todas cómo destrabarlo?</p>`,
+    });
 
     await doc.ref.update({ vencidoAvisadoEtapa: item.currentStage });
     avisosEnviados++;
@@ -5222,18 +5330,18 @@ async function revisarYAvisarVencidos() {
       const nombreItem = `${refItem.name || "Referencia"}${refItem.reference ? ` (${refItem.reference})` : ""} — Cápsula ${cap.name || ""}`;
       const etapaLabel = stages.find((s) => s.id === refItem.currentStage)?.label || refItem.currentStage;
 
-      await mandarCorreo(
-        transporte,
-        [correoDisenadora],
-        `⏰ ${nombreItem} va atrasada en ${etapaLabel}`,
-        `<p>Hola ${asignado || ""},</p><p>La referencia <strong>${nombreItem}</strong> lleva más días de los previstos en la etapa de <strong>${etapaLabel}</strong>.</p><p>¡Vamos, tú puedes avanzarla! 💪</p>`
-      );
-      await mandarCorreo(
-        transporte,
-        correosApoyo,
-        `⏰ ${nombreItem} necesita una mano — atrasada en ${etapaLabel}`,
-        `<p>Hola,</p><p>Ayudemos a <strong>${asignado || "la diseñadora"}</strong> — la referencia <strong>${nombreItem}</strong> está retrasada en la etapa de <strong>${etapaLabel}</strong>.</p><p>¿Vemos entre todas cómo destrabarlo?</p>`
-      );
+      await agregarSeccionNotificacion({
+        correos: [correoDisenadora],
+        titulo: `⏰ ${nombreItem} va atrasada en ${etapaLabel}`,
+        horaOrigen: HORA_ORIGEN_VENCIDOS,
+        html: `<p>Hola ${asignado || ""},</p><p>La referencia <strong>${nombreItem}</strong> lleva más días de los previstos en la etapa de <strong>${etapaLabel}</strong>.</p><p>¡Vamos, tú puedes avanzarla! 💪</p>`,
+      });
+      await agregarSeccionNotificacion({
+        correos: correosApoyo,
+        titulo: `⏰ ${nombreItem} necesita una mano — atrasada en ${etapaLabel}`,
+        horaOrigen: HORA_ORIGEN_VENCIDOS,
+        html: `<p>Hola,</p><p>Ayudemos a <strong>${asignado || "la diseñadora"}</strong> — la referencia <strong>${nombreItem}</strong> está retrasada en la etapa de <strong>${etapaLabel}</strong>.</p><p>¿Vemos entre todas cómo destrabarlo?</p>`,
+      });
 
       refItem.vencidoAvisadoEtapa = refItem.currentStage;
       huboCambios = true;
@@ -5283,7 +5391,7 @@ async function revisarYFelicitarAlDia() {
     .map((e) => e.correo)
     .filter(Boolean);
   const correosApoyo = [...new Set([...RECIPIENTES_APOYO.map((n) => buscarCorreoPorNombre(n, usuarios)).filter(Boolean), ...extrasApoyo])];
-  const transporte = crearTransporte();
+  const HORA_ORIGEN_FELICITACIONES = "8:00 a.m. · ¡Al día! (Diseño)";
 
   // Por diseñadora: ¿tiene al menos un ítem activo?, ¿alguno de esos activos
   // está vencido ahora mismo?
@@ -5318,18 +5426,18 @@ async function revisarYFelicitarAlDia() {
     }
     if (yaFelicitada) continue; // ya se le felicitó la última vez que se puso al día — no repetir a diario
     const correoDisenadora = buscarCorreoPorNombre(g.nombre, usuarios);
-    await mandarCorreo(
-      transporte,
-      [correoDisenadora],
-      `🎉 ${g.nombre} — ¡todo al día!`,
-      `<p>Hola ${g.nombre},</p><p>¡Felicitaciones! En este momento no tienes ningún prototipo ni referencia atrasado. Sigue así 🙌</p>`
-    );
-    await mandarCorreo(
-      transporte,
-      correosApoyo,
-      `🎉 ${g.nombre} está al día con todo`,
-      `<p>Hola,</p><p><strong>${g.nombre}</strong> no tiene nada atrasado en este momento — todo su trabajo va al día. 🎉</p>`
-    );
+    await agregarSeccionNotificacion({
+      correos: [correoDisenadora],
+      titulo: `🎉 ${g.nombre} — ¡todo al día!`,
+      horaOrigen: HORA_ORIGEN_FELICITACIONES,
+      html: `<p>Hola ${g.nombre},</p><p>¡Felicitaciones! En este momento no tienes ningún prototipo ni referencia atrasado. Sigue así 🙌</p>`,
+    });
+    await agregarSeccionNotificacion({
+      correos: correosApoyo,
+      titulo: `🎉 ${g.nombre} está al día con todo`,
+      horaOrigen: HORA_ORIGEN_FELICITACIONES,
+      html: `<p>Hola,</p><p><strong>${g.nombre}</strong> no tiene nada atrasado en este momento — todo su trabajo va al día. 🎉</p>`,
+    });
     await estadoRef.set({ sinAtrasos: true, nombre: g.nombre, actualizadoEn: new Date().toISOString() }, { merge: true });
     felicitacionesEnviadas++;
   }
@@ -5353,6 +5461,197 @@ exports.avisarVencidos = onSchedule(
   async () => {
     await revisarYAvisarVencidos();
     await revisarYFelicitarAlDia();
+  }
+);
+
+// (2026-09-14, a pedido de Fredy) Cierre del día para notificaciones: junta
+// todo lo que se fue guardando hoy con agregarSeccionNotificacion (auditoría
+// 7am, vencidos/felicitaciones 8am, despachos 6pm, resumen por cliente
+// 6:10pm) y le manda a cada destinatario UN SOLO correo con todas sus
+// secciones del día, en vez de varios correos sueltos. Si alguien no tuvo
+// nada que le llegara ese día, simplemente no recibe nada (igual que antes).
+// Si no se acumuló nada en todo el día, no manda nada.
+exports.enviarResumenDiarioNotificaciones = onSchedule(
+  {
+    schedule: "every day 19:00",
+    timeZone: "America/Bogota",
+    secrets: [EMAIL_USER, EMAIL_APP_PASSWORD],
+    timeoutSeconds: 300,
+    memory: "256MiB",
+  },
+  async () => {
+    const fecha = fechaHoyBogota();
+    const seccionesRef = db.collection("notificaciones_diarias").doc(fecha).collection("secciones");
+    const snap = await seccionesRef.get();
+    if (snap.empty) {
+      logger.info("enviarResumenDiarioNotificaciones: no hay nada acumulado hoy, no se manda nada");
+      return;
+    }
+    const secciones = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    // Agrupar por destinatario -- una misma sección puede ir a varios
+    // correos (ej. el grupo de apoyo de Diseño), y un mismo correo puede
+    // aparecer en varias secciones distintas del día.
+    const porCorreo = new Map();
+    secciones.forEach((s) => {
+      (s.correos || []).forEach((correo) => {
+        if (!correo) return;
+        if (!porCorreo.has(correo)) porCorreo.set(correo, []);
+        porCorreo.get(correo).push(s);
+      });
+    });
+
+    const transporte = crearTransporte();
+    let correosEnviados = 0;
+    for (const [correo, secs] of porCorreo) {
+      secs.sort((a, b) => String(a.creadoEn || "").localeCompare(String(b.creadoEn || "")));
+      const bloquesHtml = secs
+        .map(
+          (s) => `
+            <div style="margin:0 0 22px;">
+              <div style="font-size:10.5px;font-weight:800;color:#5A5A7A;text-transform:uppercase;letter-spacing:0.05em;">${s.horaOrigen || ""}</div>
+              <div style="font-size:15px;font-weight:900;color:#1A1A2E;margin:2px 0 8px;">${s.titulo || ""}</div>
+              <div>${s.html || ""}</div>
+            </div>
+            <div style="border-top:1px solid #E8E2DB;margin:0 0 20px;"></div>
+          `
+        )
+        .join("");
+      const htmlFinal = `
+        <div style="max-width:680px;margin:0 auto;padding:0;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;">
+          <div style="padding:0 0 18px;">
+            <div style="font-size:11px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#5A5A7A;">Industrias Yanko · ATLAS</div>
+            <div style="font-size:20px;font-weight:900;color:#1A1A2E;margin-top:6px;">Resumen del día</div>
+            <div style="font-size:13px;color:#5A5A7A;margin-top:4px;">${fecha} · ${secs.length} notificación(es) en un solo correo</div>
+          </div>
+          ${bloquesHtml}
+          <div style="font-size:11px;color:#888;">Generado automáticamente por ATLAS.</div>
+        </div>
+      `;
+      await mandarCorreo(transporte, [correo], `ATLAS — Resumen del día (${fecha})`, htmlFinal);
+      correosEnviados++;
+    }
+
+    const batch = db.batch();
+    snap.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+
+    logger.info("enviarResumenDiarioNotificaciones enviado", { correosEnviados, secciones: secciones.length });
+  }
+);
+
+// (2026-09-14, a pedido de Fredy) Reporte diario de asistencia: todos los
+// días a las 9am (media hora después de que se sube y guarda el huellero a
+// las 8am), cruza "nomina_dias_trabajados" de HOY contra los trabajadores
+// activos de cada Área Interna. Cada líder de área (quien tenga esa área
+// asignada en Usuarios) recibe SOLO su área, con cada persona marcada
+// ✅ Asistió / ❌ No marcó. Fredy, Yuleisi Moreno y María Fernanda Páez
+// reciben todas las áreas juntas en un solo correo (ver
+// DESTINATARIOS_ASISTENCIA_COMPLETA). Es un correo aparte -- no pasa por
+// agregarSeccionNotificacion ni por el resumen consolidado de las 7pm,
+// porque es información de la mañana y de otro tema (asistencia, no
+// despachos/auditoría/vencidos).
+exports.enviarAsistenciaDiaria = onSchedule(
+  {
+    schedule: "every day 09:00",
+    timeZone: "America/Bogota",
+    secrets: [EMAIL_USER, EMAIL_APP_PASSWORD],
+    timeoutSeconds: 300,
+    memory: "256MiB",
+  },
+  async () => {
+    const fecha = fechaHoyBogota();
+    const [areasSnap, trabajadoresSnap, diasTrabajadosSnap, usersSnap, configSnap] = await Promise.all([
+      db.collection("nomina_areas").get(),
+      db.collection("nomina_trabajadores").get(),
+      db.collection("nomina_dias_trabajados").where("fecha", "==", fecha).get(),
+      db.collection("users").get(),
+      db.collection("config").doc("main").get(),
+    ]);
+
+    const areas = areasSnap.docs.map((d) => d.data());
+    const todosTrabajadores = trabajadoresSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
+    const trabajadoresActivos = todosTrabajadores.filter((t) => t.activo !== false);
+    const usuarios = usersSnap.docs.map((d) => d.data());
+
+    if (!trabajadoresActivos.length) {
+      logger.info("enviarAsistenciaDiaria: no hay trabajadores activos, no se manda nada");
+      return;
+    }
+
+    const asistieronIds = new Set();
+    diasTrabajadosSnap.docs.forEach((d) => {
+      const t = trabajadorDeAsistencia(d.data(), todosTrabajadores);
+      if (t) asistieronIds.add(t.id);
+    });
+
+    // Destinatarios adicionales agregados a mano desde Administración ->
+    // Notificaciones -- se SUMAN al grupo de "todo el personal", no lo
+    // reemplazan (no hay forma de agregar un extra solo para un área
+    // puntual desde ese panel).
+    const extras = ((configSnap.data() || {}).notificacionesExtras?.asistenciaDiaria || [])
+      .map((e) => e.correo)
+      .filter(Boolean);
+    const correosCompletos = new Set([
+      ...DESTINATARIOS_ASISTENCIA_COMPLETA.map((n) => buscarCorreoPorNombre(n, usuarios)).filter(Boolean),
+      ...extras,
+    ]);
+
+    const fmtBloqueArea = (nombreArea, personas) => {
+      const totalAsistio = personas.filter((t) => asistieronIds.has(t.id)).length;
+      const filas = personas
+        .slice()
+        .sort((a, b) => String(a.nombre || "").localeCompare(String(b.nombre || "")))
+        .map((t) => {
+          const asistio = asistieronIds.has(t.id);
+          return `<tr><td>${t.nombre || "(sin nombre)"}</td><td style="text-align:center;color:${asistio ? "#2D9E6B" : "#b91c1c"};font-weight:700">${asistio ? "✅ Asistió" : "❌ No marcó"}</td></tr>`;
+        })
+        .join("");
+      return `<h3 style="margin:18px 0 6px;">${nombreArea} <span style="font-size:12px;color:#5A5A7A;font-weight:400">(${totalAsistio}/${personas.length} asistió)</span></h3><table border="1" cellpadding="6" style="border-collapse:collapse;width:100%"><tr><th>Nombre</th><th>Estado</th></tr>${filas}</table>`;
+    };
+
+    const transporte = crearTransporte();
+    let correosEnviados = 0;
+    const bloquesTodas = [];
+
+    for (const area of areas) {
+      const personasArea = trabajadoresActivos.filter((t) => (t.area || "Sin asignar") === area.nombre);
+      if (!personasArea.length) continue;
+      bloquesTodas.push(fmtBloqueArea(area.nombre, personasArea));
+
+      const lideres = usuarios
+        .filter((u) => u.areaNomina === area.nombre && u.email && !correosCompletos.has(u.email))
+        .map((u) => u.email);
+      if (lideres.length) {
+        await mandarCorreo(
+          transporte,
+          lideres,
+          `Asistencia de hoy (${fecha}) — ${area.nombre}`,
+          `<div style="max-width:640px;margin:0 auto;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;"><h2 style="margin-bottom:2px;">Asistencia de hoy</h2><p style="color:#5A5A7A;font-size:13px;margin-top:0;">${fecha}</p>${fmtBloqueArea(area.nombre, personasArea)}</div>`
+        );
+        correosEnviados++;
+      }
+    }
+
+    // Trabajadores sin "Área Interna" asignada -- nadie es su líder, pero
+    // igual aparecen en el correo de "todo el personal" para que no queden
+    // invisibles.
+    const sinAreaPersonas = trabajadoresActivos.filter((t) => !t.area);
+    if (sinAreaPersonas.length) {
+      bloquesTodas.push(fmtBloqueArea("Sin área asignada", sinAreaPersonas));
+    }
+
+    if (correosCompletos.size) {
+      await mandarCorreo(
+        transporte,
+        [...correosCompletos],
+        `Asistencia de hoy (${fecha}) — Todo el personal`,
+        `<div style="max-width:680px;margin:0 auto;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;"><h2 style="margin-bottom:2px;">Asistencia de hoy</h2><p style="color:#5A5A7A;font-size:13px;margin-top:0;">${fecha} · todas las áreas</p>${bloquesTodas.join("")}</div>`
+      );
+      correosEnviados++;
+    }
+
+    logger.info("enviarAsistenciaDiaria enviado", { correosEnviados, fecha, trabajadoresActivos: trabajadoresActivos.length, asistieron: asistieronIds.size });
   }
 );
 
