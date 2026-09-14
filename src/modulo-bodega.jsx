@@ -3220,6 +3220,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
   // asi que lo que no cabe ahi (transportador, guia, codigo de despacho,
   // cant. cortada, cobros) se ve en este modal.
   const [loteDetalle, setLoteDetalle] = useState(null);
+  const [revirtiendoLoteId, setRevirtiendoLoteId] = useState(null);
 
   // (2026-09-09, rediseño a pedido de Fredy) Panel de "Crear despacho":
   // antes, "Nuevo despacho" solo generaba un código vacío y uno lo dejaba
@@ -3542,6 +3543,23 @@ function EstadoDespachoView({ onVolver, onLogout }) {
       await batch.commit();
     } finally {
       setGuardandoId(null);
+    }
+  }
+
+  // (2026-09-14, a pedido de Fredy) Por si un lote se marco como Recibido
+  // por error (ej. al usar "Marcar como recibido" de un despacho que no
+  // debia) -- lo regresa a Enviado y le quita la fecha de llegada.
+  async function revertirLoteAEnviado(lote) {
+    if (
+      !window.confirm(`¿Revertir el lote ${lote.numLote} a "Enviado"? Se le quitará el estado de Recibido y la fecha de llegada.`)
+    )
+      return;
+    setRevirtiendoLoteId(lote.id);
+    try {
+      await fsSave("dado_por_cumplido_lotes", lote.id, { estadoEnvio: "enviado", fechaRecibido: deleteField() });
+      setLoteDetalle((d) => (d && d.id === lote.id ? { ...d, estadoEnvio: "enviado", fechaRecibido: undefined } : d));
+    } finally {
+      setRevirtiendoLoteId(null);
     }
   }
 
@@ -4103,6 +4121,13 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                           </div>
                         ))}
                       </div>
+                    </div>
+                  )}
+                  {loteDetalle.estadoEnvio === "recibido" && (
+                    <div style={{ display: "flex", justifyContent: "flex-end", borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
+                      <Btn variant="ghost" small onClick={() => revertirLoteAEnviado(loteDetalle)} disabled={revirtiendoLoteId === loteDetalle.id}>
+                        {revirtiendoLoteId === loteDetalle.id ? "Revirtiendo..." : "↩️ Revertir a Enviado"}
+                      </Btn>
                     </div>
                   )}
                 </div>
