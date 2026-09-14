@@ -1275,6 +1275,34 @@ function esperarMs(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// (2026-09-14) Antes de subir, borramos el archivo existente en esa ruta.
+// Con reintentos fallidos anteriores, Dropbox quedó devolviendo 409
+// "path/conflict/file" en esta ruta de forma persistente (no una carrera
+// puntual: ni con reintentos espaciados se resolvía solo). Borrar primero
+// limpia cualquier estado colgado que Dropbox tenga sobre ese archivo antes
+// de escribir el nuevo. Si el archivo no existe todavía (primera vez, o la
+// ruta cambió), Dropbox responde "not_found" y simplemente seguimos.
+async function borrarArchivoDropboxSiExiste(rutaDestino) {
+  const accessToken = await obtenerTokenAccesoDropbox();
+  const resp = await fetch("https://api.dropboxapi.com/2/files/delete_v2", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ path: rutaDestino }),
+  });
+  if (!resp.ok) {
+    const texto = await resp.text().catch(() => "");
+    if (texto.includes("path_lookup/not_found")) return; // no había nada que borrar
+    logger.warn("No se pudo borrar el archivo previo en Dropbox antes de subir (se continúa de todas formas)", {
+      rutaDestino,
+      status: resp.status,
+      texto,
+    });
+  }
+}
+
 // (2026-09-14) Dropbox a veces responde 409 "path/conflict/file" cuando dos
 // subidas al MISMO archivo llegan casi al mismo tiempo (p. ej. si se le da
 // "Forzar ejecución" más de una vez seguida, o la corrida automática de las
@@ -1282,6 +1310,9 @@ function esperarMs(ms) {
 // problema de la ruta. Reintentamos unas pocas veces con espera antes de
 // darnos por vencidos.
 async function subirArchivoADropbox(buffer, rutaDestino, intento = 1) {
+  if (intento === 1) {
+    await borrarArchivoDropboxSiExiste(rutaDestino);
+  }
   const accessToken = await obtenerTokenAccesoDropbox();
   const resp = await fetch("https://content.dropboxapi.com/2/files/upload", {
     method: "POST",
