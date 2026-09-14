@@ -3975,11 +3975,14 @@ function segmentosPorSemestre(desde, hasta) {
 function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias) {
   const fechaIngreso = trabajador.fechaIngreso || fechaCorte;
   const esDestajo = trabajador.tipoNomina === "Destajo";
-  // (2026-08-30, ya validado por Fredy en Nomina Destajo) Los 12
-  // trabajadores de tipo "Destajo" tienen sueldo/auxilio guardados como
-  // el valor QUINCENAL directo, no mensual como Fiscal/Fiscal Destajo.
-  const sueldoMensual = (Number(trabajador.sueldo) || 0) * (esDestajo ? 2 : 1);
-  const auxilioMensualBruto = (Number(trabajador.auxilioTransporte) || 0) * (esDestajo ? 2 : 1);
+  // (2026-09-14, corregido a pedido de Fredy) Destajo SI guarda el sueldo/
+  // auxilio MENSUAL, igual que Fiscal/Fiscal Destajo -- es el sueldo minimo
+  // con el que estan matriculados (aplica sin importar cuanto produzcan),
+  // nunca el valor de la quincena. Antes esto se multiplicaba x2 pensando
+  // que era quincenal, lo que dejaba las cesantias/prima/vacaciones al
+  // doble para cualquier Destajo con el sueldo minimo completo guardado.
+  const sueldoMensual = Number(trabajador.sueldo) || 0;
+  const auxilioMensualBruto = Number(trabajador.auxilioTransporte) || 0;
   const auxilioMensual = !esDestajo && sueldoMensual > TOPE_SUELDO_PARA_AUXILIO ? 0 : auxilioMensualBruto;
   const baseConAuxilio = sueldoMensual + auxilioMensual;
   function diasTrabajadosDelTramo(desde, hasta) {
@@ -5130,22 +5133,24 @@ function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
 function calcularLiquidacionDestajo(trabajador, netoProduccion) {
   const sueldo = Number(trabajador.sueldo) || 0;
   const auxilio = Number(trabajador.auxilioTransporte) || 0;
-  // (2026-08-30) Fredy confirmo que su tabla de referencia (cesantias/
-  // intereses/prima/vacaciones) ya es QUINCENAL, no mensual -- a diferencia
-  // de Fiscal Destajo, donde el sueldo es mensual y se divide entre 2. Para
-  // estos 12 trabajadores de Destajo, sueldo/auxilioTransporte representan
-  // directamente el valor de la quincena, asi que las tasas mensuales
-  // (8.33%, 12%, 4.17%) se aplican sobre el valor completo, sin dividir.
-  // Validado exacto con MARIA AYDE CONTRERAS SANCHEZ (sueldo=$875.452,
-  // auxilio=$124.547): cesantias=(875.452+124.547)x8.33%=$83.300,
-  // interes=$83.300x12%=$9.996, prima=$83.300, vacaciones=875.452x4.17%=$36.506
-  // -- coincide exacto con su tabla en los 4 conceptos.
+  // (2026-09-14, corregido a pedido de Fredy) El sueldo/auxilio de Destajo
+  // se guarda MENSUAL (el sueldo minimo con el que esta matriculado el
+  // trabajador, sin importar cuanto produzca) -- antes (hasta 2026-08-30)
+  // se guardaba el valor de la quincena directo y por eso este calculo NO
+  // dividia entre 2; ahora si hay que dividir para sacar la quincena antes
+  // de aplicar las tasas mensuales, igual que ya hacen
+  // calcularLiquidacionFiscal y calcularLiquidacionFiscalDestajo. El pago
+  // real de produccion (netoAPagar) sigue siendo aparte, sin tocar -- eso
+  // se sigue pagando por lo que de verdad hizo esa quincena, no por el
+  // sueldo minimo.
+  const sueldoQuincena = sueldo / 2;
+  const auxilioQuincena = auxilio / 2;
   const saldoCesantiasInicio = Number(trabajador.cesantiasAcumuladas) || 0;
-  const baseConAuxilio = sueldo + auxilio;
+  const baseConAuxilio = sueldoQuincena + auxilioQuincena;
   const cesantiasPeriodo = baseConAuxilio * TASA_CESANTIAS_MENSUAL;
   const interesesPeriodo = cesantiasPeriodo * TASA_INTERES_CESANTIAS_ANUAL;
   const primaPeriodo = baseConAuxilio * TASA_PRIMA_MENSUAL;
-  const vacacionesPeriodo = sueldo * TASA_VACACIONES_MENSUAL;
+  const vacacionesPeriodo = sueldoQuincena * TASA_VACACIONES_MENSUAL;
   return {
     netoAPagar: netoProduccion,
     cesantiasPeriodo, interesesPeriodo, primaPeriodo, vacacionesPeriodo,
