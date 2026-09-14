@@ -7523,11 +7523,14 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, p
             <KPI icon="🏖️" label="Vacaciones" value={fmtMoney(resultado.vacaciones)} color={C.violet} bg={C.violetBg} />
             <KPI icon="✅" label="Total a pagar" value={fmtMoney(resultado.totalAPagar)} color={C.green} bg={C.greenBg} />
           </div>
-          {!guardadoOk ? (
-            <Btn onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "💾 Guardar liquidación"}</Btn>
-          ) : (
-            <div style={{ fontSize: 12, color: C.green, fontWeight: 700 }}>✅ Liquidación guardada. {trabajador.nombre} quedó marcado como Inactivo con fecha de retiro {fmtFechaISO(fechaRetiro)}.</div>
-          )}
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <Btn variant="secondary" onClick={() => exportReciboLiquidacionRetiroHTML({ trabajador, liquidacion: resultado })}>🖨 Ver recibo</Btn>
+            {!guardadoOk ? (
+              <Btn onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "💾 Guardar liquidación"}</Btn>
+            ) : (
+              <div style={{ fontSize: 12, color: C.green, fontWeight: 700 }}>✅ Liquidación guardada. {trabajador.nombre} quedó marcado como Inactivo con fecha de retiro {fmtFechaISO(fechaRetiro)}.</div>
+            )}
+          </div>
         </>
       )}
       {liquidacionesRetiro && liquidacionesRetiro.length > 0 && (
