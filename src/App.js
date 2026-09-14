@@ -7519,7 +7519,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                       <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{r.name}</div>
                       <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10, marginBottom: 4 }}>Permisos de flujo de trabajo</div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte", "aprobar_despacho", "control_despacho", "editar_kpis"].map((perm) => (
+                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte", "aprobar_despacho", "control_despacho", "revertir_despacho", "editar_kpis"].map((perm) => (
                           <span key={perm} onClick={() => onUpdateConfig({ roles: config.roles.map((x) => (x.id !== r.id ? x : { ...x, perms: x.perms.includes(perm) ? x.perms.filter((p) => p !== perm) : [...x.perms, perm] })) })}
                             style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: r.perms.includes(perm) ? T.jadeBg : "#EDEDF2", color: r.perms.includes(perm) ? T.jade : T.slate, border: `1px solid ${r.perms.includes(perm) ? T.jade : T.border}` }}
                           >{perm}</span>
@@ -11104,6 +11104,11 @@ function AppInner() {
     // Generales + Estado de Despacho) -- separado del acceso a Bodega en
     // si, para poder dejar algunos roles solo con "Despacho y Saldo".
     verControlDespacho: userRoleData?.perms?.includes("control_despacho") ?? false,
+    // (2026-09-14, a pedido de Fredy) Permiso dedicado para los botones
+    // "Revertir a Enviado" / "Devolver a Sin Despacho" dentro de Estado de
+    // Despacho -- separado de control_despacho para poder dárselo puntual
+    // a alguien (ej. María Fernanda Páez) sin volverla administradora.
+    revertirDespacho: userRoleData?.perms?.includes("revertir_despacho") ?? false,
     // Permiso dedicado para editar el módulo de KPIs (puestos, funciones,
     // catálogo de KPIs — crear/editar/borrar/trasladar) sin darle a la
     // persona el resto de permisos de administrador general.
@@ -11340,7 +11345,7 @@ function AppInner() {
     return <ModuloPlanta currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "bodega") {
-    return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} soloLecturaBodega={currentUser?.role === "Cliente"} puedeVerControlDespacho={perms.verControlDespacho} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} soloLecturaBodega={currentUser?.role === "Cliente"} puedeVerControlDespacho={perms.verControlDespacho} puedeRevertirDespacho={perms.revertirDespacho} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "nomina") {
     return <ModuloNomina currentUser={currentUser} soloNovedades={soloNovedadesNomina} puedeEditarCatalogos={canAccessNominaEditarCatalogos} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;

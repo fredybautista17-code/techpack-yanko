@@ -3185,7 +3185,7 @@ function datosEnvioLote(l, formEnvio) {
     cobros: local.cobros !== undefined ? local.cobros : (l.cobrosBodega || []).map((c) => ({ ...c })),
   };
 }
-function EstadoDespachoView({ onVolver, onLogout }) {
+function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
   const [lotes, setLotes] = useState([]);
   const [trabajadores, setTrabajadores] = useState([]);
   const [despachos, setDespachos] = useState([]);
@@ -4147,7 +4147,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                       </div>
                     </div>
                   )}
-                  {(loteDetalle.estadoEnvio === "recibido" || loteDetalle.estadoEnvio === "enviado") && (
+                  {puedeRevertirDespacho && (loteDetalle.estadoEnvio === "recibido" || loteDetalle.estadoEnvio === "enviado") && (
                     <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap", borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
                       {loteDetalle.estadoEnvio === "recibido" && (
                         <Btn variant="ghost" small onClick={() => revertirLoteAEnviado(loteDetalle)} disabled={revirtiendoLoteId === loteDetalle.id}>
@@ -4620,7 +4620,7 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
 // transportador/guia/llegada) bajo una sola entrada del hub, con pestañas
 // para pasar de una a otra -- a pedido de Fredy (2026-09-10), en vez de
 // ser dos tarjetas separadas en el menu principal de Bodega.
-function ControlDespachoView({ onVolver, onLogout }) {
+function ControlDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
   const [sub, setSub] = useState("generales"); // "generales" | "estado"
   return (
     <div style={{ background: C.canvas }}>
@@ -4637,7 +4637,7 @@ function ControlDespachoView({ onVolver, onLogout }) {
       {sub === "generales" ? (
         <DespachosGeneralesView onVolver={onVolver} onLogout={onLogout} />
       ) : (
-        <EstadoDespachoView onVolver={onVolver} onLogout={onLogout} />
+        <EstadoDespachoView onVolver={onVolver} onLogout={onLogout} puedeRevertirDespacho={puedeRevertirDespacho} />
       )}
     </div>
   );
@@ -4723,12 +4723,16 @@ function BodegaHubView({ onSeleccionar, onVolver, onLogout, puedeVerControlDespa
   );
 }
 
-export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAccessContabilidad, soloLecturaBodega, puedeVerControlDespacho, onVolver, onLogout }) {
+export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAccessContabilidad, soloLecturaBodega, puedeVerControlDespacho, puedeRevertirDespacho, onVolver, onLogout }) {
   const [vista, setVista] = useState("hub");
   // Administrador siempre ve "Control de Despacho" aunque el rol no tenga
   // el permiso "control_despacho" -- igual que el resto de banderas de
   // Bodega en este componente.
   const puedeControlDespacho = !!currentUser?.isAdmin || !!puedeVerControlDespacho;
+  // (2026-09-14) Igual que arriba, pero para los botones de revertir un
+  // lote dentro de Estado de Despacho -- admin siempre los ve, o quien
+  // tenga el permiso puntual "revertir_despacho" en su rol.
+  const puedeRevertir = !!currentUser?.isAdmin || !!puedeRevertirDespacho;
   if (vista === "despacho_saldo") {
     return (
       <DespachoYSaldoView
@@ -4742,7 +4746,7 @@ export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAcc
     );
   }
   if (vista === "control_despacho" && puedeControlDespacho) {
-    return <ControlDespachoView onVolver={() => setVista("hub")} onLogout={onLogout} />;
+    return <ControlDespachoView onVolver={() => setVista("hub")} onLogout={onLogout} puedeRevertirDespacho={puedeRevertir} />;
   }
   return <BodegaHubView onSeleccionar={setVista} onVolver={onVolver} onLogout={onLogout} puedeVerControlDespacho={puedeControlDespacho} />;
 }
