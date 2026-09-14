@@ -288,9 +288,10 @@ function ChipStat({ label, value }) {
 // (2026-09-14, a pedido de Fredy) Celda numerica para la tabla del
 // Historial: los ceros (que son la mayoria) se ven atenuados para que lo
 // que si tiene valor resalte a simple vista.
-function CeldaNum({ valor }) {
+function CeldaNum({ valor, resaltarSiHayValor }) {
   const v = Number(valor) || 0;
-  return <span style={{ color: v === 0 ? C.slate : C.ink, fontWeight: v === 0 ? 400 : 700 }}>{v}</span>;
+  const color = v === 0 ? C.slate : resaltarSiHayValor ? C.amber : C.ink;
+  return <span style={{ color, fontWeight: v === 0 ? 400 : 700 }}>{v}</span>;
 }
 // Version compacta de EstadoEnvioBadge para filas de tabla (punto de
 // color + texto, en vez del badge/pill que ocupa mas espacio).
@@ -3214,6 +3215,11 @@ function EstadoDespachoView({ onVolver, onLogout }) {
   const [histSortKey, setHistSortKey] = useState("fecha");
   const [histSortDir, setHistSortDir] = useState(-1);
   const [histVisibles, setHistVisibles] = useState(50);
+  // (2026-09-14, a pedido de Fredy) Detalle completo del lote al hacer
+  // clic en una fila del Historial -- la tabla es compacta a proposito,
+  // asi que lo que no cabe ahi (transportador, guia, codigo de despacho,
+  // cant. cortada, cobros) se ve en este modal.
+  const [loteDetalle, setLoteDetalle] = useState(null);
 
   // (2026-09-09, rediseño a pedido de Fredy) Panel de "Crear despacho":
   // antes, "Nuevo despacho" solo generaba un código vacío y uno lo dejaba
@@ -4047,15 +4053,15 @@ function EstadoDespachoView({ onVolver, onLogout }) {
               onSort={(key) => { setHistSortDir((d) => (histSortKey === key ? d * -1 : key === "numLote" ? 1 : -1)); setHistSortKey(key); }}
               vacio={recibidos.length ? "Ningún registro coincide con el filtro." : "Todavía no hay nada en el historial."}
               filas={recibidosVisibles}
+              onRowClick={(l) => setLoteDetalle(l)}
               columnas={[
                 { key: "numLote", label: "Lote", sortable: true, render: (l) => <strong>{l.numLote}</strong> },
                 { key: "fecha", label: "Fecha", sortable: true, render: (l) => (l.fecha ? fmtFechaISO(l.fecha) : "—") },
+                { key: "referencia", label: "Referencia", render: (l) => l.referencia || "—" },
                 { key: "cliente", label: "Cliente", render: (l) => l.cliente || "—" },
                 { key: "estadoEnvio", label: "Estado", render: (l) => <EstadoEnvioDot lote={l} /> },
-                { key: "transportador", label: "Transportador", render: (l) => l.transportador || "—" },
-                { key: "numeroGuia", label: "Guía", render: (l) => l.numeroGuia || "—" },
                 { key: "cantidadDespachadaBodega", label: "Despachada", align: "right", render: (l) => <CeldaNum valor={l.cantidadDespachadaBodega} /> },
-                { key: "sacrificios", label: "Sacrificios", align: "right", render: (l) => <CeldaNum valor={l.sacrificios} /> },
+                { key: "sacrificios", label: "Sacrificios", align: "right", render: (l) => <CeldaNum valor={l.sacrificios} resaltarSiHayValor /> },
                 { key: "segundas", label: "Segundas", align: "right", render: (l) => <CeldaNum valor={l.segundas} /> },
                 { key: "llego", label: "Llegó", render: (l) => (l.fechaRecibido || l.fechaEnvio ? fmtFechaISO(l.fechaRecibido || l.fechaEnvio) : "—") },
               ]}
@@ -4066,6 +4072,40 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                   Cargar 50 más ({recibidosFiltrados.length - recibidosVisibles.length} restantes)
                 </Btn>
               </div>
+            )}
+            {loteDetalle && (
+              <Modal title={`Lote ${loteDetalle.numLote}`} onClose={() => setLoteDetalle(null)} width={520}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                    <span style={{ color: C.slate }}>{loteDetalle.referencia || "(sin referencia)"} — {loteDetalle.cliente || "—"}</span>
+                    <EstadoEnvioDot lote={loteDetalle} />
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px 16px", padding: 12, background: C.canvas, borderRadius: 10 }}>
+                    <div><span style={{ color: C.slate, fontSize: 11 }}>Fecha del lote</span><br /><strong>{loteDetalle.fecha ? fmtFechaISO(loteDetalle.fecha) : "—"}</strong></div>
+                    <div><span style={{ color: C.slate, fontSize: 11 }}>Cant. Cortada</span><br /><strong>{loteDetalle.cantCortada ?? "—"}</strong></div>
+                    <div><span style={{ color: C.slate, fontSize: 11 }}>Cant. Despachada</span><br /><strong>{loteDetalle.cantidadDespachadaBodega ?? loteDetalle.cantDespachada ?? 0}</strong></div>
+                    <div><span style={{ color: C.slate, fontSize: 11 }}>Sacrificios</span><br /><strong style={{ color: (loteDetalle.sacrificios || 0) > 0 ? C.amber : C.ink }}>{loteDetalle.sacrificios || 0}</strong></div>
+                    <div><span style={{ color: C.slate, fontSize: 11 }}>Segundas</span><br /><strong>{loteDetalle.segundas || 0}</strong></div>
+                    <div><span style={{ color: C.slate, fontSize: 11 }}>Código de despacho</span><br /><strong>{loteDetalle.despachoCodigo || "—"}</strong></div>
+                    <div><span style={{ color: C.slate, fontSize: 11 }}>Transportador</span><br /><strong>{loteDetalle.transportador || "— (aún no existía este dato en ATLAS)"}</strong></div>
+                    <div><span style={{ color: C.slate, fontSize: 11 }}>N° Guía</span><br /><strong>{loteDetalle.numeroGuia || "—"}</strong></div>
+                    <div><span style={{ color: C.slate, fontSize: 11 }}>Enviado</span><br /><strong>{loteDetalle.fechaEnvio ? fmtFechaISO(loteDetalle.fechaEnvio) : "—"}</strong></div>
+                    <div><span style={{ color: C.slate, fontSize: 11 }}>Recibido</span><br /><strong>{loteDetalle.fechaRecibido ? fmtFechaISO(loteDetalle.fechaRecibido) : "—"}</strong></div>
+                  </div>
+                  {!!(loteDetalle.cobrosBodega || []).length && (
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 6 }}>Cobros</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        {loteDetalle.cobrosBodega.map((c, i) => (
+                          <div key={i} style={{ fontSize: 12, color: C.ink, padding: "6px 10px", background: C.canvas, borderRadius: 8 }}>
+                            {c.trabajadorNombre} ({c.tipo}): {fmtMoney(c.valor)}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </Modal>
             )}
           </>
         )}
