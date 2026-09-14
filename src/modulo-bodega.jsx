@@ -3971,7 +3971,8 @@ function EstadoDespachoView({ onVolver, onLogout }) {
                         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                           {lotesGrupo.map((l) => (
                             <div key={l.id} style={{ fontSize: 12, color: C.ink, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8, background: C.canvas }}>
-                              <strong>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"} <EtapaContabilidadBadge lote={l} /> · Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
+                              <strong>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"}{" "}
+                              <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: C.blueBg, color: C.blue, whiteSpace: "nowrap" }}>⏳ Por recibir</span> · Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
                               {!!(l.cobrosBodega || []).length && <> · Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney(c.valor)}`).join(" / ")}</>}
                             </div>
                           ))}
