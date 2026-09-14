@@ -4247,7 +4247,7 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
                 style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", borderTop: `1px solid ${C.border}`, borderRight: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}`, borderLeft: `4px solid ${colorEstadoEnvioLote(l)}`, borderRadius: 8, fontSize: 12, cursor: "pointer", background: C.canvas }}
               >
                 <span>
-                  <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> · {l.fecha ? fmtFechaISO(l.fecha) : "—"} — {l.referencia || "(sin referencia)"} — {l.cliente || "—"} <EtapaContabilidadBadge lote={l} />
+                  <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> · {l.fecha ? fmtFechaISO(l.fecha) : "—"} — {l.referencia || "(sin referencia)"} — {l.cliente || "—"} <EstadoEnvioBadge lote={l} />
                 </span>
                 <span style={{ color: C.slate }}>
                   Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
