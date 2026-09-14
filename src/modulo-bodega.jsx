@@ -267,6 +267,16 @@ function EstadoEnvioBadge({ lote }) {
     </span>
   );
 }
+// (2026-09-14, a pedido de Fredy) Chip pequeño para mostrar una cifra
+// (Despachada/Sacrificios/Segundas) en las tarjetas de Despachos
+// Generales, en vez de una sola linea de texto plano separada por "·".
+function ChipStat({ label, value }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, padding: "3px 9px", fontSize: 11.5, color: C.ink }}>
+      {label} <strong>{value}</strong>
+    </span>
+  );
+}
 function Tabla({ columnas, filas, vacio, onRowClick }) {
   if (!filas.length) {
     return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>{vacio || "Sin datos."}</div>;
@@ -3156,6 +3166,14 @@ function EstadoDespachoView({ onVolver, onLogout }) {
   // ve solo con su fecha, y se abre con clic para ver el detalle completo
   // (antes se veia siempre todo expandido, se sentia muy cargado).
   const [despachoAbiertoId, setDespachoAbiertoId] = useState(null);
+  // (2026-09-14, a pedido de Fredy) Filtros del Historial (recibidos): la
+  // lista solo crece con el tiempo, asi que se puede buscar por lote o
+  // cliente, acotar por rango de fecha, y elegir ver solo Enviados o solo
+  // Recibidos en vez de todo mezclado.
+  const [histBusqueda, setHistBusqueda] = useState("");
+  const [histDesde, setHistDesde] = useState("");
+  const [histHasta, setHistHasta] = useState("");
+  const [histEstado, setHistEstado] = useState("todos");
 
   // (2026-09-09, rediseño a pedido de Fredy) Panel de "Crear despacho":
   // antes, "Nuevo despacho" solo generaba un código vacío y uno lo dejaba
@@ -3224,6 +3242,19 @@ function EstadoDespachoView({ onVolver, onLogout }) {
   const recibidos = aprobados
     .filter((l) => l.estadoEnvio === "recibido" || (l.estadoEnvio === "enviado" && (l.fechaEnvio || "") <= CORTE_HISTORIAL_ENVIOS))
     .sort((a, b) => (b.fechaRecibido || b.fechaEnvio || "").localeCompare(a.fechaRecibido || a.fechaEnvio || ""));
+  const recibidosFiltrados = recibidos.filter((l) => {
+    if (histEstado !== "todos" && l.estadoEnvio !== histEstado) return false;
+    const fechaRef = l.fechaRecibido || l.fechaEnvio || l.fecha || "";
+    if (histDesde && fechaRef < histDesde) return false;
+    if (histHasta && fechaRef > histHasta) return false;
+    if (histBusqueda.trim()) {
+      const q = histBusqueda.trim().toLowerCase();
+      const enLote = String(l.numLote || "").toLowerCase().includes(q);
+      const enCliente = (l.cliente || "").toLowerCase().includes(q);
+      if (!enLote && !enCliente) return false;
+    }
+    return true;
+  });
 
   // Un despacho es de un solo cliente -- en cuanto se marca el primer
   // lote, los demás clientes quedan bloqueados en el panel de selección.
@@ -3899,22 +3930,67 @@ function EstadoDespachoView({ onVolver, onLogout }) {
             </div>
           ))}
 
-        {vista === "recibidos" &&
-          (!recibidos.length ? (
-            <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Todavía no hay nada en el historial.</div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {recibidos.map((l) => (
-                <div key={l.id} style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }}>
-                  <span>
-                    <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> · {l.fecha ? fmtFechaISO(l.fecha) : "—"} — {l.referencia} — {l.cliente} <EstadoEnvioBadge lote={l} />
-                    {l.despachoCodigo ? <> · {l.despachoCodigo}</> : null}
-                  </span>
-                  <span style={{ color: C.slate }}>{l.transportador} · Guía {l.numeroGuia} · Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0} · Llegó el {l.fechaRecibido || l.fechaEnvio || "—"}</span>
-                </div>
+        {vista === "recibidos" && (
+          <>
+            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 10, padding: "12px 14px", border: `1px solid ${C.border}`, borderRadius: 10, background: C.white, marginBottom: 12 }}>
+              <div style={{ flex: 1, minWidth: 160 }}>
+                <Field label="Buscar">
+                  <FInput value={histBusqueda} onChange={setHistBusqueda} placeholder="Número de lote o cliente..." />
+                </Field>
+              </div>
+              <div style={{ width: 150 }}>
+                <Field label="Desde">
+                  <FInput type="date" value={histDesde} onChange={setHistDesde} />
+                </Field>
+              </div>
+              <div style={{ width: 150 }}>
+                <Field label="Hasta">
+                  <FInput type="date" value={histHasta} onChange={setHistHasta} />
+                </Field>
+              </div>
+              {(histBusqueda || histDesde || histHasta || histEstado !== "todos") && (
+                <span
+                  onClick={() => { setHistBusqueda(""); setHistDesde(""); setHistHasta(""); setHistEstado("todos"); }}
+                  style={{ cursor: "pointer", color: C.blue, fontSize: 12, fontWeight: 700, padding: "8px 4px" }}
+                >
+                  Limpiar
+                </span>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+              {[
+                { key: "todos", label: `Todos (${recibidos.length})` },
+                { key: "enviado", label: `🚚 Enviados (${recibidos.filter((r) => r.estadoEnvio === "enviado").length})` },
+                { key: "recibido", label: `✅ Recibidos (${recibidos.filter((r) => r.estadoEnvio === "recibido").length})` },
+              ].map((op) => (
+                <span
+                  key={op.key}
+                  onClick={() => setHistEstado(op.key)}
+                  style={{ cursor: "pointer", padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700, background: histEstado === op.key ? C.white : "transparent", color: histEstado === op.key ? C.ink : C.slate, border: `1px solid ${histEstado === op.key ? C.border : "transparent"}`, boxShadow: histEstado === op.key ? "0 1px 3px rgba(0,0,0,0.08)" : "none" }}
+                >
+                  {op.label}
+                </span>
               ))}
             </div>
-          ))}
+            {!recibidosFiltrados.length ? (
+              <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>
+                {recibidos.length ? "Ningún registro coincide con el filtro." : "Todavía no hay nada en el historial."}
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {recibidosFiltrados.map((l) => (
+                  <div key={l.id} style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }}>
+                    <span>
+                      <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> · {l.fecha ? fmtFechaISO(l.fecha) : "—"} — {l.referencia} — {l.cliente} <EstadoEnvioBadge lote={l} />
+                      {l.despachoCodigo ? <> · {l.despachoCodigo}</> : null}
+                    </span>
+                    <span style={{ color: C.slate }}>{l.transportador} · Guía {l.numeroGuia} · Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0} · Llegó el {l.fechaRecibido || l.fechaEnvio || "—"}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
@@ -3946,6 +4022,15 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
   const [fechaCorteRecibidos, setFechaCorteRecibidos] = useState(today());
   const [marcandoRecibidos, setMarcandoRecibidos] = useState(false);
   const [marcadosOkCantidad, setMarcadosOkCantidad] = useState(null);
+  // (2026-09-14, a pedido de Fredy) Buscador + rango de fechas para "Ya
+  // registrados" e "Historial" (ambas listas crecen sin parar), y las dos
+  // secciones ahora se pueden colapsar para que la pantalla no se sienta
+  // tan cargada.
+  const [filtroDGBusqueda, setFiltroDGBusqueda] = useState("");
+  const [filtroDGDesde, setFiltroDGDesde] = useState("");
+  const [filtroDGHasta, setFiltroDGHasta] = useState("");
+  const [abiertoRegistrados, setAbiertoRegistrados] = useState(true);
+  const [abiertoHistorial, setAbiertoHistorial] = useState(false);
 
   useEffect(() => {
     const unsubLotes = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
@@ -3972,6 +4057,20 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
   const registradosHistorial = lotes
     .filter((l) => l.cantidadDespachadaBodega !== undefined && (l.estadoEnvio === "enviado" || l.estadoEnvio === "recibido"))
     .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+  function pasaFiltroDG(l) {
+    if (filtroDGDesde && (l.fecha || "") < filtroDGDesde) return false;
+    if (filtroDGHasta && (l.fecha || "") > filtroDGHasta) return false;
+    if (filtroDGBusqueda.trim()) {
+      const q = filtroDGBusqueda.trim().toLowerCase();
+      const enLote = String(l.numLote || "").toLowerCase().includes(q);
+      const enCliente = (l.cliente || "").toLowerCase().includes(q);
+      const enReferencia = (l.referencia || "").toLowerCase().includes(q);
+      if (!enLote && !enCliente && !enReferencia) return false;
+    }
+    return true;
+  }
+  const registradosActivosFiltrados = registradosActivos.filter(pasaFiltroDG);
+  const registradosHistorialFiltrados = registradosHistorial.filter(pasaFiltroDG);
 
   function cargarLoteEnFormulario(l) {
     setLoteEncontrado(l);
@@ -4195,68 +4294,150 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
           )}
         </div>
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: C.ink }}>Ya registrados ({registradosActivos.length})</div>
-          <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-            <div style={{ width: 160 }}>
-              <Field label="Marcar recibidos hasta">
-                <FInput type="date" value={fechaCorteRecibidos} onChange={setFechaCorteRecibidos} />
-              </Field>
-            </div>
-            <Btn variant="secondary" small onClick={marcarRecibidosHastaFecha} disabled={marcandoRecibidos}>
-              {marcandoRecibidos ? "Marcando..." : "✅ Marcar como recibidos hasta esa fecha"}
-            </Btn>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 10, padding: "12px 14px", border: `1px solid ${C.border}`, borderRadius: 10, background: C.white, marginBottom: 14 }}>
+          <div style={{ flex: 1, minWidth: 160 }}>
+            <Field label="Buscar">
+              <FInput value={filtroDGBusqueda} onChange={setFiltroDGBusqueda} placeholder="Número de lote, cliente o referencia..." />
+            </Field>
           </div>
+          <div style={{ width: 150 }}>
+            <Field label="Desde">
+              <FInput type="date" value={filtroDGDesde} onChange={setFiltroDGDesde} />
+            </Field>
+          </div>
+          <div style={{ width: 150 }}>
+            <Field label="Hasta">
+              <FInput type="date" value={filtroDGHasta} onChange={setFiltroDGHasta} />
+            </Field>
+          </div>
+          {(filtroDGBusqueda || filtroDGDesde || filtroDGHasta) && (
+            <span
+              onClick={() => { setFiltroDGBusqueda(""); setFiltroDGDesde(""); setFiltroDGHasta(""); }}
+              style={{ cursor: "pointer", color: C.blue, fontSize: 12, fontWeight: 700, padding: "8px 4px" }}
+            >
+              Limpiar
+            </span>
+          )}
         </div>
-        {marcadosOkCantidad !== null && (
-          <div style={{ fontSize: 12, color: C.green, fontWeight: 700, marginBottom: 10 }}>✅ {marcadosOkCantidad} lote(s) marcado(s) como Recibidos.</div>
-        )}
-        {loading ? (
-          <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Cargando...</div>
-        ) : !registradosActivos.length ? (
-          <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Todavía no se ha registrado ningún despacho aquí.</div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {registradosActivos.map((l) => (
-              <div
-                key={l.id}
-                onClick={() => { setMostrarNuevo(true); setBusquedaLote(String(l.numLote || "")); cargarLoteEnFormulario(l); }}
-                style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", borderTop: `1px solid ${C.border}`, borderRight: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}`, borderLeft: `4px solid ${colorEstadoEnvioLote(l)}`, borderRadius: 8, fontSize: 12, cursor: "pointer", background: C.white }}
-              >
-                <span>
-                  <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> · {l.fecha ? fmtFechaISO(l.fecha) : "—"} — {l.referencia || "(sin referencia)"} — {l.cliente || "—"} <EtapaContabilidadBadge lote={l} />
-                </span>
-                <span style={{ color: C.slate }}>
-                  Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
-                  {!!(l.cobrosBodega || []).length && <> · Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney(c.valor)}`).join(" / ")}</>}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
 
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.ink, marginTop: 24, marginBottom: 10 }}>🗄️ Historial ({registradosHistorial.length})</div>
-        {!registradosHistorial.length ? (
-          <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Todavía no hay nada en el historial.</div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {registradosHistorial.map((l) => (
-              <div
-                key={l.id}
-                onClick={() => { setMostrarNuevo(true); setBusquedaLote(String(l.numLote || "")); cargarLoteEnFormulario(l); }}
-                style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", borderTop: `1px solid ${C.border}`, borderRight: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}`, borderLeft: `4px solid ${colorEstadoEnvioLote(l)}`, borderRadius: 8, fontSize: 12, cursor: "pointer", background: C.canvas }}
-              >
-                <span>
-                  <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> · {l.fecha ? fmtFechaISO(l.fecha) : "—"} — {l.referencia || "(sin referencia)"} — {l.cliente || "—"} <EstadoEnvioBadge lote={l} />
-                </span>
-                <span style={{ color: C.slate }}>
-                  Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
-                  {!!(l.cobrosBodega || []).length && <> · Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney(c.valor)}`).join(" / ")}</>}
-                </span>
+        <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", marginBottom: 10, background: C.white }}>
+          <div
+            onClick={() => setAbiertoRegistrados((v) => !v)}
+            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, padding: "12px 14px", cursor: "pointer", background: C.canvas }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 800, color: C.ink }}>
+              <span style={{ display: "inline-block", transform: abiertoRegistrados ? "rotate(90deg)" : "none", color: C.slate, fontSize: 11 }}>▶</span>
+              Ya registrados
+              <span style={{ background: C.border, color: C.slate, fontWeight: 700, fontSize: 11, padding: "2px 8px", borderRadius: 20 }}>
+                {registradosActivosFiltrados.length}{registradosActivosFiltrados.length !== registradosActivos.length ? ` / ${registradosActivos.length}` : ""}
+              </span>
+            </div>
+            <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
+              <div style={{ width: 150 }}>
+                <Field label="Marcar recibidos hasta">
+                  <FInput type="date" value={fechaCorteRecibidos} onChange={setFechaCorteRecibidos} />
+                </Field>
               </div>
-            ))}
+              <Btn variant="secondary" small onClick={marcarRecibidosHastaFecha} disabled={marcandoRecibidos}>
+                {marcandoRecibidos ? "Marcando..." : "✅ Marcar como recibidos hasta esa fecha"}
+              </Btn>
+            </div>
           </div>
-        )}
+          {abiertoRegistrados && (
+            <div style={{ padding: 12, borderTop: `1px solid ${C.border}` }}>
+              {marcadosOkCantidad !== null && (
+                <div style={{ fontSize: 12, color: C.green, fontWeight: 700, marginBottom: 10 }}>✅ {marcadosOkCantidad} lote(s) marcado(s) como Recibidos.</div>
+              )}
+              {loading ? (
+                <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Cargando...</div>
+              ) : !registradosActivosFiltrados.length ? (
+                <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>
+                  {registradosActivos.length ? "Ningún lote coincide con el filtro." : "Todavía no se ha registrado ningún despacho aquí."}
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {registradosActivosFiltrados.map((l) => (
+                    <div
+                      key={l.id}
+                      onClick={() => { setMostrarNuevo(true); setBusquedaLote(String(l.numLote || "")); cargarLoteEnFormulario(l); }}
+                      style={{ display: "flex", flexDirection: "column", gap: 6, padding: "12px 14px", border: `1px solid ${C.border}`, borderLeft: `4px solid ${colorEstadoEnvioLote(l)}`, borderRadius: 10, fontSize: 12, cursor: "pointer", background: C.white, boxShadow: "0 1px 2px rgba(26,26,46,0.05)" }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+                        <span>
+                          <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> <span style={{ color: C.slate }}>· {l.fecha ? fmtFechaISO(l.fecha) : "—"}</span>
+                        </span>
+                        <EtapaContabilidadBadge lote={l} />
+                      </div>
+                      <div style={{ color: C.slate }}>{l.referencia || "(sin referencia)"} — {l.cliente || "—"}</div>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        <ChipStat label="Despachada" value={l.cantidadDespachadaBodega || 0} />
+                        <ChipStat label="Sacrificios" value={l.sacrificios || 0} />
+                        <ChipStat label="Segundas" value={l.segundas || 0} />
+                      </div>
+                      {!!(l.cobrosBodega || []).length && (
+                        <div style={{ fontSize: 11, color: C.slate, borderTop: `1px dashed ${C.border}`, paddingTop: 6 }}>
+                          Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney(c.valor)}`).join(" / ")}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", background: C.white }}>
+          <div
+            onClick={() => setAbiertoHistorial((v) => !v)}
+            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, padding: "12px 14px", cursor: "pointer", background: C.canvas }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 800, color: C.ink }}>
+              <span style={{ display: "inline-block", transform: abiertoHistorial ? "rotate(90deg)" : "none", color: C.slate, fontSize: 11 }}>▶</span>
+              🗄️ Historial
+              <span style={{ background: C.border, color: C.slate, fontWeight: 700, fontSize: 11, padding: "2px 8px", borderRadius: 20 }}>
+                {registradosHistorialFiltrados.length}{registradosHistorialFiltrados.length !== registradosHistorial.length ? ` / ${registradosHistorial.length}` : ""}
+              </span>
+            </div>
+          </div>
+          {abiertoHistorial && (
+            <div style={{ padding: 12, borderTop: `1px solid ${C.border}` }}>
+              {!registradosHistorialFiltrados.length ? (
+                <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>
+                  {registradosHistorial.length ? "Ningún lote coincide con el filtro." : "Todavía no hay nada en el historial."}
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {registradosHistorialFiltrados.map((l) => (
+                    <div
+                      key={l.id}
+                      onClick={() => { setMostrarNuevo(true); setBusquedaLote(String(l.numLote || "")); cargarLoteEnFormulario(l); }}
+                      style={{ display: "flex", flexDirection: "column", gap: 6, padding: "12px 14px", border: `1px solid ${C.border}`, borderLeft: `4px solid ${colorEstadoEnvioLote(l)}`, borderRadius: 10, fontSize: 12, cursor: "pointer", background: C.canvas }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+                        <span>
+                          <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> <span style={{ color: C.slate }}>· {l.fecha ? fmtFechaISO(l.fecha) : "—"}</span>
+                        </span>
+                        <EstadoEnvioBadge lote={l} />
+                      </div>
+                      <div style={{ color: C.slate }}>{l.referencia || "(sin referencia)"} — {l.cliente || "—"}</div>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        <ChipStat label="Despachada" value={l.cantidadDespachadaBodega || 0} />
+                        <ChipStat label="Sacrificios" value={l.sacrificios || 0} />
+                        <ChipStat label="Segundas" value={l.segundas || 0} />
+                      </div>
+                      {!!(l.cobrosBodega || []).length && (
+                        <div style={{ fontSize: 11, color: C.slate, borderTop: `1px dashed ${C.border}`, paddingTop: 6 }}>
+                          Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney(c.valor)}`).join(" / ")}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
