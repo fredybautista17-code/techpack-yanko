@@ -249,6 +249,24 @@ function colorEstadoEnvioLote(l) {
   if (l.estadoEnvio === "enviado") return C.blue;
   return C.amber;
 }
+// (2026-09-14, a pedido de Fredy) Badge del estado REAL del despacho, para
+// el Historial de Estado de Despacho -- EtapaContabilidadBadge se queda
+// en "Por enviar" para cualquier lote aprobado, sin importar si ya se
+// envio o recibio, lo cual confundia en el Historial (todo se veia "por
+// enviar" aunque ya hubiera llegado hace dias).
+function EstadoEnvioBadge({ lote }) {
+  const info =
+    lote?.estadoEnvio === "recibido"
+      ? { bg: C.greenBg, color: C.green, label: "✅ Recibido" }
+      : lote?.estadoEnvio === "enviado"
+      ? { bg: C.blueBg, color: C.blue, label: "🚚 Enviado" }
+      : { bg: C.amberBg, color: C.amber, label: "📤 Por enviar" };
+  return (
+    <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: info.bg, color: info.color, whiteSpace: "nowrap" }}>
+      {info.label}
+    </span>
+  );
+}
 function Tabla({ columnas, filas, vacio, onRowClick }) {
   if (!filas.length) {
     return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>{vacio || "Sin datos."}</div>;
@@ -3889,7 +3907,7 @@ function EstadoDespachoView({ onVolver, onLogout }) {
               {recibidos.map((l) => (
                 <div key={l.id} style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12 }}>
                   <span>
-                    <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia} — {l.cliente} <EtapaContabilidadBadge lote={l} />
+                    <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> · {l.fecha ? fmtFechaISO(l.fecha) : "—"} — {l.referencia} — {l.cliente} <EstadoEnvioBadge lote={l} />
                     {l.despachoCodigo ? <> · {l.despachoCodigo}</> : null}
                   </span>
                   <span style={{ color: C.slate }}>{l.transportador} · Guía {l.numeroGuia} · Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0} · Llegó el {l.fechaRecibido || l.fechaEnvio || "—"}</span>
