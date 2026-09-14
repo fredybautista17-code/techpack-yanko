@@ -2373,11 +2373,12 @@ async function correrAuditoriaBusintVsNomina() {
   const hoy = fechaHoyBogota();
   const mesActualISO = hoy.slice(0, 7); // "2026-09" -- lo que lleva del mes en curso (Bogota)
 
-  const [areasSnap, trabajadoresSnap, produccionSnap, usersSnap, entradasRef, cabeceraEntradas] = await Promise.all([
+  const [areasSnap, trabajadoresSnap, produccionSnap, usersSnap, configSnap, entradasRef, cabeceraEntradas] = await Promise.all([
     db.collection("nomina_areas").get(),
     db.collection("nomina_trabajadores").get(),
     db.collection("nomina_produccion").get(),
     db.collection("users").get(),
+    db.collection("config").doc("main").get(),
     consultarTablaBusintBDCompleta("bmp - entrada plantaproc ref"),
     consultarTablaBusintBDCompleta("bmp - entrada plantaproc"),
   ]);
@@ -2386,6 +2387,12 @@ async function correrAuditoriaBusintVsNomina() {
   const trabajadores = trabajadoresSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
   const produccion = produccionSnap.docs.map((d) => d.data());
   const usuarios = usersSnap.docs.map((d) => d.data());
+  // Destinatarios adicionales que Fredy agregó a mano desde Administración
+  // -> Notificaciones (se SUMAN a quien ya le llega automáticamente, no lo
+  // reemplazan).
+  const extrasAuditoria = ((configSnap.data() || {}).notificacionesExtras?.auditoriaBusintVsNomina || [])
+    .map((e) => e.correo)
+    .filter(Boolean);
   // (2026-09-06, corregido a pedido de Fredy) La tabla de DETALLE ("... ref",
   // de donde sale entradasRef) NO trae Codplanta -- ese campo solo vive en
   // la tabla CABECERA ("bmp - entrada plantaproc"), igual que la fecha. Se
@@ -2511,6 +2518,7 @@ async function correrAuditoriaBusintVsNomina() {
       if (!destinatarios.length) {
         destinatarios = usuarios.filter((u) => u.isAdmin && u.email).map((u) => u.email);
       }
+      destinatarios = [...new Set([...destinatarios, ...extrasAuditoria])];
       if (destinatarios.length) {
         const transporte = crearTransporte();
         const ETIQUETAS_AUDITORIA = {
@@ -4812,9 +4820,14 @@ async function mandarCorreo(transporte, destinatarios, asunto, textoHtml) {
 exports.obtenerResumenNotificacionesProgramadas = onCall({ timeoutSeconds: 60, memory: "256MiB" }, async (request) => {
   await verificarLlamadorEsAdmin(request);
 
-  const usersSnap = await db.collection("users").get();
+  const [usersSnap, configSnap] = await Promise.all([
+    db.collection("users").get(),
+    db.collection("config").doc("main").get(),
+  ]);
   const usuarios = usersSnap.docs.map((d) => d.data());
   const paraDestino = (lista) => lista.map((u) => ({ nombre: u.name || "(sin nombre)", correo: u.email }));
+  const notificacionesExtras = (configSnap.data() || {}).notificacionesExtras || {};
+  const extrasDe = (id) => Array.isArray(notificacionesExtras[id]) ? notificacionesExtras[id] : [];
 
   const lideres = usuarios.filter((u) => (u.procesosPlaneacion || []).length > 0 && u.email);
   const admins = usuarios.filter((u) => u.isAdmin && u.email);
@@ -4872,6 +4885,7 @@ exports.obtenerResumenNotificacionesProgramadas = onCall({ timeoutSeconds: 60, m
         horario: "Todos los días 7:00 a.m.",
         tipo: "correo",
         destinatariosPorArea,
+        destinatariosExtra: extrasDe("auditoriaBusintVsNomina"),
       },
       {
         id: "correoDespachosDiarios",
@@ -4880,6 +4894,7 @@ exports.obtenerResumenNotificacionesProgramadas = onCall({ timeoutSeconds: 60, m
         horario: "Todos los días 6:00 p.m.",
         tipo: "correo",
         destinatarios: paraDestino(lideres),
+        destinatariosExtra: extrasDe("correoDespachosDiarios"),
       },
       {
         id: "correoResumenPorCliente",
@@ -4888,6 +4903,7 @@ exports.obtenerResumenNotificacionesProgramadas = onCall({ timeoutSeconds: 60, m
         horario: "Todos los días 6:10 p.m.",
         tipo: "correo",
         destinatarios: paraDestino(destinatariosResumenCliente),
+        destinatariosExtra: extrasDe("correoResumenPorCliente"),
       },
       {
         id: "avisarVencidos",
@@ -4896,6 +4912,7 @@ exports.obtenerResumenNotificacionesProgramadas = onCall({ timeoutSeconds: 60, m
         horario: "Todos los días 8:00 a.m.",
         tipo: "correo",
         destinatarios: apoyoDiseno,
+        destinatariosExtra: extrasDe("avisarVencidos"),
         nota: "Además de este grupo fijo de apoyo, cada aviso también le llega a la diseñadora responsable del prototipo/referencia específico -- eso varía cada día según a quién se le venza algo.",
       },
     ],
@@ -4919,9 +4936,10 @@ exports.correoDespachosDiarios = onSchedule(
   },
   async () => {
     const hoy = new Date().toISOString().slice(0, 10);
-    const [bitacoraSnap, usersSnap] = await Promise.all([
+    const [bitacoraSnap, usersSnap, configSnap] = await Promise.all([
       db.collection("bitacora_despachos").where("fecha", "==", hoy).get(),
       db.collection("users").get(),
+      db.collection("config").doc("main").get(),
     ]);
     const filas = bitacoraSnap.docs.map((d) => d.data());
     const despachos = filas.filter((f) => !f.esDevolucion);
@@ -4934,7 +4952,12 @@ exports.correoDespachosDiarios = onSchedule(
     const lideres = usersSnap.docs
       .map((d) => d.data())
       .filter((u) => (u.procesosPlaneacion || []).length > 0 && u.email);
-    const correos = lideres.map((u) => u.email);
+    // Destinatarios adicionales agregados a mano desde Administración ->
+    // Notificaciones -- se SUMAN a los líderes, no los reemplazan.
+    const extras = ((configSnap.data() || {}).notificacionesExtras?.correoDespachosDiarios || [])
+      .map((e) => e.correo)
+      .filter(Boolean);
+    const correos = [...new Set([...lideres.map((u) => u.email), ...extras])];
     if (!correos.length) {
       logger.warn("correoDespachosDiarios: no hay lideres con correo cargado en Usuarios, no se manda nada");
       return;
@@ -4986,9 +5009,10 @@ async function enviarResumenPorClienteCorreo() {
     const hoy = hoyDate.toISOString().slice(0, 10);
     const inicioMes = new Date(hoyDate.getFullYear(), hoyDate.getMonth(), 1).toISOString().slice(0, 10);
 
-    const [bitacoraSnap, usersSnap] = await Promise.all([
+    const [bitacoraSnap, usersSnap, configSnap] = await Promise.all([
       db.collection("bitacora_despachos").where("fecha", ">=", inicioMes).where("fecha", "<=", hoy).get(),
       db.collection("users").get(),
+      db.collection("config").doc("main").get(),
     ]);
     const filas = bitacoraSnap.docs.map((d) => d.data());
     const despachos = filas.filter((f) => !f.esDevolucion);
@@ -5020,7 +5044,12 @@ async function enviarResumenPorClienteCorreo() {
     const usuarios = usersSnap.docs.map((d) => d.data());
     const lideres = usuarios.filter((u) => (u.procesosPlaneacion || []).length > 0 && u.email).map((u) => u.email);
     const admins = usuarios.filter((u) => u.isAdmin && u.email).map((u) => u.email);
-    const correos = [...new Set([...lideres, ...admins])];
+    // Destinatarios adicionales agregados a mano desde Administración ->
+    // Notificaciones -- se SUMAN a líderes/administradores, no los reemplazan.
+    const extras = ((configSnap.data() || {}).notificacionesExtras?.correoResumenPorCliente || [])
+      .map((e) => e.correo)
+      .filter(Boolean);
+    const correos = [...new Set([...lideres, ...admins, ...extras])];
     if (!correos.length) {
       logger.warn("correoResumenPorCliente: no hay destinatarios con correo cargado, no se manda nada");
       return { enviado: false, motivo: "No hay destinatarios con correo cargado en Usuarios (líderes o administradores)." };
@@ -5138,7 +5167,12 @@ async function revisarYAvisarVencidos() {
   const stagesMap = new Map(stages.map((s) => [s.id, s.days]));
   const usuarios = usersSnap.docs.map((d) => d.data());
 
-  const correosApoyo = RECIPIENTES_APOYO.map((n) => buscarCorreoPorNombre(n, usuarios)).filter(Boolean);
+  // Destinatarios adicionales agregados a mano desde Administración ->
+  // Notificaciones -- se SUMAN al grupo fijo de apoyo, no lo reemplazan.
+  const extrasApoyo = ((configSnap.data() || {}).notificacionesExtras?.avisarVencidos || [])
+    .map((e) => e.correo)
+    .filter(Boolean);
+  const correosApoyo = [...new Set([...RECIPIENTES_APOYO.map((n) => buscarCorreoPorNombre(n, usuarios)).filter(Boolean), ...extrasApoyo])];
   if (correosApoyo.length < RECIPIENTES_APOYO.length) {
     logger.warn("No se encontró correo para todos los destinatarios de apoyo (Dayana/Karen/Yuliana) — revisa que tengan correo cargado en Administración → Usuarios.");
   }
@@ -5245,7 +5279,10 @@ async function revisarYFelicitarAlDia() {
   const stages = configSnap.exists ? (configSnap.data().stages || []) : [];
   const stagesMap = new Map(stages.map((s) => [s.id, s.days]));
   const usuarios = usersSnap.docs.map((d) => d.data());
-  const correosApoyo = RECIPIENTES_APOYO.map((n) => buscarCorreoPorNombre(n, usuarios)).filter(Boolean);
+  const extrasApoyo = ((configSnap.data() || {}).notificacionesExtras?.avisarVencidos || [])
+    .map((e) => e.correo)
+    .filter(Boolean);
+  const correosApoyo = [...new Set([...RECIPIENTES_APOYO.map((n) => buscarCorreoPorNombre(n, usuarios)).filter(Boolean), ...extrasApoyo])];
   const transporte = crearTransporte();
 
   // Por diseñadora: ¿tiene al menos un ítem activo?, ¿alguno de esos activos

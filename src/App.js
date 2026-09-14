@@ -6973,16 +6973,58 @@ function SincronizarLineasBusintBtn({ config, onUpdateConfig }) {
     </div>
   );
 }
-// (2026-09-14, a pedido de Fredy) Panel de solo lectura: qué tareas
-// automáticas hay programadas (correos + sincronizaciones), cada cuánto
-// corren, y -- para las que mandan correo -- quién las recibiría HOY según
-// los datos actuales de Usuarios. Los horarios están fijos en el backend
-// (cambiarlos requiere pedir un cambio de código); los destinatarios sí se
-// calculan en vivo cada vez que se abre o se actualiza este panel.
-function NotificacionesProgramadasPanel() {
+// (2026-09-14, a pedido de Fredy) Panel en Administración -> Notificaciones:
+// qué tareas automáticas hay programadas (correos + sincronizaciones), cada
+// cuánto corren, y -- para las que mandan correo -- quién las recibe HOY.
+// Los "Automáticos" se calculan en vivo desde Usuarios (líderes, admins,
+// área de nómina asignada); los "Adicionales" los agrega Fredy a mano acá
+// mismo -- se guardan en config.notificacionesExtras y los usan de verdad
+// las funciones que mandan los correos (se SUMAN, no reemplazan lo
+// automático). Los horarios siguen fijos en el backend -- cambiarlos
+// requiere pedir un cambio de código.
+function Chip({ nombre, correo, onQuitar }) {
+  const sinCorreo = !correo || String(correo).startsWith("⚠");
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 6px 4px 10px", background: sinCorreo ? "#fdecea" : T.white, borderRadius: 20, border: `1px solid ${T.border}` }}>
+      <span style={{ fontSize: 12.5, fontWeight: 700, color: T.ink }}>{nombre}</span>
+      <span style={{ fontSize: 11.5, color: sinCorreo ? T.coral : T.slate }}>{correo || "sin correo"}</span>
+      {onQuitar && (
+        <button onClick={onQuitar} title="Quitar" style={{ width: 18, height: 18, borderRadius: "50%", border: "none", background: "transparent", color: T.coral, fontWeight: 800, fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
+      )}
+    </div>
+  );
+}
+function DestinatariosExtra({ tareaId, extras, usuariosDisponibles, onAgregar, onQuitar }) {
+  const yaAgregados = new Set((extras || []).map((e) => e.correo));
+  const opciones = (usuariosDisponibles || []).filter((u) => u.email && !yaAgregados.has(u.email));
+  return (
+    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${T.border}` }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 6, textTransform: "uppercase" }}>Adicionales</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+        {(extras || []).map((e) => (
+          <Chip key={e.correo} nombre={e.nombre} correo={e.correo} onQuitar={() => onQuitar(e.correo)} />
+        ))}
+        {!(extras || []).length && <span style={{ fontSize: 12, color: T.slate, fontStyle: "italic" }}>Ninguno agregado todavía.</span>}
+      </div>
+      <select
+        value=""
+        onChange={(e) => {
+          const u = opciones.find((o) => o.email === e.target.value);
+          if (u) onAgregar(u);
+        }}
+        style={{ padding: "6px 10px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 12.5, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", maxWidth: 260 }}
+      >
+        <option value="">+ Agregar destinatario…</option>
+        {opciones.map((u) => <option key={u.email} value={u.email}>{u.name || u.email}</option>)}
+      </select>
+    </div>
+  );
+}
+function NotificacionesProgramadasPanel({ users, config, onUpdateConfig }) {
   const [cargando, setCargando] = useState(true);
   const [datos, setDatos] = useState(null);
   const [error, setError] = useState("");
+  const [seccionAbierta, setSeccionAbierta] = useState({ correo: true, sincronizacion: false });
 
   async function cargar() {
     setCargando(true);
@@ -6999,12 +7041,84 @@ function NotificacionesProgramadasPanel() {
   }
   useEffect(() => { cargar(); }, []);
 
-  function Chip({ nombre, correo }) {
-    const sinCorreo = !correo || String(correo).startsWith("⚠");
+  const usuariosConCorreo = (users || []).filter((u) => u.email);
+
+  function actualizarExtras(tareaId, nuevaLista) {
+    onUpdateConfig({ notificacionesExtras: { ...(config.notificacionesExtras || {}), [tareaId]: nuevaLista } });
+    setDatos((prev) => prev && { ...prev, tareas: prev.tareas.map((t) => (t.id === tareaId ? { ...t, destinatariosExtra: nuevaLista } : t)) });
+  }
+  function agregarExtra(tareaId, u) {
+    const actuales = (config.notificacionesExtras || {})[tareaId] || [];
+    if (actuales.some((e) => e.correo === u.email)) return;
+    actualizarExtras(tareaId, [...actuales, { nombre: u.name || u.email, correo: u.email }]);
+  }
+  function quitarExtra(tareaId, correo) {
+    const actuales = (config.notificacionesExtras || {})[tareaId] || [];
+    actualizarExtras(tareaId, actuales.filter((e) => e.correo !== correo));
+  }
+
+  function TareaCard({ t }) {
     return (
-      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", background: sinCorreo ? T.coralBg || "#fdecea" : T.canvas, borderRadius: 20, border: `1px solid ${T.border}` }}>
-        <span style={{ fontSize: 12.5, fontWeight: 700, color: T.ink }}>{nombre}</span>
-        <span style={{ fontSize: 11.5, color: sinCorreo ? T.coral : T.slate }}>{correo || "sin correo"}</span>
+      <div style={{ padding: "14px 16px", background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
+          <span style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{t.nombre}</span>
+          <span style={{ fontSize: 12, color: T.slate, fontWeight: 600 }}>{t.horario}</span>
+        </div>
+        <div style={{ fontSize: 12.5, color: T.slate, marginBottom: t.tipo === "correo" ? 10 : 0 }}>{t.descripcion}</div>
+        {t.tipo === "correo" && (
+          <>
+            <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 6, textTransform: "uppercase" }}>Automáticos</div>
+            {t.destinatariosPorArea && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {t.destinatariosPorArea.map((a) => (
+                  <div key={a.area}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4 }}>
+                      {a.area}{a.usaRespaldoAdmin ? " (nadie asignado — cae en administradores)" : ""}
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {a.destinatarios.length ? a.destinatarios.map((d) => <Chip key={d.correo} nombre={d.nombre} correo={d.correo} />) : <span style={{ fontSize: 12, color: T.slate, fontStyle: "italic" }}>Nadie con correo cargado.</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {t.destinatarios && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {t.destinatarios.length ? t.destinatarios.map((d) => <Chip key={d.correo || d.nombre} nombre={d.nombre} correo={d.correo} />) : <span style={{ fontSize: 12, color: T.slate, fontStyle: "italic" }}>Nadie con correo cargado.</span>}
+              </div>
+            )}
+            <DestinatariosExtra
+              tareaId={t.id}
+              extras={t.destinatariosExtra}
+              usuariosDisponibles={usuariosConCorreo}
+              onAgregar={(u) => agregarExtra(t.id, u)}
+              onQuitar={(correo) => quitarExtra(t.id, correo)}
+            />
+            {t.nota && <div style={{ fontSize: 11.5, color: T.slate, fontStyle: "italic", marginTop: 8 }}>{t.nota}</div>}
+          </>
+        )}
+      </div>
+    );
+  }
+
+  function Seccion({ tipo, titulo }) {
+    const tareas = (datos?.tareas || []).filter((t) => t.tipo === tipo);
+    if (!tareas.length) return null;
+    const abierta = seccionAbierta[tipo];
+    return (
+      <div style={{ marginBottom: 14 }}>
+        <button
+          onClick={() => setSeccionAbierta((p) => ({ ...p, [tipo]: !p[tipo] }))}
+          style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "10px 14px", background: tipo === "correo" ? T.denimBg : T.amberBg, border: "none", borderRadius: 10, cursor: "pointer", marginBottom: abierta ? 10 : 0 }}
+        >
+          <span style={{ fontSize: 13, fontWeight: 800, color: tipo === "correo" ? T.denim : T.amber }}>{titulo} ({tareas.length})</span>
+          <span style={{ marginLeft: "auto", fontSize: 12, color: tipo === "correo" ? T.denim : T.amber }}>{abierta ? "▲ Ocultar" : "▼ Mostrar"}</span>
+        </button>
+        {abierta && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {tareas.map((t) => <TareaCard key={t.id} t={t} />)}
+          </div>
+        )}
       </div>
     );
   }
@@ -7014,47 +7128,17 @@ function NotificacionesProgramadasPanel() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: 15, color: T.ink }}>Notificaciones automáticas</div>
-          <div style={{ fontSize: 12.5, color: T.slate, marginTop: 4 }}>Qué está programado en ATLAS, cada cuánto corre, y a quién le llegaría cada correo hoy según Usuarios.</div>
+          <div style={{ fontSize: 12.5, color: T.slate, marginTop: 4 }}>Qué está programado en ATLAS, cada cuánto corre, y a quién le llega cada correo hoy. Los "Adicionales" se guardan al instante y se suman a los automáticos.</div>
         </div>
         <Btn variant="secondary" small onClick={cargar} disabled={cargando}>🔄 {cargando ? "Actualizando…" : "Actualizar"}</Btn>
       </div>
-      {error && <div style={{ padding: "10px 14px", background: T.coralBg || "#fdecea", borderRadius: 8, fontSize: 13, color: T.coral, fontWeight: 600, marginBottom: 16 }}>{error}</div>}
+      {error && <div style={{ padding: "10px 14px", background: "#fdecea", borderRadius: 8, fontSize: 13, color: T.coral, fontWeight: 600, marginBottom: 16 }}>{error}</div>}
       {cargando && !datos ? (
         <div style={{ fontSize: 13, color: T.slate, fontStyle: "italic" }}>Cargando…</div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {(datos?.tareas || []).map((t) => (
-            <div key={t.id} style={{ padding: "14px 16px", background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
-                <span style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{t.nombre}</span>
-                <span style={{ padding: "2px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: t.tipo === "correo" ? T.denimBg : T.amberBg, color: t.tipo === "correo" ? T.denim : T.amber }}>
-                  {t.tipo === "correo" ? "✉ Correo" : "🔄 Sincronización"}
-                </span>
-                <span style={{ fontSize: 12, color: T.slate, fontWeight: 600 }}>{t.horario}</span>
-              </div>
-              <div style={{ fontSize: 12.5, color: T.slate, marginBottom: t.tipo === "correo" ? 10 : 0 }}>{t.descripcion}</div>
-              {t.tipo === "correo" && t.destinatariosPorArea && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {t.destinatariosPorArea.map((a) => (
-                    <div key={a.area}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4, textTransform: "uppercase" }}>
-                        {a.area}{a.usaRespaldoAdmin ? " (nadie asignado — cae en administradores)" : ""}
-                      </div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                        {a.destinatarios.length ? a.destinatarios.map((d) => <Chip key={d.correo} nombre={d.nombre} correo={d.correo} />) : <span style={{ fontSize: 12, color: T.slate, fontStyle: "italic" }}>Nadie con correo cargado.</span>}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {t.tipo === "correo" && t.destinatarios && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {t.destinatarios.length ? t.destinatarios.map((d) => <Chip key={d.correo || d.nombre} nombre={d.nombre} correo={d.correo} />) : <span style={{ fontSize: 12, color: T.slate, fontStyle: "italic" }}>Nadie con correo cargado.</span>}
-                </div>
-              )}
-              {t.nota && <div style={{ fontSize: 11.5, color: T.slate, fontStyle: "italic", marginTop: 8 }}>{t.nota}</div>}
-            </div>
-          ))}
+        <div>
+          <Seccion tipo="correo" titulo="✉ Correos" />
+          <Seccion tipo="sincronizacion" titulo="🔄 Sincronizaciones" />
         </div>
       )}
     </div>
@@ -7519,7 +7603,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                       <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{r.name}</div>
                       <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10, marginBottom: 4 }}>Permisos de flujo de trabajo</div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte", "aprobar_despacho", "control_despacho", "revertir_despacho", "editar_kpis"].map((perm) => (
+                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte", "aprobar_despacho", "control_despacho", "editar_kpis"].map((perm) => (
                           <span key={perm} onClick={() => onUpdateConfig({ roles: config.roles.map((x) => (x.id !== r.id ? x : { ...x, perms: x.perms.includes(perm) ? x.perms.filter((p) => p !== perm) : [...x.perms, perm] })) })}
                             style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: r.perms.includes(perm) ? T.jadeBg : "#EDEDF2", color: r.perms.includes(perm) ? T.jade : T.slate, border: `1px solid ${r.perms.includes(perm) ? T.jade : T.border}` }}
                           >{perm}</span>
@@ -7601,7 +7685,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
           </div>
         )}
         {tab === "usuarios" && <UsersTab users={users} onUpdateUsers={onUpdateUsers} config={config} isAdmin={isAdmin} areasNomina={areasNomina} procesosNomina={procesosNomina} />}
-        {tab === "notificaciones" && <NotificacionesProgramadasPanel />}
+        {tab === "notificaciones" && <NotificacionesProgramadasPanel users={users} config={config} onUpdateConfig={onUpdateConfig} />}
         {tab === "clientes" && <ClientesTab config={config} onUpdateConfig={onUpdateConfig} />}
         {tab === "contenido" && (
           <div>
@@ -11104,11 +11188,6 @@ function AppInner() {
     // Generales + Estado de Despacho) -- separado del acceso a Bodega en
     // si, para poder dejar algunos roles solo con "Despacho y Saldo".
     verControlDespacho: userRoleData?.perms?.includes("control_despacho") ?? false,
-    // (2026-09-14, a pedido de Fredy) Permiso dedicado para los botones
-    // "Revertir a Enviado" / "Devolver a Sin Despacho" dentro de Estado de
-    // Despacho -- separado de control_despacho para poder dárselo puntual
-    // a alguien (ej. María Fernanda Páez) sin volverla administradora.
-    revertirDespacho: userRoleData?.perms?.includes("revertir_despacho") ?? false,
     // Permiso dedicado para editar el módulo de KPIs (puestos, funciones,
     // catálogo de KPIs — crear/editar/borrar/trasladar) sin darle a la
     // persona el resto de permisos de administrador general.
@@ -11345,7 +11424,7 @@ function AppInner() {
     return <ModuloPlanta currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "bodega") {
-    return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} soloLecturaBodega={currentUser?.role === "Cliente"} puedeVerControlDespacho={perms.verControlDespacho} puedeRevertirDespacho={perms.revertirDespacho} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} soloLecturaBodega={currentUser?.role === "Cliente"} puedeVerControlDespacho={perms.verControlDespacho} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "nomina") {
     return <ModuloNomina currentUser={currentUser} soloNovedades={soloNovedadesNomina} puedeEditarCatalogos={canAccessNominaEditarCatalogos} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
