@@ -5046,6 +5046,107 @@ function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
   a.click();
   URL.revokeObjectURL(url);
 }
+// (2026-09-14, a pedido de Fredy) Recibo/visualizador para una liquidacion
+// de RETIRO (cesantias/intereses/prima/vacaciones al retirarse) -- distinto
+// del recibo de arriba, que es para las quincenas normales. Muestra
+// tambien los dias NO trabajados (sin sueldo) que se restaron del calculo.
+function exportReciboLiquidacionRetiroHTML({ trabajador, liquidacion }) {
+  const fechaGen = new Date().toISOString().slice(0, 10);
+  const nombre = trabajador?.nombre || liquidacion.nombre || "—";
+  const cedula = trabajador?.cedula || "—";
+  const area = liquidacion.area || trabajador?.area || "—";
+  const tipoNomina = liquidacion.tipoNomina || trabajador?.tipoNomina || "—";
+  const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<title>Recibo de Liquidación de Retiro — ${nombre}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',Arial,sans-serif;background:#F7F4F0;color:#1A1A2E;padding:32px}
+  @media print{body{padding:0;background:#fff}}
+  .page{max-width:820px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 4px 32px rgba(26,26,46,0.1)}
+  .header{background:linear-gradient(135deg,#1A1A2E 0%,#2D1B69 100%);padding:28px 32px;display:flex;justify-content:space-between;align-items:center}
+  .header-left h1{color:#fff;font-size:20px;font-weight:800;letter-spacing:-0.3px}
+  .header-left p{color:#C8B8A2;font-size:12px;margin-top:4px}
+  .header-right{text-align:right}
+  .header-right .badge{background:rgba(200,184,162,0.2);border:1px solid #C8B8A2;border-radius:8px;padding:8px 16px;color:#C8B8A2;font-size:13px;font-weight:700}
+  .body{padding:28px 32px}
+  .info-row{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:20px}
+  .info-card{background:#F7F4F0;border-radius:8px;padding:12px 14px;border:1px solid #E8E2DB}
+  .info-card label{display:block;font-size:10px;font-weight:700;color:#5A5A7A;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px}
+  .info-card span{font-size:14px;font-weight:700;color:#1A1A2E}
+  .section-title{font-size:14px;font-weight:800;color:#1A1A2E;margin:22px 0 10px;padding-bottom:8px;border-bottom:2px solid #E8E2DB}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  table td{padding:8px 10px;border-bottom:1px solid #F0ECE6}
+  table td:first-child{color:#5A5A7A}
+  .totales{margin-top:22px;display:grid;grid-template-columns:1fr;gap:12px}
+  .total-card{border-radius:10px;padding:14px 16px;text-align:center}
+  .total-card label{display:block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;opacity:0.85}
+  .total-card .val{font-size:22px;font-weight:900}
+  .firma{margin-top:44px;display:grid;grid-template-columns:1fr 1fr;gap:40px}
+  .firma div{border-top:1px solid #1A1A2E;padding-top:8px;text-align:center;font-size:11px;color:#5A5A7A}
+  .footer{background:#F7F4F0;padding:16px 32px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid #E8E2DB;font-size:12px;color:#5A5A7A}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <div class="header-left">
+      <h1>🧾 Recibo de Liquidación de Retiro</h1>
+      <p>Industrias Yanko · Nómina ${tipoNomina}</p>
+    </div>
+    <div class="header-right">
+      <div class="badge">Retiro</div>
+      <div style="color:#C8B8A2;font-size:11px;margin-top:8px">${fechaGen}</div>
+    </div>
+  </div>
+  <div class="body">
+    <div class="info-row">
+      <div class="info-card"><label>Trabajador</label><span>${nombre}</span></div>
+      <div class="info-card"><label>Cédula</label><span>${cedula}</span></div>
+      <div class="info-card"><label>Área</label><span>${area}</span></div>
+      <div class="info-card"><label>Tipo de nómina</label><span>${tipoNomina}</span></div>
+    </div>
+    <div class="section-title">📅 Antigüedad y días</div>
+    <table><tbody>
+      <tr><td>Fecha de ingreso</td><td style="text-align:right">${liquidacion.fechaIngreso ? fmtFechaISO(liquidacion.fechaIngreso) : "—"}</td></tr>
+      <tr><td>Fecha de retiro</td><td style="text-align:right">${liquidacion.fechaCorte ? fmtFechaISO(liquidacion.fechaCorte) : "—"}</td></tr>
+      <tr><td>Días trabajados</td><td style="text-align:right">${fmtNum(liquidacion.diasBase)}</td></tr>
+      <tr><td>Días no trabajados (sin sueldo)</td><td style="text-align:right;${(liquidacion.diasNoRemunerados || 0) > 0 ? "color:#B23A48;font-weight:700" : ""}">${fmtNum(liquidacion.diasNoRemunerados || 0)}</td></tr>
+      <tr><td>Días de vacaciones ya tomados</td><td style="text-align:right">${fmtNum(liquidacion.diasVacacionesTomados || 0)}</td></tr>
+    </tbody></table>
+    <div class="section-title">💰 Liquidación de prestaciones sociales</div>
+    <table><tbody>
+      <tr><td>Cesantías</td><td style="text-align:right">${fmtMoney(liquidacion.cesantias)}</td></tr>
+      <tr><td>Intereses de cesantías</td><td style="text-align:right">${fmtMoney(liquidacion.intereses)}</td></tr>
+      <tr><td>Prima de servicios</td><td style="text-align:right">${fmtMoney(liquidacion.prima)}</td></tr>
+      <tr><td>Vacaciones</td><td style="text-align:right">${fmtMoney(liquidacion.vacaciones)}</td></tr>
+    </tbody></table>
+    <div class="totales">
+      <div class="total-card" style="background:#EBF7F2;color:#2D9E6B"><label>Total a Pagar</label><div class="val">${fmtMoney(liquidacion.totalAPagar)}</div></div>
+    </div>
+    <div class="firma">
+      <div>Firma del Trabajador</div>
+      <div>Firma quien Autoriza</div>
+    </div>
+  </div>
+  <div class="footer">
+    <span>ATLAS · Industrias Yanko</span>
+    <span>Generado el ${new Date().toLocaleDateString("es-CO", { dateStyle: "long" })}</span>
+    <button onclick="window.print()" style="background:#1A1A2E;color:#C8B8A2;border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:700">🖨 Imprimir / PDF</button>
+  </div>
+</div>
+</body>
+</html>`;
+  const blob = new Blob([html], { type: "text/html;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `Recibo_Liquidacion_Retiro_${(nombre || "trabajador").replace(/\s+/g, "_")}_${liquidacion.fechaCorte || ""}.html`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 // ─── HISTORIAL FISCAL DESTAJO (quincenas ya confirmadas) ──────────────────
 function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
@@ -7162,6 +7263,69 @@ function analizarRetirosHistoricos(filasHoja, trabajadoresExistentes, areasNomin
 // Fiscal, Fiscal Destajo y Destajo. Al guardar, ademas de dejar el
 // registro en el historial, marca al trabajador como Inactivo y le queda
 // guardada la fecha de retiro en su ficha.
+// (2026-09-14, a pedido de Fredy) Descarga a Excel "bonito con color" (mismo
+// patron que exportarTrabajadoresExcel) del Historial de liquidaciones de
+// retiro -- una fila por trabajador liquidado, con dias trabajados, dias NO
+// trabajados y el desglose completo de prestaciones.
+async function exportarHistorialLiquidacionesRetiroExcel(historial, trabajadores) {
+  const XLSX = await import("xlsx-js-style");
+  const rgb = (hex) => hex.replace("#", "");
+  const encabezados = ["Trabajador", "Cédula", "Tipo Nómina", "Área", "Fecha Ingreso", "Fecha Retiro", "Días Trabajados", "Días No Trabajados", "Días Vacaciones Tomadas", "Cesantías", "Intereses", "Prima", "Vacaciones", "Total a Pagar", "Generada"];
+  const idxTotal = encabezados.indexOf("Total a Pagar");
+  const idxPrimerNumero = encabezados.indexOf("Días Trabajados");
+  const filas = [...(historial || [])]
+    .sort((a, b) => (b.generadaEn || "").localeCompare(a.generadaEn || ""))
+    .map((l) => {
+      const trabajador = (trabajadores || []).find((t) => t.id === l.trabajadorId);
+      return [
+        l.nombre || trabajador?.nombre || "",
+        trabajador?.cedula || "",
+        l.tipoNomina || "",
+        l.area || "",
+        l.fechaIngreso || "",
+        l.fechaCorte || "",
+        Number(l.diasBase) || 0,
+        Number(l.diasNoRemunerados) || 0,
+        Number(l.diasVacacionesTomados) || 0,
+        Number(l.cesantias) || 0,
+        Number(l.intereses) || 0,
+        Number(l.prima) || 0,
+        Number(l.vacaciones) || 0,
+        Number(l.totalAPagar) || 0,
+        l.generadaEn ? new Date(l.generadaEn).toLocaleString("es-CO") : "",
+      ];
+    });
+  const wsData = [encabezados, ...filas];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  ws["!cols"] = encabezados.map((h) => ({ wch: Math.max(14, h.length + 2) }));
+  ws["!freeze"] = { xSplit: 0, ySplit: 1 };
+  const THIN = { style: "thin", color: { rgb: rgb(C.border) } };
+  const BOX = { top: THIN, bottom: THIN, left: THIN, right: THIN };
+  for (let r = 0; r < wsData.length; r++) {
+    for (let c = 0; c < encabezados.length; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (!ws[addr]) ws[addr] = { t: "s", v: "" };
+      let style = { border: BOX, alignment: { vertical: "center", horizontal: "left", wrapText: false } };
+      if (r === 0) {
+        style.font = { bold: true, sz: 11, color: { rgb: "FFFFFF" } };
+        style.fill = { patternType: "solid", fgColor: { rgb: rgb(C.ink) } };
+        style.alignment.horizontal = "center";
+      } else if (c === idxTotal) {
+        style.fill = { patternType: "solid", fgColor: { rgb: rgb(C.greenBg) } };
+        style.font = { bold: true, color: { rgb: rgb(C.green) } };
+        style.alignment.horizontal = "right";
+      } else {
+        style.fill = { patternType: "solid", fgColor: { rgb: r % 2 === 0 ? rgb(C.canvas) : "FFFFFF" } };
+        if (c >= idxPrimerNumero) style.alignment.horizontal = "right";
+      }
+      ws[addr].s = style;
+    }
+  }
+  ws["!rows"] = wsData.map((_, i) => (i === 0 ? { hpt: 22 } : { hpt: 18 }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Liquidaciones de Retiro");
+  XLSX.writeFile(wb, `Historial_Liquidaciones_Retiro_${today()}.xlsx`);
+}
 function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, prestamos, areasNomina, onGuardarLiquidacionRetiro, onGuardarTrabajador, onGuardarAusencia, currentUser }) {
   const [areaFiltro, setAreaFiltro] = useState("");
   const [trabajadorId, setTrabajadorId] = useState("");
@@ -7195,6 +7359,17 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, p
     setFechaRetiro(t?.fechaRetiro || today());
     setResultado(null);
     setGuardadoOk(false);
+  }
+
+  // (2026-09-14, a pedido de Fredy) Recibo/visualizador y Excel para el
+  // Historial de liquidaciones de retiro -- ver exportReciboLiquidacionRetiroHTML
+  // y exportarHistorialLiquidacionesRetiroExcel mas arriba.
+  function descargarRecibo(l) {
+    const trab = trabajadores.find((t) => t.id === l.trabajadorId);
+    exportReciboLiquidacionRetiroHTML({ trabajador: trab, liquidacion: l });
+  }
+  async function descargarExcelHistorial() {
+    await exportarHistorialLiquidacionesRetiroExcel(historialFiltrado, trabajadores);
   }
 
   function calcular() {
@@ -7359,8 +7534,11 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, p
         <div style={{ marginTop: 32 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 10 }}>
             <div style={{ fontWeight: 700, fontSize: 13 }}>Historial de liquidaciones</div>
-            <div style={{ maxWidth: 200 }}>
-              <FSel value={anioFiltroHistorial} onChange={setAnioFiltroHistorial} options={aniosHistorial} placeholder="Todos los años" />
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+              <div style={{ maxWidth: 200 }}>
+                <FSel value={anioFiltroHistorial} onChange={setAnioFiltroHistorial} options={aniosHistorial} placeholder="Todos los años" />
+              </div>
+              <Btn variant="secondary" small onClick={descargarExcelHistorial} disabled={historialFiltrado.length === 0}>📊 Descargar Excel</Btn>
             </div>
           </div>
           <Tabla
@@ -7371,8 +7549,14 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, p
               { key: "area", label: "Área" },
               { key: "fechaIngreso", label: "Ingreso", render: (f) => fmtFechaISO(f.fechaIngreso) },
               { key: "fechaCorte", label: "Retiro", render: (f) => fmtFechaISO(f.fechaCorte) },
+              { key: "diasNoRemunerados", label: "Días no trabajados", align: "right", render: (f) => (
+                <span style={{ fontWeight: (f.diasNoRemunerados || 0) > 0 ? 700 : 400, color: (f.diasNoRemunerados || 0) > 0 ? C.red : C.slate }}>{fmtNum(f.diasNoRemunerados || 0)}</span>
+              ) },
               { key: "totalAPagar", label: "Total", align: "right", render: (f) => <strong>{fmtMoney(f.totalAPagar)}</strong> },
               { key: "generadaEn", label: "Generada", render: (f) => (f.generadaEn ? new Date(f.generadaEn).toLocaleString("es-CO") : "—") },
+              { key: "acciones", label: "", align: "right", render: (f) => (
+                <span onClick={() => descargarRecibo(f)} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }} title="Descargar recibo de liquidación">🖨</span>
+              ) },
             ]}
             filas={[...historialFiltrado].sort((a, b) => (b.generadaEn || "").localeCompare(a.generadaEn || ""))}
           />
