@@ -689,10 +689,11 @@ function AreaNominaModal({ area, procesos, grupos, onSave, onClose }) {
           <option value="despachado">Despachado (Facturación Clientes)</option>
           <option value="busint_unidades">Unidades movidas en Busint (por proceso)</option>
           <option value="base_dado_por_cumplido">Base Administrativa (Dado por Cumplido)</option>
+          <option value="reparto_despacho">Reparto por Despacho (Base × Cantidad Despachada, entre varias áreas)</option>
         </select>
       </Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
-        "Despachado", "Unidades movidas en Busint" y "Base Administrativa" no usan la tabla de trabajadores por destajo -- ninguna de las tres usa los procesos ni la meta de abajo, esos campos son solo para "Unidades movidas en Busint" (o "Automático" con procesos marcados).
+        "Despachado", "Unidades movidas en Busint", "Base Administrativa" y "Reparto por Despacho" no usan la tabla de trabajadores por destajo -- ninguna usa los procesos ni la meta de abajo, esos campos son solo para "Unidades movidas en Busint" (o "Automático" con procesos marcados). Marca "Reparto por Despacho" en TODAS las áreas que deban repartirse el mismo valor (ej. Contabilidad, Diseño, Bodega, Gerencia, Mantenimiento, Tesorería, Talento Humano, Líderes de Área, Marketing) -- cada una recibe una parte proporcional a cuántos trabajadores tiene, comparada contra las demás que también tengan este modo marcado.
       </div>
       <Field label="Procesos que cuentan para Centro de Costo (opcional)">
         <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, maxHeight: 160, overflowY: "auto" }}>

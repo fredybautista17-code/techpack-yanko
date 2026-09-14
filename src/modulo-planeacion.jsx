@@ -3824,6 +3824,57 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   );
   const balanceBaseAdministrativa = baseAdministrativaPeriodo - costoAreaApoyo;
   const pctCoberturaBaseAdministrativa = costoAreaApoyo > 0 ? (baseAdministrativaPeriodo / costoAreaApoyo) * 100 : 0;
+  // (2026-09-14, a pedido de Fredy) Modo "Reparto por Despacho": varias
+  // areas de apoyo (Contabilidad, Diseno, Bodega, Gerencia, Mantenimiento,
+  // Tesoreria, Talento Humano, Lideres de Area, Marketing) se reparten un
+  // mismo "pastel" -- el valor generado por lo que Bodega REALMENTE
+  // despacho (no lo cortado) -- proporcional a cuantos trabajadores tiene
+  // cada una. Se lee de dado_por_cumplido_lotes, con la cantidad y fecha
+  // que confirma Bodega en Despachos Generales (estadoEnvio "enviado" o
+  // "recibido", fechaEnvio dentro del periodo): Base (baseValorUsado) x
+  // Cantidad Despachada real (cantidadDespachadaBodega si Bodega ya la
+  // confirmo, si no el estimado de Busint en cantDespachada -- mismo
+  // criterio que usa Contabilidad, ver despachadaEfectiva en
+  // modulo-contabilidad.jsx), sumado lote por lote (sin promediar nada).
+  const [lotesDespachadosReparto, setLotesDespachadosReparto] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
+      const filas = snap.docs
+        .map((d) => d.data())
+        .filter((l) => l.estado === "aprobado" && !l.eliminado && (l.estadoEnvio === "enviado" || l.estadoEnvio === "recibido") && l.fechaEnvio)
+        .map((l) => {
+          const cantidadDespachada = l.cantidadDespachadaBodega !== undefined ? (Number(l.cantidadDespachadaBodega) || 0) : (Number(l.cantDespachada) || 0);
+          return { fechaEnvio: l.fechaEnvio, valor: (Number(l.baseValorUsado) || 0) * cantidadDespachada };
+        });
+      setLotesDespachadosReparto(filas);
+    });
+    return () => unsub();
+  }, []);
+  const valorGeneradoDespachoPeriodo = useMemo(
+    () => lotesDespachadosReparto.filter((l) => enPeriodo(l.fechaEnvio)).reduce((s, l) => s + l.valor, 0),
+    [lotesDespachadosReparto, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]
+  );
+  const lotesRepartoPeriodo = useMemo(
+    () => lotesDespachadosReparto.filter((l) => enPeriodo(l.fechaEnvio)).length,
+    [lotesDespachadosReparto, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]
+  );
+  // Areas que hoy tienen elegido el modo "Reparto por Despacho" (se marca
+  // por area en Nomina -> Administrativo -> Area Interna, igual que los
+  // demas modos) -- entre esas se reparte el valor generado arriba.
+  const areasEnRepartoDespacho = useMemo(
+    () => (areasNomina || []).filter((a) => a.modoMedicion === "reparto_despacho").map((a) => a.nombre),
+    [areasNomina]
+  );
+  const trabajadoresEnRepartoDespacho = useMemo(() => {
+    const activos = (trabajadores || []).filter((t) => t.activo !== false && !t.medirComoBaseAdministrativa);
+    return activos.filter((t) => areasEnRepartoDespacho.includes(areaEnFecha(t, fechaReferenciaPeriodo)));
+  }, [trabajadores, areasEnRepartoDespacho, fechaReferenciaPeriodo]);
+  const totalTrabajadoresReparto = trabajadoresEnRepartoDespacho.length;
+  const trabajadoresEstaAreaReparto = trabajadoresArea.length;
+  const pctParticipacionReparto = totalTrabajadoresReparto > 0 ? (trabajadoresEstaAreaReparto / totalTrabajadoresReparto) * 100 : 0;
+  const valorAsignadoAreaReparto = valorGeneradoDespachoPeriodo * (pctParticipacionReparto / 100);
+  const balanceReparto = valorAsignadoAreaReparto - costoAreaApoyo;
+  const pctCoberturaReparto = costoAreaApoyo > 0 ? (valorAsignadoAreaReparto / costoAreaApoyo) * 100 : 0;
   const [despachadoData, setDespachadoData] = useState(null);
   const [cargandoDespachado, setCargandoDespachado] = useState(false);
   function rangoFechasPeriodo() {
@@ -3951,6 +4002,8 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
             ? "Nómina del área versus el despachado total de la empresa (Facturación Clientes) — pensado para áreas de sueldo fijo sin producción ni procesos propios que medir, como Administrativo o Bodega."
             : modoMedicion === "base_dado_por_cumplido"
             ? "Nómina del área versus la Base cobrada en los lotes de Dado por Cumplido aprobados — pensado para áreas administrativas (Gerencia, Contabilidad, Diseño) que esa Base ya está pensada para cubrir."
+            : modoMedicion === "reparto_despacho"
+            ? "Nómina del área versus su parte (según cantidad de trabajadores) del valor generado por lo que Bodega REALMENTE despachó (Base × Cantidad Despachada) — pensado para repartir ese valor entre varias áreas de apoyo a la vez."
             : "Nómina que hay que pagar en cada área versus el valor de lo que cada trabajador está produciendo (Registrar Producción de Nómina, valorado con el precio máximo vigente por proceso)."}
         </p>
       </div>
@@ -4070,6 +4123,27 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
               </div>
               {!lotesBaseAdministrativaPeriodo && (
                 <div style={{ fontSize: 11, color: C.amber }}>⚠ No hay lotes de Dado por Cumplido aprobados con fecha de aprobación en este período.</div>
+              )}
+            </>
+          ) : modoMedicion === "reparto_despacho" ? (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 }}>
+                <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(costoAreaApoyo)} color={C.violet} bg={C.violetBg} />
+                <KPI icon="💰" label={`Presupuesto (${etiquetaPeriodo})`} value={presupuestoPeriodoArea > 0 ? fmtMoney(presupuestoPeriodoArea) : "Sin presupuesto"} color={C.slate} bg={C.canvas} />
+                {presupuestoPeriodoArea > 0 && (
+                  <KPI icon={dentroPresupuesto ? "✅" : "⚠️"} label="Presupuesto nómina" value={`${pctPresupuesto.toFixed(0)}%`} color={dentroPresupuesto ? C.green : C.red} bg={dentroPresupuesto ? C.greenBg : C.redBg} sub={dentroPresupuesto ? "✓ Dentro del presupuesto" : "⚠ Se pasó del presupuesto"} />
+                )}
+                <KPI icon="🚚" label={`Valor generado por despacho (${etiquetaPeriodo})`} value={fmtMoney(valorGeneradoDespachoPeriodo)} color={C.blue} bg={C.blueBg} sub={`${fmtNum(lotesRepartoPeriodo)} lote(s) despachado(s), toda la empresa`} />
+                <KPI icon="👥" label="% Participación (trabajadores)" value={totalTrabajadoresReparto > 0 ? `${pctParticipacionReparto.toFixed(1)}%` : "—"} color={C.ink} bg={C.canvas} sub={`${fmtNum(trabajadoresEstaAreaReparto)} de ${fmtNum(totalTrabajadoresReparto)} entre las áreas del reparto`} />
+                <KPI icon="🧾" label="Valor asignado a esta área" value={fmtMoney(valorAsignadoAreaReparto)} color={C.blue} bg={C.blueBg} />
+                <KPI icon={balanceReparto >= 0 ? "✅" : "⚠️"} label="Balance (Asignado − Costo)" value={fmtMoney(balanceReparto)} color={balanceReparto >= 0 ? C.green : C.red} bg={balanceReparto >= 0 ? C.greenBg : C.redBg} />
+                <KPI icon="📊" label="% Cobertura" value={costoAreaApoyo > 0 ? `${pctCoberturaReparto.toFixed(0)}%` : "—"} color={C.ink} bg={C.canvas} sub="de la nómina del área, cubierta por lo asignado" />
+              </div>
+              {totalTrabajadoresReparto === 0 && (
+                <div style={{ fontSize: 11, color: C.amber }}>⚠ Ninguna área tiene marcado el modo "Reparto por Despacho" todavía (Nómina → Administrativo → Área Interna) — sin eso no hay entre quién repartir.</div>
+              )}
+              {!lotesRepartoPeriodo && (
+                <div style={{ fontSize: 11, color: C.amber }}>⚠ No hay lotes despachados (marcados como enviados/recibidos en Bodega) con fecha de envío en este período.</div>
               )}
             </>
           ) : (
