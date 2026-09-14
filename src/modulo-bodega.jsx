@@ -239,6 +239,16 @@ function EtapaContabilidadBadge({ lote }) {
     </span>
   );
 }
+// (2026-09-14, a pedido de Fredy) Franja de color a la izquierda de cada
+// tarjeta de Despachos Generales, segun en que va el despacho del lote
+// (distinto de EtapaContabilidadBadge, que es la etapa de aprobacion en
+// Contabilidad) -- para que las tarjetas se vean "mas llenas" sin agregar
+// otro badge de texto encima del que ya hay.
+function colorEstadoEnvioLote(l) {
+  if (l.estadoEnvio === "recibido") return C.green;
+  if (l.estadoEnvio === "enviado") return C.blue;
+  return C.amber;
+}
 function Tabla({ columnas, filas, vacio, onRowClick }) {
   if (!filas.length) {
     return <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>{vacio || "Sin datos."}</div>;
@@ -3124,6 +3134,10 @@ function EstadoDespachoView({ onVolver, onLogout }) {
   const [fechaRecepcionPorDespacho, setFechaRecepcionPorDespacho] = useState({});
   const [guardandoId, setGuardandoId] = useState(null);
   const [vaciando, setVaciando] = useState(false);
+  // (2026-09-14, a pedido de Fredy) "Enviados" colapsado: cada despacho se
+  // ve solo con su fecha, y se abre con clic para ver el detalle completo
+  // (antes se veia siempre todo expandido, se sentia muy cargado).
+  const [despachoAbiertoId, setDespachoAbiertoId] = useState(null);
 
   // (2026-09-09, rediseño a pedido de Fredy) Panel de "Crear despacho":
   // antes, "Nuevo despacho" solo generaba un código vacío y uno lo dejaba
@@ -3815,42 +3829,55 @@ function EstadoDespachoView({ onVolver, onLogout }) {
           (!gruposEnviados.length ? (
             <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay lotes enviados esperando llegar.</div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              {gruposEnviados.map(({ despacho, despachoId, lotesGrupo }) => (
-                <div key={despachoId} style={{ border: `1.5px solid ${C.border}`, borderRadius: 12, padding: 12, background: C.white }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 10, paddingBottom: 8, borderBottom: `1px solid ${C.border}` }}>
-                    <div>
-                      <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>{despacho?.codigo || "(despacho)"} — {despacho?.cliente || "(sin cliente)"}</div>
-                      <div style={{ fontSize: 12, color: C.slate }}>
-                        {despacho?.transportador || "—"} · Guía {despacho?.numeroGuia || "—"}
-                        {despacho?.numeroFactura ? <> · Factura {despacho.numeroFactura}</> : null}
-                        {" "}· Enviado el {lotesGrupo[0]?.fechaEnvio || "—"}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {gruposEnviados.map(({ despacho, despachoId, lotesGrupo }) => {
+                const abierto = despachoAbiertoId === despachoId;
+                return (
+                  <div key={despachoId} style={{ border: `1.5px solid ${C.border}`, borderRadius: 12, padding: 12, background: C.white }}>
+                    <div
+                      onClick={() => setDespachoAbiertoId(abierto ? null : despachoId)}
+                      style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12, cursor: "pointer", paddingBottom: abierto ? 8 : 0, borderBottom: abierto ? `1px solid ${C.border}` : "none", marginBottom: abierto ? 10 : 0 }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>🚚 Enviado el {lotesGrupo[0]?.fechaEnvio ? fmtFechaISO(lotesGrupo[0].fechaEnvio) : "—"}</div>
+                        <div style={{ fontSize: 12, color: C.slate }}>{despacho?.codigo || "(despacho)"} — {despacho?.cliente || "(sin cliente)"} · {lotesGrupo.length} lote(s)</div>
                       </div>
+                      <div style={{ fontSize: 16, color: C.slate, alignSelf: "center" }}>{abierto ? "▲" : "▼"}</div>
                     </div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-                      <div style={{ minWidth: 150 }}>
-                        <Field label="Fecha de llegada">
-                          <FInput type="date" value={fechaRecepcionPorDespacho[despachoId] ?? today()} onChange={(v) => setFechaRecepcionPorDespacho((f) => ({ ...f, [despachoId]: v }))} />
-                        </Field>
-                      </div>
-                      <Btn variant="success" small onClick={() => marcarDespachoComoRecibido(despachoId)} disabled={guardandoId === despachoId}>
-                        {guardandoId === despachoId ? "Guardando..." : "✅ Marcar como recibido"}
-                      </Btn>
-                      <Btn variant="ghost" small onClick={() => eliminarDespacho(despachoId)} disabled={guardandoId === despachoId}>
-                        🗑️ Eliminar
-                      </Btn>
-                    </div>
+                    {abierto && (
+                      <>
+                        <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 10 }}>
+                          <div style={{ fontSize: 12, color: C.slate, alignSelf: "center" }}>
+                            {despacho?.transportador || "—"} · Guía {despacho?.numeroGuia || "—"}
+                            {despacho?.numeroFactura ? <> · Factura {despacho.numeroFactura}</> : null}
+                          </div>
+                          <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+                            <div style={{ minWidth: 150 }}>
+                              <Field label="Fecha de llegada">
+                                <FInput type="date" value={fechaRecepcionPorDespacho[despachoId] ?? today()} onChange={(v) => setFechaRecepcionPorDespacho((f) => ({ ...f, [despachoId]: v }))} />
+                              </Field>
+                            </div>
+                            <Btn variant="success" small onClick={() => marcarDespachoComoRecibido(despachoId)} disabled={guardandoId === despachoId}>
+                              {guardandoId === despachoId ? "Guardando..." : "✅ Marcar como recibido"}
+                            </Btn>
+                            <Btn variant="ghost" small onClick={() => eliminarDespacho(despachoId)} disabled={guardandoId === despachoId}>
+                              🗑️ Eliminar
+                            </Btn>
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                          {lotesGrupo.map((l) => (
+                            <div key={l.id} style={{ fontSize: 12, color: C.ink, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8, background: C.canvas }}>
+                              <strong>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"} <EtapaContabilidadBadge lote={l} /> · Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
+                              {!!(l.cobrosBodega || []).length && <> · Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney(c.valor)}`).join(" / ")}</>}
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
                   </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    {lotesGrupo.map((l) => (
-                      <div key={l.id} style={{ fontSize: 12, color: C.ink, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8, background: C.canvas }}>
-                        <strong>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"} <EtapaContabilidadBadge lote={l} /> · Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
-                        {!!(l.cobrosBodega || []).length && <> · Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney(c.valor)}`).join(" / ")}</>}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ))}
 
@@ -3893,6 +3920,14 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
   const [form, setForm] = useState({ cantidadDespachadaBodega: "", sacrificios: "", segundas: "", cobros: [] });
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
+  // (2026-09-14, a pedido de Fredy) "Marcar como recibidos hasta una
+  // fecha" -- para lotes viejos que se quedaron pegados en "Por enviar"
+  // (o "Enviado" sin nunca marcarse "Recibido") y ya no vale la pena ir
+  // uno por uno. Cierra de una vez todos los aprobados con fecha del lote
+  // hasta la elegida, sin importar en que estadoEnvio esten hoy.
+  const [fechaCorteRecibidos, setFechaCorteRecibidos] = useState(today());
+  const [marcandoRecibidos, setMarcandoRecibidos] = useState(false);
+  const [marcadosOkCantidad, setMarcadosOkCantidad] = useState(null);
 
   useEffect(() => {
     const unsubLotes = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
@@ -3983,6 +4018,39 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
       setGuardadoOk(true);
     } finally {
       setGuardando(false);
+    }
+  }
+
+  async function marcarRecibidosHastaFecha() {
+    if (!fechaCorteRecibidos) return;
+    const candidatos = lotes.filter(
+      (l) => l.estado === "aprobado" && !l.eliminado && l.estadoEnvio !== "recibido" && l.fecha && l.fecha <= fechaCorteRecibidos
+    );
+    if (!candidatos.length) {
+      alert(`No hay lotes pendientes de Recibido con fecha ${fmtFechaISO(fechaCorteRecibidos)} o antes.`);
+      return;
+    }
+    if (
+      !window.confirm(
+        `¿Marcar como Recibidos los ${candidatos.length} lote(s) con fecha ${fmtFechaISO(fechaCorteRecibidos)} o antes (estén "Por enviar" o "Enviados")? Esta acción no se puede deshacer lote por lote.`
+      )
+    )
+      return;
+    setMarcandoRecibidos(true);
+    setMarcadosOkCantidad(null);
+    try {
+      const CHUNK = 450;
+      for (let i = 0; i < candidatos.length; i += CHUNK) {
+        const grupo = candidatos.slice(i, i + CHUNK);
+        const batch = writeBatch(db);
+        grupo.forEach((l) => {
+          batch.set(doc(db, "dado_por_cumplido_lotes", l.id), { estadoEnvio: "recibido", fechaRecibido: l.fechaEnvio || l.fecha }, { merge: true });
+        });
+        await batch.commit();
+      }
+      setMarcadosOkCantidad(candidatos.length);
+    } finally {
+      setMarcandoRecibidos(false);
     }
   }
 
@@ -4109,7 +4177,22 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
           )}
         </div>
 
-        <div style={{ fontSize: 13, fontWeight: 800, color: C.ink, marginBottom: 10 }}>Ya registrados ({registradosActivos.length})</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: C.ink }}>Ya registrados ({registradosActivos.length})</div>
+          <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+            <div style={{ width: 160 }}>
+              <Field label="Marcar recibidos hasta">
+                <FInput type="date" value={fechaCorteRecibidos} onChange={setFechaCorteRecibidos} />
+              </Field>
+            </div>
+            <Btn variant="secondary" small onClick={marcarRecibidosHastaFecha} disabled={marcandoRecibidos}>
+              {marcandoRecibidos ? "Marcando..." : "✅ Marcar como recibidos hasta esa fecha"}
+            </Btn>
+          </div>
+        </div>
+        {marcadosOkCantidad !== null && (
+          <div style={{ fontSize: 12, color: C.green, fontWeight: 700, marginBottom: 10 }}>✅ {marcadosOkCantidad} lote(s) marcado(s) como Recibidos.</div>
+        )}
         {loading ? (
           <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>Cargando...</div>
         ) : !registradosActivos.length ? (
@@ -4120,10 +4203,10 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
               <div
                 key={l.id}
                 onClick={() => { setMostrarNuevo(true); setBusquedaLote(String(l.numLote || "")); cargarLoteEnFormulario(l); }}
-                style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, cursor: "pointer", background: C.white }}
+                style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", borderTop: `1px solid ${C.border}`, borderRight: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}`, borderLeft: `4px solid ${colorEstadoEnvioLote(l)}`, borderRadius: 8, fontSize: 12, cursor: "pointer", background: C.white }}
               >
                 <span>
-                  <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"} — {l.cliente || "—"} <EtapaContabilidadBadge lote={l} />
+                  <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> · {l.fecha ? fmtFechaISO(l.fecha) : "—"} — {l.referencia || "(sin referencia)"} — {l.cliente || "—"} <EtapaContabilidadBadge lote={l} />
                 </span>
                 <span style={{ color: C.slate }}>
                   Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
@@ -4143,10 +4226,10 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
               <div
                 key={l.id}
                 onClick={() => { setMostrarNuevo(true); setBusquedaLote(String(l.numLote || "")); cargarLoteEnFormulario(l); }}
-                style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, cursor: "pointer", background: C.canvas }}
+                style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", borderTop: `1px solid ${C.border}`, borderRight: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}`, borderLeft: `4px solid ${colorEstadoEnvioLote(l)}`, borderRadius: 8, fontSize: 12, cursor: "pointer", background: C.canvas }}
               >
                 <span>
-                  <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"} — {l.cliente || "—"} <EtapaContabilidadBadge lote={l} />
+                  <strong style={{ color: C.ink }}>Lote {l.numLote}</strong> · {l.fecha ? fmtFechaISO(l.fecha) : "—"} — {l.referencia || "(sin referencia)"} — {l.cliente || "—"} <EtapaContabilidadBadge lote={l} />
                 </span>
                 <span style={{ color: C.slate }}>
                   Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
