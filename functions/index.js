@@ -1271,7 +1271,17 @@ async function obtenerTokenAccesoDropbox() {
   return datos.access_token;
 }
 
-async function subirArchivoADropbox(buffer, rutaDestino) {
+function esperarMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// (2026-09-14) Dropbox a veces responde 409 "path/conflict/file" cuando dos
+// subidas al MISMO archivo llegan casi al mismo tiempo (p. ej. si se le da
+// "Forzar ejecución" más de una vez seguida, o la corrida automática de las
+// 6 a.m. coincide con una prueba manual) -- es una carrera transitoria, no un
+// problema de la ruta. Reintentamos unas pocas veces con espera antes de
+// darnos por vencidos.
+async function subirArchivoADropbox(buffer, rutaDestino, intento = 1) {
   const accessToken = await obtenerTokenAccesoDropbox();
   const resp = await fetch("https://content.dropboxapi.com/2/files/upload", {
     method: "POST",
@@ -1284,6 +1294,16 @@ async function subirArchivoADropbox(buffer, rutaDestino) {
   });
   if (!resp.ok) {
     const texto = await resp.text().catch(() => "");
+    const esConflictoTransitorio = resp.status === 409 && texto.includes("path/conflict");
+    const MAX_INTENTOS = 3;
+    if (esConflictoTransitorio && intento < MAX_INTENTOS) {
+      logger.warn(
+        `Dropbox respondió 409 (conflicto transitorio) al subir el archivo -- reintentando (intento ${intento} de ${MAX_INTENTOS})`,
+        { rutaDestino, texto }
+      );
+      await esperarMs(3000 * intento);
+      return subirArchivoADropbox(buffer, rutaDestino, intento + 1);
+    }
     throw new Error(`Dropbox respondió ${resp.status} al subir el archivo: ${texto}`);
   }
   return resp.json();

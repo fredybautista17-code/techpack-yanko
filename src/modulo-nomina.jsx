@@ -3901,21 +3901,32 @@ function diasHabilesDeAusencias(ausencias, motivos, trabajador, turno, inicio, f
 // incluidos fines de semana) que caen dentro de alguna ausencia con
 // motivo en `motivos`.
 function diasCalendarioPorMotivos(ausencias, trabajadorId, motivos, desde, hasta) {
-  // (2026-09-12) Cada ausencia se mide como un bloque independiente con el
-  // metodo 360 (ver diasEntre360) y se suman -- ya no se deduplican fecha
-  // por fecha con un Set de dias reales. En la practica esto no cambia el
-  // resultado salvo que existan 2 ausencias registradas para el mismo
-  // trabajador con fechas traslapadas, caso que no deberia ocurrir.
-  let dias = 0;
+  // (2026-09-14, corregido a pedido de Fredy) Cada ausencia se mide como un
+  // bloque independiente con el metodo 360 (ver diasEntre360) -- pero antes
+  // de sumarlos se FUSIONAN los rangos que se traslapan o quedan duplicados
+  // para el mismo trabajador/motivo, para que el mismo dia de calendario
+  // nunca cuente mas de una vez (caso real encontrado: dos ausencias de
+  // Licencia No Remunerada traslapadas dejaban el descuento al doble).
+  const intervalos = [];
   (ausencias || []).forEach((a) => {
     if (a.trabajadorId !== trabajadorId) return;
     if (!motivos.includes(a.motivo)) return;
     const inicio = a.fechaInicio > desde ? a.fechaInicio : desde;
     const fin = a.fechaFin < hasta ? a.fechaFin : hasta;
     if (inicio > fin) return;
-    dias += diasEntre360(inicio, fin);
+    intervalos.push([inicio, fin]);
   });
-  return dias;
+  intervalos.sort((a, b) => a[0].localeCompare(b[0]));
+  const fusionados = [];
+  intervalos.forEach(([inicio, fin]) => {
+    const ultimo = fusionados[fusionados.length - 1];
+    if (ultimo && inicio <= ultimo[1]) {
+      if (fin > ultimo[1]) ultimo[1] = fin;
+    } else {
+      fusionados.push([inicio, fin]);
+    }
+  });
+  return fusionados.reduce((s, [inicio, fin]) => s + diasEntre360(inicio, fin), 0);
 }
 function diasCalendarioSinSueldo(ausencias, trabajadorId, desde, hasta) {
   return diasCalendarioPorMotivos(ausencias, trabajadorId, MOTIVOS_SIN_SUELDO, desde, hasta);
