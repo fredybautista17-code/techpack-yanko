@@ -3712,9 +3712,6 @@ function NuevaReprogramacionView({ capsulas, config, onAddCapsula, onAddRef, onG
   const [referencia, setReferencia] = useState("");
   const [buscando, setBuscando] = useState(false);
   const [resultado, setResultado] = useState(null);
-  const [capsulaElegidaNombre, setCapsulaElegidaNombre] = useState("");
-  const [crearCapsula, setCrearCapsula] = useState(false);
-  const [nuevaCapsula, setNuevaCapsula] = useState({ name: "", cliente: "", mes: "" });
   const [manual, setManual] = useState({ tipo: "", colombiaCurva: "", colombiaCantidad: "", venezuelaCurva: "", venezuelaCantidad: "", precio: "", observacionesCliente: "" });
   const [guardando, setGuardando] = useState(false);
   async function buscar() {
@@ -3722,8 +3719,6 @@ function NuevaReprogramacionView({ capsulas, config, onAddCapsula, onAddRef, onG
     if (!ref) return;
     setBuscando(true);
     setResultado(null);
-    setCapsulaElegidaNombre("");
-    setCrearCapsula(false);
     try {
       const llamarRef = httpsCallable(functionsClient, "probarReferenciaBusint");
       const respRef = await llamarRef({ ref });
@@ -3764,47 +3759,21 @@ function NuevaReprogramacionView({ capsulas, config, onAddCapsula, onAddRef, onG
   async function agregarFila() {
     if (!resultado?.ok) return;
     const ref = referencia.trim();
-    let capId, refId, refObj;
+    let capId = null, refId = null, refObj = null;
     if (resultado.capsulaExistente) {
       capId = resultado.capsulaExistente.cap.id;
       refObj = resultado.capsulaExistente.ref;
       refId = refObj.id;
-    } else {
-      const nombreRef = resultado.datosBusint.nombre || ref;
-      const nuevoRefObj = {
-        id: uid(), name: nombreRef, reference: ref, categoria: resultado.datosBusint.categoria,
-        silueta: resultado.datosBusint.silueta, linea: resultado.datosBusint.lineaCruda, rango: resultado.datosBusint.rango,
-        fromProtoId: null, status: "borrador", currentStage: "ilustracion", stageStartedAt: today(), assignedTo: "", createdAt: today(),
-        image: null, colores: [], tallas: resultado.datosBusint.rango ? [resultado.datosBusint.rango] : [], tipoTela: resultado.datosBusint.tela,
-        baseMolderia: "", numPrototipo: "", bom: [], pom: [], approvals: [],
-        observations: [{ id: uid(), user: "Sistema", role: "Sistema", text: "Referencia creada desde Nueva Reprogramación (Preórdenes).", date: nowISO(), type: "info", done: true }],
-      };
-      if (crearCapsula) {
-        if (!nuevaCapsula.name) { alert("Ponle un nombre a la cápsula nueva."); return; }
-        capId = uid();
-        const cap = { id: capId, name: nuevaCapsula.name, season: "", cliente: nuevaCapsula.cliente, mes: nuevaCapsula.mes, assignedTo: "", createdAt: today(), referencias: [], ilustracionEstado: "pendiente", observacionesIlustracion: [] };
-        await onAddCapsula(cap);
-      } else if (capsulaElegidaNombre) {
-        capId = (capsulas || []).find((c) => c.name === capsulaElegidaNombre)?.id;
-        if (!capId) { alert("No se encontró esa cápsula, elige otra."); return; }
-      } else {
-        alert("Elige una cápsula existente o crea una nueva para esta referencia.");
-        return;
-      }
-      await onAddRef(capId, nuevoRefObj);
-      refObj = nuevoRefObj;
-      refId = nuevoRefObj.id;
     }
     setFilas((fs) => [...fs, {
-      capsulaId: capId, refId, reference: ref, name: refObj.name, image: refObj.image,
+      capsulaId: capId, refId, reference: ref, name: refObj?.name || resultado.datosBusint.nombre || ref, image: refObj?.image || null,
       categoria: resultado.datosBusint.categoria, silueta: resultado.datosBusint.silueta, rango: resultado.datosBusint.rango,
       tipoTela: resultado.datosBusint.tela, _tipo: manual.tipo || resultado.datosBusint.tipo,
       _colombiaCurva: manual.colombiaCurva, _colombiaCantidad: manual.colombiaCantidad,
       _venezuelaCurva: manual.venezuelaCurva, _venezuelaCantidad: manual.venezuelaCantidad,
       _precio: manual.precio, _observacionesCliente: manual.observacionesCliente,
     }]);
-    setReferencia(""); setResultado(null); setCapsulaElegidaNombre(""); setCrearCapsula(false);
-    setNuevaCapsula({ name: "", cliente: "", mes: "" });
+    setReferencia(""); setResultado(null);
     setManual({ tipo: "", colombiaCurva: "", colombiaCantidad: "", venezuelaCurva: "", venezuelaCantidad: "", precio: "", observacionesCliente: "" });
   }
   function quitarFila(i) { setFilas((fs) => fs.filter((_, idx) => idx !== i)); }
@@ -3853,24 +3822,7 @@ function NuevaReprogramacionView({ capsulas, config, onAddCapsula, onAddRef, onG
             {resultado.capsulaExistente ? (
               <div style={{ fontSize: 13, color: T.jade, fontWeight: 700, marginBottom: 10 }}>✓ Ya existe en la cápsula "{resultado.capsulaExistente.cap.name}" — se va a usar esa misma.</div>
             ) : (
-              <div style={{ marginBottom: 14 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginBottom: 8 }}>Esta referencia todavía no está en ninguna cápsula — elige una o crea una nueva</div>
-                {!crearCapsula ? (
-                  <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
-                    <div style={{ flex: 1 }}><FSel value={capsulaElegidaNombre} onChange={setCapsulaElegidaNombre} options={(capsulas || []).map((c) => c.name)} /></div>
-                    <Btn variant="secondary" small onClick={() => setCrearCapsula(true)}>+ Cápsula nueva</Btn>
-                  </div>
-                ) : (
-                  <div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 8 }}>
-                      <FInput value={nuevaCapsula.name} onChange={(v) => setNuevaCapsula((n) => ({ ...n, name: v }))} placeholder="Nombre de la cápsula" />
-                      <FSel value={nuevaCapsula.cliente} onChange={(v) => setNuevaCapsula((n) => ({ ...n, cliente: v }))} options={(config?.clientes || []).map((c) => c.nombre)} />
-                      <FSel value={nuevaCapsula.mes} onChange={(v) => setNuevaCapsula((n) => ({ ...n, mes: v }))} options={MONTHS_ES} />
-                    </div>
-                    <Btn variant="secondary" small onClick={() => setCrearCapsula(false)}>Usar una existente en vez</Btn>
-                  </div>
-                )}
-              </div>
+              <div style={{ fontSize: 13, color: T.slate, fontWeight: 600, marginBottom: 10 }}>ℹ Esta referencia todavía no está en ninguna cápsula de Diseño — se agrega igual a la preorden, sin vincular a una cápsula.</div>
             )}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
               <Field label="Tipo (Dama/Caballero/Niño)"><FInput value={manual.tipo || resultado.datosBusint.tipo} onChange={(v) => setManual((m) => ({ ...m, tipo: v }))} placeholder="Si no se clasificó" /></Field>
