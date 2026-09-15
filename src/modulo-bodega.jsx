@@ -3247,6 +3247,25 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
   const [nombreTransportadoraNueva, setNombreTransportadoraNueva] = useState("");
   const [guardandoTransportadora, setGuardandoTransportadora] = useState(false);
 
+  // (2026-09-15, a pedido de Fredy) "Forzar ejecución" de la subida a
+  // Dropbox de la Bitácora de Despachos -- normalmente corre sola todos los
+  // días a las 6am, este botón es para probar sin esperar a esa hora (solo
+  // admin -- el backend también lo valida con verificarLlamadorEsAdmin).
+  const [subiendoDropbox, setSubiendoDropbox] = useState(false);
+  async function subirBitacoraADropboxAhora() {
+    setSubiendoDropbox(true);
+    try {
+      const llamar = httpsCallable(functionsClient, "exportarBitacoraDespachosADropboxAhora");
+      const resp = await llamar();
+      const d = resp.data || {};
+      alert(`Listo — se subió la bitácora a Dropbox con ${d.totalLotes ?? 0} lote(s).`);
+    } catch (err) {
+      alert("No se pudo subir la bitácora a Dropbox: " + (err?.message || err));
+    } finally {
+      setSubiendoDropbox(false);
+    }
+  }
+
   useEffect(() => {
     const unsubLotes = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
       setLotes(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
@@ -3767,6 +3786,9 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <Btn variant="ghost" small onClick={descargarBitacora}>📥 Descargar bitácora</Btn>
+            <Btn variant="ghost" small onClick={subirBitacoraADropboxAhora} disabled={subiendoDropbox}>
+              {subiendoDropbox ? "Subiendo..." : "☁️ Forzar subida a Dropbox"}
+            </Btn>
             <Btn variant="danger" small onClick={vaciarEstadoDespacho} disabled={vaciando}>
               {vaciando ? "Vaciando..." : "🗑 Vaciar Estado de Despacho"}
             </Btn>
