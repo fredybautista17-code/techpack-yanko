@@ -4942,7 +4942,7 @@ const RECIPIENTES_APOYO = ["Dayana", "Karen", "Yuliana"];
 // Corte, Diseño, etc.) sigue viendo SOLO su área -- eso se resuelve en vivo
 // contra "Área Interna" en Usuarios, igual que ya hace la Auditoría Busint
 // vs. Nómina, así que no hay que tocar código si cambia quién es líder.
-const DESTINATARIOS_ASISTENCIA_COMPLETA = ["Fredy Bautista", "Yuleisi Moreno", "Maria Fernanda Paez"];
+const DESTINATARIOS_ASISTENCIA_COMPLETA = ["Fredy Bautista", "Yuleisi", "Maria Fernanda Paez"];
 
 function normalizarNombreAsistencia(s) {
   return String(s || "").trim().toUpperCase().replace(/\s+/g, " ");
@@ -5726,18 +5726,31 @@ exports.enviarAsistenciaDiaria = onSchedule(
   },
   async () => {
     const fecha = fechaHoyBogota();
-    const [areasSnap, trabajadoresSnap, diasTrabajadosSnap, usersSnap, configSnap] = await Promise.all([
+    const [areasSnap, trabajadoresSnap, diasTrabajadosSnap, usersSnap, configSnap, anomaliasSnap] = await Promise.all([
       db.collection("nomina_areas").get(),
       db.collection("nomina_trabajadores").get(),
       db.collection("nomina_dias_trabajados").where("fecha", "==", fecha).get(),
       db.collection("users").get(),
       db.collection("config").doc("main").get(),
+      db.collection("nomina_anomalias_huellero").get(),
     ]);
 
     const areas = areasSnap.docs.map((d) => d.data());
     const todosTrabajadores = trabajadoresSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
     const trabajadoresActivos = todosTrabajadores.filter((t) => t.activo !== false);
     const usuarios = usersSnap.docs.map((d) => d.data());
+    // (2026-09-15, a pedido de Fredy) Anomalías = marcó el huellero UNA
+    // sola vez ese día (entrada sin salida, o al revés), sin permiso que
+    // lo explique -- ya viene calculado y guardado desde Reporte de
+    // Asistencia (botón "Evaluar anomalías Entrada/Salida" en
+    // modulo-nomina.jsx), aquí solo se lee y se reparte por área igual
+    // que el resto de este correo. La recurrencia cuenta el histórico
+    // completo (ajustadas incluidas) -- es solo informativa, nunca
+    // dispara nada solo por repetirse.
+    const anomalias = anomaliasSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
+    const recurrenciaPorNombre = {};
+    anomalias.forEach((a) => { recurrenciaPorNombre[a.nombreNorm] = (recurrenciaPorNombre[a.nombreNorm] || 0) + 1; });
+    const anomaliasPendientes = anomalias.filter((a) => a.estado !== "ajustado");
 
     if (!trabajadoresActivos.length) {
       logger.info("enviarAsistenciaDiaria: no hay trabajadores activos, no se manda nada");
@@ -5775,6 +5788,21 @@ exports.enviarAsistenciaDiaria = onSchedule(
       return `<h3 style="margin:18px 0 6px;">${nombreArea} <span style="font-size:12px;color:#5A5A7A;font-weight:400">(${totalAsistio}/${personas.length} asistió)</span></h3><table border="1" cellpadding="6" style="border-collapse:collapse;width:100%"><tr><th>Nombre</th><th>Estado</th></tr>${filas}</table>`;
     };
 
+    // (2026-09-15, a pedido de Fredy) Bloque aparte con las anomalías
+    // pendientes de esta área (marcó solo entrada o solo salida) -- vacío
+    // si el área no tiene ninguna, para no ensuciar el correo la mayoría
+    // de los días.
+    const fmtBloqueAnomalias = (nombreArea) => {
+      const propias = anomaliasPendientes.filter((a) => (a.area || "Sin asignar") === nombreArea);
+      if (!propias.length) return "";
+      const filas = propias
+        .slice()
+        .sort((a, b) => a.fecha.localeCompare(b.fecha))
+        .map((a) => `<tr><td>${a.nombre || "(sin nombre)"}</td><td>${a.fecha}</td><td>${a.tipo === "falta_entrada" ? "Entrada" : "Salida"}</td><td style="text-align:center">${recurrenciaPorNombre[a.nombreNorm] || 1}</td></tr>`)
+        .join("");
+      return `<h3 style="margin:18px 0 6px;color:#b45309;">⚠ Anomalías por corroborar (marcó solo entrada o solo salida)</h3><p style="font-size:12px;color:#5A5A7A;margin:0 0 8px;">No tenían un permiso registrado que explique la marca faltante. Se ajustan desde Nómina → Anomalías Huellero.</p><table border="1" cellpadding="6" style="border-collapse:collapse;width:100%"><tr><th>Nombre</th><th>Fecha</th><th>Le faltó</th><th>Veces (histórico)</th></tr>${filas}</table>`;
+    };
+
     const transporte = crearTransporte();
     let correosEnviados = 0;
     const bloquesTodas = [];
@@ -5782,7 +5810,8 @@ exports.enviarAsistenciaDiaria = onSchedule(
     for (const area of areas) {
       const personasArea = trabajadoresActivos.filter((t) => (t.area || "Sin asignar") === area.nombre);
       if (!personasArea.length) continue;
-      bloquesTodas.push(fmtBloqueArea(area.nombre, personasArea));
+      const bloqueAnomaliasArea = fmtBloqueAnomalias(area.nombre);
+      bloquesTodas.push(fmtBloqueArea(area.nombre, personasArea) + bloqueAnomaliasArea);
 
       const lideres = usuarios
         .filter((u) => u.areaNomina === area.nombre && u.email && !correosCompletos.has(u.email))
@@ -5792,7 +5821,7 @@ exports.enviarAsistenciaDiaria = onSchedule(
           transporte,
           lideres,
           `Asistencia de hoy (${fecha}) — ${area.nombre}`,
-          `<div style="max-width:640px;margin:0 auto;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;"><h2 style="margin-bottom:2px;">Asistencia de hoy</h2><p style="color:#5A5A7A;font-size:13px;margin-top:0;">${fecha}</p>${fmtBloqueArea(area.nombre, personasArea)}</div>`
+          `<div style="max-width:640px;margin:0 auto;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;"><h2 style="margin-bottom:2px;">Asistencia de hoy</h2><p style="color:#5A5A7A;font-size:13px;margin-top:0;">${fecha}</p>${fmtBloqueArea(area.nombre, personasArea)}${bloqueAnomaliasArea}</div>`
         );
         correosEnviados++;
       }
@@ -5803,7 +5832,7 @@ exports.enviarAsistenciaDiaria = onSchedule(
     // invisibles.
     const sinAreaPersonas = trabajadoresActivos.filter((t) => !t.area);
     if (sinAreaPersonas.length) {
-      bloquesTodas.push(fmtBloqueArea("Sin área asignada", sinAreaPersonas));
+      bloquesTodas.push(fmtBloqueArea("Sin área asignada", sinAreaPersonas) + fmtBloqueAnomalias("Sin asignar"));
     }
 
     if (correosCompletos.size) {

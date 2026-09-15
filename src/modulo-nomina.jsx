@@ -3446,7 +3446,7 @@ function diasEntre360(desdeISO, hastaISO) {
   const d2 = Math.min(d2raw, 30);
   return (y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1) + 1;
 }
-function ReporteAsistenciaView({ ausencias, trabajadores, turnos, onGuardarTrabajador }) {
+function ReporteAsistenciaView({ ausencias, trabajadores, turnos, anomaliasHuellero, onGuardarTrabajador }) {
   const fileRef = useRef(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState("");
@@ -3505,6 +3505,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, onGuardarTraba
       const hastaISO = fechaHuelleroAISO(hasta);
       const diasPeriodo = listaDeDiasISO(desdeISO, hastaISO);
 
+      const ultimoDiaPeriodo = diasPeriodo[diasPeriodo.length - 1];
       const filas = empleados.map((emp) => {
         const diasConMarca = new Set(emp.marcas.map((m) => m.fechaHora.split(" ")[0]).map((f) => fechaHuelleroAISO(f)));
         const nombreNorm = normalizarNombreHuellero(emp.nombre);
@@ -3529,6 +3530,34 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, onGuardarTraba
           return { fecha: iso, motivo: motivo ? motivo.motivo : null };
         });
         const sinJustificar = detalle.filter((d) => !d.motivo);
+        // (2026-09-15, a pedido de Fredy) Anomalías Entrada/Salida: días
+        // donde SÍ marcó el huellero pero solo una vez (entrada sin salida,
+        // o al revés) -- se le olvidó registrar la otra. El último día del
+        // período se excluye porque el huellero se sube con el mes en
+        // curso completo hasta hoy: hoy todavía está en curso y no se le
+        // puede exigir la salida todavía (eso lo sigue cubriendo el correo
+        // de asistencia normal, que solo mira si ya marcó entrada). Si el
+        // hueco coincide con un permiso ya registrado ese día, no cuenta
+        // como anomalía.
+        const tiposPorDia = {};
+        emp.marcas.forEach((m) => {
+          const iso = fechaHuelleroAISO(m.fechaHora.split(" ")[0]);
+          if (!iso || (m.tipo !== "Entrada" && m.tipo !== "Salida")) return;
+          if (!tiposPorDia[iso]) tiposPorDia[iso] = new Set();
+          tiposPorDia[iso].add(m.tipo);
+        });
+        const anomaliasEntradaSalida = diasPeriodo
+          .filter((iso) => iso !== ultimoDiaPeriodo && diasConMarca.has(iso) && diaEsperado(iso, turnoDelRegistro))
+          .map((iso) => {
+            const tipos = tiposPorDia[iso] || new Set();
+            if (tipos.has("Entrada") && tipos.has("Salida")) return null;
+            const faltante = tipos.has("Entrada") ? "Salida" : tipos.has("Salida") ? "Entrada" : null;
+            if (!faltante) return null;
+            const motivo = ausenciasPersona.find((a) => a.fechaInicio <= iso && iso <= a.fechaFin);
+            if (motivo) return null;
+            return { fecha: iso, faltante, area: trabajadorDelRegistro?.trabajador?.area || "" };
+          })
+          .filter(Boolean);
         return {
           id: emp.id,
           nombre: emp.nombre,
@@ -3543,6 +3572,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, onGuardarTraba
           diasSinMarca: detalle.length,
           sinJustificar: sinJustificar.length,
           detalle,
+          anomaliasEntradaSalida,
         };
       });
 
@@ -3645,6 +3675,58 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, onGuardarTraba
     }
   }
 
+  // (2026-09-15, a pedido de Fredy) Evalúa y guarda las anomalías de
+  // Entrada/Salida (ver anomaliasEntradaSalida más arriba) en su propia
+  // colección -- de ahí las lee tanto la pantalla "Anomalías Huellero"
+  // (para que el líder las ajuste) como el correo diario de asistencia de
+  // las 9am (para avisarle). Si el líder ya la marcó "Ajustado por el
+  // líder", este botón NUNCA la vuelve a poner en pendiente, aunque se
+  // vuelva a subir el mismo huellero -- solo agrega anomalías nuevas o
+  // quita las que ya no aplican (ej. se corrigió un dato) y seguían
+  // pendientes sin resolver.
+  const [guardandoAnomalias, setGuardandoAnomalias] = useState(false);
+  const [anomaliasGuardadas, setAnomaliasGuardadas] = useState(null);
+  async function guardarAnomaliasEnAtlas() {
+    if (!reporte) return;
+    setGuardandoAnomalias(true);
+    try {
+      const batch = writeBatch(db);
+      let n = 0;
+      const diasCerrados = reporte.diasPeriodo.slice(0, -1);
+      for (const f of reporte.filas) {
+        const nombreNorm = normalizarNombreHuellero(f.nombre);
+        const porFecha = new Map(f.anomaliasEntradaSalida.map((a) => [a.fecha, a]));
+        for (const fecha of diasCerrados) {
+          const id = `${nombreNorm}__${fecha}`;
+          const existente = (anomaliasHuellero || []).find((a) => a.id === id);
+          if (existente?.estado === "ajustado") continue;
+          const ref = doc(db, "nomina_anomalias_huellero", id);
+          const anomalia = porFecha.get(fecha);
+          if (anomalia) {
+            batch.set(ref, {
+              nombre: f.nombre,
+              nombreNorm,
+              idHuellero: f.id,
+              area: anomalia.area,
+              fecha,
+              tipo: anomalia.faltante === "Entrada" ? "falta_entrada" : "falta_salida",
+              estado: "pendiente",
+              origen: "huellero",
+              cargadoEn: new Date().toISOString(),
+            });
+            n++;
+          } else if (existente) {
+            batch.delete(ref);
+          }
+        }
+      }
+      await batch.commit();
+      setAnomaliasGuardadas(n);
+    } finally {
+      setGuardandoAnomalias(false);
+    }
+  }
+
   const filasMostradas = reporte ? reporte.filas.filter((f) => !soloConFaltas || f.sinJustificar > 0).sort((a, b) => b.sinJustificar - a.sinJustificar) : [];
   const totalSinJustificar = reporte ? reporte.filas.reduce((s, f) => s + f.sinJustificar, 0) : 0;
   const personasConFaltas = reporte ? reporte.filas.filter((f) => f.sinJustificar > 0).length : 0;
@@ -3696,6 +3778,16 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, onGuardarTraba
             {diasTrabajadosGuardados !== null && (
               <span style={{ marginLeft: 10, fontSize: 12, color: C.green, fontWeight: 700 }}>
                 ✅ {diasTrabajadosGuardados} día(s) guardado(s) — ya quedan disponibles como "Días trabajados" en Nómina Destajo y Fiscal Destajo.
+              </span>
+            )}
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <Btn onClick={guardarAnomaliasEnAtlas} disabled={guardandoAnomalias}>
+              {guardandoAnomalias ? "Evaluando..." : "🔎 Evaluar anomalías Entrada/Salida"}
+            </Btn>
+            {anomaliasGuardadas !== null && (
+              <span style={{ marginLeft: 10, fontSize: 12, color: C.amber, fontWeight: 700 }}>
+                ⚠ {anomaliasGuardadas} anomalía(s) pendiente(s) — revísalas en Nómina → Anomalías Huellero (el líder de cada área las puede ajustar).
               </span>
             )}
           </div>
@@ -3768,6 +3860,65 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, onGuardarTraba
             filas={filasMostradas}
           />
         </>
+      )}
+    </div>
+  );
+}
+// (2026-09-15, a pedido de Fredy) Pantalla para que cada líder de área (y
+// el admin, viendo todas) ajuste las anomalías de Entrada/Salida que deja
+// "Evaluar anomalías Entrada/Salida" en Reporte de Asistencia -- ver
+// anomaliasEntradaSalida ahí. "Ajustado por el líder" deja ese día como
+// trabajado normal (nunca como falta sin justificar) y no vuelve a
+// aparecer en el correo diario de asistencia. El contador de veces es
+// solo informativo -- Fredy pidió explícitamente que no dispare ninguna
+// acción automática por sí solo, para no saturar el sistema.
+function AnomaliasHuelleroView({ anomalias, onAjustar }) {
+  const [ajustando, setAjustando] = useState(null);
+  const pendientes = (anomalias || [])
+    .filter((a) => a.estado !== "ajustado")
+    .slice()
+    .sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
+  const recurrencia = {};
+  (anomalias || []).forEach((a) => { recurrencia[a.nombreNorm] = (recurrencia[a.nombreNorm] || 0) + 1; });
+  async function ajustar(a) {
+    setAjustando(a.id);
+    try {
+      await onAjustar(a);
+    } finally {
+      setAjustando(null);
+    }
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 760 }}>
+        Días donde la persona marcó el huellero solo una vez (entrada o salida, no las dos) y no tenía un permiso registrado que lo explique. Al ajustar, ese día queda como un día normal trabajado -- no afecta la nómina ni queda como falta sin justificar.
+      </div>
+      {!pendientes.length && <div style={{ padding: 20, color: C.slate, fontSize: 13 }}>No hay anomalías pendientes. 🎉</div>}
+      {!!pendientes.length && (
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: C.ink }}>
+              {["Trabajador", "Fecha", "Le faltó marcar", "Veces (histórico)", ""].map((h) => (
+                <th key={h} style={{ padding: "8px 10px", color: "#fff", textAlign: "left", fontWeight: 700, fontSize: 11 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {pendientes.map((a, i) => (
+              <tr key={a.id} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                <td style={{ padding: "8px 10px", fontWeight: 700 }}>{a.nombre}</td>
+                <td style={{ padding: "8px 10px" }}>{a.fecha}</td>
+                <td style={{ padding: "8px 10px", color: C.amber, fontWeight: 700 }}>{a.tipo === "falta_entrada" ? "Entrada" : "Salida"}</td>
+                <td style={{ padding: "8px 10px" }}>{recurrencia[a.nombreNorm] || 1}</td>
+                <td style={{ padding: "8px 10px" }}>
+                  <Btn small onClick={() => ajustar(a)} disabled={ajustando === a.id}>
+                    {ajustando === a.id ? "..." : "✅ Ajustado por el líder"}
+                  </Btn>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
     </div>
   );
@@ -7736,6 +7887,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [ausencias, setAusencias] = useState([]);
   const [faltasSinJustificar, setFaltasSinJustificar] = useState([]);
   const [diasTrabajadosHuellero, setDiasTrabajadosHuellero] = useState([]);
+  const [anomaliasHuellero, setAnomaliasHuellero] = useState([]);
   const [liquidacionesF, setLiquidacionesF] = useState([]);
   const [liquidacionesFD, setLiquidacionesFD] = useState([]);
   const [liquidacionesD, setLiquidacionesD] = useState([]);
@@ -7770,6 +7922,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_ausencias"), (snap) => setAusencias(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_faltas_sin_justificar"), (snap) => setFaltasSinJustificar(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_dias_trabajados"), (snap) => setDiasTrabajadosHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_anomalias_huellero"), (snap) => setAnomaliasHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_fiscal_liquidaciones"), (snap) => setLiquidacionesF(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_fiscal_destajo_liquidaciones"), (snap) => setLiquidacionesFD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -7840,6 +7993,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         { id: "produccion", icon: "🧵", label: "Registrar Producción" },
         { id: "horas", icon: "🕐", label: "Registrar Horas" },
         { id: "permisos", icon: "📅", label: "Permisos" },
+        { id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" },
         { id: "resumen", icon: "💰", label: "Resumen" },
         { id: "historial_lote", icon: "📦", label: "Historial de Lote" },
         { id: "historial_trabajador", icon: "🧑‍🏭", label: "Historial de Trabajador" },
@@ -7849,6 +8003,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
         { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
         { id: "asistencia", icon: "📊", label: "Reporte de Asistencia" },
+        { id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" },
       ]
     : [
         { id: "dashboard", icon: "◉", label: "Inicio" },
@@ -7875,6 +8030,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
             { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
             { id: "asistencia", icon: "📊", label: "Reporte de Asistencia" },
+            { id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" },
             { id: "novedades_quincena", icon: "🧾", label: "Listado de Novedades (quincena)" },
             { id: "deducciones", icon: "🧾", label: "Deducciones" },
           ] },
@@ -7903,6 +8059,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const produccionVisible = areaLider ? produccion.filter((p) => trabajadoresVisibles.some((t) => t.id === p.trabajadorId)) : produccion;
   const horasVisibles = areaLider ? horas.filter((h) => trabajadoresVisibles.some((t) => t.id === h.trabajadorId)) : horas;
   const ausenciasVisibles = areaLider ? ausencias.filter((a) => trabajadoresVisibles.some((t) => t.id === a.trabajadorId)) : ausencias;
+  const anomaliasVisibles = areaLider ? anomaliasHuellero.filter((a) => (a.area || "Sin asignar") === areaLider) : anomaliasHuellero;
   async function guardarTrabajador(t) {
     const actual = trabajadores.find((x) => x.id === t.id);
     if (actual && t.area !== undefined && (t.area || "Sin asignar") !== (actual.area || "Sin asignar")) {
@@ -7980,6 +8137,27 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function borrarHoras(id) { await fsDelete("nomina_horas", id); }
   async function guardarAusencia(a) { await fsSave("nomina_ausencias", a.id, a); }
   async function borrarAusencia(id) { await fsDelete("nomina_ausencias", id); }
+  // (2026-09-15, a pedido de Fredy) El líder ajusta una anomalía de
+  // Entrada/Salida: queda "ajustado" (ya no vuelve a aparecer como
+  // pendiente ni en el correo diario) y el día queda como trabajado
+  // normal en nomina_dias_trabajados -- nunca como falta sin justificar.
+  async function ajustarAnomaliaHuellero(a) {
+    await fsSave("nomina_anomalias_huellero", a.id, {
+      ...a,
+      estado: "ajustado",
+      ajustadoPor: currentUser?.name || currentUser?.username || "",
+      ajustadoEn: new Date().toISOString(),
+    });
+    await fsSave("nomina_dias_trabajados", `${a.nombreNorm}__${a.fecha}`, {
+      nombre: a.nombre,
+      nombreNorm: a.nombreNorm,
+      idHuellero: a.idHuellero || "",
+      fecha: a.fecha,
+      origen: "ajuste_lider",
+      cargadoEn: new Date().toISOString(),
+    });
+    await fsDelete("nomina_faltas_sin_justificar", `${a.nombreNorm}__${a.fecha}`);
+  }
   // (2026-09-10, a pedido de Fredy) Justificar una falta desde el detalle
   // de "Días sin justificar" en Nómina -- guarda la ausencia (mismo
   // patrón de id/registradoPor que AusenciasView/PermisosCalendarioView) y
@@ -8214,8 +8392,9 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "provision_liquidaciones" && !areaLider && !soloNovedades && <ProvisionLiquidacionesView trabajadores={trabajadores} ausencias={ausencias} areasNomina={areasNomina} />}
           {subView === "prestamos" && !areaLider && !soloNovedades && <PrestamosView trabajadores={trabajadores} prestamos={prestamos} onGuardar={guardarPrestamo} onBorrar={borrarPrestamo} currentUser={currentUser} />}
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
-          {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} turnos={turnos} onGuardarTrabajador={guardarTrabajador} />}
+          {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} turnos={turnos} anomaliasHuellero={anomaliasHuellero} onGuardarTrabajador={guardarTrabajador} />}
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
+          {subView === "anomalias_huellero" && <AnomaliasHuelleroView anomalias={anomaliasVisibles} onAjustar={ajustarAnomaliaHuellero} />}
           {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
           {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} />}
