@@ -2572,7 +2572,7 @@ async function correrAuditoriaBusintVsNomina({ inmediato = false } = {}) {
 exports.getCostosProcesoDesdeBusintPorReferencia = onCall(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
-    timeoutSeconds: 120,
+    timeoutSeconds: 240,
     memory: "512MiB",
   },
   async (request) => {
@@ -2580,18 +2580,32 @@ exports.getCostosProcesoDesdeBusintPorReferencia = onCall(
     if (!ref) {
       throw new HttpsError("invalid-argument", "ref es obligatorio.");
     }
-    let todas;
-    try {
-      todas = await consultarTablaBusintBDCompleta("insumos dig");
-    } catch (err) {
+    // (2026-09-14) Dos pasadas en paralelo, no una sola -- ver nota arriba
+    // del bloque. Si UNA de las dos pasadas falla (error de red, etc.) no
+    // se aborta: se sigue con la que sí sirvió. Solo se lanza error si
+    // AMBAS fallan.
+    const resultados = await Promise.allSettled([
+      consultarTablaBusintBDCompleta("insumos dig"),
+      consultarTablaBusintBDCompleta("insumos dig"),
+    ]);
+    const pasadasOk = resultados.filter((r) => r.status === "fulfilled").map((r) => r.value);
+    if (!pasadasOk.length) {
+      const err = resultados[0].reason;
       logger.error("Error consultando Busint BD (getCostosProcesoDesdeBusintPorReferencia)", { ref, error: String(err) });
       throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
     }
     const normBuscada = normalizarRefComparacion(ref);
-    const filas = todas.filter((f) => normalizarRefComparacion(f?.Ref) === normBuscada);
-    const procesos = filas
-      .filter((f) => f?.Insumo)
-      .map((f) => ({ insumo: String(f.Insumo).trim(), cant: Number(f.Cant) || 0 }));
+    const porInsumo = new Map();
+    for (const todas of pasadasOk) {
+      todas
+        .filter((f) => normalizarRefComparacion(f?.Ref) === normBuscada && f?.Insumo)
+        .forEach((f) => {
+          const insumo = String(f.Insumo).trim();
+          const clave = normalizarProcesoBD(insumo);
+          if (!porInsumo.has(clave)) porInsumo.set(clave, { insumo, cant: Number(f.Cant) || 0 });
+        });
+    }
+    const procesos = [...porInsumo.values()];
     return { ref, encontrada: procesos.length > 0, procesos };
   }
 );
@@ -4077,6 +4091,14 @@ function normalizarInsumoBD(s) {
 }
 function normalizarRefComparacion(v) {
   return String(v || "").trim().toUpperCase().replace(/-/g, "");
+}
+// (2026-09-14) Para agrupar/deduplicar por nombre de Insumo al unir varias
+// pasadas de "insumos dig" en getCostosProcesoDesdeBusintPorReferencia --
+// mismo criterio que normalizarProceso() del frontend (trim + mayúsculas +
+// espacios colapsados), sin los guiones especiales de normalizarInsumoBD
+// (que es para OTRO propósito: comparar contra "MDEO - CORTE").
+function normalizarProcesoBD(s) {
+  return (s || "").toString().trim().toUpperCase().replace(/\s+/g, " ");
 }
 exports.probarReferenciaBusint = onCall(
   {
