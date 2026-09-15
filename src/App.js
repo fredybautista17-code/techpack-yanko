@@ -3665,6 +3665,458 @@ function BitacorasView(props) {
     </div>
   );
 }
+// ─── Preórdenes (Pedidos → Preórdenes) ──────────────────────────────
+// (2026-09-15, a pedido de Fredy) Antes de que un pedido quede formalizado
+// en el módulo "Pedidos", muchas veces ya se sabe qué referencias va a
+// llevar -- una reprogramación de algo que Busint ya conoce ("Nueva
+// Reprogramación"), o algo totalmente nuevo ("Nueva Orden", que Busint
+// todavía no tiene y se define en otra sesión con Fredy). Esta pantalla
+// deja armar ese "borrador de pedido" completo -- una fila por referencia,
+// con curvas/cantidades/precio -- ANTES de que el pedido real exista, en
+// su propia bitácora ("bitacora_preordenes"), separada de la Bitácora de
+// Envíos de Diseño porque una preorden todavía no se ha despachado a nadie.
+// Cada referencia de una preorden DEBE pertenecer a una Cápsula real (se
+// elige una existente o se crea una nueva ahí mismo), para que el semáforo
+// de "Estado Actual" siga siendo el real de esa referencia en Diseño.
+// "Graduación" a pedido real: mismo mecanismo que ya usa "Bitácora de
+// Aprobados sin Pedido" -- automática por código exacto de referencia
+// contra los pedidos ya cargados, con "Vincular a Pedido" a mano como
+// respaldo para cuando el cruce automático no calza.
+function usedInPedidoPreorden(refCode, pedidos) {
+  if (!refCode) return false;
+  const target = String(refCode).trim().toLowerCase();
+  return (pedidos || []).some((p) => (p.referencias || []).some((r) => String(r.ref || "").trim().toLowerCase() === target));
+}
+function buscarRefEnCapsulasPreorden(refNorm, capsulas) {
+  for (const cap of capsulas || []) {
+    const ref = (cap.referencias || []).find((r) => normalizarRefComparacion(r.reference) === refNorm);
+    if (ref) return { cap, ref };
+  }
+  return null;
+}
+function resumenPreordenPorCategoria(items) {
+  const mapa = new Map();
+  (items || []).forEach((it) => {
+    const cat = it.categoria || "Sin categoría";
+    const cantidad = (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0);
+    const actual = mapa.get(cat) || { categoria: cat, referencias: 0, unidades: 0 };
+    actual.referencias += 1;
+    actual.unidades += cantidad;
+    mapa.set(cat, actual);
+  });
+  return [...mapa.values()].sort((a, b) => b.unidades - a.unidades);
+}
+function NuevaReprogramacionView({ capsulas, config, onAddCapsula, onAddRef, onGuardar, onCancelar }) {
+  const [header, setHeader] = useState({ cliente: "", numPedido: "" });
+  const [filas, setFilas] = useState([]);
+  const [referencia, setReferencia] = useState("");
+  const [buscando, setBuscando] = useState(false);
+  const [resultado, setResultado] = useState(null);
+  const [capsulaElegidaNombre, setCapsulaElegidaNombre] = useState("");
+  const [crearCapsula, setCrearCapsula] = useState(false);
+  const [nuevaCapsula, setNuevaCapsula] = useState({ name: "", cliente: "", mes: "" });
+  const [manual, setManual] = useState({ tipo: "", colombiaCurva: "", colombiaCantidad: "", venezuelaCurva: "", venezuelaCantidad: "", precio: "", observacionesCliente: "" });
+  const [guardando, setGuardando] = useState(false);
+  async function buscar() {
+    const ref = referencia.trim();
+    if (!ref) return;
+    setBuscando(true);
+    setResultado(null);
+    setCapsulaElegidaNombre("");
+    setCrearCapsula(false);
+    try {
+      const llamarRef = httpsCallable(functionsClient, "probarReferenciaBusint");
+      const respRef = await llamarRef({ ref });
+      if (!respRef.data?.encontrada) {
+        setResultado({ ok: false, error: "Esta referencia no existe en Busint — una reprogramación siempre parte de algo que Busint ya conoce." });
+        return;
+      }
+      const b = respRef.data.referencia || {};
+      const grupo = (config?.lineaGrupoMap || {})[b.linea] || "";
+      let tela = "";
+      try {
+        const llamarTela = httpsCallable(functionsClient, "getComposicionTelasBusintBD");
+        const respTela = await llamarTela();
+        const normBuscada = normalizarRefComparacion(ref);
+        const filaTela = (respTela.data?.porReferencia || []).find((r) => normalizarRefComparacion(r.ref) === normBuscada);
+        tela = filaTela?.slots?.[0]?.nombre || "";
+      } catch {
+        // Tela es "best effort" -- si falla la consulta, queda para llenar a mano.
+      }
+      const datosBusint = {
+        nombre: b.descripcionLarga || "",
+        categoria: b.categoria || "",
+        silueta: b.tipoConfeccion || "",
+        rango: b.tallas ? String(b.tallas) : "",
+        tipo: grupo,
+        lineaCruda: b.linea || "",
+        tela,
+      };
+      const refNorm = normalizarRefComparacion(ref);
+      const capsulaExistente = buscarRefEnCapsulasPreorden(refNorm, capsulas);
+      setResultado({ ok: true, datosBusint, capsulaExistente });
+    } catch (err) {
+      setResultado({ ok: false, error: err?.message || "No se pudo consultar Busint." });
+    } finally {
+      setBuscando(false);
+    }
+  }
+  async function agregarFila() {
+    if (!resultado?.ok) return;
+    const ref = referencia.trim();
+    let capId, refId, refObj;
+    if (resultado.capsulaExistente) {
+      capId = resultado.capsulaExistente.cap.id;
+      refObj = resultado.capsulaExistente.ref;
+      refId = refObj.id;
+    } else {
+      const nombreRef = resultado.datosBusint.nombre || ref;
+      const nuevoRefObj = {
+        id: uid(), name: nombreRef, reference: ref, categoria: resultado.datosBusint.categoria,
+        silueta: resultado.datosBusint.silueta, linea: resultado.datosBusint.lineaCruda, rango: resultado.datosBusint.rango,
+        fromProtoId: null, status: "borrador", currentStage: "ilustracion", stageStartedAt: today(), assignedTo: "", createdAt: today(),
+        image: null, colores: [], tallas: resultado.datosBusint.rango ? [resultado.datosBusint.rango] : [], tipoTela: resultado.datosBusint.tela,
+        baseMolderia: "", numPrototipo: "", bom: [], pom: [], approvals: [],
+        observations: [{ id: uid(), user: "Sistema", role: "Sistema", text: "Referencia creada desde Nueva Reprogramación (Preórdenes).", date: nowISO(), type: "info", done: true }],
+      };
+      if (crearCapsula) {
+        if (!nuevaCapsula.name) { alert("Ponle un nombre a la cápsula nueva."); return; }
+        capId = uid();
+        const cap = { id: capId, name: nuevaCapsula.name, season: "", cliente: nuevaCapsula.cliente, mes: nuevaCapsula.mes, assignedTo: "", createdAt: today(), referencias: [], ilustracionEstado: "pendiente", observacionesIlustracion: [] };
+        await onAddCapsula(cap);
+      } else if (capsulaElegidaNombre) {
+        capId = (capsulas || []).find((c) => c.name === capsulaElegidaNombre)?.id;
+        if (!capId) { alert("No se encontró esa cápsula, elige otra."); return; }
+      } else {
+        alert("Elige una cápsula existente o crea una nueva para esta referencia.");
+        return;
+      }
+      await onAddRef(capId, nuevoRefObj);
+      refObj = nuevoRefObj;
+      refId = nuevoRefObj.id;
+    }
+    setFilas((fs) => [...fs, {
+      capsulaId: capId, refId, reference: ref, name: refObj.name, image: refObj.image,
+      categoria: resultado.datosBusint.categoria, silueta: resultado.datosBusint.silueta, rango: resultado.datosBusint.rango,
+      tipoTela: resultado.datosBusint.tela, _tipo: manual.tipo || resultado.datosBusint.tipo,
+      _colombiaCurva: manual.colombiaCurva, _colombiaCantidad: manual.colombiaCantidad,
+      _venezuelaCurva: manual.venezuelaCurva, _venezuelaCantidad: manual.venezuelaCantidad,
+      _precio: manual.precio, _observacionesCliente: manual.observacionesCliente,
+    }]);
+    setReferencia(""); setResultado(null); setCapsulaElegidaNombre(""); setCrearCapsula(false);
+    setNuevaCapsula({ name: "", cliente: "", mes: "" });
+    setManual({ tipo: "", colombiaCurva: "", colombiaCantidad: "", venezuelaCurva: "", venezuelaCantidad: "", precio: "", observacionesCliente: "" });
+  }
+  function quitarFila(i) { setFilas((fs) => fs.filter((_, idx) => idx !== i)); }
+  async function guardar() {
+    if (!filas.length) return;
+    setGuardando(true);
+    try {
+      await onGuardar(header, filas);
+    } finally {
+      setGuardando(false);
+    }
+  }
+  const resumen = resumenPreordenPorCategoria(filas.map((f) => ({ categoria: f.categoria, colombiaCantidad: f._colombiaCantidad, venezuelaCantidad: f._venezuelaCantidad })));
+  const totalUnidades = resumen.reduce((s, r) => s + r.unidades, 0);
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>🔁 Nueva Reprogramación</h2>
+        <Btn variant="secondary" onClick={onCancelar}>← Volver a Preórdenes</Btn>
+      </div>
+      <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 20, marginBottom: 20 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+          <Field label="Cliente"><FSel value={header.cliente} onChange={(v) => setHeader((h) => ({ ...h, cliente: v }))} options={(config?.clientes || []).map((c) => c.nombre)} /></Field>
+          <Field label="N° Pedido (opcional)"><FInput value={header.numPedido} onChange={(v) => setHeader((h) => ({ ...h, numPedido: v }))} placeholder="Si ya lo sabes" /></Field>
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 12 }}>
+          <div style={{ flex: 1 }}>
+            <Field label="Referencia"><FInput value={referencia} onChange={setReferencia} placeholder="Ej: C-5008" /></Field>
+          </div>
+          <Btn onClick={buscar} disabled={buscando || !referencia.trim()}>{buscando ? "Buscando..." : "🔍 Buscar en Busint"}</Btn>
+        </div>
+        {resultado && !resultado.ok && (
+          <div style={{ padding: "10px 14px", background: T.coralBg, color: T.coral, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 12 }}>⚠ {resultado.error}</div>
+        )}
+        {resultado?.ok && (
+          <div style={{ padding: 16, background: T.canvas, borderRadius: 10, marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginBottom: 10 }}>Datos traídos de Busint</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: 14, fontSize: 12 }}>
+              <div><div style={{ color: T.slate, fontWeight: 700 }}>Nombre</div><div style={{ color: T.ink }}>{resultado.datosBusint.nombre || "—"}</div></div>
+              <div><div style={{ color: T.slate, fontWeight: 700 }}>Categoría</div><div style={{ color: T.ink }}>{resultado.datosBusint.categoria || "—"}</div></div>
+              <div><div style={{ color: T.slate, fontWeight: 700 }}>Silueta</div><div style={{ color: T.ink }}>{resultado.datosBusint.silueta || "—"}</div></div>
+              <div><div style={{ color: T.slate, fontWeight: 700 }}>Rango</div><div style={{ color: T.ink }}>{resultado.datosBusint.rango || "—"}</div></div>
+              <div><div style={{ color: T.slate, fontWeight: 700 }}>Tela</div><div style={{ color: T.ink }}>{resultado.datosBusint.tela || "— (llenar a mano)"}</div></div>
+              <div><div style={{ color: T.slate, fontWeight: 700 }}>Tipo (línea)</div><div style={{ color: resultado.datosBusint.tipo ? T.ink : T.amber }}>{resultado.datosBusint.tipo || "Sin clasificar — llenar a mano"}</div></div>
+            </div>
+            {resultado.capsulaExistente ? (
+              <div style={{ fontSize: 13, color: T.jade, fontWeight: 700, marginBottom: 10 }}>✓ Ya existe en la cápsula "{resultado.capsulaExistente.cap.name}" — se va a usar esa misma.</div>
+            ) : (
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginBottom: 8 }}>Esta referencia todavía no está en ninguna cápsula — elige una o crea una nueva</div>
+                {!crearCapsula ? (
+                  <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+                    <div style={{ flex: 1 }}><FSel value={capsulaElegidaNombre} onChange={setCapsulaElegidaNombre} options={(capsulas || []).map((c) => c.name)} /></div>
+                    <Btn variant="secondary" small onClick={() => setCrearCapsula(true)}>+ Cápsula nueva</Btn>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 8 }}>
+                      <FInput value={nuevaCapsula.name} onChange={(v) => setNuevaCapsula((n) => ({ ...n, name: v }))} placeholder="Nombre de la cápsula" />
+                      <FSel value={nuevaCapsula.cliente} onChange={(v) => setNuevaCapsula((n) => ({ ...n, cliente: v }))} options={(config?.clientes || []).map((c) => c.nombre)} />
+                      <FSel value={nuevaCapsula.mes} onChange={(v) => setNuevaCapsula((n) => ({ ...n, mes: v }))} options={MONTHS_ES} />
+                    </div>
+                    <Btn variant="secondary" small onClick={() => setCrearCapsula(false)}>Usar una existente en vez</Btn>
+                  </div>
+                )}
+              </div>
+            )}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+              <Field label="Tipo (Dama/Caballero/Niño)"><FInput value={manual.tipo || resultado.datosBusint.tipo} onChange={(v) => setManual((m) => ({ ...m, tipo: v }))} placeholder="Si no se clasificó" /></Field>
+              <Field label="Curva Colombia"><FInput value={manual.colombiaCurva} onChange={(v) => setManual((m) => ({ ...m, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+              <Field label="Cantidad Colombia"><FInput value={manual.colombiaCantidad} onChange={(v) => setManual((m) => ({ ...m, colombiaCantidad: v }))} placeholder="0" /></Field>
+              <Field label="Precio"><FInput value={manual.precio} onChange={(v) => setManual((m) => ({ ...m, precio: v }))} placeholder="0" /></Field>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr", gap: 10, marginBottom: 14 }}>
+              <Field label="Curva Venezuela"><FInput value={manual.venezuelaCurva} onChange={(v) => setManual((m) => ({ ...m, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+              <Field label="Cantidad Venezuela"><FInput value={manual.venezuelaCantidad} onChange={(v) => setManual((m) => ({ ...m, venezuelaCantidad: v }))} placeholder="0" /></Field>
+              <Field label="Obs. Cliente"><FInput value={manual.observacionesCliente} onChange={(v) => setManual((m) => ({ ...m, observacionesCliente: v }))} placeholder="Opcional" /></Field>
+            </div>
+            <Btn onClick={agregarFila}>+ Agregar a la preorden</Btn>
+          </div>
+        )}
+      </div>
+      {filas.length > 0 && (
+        <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 20, marginBottom: 20 }}>
+          <div style={{ fontWeight: 800, fontSize: 15, color: T.ink, marginBottom: 12 }}>Referencias agregadas ({filas.length})</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 16 }}>
+              <thead>
+                <tr style={{ background: T.ink }}>
+                  {["Ref", "Nombre", "Categoría", "Tipo", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Cant. Total", "Precio", ""].map((h) => (
+                    <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filas.map((f, i) => (
+                  <tr key={`${f.reference}-${i}`} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
+                    <td style={{ padding: "6px 10px", fontWeight: 700 }}>{f.reference}</td>
+                    <td style={{ padding: "6px 10px" }}>{f.name}</td>
+                    <td style={{ padding: "6px 10px" }}>{f.categoria || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{f._tipo || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{f._colombiaCurva || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{f._colombiaCantidad || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{f._venezuelaCurva || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{f._venezuelaCantidad || "—"}</td>
+                    <td style={{ padding: "6px 10px", fontWeight: 700 }}>{(Number(f._colombiaCantidad) || 0) + (Number(f._venezuelaCantidad) || 0)}</td>
+                    <td style={{ padding: "6px 10px" }}>{f._precio || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}><button onClick={() => quitarFila(i)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Quitar</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontWeight: 700, fontSize: 13, color: T.ink, marginBottom: 8 }}>Resumen por categoría</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10, marginBottom: 20 }}>
+            {resumen.map((r) => (
+              <div key={r.categoria} style={{ padding: "10px 12px", borderRadius: 10, border: `1px solid ${T.border}`, background: T.canvas }}>
+                <div style={{ fontSize: 11, color: T.slate, fontWeight: 700 }}>{r.categoria}</div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: T.ink }}>{fmtNum(r.unidades)}</div>
+                <div style={{ fontSize: 11, color: T.slate }}>{r.referencias} ref{r.referencias !== 1 ? "s" : ""}</div>
+              </div>
+            ))}
+            <div style={{ padding: "10px 12px", borderRadius: 10, border: `1.5px solid ${T.denim}`, background: T.denimBg }}>
+              <div style={{ fontSize: 11, color: T.denim, fontWeight: 700 }}>Total</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: T.denim }}>{fmtNum(totalUnidades)}</div>
+              <div style={{ fontSize: 11, color: T.denim }}>{filas.length} ref{filas.length !== 1 ? "s" : ""}</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <Btn variant="secondary" onClick={onCancelar}>Cancelar</Btn>
+            <Btn onClick={guardar} disabled={guardando}>{guardando ? "Guardando..." : "💾 Guardar Preorden"}</Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido }) {
+  const [modo, setModo] = useState("lista");
+  const [subTab, setSubTab] = useState("pendientes");
+  const [vinculando, setVinculando] = useState(null);
+  const [buscaPedido, setBuscaPedido] = useState("");
+  const [expandido, setExpandido] = useState(null);
+  function itemGraduado(it) {
+    return !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidos);
+  }
+  const preordenesConEstado = (preordenes || []).map((p) => ({
+    ...p,
+    pendientes: (p.items || []).filter((it) => !itemGraduado(it)).length,
+  })).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  const visibles = subTab === "pendientes" ? preordenesConEstado.filter((p) => p.pendientes > 0) : preordenesConEstado;
+  const bq = buscaPedido.trim().toLowerCase();
+  const pedidosEncontrados = bq
+    ? (pedidos || []).filter((p) => String(p.numero || "").toLowerCase().includes(bq) || (p.cliente || "").toLowerCase().includes(bq)).slice(0, 30)
+    : [];
+  function confirmarVinculo(pedido) {
+    if (!vinculando) return;
+    onVincularPedido(vinculando.preordenId, vinculando.itemId, pedido);
+    setVinculando(null);
+    setBuscaPedido("");
+  }
+  if (modo === "reprogramacion") {
+    return (
+      <NuevaReprogramacionView
+        capsulas={capsulas}
+        config={config}
+        onAddCapsula={onAddCapsula}
+        onAddRef={onAddRef}
+        onGuardar={async (header, items) => { await onCrearPreorden(header, items); setModo("lista"); }}
+        onCancelar={() => setModo("lista")}
+      />
+    );
+  }
+  return (
+    <div>
+      {vinculando && (
+        <Modal title="Vincular a pedido" onClose={() => { setVinculando(null); setBuscaPedido(""); }} width={480}>
+          <p style={{ margin: "0 0 12px", fontSize: 13, color: T.slate }}>
+            Busca el pedido al que pertenece esta referencia. No se modifica el pedido — solo se marca como vinculada y deja de salir en pendientes.
+          </p>
+          <input
+            autoFocus
+            value={buscaPedido}
+            onChange={(e) => setBuscaPedido(e.target.value)}
+            placeholder="Buscar por número de pedido o cliente..."
+            style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, outline: "none", fontFamily: "inherit", marginBottom: 12, boxSizing: "border-box" }}
+          />
+          <div style={{ maxHeight: 320, overflowY: "auto" }}>
+            {bq && !pedidosEncontrados.length && (
+              <div style={{ textAlign: "center", padding: 20, color: T.slate, fontSize: 13 }}>No se encontró ningún pedido con eso.</div>
+            )}
+            {pedidosEncontrados.map((p) => (
+              <div key={p.id} onClick={() => confirmarVinculo(p)} style={{ padding: "10px 12px", borderRadius: 8, border: `1px solid ${T.border}`, marginBottom: 6, cursor: "pointer", background: T.canvas }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>Pedido #{p.numero}</div>
+                <div style={{ fontSize: 12, color: T.slate }}>{p.cliente || "Sin cliente"}{p.fechaPedido ? ` · ${p.fechaPedido}` : ""}</div>
+              </div>
+            ))}
+          </div>
+        </Modal>
+      )}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Preórdenes</h2>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Borradores de pedido armados antes de que el pedido real exista</p>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn onClick={() => setModo("reprogramacion")}>🔁 Nueva Reprogramación</Btn>
+          <Btn variant="secondary" onClick={() => alert("Esta pantalla todavía se está definiendo con Fredy — pronto estará lista.")}>🆕 Nueva Orden</Btn>
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+        {[["pendientes", "⏳ Pendientes"], ["todos", "Todos"]].map(([v, label]) => (
+          <button key={v} onClick={() => setSubTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${subTab === v ? T.denim : T.border}`, background: subTab === v ? T.denimBg : T.white, color: subTab === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
+        ))}
+      </div>
+      {!visibles.length && (
+        <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
+          {subTab === "pendientes" ? "No hay preórdenes pendientes de convertirse en pedido. 🎉" : "Todavía no hay preórdenes registradas."}
+        </div>
+      )}
+      {visibles.map((p) => {
+        const abierto = expandido === p.id;
+        const resumen = resumenPreordenPorCategoria(p.items);
+        const totalUnidades = resumen.reduce((s, r) => s + r.unidades, 0);
+        return (
+          <div key={p.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
+            <div onClick={() => setExpandido(abierto ? null : p.id)} style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, cursor: "pointer", flexWrap: "wrap", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 20 }}>{abierto ? "📂" : "📁"}</span>
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: T.ink }}>{p.cliente || "(Sin cliente)"}{p.numPedido ? ` · Pedido ${p.numPedido}` : ""}</div>
+                  <div style={{ fontSize: 12, color: T.slate }}>{(p.items || []).length} ref · {fmtNum(totalUnidades)} unid. · Creada {p.fechaCreado}</div>
+                </div>
+              </div>
+              {p.pendientes > 0 ? (
+                <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.amberBg, color: T.amber }}>⏳ {p.pendientes} sin convertir a pedido</span>
+              ) : (
+                <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✓ Todo convertido a pedido</span>
+              )}
+            </div>
+            {abierto && (
+              <div style={{ padding: 20 }}>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ background: T.ink }}>
+                        {["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Pedido"].map((h) => (
+                          <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(p.items || []).map((it, i) => {
+                        const cap = (capsulas || []).find((c) => c.id === it.capsulaId);
+                        const refReal = cap?.referencias?.find((r) => r.id === it.itemId);
+                        const graduada = itemGraduado(it);
+                        return (
+                          <tr key={it.itemId} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}`, opacity: graduada ? 0.55 : 1 }}>
+                            <td style={{ padding: "6px 10px" }}>{it.foto ? <img src={it.foto} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
+                            <td style={{ padding: "6px 10px", fontWeight: 700 }}>{it.referencia}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.nombre}</td>
+                            <td style={{ padding: "6px 10px" }}>{refReal ? <Badge status={refReal.status} /> : <span style={{ color: T.slate, fontStyle: "italic" }}>—</span>}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.consumo || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.tipo || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.categoria || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.silueta || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.rango || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.tela || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.colombiaCurva || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.colombiaCantidad || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.venezuelaCurva || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.venezuelaCantidad || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>{it.precio || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>
+                              {graduada ? (
+                                <span style={{ color: T.jade, fontWeight: 700 }}>✓ {it.pedidoVinculado?.numero ? `#${it.pedidoVinculado.numero}` : "En pedido"}</span>
+                              ) : (
+                                <button onClick={() => setVinculando({ preordenId: p.id, itemId: it.itemId })} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Vincular</button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ marginTop: 20 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: T.ink, marginBottom: 8 }}>Resumen por categoría</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
+                    {resumen.map((r) => (
+                      <div key={r.categoria} style={{ padding: "10px 12px", borderRadius: 10, border: `1px solid ${T.border}`, background: T.canvas }}>
+                        <div style={{ fontSize: 11, color: T.slate, fontWeight: 700 }}>{r.categoria}</div>
+                        <div style={{ fontSize: 18, fontWeight: 800, color: T.ink }}>{fmtNum(r.unidades)}</div>
+                        <div style={{ fontSize: 11, color: T.slate }}>{r.referencias} ref{r.referencias !== 1 ? "s" : ""}</div>
+                      </div>
+                    ))}
+                    <div style={{ padding: "10px 12px", borderRadius: 10, border: `1.5px solid ${T.denim}`, background: T.denimBg }}>
+                      <div style={{ fontSize: 11, color: T.denim, fontWeight: 700 }}>Total</div>
+                      <div style={{ fontSize: 18, fontWeight: 800, color: T.denim }}>{fmtNum(totalUnidades)}</div>
+                      <div style={{ fontSize: 11, color: T.denim }}>{(p.items || []).length} ref{(p.items || []).length !== 1 ? "s" : ""}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial, onGoHistorial }) {
   const [subTab, setSubTab] = useState("pendientes");
   const [kindFiltro, setKindFiltro] = useState("todos");
@@ -7222,6 +7674,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     ["capsulas", "⬢ Cápsulas"],
     ["pedidos", "📦 Pedidos"],
     ["pedidos_clientes", "🏢 Clientes"],
+    ["preordenes", "🧾 Preórdenes"],
     ["corte", "✂ Corte"],
     ["historial", "🕘 Historial"],
     ["cronograma_muestras", "🧵 Cronograma de Muestras"],
@@ -10559,6 +11012,7 @@ function AppInner() {
   const cronogramaMuestrasVisibles = clienteAsociado ? cronogramaMuestras.filter((c) => c.cliente === clienteAsociado) : cronogramaMuestras;
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
   const [bitacoraEnvios, setBitacoraEnvios] = useState([]);
+  const [bitacoraPreordenes, setBitacoraPreordenes] = useState([]);
   // Al entrar a Historial desde el enlace "❌ N declinadas" de Bitácora, se
   // usa esto para que abra ya filtrado en Declinados (HistorialDisenoView lo
   // lee una sola vez, al montar, vía initialResultado/initialTipoFiltro).
@@ -10743,6 +11197,8 @@ function AppInner() {
         unsubsDatos.push(unsubPedidoConfig);
         const unsubBitacora = onSnapshot(collection(db, "bitacora_envios"), (snap) => { setBitacoraEnvios(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubsDatos.push(unsubBitacora);
+        const unsubPreordenes = onSnapshot(collection(db, "bitacora_preordenes"), (snap) => { setBitacoraPreordenes(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubsDatos.push(unsubPreordenes);
         const unsubKpiPuestos = onSnapshot(collection(db, "kpi_puestos"), (snap) => { setKpiPuestos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubsDatos.push(unsubKpiPuestos);
         const unsubKpiPersonas = onSnapshot(collection(db, "kpi_personas"), (snap) => { setKpiPersonas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
@@ -10868,6 +11324,62 @@ function AppInner() {
       else await updateRef(it.capsulaId, it.id, patchData);
     }
     notify({ id: uid(), icon: "📦", title: "Envío registrado en Bitácora", msg: `${items.length} referencia${items.length !== 1 ? "s" : ""} — ${envio.coleccion || envio.cliente}` });
+  }
+  // --- Bitácora de Preórdenes (Pedidos → Preórdenes) ---
+  async function addBitacoraPreorden(preorden) {
+    const updated = [...bitacoraPreordenes, preorden];
+    setBitacoraPreordenes(updated);
+    await fsSave("bitacora_preordenes", preorden.id, preorden);
+  }
+  async function actualizarItemPreorden(preordenId, itemId, patch) {
+    const updated = bitacoraPreordenes.map((p) =>
+      p.id !== preordenId ? p : { ...p, items: p.items.map((it) => (it.itemId !== itemId ? it : { ...it, ...patch })) }
+    );
+    setBitacoraPreordenes(updated);
+    const item = updated.find((p) => p.id === preordenId);
+    await fsSave("bitacora_preordenes", preordenId, item);
+  }
+  // items: filas ya armadas en NuevaReprogramacionView (cada una ya trae
+  // capsulaId + refId de la referencia real en esa cápsula, más los datos
+  // propios de este pedido puntual). No se marca nada como "enviado" (a
+  // diferencia de crearEnvioBitacora) -- una preorden todavía no se
+  // despachó a nadie.
+  async function crearPreorden(header, items) {
+    const preorden = {
+      id: uid(),
+      cliente: header.cliente || "",
+      numPedido: header.numPedido || "",
+      fechaCreado: today(),
+      items: items.map((it) => ({
+        itemId: it.refId,
+        capsulaId: it.capsulaId,
+        referencia: it.reference || "",
+        nombre: it.name || "",
+        foto: it.image || null,
+        categoria: it.categoria || "",
+        silueta: it.silueta || "",
+        rango: it.rango || "",
+        tela: it.tipoTela || "",
+        tipo: it._tipo || "",
+        consumo: "",
+        colombiaCurva: it._colombiaCurva || "",
+        colombiaCantidad: it._colombiaCantidad || "",
+        venezuelaCurva: it._venezuelaCurva || "",
+        venezuelaCantidad: it._venezuelaCantidad || "",
+        precio: it._precio || "",
+        observacionesCliente: it._observacionesCliente || "",
+        pedidoVinculado: null,
+      })),
+      createdAt: nowISO(),
+      createdBy: currentUser?.name || "",
+    };
+    await addBitacoraPreorden(preorden);
+    notify({ id: uid(), icon: "🧾", title: "Preorden registrada", msg: `${items.length} referencia${items.length !== 1 ? "s" : ""}${header.cliente ? ` — ${header.cliente}` : ""}` });
+  }
+  async function vincularPreordenAPedido(preordenId, itemId, pedido) {
+    await actualizarItemPreorden(preordenId, itemId, {
+      pedidoVinculado: { numero: pedido.numero, cliente: pedido.cliente || "", vinculadoPor: currentUser?.name || "", vinculadoEn: nowISO() },
+    });
   }
   // --- Módulo KPIs (toda la compañía) ---
   // Puestos: { id, area, nombre, funciones }. `area` viene de
@@ -11202,6 +11714,7 @@ function AppInner() {
   const canAccessCapsulas = moduloVisible(userRoleData, "capsulas", currentUser?.isAdmin);
   const canAccessPedidos = moduloVisible(userRoleData, "pedidos", currentUser?.isAdmin);
   const canAccessPedidosClientes = moduloVisible(userRoleData, "pedidos_clientes", currentUser?.isAdmin);
+  const canAccessPreordenes = moduloVisible(userRoleData, "preordenes", currentUser?.isAdmin);
   const canAccessStats = moduloVisible(userRoleData, "stats", currentUser?.isAdmin);
   const canAccessHistorial = moduloVisible(userRoleData, "historial", currentUser?.isAdmin);
   const canAccessCronograma = moduloVisible(userRoleData, "cronograma_muestras", currentUser?.isAdmin);
@@ -11262,7 +11775,7 @@ function AppInner() {
   // acá: trabaja directo sobre los mismos pedidos (pedidos_activos es la
   // misma colección que usa "Pedidos"), tiene más que ver con esto que con
   // el flujo de diseño/aprobación.
-  const canAccessPedidosArea = canAccessPedidos || canAccessPedidosClientes || canAccessCorte || !!currentUser?.isAdmin;
+  const canAccessPedidosArea = canAccessPedidos || canAccessPedidosClientes || canAccessPreordenes || canAccessCorte || !!currentUser?.isAdmin;
   const [moduloActivo, setModuloActivo] = useState("diseno");
   const AREAS = [
     ...(canAccessDiseno
@@ -11287,6 +11800,7 @@ function AppInner() {
           items: [
             ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
             ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
+            ...(canAccessPreordenes ? [{ id: "preordenes", icon: "🧾", label: "Preórdenes" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
             ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
           ],
@@ -11335,6 +11849,7 @@ function AppInner() {
     if (itemId === "pedidos") return view === "pedidos" || view === "pedido-detail";
     if (itemId === "pedidos_admin") return view === "pedidos_admin";
     if (itemId === "pedidos_clientes") return view === "pedidos_clientes";
+    if (itemId === "preordenes") return view === "preordenes";
     if (itemId === "__corte__") return moduloActivo === "corte";
     if (itemId === "contabilidad_area") return moduloActivo === "contabilidad";
     if (itemId === "planeacion_area") return moduloActivo === "planeacion";
@@ -11537,6 +12052,7 @@ function AppInner() {
                     setAreaAbierta("pedidos_area");
                     if (canAccessPedidos) setView("pedidos");
                     else if (canAccessPedidosClientes) setView("pedidos_clientes");
+                    else if (canAccessPreordenes) setView("preordenes");
                     else if (currentUser?.isAdmin) setView("pedidos_admin");
                     else if (canAccessCorte) setModuloActivo("corte");
                   }
@@ -11650,6 +12166,19 @@ function AppInner() {
             {view === "pedido-detail" && selPedido && <PedidoDetailView pedido={selPedido} onBack={() => setView("pedidos")} onUpdatePedido={updatePedido} />}
             {view === "pedidos_admin" && currentUser?.isAdmin && <AdminPedidosView pedidoConfig={pedidoConfig} onSave={savePedidoConfig} config={config} onSaveConfig={saveConfig} />}
             {view === "pedidos_clientes" && <ClientesPedidosView clientes={config.clientes} pedidos={pedidosVisibles} protos={protosVisibles} capsulas={capsulasVisibles} />}
+            {view === "preordenes" && (
+              <PreordenesView
+                preordenes={bitacoraPreordenes}
+                pedidos={pedidosVisibles}
+                capsulas={capsulas}
+                config={config}
+                currentUser={currentUser}
+                onAddCapsula={addCapsula}
+                onAddRef={addRef}
+                onCrearPreorden={crearPreorden}
+                onVincularPedido={vincularPreordenAPedido}
+              />
+            )}
             {view === "stats" && <EstadisticasView protos={protosVisibles} capsulas={capsulasVisibles} stages={config.stages} config={config} />}
             {view === "historial" && (
               <HistorialDisenoView historial={historial} protos={protosVisibles} capsulas={capsulasVisibles} pedidos={pedidosVisibles} role={role} perms={perms} stages={config.stages}
