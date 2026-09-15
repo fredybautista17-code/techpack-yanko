@@ -3421,7 +3421,7 @@ async function incrustarFotosEnXlsx(wbArrayBuffer, fotos) {
     anchors.push(`
   <xdr:twoCellAnchor editAs="oneCell">
     <xdr:from><xdr:col>${foto.col}</xdr:col><xdr:colOff>19050</xdr:colOff><xdr:row>${foto.row}</xdr:row><xdr:rowOff>19050</xdr:rowOff></xdr:from>
-    <xdr:to><xdr:col>${foto.col + 1}</xdr:col><xdr:colOff>-19050</xdr:colOff><xdr:row>${foto.row + 1}</xdr:row><xdr:rowOff>-19050</xdr:rowOff></xdr:to>
+    <xdr:to><xdr:col>${foto.col + 1}</xdr:col><xdr:colOff>-19050</xdr:colOff><xdr:row>${foto.row + (foto.rowSpan || 1)}</xdr:row><xdr:rowOff>-19050</xdr:rowOff></xdr:to>
     <xdr:pic>
       <xdr:nvPicPr>
         <xdr:cNvPr id="${n + 1}" name="Foto${n}"/>
@@ -3919,15 +3919,39 @@ function NuevaReprogramacionView({ capsulas, config, currentUser, onAddCapsula, 
   );
 }
 async function exportPreordenXLSX(preorden) {
-  const XLSX = await import("xlsx");
+  // Mismo layout EXACTO del ANEXO que ya usa Bitácora de Envíos
+  // (exportBitacoraEnvioToExcel, ver comentario largo arriba de esa
+  // función) -- Fredy pidió que la preorden se descargue con esa misma
+  // apariencia (el archivo de ejemplo "REPROGRAMACIÓN KAMILA SEPTIEMBRE
+  // 2026"), no un Excel aparte. Diferencias reales frente a esa función:
+  // - No hay campo "colección" en Preórdenes, así que el título se arma
+  //   solo como "REPROGRAMACIÓN {CLIENTE} {MES} {AÑO}" con la fecha de
+  //   creación de la preorden.
+  // - "FECHA ENVIADO" usa esa misma fecha de creación (una preorden no se
+  //   ha despachado todavía, no tiene fecha de envío real).
+  // - La Carta de Colores es UNA sola imagen para TODA la preorden (no por
+  //   referencia), así que se incrusta como imagen real ocupando toda la
+  //   columna a lo alto de la tabla, en vez de repetir una nota de texto
+  //   en cada fila.
+  const XLSX = await import("xlsx-js-style");
+  function numOTexto(v) {
+    if (v === "" || v === null || v === undefined) return "";
+    const n = Number(v);
+    return Number.isNaN(n) ? v : n;
+  }
+  const items = preorden.items || [];
+  const [anioCreado, mesCreado] = (preorden.fechaCreado || today()).split("-");
+  const nombreMes = MONTHS_ES[Number(mesCreado) - 1] || "";
+  const titulo = `REPROGRAMACIÓN ${(preorden.cliente || "").toUpperCase()}${nombreMes ? ` ${nombreMes.toUpperCase()}` : ""}${anioCreado ? ` ${anioCreado}` : ""}`.trim();
   const wsData = [
-    ["PREORDEN"],
-    ["Cliente", preorden.cliente || "", "N° Pedido", preorden.numPedido || "", "Fecha", preorden.fechaCreado || ""],
-    [],
-    ["Ref", "Nombre", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Pedido"],
-    ...(preorden.items || []).map((it) => [
+    ["COLECCIÓN (NOMBRE)", titulo, "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ["FECHA ENVIADO", preorden.fechaCreado || "", "", "", "FECHA RECIBIDO CLIENTE", "", "", "", "", "MARCA", preorden.cliente || "", "", "", "N° PEDIDO", preorden.numPedido || "", "", ""],
+    ["FOTO", "REF", "ESTADO", "CONSUMO", "TIPO", "CATEGORIA", "SILUETA", "RANGO (TALLA)", "TELA", "COLOMBIA", "", "VENEZUELA", "", "PRECIO $", "OBSERVACIONES CLIENTE", "", "CARTA DE COLORES"],
+    ["", "", "", "", "", "", "", "", "", "CURVA ", "CANTIDAD", "CURVA", "CANTIDAD", "", "", "", ""],
+    ...items.map((it, i) => [
+      "",
       it.referencia || "",
-      it.nombre || "",
+      it.estadoLabel || "",
       it.consumo || "",
       it.tipo || "",
       it.categoria || "",
@@ -3935,17 +3959,105 @@ async function exportPreordenXLSX(preorden) {
       it.rango || "",
       it.tela || "",
       it.colombiaCurva || "",
-      it.colombiaCantidad || "",
+      numOTexto(it.colombiaCantidad),
       it.venezuelaCurva || "",
-      it.venezuelaCantidad || "",
-      it.precio || "",
-      it.pedidoVinculado?.numero || "",
+      numOTexto(it.venezuelaCantidad),
+      numOTexto(it.precio),
+      it.observacionesCliente || "",
+      "",
+      i === 0 && preorden.cartaColores ? "(ver en la app)" : "",
     ]),
   ];
-  const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet(wsData);
-  XLSX.utils.book_append_sheet(wb, ws, "Preorden");
+  ws["!merges"] = [
+    { s: { r: 0, c: 1 }, e: { r: 0, c: 16 } },
+    { s: { r: 1, c: 1 }, e: { r: 1, c: 3 } },
+    { s: { r: 1, c: 4 }, e: { r: 1, c: 5 } },
+    { s: { r: 1, c: 6 }, e: { r: 1, c: 8 } },
+    { s: { r: 1, c: 10 }, e: { r: 1, c: 12 } },
+    { s: { r: 1, c: 14 }, e: { r: 1, c: 16 } },
+    { s: { r: 2, c: 0 }, e: { r: 3, c: 0 } },
+    { s: { r: 2, c: 1 }, e: { r: 3, c: 1 } },
+    { s: { r: 2, c: 2 }, e: { r: 3, c: 2 } },
+    { s: { r: 2, c: 3 }, e: { r: 3, c: 3 } },
+    { s: { r: 2, c: 4 }, e: { r: 3, c: 4 } },
+    { s: { r: 2, c: 5 }, e: { r: 3, c: 5 } },
+    { s: { r: 2, c: 6 }, e: { r: 3, c: 6 } },
+    { s: { r: 2, c: 7 }, e: { r: 3, c: 7 } },
+    { s: { r: 2, c: 8 }, e: { r: 3, c: 8 } },
+    { s: { r: 2, c: 9 }, e: { r: 2, c: 10 } },
+    { s: { r: 2, c: 11 }, e: { r: 2, c: 12 } },
+    { s: { r: 2, c: 13 }, e: { r: 3, c: 13 } },
+    { s: { r: 2, c: 14 }, e: { r: 3, c: 15 } },
+    { s: { r: 2, c: 16 }, e: { r: 3, c: 16 } },
+    ...items.map((_, i) => ({ s: { r: 4 + i, c: 14 }, e: { r: 4 + i, c: 15 } })),
+    ...(preorden.cartaColores && items.length > 1 ? [{ s: { r: 4, c: 16 }, e: { r: 4 + items.length - 1, c: 16 } }] : []),
+  ];
+  const hayFotos = items.some((it) => it.foto);
+  ws["!cols"] = [
+    { wch: hayFotos ? 14 : 10 }, { wch: 12 }, { wch: 14 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 11 }, { wch: 13 },
+    { wch: 10 }, { wch: 10 }, { wch: 11 }, { wch: 10 }, { wch: 11 }, { wch: 10 }, { wch: 24 }, { wch: 4 }, { wch: 30 },
+  ];
+  ws["!rows"] = [{ hpt: 24 }, { hpt: 20 }, { hpt: 24 }, { hpt: 20 }, ...items.map(() => ({ hpt: hayFotos ? 60 : 36 }))];
+  const COLOR_INK = "1A1A2E";
+  const COLOR_SEAM = "C8B8A2";
+  const COLOR_CANVAS = "F7F4F0";
+  const COLOR_BORDER = "E8E2DB";
+  const THIN = { style: "thin", color: { rgb: COLOR_BORDER } };
+  const BOX = { top: THIN, bottom: THIN, left: THIN, right: THIN };
+  const COLS_CENTRADAS = new Set([0, 1, 2, 3, 4, 6, 7, 9, 10, 11, 12, 13, 16]);
+  const totalCols = 17;
+  const totalRows = wsData.length;
+  for (let r = 0; r < totalRows; r++) {
+    for (let c = 0; c < totalCols; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (!ws[addr]) ws[addr] = { t: "s", v: "" };
+      const centrada = COLS_CENTRADAS.has(c);
+      let style = { border: BOX, alignment: { vertical: "center", horizontal: centrada ? "center" : "left", wrapText: true } };
+      if (r === 0) {
+        style.font = { bold: true, sz: 13, color: { rgb: COLOR_INK } };
+        style.fill = { patternType: "solid", fgColor: { rgb: COLOR_CANVAS } };
+      } else if (r === 1) {
+        const esEtiqueta = c === 0 || c === 4 || c === 9 || c === 13;
+        style.font = { bold: esEtiqueta, sz: 11, color: { rgb: COLOR_INK } };
+        if (esEtiqueta) style.fill = { patternType: "solid", fgColor: { rgb: COLOR_CANVAS } };
+      } else if (r === 2 || r === 3) {
+        style.fill = { patternType: "solid", fgColor: { rgb: COLOR_INK } };
+        style.font = { bold: true, sz: 10, color: { rgb: COLOR_SEAM } };
+        style.alignment = { vertical: "center", horizontal: "center", wrapText: true };
+      } else {
+        const filaDato = r - 4;
+        style.fill = { patternType: "solid", fgColor: { rgb: filaDato % 2 === 0 ? "FFFFFF" : COLOR_CANVAS } };
+        style.font = { sz: 10, color: { rgb: COLOR_INK } };
+        if (c === 13 && ws[addr].v !== "") style.numFmt = "$#,##0";
+      }
+      ws[addr].s = style;
+    }
+  }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "ANEXO");
   const nombreArchivo = `Preorden_${(preorden.cliente || "SinCliente").replace(/[^a-zA-Z0-9]+/g, "_")}_${preorden.fechaCreado || today()}.xlsx`;
+  const fotos = items.map((it, i) => ({ dataUrl: it.foto, col: 0, row: 4 + i })).filter((f) => f.dataUrl);
+  if (preorden.cartaColores) {
+    fotos.push({ dataUrl: preorden.cartaColores, col: 16, row: 4, rowSpan: Math.max(items.length, 1) });
+  }
+  if (fotos.length) {
+    try {
+      const wbArrayBuffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+      const blob = await incrustarFotosEnXlsx(wbArrayBuffer, fotos);
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = nombreArchivo;
+        a.click();
+        URL.revokeObjectURL(url);
+        return;
+      }
+    } catch (e) {
+      // Mejor un Excel completo sin imágenes que ninguno.
+    }
+  }
   XLSX.writeFile(wb, nombreArchivo);
 }
 function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido }) {
@@ -4061,7 +4173,14 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                       <img src={p.cartaColores} alt="Carta de colores" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, border: `1px solid ${T.border}` }} />
                     </div>
                   ) : <div />}
-                  <Btn variant="secondary" small onClick={() => exportPreordenXLSX(p)}>📊 Descargar Excel</Btn>
+                  <Btn variant="secondary" small onClick={() => exportPreordenXLSX({
+                    ...p,
+                    items: (p.items || []).map((it) => {
+                      const cap = (capsulas || []).find((c) => c.id === it.capsulaId);
+                      const refReal = cap?.referencias?.find((r) => r.id === it.itemId);
+                      return { ...it, estadoLabel: refReal ? (STATUS[refReal.status]?.label || refReal.status) : "" };
+                    }),
+                  })}>📊 Descargar Excel</Btn>
                 </div>
                 <div style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
