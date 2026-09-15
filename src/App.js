@@ -3706,8 +3706,16 @@ function resumenPreordenPorCategoria(items) {
   });
   return [...mapa.values()].sort((a, b) => b.unidades - a.unidades);
 }
-function NuevaReprogramacionView({ capsulas, config, onAddCapsula, onAddRef, onGuardar, onCancelar }) {
-  const [header, setHeader] = useState({ cliente: "", numPedido: "" });
+function NuevaReprogramacionView({ capsulas, config, currentUser, onAddCapsula, onAddRef, onGuardar, onCancelar }) {
+  const [header, setHeader] = useState({ cliente: "", numPedido: "", cartaColores: null });
+  const esCliente = currentUser?.role === "Cliente";
+  // Si entra un usuario del rol Cliente, el pedido queda fijo a su propio
+  // cliente asociado -- no puede armar una preorden a nombre de otro cliente.
+  useEffect(() => {
+    if (esCliente && currentUser?.clienteAsociado) {
+      setHeader((h) => (h.cliente ? h : { ...h, cliente: currentUser.clienteAsociado }));
+    }
+  }, [esCliente, currentUser?.clienteAsociado]);
   const [filas, setFilas] = useState([]);
   const [referencia, setReferencia] = useState("");
   const [buscando, setBuscando] = useState(false);
@@ -3729,14 +3737,17 @@ function NuevaReprogramacionView({ capsulas, config, onAddCapsula, onAddRef, onG
       const b = respRef.data.referencia || {};
       const grupo = (config?.lineaGrupoMap || {})[b.linea] || "";
       let tela = "";
+      let consumo = "";
       try {
         const llamarTela = httpsCallable(functionsClient, "getComposicionTelasBusintBD");
         const respTela = await llamarTela();
         const normBuscada = normalizarRefComparacion(ref);
         const filaTela = (respTela.data?.porReferencia || []).find((r) => normalizarRefComparacion(r.ref) === normBuscada);
-        tela = filaTela?.slots?.[0]?.nombre || "";
+        const slot0 = filaTela?.slots?.[0];
+        tela = slot0?.nombre || "";
+        consumo = slot0?.consumo != null && slot0?.consumo !== "" ? `${slot0.consumo}${slot0.unidad ? ` ${slot0.unidad}` : ""}` : "";
       } catch {
-        // Tela es "best effort" -- si falla la consulta, queda para llenar a mano.
+        // Tela/Consumo son "best effort" -- si falla la consulta, quedan para llenar a mano.
       }
       const datosBusint = {
         nombre: b.descripcionLarga || "",
@@ -3746,6 +3757,7 @@ function NuevaReprogramacionView({ capsulas, config, onAddCapsula, onAddRef, onG
         tipo: grupo,
         lineaCruda: b.linea || "",
         tela,
+        consumo,
       };
       const refNorm = normalizarRefComparacion(ref);
       const capsulaExistente = buscarRefEnCapsulasPreorden(refNorm, capsulas);
@@ -3768,7 +3780,7 @@ function NuevaReprogramacionView({ capsulas, config, onAddCapsula, onAddRef, onG
     setFilas((fs) => [...fs, {
       capsulaId: capId, refId, reference: ref, name: refObj?.name || resultado.datosBusint.nombre || ref, image: refObj?.image || null,
       categoria: resultado.datosBusint.categoria, silueta: resultado.datosBusint.silueta, rango: resultado.datosBusint.rango,
-      tipoTela: resultado.datosBusint.tela, _tipo: manual.tipo || resultado.datosBusint.tipo,
+      tipoTela: resultado.datosBusint.tela, consumo: resultado.datosBusint.consumo, _tipo: manual.tipo || resultado.datosBusint.tipo,
       _colombiaCurva: manual.colombiaCurva, _colombiaCantidad: manual.colombiaCantidad,
       _venezuelaCurva: manual.venezuelaCurva, _venezuelaCantidad: manual.venezuelaCantidad,
       _precio: manual.precio, _observacionesCliente: manual.observacionesCliente,
@@ -3796,8 +3808,18 @@ function NuevaReprogramacionView({ capsulas, config, onAddCapsula, onAddRef, onG
       </div>
       <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 20, marginBottom: 20 }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
-          <Field label="Cliente"><FSel value={header.cliente} onChange={(v) => setHeader((h) => ({ ...h, cliente: v }))} options={(config?.clientes || []).map((c) => c.nombre)} /></Field>
+          <Field label="Cliente">
+            {esCliente ? (
+              <div style={{ padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.canvas }}>{currentUser?.clienteAsociado || "—"}</div>
+            ) : (
+              <FSel value={header.cliente} onChange={(v) => setHeader((h) => ({ ...h, cliente: v }))} options={(config?.clientes || []).map((c) => c.nombre)} />
+            )}
+          </Field>
           <Field label="N° Pedido (opcional)"><FInput value={header.numPedido} onChange={(v) => setHeader((h) => ({ ...h, numPedido: v }))} placeholder="Si ya lo sabes" /></Field>
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 8 }}>Carta de Colores (opcional)</div>
+          <ImageUploader image={header.cartaColores} onImage={(img) => setHeader((h) => ({ ...h, cartaColores: img }))} />
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 12 }}>
           <div style={{ flex: 1 }}>
@@ -3817,6 +3839,7 @@ function NuevaReprogramacionView({ capsulas, config, onAddCapsula, onAddRef, onG
               <div><div style={{ color: T.slate, fontWeight: 700 }}>Silueta</div><div style={{ color: T.ink }}>{resultado.datosBusint.silueta || "—"}</div></div>
               <div><div style={{ color: T.slate, fontWeight: 700 }}>Rango</div><div style={{ color: T.ink }}>{resultado.datosBusint.rango || "—"}</div></div>
               <div><div style={{ color: T.slate, fontWeight: 700 }}>Tela</div><div style={{ color: T.ink }}>{resultado.datosBusint.tela || "— (llenar a mano)"}</div></div>
+              <div><div style={{ color: T.slate, fontWeight: 700 }}>Consumo</div><div style={{ color: T.ink }}>{resultado.datosBusint.consumo || "— (llenar a mano)"}</div></div>
               <div><div style={{ color: T.slate, fontWeight: 700 }}>Tipo (línea)</div><div style={{ color: resultado.datosBusint.tipo ? T.ink : T.amber }}>{resultado.datosBusint.tipo || "Sin clasificar — llenar a mano"}</div></div>
             </div>
             {resultado.capsulaExistente ? (
@@ -3846,7 +3869,7 @@ function NuevaReprogramacionView({ capsulas, config, onAddCapsula, onAddRef, onG
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 16 }}>
               <thead>
                 <tr style={{ background: T.ink }}>
-                  {["Ref", "Nombre", "Categoría", "Tipo", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Cant. Total", "Precio", ""].map((h) => (
+                  {["Ref", "Nombre", "Categoría", "Consumo", "Tipo", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Cant. Total", "Precio", ""].map((h) => (
                     <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
@@ -3857,6 +3880,7 @@ function NuevaReprogramacionView({ capsulas, config, onAddCapsula, onAddRef, onG
                     <td style={{ padding: "6px 10px", fontWeight: 700 }}>{f.reference}</td>
                     <td style={{ padding: "6px 10px" }}>{f.name}</td>
                     <td style={{ padding: "6px 10px" }}>{f.categoria || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{f.consumo || "—"}</td>
                     <td style={{ padding: "6px 10px" }}>{f._tipo || "—"}</td>
                     <td style={{ padding: "6px 10px" }}>{f._colombiaCurva || "—"}</td>
                     <td style={{ padding: "6px 10px" }}>{f._colombiaCantidad || "—"}</td>
@@ -3894,6 +3918,36 @@ function NuevaReprogramacionView({ capsulas, config, onAddCapsula, onAddRef, onG
     </div>
   );
 }
+async function exportPreordenXLSX(preorden) {
+  const XLSX = await import("xlsx");
+  const wsData = [
+    ["PREORDEN"],
+    ["Cliente", preorden.cliente || "", "N° Pedido", preorden.numPedido || "", "Fecha", preorden.fechaCreado || ""],
+    [],
+    ["Ref", "Nombre", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Pedido"],
+    ...(preorden.items || []).map((it) => [
+      it.referencia || "",
+      it.nombre || "",
+      it.consumo || "",
+      it.tipo || "",
+      it.categoria || "",
+      it.silueta || "",
+      it.rango || "",
+      it.tela || "",
+      it.colombiaCurva || "",
+      it.colombiaCantidad || "",
+      it.venezuelaCurva || "",
+      it.venezuelaCantidad || "",
+      it.precio || "",
+      it.pedidoVinculado?.numero || "",
+    ]),
+  ];
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  XLSX.utils.book_append_sheet(wb, ws, "Preorden");
+  const nombreArchivo = `Preorden_${(preorden.cliente || "SinCliente").replace(/[^a-zA-Z0-9]+/g, "_")}_${preorden.fechaCreado || today()}.xlsx`;
+  XLSX.writeFile(wb, nombreArchivo);
+}
 function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido }) {
   const [modo, setModo] = useState("lista");
   const [subTab, setSubTab] = useState("pendientes");
@@ -3923,6 +3977,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
       <NuevaReprogramacionView
         capsulas={capsulas}
         config={config}
+        currentUser={currentUser}
         onAddCapsula={onAddCapsula}
         onAddRef={onAddRef}
         onGuardar={async (header, items) => { await onCrearPreorden(header, items); setModo("lista"); }}
@@ -3999,6 +4054,15 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
             </div>
             {abierto && (
               <div style={{ padding: 20 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
+                  {p.cartaColores ? (
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Carta de Colores</div>
+                      <img src={p.cartaColores} alt="Carta de colores" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, border: `1px solid ${T.border}` }} />
+                    </div>
+                  ) : <div />}
+                  <Btn variant="secondary" small onClick={() => exportPreordenXLSX(p)}>📊 Descargar Excel</Btn>
+                </div>
                 <div style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                     <thead>
@@ -11301,6 +11365,7 @@ function AppInner() {
       id: uid(),
       cliente: header.cliente || "",
       numPedido: header.numPedido || "",
+      cartaColores: header.cartaColores || null,
       fechaCreado: today(),
       items: items.map((it) => ({
         itemId: it.refId,
@@ -11313,7 +11378,7 @@ function AppInner() {
         rango: it.rango || "",
         tela: it.tipoTela || "",
         tipo: it._tipo || "",
-        consumo: "",
+        consumo: it.consumo || "",
         colombiaCurva: it._colombiaCurva || "",
         colombiaCantidad: it._colombiaCantidad || "",
         venezuelaCurva: it._venezuelaCurva || "",
