@@ -2596,17 +2596,30 @@ exports.getCostosProcesoDesdeBusintPorReferencia = onCall(
     }
     const normBuscada = normalizarRefComparacion(ref);
     const porInsumo = new Map();
+    const _debugFilasCrudas = []; // (2026-09-15) diagnóstico temporal, ver nota arriba
     for (const todas of pasadasOk) {
       todas
         .filter((f) => normalizarRefComparacion(f?.Ref) === normBuscada && f?.Insumo)
         .forEach((f) => {
           const insumo = String(f.Insumo).trim();
           const clave = normalizarProcesoBD(insumo);
+          _debugFilasCrudas.push({ refCrudo: f.Ref, insumo, cant: Number(f.Cant) || 0 });
           if (!porInsumo.has(clave)) porInsumo.set(clave, { insumo, cant: Number(f.Cant) || 0 });
         });
     }
     const procesos = [...porInsumo.values()];
-    return { ref, encontrada: procesos.length > 0, procesos };
+    return {
+      ref,
+      encontrada: procesos.length > 0,
+      procesos,
+      _debug: {
+        normBuscada,
+        totalPasadasOk: pasadasOk.length,
+        totalFilasPorPasada: pasadasOk.map((t) => t.length),
+        totalFilasCrudasCoincidentes: _debugFilasCrudas.length,
+        filasCrudasCoincidentes: _debugFilasCrudas,
+      },
+    };
   }
 );
 // (2026-09-02, a pedido de Fredy) Precios de corte ("MDEO - CORTE") de
