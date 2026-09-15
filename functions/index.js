@@ -1438,6 +1438,112 @@ exports.exportarDadoPorCumplidoADropboxDiario = onSchedule(
 );
 // ─────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────
+// (2026-09-15, a pedido de Fredy) Exportar la Bitácora de Despachos (Bodega
+// -> Control de Despacho -> Estado de Despacho) a Excel y subirla a Dropbox
+// -- mismo patrón que "Dado por Cumplido" de arriba: se sobrescribe SIEMPRE
+// el mismo archivo, para que cada mañana ya esté el más reciente. Mismas
+// columnas y mismos datos que ya arma el botón manual "📥 Descargar
+// bitácora" de esa pantalla (ver descargarBitacora en modulo-bodega.jsx):
+// lotes de "dado_por_cumplido_lotes" que ya estén Aprobados Y con estado de
+// envío (Enviado o Recibido) -- los que todavía están "Por enviar" no
+// entran, porque esta bitácora es de lo que YA se movió.
+const DROPBOX_RUTA_BITACORA_DESPACHOS =
+  "/CENTRO ADMINISTRATIVO YANKO/DESPACHOS/CONTROL DE DESPACHOS/DESPACHOS GENERALES/2026/BITACORA DESPACHOS 2026.xlsx";
+
+const BITACORA_DESPACHOS_COLUMNAS = [
+  { header: "Lote", key: "numLote", width: 10 },
+  { header: "Referencia", key: "referencia", width: 16 },
+  { header: "Cliente", key: "cliente", width: 22 },
+  { header: "Cant. Cortada", key: "cantCortada", width: 14 },
+  { header: "Cant. Despachada", key: "cantidadDespachadaBodega", width: 16 },
+  { header: "Sacrificios", key: "sacrificios", width: 12 },
+  { header: "Segundas", key: "segundas", width: 11 },
+  { header: "Cobros", key: "cobros", width: 40 },
+  { header: "Despacho", key: "despachoCodigo", width: 18 },
+  { header: "Transportador", key: "transportador", width: 18 },
+  { header: "Guía", key: "numeroGuia", width: 16 },
+  { header: "Fecha Envío", key: "fechaEnvio", width: 13 },
+  { header: "Fecha Recibido", key: "fechaRecibido", width: 14 },
+  { header: "Estado", key: "estado", width: 12 },
+];
+
+async function generarExcelBitacoraDespachos() {
+  const snap = await db.collection("dado_por_cumplido_lotes").where("estado", "==", "aprobado").get();
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Bitácora");
+  ws.columns = BITACORA_DESPACHOS_COLUMNAS;
+  ws.getRow(1).font = { bold: true };
+  let total = 0;
+  snap.docs.forEach((doc) => {
+    const l = doc.data();
+    if (l.estadoEnvio !== "enviado" && l.estadoEnvio !== "recibido") return; // "Por enviar" no entra a la bitácora
+    const cobrosTexto = (l.cobrosBodega || []).map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoneyCorreoGenerico(c.valor)}`).join(" / ");
+    ws.addRow({
+      numLote: l.numLote ?? "",
+      referencia: l.referencia || "",
+      cliente: l.cliente || "",
+      cantCortada: Number(l.cantCortada) || 0,
+      cantidadDespachadaBodega: Number(l.cantidadDespachadaBodega) || 0,
+      sacrificios: Number(l.sacrificios) || 0,
+      segundas: Number(l.segundas) || 0,
+      cobros: cobrosTexto,
+      despachoCodigo: l.despachoCodigo || "",
+      transportador: l.transportador || "",
+      numeroGuia: l.numeroGuia || "",
+      fechaEnvio: l.fechaEnvio || "",
+      fechaRecibido: l.fechaRecibido || "",
+      estado: l.estadoEnvio === "recibido" ? "Recibido" : "Enviado",
+    });
+    total++;
+  });
+  const buffer = await wb.xlsx.writeBuffer();
+  return { buffer, totalLotes: total };
+}
+function fmtMoneyCorreoGenerico(v) {
+  return `$${Math.round(Number(v) || 0).toLocaleString("es-CO")}`;
+}
+
+async function exportarBitacoraDespachosADropbox() {
+  const { buffer, totalLotes } = await generarExcelBitacoraDespachos();
+  await subirArchivoADropbox(buffer, DROPBOX_RUTA_BITACORA_DESPACHOS);
+  logger.info("exportarBitacoraDespachosADropbox completado", { totalLotes, ruta: DROPBOX_RUTA_BITACORA_DESPACHOS });
+  return { ok: true, totalLotes, ruta: DROPBOX_RUTA_BITACORA_DESPACHOS };
+}
+
+// Botón manual "Descargar y subir a Dropbox ahora" (si se agrega en Bodega
+// -> Control de Despacho, solo admin) -- para probar sin esperar al horario
+// de las 6:00 a.m.
+exports.exportarBitacoraDespachosADropboxAhora = onCall(
+  {
+    secrets: [DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN],
+    timeoutSeconds: 120,
+    memory: "256MiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    return await exportarBitacoraDespachosADropbox();
+  }
+);
+
+// Corre sola todos los días a las 6:00 a.m. hora Bogotá -- genera el Excel
+// de la Bitácora de Despachos (lotes aprobados con estado Enviado o
+// Recibido) y lo sobrescribe siempre en la misma ruta de Dropbox.
+exports.exportarBitacoraDespachosADropboxDiario = onSchedule(
+  {
+    schedule: "0 6 * * *",
+    timeZone: "America/Bogota",
+    secrets: [DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN],
+    timeoutSeconds: 120,
+    memory: "256MiB",
+  },
+  async () => {
+    const resultado = await exportarBitacoraDespachosADropbox();
+    logger.info("exportarBitacoraDespachosADropboxDiario completado", resultado);
+  }
+);
+// ─────────────────────────────────────────────────────────────────────────
+
 
 function cryptoRandomId() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
