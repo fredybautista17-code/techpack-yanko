@@ -2572,7 +2572,7 @@ async function correrAuditoriaBusintVsNomina({ inmediato = false } = {}) {
 exports.getCostosProcesoDesdeBusintPorReferencia = onCall(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
-    timeoutSeconds: 240,
+    timeoutSeconds: 120,
     memory: "512MiB",
   },
   async (request) => {
@@ -2580,32 +2580,53 @@ exports.getCostosProcesoDesdeBusintPorReferencia = onCall(
     if (!ref) {
       throw new HttpsError("invalid-argument", "ref es obligatorio.");
     }
-    // (2026-09-14) Dos pasadas en paralelo, no una sola -- ver nota arriba
-    // del bloque. Si UNA de las dos pasadas falla (error de red, etc.) no
-    // se aborta: se sigue con la que sí sirvió. Solo se lanza error si
-    // AMBAS fallan.
-    const resultados = await Promise.allSettled([
-      consultarTablaBusintBDCompleta("insumos dig"),
-      consultarTablaBusintBDCompleta("insumos dig"),
-    ]);
-    const pasadasOk = resultados.filter((r) => r.status === "fulfilled").map((r) => r.value);
-    if (!pasadasOk.length) {
-      const err = resultados[0].reason;
+    let todas;
+    try {
+      todas = await consultarTablaBusintBDCompleta("insumos dig");
+    } catch (err) {
       logger.error("Error consultando Busint BD (getCostosProcesoDesdeBusintPorReferencia)", { ref, error: String(err) });
       throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
     }
+    // (2026-09-15) Confirmado con Fredy: Busint puede tener la MISMA
+    // referencia guardada más de una vez en "insumos dig" con distinta
+    // escritura literal de "Ref" (ej. "C5008" y "C-5008") -- normalmente
+    // porque la ficha técnica se rehízo bajo una escritura nueva sin
+    // borrar la fila anterior. Si se mezclan insumo por insumo entre
+    // ambas fichas se puede terminar usando un dato VIEJO para algún
+    // proceso (pasó con C-5008/TERMINACION: la escritura sin guion, más
+    // vieja, trae 100; la escritura con guion, la vigente, trae 173).
+    // Para no mezclar dos fichas técnicas distintas, se agrupan las filas
+    // coincidentes por su "Ref" tal cual está escrita en Busint, y se usa
+    // COMPLETO solo el grupo cuyo ID más alto sea el mayor de todos -- la
+    // escritura más reciente -- descartando los demás grupos enteros (no
+    // se combinan procesos de una ficha con los de otra).
     const normBuscada = normalizarRefComparacion(ref);
+    const porRefLiteral = new Map(); // Ref tal cual está en Busint -> { maxId, filas }
+    todas
+      .filter((f) => normalizarRefComparacion(f?.Ref) === normBuscada && f?.Insumo)
+      .forEach((f) => {
+        const refLit = String(f.Ref ?? "");
+        const id = Number(f.ID) || 0;
+        if (!porRefLiteral.has(refLit)) porRefLiteral.set(refLit, { maxId: id, filas: [] });
+        const grupo = porRefLiteral.get(refLit);
+        if (id > grupo.maxId) grupo.maxId = id;
+        grupo.filas.push(f);
+      });
+    let refLiteralUsada = null;
+    let mejorGrupo = null;
+    for (const [refLit, grupo] of porRefLiteral.entries()) {
+      if (!mejorGrupo || grupo.maxId > mejorGrupo.maxId) {
+        mejorGrupo = grupo;
+        refLiteralUsada = refLit;
+      }
+    }
     const porInsumo = new Map();
-    const _debugFilasCrudas = []; // (2026-09-15) diagnóstico temporal, ver nota arriba
-    for (const todas of pasadasOk) {
-      todas
-        .filter((f) => normalizarRefComparacion(f?.Ref) === normBuscada && f?.Insumo)
-        .forEach((f) => {
-          const insumo = String(f.Insumo).trim();
-          const clave = normalizarProcesoBD(insumo);
-          _debugFilasCrudas.push({ refCrudo: f.Ref, insumo, cant: Number(f.Cant) || 0 });
-          if (!porInsumo.has(clave)) porInsumo.set(clave, { insumo, cant: Number(f.Cant) || 0 });
-        });
+    if (mejorGrupo) {
+      mejorGrupo.filas.forEach((f) => {
+        const insumo = String(f.Insumo).trim();
+        const clave = normalizarProcesoBD(insumo);
+        if (!porInsumo.has(clave)) porInsumo.set(clave, { insumo, cant: Number(f.Cant) || 0 });
+      });
     }
     const procesos = [...porInsumo.values()];
     return {
@@ -2614,10 +2635,13 @@ exports.getCostosProcesoDesdeBusintPorReferencia = onCall(
       procesos,
       _debug: {
         normBuscada,
-        totalPasadasOk: pasadasOk.length,
-        totalFilasPorPasada: pasadasOk.map((t) => t.length),
-        totalFilasCrudasCoincidentes: _debugFilasCrudas.length,
-        filasCrudasCoincidentes: _debugFilasCrudas,
+        totalFilas: todas.length,
+        gruposPorRefLiteral: [...porRefLiteral.entries()].map(([refLit, g]) => ({
+          refLiteral: refLit,
+          maxId: g.maxId,
+          cantidadFilas: g.filas.length,
+        })),
+        refLiteralUsada,
       },
     };
   }
