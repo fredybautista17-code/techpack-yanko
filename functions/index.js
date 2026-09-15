@@ -5726,13 +5726,16 @@ exports.enviarAsistenciaDiaria = onSchedule(
   },
   async () => {
     const fecha = fechaHoyBogota();
-    const [areasSnap, trabajadoresSnap, diasTrabajadosSnap, usersSnap, configSnap, anomaliasSnap] = await Promise.all([
+    const primerDiaMes = `${fecha.slice(0, 7)}-01`;
+    const [areasSnap, trabajadoresSnap, diasTrabajadosSnap, usersSnap, configSnap, anomaliasSnap, ausenciasSnap, retardosMesSnap] = await Promise.all([
       db.collection("nomina_areas").get(),
       db.collection("nomina_trabajadores").get(),
       db.collection("nomina_dias_trabajados").where("fecha", "==", fecha).get(),
       db.collection("users").get(),
       db.collection("config").doc("main").get(),
       db.collection("nomina_anomalias_huellero").get(),
+      db.collection("nomina_ausencias").get(),
+      db.collection("nomina_retardos").where("fecha", ">=", primerDiaMes).where("fecha", "<=", fecha).get(),
     ]);
 
     const areas = areasSnap.docs.map((d) => d.data());
@@ -5751,6 +5754,20 @@ exports.enviarAsistenciaDiaria = onSchedule(
     const recurrenciaPorNombre = {};
     anomalias.forEach((a) => { recurrenciaPorNombre[a.nombreNorm] = (recurrenciaPorNombre[a.nombreNorm] || 0) + 1; });
     const anomaliasPendientes = anomalias.filter((a) => a.estado !== "ajustado");
+    // (2026-09-15, a pedido de Fredy) Dos secciones nuevas en el mismo
+    // correo diario: quién tiene permiso HOY (para que el líder no espere a
+    // que alguien le avise que faltó) y una estadística de llegadas tarde
+    // del mes en curso -- ambas se reparten por área igual que el resto de
+    // este correo. El conteo de retardos ya viene acotado al mes en curso
+    // por el `where` de la consulta de arriba.
+    const ausencias = ausenciasSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
+    const permisosHoy = ausencias.filter((a) => a.fechaInicio <= fecha && fecha <= a.fechaFin);
+    const retardosPorNombre = {};
+    retardosMesSnap.docs.forEach((d) => {
+      const r = d.data();
+      if (!retardosPorNombre[r.nombreNorm]) retardosPorNombre[r.nombreNorm] = { nombre: r.nombre, area: r.area || "", cantidad: 0 };
+      retardosPorNombre[r.nombreNorm].cantidad++;
+    });
 
     if (!trabajadoresActivos.length) {
       logger.info("enviarAsistenciaDiaria: no hay trabajadores activos, no se manda nada");
@@ -5803,6 +5820,36 @@ exports.enviarAsistenciaDiaria = onSchedule(
       return `<h3 style="margin:18px 0 6px;color:#b45309;">⚠ Anomalías por corroborar (marcó solo entrada o solo salida)</h3><p style="font-size:12px;color:#5A5A7A;margin:0 0 8px;">No tenían un permiso registrado que explique la marca faltante. Se ajustan desde Nómina → Anomalías Huellero.</p><table border="1" cellpadding="6" style="border-collapse:collapse;width:100%"><tr><th>Nombre</th><th>Fecha</th><th>Le faltó</th><th>Veces (histórico)</th></tr>${filas}</table>`;
     };
 
+    // (2026-09-15, a pedido de Fredy) Bloque con quiénes de esta área tienen
+    // permiso HOY -- vacío si nadie, para no ensuciar el correo la mayoría
+    // de los días.
+    const fmtBloquePermisosHoy = (nombreArea, personas) => {
+      const conPermiso = permisosHoy.filter((a) => personas.some((t) => t.id === a.trabajadorId));
+      if (!conPermiso.length) return "";
+      const filas = conPermiso
+        .map((a) => {
+          const t = personas.find((tt) => tt.id === a.trabajadorId);
+          return `<tr><td>${t?.nombre || "(sin nombre)"}</td><td>${a.motivo || "—"}</td><td>${a.fechaInicio} a ${a.fechaFin}</td></tr>`;
+        })
+        .join("");
+      return `<h3 style="margin:18px 0 6px;color:#1d4ed8;">🗓️ Con permiso hoy</h3><table border="1" cellpadding="6" style="border-collapse:collapse;width:100%"><tr><th>Nombre</th><th>Motivo</th><th>Vigencia</th></tr>${filas}</table>`;
+    };
+
+    // (2026-09-15, a pedido de Fredy) Bloque con la estadística de llegadas
+    // tarde del mes en curso para esta área -- puramente informativo aquí
+    // (el correo formal aparte, revisarRetardosYAvisar más abajo, es lo que
+    // dispara el aviso cuando alguien cruza el umbral).
+    const fmtBloqueRetardos = (nombreArea) => {
+      const propios = Object.values(retardosPorNombre).filter((r) => (r.area || "Sin asignar") === nombreArea);
+      if (!propios.length) return "";
+      const filas = propios
+        .slice()
+        .sort((a, b) => b.cantidad - a.cantidad)
+        .map((r) => `<tr><td>${r.nombre}</td><td style="text-align:center;font-weight:700;color:${r.cantidad >= 6 ? "#b91c1c" : "#1A1A2E"}">${r.cantidad}</td></tr>`)
+        .join("");
+      return `<h3 style="margin:18px 0 6px;color:#5A5A7A;">🕒 Llegadas tarde este mes</h3><table border="1" cellpadding="6" style="border-collapse:collapse;width:100%"><tr><th>Nombre</th><th>Veces</th></tr>${filas}</table>`;
+    };
+
     const transporte = crearTransporte();
     let correosEnviados = 0;
     const bloquesTodas = [];
@@ -5811,7 +5858,9 @@ exports.enviarAsistenciaDiaria = onSchedule(
       const personasArea = trabajadoresActivos.filter((t) => (t.area || "Sin asignar") === area.nombre);
       if (!personasArea.length) continue;
       const bloqueAnomaliasArea = fmtBloqueAnomalias(area.nombre);
-      bloquesTodas.push(fmtBloqueArea(area.nombre, personasArea) + bloqueAnomaliasArea);
+      const bloquePermisosArea = fmtBloquePermisosHoy(area.nombre, personasArea);
+      const bloqueRetardosArea = fmtBloqueRetardos(area.nombre);
+      bloquesTodas.push(fmtBloqueArea(area.nombre, personasArea) + bloqueAnomaliasArea + bloquePermisosArea + bloqueRetardosArea);
 
       const lideres = usuarios
         .filter((u) => u.areaNomina === area.nombre && u.email && !correosCompletos.has(u.email))
@@ -5821,7 +5870,7 @@ exports.enviarAsistenciaDiaria = onSchedule(
           transporte,
           lideres,
           `Asistencia de hoy (${fecha}) — ${area.nombre}`,
-          `<div style="max-width:640px;margin:0 auto;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;"><h2 style="margin-bottom:2px;">Asistencia de hoy</h2><p style="color:#5A5A7A;font-size:13px;margin-top:0;">${fecha}</p>${fmtBloqueArea(area.nombre, personasArea)}${bloqueAnomaliasArea}</div>`
+          `<div style="max-width:640px;margin:0 auto;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;"><h2 style="margin-bottom:2px;">Asistencia de hoy</h2><p style="color:#5A5A7A;font-size:13px;margin-top:0;">${fecha}</p>${fmtBloqueArea(area.nombre, personasArea)}${bloqueAnomaliasArea}${bloquePermisosArea}${bloqueRetardosArea}</div>`
         );
         correosEnviados++;
       }
@@ -5832,7 +5881,7 @@ exports.enviarAsistenciaDiaria = onSchedule(
     // invisibles.
     const sinAreaPersonas = trabajadoresActivos.filter((t) => !t.area);
     if (sinAreaPersonas.length) {
-      bloquesTodas.push(fmtBloqueArea("Sin área asignada", sinAreaPersonas) + fmtBloqueAnomalias("Sin asignar"));
+      bloquesTodas.push(fmtBloqueArea("Sin área asignada", sinAreaPersonas) + fmtBloqueAnomalias("Sin asignar") + fmtBloquePermisosHoy("Sin asignar", sinAreaPersonas) + fmtBloqueRetardos("Sin asignar"));
     }
 
     if (correosCompletos.size) {
@@ -5846,6 +5895,81 @@ exports.enviarAsistenciaDiaria = onSchedule(
     }
 
     logger.info("enviarAsistenciaDiaria enviado", { correosEnviados, fecha, trabajadoresActivos: trabajadoresActivos.length, asistieron: asistieronIds.size });
+  }
+);
+
+// (2026-09-15, a pedido de Fredy) Umbral formal de llegadas tarde: 6 en la
+// quincena (1-15 / 16-fin de mes) o 12 en el mes, lo que se cumpla primero.
+// Se dispara desde "Evaluar anomalías y retardos" en Reporte de Asistencia
+// (modulo-nomina.jsx) justo después de guardar los retardos del archivo
+// recién subido, así el aviso llega el mismo día que se sube el huellero en
+// vez de esperar al correo de las 9am. Deduplicado por persona+período
+// (nomina_avisos_retardos) -- una vez avisado, no se repite aunque se
+// vuelva a subir el mismo huellero o se cruce otra vez el umbral dentro del
+// mismo período. Correo a Gerencia/Talento Humano (mismo grupo de
+// DESTINATARIOS_ASISTENCIA_COMPLETA -- Fredy confirmó que es la misma
+// gente, sin un correo de RRHH aparte) + el líder del área de la persona.
+exports.revisarRetardosYAvisar = onCall(
+  { secrets: [EMAIL_USER, EMAIL_APP_PASSWORD], timeoutSeconds: 120, memory: "256MiB" },
+  async () => {
+    const fecha = fechaHoyBogota();
+    const [, mesNum, dia] = fecha.split("-").map(Number);
+    const mesStr = fecha.slice(0, 7);
+    const inicioMes = `${mesStr}-01`;
+    const finMes = `${mesStr}-31`;
+    const inicioQuincena = dia <= 15 ? `${mesStr}-01` : `${mesStr}-16`;
+    const finQuincena = dia <= 15 ? `${mesStr}-15` : finMes;
+    const periodoQuincena = `${mesStr}-${dia <= 15 ? "Q1" : "Q2"}`;
+    const periodoMes = `${mesStr}-MES`;
+    const [retardosQuincenaSnap, retardosMesSnap, usersSnap] = await Promise.all([
+      db.collection("nomina_retardos").where("fecha", ">=", inicioQuincena).where("fecha", "<=", finQuincena).get(),
+      db.collection("nomina_retardos").where("fecha", ">=", inicioMes).where("fecha", "<=", finMes).get(),
+      db.collection("users").get(),
+    ]);
+    const usuarios = usersSnap.docs.map((d) => d.data());
+    function contarPorNombre(snap) {
+      const counts = new Map();
+      snap.docs.forEach((d) => {
+        const r = d.data();
+        if (!counts.has(r.nombreNorm)) counts.set(r.nombreNorm, { nombre: r.nombre, area: r.area || "", cantidad: 0 });
+        counts.get(r.nombreNorm).cantidad++;
+      });
+      return counts;
+    }
+    const conteoQuincena = contarPorNombre(retardosQuincenaSnap);
+    const conteoMes = contarPorNombre(retardosMesSnap);
+    const transporte = crearTransporte();
+    const correosCompletos = DESTINATARIOS_ASISTENCIA_COMPLETA.map((n) => buscarCorreoPorNombre(n, usuarios)).filter(Boolean);
+    let avisosEnviados = 0;
+    async function revisarUmbral(nombreNorm, datos, umbral, periodoId, etiquetaPeriodo) {
+      if (datos.cantidad < umbral) return;
+      const avisoId = `${nombreNorm}__${periodoId}`.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 400);
+      const avisoRef = db.collection("nomina_avisos_retardos").doc(avisoId);
+      const yaExiste = await avisoRef.get();
+      if (yaExiste.exists) return;
+      const lideres = usuarios.filter((u) => u.areaNomina === datos.area && u.email).map((u) => u.email);
+      const correos = [...new Set([...correosCompletos, ...lideres])];
+      if (!correos.length) {
+        logger.warn("revisarRetardosYAvisar: sin correos para avisar", { nombreNorm, area: datos.area });
+        return;
+      }
+      await mandarCorreo(
+        transporte,
+        correos,
+        `ATLAS — ${datos.nombre}: ${datos.cantidad} llegadas tarde en ${etiquetaPeriodo}`,
+        `<div style="max-width:640px;margin:0 auto;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;"><h2 style="margin-bottom:2px;">Llegadas tarde recurrentes</h2><p style="color:#5A5A7A;font-size:13px;margin-top:0;">${etiquetaPeriodo}</p><p><strong>${datos.nombre}</strong>${datos.area ? ` (${datos.area})` : ""} acumula <strong>${datos.cantidad}</strong> llegadas tarde en ${etiquetaPeriodo}.</p></div>`
+      );
+      await avisoRef.set({ nombreNorm, nombre: datos.nombre, area: datos.area, periodo: periodoId, cantidad: datos.cantidad, enviadoEn: new Date().toISOString() });
+      avisosEnviados++;
+    }
+    for (const [nombreNorm, datos] of conteoQuincena) {
+      await revisarUmbral(nombreNorm, datos, 6, periodoQuincena, `la quincena (${inicioQuincena} a ${finQuincena})`);
+    }
+    for (const [nombreNorm, datos] of conteoMes) {
+      await revisarUmbral(nombreNorm, datos, 12, periodoMes, `el mes de ${mesStr}`);
+    }
+    logger.info("revisarRetardosYAvisar terminado", { avisosEnviados, fecha });
+    return { avisosEnviados };
   }
 );
 

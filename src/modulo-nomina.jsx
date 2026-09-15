@@ -612,10 +612,11 @@ function agruparAreasParaSelect(areasNomina, gruposTrabajo, valueKey) {
   }
   return grupos;
 }
-function AreaNominaModal({ area, procesos, grupos, onSave, onClose }) {
+function AreaNominaModal({ area, procesos, grupos, turnos, onSave, onClose }) {
   const [form, setForm] = useState({
     nombre: area?.nombre || "",
     grupoTrabajoId: area?.grupoTrabajoId || "",
+    turnoId: area?.turnoId || "",
     procesosCentroCosto: area?.procesosCentroCosto || [],
     metaDiariaUnidades: area?.metaDiariaUnidades ?? "",
     presupuestoMensualNomina: area?.presupuestoMensualNomina ?? "",
@@ -628,6 +629,7 @@ function AreaNominaModal({ area, procesos, grupos, onSave, onClose }) {
     onSave({
       nombre: form.nombre.trim(),
       grupoTrabajoId: form.grupoTrabajoId || "",
+      turnoId: form.turnoId || "",
       procesosCentroCosto: form.procesosCentroCosto,
       metaDiariaUnidades: form.metaDiariaUnidades === "" ? null : Number(form.metaDiariaUnidades) || 0,
       presupuestoMensualNomina: form.presupuestoMensualNomina === "" ? null : Number(form.presupuestoMensualNomina) || 0,
@@ -641,6 +643,16 @@ function AreaNominaModal({ area, procesos, grupos, onSave, onClose }) {
       <Field label="Nombre del Área Interna"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: ZONA CALOR, EMPAQUE, ADMINISTRATIVO, CONTROL DE CALIDAD" /></Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
         Esta lista alimenta el campo "Área Interna" de cada trabajador y el área que se le asigna a un líder en Usuarios. Es distinta de "Área TNS" (Operativa/Administrativo/Diseño, más abajo en Administrativo).
+      </div>
+      {/* (2026-09-15, a pedido de Fredy) Turno por defecto de esta área --
+          aplica a todos los trabajadores del área que NO tengan un turno
+          especial puesto directamente en su ficha (ver Trabajadores). Un
+          turno especial en el trabajador siempre manda sobre este. */}
+      <Field label="Turno de esta área (opcional)">
+        <FSel value={form.turnoId} onChange={set("turnoId")} options={[...(turnos || [])].sort((a, b) => a.nombre.localeCompare(b.nombre)).map((t) => ({ value: t.id, label: t.nombre }))} placeholder="Sin turno por defecto" />
+      </Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        Se le aplica a todos los trabajadores de esta área, salvo a quien tenga un turno especial puesto directamente en su ficha (Trabajadores → Turno). Créalos en Administrativo → Turnos.
       </div>
       <Field label="Grupo de Trabajo (opcional)">
         <FSel value={form.grupoTrabajoId} onChange={set("grupoTrabajoId")} options={[...(grupos || [])].sort((a, b) => a.nombre.localeCompare(b.nombre)).map((g) => ({ value: g.id, label: g.nombre }))} placeholder="Sin grupo" />
@@ -739,7 +751,7 @@ function AreaNominaModal({ area, procesos, grupos, onSave, onClose }) {
     </Modal>
   );
 }
-function AreasNominaView({ areas, trabajadores, procesos, grupos, isAdmin, onSave, onDelete }) {
+function AreasNominaView({ areas, trabajadores, procesos, grupos, turnos, isAdmin, onSave, onDelete }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | area
   const [confirmDel, setConfirmDel] = useState(null);
   const nombreGrupo = (grupoId) => (grupos || []).find((g) => g.id === grupoId)?.nombre || null;
@@ -759,6 +771,7 @@ function AreasNominaView({ areas, trabajadores, procesos, grupos, isAdmin, onSav
           area={modal === "nuevo" ? null : modal}
           procesos={procesos}
           grupos={grupos}
+          turnos={turnos}
           onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
           onClose={() => setModal(null)}
         />
@@ -787,6 +800,7 @@ function AreasNominaView({ areas, trabajadores, procesos, grupos, isAdmin, onSav
         columnas={[
           { key: "nombre", label: "Área Interna" },
           { key: "grupo", label: "Grupo de Trabajo", render: (f) => nombreGrupo(f.grupoTrabajoId) || <span style={{ color: C.slate }}>Sin grupo</span> },
+          { key: "turno", label: "Turno", render: (f) => (turnos || []).find((t) => t.id === f.turnoId)?.nombre || <span style={{ color: C.slate }}>Sin turno</span> },
           { key: "trabajadores", label: "Trabajadores", align: "right", render: (f) => contarTrabajadores(f.nombre) },
           ...(isAdmin ? [{
             key: "acciones", label: "", align: "right",
@@ -1185,18 +1199,22 @@ function TurnoModal({ turno, onSave, onClose }) {
     nombre: turno?.nombre || "",
     dias: turno?.dias || [...DIAS_SEMANA_TURNO],
     sabadoSiFestivo: turno?.sabadoSiFestivo ?? true,
+    horarios: turno?.horarios || {},
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function toggleDia(d) {
     setForm((f) => ({ ...f, dias: f.dias.includes(d) ? f.dias.filter((x) => x !== d) : [...f.dias, d] }));
   }
+  function setHorario(d, campo, valor) {
+    setForm((f) => ({ ...f, horarios: { ...f.horarios, [d]: { ...(f.horarios[d] || {}), [campo]: valor } } }));
+  }
   function guardar() {
     if (!form.nombre.trim()) return;
-    onSave({ nombre: form.nombre.trim(), dias: form.dias, sabadoSiFestivo: !!form.sabadoSiFestivo });
+    onSave({ nombre: form.nombre.trim(), dias: form.dias, sabadoSiFestivo: !!form.sabadoSiFestivo, horarios: form.horarios });
     onClose();
   }
   return (
-    <Modal title={turno ? "Editar Turno" : "Nuevo Turno"} onClose={onClose} width={440}>
+    <Modal title={turno ? "Editar Turno" : "Nuevo Turno"} onClose={onClose} width={480}>
       <Field label="Nombre del turno"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Medio tiempo mañana (7am-12pm)" /></Field>
       <Field label="Días que le corresponden">
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -1207,6 +1225,27 @@ function TurnoModal({ turno, onSave, onClose }) {
           ))}
         </div>
       </Field>
+      {/* (2026-09-15, a pedido de Fredy) Hora de entrada/salida POR CADA
+          día marcado arriba -- así un mismo turno cubre tanto "todos los
+          días igual" como "lunes distinto al resto" (ej. fábrica: lunes
+          8am, resto 7am) sin crear un turno aparte solo para el lunes. Se
+          usa para calcular retardos en Reporte de Asistencia; si se deja
+          en blanco, ese día simplemente no se evalúa retardo para quien
+          tenga este turno. */}
+      {form.dias.length > 0 && (
+        <Field label="Hora de entrada / salida por día (opcional, para retardos)">
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {DIAS_SEMANA_TURNO.filter((d) => form.dias.includes(d)).map((d) => (
+              <div key={d} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ width: 70, fontSize: 12, fontWeight: 700, color: C.ink }}>{labelDiaTurno(d)}</div>
+                <input type="time" value={form.horarios[d]?.entrada || ""} onChange={(e) => setHorario(d, "entrada", e.target.value)} style={{ padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }} />
+                <span style={{ fontSize: 11, color: C.slate }}>a</span>
+                <input type="time" value={form.horarios[d]?.salida || ""} onChange={(e) => setHorario(d, "salida", e.target.value)} style={{ padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }} />
+              </div>
+            ))}
+          </div>
+        </Field>
+      )}
       <Field label="Sábado">
         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.slate, cursor: "pointer" }}>
           <input type="checkbox" checked={form.sabadoSiFestivo} onChange={(e) => set("sabadoSiFestivo")(e.target.checked)} /> Le corresponde el sábado cuando esa semana tiene un festivo entre semana
@@ -3346,6 +3385,35 @@ function diaEsperado(iso, turno) {
   const dias = turno?.dias || DIAS_SEMANA_TURNO;
   return dias.includes(diaCodigo);
 }
+// (2026-09-15, a pedido de Fredy) Código de día de semana (Lun..Sab) para
+// una fecha ISO -- mismo criterio que diaEsperado, factorizado aparte
+// porque ahora también lo necesita el cálculo de retardos (para saber qué
+// hora de entrada del turno le toca a ese día puntual).
+function diaCodigoDeISO(iso) {
+  const dow = new Date(iso + "T00:00:00").getDay();
+  return ["Dom", "Lun", "Mar", "Mie", "Jue", "Vie", "Sab"][dow];
+}
+function horaEntradaEsperada(turno, diaCodigo) {
+  return turno?.horarios?.[diaCodigo]?.entrada || null;
+}
+// (2026-09-15, a pedido de Fredy) Turno real de un trabajador: manda el
+// turno especial puesto directamente en su ficha (Trabajadores → Turno);
+// si no tiene, cae al turno por defecto de su Área Interna; si tampoco el
+// área tiene turno asignado, sigue sin turno (se asume el horario
+// completo de siempre para "qué días le tocan", y no se evalúan retardos
+// porque no hay hora de referencia).
+function resolverTurnoDeTrabajador(trabajador, areasNomina, turnos) {
+  if (trabajador?.turnoId) {
+    const t = (turnos || []).find((x) => x.id === trabajador.turnoId);
+    if (t) return t;
+  }
+  const area = (areasNomina || []).find((a) => a.nombre === trabajador?.area);
+  if (area?.turnoId) {
+    const t = (turnos || []).find((x) => x.id === area.turnoId);
+    if (t) return t;
+  }
+  return null;
+}
 function parseHuelleroXLS(aoa) {
   const DT_RE = /^\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}$/;
   function celda(v) {
@@ -3446,7 +3514,7 @@ function diasEntre360(desdeISO, hastaISO) {
   const d2 = Math.min(d2raw, 30);
   return (y2 - y1) * 360 + (m2 - m1) * 30 + (d2 - d1) + 1;
 }
-function ReporteAsistenciaView({ ausencias, trabajadores, turnos, anomaliasHuellero, onGuardarTrabajador }) {
+function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, anomaliasHuellero, onGuardarTrabajador }) {
   const fileRef = useRef(null);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState("");
@@ -3519,7 +3587,11 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, anomaliasHuell
           if (trabajadorDelRegistro && a.trabajadorId) return a.trabajadorId === trabajadorDelRegistro.trabajador.id;
           return normalizarNombreHuellero(a.nombre) === nombreNorm;
         });
-        const turnoDelRegistro = trabajadorDelRegistro ? (turnos || []).find((t) => t.id === trabajadorDelRegistro.trabajador.turnoId) : null;
+        // (2026-09-15, a pedido de Fredy) El turno real de la persona sigue
+        // la cascada: turno especial en su ficha -> si no tiene, el turno
+        // por defecto de su Área Interna -> si tampoco, sin turno (se
+        // asume el horario completo de siempre, sin evaluar retardos).
+        const turnoDelRegistro = trabajadorDelRegistro ? resolverTurnoDeTrabajador(trabajadorDelRegistro.trabajador, areasNomina, turnos) : null;
         const diasSinMarca = diasPeriodo.filter((iso) => {
           if (diasConMarca.has(iso)) return false;
           if (!diaEsperado(iso, turnoDelRegistro)) return false;
@@ -3558,6 +3630,39 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, anomaliasHuell
             return { fecha: iso, faltante, area: trabajadorDelRegistro?.trabajador?.area || "" };
           })
           .filter(Boolean);
+        // (2026-09-15, a pedido de Fredy) Retardos de entrada: por cada día
+        // cerrado del período donde el turno de la persona tiene una hora
+        // de entrada esperada para ese día de la semana, se compara contra
+        // la marca de "Entrada" más temprana que dejó el huellero ese día.
+        // Tolerancia de 5 minutos (ej: entra a las 7:00, cuenta tarde desde
+        // las 7:06). Si el turno no tiene hora definida para ese día
+        // puntual, no se evalúa (no hay con qué comparar) -- así una
+        // persona sin turno, o con un turno sin horarios cargados, nunca
+        // sale con retardos "inventados".
+        const entradaMasTempranaPorDia = {};
+        emp.marcas.forEach((m) => {
+          if (m.tipo !== "Entrada") return;
+          const iso = fechaHuelleroAISO(m.fechaHora.split(" ")[0]);
+          const hora = m.fechaHora.split(" ")[1] || "";
+          if (!iso || !hora) return;
+          if (!entradaMasTempranaPorDia[iso] || hora < entradaMasTempranaPorDia[iso]) entradaMasTempranaPorDia[iso] = hora;
+        });
+        const retardosEntrada = diasPeriodo
+          .filter((iso) => iso !== ultimoDiaPeriodo && diasConMarca.has(iso) && diaEsperado(iso, turnoDelRegistro))
+          .map((iso) => {
+            const horaEsperada = horaEntradaEsperada(turnoDelRegistro, diaCodigoDeISO(iso));
+            const horaMarcada = entradaMasTempranaPorDia[iso];
+            if (!horaEsperada || !horaMarcada) return null;
+            const [hE, mE] = horaEsperada.split(":").map(Number);
+            const [hM, mM] = horaMarcada.split(":").map(Number);
+            if ([hE, mE, hM, mM].some((n) => Number.isNaN(n))) return null;
+            const minutosEsperados = hE * 60 + mE;
+            const minutosMarcados = hM * 60 + mM;
+            const TOLERANCIA_MIN = 5;
+            if (minutosMarcados <= minutosEsperados + TOLERANCIA_MIN) return null;
+            return { fecha: iso, horaEsperada, horaMarcada, minutosTarde: minutosMarcados - minutosEsperados, area: trabajadorDelRegistro?.trabajador?.area || "" };
+          })
+          .filter(Boolean);
         return {
           id: emp.id,
           nombre: emp.nombre,
@@ -3573,6 +3678,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, anomaliasHuell
           sinJustificar: sinJustificar.length,
           detalle,
           anomaliasEntradaSalida,
+          retardosEntrada,
         };
       });
 
@@ -3684,14 +3790,26 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, anomaliasHuell
   // vuelva a subir el mismo huellero -- solo agrega anomalías nuevas o
   // quita las que ya no aplican (ej. se corrigió un dato) y seguían
   // pendientes sin resolver.
+  // (2026-09-15, a pedido de Fredy) Un solo botón evalúa Y guarda tanto las
+  // anomalías de Entrada/Salida (arriba) como los retardos de entrada
+  // (retardosEntrada, mismo archivo). Los retardos se reemplazan por
+  // completo para el rango de este archivo -- mismo patrón que "días
+  // trabajados" -- porque a diferencia de una anomalía, un retardo no se
+  // "ajusta" uno por uno, es solo un conteo que alimenta el umbral formal.
+  // Al terminar, avisa a la Cloud Function para que revise de una vez si
+  // alguien ya cruzó el umbral (6 en la quincena / 12 en el mes) y mande el
+  // correo formal -- sin bloquear el botón si falla (la próxima subida del
+  // huellero lo vuelve a intentar).
   const [guardandoAnomalias, setGuardandoAnomalias] = useState(false);
   const [anomaliasGuardadas, setAnomaliasGuardadas] = useState(null);
-  async function guardarAnomaliasEnAtlas() {
+  const [retardosGuardados, setRetardosGuardados] = useState(null);
+  async function evaluarAnomaliasYRetardos() {
     if (!reporte) return;
     setGuardandoAnomalias(true);
     try {
       const batch = writeBatch(db);
       let n = 0;
+      let nRetardos = 0;
       const diasCerrados = reporte.diasPeriodo.slice(0, -1);
       for (const f of reporte.filas) {
         const nombreNorm = normalizarNombreHuellero(f.nombre);
@@ -3719,9 +3837,38 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, anomaliasHuell
             batch.delete(ref);
           }
         }
+        const retardoPorFecha = new Map((f.retardosEntrada || []).map((r) => [r.fecha, r]));
+        for (const fecha of diasCerrados) {
+          const idRetardo = `${nombreNorm}__${fecha}`;
+          const refRetardo = doc(db, "nomina_retardos", idRetardo);
+          const retardo = retardoPorFecha.get(fecha);
+          if (retardo) {
+            batch.set(refRetardo, {
+              nombre: f.nombre,
+              nombreNorm,
+              idHuellero: f.id,
+              area: retardo.area,
+              fecha,
+              horaEsperada: retardo.horaEsperada,
+              horaMarcada: retardo.horaMarcada,
+              minutosTarde: retardo.minutosTarde,
+              origen: "huellero",
+              cargadoEn: new Date().toISOString(),
+            });
+            nRetardos++;
+          } else {
+            batch.delete(refRetardo);
+          }
+        }
       }
       await batch.commit();
       setAnomaliasGuardadas(n);
+      setRetardosGuardados(nRetardos);
+      try {
+        await httpsCallable(functionsClient, "revisarRetardosYAvisar")();
+      } catch (err) {
+        console.error("No se pudo revisar retardos para avisar:", err);
+      }
     } finally {
       setGuardandoAnomalias(false);
     }
@@ -3782,12 +3929,17 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, anomaliasHuell
             )}
           </div>
           <div style={{ marginBottom: 16 }}>
-            <Btn onClick={guardarAnomaliasEnAtlas} disabled={guardandoAnomalias}>
-              {guardandoAnomalias ? "Evaluando..." : "🔎 Evaluar anomalías Entrada/Salida"}
+            <Btn onClick={evaluarAnomaliasYRetardos} disabled={guardandoAnomalias}>
+              {guardandoAnomalias ? "Evaluando..." : "🔎 Evaluar anomalías y retardos"}
             </Btn>
             {anomaliasGuardadas !== null && (
               <span style={{ marginLeft: 10, fontSize: 12, color: C.amber, fontWeight: 700 }}>
                 ⚠ {anomaliasGuardadas} anomalía(s) pendiente(s) — revísalas en Nómina → Anomalías Huellero (el líder de cada área las puede ajustar).
+              </span>
+            )}
+            {retardosGuardados !== null && (
+              <span style={{ marginLeft: 10, fontSize: 12, color: C.slate, fontWeight: 700 }}>
+                🕒 {retardosGuardados} retardo(s) de entrada registrado(s) este período.
               </span>
             )}
           </div>
@@ -3872,7 +4024,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, anomaliasHuell
 // aparecer en el correo diario de asistencia. El contador de veces es
 // solo informativo -- Fredy pidió explícitamente que no dispare ninguna
 // acción automática por sí solo, para no saturar el sistema.
-function AnomaliasHuelleroView({ anomalias, onAjustar }) {
+function AnomaliasHuelleroView({ anomalias, retardos, onAjustar }) {
   const [ajustando, setAjustando] = useState(null);
   const pendientes = (anomalias || [])
     .filter((a) => a.estado !== "ajustado")
@@ -3888,6 +4040,18 @@ function AnomaliasHuelleroView({ anomalias, onAjustar }) {
       setAjustando(null);
     }
   }
+  // (2026-09-15, a pedido de Fredy) Estadística de llegadas tarde del mes
+  // en curso, agrupada por persona -- puramente informativa aquí (el correo
+  // formal automático ya avisa solo cuando se cruza el umbral de 6 en la
+  // quincena / 12 en el mes, ver revisarRetardosYAvisar en el backend).
+  const mesActual = today().slice(0, 7);
+  const retardosDelMes = (retardos || []).filter((r) => r.fecha.slice(0, 7) === mesActual);
+  const retardosPorPersona = {};
+  retardosDelMes.forEach((r) => {
+    if (!retardosPorPersona[r.nombreNorm]) retardosPorPersona[r.nombreNorm] = { nombre: r.nombre, cantidad: 0 };
+    retardosPorPersona[r.nombreNorm].cantidad++;
+  });
+  const filasRetardos = Object.values(retardosPorPersona).sort((a, b) => b.cantidad - a.cantidad);
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 760 }}>
@@ -3919,6 +4083,119 @@ function AnomaliasHuelleroView({ anomalias, onAjustar }) {
             ))}
           </tbody>
         </table>
+      )}
+      <div style={{ marginTop: 28, marginBottom: 10, fontWeight: 800, color: C.ink, fontSize: 14 }}>🕒 Retardos de este mes</div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, maxWidth: 760 }}>
+        Llegadas tarde de {new Date(mesActual + "-01T00:00:00").toLocaleDateString("es-CO", { month: "long", year: "numeric" })} contra la hora de entrada del turno de cada persona (5 minutos de tolerancia). Al llegar a 6 en la quincena o 12 en el mes, Atlas manda un correo formal automático a Gerencia y al líder del área.
+      </div>
+      {!filasRetardos.length && <div style={{ padding: 20, color: C.slate, fontSize: 13 }}>Nadie con retardos registrados este mes. 🎉</div>}
+      {!!filasRetardos.length && (
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: C.ink }}>
+              {["Trabajador", "Retardos este mes"].map((h) => (
+                <th key={h} style={{ padding: "8px 10px", color: "#fff", textAlign: "left", fontWeight: 700, fontSize: 11 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filasRetardos.map((r, i) => (
+              <tr key={r.nombre + i} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                <td style={{ padding: "8px 10px", fontWeight: 700 }}>{r.nombre}</td>
+                <td style={{ padding: "8px 10px", fontWeight: 800, color: r.cantidad >= 12 ? C.red : r.cantidad >= 6 ? C.amber : C.ink }}>{r.cantidad}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+// (2026-09-15, a pedido de Fredy) Historial de asistencia por área: lee
+// directo de lo que YA quedó guardado en Atlas al subir el huellero
+// (nomina_dias_trabajados / nomina_faltas_sin_justificar / nomina_ausencias
+// / nomina_anomalias_huellero / nomina_retardos), así que consultar un mes
+// anterior nunca requiere volver a subir el archivo. El líder de área ve
+// fija su propia área (sin selector); el admin puede elegir cualquiera o
+// dejarlo en "Todas".
+function HistorialAsistenciaAreaView({ areasNomina, trabajadores, areaLider, diasTrabajados, faltas, ausencias, anomalias, retardos, turnos }) {
+  const [areaSel, setAreaSel] = useState(areaLider || "");
+  const [mes, setMes] = useState(today().slice(0, 7));
+  const [anioStr, mesStr] = mes.split("-");
+  const anio = Number(anioStr);
+  const mesNum = Number(mesStr);
+  const primerDia = new Date(anio, mesNum - 1, 1);
+  const ultimoDia = new Date(anio, mesNum, 0);
+  const diasDelMes = [];
+  for (let d = new Date(primerDia); d <= ultimoDia; d.setDate(d.getDate() + 1)) diasDelMes.push(isoDate(d));
+  const areaEfectiva = areaLider || areaSel;
+  const trabajadoresMostrados = (areaEfectiva ? trabajadores.filter((t) => (t.area || "Sin asignar") === areaEfectiva) : trabajadores)
+    .slice()
+    .sort((a, b) => a.nombre.localeCompare(b.nombre));
+  const hoyISO = today();
+  function estadoDelDia(t, iso, turno) {
+    if (!diaEsperado(iso, turno)) return { icon: "·", bg: "transparent", title: "No laboral" };
+    const nombreNorm = normalizarNombreHuellero(t.nombre);
+    const ausencia = (ausencias || []).find((a) => a.trabajadorId === t.id && a.fechaInicio <= iso && iso <= a.fechaFin);
+    if (ausencia) return { icon: "🗓️", bg: C.amberBg, title: `Permiso — ${ausencia.motivo}` };
+    const trabajo = (diasTrabajados || []).find((d) => d.fecha === iso && coincideHuellero(d, t, nombreNorm));
+    if (trabajo) {
+      const anomalia = (anomalias || []).find((a) => a.fecha === iso && a.nombreNorm === nombreNorm && a.estado !== "ajustado");
+      const retardo = (retardos || []).find((r) => r.fecha === iso && r.nombreNorm === nombreNorm);
+      if (anomalia) return { icon: "✅⚠️", bg: C.amberBg, title: `Trabajado — le faltó marcar ${anomalia.tipo === "falta_entrada" ? "la entrada" : "la salida"}` };
+      if (retardo) return { icon: "✅🕒", bg: C.blueBg, title: `Trabajado — llegó tarde (marcó ${retardo.horaMarcada}, esperado ${retardo.horaEsperada})` };
+      return { icon: "✅", bg: "transparent", title: "Trabajado" };
+    }
+    const falta = (faltas || []).find((f) => f.fecha === iso && coincideHuellero(f, t, nombreNorm));
+    if (falta) return { icon: "❌", bg: C.redBg, title: "No marcó — sin justificar" };
+    if (iso > hoyISO) return { icon: "", bg: "transparent", title: "" };
+    return { icon: "—", bg: "transparent", title: "Sin datos todavía (no se ha subido el huellero de esta fecha)" };
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Calendario de asistencia leído directo de lo que ya quedó guardado al subir el huellero -- no hace falta volver a subirlo para consultar un mes anterior. ✅ trabajado · ✅⚠️ trabajado con anomalía de marcación · ✅🕒 trabajado pero llegó tarde · 🗓️ permiso · ❌ no marcó (sin justificar) · — sin datos todavía.
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+        {!areaLider && (
+          <div style={{ minWidth: 220 }}>
+            <FSel value={areaSel} onChange={setAreaSel} options={(areasNomina || []).slice().sort((a, b) => a.nombre.localeCompare(b.nombre)).map((a) => ({ value: a.nombre, label: a.nombre }))} placeholder="Todas las áreas" />
+          </div>
+        )}
+        <input type="month" value={mes} onChange={(e) => setMes(e.target.value)} style={{ padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
+      </div>
+      {!trabajadoresMostrados.length && <div style={{ padding: 20, color: C.slate, fontSize: 13 }}>No hay trabajadores para mostrar en esta área.</div>}
+      {!!trabajadoresMostrados.length && (
+        <div style={{ overflowX: "auto", border: `1px solid ${C.border}`, borderRadius: 12 }}>
+          <table style={{ borderCollapse: "collapse", fontSize: 12, minWidth: "100%" }}>
+            <thead>
+              <tr style={{ background: C.ink }}>
+                <th style={{ position: "sticky", left: 0, background: C.ink, padding: "8px 10px", color: "#fff", textAlign: "left", fontWeight: 700, fontSize: 11, zIndex: 1 }}>Trabajador</th>
+                {diasDelMes.map((iso) => (
+                  <th key={iso} style={{ padding: "6px 4px", color: "#fff", textAlign: "center", fontWeight: 700, fontSize: 10, minWidth: 28 }}>{Number(iso.slice(8, 10))}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {trabajadoresMostrados.map((t, i) => {
+                const turno = resolverTurnoDeTrabajador(t, areasNomina, turnos);
+                return (
+                  <tr key={t.id} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                    <td style={{ position: "sticky", left: 0, background: i % 2 === 0 ? C.canvas : C.white, padding: "6px 10px", fontWeight: 700, whiteSpace: "nowrap" }}>{t.nombre}</td>
+                    {diasDelMes.map((iso) => {
+                      const e = estadoDelDia(t, iso, turno);
+                      return (
+                        <td key={iso} title={e.title} style={{ padding: "4px 2px", textAlign: "center", background: e.bg, fontSize: 13 }}>
+                          {e.icon}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -7888,6 +8165,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [faltasSinJustificar, setFaltasSinJustificar] = useState([]);
   const [diasTrabajadosHuellero, setDiasTrabajadosHuellero] = useState([]);
   const [anomaliasHuellero, setAnomaliasHuellero] = useState([]);
+  const [retardosHuellero, setRetardosHuellero] = useState([]);
   const [liquidacionesF, setLiquidacionesF] = useState([]);
   const [liquidacionesFD, setLiquidacionesFD] = useState([]);
   const [liquidacionesD, setLiquidacionesD] = useState([]);
@@ -7923,6 +8201,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_faltas_sin_justificar"), (snap) => setFaltasSinJustificar(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_dias_trabajados"), (snap) => setDiasTrabajadosHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_anomalias_huellero"), (snap) => setAnomaliasHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_retardos"), (snap) => setRetardosHuellero(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_fiscal_liquidaciones"), (snap) => setLiquidacionesF(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_fiscal_destajo_liquidaciones"), (snap) => setLiquidacionesFD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -7994,6 +8273,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         { id: "horas", icon: "🕐", label: "Registrar Horas" },
         { id: "permisos", icon: "📅", label: "Permisos" },
         { id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" },
+        { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
         { id: "resumen", icon: "💰", label: "Resumen" },
         { id: "historial_lote", icon: "📦", label: "Historial de Lote" },
         { id: "historial_trabajador", icon: "🧑‍🏭", label: "Historial de Trabajador" },
@@ -8004,6 +8284,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
         { id: "asistencia", icon: "📊", label: "Reporte de Asistencia" },
         { id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" },
+        { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
       ]
     : [
         { id: "dashboard", icon: "◉", label: "Inicio" },
@@ -8031,6 +8312,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
             { id: "asistencia", icon: "📊", label: "Reporte de Asistencia" },
             { id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" },
+            { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
             { id: "novedades_quincena", icon: "🧾", label: "Listado de Novedades (quincena)" },
             { id: "deducciones", icon: "🧾", label: "Deducciones" },
           ] },
@@ -8060,6 +8342,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const horasVisibles = areaLider ? horas.filter((h) => trabajadoresVisibles.some((t) => t.id === h.trabajadorId)) : horas;
   const ausenciasVisibles = areaLider ? ausencias.filter((a) => trabajadoresVisibles.some((t) => t.id === a.trabajadorId)) : ausencias;
   const anomaliasVisibles = areaLider ? anomaliasHuellero.filter((a) => (a.area || "Sin asignar") === areaLider) : anomaliasHuellero;
+  const retardosVisibles = areaLider ? retardosHuellero.filter((r) => (r.area || "Sin asignar") === areaLider) : retardosHuellero;
   async function guardarTrabajador(t) {
     const actual = trabajadores.find((x) => x.id === t.id);
     if (actual && t.area !== undefined && (t.area || "Sin asignar") !== (actual.area || "Sin asignar")) {
@@ -8376,7 +8659,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
           {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
-          {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} grupos={gruposTrabajo} isAdmin={isAdminCatalogos} onSave={guardarAreaNomina} onDelete={borrarAreaNomina} />}
+          {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} grupos={gruposTrabajo} turnos={turnos} isAdmin={isAdminCatalogos} onSave={guardarAreaNomina} onDelete={borrarAreaNomina} />}
           {subView === "zonas_nomina" && !areaLider && !soloNovedades && <ZonasNominaView zonas={zonasNomina} areasNomina={areasNomina} gruposTrabajo={gruposTrabajo} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarZonaNomina} onDelete={borrarZonaNomina} />}
           {subView === "areas_tns" && !areaLider && !soloNovedades && <AreasTnsView areas={areasTNS} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarAreaTNS} onDelete={borrarAreaTNS} />}
           {subView === "tipos_contrato" && !areaLider && !soloNovedades && <TiposContratoView tipos={tiposContrato} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTipoContrato} onDelete={borrarTipoContrato} />}
@@ -8392,9 +8675,10 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "provision_liquidaciones" && !areaLider && !soloNovedades && <ProvisionLiquidacionesView trabajadores={trabajadores} ausencias={ausencias} areasNomina={areasNomina} />}
           {subView === "prestamos" && !areaLider && !soloNovedades && <PrestamosView trabajadores={trabajadores} prestamos={prestamos} onGuardar={guardarPrestamo} onBorrar={borrarPrestamo} currentUser={currentUser} />}
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
-          {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} turnos={turnos} anomaliasHuellero={anomaliasHuellero} onGuardarTrabajador={guardarTrabajador} />}
+          {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} turnos={turnos} areasNomina={areasNomina} anomaliasHuellero={anomaliasHuellero} onGuardarTrabajador={guardarTrabajador} />}
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
-          {subView === "anomalias_huellero" && <AnomaliasHuelleroView anomalias={anomaliasVisibles} onAjustar={ajustarAnomaliaHuellero} />}
+          {subView === "anomalias_huellero" && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
+          {subView === "historial_asistencia_area" && <HistorialAsistenciaAreaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausenciasVisibles} anomalias={anomaliasVisibles} retardos={retardosVisibles} turnos={turnos} />}
           {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
           {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} />}
