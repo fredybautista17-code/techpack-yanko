@@ -4205,6 +4205,72 @@ async function exportPreordenXLSX(preorden) {
   }
   XLSX.writeFile(wb, nombreArchivo);
 }
+const UBICACION_PRODUCCION_ORDEN = ["BPT", "Semiterminado", "Planta", "BMP", "Corte"];
+const UBICACION_PRODUCCION_ICONO = { BPT: "📦", Semiterminado: "🧵", Planta: "🏭", BMP: "🪡", Corte: "✂️" };
+function EstadoProduccionRef({ numeroPedido, referencia }) {
+  const [programacion, setProgramacion] = useState([]);
+  const [cargas, setCargas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  useEffect(() => {
+    let listos = 0;
+    const marcar = () => { listos += 1; if (listos >= 2) setCargando(false); };
+    const unsub1 = onSnapshot(collection(db, "corte_programacion"), (snap) => {
+      setProgramacion(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      marcar();
+    });
+    const unsub2 = onSnapshot(collection(db, "planeacion_cargas"), (snap) => {
+      setCargas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      marcar();
+    });
+    return () => { unsub1(); unsub2(); };
+  }, []);
+  const numNorm = String(numeroPedido ?? "").trim();
+  const refNorm = normalizarRefComparacion(referencia);
+  const programado = programacion.find((pr) =>
+    pr.estado !== "cumplido" &&
+    String(pr.numero ?? "").trim() === numNorm &&
+    normalizarRefComparacion(pr.ref) === refNorm
+  );
+  const porNumLote = new Map();
+  cargas.forEach((carga) => {
+    (carga.lotes || []).forEach((l) => {
+      if (String(l.numPedido ?? "").trim() !== numNorm) return;
+      if (normalizarRefComparacion(l.referencia) !== refNorm) return;
+      const rango = UBICACION_PRODUCCION_ORDEN.indexOf(l.ubicacionActual);
+      if (rango === -1) return;
+      const numLote = String(l.numLote ?? "").trim() || `${numNorm}__${refNorm}__sinlote`;
+      const actual = porNumLote.get(numLote);
+      if (!actual || rango < actual.rango) {
+        porNumLote.set(numLote, { rango, ubicacion: l.ubicacionActual, unidades: Number(l.unidadesUbicacion) || 0 });
+      }
+    });
+  });
+  const porUbicacion = new Map();
+  porNumLote.forEach(({ ubicacion, unidades }) => {
+    porUbicacion.set(ubicacion, (porUbicacion.get(ubicacion) || 0) + unidades);
+  });
+  const ubicaciones = UBICACION_PRODUCCION_ORDEN.filter((u) => porUbicacion.has(u));
+  if (cargando) {
+    return <div style={{ fontSize: 12, color: T.slate }}>Consultando producción…</div>;
+  }
+  if (!programado && !ubicaciones.length) {
+    return <div style={{ fontSize: 12, color: T.slate, fontStyle: "italic" }}>Sin información de producción para esta referencia todavía.</div>;
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {programado && (
+        <div style={{ padding: "6px 10px", borderRadius: 8, background: T.amberBg, color: T.amber, fontSize: 12, fontWeight: 700 }}>
+          🔵 Programada para cortar{programado.fechaProgramada ? ` — ${programado.fechaProgramada}` : ""}
+        </div>
+      )}
+      {ubicaciones.map((u) => (
+        <div key={u} style={{ padding: "6px 10px", borderRadius: 8, background: T.jadeBg, color: T.jade, fontSize: 12, fontWeight: 700 }}>
+          {UBICACION_PRODUCCION_ICONO[u] || "📍"} En {u}{porUbicacion.get(u) ? ` (${fmtNum(porUbicacion.get(u))} unid.)` : ""}
+        </div>
+      ))}
+    </div>
+  );
+}
 function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden }) {
   const [modo, setModo] = useState("lista");
   const [subTab, setSubTab] = useState("pendientes");
@@ -4250,14 +4316,18 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
   return (
     <div>
       {detallePedido && (
-        <Modal title={`Pedido #${detallePedido.numero || "?"}`} onClose={() => setDetallePedido(null)} width={480}>
+        <Modal title={`Pedido #${detallePedido.pedido.numero || "?"}`} onClose={() => setDetallePedido(null)} width={480}>
           <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13, color: T.ink }}>
-            <div><strong>Cliente:</strong> {detallePedido.cliente || "—"}</div>
-            <div><strong>Fecha del pedido:</strong> {detallePedido.fechaPedido || "—"}</div>
-            <div><strong>Fecha de despacho:</strong> {detallePedido.fechaDespacho || "—"}</div>
-            <div><strong>Vendedor:</strong> {detallePedido.vendedor || "—"}</div>
-            <div><strong>Ciudad:</strong> {detallePedido.ciudad || "—"}</div>
-            <div><strong>Referencias en el pedido:</strong> {(detallePedido.referencias || []).length}</div>
+            <div><strong>Cliente:</strong> {detallePedido.pedido.cliente || "—"}</div>
+            <div><strong>Fecha del pedido:</strong> {detallePedido.pedido.fechaPedido || "—"}</div>
+            <div><strong>Fecha de despacho:</strong> {detallePedido.pedido.fechaDespacho || "—"}</div>
+            <div><strong>Vendedor:</strong> {detallePedido.pedido.vendedor || "—"}</div>
+            <div><strong>Ciudad:</strong> {detallePedido.pedido.ciudad || "—"}</div>
+            <div><strong>Referencias en el pedido:</strong> {(detallePedido.pedido.referencias || []).length}</div>
+            <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 6 }}>Estado de producción — {detallePedido.referencia}</div>
+              <EstadoProduccionRef numeroPedido={detallePedido.pedido.numero} referencia={detallePedido.referencia} />
+            </div>
           </div>
         </Modal>
       )}
@@ -4446,7 +4516,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                                   : pedidoQueContieneRef(it.referencia, pedidos);
                                 return (
                                   <span
-                                    onClick={() => pedidoDetalle && setDetallePedido(pedidoDetalle)}
+                                    onClick={() => pedidoDetalle && setDetallePedido({ pedido: pedidoDetalle, referencia: it.referencia })}
                                     title={pedidoDetalle ? "Ver detalle del pedido" : ""}
                                     style={{ color: T.jade, fontWeight: 700, cursor: pedidoDetalle ? "pointer" : "default", textDecoration: pedidoDetalle ? "underline" : "none" }}
                                   >✓ {it.pedidoVinculado?.numero ? `#${it.pedidoVinculado.numero}` : "En pedido"}</span>
