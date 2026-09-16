@@ -4129,7 +4129,7 @@ async function exportPreordenXLSX(preorden) {
   }
   XLSX.writeFile(wb, nombreArchivo);
 }
-function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onActualizarPreorden }) {
+function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onActualizarPreorden, onEliminarPreorden }) {
   const [modo, setModo] = useState("lista");
   const [subTab, setSubTab] = useState("pendientes");
   const [estadoFiltro, setEstadoFiltro] = useState("todas");
@@ -4244,6 +4244,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
         // mundo menos el administrador, que siempre puede seguir editando.
         const bloqueada = estadoActual === "aprobada" && !currentUser?.isAdmin;
         const puedeAprobar = currentUser?.role === "Cliente" && clientesDeUsuario(currentUser).includes(p.cliente) && estadoActual !== "aprobada";
+        const puedeEliminar = currentUser?.isAdmin || (currentUser?.role !== "Cliente" && !bloqueada);
         return (
           <div key={p.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
             <div onClick={() => setExpandido(abierto ? null : p.id)} style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, cursor: "pointer", flexWrap: "wrap", gap: 10 }}>
@@ -4261,11 +4262,23 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                   <div style={{ fontSize: 12, color: T.slate }}>{(p.items || []).length} ref · {fmtNum(totalUnidades)} unid. · Creada {p.fechaCreado}</div>
                 </div>
               </div>
-              {p.pendientes > 0 ? (
-                <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.amberBg, color: T.amber }}>⏳ {p.pendientes} sin convertir a pedido</span>
-              ) : (
-                <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✓ Todo convertido a pedido</span>
-              )}
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {p.pendientes > 0 ? (
+                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.amberBg, color: T.amber }}>⏳ {p.pendientes} sin convertir a pedido</span>
+                ) : (
+                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✓ Todo convertido a pedido</span>
+                )}
+                {puedeEliminar && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (window.confirm(`¿Eliminar la preorden de ${p.cliente || "sin cliente"}? Esto no se puede deshacer.`)) onEliminarPreorden(p.id);
+                    }}
+                    title="Eliminar preorden"
+                    style={{ padding: "5px 9px", borderRadius: 6, border: `1px solid ${T.coral}55`, background: T.white, color: T.coral, fontWeight: 700, fontSize: 13, cursor: "pointer" }}
+                  >🗑️</button>
+                )}
+              </div>
             </div>
             {abierto && (
               <div style={{ padding: 20 }}>
@@ -11643,6 +11656,12 @@ function AppInner() {
     setBitacoraPreordenes(updated);
     await fsSave("bitacora_preordenes", preorden.id, preorden);
   }
+  // (2026-09-16, a pedido de Fredy) Botón para eliminar una preorden
+  // completa -- borrado real, no hay Papelera para Preórdenes todavía.
+  async function deleteBitacoraPreorden(preordenId) {
+    setBitacoraPreordenes((ps) => ps.filter((p) => p.id !== preordenId));
+    await fsDelete("bitacora_preordenes", preordenId);
+  }
   async function actualizarItemPreorden(preordenId, itemId, patch) {
     const updated = bitacoraPreordenes.map((p) =>
       p.id !== preordenId ? p : { ...p, items: p.items.map((it) => (it.itemId !== itemId ? it : { ...it, ...patch })) }
@@ -12519,6 +12538,7 @@ function AppInner() {
                 onVincularPedido={vincularPreordenAPedido}
                 onAprobarPreorden={aprobarPreorden}
                 onActualizarPreorden={actualizarPreorden}
+                onEliminarPreorden={deleteBitacoraPreorden}
               />
             )}
             {view === "stats" && <EstadisticasView protos={protosVisibles} capsulas={capsulasVisibles} stages={config.stages} config={config} />}
