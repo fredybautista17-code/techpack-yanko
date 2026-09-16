@@ -11321,10 +11321,10 @@ function AppInner() {
     .map((cap) => ({ ...cap, referencias: (cap.referencias || []).filter((r) => !r.eliminado) }));
   const pedidosVisibles = clientesUsuario.length ? pedidos.filter((p) => clientesUsuario.includes(p.cliente)) : pedidos;
   const cronogramaMuestrasVisibles = clientesUsuario.length ? cronogramaMuestras.filter((c) => clientesUsuario.includes(c.cliente)) : cronogramaMuestras;
-  const preordenesVisibles = clientesUsuario.length ? bitacoraPreordenes.filter((p) => clientesUsuario.includes(p.cliente)) : bitacoraPreordenes;
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
   const [bitacoraEnvios, setBitacoraEnvios] = useState([]);
   const [bitacoraPreordenes, setBitacoraPreordenes] = useState([]);
+  const preordenesVisibles = clientesUsuario.length ? bitacoraPreordenes.filter((p) => clientesUsuario.includes(p.cliente)) : bitacoraPreordenes;
   // Al entrar a Historial desde el enlace "❌ N declinadas" de Bitácora, se
   // usa esto para que abra ya filtrado en Declinados (HistorialDisenoView lo
   // lee una sola vez, al montar, vía initialResultado/initialTipoFiltro).
