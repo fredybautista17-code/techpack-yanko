@@ -1351,6 +1351,7 @@ const COLUMNAS_EXCEL_TRABAJADORES = [
   { campo: "tarifaHora", label: "Tarifa por Hora", tipo: "numero" },
   { campo: "tnsCodigo", label: "Código TNS", tipo: "texto" },
   { campo: "turnoId", label: "Turno", tipo: "catalogo_turno" },
+  { campo: "exentoHuellero", label: "Exento de Huellero", tipo: "si_no" },
   { campo: "activo", label: "Estado", tipo: "estado" },
   { campo: "idHuellero", label: "ID Huellero (no editar aquí)", tipo: "protegido" },
 ];
@@ -1368,6 +1369,8 @@ async function exportarTrabajadoresExcel(trabajadores, turnos) {
         return Number(t[col.campo] || 0);
       case "activo":
         return t.activo ? "Activo" : "Inactivo";
+      case "exentoHuellero":
+        return t.exentoHuellero ? "Sí" : "No";
       case "turnoId":
         return nombreTurno(t.turnoId) || "Horario completo";
       default:
@@ -1384,6 +1387,7 @@ async function exportarTrabajadoresExcel(trabajadores, turnos) {
   const BOX = { top: THIN, bottom: THIN, left: THIN, right: THIN };
   const idxProtegida = COLUMNAS_EXCEL_TRABAJADORES.findIndex((c) => c.tipo === "protegido");
   const idxEstado = COLUMNAS_EXCEL_TRABAJADORES.findIndex((c) => c.tipo === "estado");
+  const idxExento = COLUMNAS_EXCEL_TRABAJADORES.findIndex((c) => c.campo === "exentoHuellero");
   for (let r = 0; r < wsData.length; r++) {
     for (let c = 0; c < COLUMNAS_EXCEL_TRABAJADORES.length; c++) {
       const addr = XLSX.utils.encode_cell({ r, c });
@@ -1400,6 +1404,11 @@ async function exportarTrabajadoresExcel(trabajadores, turnos) {
         const esActivo = wsData[r][c] === "Activo";
         style.fill = { patternType: "solid", fgColor: { rgb: rgb(esActivo ? C.greenBg : C.redBg) } };
         style.font = { bold: true, color: { rgb: rgb(esActivo ? C.green : C.red) } };
+        style.alignment.horizontal = "center";
+      } else if (c === idxExento) {
+        const esExento = wsData[r][c] === "Sí";
+        style.fill = { patternType: "solid", fgColor: { rgb: rgb(esExento ? C.amberBg : (r % 2 === 0 ? C.canvas : "FFFFFF")) } };
+        style.font = esExento ? { bold: true, color: { rgb: rgb(C.amber) } } : {};
         style.alignment.horizontal = "center";
       } else {
         style.fill = { patternType: "solid", fgColor: { rgb: r % 2 === 0 ? rgb(C.canvas) : "FFFFFF" } };
@@ -1436,6 +1445,8 @@ function valorActualMostrar(col, trabajador, ctx) {
       return trabajador.claseRiesgoARL ? labelClaseARL(trabajador.claseRiesgoARL) : "—";
     case "catalogo_turno":
       return (ctx.turnos || []).find((t) => t.id === trabajador.turnoId)?.nombre || "Horario completo";
+    case "si_no":
+      return trabajador[col.campo] ? "Sí" : "No";
     default:
       return trabajador[col.campo] || "—";
   }
@@ -1463,6 +1474,16 @@ function resolverCeldaExcel(col, valorCrudo, trabajador, ctx) {
     else return { advertencia: `Estado "${texto}" no reconocido (usa Activo/Inactivo)` };
     if (!!trabajador.activo === val) return null;
     return { cambio: { valor: val, mostrar: val ? "Activo" : "Inactivo" } };
+  }
+  if (col.tipo === "si_no") {
+    if (texto === "") return null;
+    const t = normalizarNombreParaComparar(texto);
+    let val;
+    if (t === "SI" || t === "S" || t === "TRUE") val = true;
+    else if (t === "NO" || t === "N" || t === "FALSE") val = false;
+    else return { advertencia: `Valor "${texto}" no reconocido (usa Sí/No)` };
+    if (!!trabajador[col.campo] === val) return null;
+    return { cambio: { valor: val, mostrar: val ? "Sí" : "No" } };
   }
   if (col.tipo === "fecha") {
     if (texto === "") return null;
@@ -1614,6 +1635,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     empleador: trabajador?.empleador || "",
     claseRiesgoARL: trabajador?.claseRiesgoARL || "",
     idHuellero: trabajador?.idHuellero || "",
+    exentoHuellero: trabajador?.exentoHuellero ?? false,
     turnoId: trabajador?.turnoId || "",
     tipoNomina: trabajador?.tipoNomina || "",
     tipoContrato: trabajador ? (trabajador.tipoContrato || "") : "Término Fijo",
@@ -1654,6 +1676,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       empleador: form.empleador || "",
       claseRiesgoARL: form.claseRiesgoARL || "",
       idHuellero: form.idHuellero.trim(),
+      exentoHuellero: !!form.exentoHuellero,
       turnoId: form.turnoId || "",
       tipoNomina: form.tipoNomina || "",
       tipoContrato: form.tipoContrato || "",
@@ -1674,6 +1697,15 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       <Field label="ID Huellero (opcional)"><FInput value={form.idHuellero} onChange={set("idHuellero")} placeholder="Ej: 114 -- el ID que trae el reporte del huellero" /></Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
         Vincula a esta persona con su ID en el equipo biométrico -- así el Reporte de Asistencia cruza los días trabajados aunque el nombre esté escrito distinto. Se puede dejar vacío y vincular después, directo desde el Reporte de Asistencia.
+      </div>
+      <Field label="Marcación de huellero">
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input type="checkbox" id="exentoHuellero" checked={!!form.exentoHuellero} onChange={(e) => set("exentoHuellero")(e.target.checked)} />
+          <label htmlFor="exentoHuellero" style={{ fontSize: 12.5, color: C.ink, cursor: "pointer" }}>Exento de Huellero -- no necesita marcar</label>
+        </div>
+      </Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        Para quien no tiene horario fijo de fábrica (ej. Gerencia, Diseño, algunos administrativos). Con esto activo, Reporte de Asistencia nunca le cuenta falta, anomalía ni retardo, aunque llegue a aparecer alguna vez en el archivo del huellero.
       </div>
       <Field label="Turno (opcional)">
         <FSel value={form.turnoId} onChange={set("turnoId")} options={(turnos || []).map((t) => ({ value: t.id, label: t.nombre }))} placeholder="Horario completo (por defecto)" />
@@ -2309,6 +2341,9 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
             const t = (turnos || []).find((tu) => tu.id === f.turnoId);
             return t ? t.nombre : <span style={{ color: C.slate }}>Horario completo</span>;
           } },
+          { key: "exentoHuellero", label: "Exento Huellero", render: (f) => f.exentoHuellero ? (
+            <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: C.amberBg, color: C.amber }}>SÍ</span>
+          ) : <span style={{ color: C.slate }}>No</span> },
           { key: "activo", label: "Estado", render: (f) => (
             <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: f.activo ? C.greenBg : C.redBg, color: f.activo ? C.green : C.red }}>
               {f.activo ? "ACTIVO" : "INACTIVO"}
@@ -3592,7 +3627,12 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
         // por defecto de su Área Interna -> si tampoco, sin turno (se
         // asume el horario completo de siempre, sin evaluar retardos).
         const turnoDelRegistro = trabajadorDelRegistro ? resolverTurnoDeTrabajador(trabajadorDelRegistro.trabajador, areasNomina, turnos) : null;
-        const diasSinMarca = diasPeriodo.filter((iso) => {
+        // (2026-09-16, a pedido de Fredy) Trabajadores marcados "Exento de
+        // Huellero" (Gerencia, Diseño, administrativos sin horario fijo de
+        // fábrica) nunca deben salir con falta, anomalía ni retardo, así
+        // lleguen a aparecer en el archivo del huellero alguna vez.
+        const exento = !!trabajadorDelRegistro?.trabajador?.exentoHuellero;
+        const diasSinMarca = exento ? [] : diasPeriodo.filter((iso) => {
           if (diasConMarca.has(iso)) return false;
           if (!diaEsperado(iso, turnoDelRegistro)) return false;
           return true;
@@ -3619,7 +3659,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
           tiposPorDia[iso].add(m.tipo);
         });
         const anomaliasEntradaSalida = diasPeriodo
-          .filter((iso) => iso !== ultimoDiaPeriodo && diasConMarca.has(iso) && diaEsperado(iso, turnoDelRegistro))
+          .filter((iso) => !exento && iso !== ultimoDiaPeriodo && diasConMarca.has(iso) && diaEsperado(iso, turnoDelRegistro))
           .map((iso) => {
             const tipos = tiposPorDia[iso] || new Set();
             if (tipos.has("Entrada") && tipos.has("Salida")) return null;
@@ -3648,7 +3688,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
           if (!entradaMasTempranaPorDia[iso] || hora < entradaMasTempranaPorDia[iso]) entradaMasTempranaPorDia[iso] = hora;
         });
         const retardosEntrada = diasPeriodo
-          .filter((iso) => iso !== ultimoDiaPeriodo && diasConMarca.has(iso) && diaEsperado(iso, turnoDelRegistro))
+          .filter((iso) => !exento && iso !== ultimoDiaPeriodo && diasConMarca.has(iso) && diaEsperado(iso, turnoDelRegistro))
           .map((iso) => {
             const horaEsperada = horaEntradaEsperada(turnoDelRegistro, diaCodigoDeISO(iso));
             const horaMarcada = entradaMasTempranaPorDia[iso];
@@ -3679,6 +3719,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
           detalle,
           anomaliasEntradaSalida,
           retardosEntrada,
+          exento,
         };
       });
 
@@ -3995,7 +4036,12 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
                 if (v.viaId && !v.nombreCoincide) {
                   return <span style={{ color: C.amber, fontWeight: 700 }} title={`El huellero reporta "${f.nombre}" pero el ID ${f.id} está vinculado a ${v.trabajador.nombre} -- revisa si el ID fue reasignado a otra persona.`}>⚠ {v.trabajador.nombre}</span>;
                 }
-                return <span style={{ color: C.green }}>{v.trabajador.nombre}</span>;
+                return (
+                  <span style={{ color: C.green }}>
+                    {v.trabajador.nombre}
+                    {f.exento && <span style={{ marginLeft: 6, padding: "1px 6px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.amberBg, color: C.amber }} title="Exento de Huellero -- no se le exige marcación">🚫 Exento</span>}
+                  </span>
+                );
               } },
               { key: "depto", label: "Departamento" },
               { key: "diasConMarca", label: "Días con marca", align: "right" },
@@ -4134,6 +4180,7 @@ function HistorialAsistenciaAreaView({ areasNomina, trabajadores, areaLider, dia
     .sort((a, b) => a.nombre.localeCompare(b.nombre));
   const hoyISO = today();
   function estadoDelDia(t, iso, turno) {
+    if (t.exentoHuellero) return { icon: "", bg: "transparent", title: "Exento de Huellero -- no se le exige marcación" };
     if (!diaEsperado(iso, turno)) return { icon: "·", bg: "transparent", title: "No laboral" };
     const nombreNorm = normalizarNombreHuellero(t.nombre);
     const ausencia = (ausencias || []).find((a) => a.trabajadorId === t.id && a.fechaInicio <= iso && iso <= a.fechaFin);
@@ -4181,7 +4228,10 @@ function HistorialAsistenciaAreaView({ areasNomina, trabajadores, areaLider, dia
                 const turno = resolverTurnoDeTrabajador(t, areasNomina, turnos);
                 return (
                   <tr key={t.id} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                    <td style={{ position: "sticky", left: 0, background: i % 2 === 0 ? C.canvas : C.white, padding: "6px 10px", fontWeight: 700, whiteSpace: "nowrap" }}>{t.nombre}</td>
+                    <td style={{ position: "sticky", left: 0, background: i % 2 === 0 ? C.canvas : C.white, padding: "6px 10px", fontWeight: 700, whiteSpace: "nowrap" }}>
+                      {t.nombre}
+                      {t.exentoHuellero && <span style={{ marginLeft: 6, padding: "1px 6px", borderRadius: 20, fontSize: 9, fontWeight: 700, background: C.amberBg, color: C.amber }}>🚫 Exento</span>}
+                    </td>
                     {diasDelMes.map((iso) => {
                       const e = estadoDelDia(t, iso, turno);
                       return (
