@@ -1062,6 +1062,42 @@ function moduloVisible(roleData, mod, isAdmin) {
   if (DISENO_SUBMODULOS.includes(mod)) return true;
   return false;
 }
+// (2026-09-16, a pedido de Fredy) Un usuario Cliente puede tener MAS de una
+// marca asociada (ej. un cliente ve "Camila Group" Y "Camila Venezuela" a la
+// vez) -- clientesAsociados (arreglo) es el campo nuevo; clienteAsociado
+// (string, singular) se deja intacto para los usuarios creados antes de este
+// cambio, así que esta función es el único lugar que hay que consultar para
+// saber qué clientes puede ver alguien, sea cual sea el campo que tenga
+// poblado.
+function clientesDeUsuario(u) {
+  if (Array.isArray(u?.clientesAsociados) && u.clientesAsociados.length) return u.clientesAsociados;
+  if (u?.clienteAsociado) return [u.clienteAsociado];
+  return [];
+}
+// (2026-09-16, a pedido de Fredy) Además de restringir POR CLIENTE, ahora se
+// puede restringir por MÓDULO qué ve cada usuario Cliente puntual (ej. un
+// cliente ve Cápsulas+Prototipos+Pedidos, otro ve solo Bodega+Preórdenes).
+// Si el usuario no tiene modulosCliente configurado (o está vacío), no se
+// restringe nada por este lado -- así los clientes que ya existían antes de
+// este cambio (Mauricio, Isasa) siguen viendo exactamente lo mismo que hoy
+// hasta que Fredy les marque algo puntual.
+function moduloVisibleParaCliente(currentUser, mod) {
+  if (currentUser?.role !== "Cliente") return true;
+  const lista = currentUser?.modulosCliente;
+  if (!Array.isArray(lista) || !lista.length) return true;
+  return lista.includes(mod);
+}
+// Catálogo de módulos que se pueden marcar/desmarcar por usuario Cliente en
+// la pantalla de Usuarios -- ampliar esta lista es lo único que hace falta
+// para poder ofrecer un módulo nuevo a futuro.
+const MODULOS_CLIENTE_OPCIONES = [
+  { id: "protos", label: "Prototipos" },
+  { id: "capsulas", label: "Cápsulas" },
+  { id: "pedidos", label: "Pedidos" },
+  { id: "cronograma_muestras", label: "Cronograma de Muestras" },
+  { id: "bodega", label: "Bodega" },
+  { id: "preordenes", label: "Preórdenes" },
+];
 
 function LoadingScreen({ message }) {
   return (
@@ -3709,13 +3745,15 @@ function resumenPreordenPorCategoria(items) {
 function NuevaReprogramacionView({ capsulas, config, currentUser, onAddCapsula, onAddRef, onGuardar, onCancelar }) {
   const [header, setHeader] = useState({ cliente: "", numPedido: "", cartaColores: null });
   const esCliente = currentUser?.role === "Cliente";
-  // Si entra un usuario del rol Cliente, el pedido queda fijo a su propio
-  // cliente asociado -- no puede armar una preorden a nombre de otro cliente.
+  // (2026-09-16) Un cliente puede tener más de una marca asociada -- si solo
+  // tiene una, se sigue fijando sola como antes; si tiene varias, se deja
+  // elegir entre esas (nunca las de otro cliente).
+  const clientesUsuario = clientesDeUsuario(currentUser);
   useEffect(() => {
-    if (esCliente && currentUser?.clienteAsociado) {
-      setHeader((h) => (h.cliente ? h : { ...h, cliente: currentUser.clienteAsociado }));
+    if (esCliente && clientesUsuario.length === 1) {
+      setHeader((h) => (h.cliente ? h : { ...h, cliente: clientesUsuario[0] }));
     }
-  }, [esCliente, currentUser?.clienteAsociado]);
+  }, [esCliente, clientesUsuario.join("|")]);
   const [filas, setFilas] = useState([]);
   const [referencia, setReferencia] = useState("");
   const [buscando, setBuscando] = useState(false);
@@ -3810,7 +3848,11 @@ function NuevaReprogramacionView({ capsulas, config, currentUser, onAddCapsula, 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
           <Field label="Cliente">
             {esCliente ? (
-              <div style={{ padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.canvas }}>{currentUser?.clienteAsociado || "—"}</div>
+              clientesUsuario.length > 1 ? (
+                <FSel value={header.cliente} onChange={(v) => setHeader((h) => ({ ...h, cliente: v }))} options={clientesUsuario} />
+              ) : (
+                <div style={{ padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.canvas }}>{clientesUsuario[0] || "—"}</div>
+              )
             ) : (
               <FSel value={header.cliente} onChange={(v) => setHeader((h) => ({ ...h, cliente: v }))} options={(config?.clientes || []).map((c) => c.nombre)} />
             )}
@@ -6256,7 +6298,7 @@ function EditNombreModal({ item, tipo, config, onSave, onClose }) {
 function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesosNomina }) {
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState(null);
-  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false });
+  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false });
   const [changePwdId, setChangePwdId] = useState(null);
   const [newPwd, setNewPwd] = useState("");
   const [showPwd, setShowPwd] = useState(false);
@@ -6291,8 +6333,8 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
     }
     setMigrando(false);
   }
-  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false }); setEditUser(null); setShowForm(true); setError(""); }
-  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false }); setEditUser(u); setShowForm(true); setError(""); }
+  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false }); setEditUser(null); setShowForm(true); setError(""); }
+  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", clientesAsociados: u.clientesAsociados || [], modulosCliente: u.modulosCliente || [], email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false }); setEditUser(u); setShowForm(true); setError(""); }
   // Crear usuario nuevo pasa por la Cloud Function `adminCrearUsuario` (Fase
   // B): a diferencia de editar, crear SÍ necesita generar una cuenta real de
   // Firebase Auth para que esa persona pueda entrar — eso no lo puede hacer
@@ -6309,7 +6351,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
       if (!form.name) { setError("El nombre es obligatorio."); return; }
       if (form.email && form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) { setError("El correo no parece válido."); return; }
       const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, avatar } : u)));
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, avatar } : u)));
       setShowForm(false);
       return;
     }
@@ -6321,7 +6363,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
     setCreando(true);
     try {
       const llamar = httpsCallable(functionsClient, "adminCrearUsuario");
-      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado, email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas });
+      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado, clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas });
       setShowForm(false);
     } catch (err) {
       setError(err?.message || "No se pudo crear el usuario.");
@@ -6445,13 +6487,54 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
               <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Para poder mandarle avisos por correo (ej. prototipos/cápsulas vencidos).</div>
             </div>
             <div>
-              <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Cliente asociado (opcional)</label>
-              <select value={form.clienteAsociado} onChange={(e) => setForm((f) => ({ ...f, clienteAsociado: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
-                <option value="">— Ninguno (ve todos los clientes) —</option>
-                {(config.clientes || []).map((c) => <option key={c.nombre} value={c.nombre}>{c.nombre}</option>)}
-              </select>
-              <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Si eliges un cliente, este usuario solo verá prototipos, cápsulas, pedidos y estadísticas de ese cliente.</div>
+              <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Clientes asociados (opcional)</label>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, maxHeight: 180, overflowY: "auto" }}>
+                {(config.clientes || []).length === 0 && <div style={{ fontSize: 12, color: T.slate }}>No hay clientes cargados todavía.</div>}
+                {(config.clientes || []).map((cl) => {
+                  const marcado = (form.clientesAsociados || []).includes(cl.nombre);
+                  return (
+                    <label key={cl.nombre} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: T.ink }}>
+                      <input
+                        type="checkbox"
+                        checked={marcado}
+                        onChange={(e) => setForm((f) => {
+                          const actuales = f.clientesAsociados || [];
+                          const siguientes = e.target.checked ? [...actuales, cl.nombre] : actuales.filter((x) => x !== cl.nombre);
+                          return { ...f, clientesAsociados: siguientes };
+                        })}
+                      />
+                      {cl.nombre}
+                    </label>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Si marcas uno o más, este usuario solo ve lo de esos clientes (en los módulos que le marques abajo, si es rol Cliente). Sin ninguno marcado, ve todos los clientes.</div>
             </div>
+            {form.role === "Cliente" && (
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Módulos que puede ver este cliente (opcional)</label>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8 }}>
+                  {MODULOS_CLIENTE_OPCIONES.map((m) => {
+                    const marcado = (form.modulosCliente || []).includes(m.id);
+                    return (
+                      <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: T.ink }}>
+                        <input
+                          type="checkbox"
+                          checked={marcado}
+                          onChange={(e) => setForm((f) => {
+                            const actuales = f.modulosCliente || [];
+                            const siguientes = e.target.checked ? [...actuales, m.id] : actuales.filter((x) => x !== m.id);
+                            return { ...f, modulosCliente: siguientes };
+                          })}
+                        />
+                        {m.label}
+                      </label>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Sin ninguno marcado, ve todos los módulos de cliente (como hoy). Marca alguno para limitarlo solo a esos.</div>
+              </div>
+            )}
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Área Interna (opcional)</label>
               <select value={form.areaNomina} onChange={(e) => setForm((f) => ({ ...f, areaNomina: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
@@ -11129,7 +11212,7 @@ function AppInner() {
   // versiones "Visibles" en cada pantalla para que la restricción aplique
   // en todas a la vez. Si el usuario no tiene cliente asociado, ve todo
   // igual que hoy.
-  const clienteAsociado = currentUser?.clienteAsociado || "";
+  const clientesUsuario = clientesDeUsuario(currentUser);
   function capsulaCliente(cap) {
     if (cap.cliente) return cap.cliente;
     const conRef = (cap.referencias || []).find((r) => r.cliente || r.colores?.[0]);
@@ -11139,12 +11222,12 @@ function AppInner() {
   // — se esconden de toda la navegación normal aquí mismo, en un solo lugar,
   // sin tocar protos/capsulas (los arrays "crudos" siguen completos porque
   // varias funciones de escritura los usan como base para no perder datos).
-  const protosVisibles = (clienteAsociado ? protos.filter((p) => (p.cliente || p.colores?.[0]) === clienteAsociado) : protos).filter((p) => !p.eliminado);
-  const capsulasVisibles = (clienteAsociado ? capsulas.filter((cap) => capsulaCliente(cap) === clienteAsociado) : capsulas)
+  const protosVisibles = (clientesUsuario.length ? protos.filter((p) => clientesUsuario.includes(p.cliente || p.colores?.[0])) : protos).filter((p) => !p.eliminado);
+  const capsulasVisibles = (clientesUsuario.length ? capsulas.filter((cap) => clientesUsuario.includes(capsulaCliente(cap))) : capsulas)
     .filter((cap) => !cap.eliminado)
     .map((cap) => ({ ...cap, referencias: (cap.referencias || []).filter((r) => !r.eliminado) }));
-  const pedidosVisibles = clienteAsociado ? pedidos.filter((p) => p.cliente === clienteAsociado) : pedidos;
-  const cronogramaMuestrasVisibles = clienteAsociado ? cronogramaMuestras.filter((c) => c.cliente === clienteAsociado) : cronogramaMuestras;
+  const pedidosVisibles = clientesUsuario.length ? pedidos.filter((p) => clientesUsuario.includes(p.cliente)) : pedidos;
+  const cronogramaMuestrasVisibles = clientesUsuario.length ? cronogramaMuestras.filter((c) => clientesUsuario.includes(c.cliente)) : cronogramaMuestras;
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
   const [bitacoraEnvios, setBitacoraEnvios] = useState([]);
   const [bitacoraPreordenes, setBitacoraPreordenes] = useState([]);
@@ -11846,21 +11929,21 @@ function AppInner() {
   // sección (Prototipos, Cápsulas, Pedidos, Clientes, Corte, Estadísticas,
   // Contabilidad) se autoriza de forma independiente. Esto permite roles como
   // "Planeador": acceso a Pedidos y Corte, sin Prototipos ni Cápsulas.
-  const canAccessProtos = moduloVisible(userRoleData, "protos", currentUser?.isAdmin);
-  const canAccessCapsulas = moduloVisible(userRoleData, "capsulas", currentUser?.isAdmin);
-  const canAccessPedidos = moduloVisible(userRoleData, "pedidos", currentUser?.isAdmin);
+  const canAccessProtos = moduloVisible(userRoleData, "protos", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "protos");
+  const canAccessCapsulas = moduloVisible(userRoleData, "capsulas", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "capsulas");
+  const canAccessPedidos = moduloVisible(userRoleData, "pedidos", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "pedidos");
   const canAccessPedidosClientes = moduloVisible(userRoleData, "pedidos_clientes", currentUser?.isAdmin);
-  const canAccessPreordenes = moduloVisible(userRoleData, "preordenes", currentUser?.isAdmin);
+  const canAccessPreordenes = moduloVisible(userRoleData, "preordenes", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "preordenes");
   const canAccessStats = moduloVisible(userRoleData, "stats", currentUser?.isAdmin);
   const canAccessHistorial = moduloVisible(userRoleData, "historial", currentUser?.isAdmin);
-  const canAccessCronograma = moduloVisible(userRoleData, "cronograma_muestras", currentUser?.isAdmin);
+  const canAccessCronograma = moduloVisible(userRoleData, "cronograma_muestras", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "cronograma_muestras");
   const canAccessBitacora = moduloVisible(userRoleData, "bitacora", currentUser?.isAdmin);
   const canAccessKpis = moduloVisible(userRoleData, "kpis", currentUser?.isAdmin);
   const canAccessCorte = moduloVisible(userRoleData, "corte", currentUser?.isAdmin);
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
   const canAccessPlaneacion = moduloVisible(userRoleData, "planeacion", currentUser?.isAdmin);
   const canAccessPlanta = moduloVisible(userRoleData, "planta", currentUser?.isAdmin);
-  const canAccessBodega = moduloVisible(userRoleData, "bodega", currentUser?.isAdmin);
+  const canAccessBodega = moduloVisible(userRoleData, "bodega", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "bodega");
   const canAccessNominaCompleta = moduloVisible(userRoleData, "nomina", currentUser?.isAdmin);
   // "nomina_novedades" (2026-09-01, a pedido de Fredy): permiso angosto para
   // dar acceso SOLO al grupo "Novedades" de Nómina (Motivos de Ausencia,
