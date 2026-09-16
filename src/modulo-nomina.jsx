@@ -4070,14 +4070,12 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
 // aparecer en el correo diario de asistencia. El contador de veces es
 // solo informativo -- Fredy pidió explícitamente que no dispare ninguna
 // acción automática por sí solo, para no saturar el sistema.
-function AnomaliasHuelleroView({ anomalias, retardos, onAjustar }) {
+// (2026-09-16, a pedido de Fredy) Ventana auxiliar con las fechas puntuales
+// de anomalias pendientes de UNA persona -- se abre al hacer clic en su fila
+// dentro de AnomaliasHuelleroView (unificado por persona, ver mas abajo).
+// Mismo patron que DetalleDiasSinJustificarModal para "Dias sin justificar".
+function DetalleAnomaliasModal({ nombre, items, onAjustar, onClose }) {
   const [ajustando, setAjustando] = useState(null);
-  const pendientes = (anomalias || [])
-    .filter((a) => a.estado !== "ajustado")
-    .slice()
-    .sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
-  const recurrencia = {};
-  (anomalias || []).forEach((a) => { recurrencia[a.nombreNorm] = (recurrencia[a.nombreNorm] || 0) + 1; });
   async function ajustar(a) {
     setAjustando(a.id);
     try {
@@ -4086,6 +4084,48 @@ function AnomaliasHuelleroView({ anomalias, retardos, onAjustar }) {
       setAjustando(null);
     }
   }
+  return (
+    <Modal title={`Anomalías pendientes — ${nombre}`} onClose={onClose} width={460}>
+      {!items.length ? (
+        <div style={{ fontSize: 13, color: C.slate }}>No hay anomalías pendientes. 🎉</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {items.map((a) => (
+            <div key={a.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8 }}>
+              <div>
+                <div style={{ fontWeight: 700, color: C.ink }}>{fmtFechaISO(a.fecha)}</div>
+                <div style={{ fontSize: 11, color: C.amber, fontWeight: 700 }}>Le faltó marcar {a.tipo === "falta_entrada" ? "la entrada" : "la salida"}</div>
+              </div>
+              <Btn small onClick={() => ajustar(a)} disabled={ajustando === a.id}>
+                {ajustando === a.id ? "..." : "✅ Ajustado"}
+              </Btn>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
+  );
+}
+function AnomaliasHuelleroView({ anomalias, retardos, onAjustar }) {
+  // (2026-09-16, a pedido de Fredy) Unificado por persona -- antes salia
+  // una fila por CADA dia con anomalia pendiente (tabla larguisima si a
+  // alguien se le acumulaban varios dias); ahora una fila por persona con
+  // el total pendiente, y el detalle de fechas se ve en una ventana aparte
+  // (DetalleAnomaliasModal, arriba).
+  const [personaAbierta, setPersonaAbierta] = useState(null); // nombreNorm
+  const pendientes = (anomalias || [])
+    .filter((a) => a.estado !== "ajustado")
+    .slice()
+    .sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
+  const recurrencia = {};
+  (anomalias || []).forEach((a) => { recurrencia[a.nombreNorm] = (recurrencia[a.nombreNorm] || 0) + 1; });
+  const porPersona = {};
+  pendientes.forEach((a) => {
+    if (!porPersona[a.nombreNorm]) porPersona[a.nombreNorm] = { nombre: a.nombre, nombreNorm: a.nombreNorm, items: [] };
+    porPersona[a.nombreNorm].items.push(a);
+  });
+  const filasPersona = Object.values(porPersona).sort((a, b) => b.items.length - a.items.length);
+  const personaAbiertaData = personaAbierta ? porPersona[personaAbierta] : null;
   // (2026-09-15, a pedido de Fredy) Estadística de llegadas tarde del mes
   // en curso, agrupada por persona -- puramente informativa aquí (el correo
   // formal automático ya avisa solo cuando se cruza el umbral de 6 en la
@@ -4100,31 +4140,29 @@ function AnomaliasHuelleroView({ anomalias, retardos, onAjustar }) {
   const filasRetardos = Object.values(retardosPorPersona).sort((a, b) => b.cantidad - a.cantidad);
   return (
     <div>
+      {personaAbiertaData && (
+        <DetalleAnomaliasModal nombre={personaAbiertaData.nombre} items={personaAbiertaData.items} onAjustar={onAjustar} onClose={() => setPersonaAbierta(null)} />
+      )}
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 760 }}>
         Días donde la persona marcó el huellero solo una vez (entrada o salida, no las dos) y no tenía un permiso registrado que lo explique. Al ajustar, ese día queda como un día normal trabajado -- no afecta la nómina ni queda como falta sin justificar.
       </div>
-      {!pendientes.length && <div style={{ padding: 20, color: C.slate, fontSize: 13 }}>No hay anomalías pendientes. 🎉</div>}
-      {!!pendientes.length && (
+      {!filasPersona.length && <div style={{ padding: 20, color: C.slate, fontSize: 13 }}>No hay anomalías pendientes. 🎉</div>}
+      {!!filasPersona.length && (
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: C.ink }}>
-              {["Trabajador", "Fecha", "Le faltó marcar", "Veces (histórico)", ""].map((h) => (
+              {["Trabajador", "Días pendientes de ajustar", "Veces (histórico)", ""].map((h) => (
                 <th key={h} style={{ padding: "8px 10px", color: "#fff", textAlign: "left", fontWeight: 700, fontSize: 11 }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {pendientes.map((a, i) => (
-              <tr key={a.id} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                <td style={{ padding: "8px 10px", fontWeight: 700 }}>{a.nombre}</td>
-                <td style={{ padding: "8px 10px" }}>{a.fecha}</td>
-                <td style={{ padding: "8px 10px", color: C.amber, fontWeight: 700 }}>{a.tipo === "falta_entrada" ? "Entrada" : "Salida"}</td>
-                <td style={{ padding: "8px 10px" }}>{recurrencia[a.nombreNorm] || 1}</td>
-                <td style={{ padding: "8px 10px" }}>
-                  <Btn small onClick={() => ajustar(a)} disabled={ajustando === a.id}>
-                    {ajustando === a.id ? "..." : "✅ Ajustado por el líder"}
-                  </Btn>
-                </td>
+            {filasPersona.map((p, i) => (
+              <tr key={p.nombreNorm} onClick={() => setPersonaAbierta(p.nombreNorm)} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}`, cursor: "pointer" }}>
+                <td style={{ padding: "8px 10px", fontWeight: 700 }}>{p.nombre}</td>
+                <td style={{ padding: "8px 10px", color: C.amber, fontWeight: 700 }}>{p.items.length}</td>
+                <td style={{ padding: "8px 10px" }}>{recurrencia[p.nombreNorm] || p.items.length}</td>
+                <td style={{ padding: "8px 10px", color: C.blue, fontWeight: 700 }}>Ver fechas →</td>
               </tr>
             ))}
           </tbody>
@@ -4410,6 +4448,32 @@ function diasCalendarioPorMotivos(ausencias, trabajadorId, motivos, desde, hasta
 function diasCalendarioSinSueldo(ausencias, trabajadorId, desde, hasta) {
   return diasCalendarioPorMotivos(ausencias, trabajadorId, MOTIVOS_SIN_SUELDO, desde, hasta);
 }
+// (2026-09-16, a pedido de Fredy) Igual que la Licencia No Remunerada, los
+// dias que el trabajador no vino a laborar y no tenia permiso registrado
+// (guardados en nomina_faltas_sin_justificar al subir el huellero en
+// Reporte de Asistencia) tampoco generan antiguedad para la Liquidacion de
+// Retiro -- se cruzan por huellero (ID o nombre) igual que en el resto de
+// Nomina, con coincideHuellero(). Cada falta es un dia suelto (no un rango
+// como Licencia No Remunerada), asi que basta con contar cuantas fechas
+// unicas caen dentro de [desde, hasta].
+function diasSinJustificarEnRango(faltas, trabajador, nombreNorm, desde, hasta) {
+  const fechas = new Set();
+  (faltas || []).forEach((f) => {
+    if (!coincideHuellero(f, trabajador, nombreNorm)) return;
+    if (f.fecha < desde || f.fecha > hasta) return;
+    fechas.add(f.fecha);
+  });
+  return fechas.size;
+}
+function fechasSinJustificarEnRango(faltas, trabajador, nombreNorm, desde, hasta) {
+  const fechas = new Set();
+  (faltas || []).forEach((f) => {
+    if (!coincideHuellero(f, trabajador, nombreNorm)) return;
+    if (f.fecha < desde || f.fecha > hasta) return;
+    fechas.add(f.fecha);
+  });
+  return [...fechas].sort();
+}
 // Parte [desde, hasta] en tramos de UN anio calendario (1 ene -> 31 dic) y
 // en tramos de UN semestre calendario (ene-jun / jul-dic). Cesantias e
 // intereses se causan por anio y la prima por semestre -- calcular todo
@@ -4462,8 +4526,14 @@ function segmentosPorSemestre(desde, hasta) {
 // anteriores al 1 de septiembre de 2026 (cuando Atlas empezo a registrar
 // nomina en vivo) solo quedan completos si se cargaron con el archivo
 // historico (enero-agosto).
-function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias) {
+// (2026-09-16, a pedido de Fredy) Ademas de Licencia No Remunerada, ahora
+// tambien restan antiguedad los dias sin justificar del huellero (ver
+// diasSinJustificarEnRango arriba) -- si le quita un dia laboral, le
+// cambia cesantias/intereses/prima/vacaciones, igual que ya pasaba con
+// Licencia No Remunerada.
+function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias, faltas = []) {
   const fechaIngreso = trabajador.fechaIngreso || fechaCorte;
+  const nombreNorm = normalizarNombreHuellero(trabajador.nombre);
   const esDestajo = trabajador.tipoNomina === "Destajo";
   // (2026-09-14, corregido a pedido de Fredy) Destajo SI guarda el sueldo/
   // auxilio MENSUAL, igual que Fiscal/Fiscal Destajo -- es el sueldo minimo
@@ -4478,7 +4548,8 @@ function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias) {
   function diasTrabajadosDelTramo(desde, hasta) {
     const calendario = diasEntre360(desde, hasta);
     const sinSueldo = diasCalendarioSinSueldo(ausencias, trabajador.id, desde, hasta);
-    return Math.max(0, calendario - sinSueldo);
+    const sinJustificar = diasSinJustificarEnRango(faltas, trabajador, nombreNorm, desde, hasta);
+    return Math.max(0, calendario - sinSueldo - sinJustificar);
   }
   let cesantias = 0;
   let intereses = 0;
@@ -4495,12 +4566,19 @@ function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias) {
   const diasCalendario = diasEntre360(fechaIngreso, fechaCorte);
   const diasBase = diasTrabajadosDelTramo(fechaIngreso, fechaCorte);
   const diasNoRemunerados = diasCalendario - diasBase;
+  // (2026-09-16, a pedido de Fredy) Desglose informativo de esos dias no
+  // remunerados para mostrar en el recibo y en el panel "Dias No
+  // Justificados" -- diasNoRemunerados (arriba) sigue siendo el TOTAL de
+  // los dos, para no romper nada de lo que ya lee ese campo.
+  const diasLicenciaNoRemunerada = diasCalendarioSinSueldo(ausencias, trabajador.id, fechaIngreso, fechaCorte);
+  const diasSinJustificar = diasSinJustificarEnRango(faltas, trabajador, nombreNorm, fechaIngreso, fechaCorte);
+  const fechasSinJustificar = fechasSinJustificarEnRango(faltas, trabajador, nombreNorm, fechaIngreso, fechaCorte);
   const vacacionesAcumuladas = (sueldoMensual * diasBase) / 720;
   const diasVacacionesTomados = diasCalendarioPorMotivos(ausencias, trabajador.id, ["Vacaciones"], fechaIngreso, fechaCorte);
   const valorVacacionesTomadas = (sueldoMensual / 30) * diasVacacionesTomados;
   const vacaciones = Math.max(0, vacacionesAcumuladas - valorVacacionesTomadas);
   const totalAPagar = cesantias + intereses + prima + vacaciones;
-  return { fechaIngreso, fechaCorte, diasCalendario, diasNoRemunerados, diasBase, diasVacacionesTomados, cesantias, intereses, prima, vacaciones, totalAPagar };
+  return { fechaIngreso, fechaCorte, diasCalendario, diasNoRemunerados, diasLicenciaNoRemunerada, diasSinJustificar, fechasSinJustificar, diasBase, diasVacacionesTomados, cesantias, intereses, prima, vacaciones, totalAPagar };
 }
 // (2026-09-13, a pedido de Fredy) Cesantias/intereses de un trabajador
 // Fiscal se deben consignar al fondo antes del 14 de febrero del anio
@@ -5401,6 +5479,7 @@ function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
       <tr><td>Sueldo básico (mensual)</td><td style="text-align:right">${fmtMoney(sueldoBasico)}</td></tr>
       <tr><td>Auxilio de transporte (mensual)</td><td style="text-align:right">${fmtMoney(auxilioBasico)}</td></tr>
       <tr><td>Días sin justificar</td><td style="text-align:right">${liquidacion.diasInasistencia || 0}</td></tr>
+      ${(liquidacion.fechasFalta && liquidacion.fechasFalta.length) ? `<tr><td colspan="2" style="font-size:11px;color:#5A5A7A;padding-top:0">${liquidacion.fechasFalta.map((f) => fmtFechaISO(f)).join(" · ")}</td></tr>` : ""}
       <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasTrabajados == null ? "—" : liquidacion.diasTrabajados}</td></tr>
       <tr><td>Descuento por inasistencia</td><td style="text-align:right;color:#B23A48">-${fmtMoney((liquidacion.descuentoSueldo || 0) + (liquidacion.descuentoAuxilio || 0))}</td></tr>
       <tr><td>Sueldo quincena</td><td style="text-align:right">${fmtMoney(liquidacion.sueldoQuincena)}</td></tr>
@@ -5412,6 +5491,7 @@ function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
       <tr><td>Sueldo básico (mensual)</td><td style="text-align:right">${fmtMoney(sueldoBasico)}</td></tr>
       <tr><td>Auxilio de transporte (mensual)</td><td style="text-align:right">${fmtMoney(auxilioBasico)}</td></tr>
       <tr><td>Días sin justificar</td><td style="text-align:right">${liquidacion.diasInasistencia || 0}</td></tr>
+      ${(liquidacion.fechasFalta && liquidacion.fechasFalta.length) ? `<tr><td colspan="2" style="font-size:11px;color:#5A5A7A;padding-top:0">${liquidacion.fechasFalta.map((f) => fmtFechaISO(f)).join(" · ")}</td></tr>` : ""}
       <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasTrabajados == null ? "—" : liquidacion.diasTrabajados}</td></tr>
       <tr><td>Descuento por inasistencia</td><td style="text-align:right;color:#B23A48">-${fmtMoney((liquidacion.descuentoSueldo || 0) + (liquidacion.descuentoAuxilio || 0))}</td></tr>
       <tr><td>Sueldo quincena</td><td style="text-align:right">${fmtMoney(liquidacion.sueldoQuincena)}</td></tr>
@@ -5593,8 +5673,16 @@ function exportReciboLiquidacionRetiroHTML({ trabajador, liquidacion }) {
       <tr><td>Fecha de retiro</td><td style="text-align:right">${liquidacion.fechaCorte ? fmtFechaISO(liquidacion.fechaCorte) : "—"}</td></tr>
       <tr><td>Días trabajados</td><td style="text-align:right">${fmtNum(liquidacion.diasBase)}</td></tr>
       <tr><td>Días no trabajados (sin sueldo)</td><td style="text-align:right;${(liquidacion.diasNoRemunerados || 0) > 0 ? "color:#B23A48;font-weight:700" : ""}">${fmtNum(liquidacion.diasNoRemunerados || 0)}</td></tr>
+      ${(liquidacion.diasLicenciaNoRemunerada || liquidacion.diasSinJustificar) ? `
+      <tr><td style="padding-left:24px;font-size:12px;color:#8A8AA0">— Licencia No Remunerada</td><td style="text-align:right;font-size:12px;color:#8A8AA0">${fmtNum(liquidacion.diasLicenciaNoRemunerada || 0)}</td></tr>
+      <tr><td style="padding-left:24px;font-size:12px;color:#8A8AA0">— Días sin justificar</td><td style="text-align:right;font-size:12px;color:#8A8AA0">${fmtNum(liquidacion.diasSinJustificar || 0)}</td></tr>` : ""}
       <tr><td>Días de vacaciones ya tomados</td><td style="text-align:right">${fmtNum(liquidacion.diasVacacionesTomados || 0)}</td></tr>
     </tbody></table>
+    ${(liquidacion.fechasSinJustificar && liquidacion.fechasSinJustificar.length) ? `
+    <div class="section-title">📋 Fechas de días sin justificar</div>
+    <table><tbody>
+      <tr><td style="font-size:12px">${liquidacion.fechasSinJustificar.map((f) => fmtFechaISO(f)).join(" · ")}</td></tr>
+    </tbody></table>` : ""}
     <div class="section-title">💰 Liquidación de prestaciones sociales</div>
     <table><tbody>
       <tr><td>Cesantías</td><td style="text-align:right">${fmtMoney(liquidacion.cesantias)}</td></tr>
@@ -7805,7 +7893,7 @@ async function exportarHistorialLiquidacionesRetiroExcel(historial, trabajadores
   XLSX.utils.book_append_sheet(wb, ws, "Liquidaciones de Retiro");
   XLSX.writeFile(wb, `Historial_Liquidaciones_Retiro_${today()}.xlsx`);
 }
-function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, prestamos, areasNomina, onGuardarLiquidacionRetiro, onGuardarTrabajador, onGuardarAusencia, currentUser }) {
+function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesRetiro, prestamos, areasNomina, onGuardarLiquidacionRetiro, onGuardarTrabajador, onGuardarAusencia, currentUser }) {
   const [areaFiltro, setAreaFiltro] = useState("");
   const [trabajadorId, setTrabajadorId] = useState("");
   const [fechaRetiro, setFechaRetiro] = useState("");
@@ -7853,7 +7941,7 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, p
 
   function calcular() {
     if (!trabajador || !fechaRetiro || !trabajador.fechaIngreso) return;
-    setResultado(calcularLiquidacionRetiro(trabajador, fechaRetiro, ausencias));
+    setResultado(calcularLiquidacionRetiro(trabajador, fechaRetiro, ausencias, faltas));
     setGuardadoOk(false);
   }
 
@@ -7933,7 +8021,7 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, p
         Calcula la liquidación de prestaciones sociales (cesantías, intereses de cesantías, prima de servicios y vacaciones) de un trabajador desde su fecha de ingreso hasta la fecha de retiro que indiques. Aplica para Fiscal, Fiscal Destajo y Destajo.
       </div>
       <div style={{ fontSize: 11.5, color: C.amber, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, padding: "8px 12px", marginBottom: 16, maxWidth: 820 }}>
-        ⚠️ Cesantías, intereses, prima y vacaciones se calculan con las fórmulas de ley sobre todo el tiempo trabajado desde la Fecha de Ingreso, restando los días de Licencia No Remunerada y descontando de vacaciones los días que la persona ya disfrutó -- todo según lo que tengas registrado en Ausencias. Si el trabajador tiene antigüedad anterior al 1 de septiembre de 2026 (cuando Atlas empezó a registrar novedades en vivo) y ese periodo no está cargado todavía, el cálculo no lo tiene en cuenta hasta que subas el archivo histórico de enero-agosto. Valida el resultado con tu contador o abogado laboral antes de usarlo para una liquidación real.
+        ⚠️ Cesantías, intereses, prima y vacaciones se calculan con las fórmulas de ley sobre todo el tiempo trabajado desde la Fecha de Ingreso, restando los días de Licencia No Remunerada y los días sin justificar del huellero, y descontando de vacaciones los días que la persona ya disfrutó -- todo según lo que tengas registrado en Ausencias y en Días No Justificados. Si el trabajador tiene antigüedad anterior al 1 de septiembre de 2026 (cuando Atlas empezó a registrar novedades en vivo) y ese periodo no está cargado todavía, el cálculo no lo tiene en cuenta hasta que subas el archivo histórico de enero-agosto. Valida el resultado con tu contador o abogado laboral antes de usarlo para una liquidación real.
       </div>
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
         <Field label="Área (opcional, para filtrar)">
@@ -7994,7 +8082,7 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, p
       {resultado && (
         <>
           <div style={{ display: "flex", gap: 14, marginBottom: 16, flexWrap: "wrap" }}>
-            <KPI icon="📅" label="Días trabajados" value={fmtNum(resultado.diasBase)} color={C.blue} bg={C.blueBg} sub={resultado.diasNoRemunerados > 0 ? `${resultado.diasNoRemunerados} días sin sueldo descontados` : undefined} />
+            <KPI icon="📅" label="Días trabajados" value={fmtNum(resultado.diasBase)} color={C.blue} bg={C.blueBg} sub={resultado.diasNoRemunerados > 0 ? `${resultado.diasNoRemunerados} días sin sueldo (${resultado.diasLicenciaNoRemunerada || 0} licencia + ${resultado.diasSinJustificar || 0} sin justificar)` : undefined} />
             <KPI icon="🏖️" label="Días de vacaciones ya tomados" value={fmtNum(resultado.diasVacacionesTomados)} color={C.slate} bg={C.canvas} />
             <KPI icon="💰" label="Cesantías" value={fmtMoney(resultado.cesantias)} color={C.violet} bg={C.violetBg} />
             <KPI icon="📈" label="Intereses de cesantías" value={fmtMoney(resultado.intereses)} color={C.violet} bg={C.violetBg} />
@@ -8002,6 +8090,11 @@ function LiquidacionRetiroView({ trabajadores, ausencias, liquidacionesRetiro, p
             <KPI icon="🏖️" label="Vacaciones" value={fmtMoney(resultado.vacaciones)} color={C.violet} bg={C.violetBg} />
             <KPI icon="✅" label="Total a pagar" value={fmtMoney(resultado.totalAPagar)} color={C.green} bg={C.greenBg} />
           </div>
+          {!!(resultado.fechasSinJustificar || []).length && (
+            <div style={{ fontSize: 12, color: C.slate, marginBottom: 14, maxWidth: 700 }}>
+              <strong style={{ color: C.ink }}>Fechas sin justificar descontadas:</strong> {resultado.fechasSinJustificar.map((f) => fmtFechaISO(f)).join(" · ")}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <Btn variant="secondary" onClick={() => exportReciboLiquidacionRetiroHTML({ trabajador, liquidacion: resultado })}>🖨 Ver recibo</Btn>
             {!guardadoOk ? (
@@ -8177,7 +8270,71 @@ function ProvisionLiquidacionesView({ trabajadores, ausencias, areasNomina }) {
     </div>
   );
 }
-export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos }) {
+// (2026-09-16, a pedido de Fredy) Panel resumen de "dias sin justificar" por
+// trabajador, en un lugar aparte (grupo Liquidaciones) para no mezclarlo con
+// Registrar Produccion ni con las pantallas de nomina quincenal -- pura
+// consulta de lo que ya esta guardado en nomina_faltas_sin_justificar
+// (historico completo, sin necesidad de volver a subir el huellero).
+// Reutiliza DetalleDiasSinJustificarModal, el mismo modal que ya usan Nomina
+// Fiscal/Fiscal Destajo/Destajo para ver el detalle de fechas y justificar.
+function DiasNoJustificadosView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, areasNomina }) {
+  const [areaFiltro, setAreaFiltro] = useState("");
+  const [detalle, setDetalle] = useState(null); // { trabajador, fechas }
+  const personas = (trabajadores || []).filter((t) => !areaFiltro || (t.area || "Sin asignar") === areaFiltro);
+  const filas = personas
+    .map((t) => {
+      const nombreNorm = normalizarNombreHuellero(t.nombre);
+      const fechas = (faltas || []).filter((f) => coincideHuellero(f, t, nombreNorm)).map((f) => f.fecha).sort();
+      return { trabajador: t, fechas };
+    })
+    .filter((f) => f.fechas.length > 0)
+    .sort((a, b) => b.fechas.length - a.fechas.length);
+  return (
+    <div>
+      {detalle && (
+        <DetalleDiasSinJustificarModal
+          trabajador={detalle.trabajador}
+          fechas={detalle.fechas}
+          ausencias={ausencias}
+          trabajadores={trabajadores}
+          motivosDisponibles={motivosDisponibles}
+          onJustificar={(data, fecha) => onJustificarFalta(data, normalizarNombreHuellero(detalle.trabajador.nombre), fecha)}
+          onLimpiar={(fecha) => onLimpiarFaltaJustificada(normalizarNombreHuellero(detalle.trabajador.nombre), fecha)}
+          onClose={() => setDetalle(null)}
+        />
+      )}
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Resumen histórico de los días que cada trabajador no marcó el huellero y no tenía un permiso registrado que lo explique -- viene de lo ya guardado al subir el huellero en Reporte de Asistencia, no hace falta volver a subir nada acá. Estos días también restan antigüedad (cesantías, intereses, prima y vacaciones) en la Liquidación de Retiro, igual que la Licencia No Remunerada. Haz clic en una fila para ver las fechas exactas y, si hace falta, justificarlas.
+      </div>
+      <div style={{ marginBottom: 16, maxWidth: 260 }}>
+        <FSel value={areaFiltro} onChange={setAreaFiltro} options={(areasNomina || []).map((a) => a.nombre)} placeholder="Todas las áreas" />
+      </div>
+      {!filas.length && <div style={{ padding: 20, color: C.slate, fontSize: 13 }}>Nadie tiene días sin justificar registrados. 🎉</div>}
+      {!!filas.length && (
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: C.ink }}>
+              {["Trabajador", "Área", "Días sin justificar", ""].map((h) => (
+                <th key={h} style={{ padding: "8px 10px", color: "#fff", textAlign: "left", fontWeight: 700, fontSize: 11 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filas.map((f, i) => (
+              <tr key={f.trabajador.id} onClick={() => setDetalle({ trabajador: f.trabajador, fechas: f.fechas })} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}`, cursor: "pointer" }}>
+                <td style={{ padding: "8px 10px", fontWeight: 700 }}>{f.trabajador.nombre}</td>
+                <td style={{ padding: "8px 10px", color: C.slate }}>{f.trabajador.area || "Sin asignar"}</td>
+                <td style={{ padding: "8px 10px", fontWeight: 800, color: f.fechas.length >= 3 ? C.red : C.amber }}>{f.fechas.length}</td>
+                <td style={{ padding: "8px 10px", color: C.blue, fontWeight: 700 }}>Ver fechas →</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos, puedeVerAnomaliasHuellero }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
   // reducido, ya filtrado a su propia gente, en vez del panel completo de
@@ -8322,7 +8479,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         { id: "produccion", icon: "🧵", label: "Registrar Producción" },
         { id: "horas", icon: "🕐", label: "Registrar Horas" },
         { id: "permisos", icon: "📅", label: "Permisos" },
-        { id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" },
+        ...(puedeVerAnomaliasHuellero ? [{ id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" }] : []),
         { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
         { id: "resumen", icon: "💰", label: "Resumen" },
         { id: "historial_lote", icon: "📦", label: "Historial de Lote" },
@@ -8333,7 +8490,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
         { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
         { id: "asistencia", icon: "📊", label: "Reporte de Asistencia" },
-        { id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" },
+        ...(puedeVerAnomaliasHuellero ? [{ id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" }] : []),
         { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
       ]
     : [
@@ -8361,13 +8518,14 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
             { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
             { id: "asistencia", icon: "📊", label: "Reporte de Asistencia" },
-            { id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" },
+            ...(puedeVerAnomaliasHuellero ? [{ id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" }] : []),
             { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
             { id: "novedades_quincena", icon: "🧾", label: "Listado de Novedades (quincena)" },
             { id: "deducciones", icon: "🧾", label: "Deducciones" },
           ] },
         { group: "Liquidaciones", icon: "🧮", items: [
             { id: "liquidacion_retiro", icon: "📄", label: "Liquidación de Trabajador" },
+            { id: "dias_no_justificados", icon: "📋", label: "Días No Justificados" },
             { id: "provision_liquidaciones", icon: "📊", label: "Provisión (hasta hoy)" },
             { id: "prestamos", icon: "💵", label: "Préstamos" },
           ] },
@@ -8721,13 +8879,14 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "tns" && !areaLider && !soloNovedades && <TNSConexionView />}
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
           {subView === "novedades_quincena" && !areaLider && !soloNovedades && <NovedadesQuincenaView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} motivosDisponibles={nombresMotivosDisponibles} currentUser={currentUser} onGuardarAusencia={guardarAusencia} onGuardarPrestamo={guardarPrestamo} />}
-          {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} onGuardarAusencia={guardarAusencia} currentUser={currentUser} />}
+          {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} onGuardarAusencia={guardarAusencia} currentUser={currentUser} />}
+          {subView === "dias_no_justificados" && !areaLider && !soloNovedades && <DiasNoJustificadosView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} areasNomina={areasNomina} />}
           {subView === "provision_liquidaciones" && !areaLider && !soloNovedades && <ProvisionLiquidacionesView trabajadores={trabajadores} ausencias={ausencias} areasNomina={areasNomina} />}
           {subView === "prestamos" && !areaLider && !soloNovedades && <PrestamosView trabajadores={trabajadores} prestamos={prestamos} onGuardar={guardarPrestamo} onBorrar={borrarPrestamo} currentUser={currentUser} />}
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} turnos={turnos} areasNomina={areasNomina} anomaliasHuellero={anomaliasHuellero} onGuardarTrabajador={guardarTrabajador} />}
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
-          {subView === "anomalias_huellero" && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
+          {subView === "anomalias_huellero" && puedeVerAnomaliasHuellero && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
           {subView === "historial_asistencia_area" && <HistorialAsistenciaAreaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausenciasVisibles} anomalias={anomaliasVisibles} retardos={retardosVisibles} turnos={turnos} />}
           {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
