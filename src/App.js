@@ -1373,7 +1373,7 @@ function Toast({ items, onDismiss }) {
     </div>
   );
 }
-function ImageUploader({ image, onImage, readonly }) {
+function ImageUploader({ image, onImage, readonly, compact }) {
   const fileRef = useRef();
   function handleFile(e) {
     const f = e.target.files[0];
@@ -1394,6 +1394,34 @@ function ImageUploader({ image, onImage, readonly }) {
       onImage(compressed);
     };
     img.src = url;
+  }
+  if (compact) {
+    return (
+      <div style={{ display: "inline-block" }}>
+        <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFile} />
+        {image ? (
+          <div style={{ position: "relative", display: "inline-block" }}>
+            <img
+              src={image}
+              alt="carta de colores"
+              onClick={() => !readonly && fileRef.current.click()}
+              title={readonly ? "" : "Toca para cambiar"}
+              style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 6, border: `1px solid ${T.border}`, display: "block", cursor: readonly ? "default" : "pointer" }}
+            />
+            {!readonly && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onImage(null); }}
+                style={{ position: "absolute", top: -6, right: -6, background: "rgba(26,26,46,0.85)", border: "none", borderRadius: "50%", width: 16, height: 16, color: "white", cursor: "pointer", fontSize: 10, lineHeight: "16px", padding: 0 }}
+              >×</button>
+            )}
+          </div>
+        ) : !readonly ? (
+          <div onClick={() => fileRef.current.click()} style={{ width: 44, height: 44, border: `2px dashed ${T.border}`, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", background: T.canvas, color: T.slate, fontSize: 16 }}>📷</div>
+        ) : (
+          <span style={{ fontSize: 11, color: T.slate, fontStyle: "italic" }}>—</span>
+        )}
+      </div>
+    );
   }
   return (
     <div style={{ marginBottom: 20 }}>
@@ -3753,7 +3781,7 @@ function resumenPreordenPorCategoria(items) {
   return [...mapa.values()].sort((a, b) => b.unidades - a.unidades);
 }
 function NuevaReprogramacionView({ capsulas, pedidos, config, currentUser, esOrdenNueva, onAddCapsula, onAddRef, onGuardar, onCancelar }) {
-  const [header, setHeader] = useState({ cliente: "", numPedido: "", cartaColores: null });
+  const [header, setHeader] = useState({ cliente: "", numPedido: "" });
   const esCliente = currentUser?.role === "Cliente";
   // (2026-09-16) Un cliente puede tener más de una marca asociada -- si solo
   // tiene una, se sigue fijando sola como antes; si tiene varias, se deja
@@ -3889,10 +3917,6 @@ function NuevaReprogramacionView({ capsulas, pedidos, config, currentUser, esOrd
             )}
           </Field>
           <Field label="N° Pedido (opcional)"><FInput value={header.numPedido} onChange={(v) => setHeader((h) => ({ ...h, numPedido: v }))} placeholder="Si ya lo sabes" /></Field>
-        </div>
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 8 }}>Carta de Colores (opcional)</div>
-          <ImageUploader image={header.cartaColores} onImage={(img) => setHeader((h) => ({ ...h, cartaColores: img }))} />
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 12 }}>
           <div style={{ flex: 1 }}>
@@ -4052,10 +4076,9 @@ async function exportPreordenXLSX(preorden) {
   //   creación de la preorden.
   // - "FECHA ENVIADO" usa esa misma fecha de creación (una preorden no se
   //   ha despachado todavía, no tiene fecha de envío real).
-  // - La Carta de Colores es UNA sola imagen para TODA la preorden (no por
-  //   referencia), así que se incrusta como imagen real ocupando toda la
-  //   columna a lo alto de la tabla, en vez de repetir una nota de texto
-  //   en cada fila.
+  // - La Carta de Colores es por REFERENCIA (cada ítem tiene la suya), así
+  //   que se incrusta como imagen real junto a la fila de cada referencia,
+  //   en vez de una sola imagen ocupando toda la columna.
   const XLSX = await import("xlsx-js-style");
   function numOTexto(v) {
     if (v === "" || v === null || v === undefined) return "";
@@ -4088,7 +4111,7 @@ async function exportPreordenXLSX(preorden) {
       numOTexto(it.precio),
       it.observacionesCliente || "",
       "",
-      i === 0 && preorden.cartaColores ? "(ver en la app)" : "",
+      it.cartaColores ? "(ver en la app)" : "",
     ]),
   ];
   const ws = XLSX.utils.aoa_to_sheet(wsData);
@@ -4114,7 +4137,6 @@ async function exportPreordenXLSX(preorden) {
     { s: { r: 2, c: 14 }, e: { r: 3, c: 15 } },
     { s: { r: 2, c: 16 }, e: { r: 3, c: 16 } },
     ...items.map((_, i) => ({ s: { r: 4 + i, c: 14 }, e: { r: 4 + i, c: 15 } })),
-    ...(preorden.cartaColores && items.length > 1 ? [{ s: { r: 4, c: 16 }, e: { r: 4 + items.length - 1, c: 16 } }] : []),
   ];
   const hayFotos = items.some((it) => it.foto);
   ws["!cols"] = [
@@ -4161,9 +4183,9 @@ async function exportPreordenXLSX(preorden) {
   XLSX.utils.book_append_sheet(wb, ws, "ANEXO");
   const nombreArchivo = `Preorden_${(preorden.cliente || "SinCliente").replace(/[^a-zA-Z0-9]+/g, "_")}_${preorden.fechaCreado || today()}.xlsx`;
   const fotos = items.map((it, i) => ({ dataUrl: it.foto, col: 0, row: 4 + i })).filter((f) => f.dataUrl);
-  if (preorden.cartaColores) {
-    fotos.push({ dataUrl: preorden.cartaColores, col: 16, row: 4, rowSpan: Math.max(items.length, 1) });
-  }
+  items.forEach((it, i) => {
+    if (it.cartaColores) fotos.push({ dataUrl: it.cartaColores, col: 16, row: 4 + i });
+  });
   if (fotos.length) {
     try {
       const wbArrayBuffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
@@ -4183,7 +4205,7 @@ async function exportPreordenXLSX(preorden) {
   }
   XLSX.writeFile(wb, nombreArchivo);
 }
-function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onActualizarPreorden, onEliminarPreorden }) {
+function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden }) {
   const [modo, setModo] = useState("lista");
   const [subTab, setSubTab] = useState("pendientes");
   const [estadoFiltro, setEstadoFiltro] = useState("todas");
@@ -4299,6 +4321,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
         const bloqueada = estadoActual === "aprobada" && !currentUser?.isAdmin;
         const puedeAprobar = currentUser?.role === "Cliente" && clientesDeUsuario(currentUser).includes(p.cliente) && estadoActual !== "aprobada";
         const puedeEliminar = currentUser?.isAdmin || (currentUser?.role !== "Cliente" && !bloqueada);
+        const faltaCartaColores = !(p.items || []).length || (p.items || []).some((it) => !it.cartaColores);
         return (
           <div key={p.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
             <div onClick={() => setExpandido(abierto ? null : p.id)} style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, cursor: "pointer", flexWrap: "wrap", gap: 10 }}>
@@ -4336,32 +4359,20 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
             </div>
             {abierto && (
               <div style={{ padding: 20 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
-                  <div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Carta de Colores</div>
-                    {bloqueada ? (
-                      p.cartaColores ? (
-                        <img src={p.cartaColores} alt="Carta de colores" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, border: `1px solid ${T.border}` }} />
-                      ) : (
-                        <div style={{ fontSize: 12, color: T.slate }}>Sin carta de colores</div>
-                      )
-                    ) : (
-                      <ImageUploader image={p.cartaColores} onImage={(img) => onActualizarPreorden(p.id, { cartaColores: img })} />
-                    )}
-                  </div>
+                <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
                   <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                     {puedeAprobar && (
                       <Btn
                         variant="success"
                         small
-                        disabled={!p.cartaColores}
+                        disabled={faltaCartaColores}
                         onClick={() => {
-                          if (window.confirm("¿Aprobar esta preorden y el colorido de la carta de colores? Una vez aprobada queda bloqueada.")) onAprobarPreorden(p.id);
+                          if (window.confirm("¿Aprobar esta preorden y el colorido de cada referencia? Una vez aprobada queda bloqueada.")) onAprobarPreorden(p.id);
                         }}
                       >✓ Aprobar</Btn>
                     )}
-                    {puedeAprobar && !p.cartaColores && (
-                      <div style={{ fontSize: 11, color: T.amber, maxWidth: 180 }}>Falta subir la carta de colores para poder aprobar.</div>
+                    {puedeAprobar && faltaCartaColores && (
+                      <div style={{ fontSize: 11, color: T.amber, maxWidth: 220 }}>Falta subir la carta de colores de cada referencia para poder aprobar.</div>
                     )}
                     <Btn variant="secondary" small onClick={() => exportPreordenXLSX({
                       ...p,
@@ -4393,7 +4404,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                     <thead>
                       <tr style={{ background: T.ink }}>
-                        {["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Pedido"].map((h) => (
+                        {["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Carta Colores", "Pedido"].map((h) => (
                           <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
                         ))}
                       </tr>
@@ -4420,6 +4431,14 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                             <td style={{ padding: "6px 10px" }}>{it.venezuelaCurva || "—"}</td>
                             <td style={{ padding: "6px 10px" }}>{it.venezuelaCantidad || "—"}</td>
                             <td style={{ padding: "6px 10px" }}>{it.precio || "—"}</td>
+                            <td style={{ padding: "6px 10px" }}>
+                              <ImageUploader
+                                compact
+                                image={it.cartaColores}
+                                onImage={(img) => onActualizarItemPreorden(p.id, it.itemId, { cartaColores: img })}
+                                readonly={bloqueada}
+                              />
+                            </td>
                             <td style={{ padding: "6px 10px" }}>
                               {graduada ? (() => {
                                 const pedidoDetalle = it.pedidoVinculado?.numero
@@ -11757,7 +11776,6 @@ function AppInner() {
       // aprobada queda para más adelante, cuando Fredy explique cómo debe
       // funcionar.
       estado: "montada",
-      cartaColores: header.cartaColores || null,
       fechaCreado: today(),
       items: items.map((it) => ({
         itemId: it.refId,
@@ -11778,6 +11796,7 @@ function AppInner() {
         precio: it._precio || "",
         observacionesCliente: it._observacionesCliente || "",
         pedidoVinculado: null,
+        cartaColores: null,
       })),
       createdAt: nowISO(),
       createdBy: currentUser?.name || "",
@@ -12609,6 +12628,7 @@ function AppInner() {
                 onAprobarPreorden={aprobarPreorden}
                 onActualizarPreorden={actualizarPreorden}
                 onEliminarPreorden={deleteBitacoraPreorden}
+                onActualizarItemPreorden={actualizarItemPreorden}
               />
             )}
             {view === "stats" && <EstadisticasView protos={protosVisibles} capsulas={capsulasVisibles} stages={config.stages} config={config} />}
