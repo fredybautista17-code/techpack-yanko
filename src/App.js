@@ -1398,17 +1398,24 @@ function ImageUploader({ image, onImage, readonly }) {
   return (
     <div style={{ marginBottom: 20 }}>
       <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 8 }}>Imagen</div>
+      <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFile} />
       {image ? (
         <div style={{ position: "relative", display: "inline-block" }}>
-          <img src={image} alt="ref" style={{ width: "100%", maxWidth: 300, height: 180, objectFit: "cover", borderRadius: 10, border: `1px solid ${T.border}`, display: "block" }} />
+          <img
+            src={image}
+            alt="ref"
+            onClick={() => !readonly && fileRef.current.click()}
+            title={readonly ? "" : "Toca para cambiar la imagen"}
+            style={{ width: "100%", maxWidth: 300, height: 180, objectFit: "cover", borderRadius: 10, border: `1px solid ${T.border}`, display: "block", cursor: readonly ? "default" : "pointer" }}
+          />
           {!readonly && <button onClick={() => onImage(null)} style={{ position: "absolute", top: 8, right: 8, background: "rgba(26,26,46,0.75)", border: "none", borderRadius: "50%", width: 28, height: 28, color: "white", cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>}
+          {!readonly && <div style={{ fontSize: 11, color: T.slate, marginTop: 6 }}>Toca la imagen para cambiarla, o la × para quitarla.</div>}
         </div>
       ) : (
         !readonly && (
           <div onClick={() => fileRef.current.click()} style={{ width: "100%", maxWidth: 300, height: 130, border: `2px dashed ${T.border}`, borderRadius: 10, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", background: T.canvas, color: T.slate }}>
             <span style={{ fontSize: 28, marginBottom: 6 }}>📷</span>
             <span style={{ fontSize: 13, fontWeight: 600 }}>Subir imagen</span>
-            <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFile} />
           </div>
         )
       )}
