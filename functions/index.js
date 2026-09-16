@@ -4767,7 +4767,7 @@ exports.adminCrearUsuario = onCall(
   { timeoutSeconds: 60, memory: "256MiB" },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
-    const { name, username, password, role, isAdmin, clienteAsociado, areaNomina, procesosPlaneacion, landingAreas } = request.data || {};
+    const { name, username, password, role, isAdmin, clienteAsociado, clientesAsociados, modulosCliente, areaNomina, procesosPlaneacion, landingAreas } = request.data || {};
     const nombreLimpio = String(name || "").trim();
     const usernameNorm = String(username || "").trim().toLowerCase();
     if (!nombreLimpio || !usernameNorm || !password) {
@@ -4806,6 +4806,14 @@ exports.adminCrearUsuario = onCall(
       // cuentas de acceso restringido de un cliente que no debe ver el
       // trabajo de otros clientes.
       clienteAsociado: clienteAsociado ? String(clienteAsociado).trim() : "",
+      // (2026-09-16, a pedido de Fredy) Lista de clientes/marcas asociadas --
+      // reemplaza a clienteAsociado (singular) para los usuarios nuevos; ver
+      // clientesDeUsuario() en App.js para cómo conviven los dos campos.
+      clientesAsociados: Array.isArray(clientesAsociados) ? clientesAsociados.map((cl) => String(cl)) : [],
+      // Módulos de cliente que puede ver este usuario puntual (protos,
+      // capsulas, pedidos, cronograma_muestras, bodega, preordenes) -- vacío
+      // significa "todos", igual que hoy.
+      modulosCliente: Array.isArray(modulosCliente) ? modulosCliente.map((m) => String(m)) : [],
       // Área de Nómina (opcional): solo se usa para los líderes de área
       // (Anny Beltrán → Terminación, Sarai Méndez → Termofijación) — con
       // esto puesto, el módulo de Nómina les muestra una pantalla simple
