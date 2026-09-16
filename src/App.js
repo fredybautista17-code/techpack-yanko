@@ -11964,12 +11964,19 @@ function AppInner() {
     await fsDelete("bitacora_preordenes", preordenId);
   }
   async function actualizarItemPreorden(preordenId, itemId, patch) {
+    const anterior = bitacoraPreordenes;
     const updated = bitacoraPreordenes.map((p) =>
       p.id !== preordenId ? p : { ...p, items: p.items.map((it) => (it.itemId !== itemId ? it : { ...it, ...patch })) }
     );
     setBitacoraPreordenes(updated);
     const item = updated.find((p) => p.id === preordenId);
-    await fsSave("bitacora_preordenes", preordenId, item);
+    try {
+      await fsSave("bitacora_preordenes", preordenId, item);
+    } catch (err) {
+      console.error("No se pudo guardar la preorden (actualizarItemPreorden):", err);
+      setBitacoraPreordenes(anterior);
+      alert('El cambio no se pudo guardar: la preorden quedo demasiado pesada (seguramente por la cantidad de fotos que tiene). Sube las imagenes en tandas mas pequenas o quita alguna foto antes de volver a intentar. Nada se guardo -- vuelve a intentarlo.');
+    }
   }
   // items: filas ya armadas en NuevaReprogramacionView (cada una ya trae
   // capsulaId + refId de la referencia real en esa cápsula, más los datos
@@ -12025,10 +12032,17 @@ function AppInner() {
   // se usa para la carta de colores (se puede subir/cambiar mientras está
   // "montada") y para el estado de aprobación.
   async function actualizarPreorden(preordenId, patch) {
+    const anterior = bitacoraPreordenes;
     const updated = bitacoraPreordenes.map((p) => (p.id !== preordenId ? p : { ...p, ...patch }));
     setBitacoraPreordenes(updated);
     const item = updated.find((p) => p.id === preordenId);
-    await fsSave("bitacora_preordenes", preordenId, item);
+    try {
+      await fsSave("bitacora_preordenes", preordenId, item);
+    } catch (err) {
+      console.error("No se pudo guardar la preorden (actualizarPreorden):", err);
+      setBitacoraPreordenes(anterior);
+      alert('El cambio no se pudo guardar: la preorden quedo demasiado pesada (seguramente por la cantidad de fotos que tiene). Sube las imagenes en tandas mas pequenas o quita alguna foto antes de volver a intentar. Nada se guardo -- vuelve a intentarlo.');
+    }
   }
   // (2026-09-16, a pedido de Fredy) Solo el cliente aprueba -- indistinto de
   // quién montó la preorden -- y aprobar es lo mismo que aprobar el colorido

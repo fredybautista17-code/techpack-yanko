@@ -612,7 +612,7 @@ function agruparAreasParaSelect(areasNomina, gruposTrabajo, valueKey) {
   }
   return grupos;
 }
-function AreaNominaModal({ area, procesos, grupos, turnos, onSave, onClose }) {
+function AreaNominaModal({ area, procesos, grupos, turnos, trabajadores, onAplicarTurno, onSave, onClose }) {
   const [form, setForm] = useState({
     nombre: area?.nombre || "",
     grupoTrabajoId: area?.grupoTrabajoId || "",
@@ -624,6 +624,37 @@ function AreaNominaModal({ area, procesos, grupos, turnos, onSave, onClose }) {
     mideReclamosCalidad: !!area?.mideReclamosCalidad,
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  // (2026-09-16, a pedido de Fredy) Aplicar el turno de esta area a los
+  // trabajadores que ya la tienen asignada -- pensado para cuando se le
+  // pone o cambia el turno por defecto a un area que ya tenia gente. Todos
+  // marcados por defecto; Fredy desmarca a quien no deba cambiar (ej. un
+  // turno especial de mecanico) antes de aplicar.
+  const [mostrarAplicarTurno, setMostrarAplicarTurno] = useState(false);
+  const [seleccionAplicar, setSeleccionAplicar] = useState({});
+  const [aplicandoTurno, setAplicandoTurno] = useState(false);
+  const [resultadoAplicarTurno, setResultadoAplicarTurno] = useState(null);
+  const trabajadoresDelArea = area ? (trabajadores || []).filter((t) => (t.area || "Sin asignar") === area.nombre) : [];
+  function nombreTurnoDe(tid) {
+    return (turnos || []).find((t) => t.id === tid)?.nombre || "Sin turno";
+  }
+  function abrirAplicarTurno() {
+    const inicial = {};
+    trabajadoresDelArea.forEach((t) => { inicial[t.id] = true; });
+    setSeleccionAplicar(inicial);
+    setResultadoAplicarTurno(null);
+    setMostrarAplicarTurno(true);
+  }
+  async function confirmarAplicarTurno() {
+    const ids = trabajadoresDelArea.filter((t) => seleccionAplicar[t.id]).map((t) => t.id);
+    if (!ids.length || !form.turnoId) return;
+    setAplicandoTurno(true);
+    try {
+      await onAplicarTurno(ids, form.turnoId);
+      setResultadoAplicarTurno(ids.length);
+    } finally {
+      setAplicandoTurno(false);
+    }
+  }
   function guardar() {
     if (!form.nombre.trim()) return;
     onSave({
@@ -654,6 +685,35 @@ function AreaNominaModal({ area, procesos, grupos, turnos, onSave, onClose }) {
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
         Se le aplica a todos los trabajadores de esta área, salvo a quien tenga un turno especial puesto directamente en su ficha (Trabajadores → Turno). Créalos en Administrativo → Turnos.
       </div>
+      {area && form.turnoId && trabajadoresDelArea.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          {!mostrarAplicarTurno ? (
+            <Btn variant="secondary" onClick={abrirAplicarTurno}>Aplicar este turno a los trabajadores actuales de esta área ({trabajadoresDelArea.length})</Btn>
+          ) : (
+            <div style={{ border: `1.5px solid ${C.border}`, borderRadius: 8, padding: 12 }}>
+              <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
+                Se le va a poner el turno <strong style={{ color: C.ink }}>{nombreTurnoDe(form.turnoId)}</strong> a quien esté marcado abajo. Desmarca a quien no deba cambiar (ej. alguien con un turno especial).
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 220, overflowY: "auto", marginBottom: 10 }}>
+                {trabajadoresDelArea.map((t) => (
+                  <label key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: C.ink, cursor: "pointer" }}>
+                    <input type="checkbox" checked={!!seleccionAplicar[t.id]} onChange={(e) => setSeleccionAplicar((s) => ({ ...s, [t.id]: e.target.checked }))} />
+                    <span style={{ fontWeight: 700 }}>{t.nombre}</span>
+                    <span style={{ color: C.slate }}>— turno actual: {nombreTurnoDe(t.turnoId)}</span>
+                  </label>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <Btn variant="secondary" onClick={() => setMostrarAplicarTurno(false)}>Cancelar</Btn>
+                <Btn onClick={confirmarAplicarTurno} disabled={aplicandoTurno || !Object.values(seleccionAplicar).some(Boolean)}>{aplicandoTurno ? "Aplicando..." : "Aplicar a los marcados"}</Btn>
+              </div>
+              {resultadoAplicarTurno != null && (
+                <div style={{ marginTop: 10, fontSize: 12, color: C.green, fontWeight: 700 }}>✅ Listo, se actualizó el turno de {resultadoAplicarTurno} trabajador(es).</div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       <Field label="Grupo de Trabajo (opcional)">
         <FSel value={form.grupoTrabajoId} onChange={set("grupoTrabajoId")} options={[...(grupos || [])].sort((a, b) => a.nombre.localeCompare(b.nombre)).map((g) => ({ value: g.id, label: g.nombre }))} placeholder="Sin grupo" />
       </Field>
@@ -751,7 +811,7 @@ function AreaNominaModal({ area, procesos, grupos, turnos, onSave, onClose }) {
     </Modal>
   );
 }
-function AreasNominaView({ areas, trabajadores, procesos, grupos, turnos, isAdmin, onSave, onDelete }) {
+function AreasNominaView({ areas, trabajadores, procesos, grupos, turnos, isAdmin, onSave, onAplicarTurno, onDelete }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | area
   const [confirmDel, setConfirmDel] = useState(null);
   const nombreGrupo = (grupoId) => (grupos || []).find((g) => g.id === grupoId)?.nombre || null;
@@ -772,6 +832,8 @@ function AreasNominaView({ areas, trabajadores, procesos, grupos, turnos, isAdmi
           procesos={procesos}
           grupos={grupos}
           turnos={turnos}
+          trabajadores={trabajadores}
+          onAplicarTurno={onAplicarTurno}
           onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
           onClose={() => setModal(null)}
         />
@@ -1656,9 +1718,15 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
   const gruposAreaParaSelect = agruparAreasParaSelect(areasNomina, gruposTrabajo, "nombre");
   function cambiarArea(v) {
     setForm((f) => {
-      const nuevaAreaId = areasNomina.find((a) => a.nombre === v)?.id;
+      const nuevaArea = areasNomina.find((a) => a.nombre === v);
+      const nuevaAreaId = nuevaArea?.id;
       const zonaSigueValida = (zonasNomina || []).some((z) => z.areaId === nuevaAreaId && z.nombre === f.zona);
-      return { ...f, area: v, zona: zonaSigueValida ? f.zona : "" };
+      // (2026-09-16, a pedido de Fredy) Si la nueva area tiene un turno por
+      // defecto, se lo pone de una vez al campo Turno del formulario -- si
+      // no tiene, se deja el turno que ya estuviera puesto (no se borra un
+      // turno especial de la persona sin que Fredy lo pida a mano).
+      const turnoIdSugerido = nuevaArea?.turnoId || f.turnoId;
+      return { ...f, area: v, zona: zonaSigueValida ? f.zona : "", turnoId: turnoIdSugerido };
     });
   }
   function guardar() {
@@ -4106,6 +4174,35 @@ function DetalleAnomaliasModal({ nombre, items, onAjustar, onClose }) {
     </Modal>
   );
 }
+// (2026-09-16, a pedido de Fredy) Ventana auxiliar con el detalle de los
+// retardos de UNA persona -- que dias llego tarde, la hora de entrada que
+// le tocaba segun su turno, la hora que marco el huellero y cuantos
+// minutos de atraso. Mismo patron que DetalleAnomaliasModal, pero de solo
+// lectura (un retardo no se "ajusta", es un conteo que alimenta el correo
+// formal automatico).
+function DetalleRetardosModal({ nombre, items, onClose }) {
+  const ordenados = [...items].sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
+  return (
+    <Modal title={`Retardos de este mes — ${nombre}`} onClose={onClose} width={460}>
+      {!ordenados.length ? (
+        <div style={{ fontSize: 13, color: C.slate }}>No hay retardos registrados este mes.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {ordenados.map((r, i) => (
+            <div key={r.fecha + i} style={{ padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8 }}>
+              <div style={{ fontWeight: 700, color: C.ink, marginBottom: 4 }}>{fmtFechaISO(r.fecha)}</div>
+              <div style={{ display: "flex", gap: 16, fontSize: 12, color: C.slate }}>
+                <span>Entrada esperada: <strong style={{ color: C.ink }}>{r.horaEsperada}</strong></span>
+                <span>Marcó: <strong style={{ color: C.ink }}>{r.horaMarcada}</strong></span>
+                <span style={{ color: r.minutosTarde >= 30 ? C.red : C.amber, fontWeight: 700 }}>{r.minutosTarde} min tarde</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
+  );
+}
 function AnomaliasHuelleroView({ anomalias, retardos, onAjustar }) {
   // (2026-09-16, a pedido de Fredy) Unificado por persona -- antes salia
   // una fila por CADA dia con anomalia pendiente (tabla larguisima si a
@@ -4113,6 +4210,7 @@ function AnomaliasHuelleroView({ anomalias, retardos, onAjustar }) {
   // el total pendiente, y el detalle de fechas se ve en una ventana aparte
   // (DetalleAnomaliasModal, arriba).
   const [personaAbierta, setPersonaAbierta] = useState(null); // nombreNorm
+  const [retardoAbierto, setRetardoAbierto] = useState(null); // nombreNorm
   const pendientes = (anomalias || [])
     .filter((a) => a.estado !== "ajustado")
     .slice()
@@ -4134,14 +4232,19 @@ function AnomaliasHuelleroView({ anomalias, retardos, onAjustar }) {
   const retardosDelMes = (retardos || []).filter((r) => r.fecha.slice(0, 7) === mesActual);
   const retardosPorPersona = {};
   retardosDelMes.forEach((r) => {
-    if (!retardosPorPersona[r.nombreNorm]) retardosPorPersona[r.nombreNorm] = { nombre: r.nombre, cantidad: 0 };
+    if (!retardosPorPersona[r.nombreNorm]) retardosPorPersona[r.nombreNorm] = { nombre: r.nombre, nombreNorm: r.nombreNorm, cantidad: 0, items: [] };
     retardosPorPersona[r.nombreNorm].cantidad++;
+    retardosPorPersona[r.nombreNorm].items.push(r);
   });
   const filasRetardos = Object.values(retardosPorPersona).sort((a, b) => b.cantidad - a.cantidad);
+  const retardoAbiertoData = retardoAbierto ? retardosPorPersona[retardoAbierto] : null;
   return (
     <div>
       {personaAbiertaData && (
         <DetalleAnomaliasModal nombre={personaAbiertaData.nombre} items={personaAbiertaData.items} onAjustar={onAjustar} onClose={() => setPersonaAbierta(null)} />
+      )}
+      {retardoAbiertoData && (
+        <DetalleRetardosModal nombre={retardoAbiertoData.nombre} items={retardoAbiertoData.items} onClose={() => setRetardoAbierto(null)} />
       )}
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 760 }}>
         Días donde la persona marcó el huellero solo una vez (entrada o salida, no las dos) y no tenía un permiso registrado que lo explique. Al ajustar, ese día queda como un día normal trabajado -- no afecta la nómina ni queda como falta sin justificar.
@@ -4177,16 +4280,17 @@ function AnomaliasHuelleroView({ anomalias, retardos, onAjustar }) {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: C.ink }}>
-              {["Trabajador", "Retardos este mes"].map((h) => (
+              {["Trabajador", "Retardos este mes", ""].map((h) => (
                 <th key={h} style={{ padding: "8px 10px", color: "#fff", textAlign: "left", fontWeight: 700, fontSize: 11 }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {filasRetardos.map((r, i) => (
-              <tr key={r.nombre + i} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+              <tr key={r.nombreNorm} onClick={() => setRetardoAbierto(r.nombreNorm)} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}`, cursor: "pointer" }}>
                 <td style={{ padding: "8px 10px", fontWeight: 700 }}>{r.nombre}</td>
                 <td style={{ padding: "8px 10px", fontWeight: 800, color: r.cantidad >= 12 ? C.red : r.cantidad >= 6 ? C.amber : C.ink }}>{r.cantidad}</td>
+                <td style={{ padding: "8px 10px", color: C.blue, fontWeight: 700 }}>Ver detalle →</td>
               </tr>
             ))}
           </tbody>
@@ -8568,6 +8672,17 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function guardarProceso(p) { await fsSave("nomina_precios_proceso", p.id, p); }
   async function borrarProceso(id) { await fsDelete("nomina_precios_proceso", id); }
   async function guardarAreaNomina(a) { await fsSave("nomina_areas", a.id, a); }
+  // (2026-09-16, a pedido de Fredy) Aplica un turno a varios trabajadores
+  // de una sola vez -- lo dispara el boton "Aplicar este turno a los
+  // trabajadores actuales de esta area" en Editar Area Interna, siempre
+  // con Fredy revisando antes la lista de a quien le va a cambiar.
+  async function aplicarTurnoATrabajadores(trabajadorIds, turnoId) {
+    const batch = writeBatch(db);
+    for (const id of trabajadorIds) {
+      batch.update(doc(db, "nomina_trabajadores", id), { turnoId });
+    }
+    await batch.commit();
+  }
   async function borrarAreaNomina(id) { await fsDelete("nomina_areas", id); }
   async function guardarAreaTNS(a) { await fsSave("nomina_areas_tns", a.id, a); }
   async function borrarAreaTNS(id) { await fsDelete("nomina_areas_tns", id); }
@@ -8867,7 +8982,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
           {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
-          {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} grupos={gruposTrabajo} turnos={turnos} isAdmin={isAdminCatalogos} onSave={guardarAreaNomina} onDelete={borrarAreaNomina} />}
+          {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} grupos={gruposTrabajo} turnos={turnos} isAdmin={isAdminCatalogos} onSave={guardarAreaNomina} onAplicarTurno={aplicarTurnoATrabajadores} onDelete={borrarAreaNomina} />}
           {subView === "zonas_nomina" && !areaLider && !soloNovedades && <ZonasNominaView zonas={zonasNomina} areasNomina={areasNomina} gruposTrabajo={gruposTrabajo} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarZonaNomina} onDelete={borrarZonaNomina} />}
           {subView === "areas_tns" && !areaLider && !soloNovedades && <AreasTnsView areas={areasTNS} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarAreaTNS} onDelete={borrarAreaTNS} />}
           {subView === "tipos_contrato" && !areaLider && !soloNovedades && <TiposContratoView tipos={tiposContrato} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTipoContrato} onDelete={borrarTipoContrato} />}
