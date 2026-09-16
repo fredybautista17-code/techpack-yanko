@@ -3718,10 +3718,13 @@ function BitacorasView(props) {
 // Aprobados sin Pedido" -- automática por código exacto de referencia
 // contra los pedidos ya cargados, con "Vincular a Pedido" a mano como
 // respaldo para cuando el cruce automático no calza.
-function usedInPedidoPreorden(refCode, pedidos) {
-  if (!refCode) return false;
+function pedidoQueContieneRef(refCode, pedidos) {
+  if (!refCode) return null;
   const target = String(refCode).trim().toLowerCase();
-  return (pedidos || []).some((p) => (p.referencias || []).some((r) => String(r.ref || "").trim().toLowerCase() === target));
+  return (pedidos || []).find((p) => (p.referencias || []).some((r) => String(r.ref || "").trim().toLowerCase() === target)) || null;
+}
+function usedInPedidoPreorden(refCode, pedidos) {
+  return !!pedidoQueContieneRef(refCode, pedidos);
 }
 function buscarRefEnCapsulasPreorden(refNorm, capsulas) {
   for (const cap of capsulas || []) {
@@ -3742,7 +3745,7 @@ function resumenPreordenPorCategoria(items) {
   });
   return [...mapa.values()].sort((a, b) => b.unidades - a.unidades);
 }
-function NuevaReprogramacionView({ capsulas, config, currentUser, onAddCapsula, onAddRef, onGuardar, onCancelar }) {
+function NuevaReprogramacionView({ capsulas, pedidos, config, currentUser, esOrdenNueva, onAddCapsula, onAddRef, onGuardar, onCancelar }) {
   const [header, setHeader] = useState({ cliente: "", numPedido: "", cartaColores: null });
   const esCliente = currentUser?.role === "Cliente";
   // (2026-09-16) Un cliente puede tener más de una marca asociada -- si solo
@@ -3765,6 +3768,28 @@ function NuevaReprogramacionView({ capsulas, config, currentUser, onAddCapsula, 
     if (!ref) return;
     setBuscando(true);
     setResultado(null);
+    const refNorm = normalizarRefComparacion(ref);
+    const pedidoExistente = pedidoQueContieneRef(ref, pedidos);
+    // (2026-09-16, a pedido de Fredy) "Nueva Orden" es para referencias que
+    // todavía no existen en Busint -- se busca solo en Cápsulas internas; si
+    // tampoco está ahí, se agrega igual, completamente a mano.
+    if (esOrdenNueva) {
+      const capsulaExistente = buscarRefEnCapsulasPreorden(refNorm, capsulas);
+      const datosBusint = capsulaExistente
+        ? {
+            nombre: capsulaExistente.ref.name || "",
+            categoria: capsulaExistente.ref.categoria || "",
+            silueta: capsulaExistente.ref.silueta || "",
+            rango: capsulaExistente.ref.rango || (capsulaExistente.ref.tallas?.[0] || ""),
+            tipo: "",
+            tela: capsulaExistente.ref.tipoTela || "",
+            consumo: "",
+          }
+        : { nombre: "", categoria: "", silueta: "", rango: "", tipo: "", tela: "", consumo: "" };
+      setResultado({ ok: true, datosBusint, capsulaExistente, pedidoExistente });
+      setBuscando(false);
+      return;
+    }
     try {
       const llamarRef = httpsCallable(functionsClient, "probarReferenciaBusint");
       const respRef = await llamarRef({ ref });
@@ -3797,9 +3822,8 @@ function NuevaReprogramacionView({ capsulas, config, currentUser, onAddCapsula, 
         tela,
         consumo,
       };
-      const refNorm = normalizarRefComparacion(ref);
       const capsulaExistente = buscarRefEnCapsulasPreorden(refNorm, capsulas);
-      setResultado({ ok: true, datosBusint, capsulaExistente });
+      setResultado({ ok: true, datosBusint, capsulaExistente, pedidoExistente });
     } catch (err) {
       setResultado({ ok: false, error: err?.message || "No se pudo consultar Busint." });
     } finally {
@@ -3841,7 +3865,7 @@ function NuevaReprogramacionView({ capsulas, config, currentUser, onAddCapsula, 
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>🔁 Nueva Reprogramación</h2>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>{esOrdenNueva ? "🆕 Nueva Orden" : "🔁 Nueva Reprogramación"}</h2>
         <Btn variant="secondary" onClick={onCancelar}>← Volver a Preórdenes</Btn>
       </div>
       <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 20, marginBottom: 20 }}>
@@ -3867,14 +3891,17 @@ function NuevaReprogramacionView({ capsulas, config, currentUser, onAddCapsula, 
           <div style={{ flex: 1 }}>
             <Field label="Referencia"><FInput value={referencia} onChange={setReferencia} placeholder="Ej: C-5008" /></Field>
           </div>
-          <Btn onClick={buscar} disabled={buscando || !referencia.trim()}>{buscando ? "Buscando..." : "🔍 Buscar en Busint"}</Btn>
+          <Btn onClick={buscar} disabled={buscando || !referencia.trim()}>{buscando ? "Buscando..." : (esOrdenNueva ? "🔍 Buscar en Cápsulas" : "🔍 Buscar en Busint")}</Btn>
         </div>
         {resultado && !resultado.ok && (
           <div style={{ padding: "10px 14px", background: T.coralBg, color: T.coral, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 12 }}>⚠ {resultado.error}</div>
         )}
         {resultado?.ok && (
           <div style={{ padding: 16, background: T.canvas, borderRadius: 10, marginBottom: 12 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginBottom: 10 }}>Datos traídos de Busint</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginBottom: 10 }}>{esOrdenNueva ? "Datos encontrados" : "Datos traídos de Busint"}</div>
+            {resultado.pedidoExistente && (
+              <div style={{ fontSize: 13, color: T.amber, fontWeight: 700, marginBottom: 10 }}>⚠ Esta referencia ya está en el Pedido #{resultado.pedidoExistente.numero || "?"} ({resultado.pedidoExistente.cliente || "sin cliente"}).</div>
+            )}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: 14, fontSize: 12 }}>
               <div><div style={{ color: T.slate, fontWeight: 700 }}>Nombre</div><div style={{ color: T.ink }}>{resultado.datosBusint.nombre || "—"}</div></div>
               <div><div style={{ color: T.slate, fontWeight: 700 }}>Categoría</div><div style={{ color: T.ink }}>{resultado.datosBusint.categoria || "—"}</div></div>
@@ -4108,6 +4135,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
   const [estadoFiltro, setEstadoFiltro] = useState("todas");
   const [vinculando, setVinculando] = useState(null);
   const [buscaPedido, setBuscaPedido] = useState("");
+  const [detallePedido, setDetallePedido] = useState(null);
   const [expandido, setExpandido] = useState(null);
   function itemGraduado(it) {
     return !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidos);
@@ -4128,12 +4156,14 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
     setVinculando(null);
     setBuscaPedido("");
   }
-  if (modo === "reprogramacion") {
+  if (modo === "reprogramacion" || modo === "orden_nueva") {
     return (
       <NuevaReprogramacionView
         capsulas={capsulas}
+        pedidos={pedidos}
         config={config}
         currentUser={currentUser}
+        esOrdenNueva={modo === "orden_nueva"}
         onAddCapsula={onAddCapsula}
         onAddRef={onAddRef}
         onGuardar={async (header, items) => { await onCrearPreorden(header, items); setModo("lista"); }}
@@ -4143,6 +4173,18 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
   }
   return (
     <div>
+      {detallePedido && (
+        <Modal title={`Pedido #${detallePedido.numero || "?"}`} onClose={() => setDetallePedido(null)} width={480}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13, color: T.ink }}>
+            <div><strong>Cliente:</strong> {detallePedido.cliente || "—"}</div>
+            <div><strong>Fecha del pedido:</strong> {detallePedido.fechaPedido || "—"}</div>
+            <div><strong>Fecha de despacho:</strong> {detallePedido.fechaDespacho || "—"}</div>
+            <div><strong>Vendedor:</strong> {detallePedido.vendedor || "—"}</div>
+            <div><strong>Ciudad:</strong> {detallePedido.ciudad || "—"}</div>
+            <div><strong>Referencias en el pedido:</strong> {(detallePedido.referencias || []).length}</div>
+          </div>
+        </Modal>
+      )}
       {vinculando && (
         <Modal title="Vincular a pedido" onClose={() => { setVinculando(null); setBuscaPedido(""); }} width={480}>
           <p style={{ margin: "0 0 12px", fontSize: 13, color: T.slate }}>
@@ -4175,7 +4217,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <Btn onClick={() => setModo("reprogramacion")}>🔁 Nueva Reprogramación</Btn>
-          <Btn variant="secondary" onClick={() => alert("Esta pantalla todavía se está definiendo con Fredy — pronto estará lista.")}>🆕 Nueva Orden</Btn>
+          <Btn variant="secondary" onClick={() => setModo("orden_nueva")}>🆕 Nueva Orden</Btn>
         </div>
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
@@ -4296,9 +4338,18 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                             <td style={{ padding: "6px 10px" }}>{it.venezuelaCantidad || "—"}</td>
                             <td style={{ padding: "6px 10px" }}>{it.precio || "—"}</td>
                             <td style={{ padding: "6px 10px" }}>
-                              {graduada ? (
-                                <span style={{ color: T.jade, fontWeight: 700 }}>✓ {it.pedidoVinculado?.numero ? `#${it.pedidoVinculado.numero}` : "En pedido"}</span>
-                              ) : bloqueada ? (
+                              {graduada ? (() => {
+                                const pedidoDetalle = it.pedidoVinculado?.numero
+                                  ? (pedidos || []).find((pp) => String(pp.numero) === String(it.pedidoVinculado.numero))
+                                  : pedidoQueContieneRef(it.referencia, pedidos);
+                                return (
+                                  <span
+                                    onClick={() => pedidoDetalle && setDetallePedido(pedidoDetalle)}
+                                    title={pedidoDetalle ? "Ver detalle del pedido" : ""}
+                                    style={{ color: T.jade, fontWeight: 700, cursor: pedidoDetalle ? "pointer" : "default", textDecoration: pedidoDetalle ? "underline" : "none" }}
+                                  >✓ {it.pedidoVinculado?.numero ? `#${it.pedidoVinculado.numero}` : "En pedido"}</span>
+                                );
+                              })() : bloqueada ? (
                                 <span style={{ color: T.slate, fontSize: 11, fontStyle: "italic" }}>🔒 Bloqueada</span>
                               ) : (
                                 <button onClick={() => setVinculando({ preordenId: p.id, itemId: it.itemId })} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Vincular</button>
