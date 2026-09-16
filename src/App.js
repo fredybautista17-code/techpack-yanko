@@ -3994,6 +3994,53 @@ function NuevaReprogramacionView({ capsulas, pedidos, config, currentUser, esOrd
     </div>
   );
 }
+async function actualizarPreordenDesdeExcel(preorden, file, onActualizarPreorden) {
+  const XLSX = await import("xlsx");
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(buffer, { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: true });
+  const txt = (v) => (v === null || v === undefined ? "" : String(v).trim());
+  const porRef = new Map();
+  for (let i = 4; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || !row.length) continue;
+    const ref = txt(row[1]);
+    if (!ref) continue;
+    porRef.set(normalizarRefComparacion(ref), {
+      consumo: txt(row[3]),
+      tipo: txt(row[4]),
+      categoria: txt(row[5]),
+      silueta: txt(row[6]),
+      rango: txt(row[7]),
+      tela: txt(row[8]),
+      colombiaCurva: txt(row[9]),
+      colombiaCantidad: txt(row[10]),
+      venezuelaCurva: txt(row[11]),
+      venezuelaCantidad: txt(row[12]),
+      precio: txt(row[13]),
+      observacionesCliente: txt(row[14]),
+    });
+  }
+  let actualizados = 0;
+  const items = preorden.items || [];
+  const nuevosItems = items.map((it) => {
+    const cambios = porRef.get(normalizarRefComparacion(it.referencia));
+    if (!cambios) return it;
+    actualizados++;
+    return { ...it, ...cambios };
+  });
+  const refsPreorden = new Set(items.map((it) => normalizarRefComparacion(it.referencia)));
+  const sinCoincidir = [...porRef.keys()].filter((refNorm) => !refsPreorden.has(refNorm));
+  await onActualizarPreorden(preorden.id, { items: nuevosItems });
+  if (!actualizados) {
+    alert("No se encontró ninguna referencia del Excel que coincida con las de esta preorden. Revisa que no hayas cambiado la columna REF.");
+  } else if (sinCoincidir.length) {
+    alert(`Se actualizaron ${actualizados} referencia(s). ${sinCoincidir.length} fila(s) del Excel no coinciden con ninguna referencia de esta preorden y se ignoraron.`);
+  } else {
+    alert(`Se actualizaron ${actualizados} referencia(s) de la preorden.`);
+  }
+}
 async function exportPreordenXLSX(preorden) {
   // Mismo layout EXACTO del ANEXO que ya usa Bitácora de Envíos
   // (exportBitacoraEnvioToExcel, ver comentario largo arriba de esa
@@ -4324,6 +4371,22 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                         return { ...it, estadoLabel: refReal ? (STATUS[refReal.status]?.label || refReal.status) : "" };
                       }),
                     })}>📊 Descargar Excel</Btn>
+                    {!bloqueada && (
+                      <>
+                        <input
+                          id={`preorden-excel-${p.id}`}
+                          type="file"
+                          accept=".xlsx,.xls"
+                          style={{ display: "none" }}
+                          onChange={(e) => {
+                            const f = e.target.files[0];
+                            e.target.value = "";
+                            if (f) actualizarPreordenDesdeExcel(p, f, onActualizarPreorden);
+                          }}
+                        />
+                        <Btn variant="secondary" small onClick={() => document.getElementById(`preorden-excel-${p.id}`).click()}>📤 Subir Excel</Btn>
+                      </>
+                    )}
                   </div>
                 </div>
                 <div style={{ overflowX: "auto" }}>
