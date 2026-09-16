@@ -4102,9 +4102,10 @@ async function exportPreordenXLSX(preorden) {
   }
   XLSX.writeFile(wb, nombreArchivo);
 }
-function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido }) {
+function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onActualizarPreorden }) {
   const [modo, setModo] = useState("lista");
   const [subTab, setSubTab] = useState("pendientes");
+  const [estadoFiltro, setEstadoFiltro] = useState("todas");
   const [vinculando, setVinculando] = useState(null);
   const [buscaPedido, setBuscaPedido] = useState("");
   const [expandido, setExpandido] = useState(null);
@@ -4115,7 +4116,8 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
     ...p,
     pendientes: (p.items || []).filter((it) => !itemGraduado(it)).length,
   })).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
-  const visibles = subTab === "pendientes" ? preordenesConEstado.filter((p) => p.pendientes > 0) : preordenesConEstado;
+  const porSubTab = subTab === "pendientes" ? preordenesConEstado.filter((p) => p.pendientes > 0) : preordenesConEstado;
+  const visibles = estadoFiltro === "todas" ? porSubTab : porSubTab.filter((p) => (p.estado || "montada") === estadoFiltro);
   const bq = buscaPedido.trim().toLowerCase();
   const pedidosEncontrados = bq
     ? (pedidos || []).filter((p) => String(p.numero || "").toLowerCase().includes(bq) || (p.cliente || "").toLowerCase().includes(bq)).slice(0, 30)
@@ -4176,9 +4178,14 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
           <Btn variant="secondary" onClick={() => alert("Esta pantalla todavía se está definiendo con Fredy — pronto estará lista.")}>🆕 Nueva Orden</Btn>
         </div>
       </div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
         {[["pendientes", "⏳ Pendientes"], ["todos", "Todos"]].map(([v, label]) => (
           <button key={v} onClick={() => setSubTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${subTab === v ? T.denim : T.border}`, background: subTab === v ? T.denimBg : T.white, color: subTab === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+        {[["todas", "Todos los estados"], ["montada", "🟡 Montadas"], ["aprobada", "✅ Aprobadas"]].map(([v, label]) => (
+          <button key={v} onClick={() => setEstadoFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${estadoFiltro === v ? T.jade : T.border}`, background: estadoFiltro === v ? T.jadeBg : T.white, color: estadoFiltro === v ? T.jade : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
       {!visibles.length && (
@@ -4190,13 +4197,25 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
         const abierto = expandido === p.id;
         const resumen = resumenPreordenPorCategoria(p.items);
         const totalUnidades = resumen.reduce((s, r) => s + r.unidades, 0);
+        const estadoActual = p.estado || "montada";
+        // (2026-09-16, a pedido de Fredy) Aprobada = bloqueada para todo el
+        // mundo menos el administrador, que siempre puede seguir editando.
+        const bloqueada = estadoActual === "aprobada" && !currentUser?.isAdmin;
+        const puedeAprobar = currentUser?.role === "Cliente" && clientesDeUsuario(currentUser).includes(p.cliente) && estadoActual !== "aprobada";
         return (
           <div key={p.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
             <div onClick={() => setExpandido(abierto ? null : p.id)} style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, cursor: "pointer", flexWrap: "wrap", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: 20 }}>{abierto ? "📂" : "📁"}</span>
                 <div>
-                  <div style={{ fontWeight: 800, fontSize: 15, color: T.ink }}>{p.cliente || "(Sin cliente)"}{p.numPedido ? ` · Pedido ${p.numPedido}` : ""}</div>
+                  <div style={{ fontWeight: 800, fontSize: 15, color: T.ink, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span>{p.cliente || "(Sin cliente)"}{p.numPedido ? ` · Pedido ${p.numPedido}` : ""}</span>
+                    {estadoActual === "aprobada" ? (
+                      <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✅ Aprobada</span>
+                    ) : (
+                      <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.amberBg, color: T.amber }}>🟡 Montada</span>
+                    )}
+                  </div>
                   <div style={{ fontSize: 12, color: T.slate }}>{(p.items || []).length} ref · {fmtNum(totalUnidades)} unid. · Creada {p.fechaCreado}</div>
                 </div>
               </div>
@@ -4209,20 +4228,41 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
             {abierto && (
               <div style={{ padding: 20 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
-                  {p.cartaColores ? (
-                    <div>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Carta de Colores</div>
-                      <img src={p.cartaColores} alt="Carta de colores" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, border: `1px solid ${T.border}` }} />
-                    </div>
-                  ) : <div />}
-                  <Btn variant="secondary" small onClick={() => exportPreordenXLSX({
-                    ...p,
-                    items: (p.items || []).map((it) => {
-                      const cap = (capsulas || []).find((c) => c.id === it.capsulaId);
-                      const refReal = cap?.referencias?.find((r) => r.id === it.itemId);
-                      return { ...it, estadoLabel: refReal ? (STATUS[refReal.status]?.label || refReal.status) : "" };
-                    }),
-                  })}>📊 Descargar Excel</Btn>
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Carta de Colores</div>
+                    {bloqueada ? (
+                      p.cartaColores ? (
+                        <img src={p.cartaColores} alt="Carta de colores" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, border: `1px solid ${T.border}` }} />
+                      ) : (
+                        <div style={{ fontSize: 12, color: T.slate }}>Sin carta de colores</div>
+                      )
+                    ) : (
+                      <ImageUploader image={p.cartaColores} onImage={(img) => onActualizarPreorden(p.id, { cartaColores: img })} />
+                    )}
+                  </div>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    {puedeAprobar && (
+                      <Btn
+                        variant="success"
+                        small
+                        disabled={!p.cartaColores}
+                        onClick={() => {
+                          if (window.confirm("¿Aprobar esta preorden y el colorido de la carta de colores? Una vez aprobada queda bloqueada.")) onAprobarPreorden(p.id);
+                        }}
+                      >✓ Aprobar</Btn>
+                    )}
+                    {puedeAprobar && !p.cartaColores && (
+                      <div style={{ fontSize: 11, color: T.amber, maxWidth: 180 }}>Falta subir la carta de colores para poder aprobar.</div>
+                    )}
+                    <Btn variant="secondary" small onClick={() => exportPreordenXLSX({
+                      ...p,
+                      items: (p.items || []).map((it) => {
+                        const cap = (capsulas || []).find((c) => c.id === it.capsulaId);
+                        const refReal = cap?.referencias?.find((r) => r.id === it.itemId);
+                        return { ...it, estadoLabel: refReal ? (STATUS[refReal.status]?.label || refReal.status) : "" };
+                      }),
+                    })}>📊 Descargar Excel</Btn>
+                  </div>
                 </div>
                 <div style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -4258,6 +4298,8 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                             <td style={{ padding: "6px 10px" }}>
                               {graduada ? (
                                 <span style={{ color: T.jade, fontWeight: 700 }}>✓ {it.pedidoVinculado?.numero ? `#${it.pedidoVinculado.numero}` : "En pedido"}</span>
+                              ) : bloqueada ? (
+                                <span style={{ color: T.slate, fontSize: 11, fontStyle: "italic" }}>🔒 Bloqueada</span>
                               ) : (
                                 <button onClick={() => setVinculando({ preordenId: p.id, itemId: it.itemId })} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Vincular</button>
                               )}
@@ -11228,6 +11270,7 @@ function AppInner() {
     .map((cap) => ({ ...cap, referencias: (cap.referencias || []).filter((r) => !r.eliminado) }));
   const pedidosVisibles = clientesUsuario.length ? pedidos.filter((p) => clientesUsuario.includes(p.cliente)) : pedidos;
   const cronogramaMuestrasVisibles = clientesUsuario.length ? cronogramaMuestras.filter((c) => clientesUsuario.includes(c.cliente)) : cronogramaMuestras;
+  const preordenesVisibles = clientesUsuario.length ? bitacoraPreordenes.filter((p) => clientesUsuario.includes(p.cliente)) : bitacoraPreordenes;
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
   const [bitacoraEnvios, setBitacoraEnvios] = useState([]);
   const [bitacoraPreordenes, setBitacoraPreordenes] = useState([]);
@@ -11567,6 +11610,13 @@ function AppInner() {
       id: uid(),
       cliente: header.cliente || "",
       numPedido: header.numPedido || "",
+      // (2026-09-16, a pedido de Fredy) Dos etapas: "montada" (recién creada,
+      // la haya montado el cliente o alguien de Yanko) y "aprobada" (el
+      // cliente decidió el colorido y la preorden queda bloqueada -- ver
+      // aprobarPreorden más abajo). El pedido de tela sobre una preorden ya
+      // aprobada queda para más adelante, cuando Fredy explique cómo debe
+      // funcionar.
+      estado: "montada",
       cartaColores: header.cartaColores || null,
       fechaCreado: today(),
       items: items.map((it) => ({
@@ -11599,6 +11649,26 @@ function AppInner() {
     await actualizarItemPreorden(preordenId, itemId, {
       pedidoVinculado: { numero: pedido.numero, cliente: pedido.cliente || "", vinculadoPor: currentUser?.name || "", vinculadoEn: nowISO() },
     });
+  }
+  // Cambios a nivel de la preorden completa (no de un ítem puntual) -- hoy
+  // se usa para la carta de colores (se puede subir/cambiar mientras está
+  // "montada") y para el estado de aprobación.
+  async function actualizarPreorden(preordenId, patch) {
+    const updated = bitacoraPreordenes.map((p) => (p.id !== preordenId ? p : { ...p, ...patch }));
+    setBitacoraPreordenes(updated);
+    const item = updated.find((p) => p.id === preordenId);
+    await fsSave("bitacora_preordenes", preordenId, item);
+  }
+  // (2026-09-16, a pedido de Fredy) Solo el cliente aprueba -- indistinto de
+  // quién montó la preorden -- y aprobar es lo mismo que aprobar el colorido
+  // de la carta de colores: es el último paso antes de poder hacer el
+  // pedido de tela (eso último, más adelante). Una vez aprobada queda
+  // bloqueada para todo el mundo menos el administrador (ver `bloqueada` en
+  // PreordenesView).
+  async function aprobarPreorden(preordenId) {
+    await actualizarPreorden(preordenId, { estado: "aprobada", aprobadaPor: currentUser?.name || "", aprobadaEn: nowISO() });
+    const p = bitacoraPreordenes.find((x) => x.id === preordenId);
+    notify({ id: uid(), icon: "✅", title: "Preorden aprobada", msg: p?.cliente ? `${p.cliente} aprobó el colorido` : "Colorido aprobado" });
   }
   // --- Módulo KPIs (toda la compañía) ---
   // Puestos: { id, area, nombre, funciones }. `area` viene de
@@ -12387,7 +12457,7 @@ function AppInner() {
             {view === "pedidos_clientes" && <ClientesPedidosView clientes={config.clientes} pedidos={pedidosVisibles} protos={protosVisibles} capsulas={capsulasVisibles} />}
             {view === "preordenes" && (
               <PreordenesView
-                preordenes={bitacoraPreordenes}
+                preordenes={preordenesVisibles}
                 pedidos={pedidosVisibles}
                 capsulas={capsulas}
                 config={config}
@@ -12396,6 +12466,8 @@ function AppInner() {
                 onAddRef={addRef}
                 onCrearPreorden={crearPreorden}
                 onVincularPedido={vincularPreordenAPedido}
+                onAprobarPreorden={aprobarPreorden}
+                onActualizarPreorden={actualizarPreorden}
               />
             )}
             {view === "stats" && <EstadisticasView protos={protosVisibles} capsulas={capsulasVisibles} stages={config.stages} config={config} />}
