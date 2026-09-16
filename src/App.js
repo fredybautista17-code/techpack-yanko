@@ -4018,20 +4018,92 @@ function NuevaReprogramacionView({ capsulas, pedidos, config, currentUser, esOrd
     </div>
   );
 }
+function cartaColoresLista(it) {
+  const v = it && it.cartaColores;
+  return Array.isArray(v) ? v.filter(Boolean) : v ? [v] : [];
+}
+function ImageListUploader({ images, onChange, readonly }) {
+  const fileRef = useRef();
+  const lista = images || [];
+  function handleFile(e) {
+    const f = e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    const img = new Image();
+    const url = URL.createObjectURL(f);
+    img.onload = () => {
+      const MAX = 800;
+      let w = img.width, h = img.height;
+      if (w > MAX || h > MAX) {
+        if (w > h) { h = Math.round((h * MAX) / w); w = MAX; } else { w = Math.round((w * MAX) / h); h = MAX; }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      const compressed = canvas.toDataURL("image/jpeg", 0.7);
+      URL.revokeObjectURL(url);
+      onChange([...lista, compressed]);
+    };
+    img.src = url;
+  }
+  function quitar(idx) {
+    onChange(lista.filter((_, i) => i !== idx));
+  }
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+      <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFile} />
+      {lista.map((src, idx) => (
+        <div key={idx} style={{ position: "relative", display: "inline-block" }}>
+          <img src={src} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 5, border: `1px solid ${T.border}` }} />
+          {!readonly && (
+            <button
+              onClick={() => quitar(idx)}
+              title="Quitar esta imagen"
+              style={{ position: "absolute", top: -5, right: -5, background: "rgba(26,26,46,0.85)", border: "none", borderRadius: "50%", width: 13, height: 13, color: "white", cursor: "pointer", fontSize: 8, lineHeight: "13px", padding: 0 }}
+            >×</button>
+          )}
+        </div>
+      ))}
+      {!readonly && (
+        <div onClick={() => fileRef.current.click()} title="Agregar imagen" style={{ width: 32, height: 32, border: `2px dashed ${T.border}`, borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", background: T.canvas, color: T.slate, fontSize: 16, flexShrink: 0 }}>+</div>
+      )}
+      {!lista.length && readonly && <span style={{ fontSize: 11, color: T.slate, fontStyle: "italic" }}>—</span>}
+    </div>
+  );
+}
 async function actualizarPreordenDesdeExcel(preorden, file, onActualizarPreorden) {
   const XLSX = await import("xlsx");
+  const JSZip = (await import("jszip")).default;
   const buffer = await file.arrayBuffer();
   const wb = XLSX.read(buffer, { type: "array" });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: true });
   const txt = (v) => (v === null || v === undefined ? "" : String(v).trim());
+  const norm = (v) => txt(v).toUpperCase();
+  // FOTO y CARTA DE COLORES se ubican por el texto del encabezado (fila
+  // índice 2), no por columna fija -- así funciona igual si sube el Excel
+  // que descarga ATLAS (con columna separadora) o el que le manda el
+  // cliente directo (sin esa columna, ver atlas-preordenes-cliente-...md).
+  const headerRow = rows[2] || [];
+  let colFoto = headerRow.findIndex((h) => norm(h).includes("FOTO"));
+  const colCarta = headerRow.findIndex((h) => norm(h).includes("CARTA"));
+  if (colFoto === -1) colFoto = 0;
+  let imagenesPorFilaCol = {};
+  try {
+    const parser = new DOMParser();
+    const zip = await JSZip.loadAsync(buffer);
+    const rutasHojas = await mapaHojasARutaXlsx(zip, parser);
+    if (rutasHojas[0]) imagenesPorFilaCol = await extraerImagenesPorFilaYColumna(zip, rutasHojas[0], parser);
+  } catch (e) {
+    // Sin fotos legibles en el Excel -- el texto/cantidades se actualiza igual.
+  }
   const porRef = new Map();
   for (let i = 4; i < rows.length; i++) {
     const row = rows[i];
     if (!row || !row.length) continue;
     const ref = txt(row[1]);
     if (!ref) continue;
-    porRef.set(normalizarRefComparacion(ref), {
+    const cambios = {
       consumo: txt(row[3]),
       tipo: txt(row[4]),
       categoria: txt(row[5]),
@@ -4044,7 +4116,18 @@ async function actualizarPreordenDesdeExcel(preorden, file, onActualizarPreorden
       venezuelaCantidad: txt(row[12]),
       precio: txt(row[13]),
       observacionesCliente: txt(row[14]),
-    });
+    };
+    const imagenesFila = imagenesPorFilaCol[i] || {};
+    if (imagenesFila[colFoto]?.length) cambios.foto = imagenesFila[colFoto][0];
+    if (colCarta !== -1) {
+      const todasCarta = Object.keys(imagenesFila)
+        .map(Number)
+        .filter((col) => col !== colFoto && col >= colCarta)
+        .sort((a, b) => a - b)
+        .flatMap((col) => imagenesFila[col]);
+      if (todasCarta.length) cambios.cartaColores = todasCarta;
+    }
+    porRef.set(normalizarRefComparacion(ref), cambios);
   }
   let actualizados = 0;
   const items = preorden.items || [];
@@ -4060,9 +4143,9 @@ async function actualizarPreordenDesdeExcel(preorden, file, onActualizarPreorden
   if (!actualizados) {
     alert("No se encontró ninguna referencia del Excel que coincida con las de esta preorden. Revisa que no hayas cambiado la columna REF.");
   } else if (sinCoincidir.length) {
-    alert(`Se actualizaron ${actualizados} referencia(s). ${sinCoincidir.length} fila(s) del Excel no coinciden con ninguna referencia de esta preorden y se ignoraron.`);
+    alert(`Se actualizaron ${actualizados} referencia(s) (cantidades, foto y carta de colores si el Excel las traía). ${sinCoincidir.length} fila(s) del Excel no coinciden con ninguna referencia de esta preorden y se ignoraron.`);
   } else {
-    alert(`Se actualizaron ${actualizados} referencia(s) de la preorden.`);
+    alert(`Se actualizaron ${actualizados} referencia(s) de la preorden (cantidades, foto y carta de colores si el Excel las traía).`);
   }
 }
 async function exportPreordenXLSX(preorden) {
@@ -4111,7 +4194,7 @@ async function exportPreordenXLSX(preorden) {
       numOTexto(it.precio),
       it.observacionesCliente || "",
       "",
-      it.cartaColores ? "(ver en la app)" : "",
+      cartaColoresLista(it).length ? "(ver en la app)" : "",
     ]),
   ];
   const ws = XLSX.utils.aoa_to_sheet(wsData);
@@ -4184,7 +4267,9 @@ async function exportPreordenXLSX(preorden) {
   const nombreArchivo = `Preorden_${(preorden.cliente || "SinCliente").replace(/[^a-zA-Z0-9]+/g, "_")}_${preorden.fechaCreado || today()}.xlsx`;
   const fotos = items.map((it, i) => ({ dataUrl: it.foto, col: 0, row: 4 + i })).filter((f) => f.dataUrl);
   items.forEach((it, i) => {
-    if (it.cartaColores) fotos.push({ dataUrl: it.cartaColores, col: 16, row: 4 + i });
+    cartaColoresLista(it).forEach((dataUrl, idx) => {
+      fotos.push({ dataUrl, col: 16 + idx, row: 4 + i });
+    });
   });
   if (fotos.length) {
     try {
@@ -4391,7 +4476,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
         const bloqueada = estadoActual === "aprobada" && !currentUser?.isAdmin;
         const puedeAprobar = currentUser?.role === "Cliente" && clientesDeUsuario(currentUser).includes(p.cliente) && estadoActual !== "aprobada";
         const puedeEliminar = currentUser?.isAdmin || (currentUser?.role !== "Cliente" && !bloqueada);
-        const faltaCartaColores = !(p.items || []).length || (p.items || []).some((it) => !it.cartaColores);
+        const faltaCartaColores = !(p.items || []).length || (p.items || []).some((it) => !cartaColoresLista(it).length);
         return (
           <div key={p.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
             <div onClick={() => setExpandido(abierto ? null : p.id)} style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, cursor: "pointer", flexWrap: "wrap", gap: 10 }}>
@@ -4502,10 +4587,9 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                             <td style={{ padding: "6px 10px" }}>{it.venezuelaCantidad || "—"}</td>
                             <td style={{ padding: "6px 10px" }}>{it.precio || "—"}</td>
                             <td style={{ padding: "6px 10px" }}>
-                              <ImageUploader
-                                compact
-                                image={it.cartaColores}
-                                onImage={(img) => onActualizarItemPreorden(p.id, it.itemId, { cartaColores: img })}
+                              <ImageListUploader
+                                images={cartaColoresLista(it)}
+                                onChange={(imgs) => onActualizarItemPreorden(p.id, it.itemId, { cartaColores: imgs })}
                                 readonly={bloqueada}
                               />
                             </td>
@@ -7290,6 +7374,64 @@ async function extraerImagenesDeHoja(zip, sheetPath, parser) {
     // Hoja con XML atípico — se ignora solo la parte de fotos de esta hoja.
   }
   return mapa;
+}
+// Igual que extraerImagenesDeHoja (misma cadena hoja->drawing->rels->media)
+// pero agrupando TODAS las imagenes por fila Y columna, sin pisar ninguna
+// -- necesaria para Carta de Colores, donde una misma referencia puede
+// traer varias imagenes en la misma columna (una por muestra/color).
+// Devuelve { [filaIndex0Based]: { [colIndex0Based]: [dataUrl, ...] } }.
+async function extraerImagenesPorFilaYColumna(zip, sheetPath, parser) {
+  const porFila = {};
+  try {
+    const sheetXmlText = await zip.file(sheetPath)?.async("text");
+    if (!sheetXmlText) return porFila;
+    const sheetDoc = parser.parseFromString(sheetXmlText, "application/xml");
+    const drawingEl = xmlLocalAll(sheetDoc, "drawing")[0];
+    if (!drawingEl) return porFila;
+    const drawingRid = drawingEl.getAttributeNS(OOXML_REL_NS, "id");
+    const sheetDir = sheetPath.slice(0, sheetPath.lastIndexOf("/"));
+    const sheetFile = sheetPath.slice(sheetPath.lastIndexOf("/") + 1);
+    const sheetRelsText = await zip.file(`${sheetDir}/_rels/${sheetFile}.rels`)?.async("text");
+    if (!sheetRelsText) return porFila;
+    const sheetRelsDoc = parser.parseFromString(sheetRelsText, "application/xml");
+    const relDraw = xmlLocalAll(sheetRelsDoc, "Relationship").find((r) => r.getAttribute("Id") === drawingRid);
+    if (!relDraw) return porFila;
+    const drawingPath = resolverRutaXlsx(sheetDir, relDraw.getAttribute("Target"));
+    const drawingXmlText = await zip.file(drawingPath)?.async("text");
+    if (!drawingXmlText) return porFila;
+    const drawingDoc = parser.parseFromString(drawingXmlText, "application/xml");
+    const drawingDir = drawingPath.slice(0, drawingPath.lastIndexOf("/"));
+    const drawingFile = drawingPath.slice(drawingPath.lastIndexOf("/") + 1);
+    const drawingRelsText = await zip.file(`${drawingDir}/_rels/${drawingFile}.rels`)?.async("text");
+    const drawingRelEls = drawingRelsText ? xmlLocalAll(parser.parseFromString(drawingRelsText, "application/xml"), "Relationship") : [];
+    const anchors = [...xmlLocalAll(drawingDoc, "twoCellAnchor"), ...xmlLocalAll(drawingDoc, "oneCellAnchor")];
+    for (const anchor of anchors) {
+      const from = xmlLocalAll(anchor, "from")[0];
+      const rowEl = from && xmlLocalAll(from, "row")[0];
+      const colEl = from && xmlLocalAll(from, "col")[0];
+      const blip = xmlLocalAll(anchor, "blip")[0];
+      if (!rowEl || !colEl || !blip) continue;
+      const fila = parseInt(rowEl.textContent, 10);
+      const col = parseInt(colEl.textContent, 10);
+      const embedRid = blip.getAttributeNS(OOXML_REL_NS, "embed");
+      const relImg = drawingRelEls.find((r) => r.getAttribute("Id") === embedRid);
+      if (!relImg || Number.isNaN(fila) || Number.isNaN(col)) continue;
+      const mediaPath = resolverRutaXlsx(drawingDir, relImg.getAttribute("Target"));
+      const mediaFile = zip.file(mediaPath);
+      if (!mediaFile) continue;
+      const bytes = await mediaFile.async("uint8array");
+      const ext = (mediaPath.split(".").pop() || "png").toLowerCase();
+      const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "gif" ? "image/gif" : "image/png";
+      const dataUrl = await comprimirImagenBytesABase64(bytes, mime);
+      if (!dataUrl) continue;
+      if (!porFila[fila]) porFila[fila] = {};
+      if (!porFila[fila][col]) porFila[fila][col] = [];
+      porFila[fila][col].push(dataUrl);
+    }
+  } catch (e) {
+    // Hoja con XML atípico -- se ignora solo la parte de fotos de esta hoja.
+  }
+  return porFila;
 }
 // Lista de referencias creadas dentro de ATLAS (prototipos + referencias de
 // cápsulas) que TODAVÍA no están confirmadas en Busint — para que el equipo
@@ -11866,7 +12008,7 @@ function AppInner() {
         precio: it._precio || "",
         observacionesCliente: it._observacionesCliente || "",
         pedidoVinculado: null,
-        cartaColores: null,
+        cartaColores: [],
       })),
       createdAt: nowISO(),
       createdBy: currentUser?.name || "",
