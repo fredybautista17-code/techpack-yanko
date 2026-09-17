@@ -3822,7 +3822,9 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
         // -- si no, una falta vieja/erronea se queda para siempre aunque se
         // suba despues un archivo que la desmienta.
         for (const fecha of reporte.diasPeriodo) {
-          const id = `${nombreNorm}__${fecha}`;
+          // (2026-09-17) Llave por ID del huellero, no por nombre -- ver
+          // nota de la Parte 10 mas arriba en el archivo.
+          const id = `${f.id || nombreNorm}__${fecha}`;
           const ref = doc(db, "nomina_faltas_sin_justificar", id);
           if (sinJustificarSet.has(fecha)) {
             batch.set(ref, {
@@ -3866,7 +3868,9 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
         // este archivo reemplaza por completo lo que hubiera guardado de
         // antes para esta persona en esas fechas.
         for (const fecha of reporte.diasPeriodo) {
-          const id = `${nombreNorm}__${fecha}`;
+          // (2026-09-17) Llave por ID del huellero, no por nombre -- ver
+          // nota de la Parte 10 mas arriba en el archivo.
+          const id = `${f.id || nombreNorm}__${fecha}`;
           const ref = doc(db, "nomina_dias_trabajados", id);
           if (diasConMarcaSet.has(fecha)) {
             batch.set(ref, {
@@ -3924,7 +3928,9 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
         const nombreNorm = normalizarNombreHuellero(f.nombre);
         const porFecha = new Map(f.anomaliasEntradaSalida.map((a) => [a.fecha, a]));
         for (const fecha of diasCerrados) {
-          const id = `${nombreNorm}__${fecha}`;
+          // (2026-09-17) Llave por ID del huellero, no por nombre -- ver
+          // nota de la Parte 10 mas arriba en el archivo.
+          const id = `${f.id || nombreNorm}__${fecha}`;
           const existente = (anomaliasHuellero || []).find((a) => a.id === id);
           if (existente?.estado === "ajustado") continue;
           const ref = doc(db, "nomina_anomalias_huellero", id);
@@ -3948,7 +3954,9 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
         }
         const retardoPorFecha = new Map((f.retardosEntrada || []).map((r) => [r.fecha, r]));
         for (const fecha of diasCerrados) {
-          const idRetardo = `${nombreNorm}__${fecha}`;
+          // (2026-09-17) Llave por ID del huellero, no por nombre -- ver
+          // nota de la Parte 10 mas arriba en el archivo.
+          const idRetardo = `${f.id || nombreNorm}__${fecha}`;
           const refRetardo = doc(db, "nomina_retardos", idRetardo);
           const retardo = retardoPorFecha.get(fecha);
           if (retardo) {
@@ -8438,6 +8446,91 @@ function DiasNoJustificadosView({ trabajadores, faltas, ausencias, motivosDispon
     </div>
   );
 }
+// (2026-09-17, a pedido de Fredy, caso Andrea Michell Bonilla / ID 235)
+// Ver nota de la Parte 10 (llave por ID huellero) mas arriba en el
+// archivo -- esta pantalla es la limpieza de lo que ya haya quedado
+// duplicado con la llave vieja (nombre+fecha) antes de ese arreglo.
+function agruparDuplicadosHuellero(docs) {
+  const grupos = {};
+  (docs || []).forEach((d) => {
+    if (!d.idHuellero || !d.fecha) return;
+    const key = `${d.idHuellero}__${d.fecha}`;
+    if (!grupos[key]) grupos[key] = [];
+    grupos[key].push(d);
+  });
+  return Object.values(grupos)
+    .filter((g) => g.length > 1)
+    .sort((a, b) => (a[0].fecha < b[0].fecha ? 1 : -1));
+}
+function idsADejarYBorrar(grupo) {
+  // Prefiere conservar el documento que ya haya quedado con la llave NUEVA
+  // (`${idHuellero}__${fecha}`); si ninguno la tiene todavia, conserva el
+  // mas reciente (cargadoEn). El resto se borra.
+  const llaveNueva = `${grupo[0].idHuellero}__${grupo[0].fecha}`;
+  const preferido = grupo.find((d) => d.id === llaveNueva) || [...grupo].sort((a, b) => (b.cargadoEn || "").localeCompare(a.cargadoEn || ""))[0];
+  return { conservar: preferido, borrar: grupo.filter((d) => d.id !== preferido.id) };
+}
+function DiagnosticoDuplicadosView({ diasTrabajados, faltas, anomalias, retardos, trabajadores, onEliminar }) {
+  const [eliminando, setEliminando] = useState(null);
+  const [borrados, setBorrados] = useState({});
+  const colecciones = [
+    { coleccion: "nomina_dias_trabajados", label: "Días trabajados", docs: diasTrabajados },
+    { coleccion: "nomina_faltas_sin_justificar", label: "Días sin justificar", docs: faltas },
+    { coleccion: "nomina_anomalias_huellero", label: "Anomalías Entrada/Salida", docs: anomalias },
+    { coleccion: "nomina_retardos", label: "Retardos", docs: retardos },
+  ].map((c) => ({ ...c, grupos: agruparDuplicadosHuellero(c.docs) }));
+  const totalGrupos = colecciones.reduce((s, c) => s + c.grupos.length, 0);
+  function nombreTrabajadorDe(idHuellero) {
+    const t = (trabajadores || []).find((x) => String(x.idHuellero || "").trim() === String(idHuellero).trim());
+    return t?.nombre || null;
+  }
+  async function eliminarGrupo(coleccion, grupo, key) {
+    setEliminando(key);
+    try {
+      const { borrar } = idsADejarYBorrar(grupo);
+      await onEliminar(coleccion, borrar.map((d) => d.id));
+      setBorrados((b) => ({ ...b, [key]: borrar.length }));
+    } finally {
+      setEliminando(null);
+    }
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Detecta cuando el mismo día de la misma persona (mismo ID del huellero) quedó guardado en más de un documento -- típicamente porque el huellero reportó el nombre escrito distinto entre dos subidas, o porque el ID del dispositivo fue reasignado. Esto infla contadores como "Días trabajados". Al eliminar un grupo se conserva un solo documento por día (el más reciente) y se borran los demás -- esto sí borra datos, revisa antes de confirmar.
+      </div>
+      {totalGrupos === 0 && <div style={{ padding: 20, color: C.slate, fontSize: 13 }}>No se encontraron duplicados. 🎉</div>}
+      {colecciones.map((c) => c.grupos.length === 0 ? null : (
+        <div key={c.coleccion} style={{ marginBottom: 24 }}>
+          <div style={{ fontWeight: 800, color: C.ink, fontSize: 14, marginBottom: 10 }}>{c.label} ({c.grupos.length} día(s) duplicado(s))</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {c.grupos.map((grupo) => {
+              const key = `${c.coleccion}__${grupo[0].idHuellero}__${grupo[0].fecha}`;
+              const nombres = [...new Set(grupo.map((d) => d.nombre))];
+              return (
+                <div key={key} style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 700, color: C.ink }}>{fmtFechaISO(grupo[0].fecha)} — ID Huellero {grupo[0].idHuellero}{nombreTrabajadorDe(grupo[0].idHuellero) ? ` (${nombreTrabajadorDe(grupo[0].idHuellero)})` : ""}</div>
+                      <div style={{ fontSize: 11, color: C.amber, fontWeight: 700 }}>{grupo.length} documentos para el mismo día — nombres reportados: {nombres.join(" / ")}</div>
+                    </div>
+                    {borrados[key] == null ? (
+                      <Btn small variant="danger" onClick={() => eliminarGrupo(c.coleccion, grupo, key)} disabled={eliminando === key}>
+                        {eliminando === key ? "..." : `Dejar solo 1 (borrar ${grupo.length - 1})`}
+                      </Btn>
+                    ) : (
+                      <span style={{ fontSize: 12, color: C.green, fontWeight: 700 }}>✅ Se borraron {borrados[key]}</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos, puedeVerAnomaliasHuellero }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
@@ -8617,6 +8710,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "motivos_ausencia", icon: "🏷️", label: "Motivos de Ausencia (catálogo)" },
             { id: "turnos", icon: "⏱️", label: "Turnos" },
             { id: "trabajadores", icon: "👷", label: "Trabajadores" },
+            ...(isAdmin ? [{ id: "diagnostico_duplicados", icon: "🧹", label: "Diagnóstico de Duplicados (Huellero)" }] : []),
           ] },
         { group: "Novedades", icon: "📣", items: [
             { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
@@ -8693,6 +8787,14 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function guardarMotivoAusencia(m) { await fsSave("nomina_motivos_ausencia", m.id, m); }
   async function borrarMotivoAusencia(id) { await fsDelete("nomina_motivos_ausencia", id); }
   async function guardarTurno(t) { await fsSave("nomina_turnos", t.id, t); }
+  // (2026-09-17, a pedido de Fredy) Borra documentos duplicados de las
+  // colecciones del huellero -- lo dispara siempre el boton de
+  // DiagnosticoDuplicadosView, nunca se ejecuta solo.
+  async function eliminarDuplicadosHuellero(coleccion, ids) {
+    const batch = writeBatch(db);
+    for (const id of ids) batch.delete(doc(db, coleccion, id));
+    await batch.commit();
+  }
   async function borrarTurno(id) { await fsDelete("nomina_turnos", id); }
   async function guardarGrupoTrabajo(g) { await fsSave("nomina_grupos_trabajo", g.id, g); }
   async function borrarGrupoTrabajo(id) { await fsDelete("nomina_grupos_trabajo", id); }
@@ -8988,6 +9090,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "tipos_contrato" && !areaLider && !soloNovedades && <TiposContratoView tipos={tiposContrato} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTipoContrato} onDelete={borrarTipoContrato} />}
           {subView === "motivos_ausencia" && !areaLider && !soloNovedades && <MotivosAusenciaView motivos={motivosAusencia} ausencias={ausencias} isAdmin={isAdminCatalogos} onSave={guardarMotivoAusencia} onDelete={borrarMotivoAusencia} />}
           {subView === "turnos" && !areaLider && !soloNovedades && <TurnosView turnos={turnos} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTurno} onDelete={borrarTurno} />}
+          {subView === "diagnostico_duplicados" && isAdmin && !areaLider && !soloNovedades && <DiagnosticoDuplicadosView diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} anomalias={anomaliasHuellero} retardos={retardosHuellero} trabajadores={trabajadores} onEliminar={eliminarDuplicadosHuellero} />}
           {subView === "precios" && !areaLider && !soloNovedades && <PreciosProcesoView precios={precios} isAdmin={isAdminCatalogos} onSave={guardarProceso} onDelete={borrarProceso} />}
           {subView === "costos_teorico" && !areaLider && !soloNovedades && <CostosTeoricoProcesoView costos={costosTeoricoProceso} isAdmin={isAdminCatalogos} onGuardarLote={guardarCostosTeoricoProcesoLote} onBorrarTodo={vaciarCostosTeoricoProceso} />}
           {subView === "costo_referencia" && !areaLider && !soloNovedades && <ConsultarCostoReferenciaView />}
