@@ -4484,6 +4484,12 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
   const [buscaPedido, setBuscaPedido] = useState("");
   const [detallePedido, setDetallePedido] = useState(null);
   const [expandido, setExpandido] = useState(null);
+  const [refrescando, setRefrescando] = useState(null);
+  const [editando, setEditando] = useState(null);
+  const [formEdit, setFormEdit] = useState(null);
+  const [escaneando, setEscaneando] = useState(false);
+  const [resultadoLimpieza, setResultadoLimpieza] = useState(null);
+  const [aplicandoLimpieza, setAplicandoLimpieza] = useState(false);
   function itemGraduado(it) {
     return !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidos);
   }
@@ -4502,6 +4508,134 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
     onVincularPedido(vinculando.preordenId, vinculando.itemId, pedido);
     setVinculando(null);
     setBuscaPedido("");
+  }
+  // (2026-09-17, a pedido de Fredy) Botón "🔄 Actualizar" por referencia --
+  // misma consulta a Busint que usa NuevaReprogramacionView.buscar(), pero
+  // acá solo se rellenan los campos que estén vacíos: nunca pisa un dato
+  // que ya se haya llenado a mano o en una consulta anterior.
+  async function refrescarBusint(preordenId, it) {
+    const key = `${preordenId}::${it.itemId}`;
+    setRefrescando(key);
+    try {
+      const llamarRef = httpsCallable(functionsClient, "probarReferenciaBusint");
+      const respRef = await llamarRef({ ref: it.referencia });
+      if (!respRef.data?.encontrada) {
+        alert(`La referencia ${it.referencia} no se encontró en Busint.`);
+        return;
+      }
+      const b = respRef.data.referencia || {};
+      const grupo = (config?.lineaGrupoMap || {})[b.linea] || "";
+      let tela = "", consumo = "";
+      try {
+        const llamarTela = httpsCallable(functionsClient, "getComposicionTelasBusintBD");
+        const respTela = await llamarTela();
+        const normBuscada = normalizarRefComparacion(it.referencia);
+        const filaTela = (respTela.data?.porReferencia || []).find((r) => normalizarRefComparacion(r.ref) === normBuscada);
+        const slot0 = filaTela?.slots?.[0];
+        tela = slot0?.nombre || "";
+        consumo = slot0?.consumo != null && slot0?.consumo !== "" ? `${slot0.consumo}${slot0.unidad ? ` ${slot0.unidad}` : ""}` : "";
+      } catch {
+        // Tela/Consumo son "best effort", igual que en NuevaReprogramacionView.buscar().
+      }
+      const patch = {};
+      if (!it.consumo && consumo) patch.consumo = consumo;
+      if (!it.tipo && grupo) patch.tipo = grupo;
+      if (!it.categoria && b.categoria) patch.categoria = b.categoria;
+      if (!it.silueta && b.tipoConfeccion) patch.silueta = b.tipoConfeccion;
+      if (!it.rango && b.tallas) patch.rango = String(b.tallas);
+      if (!it.tela && tela) patch.tela = tela;
+      if (!Object.keys(patch).length) {
+        alert("No había campos vacíos para completar (o Busint no tiene datos nuevos para esta referencia).");
+        return;
+      }
+      await onActualizarItemPreorden(preordenId, it.itemId, patch);
+    } catch (err) {
+      alert(err?.message || "No se pudo consultar Busint.");
+    } finally {
+      setRefrescando(null);
+    }
+  }
+  // (2026-09-17, a pedido de Fredy) Botón "✏️ Editar" -- formulario manual
+  // para fijar/corregir cualquiera de estos campos a mano, sin depender de
+  // Busint. A diferencia de refrescarBusint, esto SÍ sobrescribe lo que
+  // haya, porque es una edición manual explícita.
+  function abrirEditar(preordenId, it) {
+    setEditando({ preordenId, itemId: it.itemId, referencia: it.referencia });
+    setFormEdit({
+      consumo: it.consumo || "", tipo: it.tipo || "", categoria: it.categoria || "", silueta: it.silueta || "",
+      rango: it.rango || "", tela: it.tela || "", colombiaCurva: it.colombiaCurva || "", colombiaCantidad: it.colombiaCantidad || "",
+      venezuelaCurva: it.venezuelaCurva || "", venezuelaCantidad: it.venezuelaCantidad || "", precio: it.precio || "",
+      observacionesCliente: it.observacionesCliente || "",
+    });
+  }
+  async function guardarEditar() {
+    if (!editando || !formEdit) return;
+    await onActualizarItemPreorden(editando.preordenId, editando.itemId, formEdit);
+    setEditando(null);
+    setFormEdit(null);
+  }
+  function medirImagen(src) {
+    return new Promise((resolve) => {
+      if (!src) { resolve(null); return; }
+      const img = new Image();
+      img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+      img.onerror = () => resolve(null);
+      img.src = src;
+    });
+  }
+  // (2026-09-17, a pedido de Fredy) Umbral para detectar la miniatura
+  // genérica de tinta que Excel deja como respaldo del trazo (21x27px en
+  // los casos reales revisados) -- cualquier foto real mide cientos de
+  // píxeles, así que 50px de margen es seguro.
+  const UMBRAL_FOTO_DANADA = 50;
+  async function escanearFotosDanadas() {
+    setEscaneando(true);
+    setResultadoLimpieza(null);
+    const tareas = [];
+    for (const p of preordenes || []) {
+      for (const it of p.items || []) {
+        if (it.foto) {
+          tareas.push(
+            medirImagen(it.foto).then((dim) => (dim && dim.w < UMBRAL_FOTO_DANADA && dim.h < UMBRAL_FOTO_DANADA
+              ? { preordenId: p.id, cliente: p.cliente, itemId: it.itemId, referencia: it.referencia, campo: "foto" }
+              : null))
+          );
+        }
+        cartaColoresLista(it).forEach((src, idx) => {
+          tareas.push(
+            medirImagen(src).then((dim) => (dim && dim.w < UMBRAL_FOTO_DANADA && dim.h < UMBRAL_FOTO_DANADA
+              ? { preordenId: p.id, cliente: p.cliente, itemId: it.itemId, referencia: it.referencia, campo: "cartaColores", idx }
+              : null))
+          );
+        });
+      }
+    }
+    const hallazgos = (await Promise.all(tareas)).filter(Boolean);
+    setEscaneando(false);
+    setResultadoLimpieza(hallazgos);
+  }
+  async function confirmarLimpieza() {
+    if (!resultadoLimpieza?.length) return;
+    setAplicandoLimpieza(true);
+    const porItem = new Map();
+    for (const h of resultadoLimpieza) {
+      const key = `${h.preordenId}::${h.itemId}`;
+      if (!porItem.has(key)) porItem.set(key, { preordenId: h.preordenId, itemId: h.itemId, quitarFoto: false, quitarIdx: new Set() });
+      const g = porItem.get(key);
+      if (h.campo === "foto") g.quitarFoto = true;
+      else g.quitarIdx.add(h.idx);
+    }
+    for (const g of porItem.values()) {
+      const p = (preordenes || []).find((pp) => pp.id === g.preordenId);
+      const it = p?.items?.find((i) => i.itemId === g.itemId);
+      if (!it) continue;
+      const patch = {};
+      if (g.quitarFoto) patch.foto = null;
+      if (g.quitarIdx.size) patch.cartaColores = cartaColoresLista(it).filter((_, idx) => !g.quitarIdx.has(idx));
+      await onActualizarItemPreorden(g.preordenId, g.itemId, patch);
+    }
+    setAplicandoLimpieza(false);
+    setResultadoLimpieza(null);
   }
   if (modo === "reprogramacion" || modo === "orden_nueva") {
     return (
@@ -4561,12 +4695,63 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
           </div>
         </Modal>
       )}
+      {editando && formEdit && (
+        <Modal title={`Editar — ${editando.referencia}`} onClose={() => { setEditando(null); setFormEdit(null); }} width={520}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+            <Field label="Consumo"><FInput value={formEdit.consumo} onChange={(v) => setFormEdit((f) => ({ ...f, consumo: v }))} /></Field>
+            <Field label="Tipo"><FInput value={formEdit.tipo} onChange={(v) => setFormEdit((f) => ({ ...f, tipo: v }))} /></Field>
+            <Field label="Categoría"><FInput value={formEdit.categoria} onChange={(v) => setFormEdit((f) => ({ ...f, categoria: v }))} /></Field>
+            <Field label="Silueta"><FInput value={formEdit.silueta} onChange={(v) => setFormEdit((f) => ({ ...f, silueta: v }))} /></Field>
+            <Field label="Rango"><FInput value={formEdit.rango} onChange={(v) => setFormEdit((f) => ({ ...f, rango: v }))} /></Field>
+            <Field label="Tela"><FInput value={formEdit.tela} onChange={(v) => setFormEdit((f) => ({ ...f, tela: v }))} /></Field>
+            <Field label="Curva Colombia"><FInput value={formEdit.colombiaCurva} onChange={(v) => setFormEdit((f) => ({ ...f, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+            <Field label="Cantidad Colombia"><FInput value={formEdit.colombiaCantidad} onChange={(v) => setFormEdit((f) => ({ ...f, colombiaCantidad: v }))} /></Field>
+            <Field label="Curva Venezuela"><FInput value={formEdit.venezuelaCurva} onChange={(v) => setFormEdit((f) => ({ ...f, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+            <Field label="Cantidad Venezuela"><FInput value={formEdit.venezuelaCantidad} onChange={(v) => setFormEdit((f) => ({ ...f, venezuelaCantidad: v }))} /></Field>
+            <Field label="Precio"><FInput value={formEdit.precio} onChange={(v) => setFormEdit((f) => ({ ...f, precio: v }))} /></Field>
+          </div>
+          <Field label="Observaciones Cliente"><FInput value={formEdit.observacionesCliente} onChange={(v) => setFormEdit((f) => ({ ...f, observacionesCliente: v }))} /></Field>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+            <Btn variant="secondary" onClick={() => { setEditando(null); setFormEdit(null); }}>Cancelar</Btn>
+            <Btn onClick={guardarEditar}>Guardar</Btn>
+          </div>
+        </Modal>
+      )}
+      {resultadoLimpieza && (
+        <Modal title="Limpiar fotos dañadas" onClose={() => !aplicandoLimpieza && setResultadoLimpieza(null)} width={520}>
+          {resultadoLimpieza.length === 0 ? (
+            <p style={{ margin: 0, fontSize: 13, color: T.slate }}>No se encontró ninguna foto dañada (miniatura de tinta sin foto real detrás).</p>
+          ) : (
+            <>
+              <p style={{ margin: "0 0 12px", fontSize: 13, color: T.ink }}>
+                Se encontraron <strong>{resultadoLimpieza.length}</strong> foto(s) dañada(s) (miniaturas de tinta sin foto real detrás) en las siguientes referencias. Se van a quitar SOLO esas fotos puntuales — las demás fotos de cada referencia quedan intactas.
+              </p>
+              <div style={{ maxHeight: 280, overflowY: "auto", border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px 12px", marginBottom: 12 }}>
+                {Object.entries(
+                  resultadoLimpieza.reduce((acc, h) => {
+                    const key = `${h.cliente || "Sin cliente"} · ${h.referencia}`;
+                    acc[key] = (acc[key] || 0) + 1;
+                    return acc;
+                  }, {})
+                ).map(([key, n]) => (
+                  <div key={key} style={{ fontSize: 12, color: T.ink, padding: "4px 0", borderBottom: `1px solid ${T.border}` }}>{key} — {n} foto(s)</div>
+                ))}
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                <Btn variant="secondary" disabled={aplicandoLimpieza} onClick={() => setResultadoLimpieza(null)}>Cancelar</Btn>
+                <Btn variant="danger" disabled={aplicandoLimpieza} onClick={confirmarLimpieza}>{aplicandoLimpieza ? "Limpiando..." : `Quitar ${resultadoLimpieza.length} foto(s)`}</Btn>
+              </div>
+            </>
+          )}
+        </Modal>
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Preórdenes</h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Borradores de pedido armados antes de que el pedido real exista</p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
+          <Btn variant="secondary" disabled={escaneando} onClick={escanearFotosDanadas}>{escaneando ? "🔍 Revisando..." : "🧹 Limpiar fotos dañadas"}</Btn>
           <Btn onClick={() => setModo("reprogramacion")}>🔁 Nueva Reprogramación</Btn>
           <Btn variant="secondary" onClick={() => setModo("orden_nueva")}>🆕 Nueva Orden</Btn>
         </div>
@@ -4679,7 +4864,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                     <thead>
                       <tr style={{ background: T.ink }}>
-                        {["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Carta Colores", "Pedido"].map((h) => (
+                        {["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Carta Colores", "Pedido", "Acciones"].map((h) => (
                           <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
                         ))}
                       </tr>
@@ -4729,6 +4914,23 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                                 <span style={{ color: T.slate, fontSize: 11, fontStyle: "italic" }}>🔒 Bloqueada</span>
                               ) : (
                                 <button onClick={() => setVinculando({ preordenId: p.id, itemId: it.itemId })} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Vincular</button>
+                              )}
+                            </td>
+                            <td style={{ padding: "6px 10px" }}>
+                              {!bloqueada && (
+                                <div style={{ display: "flex", gap: 4 }}>
+                                  <button
+                                    onClick={() => refrescarBusint(p.id, it)}
+                                    disabled={refrescando === `${p.id}::${it.itemId}`}
+                                    title="Volver a consultar Busint para llenar los campos vacíos"
+                                    style={{ padding: "4px 7px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 12, cursor: refrescando === `${p.id}::${it.itemId}` ? "not-allowed" : "pointer", opacity: refrescando === `${p.id}::${it.itemId}` ? 0.5 : 1 }}
+                                  >{refrescando === `${p.id}::${it.itemId}` ? "…" : "🔄"}</button>
+                                  <button
+                                    onClick={() => abrirEditar(p.id, it)}
+                                    title="Editar esta referencia a mano"
+                                    style={{ padding: "4px 7px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+                                  >✏️</button>
+                                </div>
                               )}
                             </td>
                           </tr>
