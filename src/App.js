@@ -19,6 +19,11 @@ import {
   onSnapshot,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
+// (2026-09-17, a pedido de Fredy) Storage -- para subir las fotos de
+// "Carta de colores" de Preordenes como archivos en vez de guardarlas
+// codificadas dentro del documento de Firestore (ver ImageListUploader
+// mas abajo, y la nota completa junto a `const storage = ...`).
+import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential, setPersistence, browserSessionPersistence } from "firebase/auth";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -30,6 +35,14 @@ const firebaseConfig = {
 };
 const fbApp = initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
+// (2026-09-17, a pedido de Fredy) Cliente de Firebase Storage -- lo usa
+// ImageListUploader para subir las fotos de "Carta de colores" como
+// archivos (en vez de codificarlas dentro del documento de Firestore),
+// asi el documento de la preorden se mantiene liviano sin importar
+// cuantas fotos tenga. El bucket ya viene configurado en
+// firebaseConfig.storageBucket, no requiere nada nuevo del lado de
+// Firebase.
+const storage = getStorage(fbApp);
 // Cliente de Cloud Functions — usado por el Informe de Pedidos Vigentes por
 // Cliente para llamar getPedidosVigentesBusint (consulta Busint en vivo).
 const functionsClient = getFunctions(fbApp);
@@ -4022,13 +4035,12 @@ function cartaColoresLista(it) {
   const v = it && it.cartaColores;
   return Array.isArray(v) ? v.filter(Boolean) : v ? [v] : [];
 }
-function ImageListUploader({ images, onChange, readonly }) {
-  const fileRef = useRef();
-  const lista = images || [];
-  function handleFile(e) {
-    const f = e.target.files[0];
-    e.target.value = "";
-    if (!f) return;
+// (2026-09-17, a pedido de Fredy) Comprime una imagen igual que antes (max
+// 800px, jpeg 0.7) pero devuelve una Promise -- lo necesita handleFiles de
+// ImageListUploader para poder subir varias fotos en fila (o en paralelo)
+// a Storage.
+function comprimirImagenParaCartaColores(f) {
+  return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(f);
     img.onload = () => {
@@ -4042,16 +4054,51 @@ function ImageListUploader({ images, onChange, readonly }) {
       canvas.getContext("2d").drawImage(img, 0, 0, w, h);
       const compressed = canvas.toDataURL("image/jpeg", 0.7);
       URL.revokeObjectURL(url);
-      onChange([...lista, compressed]);
+      resolve(compressed);
     };
+    img.onerror = (err) => { URL.revokeObjectURL(url); reject(err); };
     img.src = url;
+  });
+}
+function ImageListUploader({ images, onChange, readonly }) {
+  const fileRef = useRef();
+  const lista = images || [];
+  // (2026-09-17, a pedido de Fredy) Cada foto se sube a Firebase Storage y
+  // solo se guarda el link (URL) en `cartaColores` -- antes se guardaba la
+  // imagen completa codificada ahi mismo, y eso era lo que hacia que el
+  // documento de la preorden se volviera demasiado pesado para Firestore
+  // cuando habia muchas fotos. Las fotos viejas (ya guardadas como imagen
+  // codificada) se siguen viendo igual -- un <img src> funciona igual con
+  // una URL o con una imagen codificada. Ademas ahora se pueden elegir
+  // varias fotos de una vez (antes una por una).
+  const [subiendo, setSubiendo] = useState(false);
+  async function handleFiles(e) {
+    const archivos = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!archivos.length) return;
+    setSubiendo(true);
+    try {
+      const nuevas = [];
+      for (const f of archivos) {
+        const compressed = await comprimirImagenParaCartaColores(f);
+        const ref = storageRef(storage, `carta_colores/${uid()}.jpg`);
+        await uploadString(ref, compressed, "data_url");
+        nuevas.push(await getDownloadURL(ref));
+      }
+      onChange([...lista, ...nuevas]);
+    } catch (err) {
+      console.error("No se pudieron subir una o mas imagenes de carta de colores:", err);
+      alert("Una o mas imagenes no se pudieron subir. Revisa tu conexion e intentalo de nuevo.");
+    } finally {
+      setSubiendo(false);
+    }
   }
   function quitar(idx) {
     onChange(lista.filter((_, i) => i !== idx));
   }
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
-      <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFile} />
+      <input ref={fileRef} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={handleFiles} />
       {lista.map((src, idx) => (
         <div key={idx} style={{ position: "relative", display: "inline-block" }}>
           <img src={src} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 5, border: `1px solid ${T.border}` }} />
@@ -4065,7 +4112,11 @@ function ImageListUploader({ images, onChange, readonly }) {
         </div>
       ))}
       {!readonly && (
-        <div onClick={() => fileRef.current.click()} title="Agregar imagen" style={{ width: 32, height: 32, border: `2px dashed ${T.border}`, borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", background: T.canvas, color: T.slate, fontSize: 16, flexShrink: 0 }}>+</div>
+        <div
+          onClick={() => !subiendo && fileRef.current.click()}
+          title={subiendo ? "Subiendo..." : "Agregar imagen(es)"}
+          style={{ width: 32, height: 32, border: `2px dashed ${T.border}`, borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", cursor: subiendo ? "not-allowed" : "pointer", background: T.canvas, color: T.slate, fontSize: 16, flexShrink: 0, opacity: subiendo ? 0.5 : 1 }}
+        >{subiendo ? "…" : "+"}</div>
       )}
       {!lista.length && readonly && <span style={{ fontSize: 11, color: T.slate, fontStyle: "italic" }}>—</span>}
     </div>
