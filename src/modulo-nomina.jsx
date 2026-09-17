@@ -4607,8 +4607,51 @@ function diasCalendarioPorMotivos(ausencias, trabajadorId, motivos, desde, hasta
   });
   return fusionados.reduce((s, [inicio, fin]) => s + diasEntre360(inicio, fin), 0);
 }
-function diasCalendarioSinSueldo(ausencias, trabajadorId, desde, hasta) {
-  return diasCalendarioPorMotivos(ausencias, trabajadorId, MOTIVOS_SIN_SUELDO, desde, hasta);
+// (2026-09-17, confirmado con Fredy con dos ejemplos reales) A diferencia
+// de diasCalendarioPorMotivos de arriba (que sigue usandose tal cual para
+// Vacaciones, que por ley SI se descuentan por dia de calendario), la
+// Licencia No Remunerada solo debe restar antiguedad por los dias que a
+// esa persona de verdad le tocaba trabajar: un sabado/domingo que caiga
+// dentro del permiso no se puede "quitar" porque ya era descanso de por
+// si, y lo mismo un festivo -- ninguno de los dos se trabaja de todas
+// formas, con o sin permiso. Usa el mismo Turno de cada trabajador que ya
+// usa el Reporte de Asistencia (diaEsperado/resolverTurnoDeTrabajador),
+// asi que un sabado si cuenta como laboral cuando esa semana tuvo un
+// festivo entre semana (regla de reposicion ya confirmada 09/09/2026).
+function diasLaboralesEnIntervalo(desde, hasta, turno) {
+  let dias = 0;
+  let cursor = desde;
+  while (cursor <= hasta) {
+    if (!esFestivoColombia(cursor) && diaEsperado(cursor, turno)) dias++;
+    cursor = siguienteDiaISO(cursor);
+  }
+  return dias;
+}
+function diasCalendarioSinSueldo(ausencias, trabajador, areasNomina, turnos, desde, hasta) {
+  // Misma fusion de rangos traslapados/duplicados que diasCalendarioPorMotivos
+  // (ver comentario de esa funcion) -- aca cada intervalo ya fusionado se
+  // cuenta en dias laborales reales, no en dias de calendario.
+  const intervalos = [];
+  (ausencias || []).forEach((a) => {
+    if (a.trabajadorId !== trabajador.id) return;
+    if (!MOTIVOS_SIN_SUELDO.includes(a.motivo)) return;
+    const inicio = a.fechaInicio > desde ? a.fechaInicio : desde;
+    const fin = a.fechaFin < hasta ? a.fechaFin : hasta;
+    if (inicio > fin) return;
+    intervalos.push([inicio, fin]);
+  });
+  intervalos.sort((a, b) => a[0].localeCompare(b[0]));
+  const fusionados = [];
+  intervalos.forEach(([inicio, fin]) => {
+    const ultimo = fusionados[fusionados.length - 1];
+    if (ultimo && inicio <= ultimo[1]) {
+      if (fin > ultimo[1]) ultimo[1] = fin;
+    } else {
+      fusionados.push([inicio, fin]);
+    }
+  });
+  const turno = resolverTurnoDeTrabajador(trabajador, areasNomina, turnos);
+  return fusionados.reduce((s, [inicio, fin]) => s + diasLaboralesEnIntervalo(inicio, fin, turno), 0);
 }
 // (2026-09-16, a pedido de Fredy) Igual que la Licencia No Remunerada, los
 // dias que el trabajador no vino a laborar y no tenia permiso registrado
@@ -4693,7 +4736,7 @@ function segmentosPorSemestre(desde, hasta) {
 // diasSinJustificarEnRango arriba) -- si le quita un dia laboral, le
 // cambia cesantias/intereses/prima/vacaciones, igual que ya pasaba con
 // Licencia No Remunerada.
-function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias, faltas = []) {
+function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias, faltas = [], areasNomina = [], turnos = []) {
   const fechaIngreso = trabajador.fechaIngreso || fechaCorte;
   const nombreNorm = normalizarNombreHuellero(trabajador.nombre);
   const esDestajo = trabajador.tipoNomina === "Destajo";
@@ -4709,7 +4752,7 @@ function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias, faltas = [
   const baseConAuxilio = sueldoMensual + auxilioMensual;
   function diasTrabajadosDelTramo(desde, hasta) {
     const calendario = diasEntre360(desde, hasta);
-    const sinSueldo = diasCalendarioSinSueldo(ausencias, trabajador.id, desde, hasta);
+    const sinSueldo = diasCalendarioSinSueldo(ausencias, trabajador, areasNomina, turnos, desde, hasta);
     const sinJustificar = diasSinJustificarEnRango(faltas, trabajador, nombreNorm, desde, hasta);
     return Math.max(0, calendario - sinSueldo - sinJustificar);
   }
@@ -4732,7 +4775,7 @@ function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias, faltas = [
   // remunerados para mostrar en el recibo y en el panel "Dias No
   // Justificados" -- diasNoRemunerados (arriba) sigue siendo el TOTAL de
   // los dos, para no romper nada de lo que ya lee ese campo.
-  const diasLicenciaNoRemunerada = diasCalendarioSinSueldo(ausencias, trabajador.id, fechaIngreso, fechaCorte);
+  const diasLicenciaNoRemunerada = diasCalendarioSinSueldo(ausencias, trabajador, areasNomina, turnos, fechaIngreso, fechaCorte);
   const diasSinJustificar = diasSinJustificarEnRango(faltas, trabajador, nombreNorm, fechaIngreso, fechaCorte);
   const fechasSinJustificar = fechasSinJustificarEnRango(faltas, trabajador, nombreNorm, fechaIngreso, fechaCorte);
   const vacacionesAcumuladas = (sueldoMensual * diasBase) / 720;
@@ -4758,7 +4801,7 @@ function anioSugeridoParaCesantias() {
 // febrero siguiente. Recorta al rango real: desde la Fecha de Ingreso (si
 // entro a mitad de ese anio) hasta hoy (si el anio todavia no termina) o
 // hasta el 31 de diciembre de ese anio (si ya paso).
-function calcularCesantiasDelAnio(trabajador, anio, ausencias) {
+function calcularCesantiasDelAnio(trabajador, anio, ausencias, areasNomina = [], turnos = []) {
   if (!trabajador.fechaIngreso) return null;
   const desdeAnio = `${anio}-01-01`;
   const hastaAnio = `${anio}-12-31`;
@@ -4771,7 +4814,7 @@ function calcularCesantiasDelAnio(trabajador, anio, ausencias) {
   const auxilioMensual = sueldoMensual > TOPE_SUELDO_PARA_AUXILIO ? 0 : auxilioMensualBruto;
   const baseConAuxilio = sueldoMensual + auxilioMensual;
   const calendario = diasEntre360(desde, hastaTope);
-  const sinSueldo = diasCalendarioSinSueldo(ausencias, trabajador.id, desde, hastaTope);
+  const sinSueldo = diasCalendarioSinSueldo(ausencias, trabajador, areasNomina, turnos, desde, hastaTope);
   const dias = Math.max(0, calendario - sinSueldo);
   const cesantias = (baseConAuxilio * dias) / 360;
   const intereses = (cesantias * dias * TASA_INTERES_CESANTIAS_ANUAL) / 360;
@@ -7938,7 +7981,7 @@ function validarRangoFechasOpcional(inicio, fin, fechaIngreso, fechaRetiro, etiq
   if (inicio < fechaIngreso || fin > fechaRetiro) return { ok: false, error: `${etiqueta}: las fechas deben estar entre la Fecha de Ingreso y la Fecha de Retiro (fila de ${nombreFila})` };
   return { ok: true, inicio, fin };
 }
-function analizarRetirosHistoricos(filasHoja, trabajadoresExistentes, areasNomina) {
+function analizarRetirosHistoricos(filasHoja, trabajadoresExistentes, areasNomina, turnos = []) {
   const validas = [];
   const errores = [];
   const cedulasEnArchivo = new Set();
@@ -7981,7 +8024,7 @@ function analizarRetirosHistoricos(filasHoja, trabajadoresExistentes, areasNomin
     const ausenciasTmp = [];
     if (rVac.inicio) ausenciasTmp.push({ trabajadorId: trabajadorTmp.id, motivo: "Vacaciones", fechaInicio: rVac.inicio, fechaFin: rVac.fin });
     if (rLic.inicio) ausenciasTmp.push({ trabajadorId: trabajadorTmp.id, motivo: "Licencia No Remunerada", fechaInicio: rLic.inicio, fechaFin: rLic.fin });
-    const calculo = calcularLiquidacionRetiro(trabajadorTmp, fechaRetiro, ausenciasTmp);
+    const calculo = calcularLiquidacionRetiro(trabajadorTmp, fechaRetiro, ausenciasTmp, [], areasNomina, turnos);
     validas.push({ trabajador: trabajadorTmp, fechaRetiro, ausenciasTmp, calculo });
   }
   return { validas, errores };
@@ -8055,7 +8098,7 @@ async function exportarHistorialLiquidacionesRetiroExcel(historial, trabajadores
   XLSX.utils.book_append_sheet(wb, ws, "Liquidaciones de Retiro");
   XLSX.writeFile(wb, `Historial_Liquidaciones_Retiro_${today()}.xlsx`);
 }
-function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesRetiro, prestamos, areasNomina, onGuardarLiquidacionRetiro, onGuardarTrabajador, onGuardarAusencia, currentUser }) {
+function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesRetiro, prestamos, areasNomina, turnos, onGuardarLiquidacionRetiro, onGuardarTrabajador, onGuardarAusencia, currentUser }) {
   const [areaFiltro, setAreaFiltro] = useState("");
   const [trabajadorId, setTrabajadorId] = useState("");
   const [fechaRetiro, setFechaRetiro] = useState("");
@@ -8103,7 +8146,7 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
 
   function calcular() {
     if (!trabajador || !fechaRetiro || !trabajador.fechaIngreso) return;
-    setResultado(calcularLiquidacionRetiro(trabajador, fechaRetiro, ausencias, faltas));
+    setResultado(calcularLiquidacionRetiro(trabajador, fechaRetiro, ausencias, faltas, areasNomina, turnos));
     setGuardadoOk(false);
   }
 
@@ -8139,7 +8182,7 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
       const wb = XLSX.read(buffer, { type: "array", cellDates: false });
       const hoja = hojaPorNombre(wb, HOJA_RETIROS_HISTORICO) || wb.Sheets[wb.SheetNames[0]];
       const filasHoja = XLSX.utils.sheet_to_json(hoja, { header: 1, raw: true, defval: "" });
-      setPreviewRetiros(analizarRetirosHistoricos(filasHoja, trabajadores, areasNomina));
+      setPreviewRetiros(analizarRetirosHistoricos(filasHoja, trabajadores, areasNomina, turnos));
     } catch (err) {
       setPreviewRetiros({ error: err?.message || String(err) });
     }
@@ -8208,7 +8251,7 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
         </div>
       )}
       {trabajador && trabajador.tipoNomina === "Fiscal" && (() => {
-        const proyeccion = calcularCesantiasDelAnio(trabajador, anioCesantias, ausencias);
+        const proyeccion = calcularCesantiasDelAnio(trabajador, anioCesantias, ausencias, areasNomina, turnos);
         return (
           <div style={{ border: `1px solid ${C.blue}`, background: C.blueBg, borderRadius: 8, padding: 14, marginBottom: 20, maxWidth: 560 }}>
             <div style={{ fontWeight: 700, fontSize: 12.5, color: C.blue, marginBottom: 8 }}>📅 Cesantías e intereses para el 14 de febrero</div>
@@ -8359,7 +8402,7 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
 // Liquidacion de Trabajador) cuanto se deberia tener provisionado HOY si
 // se liquidara a cada trabajador activo en este momento. Se puede filtrar
 // por Area Interna para ver el presupuesto de una sola area.
-function ProvisionLiquidacionesView({ trabajadores, ausencias, areasNomina }) {
+function ProvisionLiquidacionesView({ trabajadores, ausencias, areasNomina, turnos }) {
   const [areaFiltro, setAreaFiltro] = useState("");
   // (2026-09-14, a pedido de Fredy) Antes esto SIEMPRE calculaba a la
   // fecha de HOY -- ahora se puede elegir cualquier fecha de corte (ej:
@@ -8372,7 +8415,7 @@ function ProvisionLiquidacionesView({ trabajadores, ausencias, areasNomina }) {
   );
   const sinFechaIngreso = personas.filter((t) => !t.fechaIngreso);
   function calcular() {
-    const filas = personas.filter((t) => t.fechaIngreso).map((t) => ({ trabajador: t, calculo: calcularLiquidacionRetiro(t, fechaCorte, ausencias) }));
+    const filas = personas.filter((t) => t.fechaIngreso).map((t) => ({ trabajador: t, calculo: calcularLiquidacionRetiro(t, fechaCorte, ausencias, [], areasNomina, turnos) }));
     filas.sort((a, b) => b.calculo.totalAPagar - a.calculo.totalAPagar);
     setResultado(filas);
   }
@@ -9193,9 +9236,9 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "tns" && !areaLider && !soloNovedades && <TNSConexionView />}
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
           {subView === "novedades_quincena" && !areaLider && !soloNovedades && <NovedadesQuincenaView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} motivosDisponibles={nombresMotivosDisponibles} currentUser={currentUser} onGuardarAusencia={guardarAusencia} onGuardarPrestamo={guardarPrestamo} />}
-          {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} onGuardarAusencia={guardarAusencia} currentUser={currentUser} />}
+          {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} turnos={turnos} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} onGuardarAusencia={guardarAusencia} currentUser={currentUser} />}
           {subView === "dias_no_justificados" && !areaLider && !soloNovedades && <DiasNoJustificadosView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} areasNomina={areasNomina} />}
-          {subView === "provision_liquidaciones" && !areaLider && !soloNovedades && <ProvisionLiquidacionesView trabajadores={trabajadores} ausencias={ausencias} areasNomina={areasNomina} />}
+          {subView === "provision_liquidaciones" && !areaLider && !soloNovedades && <ProvisionLiquidacionesView trabajadores={trabajadores} ausencias={ausencias} areasNomina={areasNomina} turnos={turnos} />}
           {subView === "prestamos" && !areaLider && !soloNovedades && <PrestamosView trabajadores={trabajadores} prestamos={prestamos} onGuardar={guardarPrestamo} onBorrar={borrarPrestamo} currentUser={currentUser} />}
           {subView === "ausencias" && !areaLider && <AusenciasView ausencias={ausencias} trabajadores={trabajadores} currentUser={currentUser} motivosDisponibles={nombresMotivosDisponibles} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "asistencia" && !areaLider && <ReporteAsistenciaView ausencias={ausencias} trabajadores={trabajadores} turnos={turnos} areasNomina={areasNomina} anomaliasHuellero={anomaliasHuellero} onGuardarTrabajador={guardarTrabajador} />}
