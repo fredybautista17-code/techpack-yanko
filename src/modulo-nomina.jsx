@@ -8670,7 +8670,7 @@ function DiagnosticoDuplicadosView({ diasTrabajados, faltas, anomalias, retardos
     </div>
   );
 }
-export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos, puedeVerAnomaliasHuellero }) {
+export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
   // reducido, ya filtrado a su propia gente, en vez del panel completo de
@@ -8849,7 +8849,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "motivos_ausencia", icon: "🏷️", label: "Motivos de Ausencia (catálogo)" },
             { id: "turnos", icon: "⏱️", label: "Turnos" },
             { id: "trabajadores", icon: "👷", label: "Trabajadores" },
-            ...(isAdmin ? [{ id: "diagnostico_duplicados", icon: "🧹", label: "Diagnóstico de Duplicados (Huellero)" }] : []),
+            ...(isAdmin || puedeVerDuplicadosHuellero ? [{ id: "diagnostico_duplicados", icon: "🧹", label: "Diagnóstico de Duplicados (Huellero)" }] : []),
           ] },
         { group: "Novedades", icon: "📣", items: [
             { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
@@ -9229,7 +9229,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "tipos_contrato" && !areaLider && !soloNovedades && <TiposContratoView tipos={tiposContrato} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTipoContrato} onDelete={borrarTipoContrato} />}
           {subView === "motivos_ausencia" && !areaLider && !soloNovedades && <MotivosAusenciaView motivos={motivosAusencia} ausencias={ausencias} isAdmin={isAdminCatalogos} onSave={guardarMotivoAusencia} onDelete={borrarMotivoAusencia} />}
           {subView === "turnos" && !areaLider && !soloNovedades && <TurnosView turnos={turnos} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTurno} onDelete={borrarTurno} />}
-          {subView === "diagnostico_duplicados" && isAdmin && !areaLider && !soloNovedades && <DiagnosticoDuplicadosView diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} anomalias={anomaliasHuellero} retardos={retardosHuellero} trabajadores={trabajadores} onEliminar={eliminarDuplicadosHuellero} />}
+          {subView === "diagnostico_duplicados" && (isAdmin || puedeVerDuplicadosHuellero) && !areaLider && !soloNovedades && <DiagnosticoDuplicadosView diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} anomalias={anomaliasHuellero} retardos={retardosHuellero} trabajadores={trabajadores} onEliminar={eliminarDuplicadosHuellero} />}
           {subView === "precios" && !areaLider && !soloNovedades && <PreciosProcesoView precios={precios} isAdmin={isAdminCatalogos} onSave={guardarProceso} onDelete={borrarProceso} />}
           {subView === "costos_teorico" && !areaLider && !soloNovedades && <CostosTeoricoProcesoView costos={costosTeoricoProceso} isAdmin={isAdminCatalogos} onGuardarLote={guardarCostosTeoricoProcesoLote} onBorrarTodo={vaciarCostosTeoricoProceso} />}
           {subView === "costo_referencia" && !areaLider && !soloNovedades && <ConsultarCostoReferenciaView />}

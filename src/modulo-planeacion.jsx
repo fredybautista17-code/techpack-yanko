@@ -3505,6 +3505,16 @@ function costoMensualCompletoCC(t) {
 }
 function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movimientos, cargandoMovimientos, onActualizarMovimientos, reclamosCalidad, areaFija }) {
   const hoy = today();
+  // (2026-09-17, a pedido de Fredy) Botón "Actualizar" del modo $/Destajo
+  // (default). Los datos de "produccion" ya llegan en vivo (onSnapshot),
+  // así que aquí no hay nada que consultar -- el botón solo le confirma
+  // a quien lo mira que la vista está al día, igual que "Correr auditoría
+  // ahora" en el panel de abajo.
+  const [actualizadoDestajo, setActualizadoDestajo] = useState(false);
+  function actualizarVistaDestajo() {
+    setActualizadoDestajo(true);
+    setTimeout(() => setActualizadoDestajo(false), 1500);
+  }
   const [periodo, setPeriodo] = useState("mes"); // "dia" | "mes" | "anio"
   const [fechaDia, setFechaDia] = useState(hoy);
   const [mesSel, setMesSel] = useState(new Date().getMonth() + 1);
@@ -4065,6 +4075,11 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
         {modoMedicion === "despachado" && (
           <Btn variant="ghost" onClick={actualizarDespachado} disabled={cargandoDespachado}>
             {cargandoDespachado ? "Consultando Busint..." : "🔄 Actualizar despachado"}
+          </Btn>
+        )}
+        {modoMedicion === "destajo" && (
+          <Btn variant="ghost" onClick={actualizarVistaDestajo}>
+            {actualizadoDestajo ? "✓ Actualizado" : "🔄 Actualizar"}
           </Btn>
         )}
       </div>

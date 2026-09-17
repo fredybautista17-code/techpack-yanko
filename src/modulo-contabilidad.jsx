@@ -3548,8 +3548,14 @@ const FORMATO_PORCENTAJE_DPC = "0.00%";
 const COLUMNAS_MONEDA_DPC = new Set(["VR. TEORICO ", "VR. REAL ", "COSTO DEFINITIVO", "COSTO T", "PRECIO VENTA U.", "VENTA T.", "Venta T. - Costo T.", "Costo T. Ref.", "BASE", "TRANSPORTE", "TOTAL"]);
 const COLUMNAS_PORCENTAJE_DPC = new Set(["% Ganancia/Lote", "% Ganancia/Ref."]);
 
-function DadoPorCumplidoView({ currentUser }) {
+function DadoPorCumplidoView({ currentUser, puedeAdministrarBases }) {
   const isAdmin = currentUser?.isAdmin;
+  // (2026-09-17, a pedido de Fredy) "puedeAdministrarBases": permiso puntual
+  // (rol, ver App.js) para que alguien SIN admin total pueda crear y
+  // configurar las Categorías BASE (y porcentajes de la fórmula) -- nada
+  // más. Las acciones destructivas (vaciar historial completo, eliminar
+  // lote histórico) siguen siendo exclusivas de isAdmin, sin cambios.
+  const puedeConfigurarBases = isAdmin || !!puedeAdministrarBases;
   const [lotes, setLotes] = useState([]);
   const [bases, setBases] = useState([]);
   const [config, setConfig] = useState(DADO_POR_CUMPLIDO_PORCENTAJES_SEMILLA);
@@ -3856,18 +3862,24 @@ function DadoPorCumplidoView({ currentUser }) {
             Cada vez que se factura un lote en Busint, aparece aquí solo (revisa las facturas cada 2 horas). Escribe el Costo Real Total (el mismo número que ya buscas en Busint) y elige la categoría BASE — el resto se calcula solo.
           </div>
         </div>
-        {isAdmin && (
+        {(puedeConfigurarBases || isAdmin) && (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Btn variant="ghost" small onClick={() => setMostrarConfig((v) => !v)}>⚙️ Configuración</Btn>
-            <Btn variant="secondary" small onClick={sincronizarAhora} disabled={sincronizando}>
-              {sincronizando ? "Buscando..." : "🔄 Buscar lotes nuevos"}
-            </Btn>
-            <Btn variant="ghost" small onClick={exportarDadoPorCumplidoExcel}>📥 Descargar Excel</Btn>
+            {puedeConfigurarBases && (
+              <Btn variant="ghost" small onClick={() => setMostrarConfig((v) => !v)}>⚙️ Configuración</Btn>
+            )}
+            {isAdmin && (
+              <Btn variant="secondary" small onClick={sincronizarAhora} disabled={sincronizando}>
+                {sincronizando ? "Buscando..." : "🔄 Buscar lotes nuevos"}
+              </Btn>
+            )}
+            {isAdmin && (
+              <Btn variant="ghost" small onClick={exportarDadoPorCumplidoExcel}>📥 Descargar Excel</Btn>
+            )}
           </div>
         )}
       </div>
 
-      {mostrarConfig && isAdmin && (
+      {mostrarConfig && puedeConfigurarBases && (
         <div style={{ margin: "16px 0", padding: 16, border: `1px solid ${C.border}`, borderRadius: 12, background: C.canvas }}>
           <div style={{ fontWeight: 700, fontSize: 13, color: C.ink, marginBottom: 10 }}>Porcentajes de la fórmula</div>
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
@@ -5438,7 +5450,7 @@ function HomeContabilidad({ onGoModulo }) {
   );
 }
 // ─── ROOT MÓDULO CONTABILIDAD ─────────────────────────────────────────────────
-export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) {
+export default function ModuloContabilidad({ currentUser, onVolver, onLogout, puedeAdministrarBasesDadoPorCumplido }) {
   const [subView, setSubView] = useState("home");
   const [movimientos, setMovimientos] = useState([]);
   const [compras, setCompras] = useState([]);
@@ -5908,7 +5920,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout }) 
             />
           )}
           {subView === "facturacion_clientes" && <FacturacionClientesView />}
-          {subView === "dado_por_cumplido" && <DadoPorCumplidoView currentUser={currentUser} />}
+          {subView === "dado_por_cumplido" && <DadoPorCumplidoView currentUser={currentUser} puedeAdministrarBases={puedeAdministrarBasesDadoPorCumplido} />}
           {subView === "cxp" && (
             <CuentasPorPagarView
               cortes={cortesCxp}
