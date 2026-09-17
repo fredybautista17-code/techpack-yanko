@@ -4785,14 +4785,18 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
           <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Borradores de pedido armados antes de que el pedido real exista</p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <Btn
-            variant="secondary"
-            disabled={reparando}
-            onClick={() => {
-              if (window.confirm("Esto revisa todas las preórdenes y le da un identificador propio a cada referencia que no tenga uno (sin tocar ningún otro dato). ¿Continuar?")) repararIdentificadores();
-            }}
-          >{reparando ? "🔧 Reparando..." : "🔧 Reparar identificadores"}</Btn>
-          <Btn variant="secondary" disabled={escaneando} onClick={escanearFotosDanadas}>{escaneando ? "🔍 Revisando..." : "🧹 Limpiar fotos dañadas"}</Btn>
+          {currentUser?.isAdmin && (
+            <>
+              <Btn
+                variant="secondary"
+                disabled={reparando}
+                onClick={() => {
+                  if (window.confirm("Esto revisa todas las preórdenes y le da un identificador propio a cada referencia que no tenga uno (sin tocar ningún otro dato). ¿Continuar?")) repararIdentificadores();
+                }}
+              >{reparando ? "🔧 Reparando..." : "🔧 Reparar identificadores"}</Btn>
+              <Btn variant="secondary" disabled={escaneando} onClick={escanearFotosDanadas}>{escaneando ? "🔍 Revisando..." : "🧹 Limpiar fotos dañadas"}</Btn>
+            </>
+          )}
           <Btn onClick={() => setModo("reprogramacion")}>🔁 Nueva Reprogramación</Btn>
           <Btn variant="secondary" onClick={() => setModo("orden_nueva")}>🆕 Nueva Orden</Btn>
         </div>
@@ -4823,6 +4827,26 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
         const puedeAprobar = currentUser?.role === "Cliente" && clientesDeUsuario(currentUser).includes(p.cliente) && estadoActual !== "aprobada";
         const puedeEliminar = currentUser?.isAdmin || (currentUser?.role !== "Cliente" && !bloqueada);
         const faltaCartaColores = !(p.items || []).length || (p.items || []).some((it) => !cartaColoresLista(it).length);
+        // (2026-09-17, a pedido de Fredy) Compra de tela por referencia --
+        // solo tiene sentido una vez la preorden está "aprobada" (antes de
+        // eso no hay nada que comprar todavía). Cualquier usuario interno
+        // (no Cliente) puede marcarla, incluso si la preorden ya está
+        // "bloqueada" para el resto de edición -- el Cliente solo la ve,
+        // de solo lectura.
+        const puedeMarcarTela = currentUser?.role !== "Cliente";
+        const itemsPendientesTela = (p.items || []).filter((it) => !it.telaComprada);
+        const itemsConTela = (p.items || []).filter((it) => it.telaComprada);
+        function marcarTelaComprada(it) {
+          if (window.confirm(`¿Marcar la referencia "${it.referencia}" como tela ya comprada?`)) {
+            onActualizarItemPreorden(p.id, it.itemId, { telaComprada: true, telaCompradaEn: nowISO(), telaCompradaPor: currentUser?.name || "" });
+          }
+        }
+        function celdaTela(it) {
+          if (estadoActual !== "aprobada") return <span style={{ color: T.slate }}>—</span>;
+          if (it.telaComprada) return <span style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.jadeBg, color: T.jade, whiteSpace: "nowrap" }}>🧵 Comprada</span>;
+          if (puedeMarcarTela) return <button onClick={() => marcarTelaComprada(it)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>🧵 Ya se compró</button>;
+          return <span style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.amberBg, color: T.amber, whiteSpace: "nowrap" }}>⏳ Pendiente</span>;
+        }
         return (
           <div key={p.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
             <div onClick={() => setExpandido(abierto ? null : p.id)} style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, cursor: "pointer", flexWrap: "wrap", gap: 10 }}>
@@ -4835,6 +4859,9 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                       <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✅ Aprobada</span>
                     ) : (
                       <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.amberBg, color: T.amber }}>🟡 Montada</span>
+                    )}
+                    {estadoActual === "aprobada" && (p.items || []).length > 0 && (
+                      <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim }}>🧵 {itemsConTela.length}/{(p.items || []).length} con tela comprada</span>
                     )}
                   </div>
                   <div style={{ fontSize: 12, color: T.slate }}>{(p.items || []).length} ref · {fmtNum(totalUnidades)} unid. · Creada {p.fechaCreado}</div>
@@ -4905,78 +4932,100 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                     <thead>
                       <tr style={{ background: T.ink }}>
-                        {["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Carta Colores", "Pedido", "Acciones"].map((h) => (
+                        {["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Compra Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Carta Colores", "Pedido", "Acciones"].map((h) => (
                           <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {(p.items || []).map((it, i) => {
-                        const cap = (capsulas || []).find((c) => c.id === it.capsulaId);
-                        const refReal = cap?.referencias?.find((r) => r.id === it.itemId);
-                        const graduada = itemGraduado(it);
+                      {(() => {
+                        function filaItem(it, i) {
+                          const cap = (capsulas || []).find((c) => c.id === it.capsulaId);
+                          const refReal = cap?.referencias?.find((r) => r.id === it.itemId);
+                          const graduada = itemGraduado(it);
+                          return (
+                            <tr key={it.itemId} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}`, opacity: graduada ? 0.55 : 1 }}>
+                              <td style={{ padding: "6px 10px" }}>{it.foto ? <img src={it.foto} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
+                              <td style={{ padding: "6px 10px", fontWeight: 700 }}>{it.referencia}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.nombre}</td>
+                              <td style={{ padding: "6px 10px" }}>{refReal ? <Badge status={refReal.status} /> : <span style={{ color: T.slate, fontStyle: "italic" }}>—</span>}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.consumo || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.tipo || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.categoria || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.silueta || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.rango || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.tela || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{celdaTela(it)}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.colombiaCurva || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.colombiaCantidad || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.venezuelaCurva || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.venezuelaCantidad || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.precio || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>
+                                <ImageListUploader
+                                  images={cartaColoresLista(it)}
+                                  onChange={(imgs) => onActualizarItemPreorden(p.id, it.itemId, { cartaColores: imgs })}
+                                  readonly={bloqueada}
+                                />
+                              </td>
+                              <td style={{ padding: "6px 10px" }}>
+                                {graduada ? (() => {
+                                  const pedidoDetalle = it.pedidoVinculado?.numero
+                                    ? (pedidos || []).find((pp) => String(pp.numero) === String(it.pedidoVinculado.numero))
+                                    : pedidoQueContieneRef(it.referencia, pedidos);
+                                  return (
+                                    <span
+                                      onClick={() => pedidoDetalle && setDetallePedido({ pedido: pedidoDetalle, referencia: it.referencia })}
+                                      title={pedidoDetalle ? "Ver detalle del pedido" : ""}
+                                      style={{ color: T.jade, fontWeight: 700, cursor: pedidoDetalle ? "pointer" : "default", textDecoration: pedidoDetalle ? "underline" : "none" }}
+                                    >✓ {it.pedidoVinculado?.numero ? `#${it.pedidoVinculado.numero}` : "En pedido"}</span>
+                                  );
+                                })() : bloqueada ? (
+                                  <span style={{ color: T.slate, fontSize: 11, fontStyle: "italic" }}>🔒 Bloqueada</span>
+                                ) : (
+                                  <button onClick={() => setVinculando({ preordenId: p.id, itemId: it.itemId })} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Vincular</button>
+                                )}
+                              </td>
+                              <td style={{ padding: "6px 10px" }}>
+                                {!bloqueada && (
+                                  <div style={{ display: "flex", gap: 4 }}>
+                                    <button
+                                      onClick={() => refrescarBusint(p.id, it)}
+                                      disabled={refrescando === `${p.id}::${it.itemId}`}
+                                      title="Volver a consultar Busint para llenar los campos vacíos"
+                                      style={{ padding: "4px 7px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 12, cursor: refrescando === `${p.id}::${it.itemId}` ? "not-allowed" : "pointer", opacity: refrescando === `${p.id}::${it.itemId}` ? 0.5 : 1 }}
+                                    >{refrescando === `${p.id}::${it.itemId}` ? "…" : "🔄"}</button>
+                                    <button
+                                      onClick={() => abrirEditar(p.id, it)}
+                                      title="Editar esta referencia a mano"
+                                      style={{ padding: "4px 7px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+                                    >✏️</button>
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        }
+                        if (estadoActual !== "aprobada") {
+                          return (p.items || []).map((it, i) => filaItem(it, i));
+                        }
                         return (
-                          <tr key={it.itemId} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}`, opacity: graduada ? 0.55 : 1 }}>
-                            <td style={{ padding: "6px 10px" }}>{it.foto ? <img src={it.foto} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
-                            <td style={{ padding: "6px 10px", fontWeight: 700 }}>{it.referencia}</td>
-                            <td style={{ padding: "6px 10px" }}>{it.nombre}</td>
-                            <td style={{ padding: "6px 10px" }}>{refReal ? <Badge status={refReal.status} /> : <span style={{ color: T.slate, fontStyle: "italic" }}>—</span>}</td>
-                            <td style={{ padding: "6px 10px" }}>{it.consumo || "—"}</td>
-                            <td style={{ padding: "6px 10px" }}>{it.tipo || "—"}</td>
-                            <td style={{ padding: "6px 10px" }}>{it.categoria || "—"}</td>
-                            <td style={{ padding: "6px 10px" }}>{it.silueta || "—"}</td>
-                            <td style={{ padding: "6px 10px" }}>{it.rango || "—"}</td>
-                            <td style={{ padding: "6px 10px" }}>{it.tela || "—"}</td>
-                            <td style={{ padding: "6px 10px" }}>{it.colombiaCurva || "—"}</td>
-                            <td style={{ padding: "6px 10px" }}>{it.colombiaCantidad || "—"}</td>
-                            <td style={{ padding: "6px 10px" }}>{it.venezuelaCurva || "—"}</td>
-                            <td style={{ padding: "6px 10px" }}>{it.venezuelaCantidad || "—"}</td>
-                            <td style={{ padding: "6px 10px" }}>{it.precio || "—"}</td>
-                            <td style={{ padding: "6px 10px" }}>
-                              <ImageListUploader
-                                images={cartaColoresLista(it)}
-                                onChange={(imgs) => onActualizarItemPreorden(p.id, it.itemId, { cartaColores: imgs })}
-                                readonly={bloqueada}
-                              />
-                            </td>
-                            <td style={{ padding: "6px 10px" }}>
-                              {graduada ? (() => {
-                                const pedidoDetalle = it.pedidoVinculado?.numero
-                                  ? (pedidos || []).find((pp) => String(pp.numero) === String(it.pedidoVinculado.numero))
-                                  : pedidoQueContieneRef(it.referencia, pedidos);
-                                return (
-                                  <span
-                                    onClick={() => pedidoDetalle && setDetallePedido({ pedido: pedidoDetalle, referencia: it.referencia })}
-                                    title={pedidoDetalle ? "Ver detalle del pedido" : ""}
-                                    style={{ color: T.jade, fontWeight: 700, cursor: pedidoDetalle ? "pointer" : "default", textDecoration: pedidoDetalle ? "underline" : "none" }}
-                                  >✓ {it.pedidoVinculado?.numero ? `#${it.pedidoVinculado.numero}` : "En pedido"}</span>
-                                );
-                              })() : bloqueada ? (
-                                <span style={{ color: T.slate, fontSize: 11, fontStyle: "italic" }}>🔒 Bloqueada</span>
-                              ) : (
-                                <button onClick={() => setVinculando({ preordenId: p.id, itemId: it.itemId })} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Vincular</button>
-                              )}
-                            </td>
-                            <td style={{ padding: "6px 10px" }}>
-                              {!bloqueada && (
-                                <div style={{ display: "flex", gap: 4 }}>
-                                  <button
-                                    onClick={() => refrescarBusint(p.id, it)}
-                                    disabled={refrescando === `${p.id}::${it.itemId}`}
-                                    title="Volver a consultar Busint para llenar los campos vacíos"
-                                    style={{ padding: "4px 7px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 12, cursor: refrescando === `${p.id}::${it.itemId}` ? "not-allowed" : "pointer", opacity: refrescando === `${p.id}::${it.itemId}` ? 0.5 : 1 }}
-                                  >{refrescando === `${p.id}::${it.itemId}` ? "…" : "🔄"}</button>
-                                  <button
-                                    onClick={() => abrirEditar(p.id, it)}
-                                    title="Editar esta referencia a mano"
-                                    style={{ padding: "4px 7px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}
-                                  >✏️</button>
-                                </div>
-                              )}
-                            </td>
-                          </tr>
+                          <>
+                            <tr>
+                              <td colSpan={19} style={{ padding: "10px 10px 6px", fontWeight: 800, fontSize: 12, color: T.ink, background: T.white }}>✅ Aprobadas — pendientes de tela ({itemsPendientesTela.length})</td>
+                            </tr>
+                            {itemsPendientesTela.length ? itemsPendientesTela.map((it, i) => filaItem(it, i)) : (
+                              <tr><td colSpan={19} style={{ padding: "6px 10px", color: T.slate, fontStyle: "italic" }}>Ninguna referencia pendiente de tela.</td></tr>
+                            )}
+                            <tr>
+                              <td colSpan={19} style={{ padding: "16px 10px 6px", fontWeight: 800, fontSize: 12, color: T.jade, background: T.white, borderTop: `2px solid ${T.border}` }}>🧵 Aprobadas con compra de tela ({itemsConTela.length})</td>
+                            </tr>
+                            {itemsConTela.length ? itemsConTela.map((it, i) => filaItem(it, i)) : (
+                              <tr><td colSpan={19} style={{ padding: "6px 10px", color: T.slate, fontStyle: "italic" }}>Todavía no hay referencias con tela comprada.</td></tr>
+                            )}
+                          </>
                         );
-                      })}
+                      })()}
                     </tbody>
                   </table>
                 </div>
