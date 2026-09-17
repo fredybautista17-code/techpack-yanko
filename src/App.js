@@ -7545,6 +7545,7 @@ async function extraerImagenesPorFilaYColumna(zip, sheetPath, parser) {
       const toColOffEl = to && xmlLocalAll(to, "colOff")[0];
       const toRowOffEl = to && xmlLocalAll(to, "rowOff")[0];
       const box = {
+        fromCol: col,
         fromColOff: colOffEl ? parseInt(colOffEl.textContent, 10) : 0,
         fromRowOff: rowOffEl ? parseInt(rowOffEl.textContent, 10) : 0,
         toCol: toColEl ? parseInt(toColEl.textContent, 10) : col,
