@@ -4490,6 +4490,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
   const [escaneando, setEscaneando] = useState(false);
   const [resultadoLimpieza, setResultadoLimpieza] = useState(null);
   const [aplicandoLimpieza, setAplicandoLimpieza] = useState(false);
+  const [reparando, setReparando] = useState(false);
   function itemGraduado(it) {
     return !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidos);
   }
@@ -4637,6 +4638,39 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
     setAplicandoLimpieza(false);
     setResultadoLimpieza(null);
   }
+  // (2026-09-17, a pedido de Fredy, tras encontrar el bug real: una
+  // preorden con varias referencias sin Capsula todavia terminaba con
+  // TODAS esas filas compartiendo el mismo itemId vacio -- actualizar una
+  // sola (Actualizar, Editar, carta de colores, Vincular) sobreescribia
+  // todas las demas con los mismos datos.) Revisa TODAS las preordenes,
+  // le da un identificador propio a cada fila que tenga itemId vacio
+  // (nunca toca una fila que ya tenga uno -- esas siguen enlazadas a su
+  // Capsula real para el Estado/Badge) y guarda solo las preordenes que
+  // de verdad tenian el problema.
+  async function repararIdentificadores() {
+    setReparando(true);
+    let preordenesReparadas = 0;
+    let itemsReparados = 0;
+    for (const p of preordenes || []) {
+      let cambio = false;
+      const nuevosItems = (p.items || []).map((it) => {
+        if (it.itemId) return it;
+        cambio = true;
+        itemsReparados++;
+        return { ...it, itemId: uid() };
+      });
+      if (cambio) {
+        await onActualizarPreorden(p.id, { items: nuevosItems });
+        preordenesReparadas++;
+      }
+    }
+    setReparando(false);
+    alert(
+      preordenesReparadas
+        ? `Listo: se repararon ${itemsReparados} referencia(s) en ${preordenesReparadas} preorden(es). Ya puedes usar Actualizar/Editar/carta de colores en ellas sin que se mezclen entre sí.`
+        : "No se encontró ninguna referencia con identificador vacío -- no había nada que reparar."
+    );
+  }
   if (modo === "reprogramacion" || modo === "orden_nueva") {
     return (
       <NuevaReprogramacionView
@@ -4751,6 +4785,13 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
           <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Borradores de pedido armados antes de que el pedido real exista</p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
+          <Btn
+            variant="secondary"
+            disabled={reparando}
+            onClick={() => {
+              if (window.confirm("Esto revisa todas las preórdenes y le da un identificador propio a cada referencia que no tenga uno (sin tocar ningún otro dato). ¿Continuar?")) repararIdentificadores();
+            }}
+          >{reparando ? "🔧 Reparando..." : "🔧 Reparar identificadores"}</Btn>
           <Btn variant="secondary" disabled={escaneando} onClick={escanearFotosDanadas}>{escaneando ? "🔍 Revisando..." : "🧹 Limpiar fotos dañadas"}</Btn>
           <Btn onClick={() => setModo("reprogramacion")}>🔁 Nueva Reprogramación</Btn>
           <Btn variant="secondary" onClick={() => setModo("orden_nueva")}>🆕 Nueva Orden</Btn>
@@ -12491,8 +12532,17 @@ function AppInner() {
       // funcionar.
       estado: "montada",
       fechaCreado: today(),
+      // (2026-09-17, a pedido de Fredy) itemId SIEMPRE debe ser unico dentro
+      // de la preorden -- si la referencia ya existe como Capsula, se usa
+      // su id real (asi el Estado/Badge de la fila sigue el estado en vivo
+      // de esa referencia); si no existe todavia como Capsula, refId viene
+      // null y antes TODAS las filas sin Capsula de una misma preorden
+      // terminaban compartiendo ese mismo itemId null -- cualquier
+      // actualizacion a una de ellas (Actualizar, Editar, carta de
+      // colores, Vincular) se aplicaba a todas por igual. Con uid() de
+      // respaldo cada fila queda independiente sin importar su origen.
       items: items.map((it) => ({
-        itemId: it.refId,
+        itemId: it.refId || uid(),
         capsulaId: it.capsulaId,
         referencia: it.reference || "",
         nombre: it.name || "",
