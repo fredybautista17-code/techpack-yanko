@@ -4122,6 +4122,17 @@ function ImageListUploader({ images, onChange, readonly }) {
     </div>
   );
 }
+// (2026-09-17, a pedido de Fredy) Sube una foto extraida del Excel
+// (dataURL base64) a Firebase Storage y devuelve el link -- misma
+// carpeta "carta_colores/" que usa ImageListUploader (ver esa funcion
+// mas arriba), para que el documento de la preorden no cargue la
+// imagen completa sin importar si la foto vino del boton manual o de
+// un Excel.
+async function subirImagenExcelACartaColores(dataUrl) {
+  const ref = storageRef(storage, `carta_colores/${uid()}.jpg`);
+  await uploadString(ref, dataUrl, "data_url");
+  return await getDownloadURL(ref);
+}
 async function actualizarPreordenDesdeExcel(preorden, file, onActualizarPreorden) {
   const XLSX = await import("xlsx");
   const JSZip = (await import("jszip")).default;
@@ -4149,6 +4160,10 @@ async function actualizarPreordenDesdeExcel(preorden, file, onActualizarPreorden
     // Sin fotos legibles en el Excel -- el texto/cantidades se actualiza igual.
   }
   const porRef = new Map();
+  // (2026-09-17, a pedido de Fredy) Fotos del Excel que no se pudieron
+  // subir a Storage (ej. sin conexion a mitad del proceso) -- la fila
+  // sigue actualizandose con sus demas datos, solo se avisa al final.
+  let fotosFallidas = 0;
   for (let i = 4; i < rows.length; i++) {
     const row = rows[i];
     if (!row || !row.length) continue;
@@ -4169,14 +4184,23 @@ async function actualizarPreordenDesdeExcel(preorden, file, onActualizarPreorden
       observacionesCliente: txt(row[14]),
     };
     const imagenesFila = imagenesPorFilaCol[i] || {};
-    if (imagenesFila[colFoto]?.length) cambios.foto = imagenesFila[colFoto][0];
-    if (colCarta !== -1) {
-      const todasCarta = Object.keys(imagenesFila)
-        .map(Number)
-        .filter((col) => col !== colFoto && col >= colCarta)
-        .sort((a, b) => a - b)
-        .flatMap((col) => imagenesFila[col]);
-      if (todasCarta.length) cambios.cartaColores = todasCarta;
+    try {
+      if (imagenesFila[colFoto]?.length) {
+        cambios.foto = await subirImagenExcelACartaColores(imagenesFila[colFoto][0]);
+      }
+      if (colCarta !== -1) {
+        const todasCartaDataUrls = Object.keys(imagenesFila)
+          .map(Number)
+          .filter((col) => col !== colFoto && col >= colCarta)
+          .sort((a, b) => a - b)
+          .flatMap((col) => imagenesFila[col]);
+        if (todasCartaDataUrls.length) {
+          cambios.cartaColores = await Promise.all(todasCartaDataUrls.map((du) => subirImagenExcelACartaColores(du)));
+        }
+      }
+    } catch (err) {
+      console.error(`No se pudo subir alguna foto de la fila ${i} del Excel a Storage:`, err);
+      fotosFallidas++;
     }
     porRef.set(normalizarRefComparacion(ref), cambios);
   }
@@ -4191,12 +4215,13 @@ async function actualizarPreordenDesdeExcel(preorden, file, onActualizarPreorden
   const refsPreorden = new Set(items.map((it) => normalizarRefComparacion(it.referencia)));
   const sinCoincidir = [...porRef.keys()].filter((refNorm) => !refsPreorden.has(refNorm));
   await onActualizarPreorden(preorden.id, { items: nuevosItems });
+  const avisoFotos = fotosFallidas ? ` ⚠ ${fotosFallidas} foto(s) del Excel no se pudieron subir (revisa tu conexión y vuelve a subir el Excel si hace falta).` : "";
   if (!actualizados) {
-    alert("No se encontró ninguna referencia del Excel que coincida con las de esta preorden. Revisa que no hayas cambiado la columna REF.");
+    alert("No se encontró ninguna referencia del Excel que coincida con las de esta preorden. Revisa que no hayas cambiado la columna REF." + avisoFotos);
   } else if (sinCoincidir.length) {
-    alert(`Se actualizaron ${actualizados} referencia(s) (cantidades, foto y carta de colores si el Excel las traía). ${sinCoincidir.length} fila(s) del Excel no coinciden con ninguna referencia de esta preorden y se ignoraron.`);
+    alert(`Se actualizaron ${actualizados} referencia(s) (cantidades, foto y carta de colores si el Excel las traía). ${sinCoincidir.length} fila(s) del Excel no coinciden con ninguna referencia de esta preorden y se ignoraron.` + avisoFotos);
   } else {
-    alert(`Se actualizaron ${actualizados} referencia(s) de la preorden (cantidades, foto y carta de colores si el Excel las traía).`);
+    alert(`Se actualizaron ${actualizados} referencia(s) de la preorden (cantidades, foto y carta de colores si el Excel las traía).` + avisoFotos);
   }
 }
 async function exportPreordenXLSX(preorden) {
