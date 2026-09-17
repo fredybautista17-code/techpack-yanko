@@ -3499,6 +3499,13 @@ function diaCodigoDeISO(iso) {
 function horaEntradaEsperada(turno, diaCodigo) {
   return turno?.horarios?.[diaCodigo]?.entrada || null;
 }
+// (2026-09-17, a pedido de Fredy) Hora de salida esperada de un turno
+// para un dia puntual -- mismo criterio que horaEntradaEsperada, para
+// poder reconocer cuando una marca unica del dia en realidad fue la
+// salida (ver nota de la Parte 12 mas abajo, en anomaliasEntradaSalida).
+function horaSalidaEsperada(turno, diaCodigo) {
+  return turno?.horarios?.[diaCodigo]?.salida || null;
+}
 // (2026-09-15, a pedido de Fredy) Turno real de un trabajador: manda el
 // turno especial puesto directamente en su ficha (Trabajadores → Turno);
 // si no tiene, cae al turno por defecto de su Área Interna; si tampoco el
@@ -3720,17 +3727,60 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
         // hueco coincide con un permiso ya registrado ese día, no cuenta
         // como anomalía.
         const tiposPorDia = {};
+        // (2026-09-17, a pedido de Fredy) Ademas del tipo, se guarda cada
+        // marca del dia (tipo + hora) -- lo necesita el caso de la marca
+        // unica mas abajo, para saber si esa marca cae cerca del inicio o
+        // el final del turno, sin importar como la haya etiquetado el
+        // huellero.
+        const marcasPorDia = {};
         emp.marcas.forEach((m) => {
           const iso = fechaHuelleroAISO(m.fechaHora.split(" ")[0]);
           if (!iso || (m.tipo !== "Entrada" && m.tipo !== "Salida")) return;
           if (!tiposPorDia[iso]) tiposPorDia[iso] = new Set();
           tiposPorDia[iso].add(m.tipo);
+          if (!marcasPorDia[iso]) marcasPorDia[iso] = [];
+          marcasPorDia[iso].push({ tipo: m.tipo, hora: m.fechaHora.split(" ")[1] || "" });
         });
         const anomaliasEntradaSalida = diasPeriodo
           .filter((iso) => !exento && iso !== ultimoDiaPeriodo && diasConMarca.has(iso) && diaEsperado(iso, turnoDelRegistro))
           .map((iso) => {
             const tipos = tiposPorDia[iso] || new Set();
             if (tipos.has("Entrada") && tipos.has("Salida")) return null;
+            // (2026-09-17, a pedido de Fredy) Si ese dia hubo una sola
+            // marca, el huellero la etiqueta "Entrada" o "Salida" solo
+            // por ser la unica del dia -- no porque realmente sepa cual
+            // fue. Si esa marca cae cerca (o despues) de la hora de
+            // salida esperada del turno, en realidad esa persona si
+            // cerro su dia (fue su salida real aunque quede etiquetada
+            // "Entrada"). Simetrico si cae cerca (o antes) de la hora de
+            // entrada esperada estando etiquetada "Salida" -- en
+            // realidad fue su entrada. Margen de 30 min para cubrir
+            // salidas/entradas un poco antes de la hora exacta.
+            const marcasDelDia = marcasPorDia[iso] || [];
+            if (marcasDelDia.length === 1) {
+              const horaMarca = marcasDelDia[0].hora;
+              const TOLERANCIA_CIERRE_MIN = 30;
+              if (tipos.has("Entrada") && horaMarca) {
+                const horaSalidaEsp = horaSalidaEsperada(turnoDelRegistro, diaCodigoDeISO(iso));
+                if (horaSalidaEsp) {
+                  const [hS, mS] = horaSalidaEsp.split(":").map(Number);
+                  const [hM, mM] = horaMarca.split(":").map(Number);
+                  if (![hS, mS, hM, mM].some((n) => Number.isNaN(n))) {
+                    if (hM * 60 + mM >= hS * 60 + mS - TOLERANCIA_CIERRE_MIN) return null;
+                  }
+                }
+              }
+              if (tipos.has("Salida") && horaMarca) {
+                const horaEntradaEsp = horaEntradaEsperada(turnoDelRegistro, diaCodigoDeISO(iso));
+                if (horaEntradaEsp) {
+                  const [hE, mE] = horaEntradaEsp.split(":").map(Number);
+                  const [hM, mM] = horaMarca.split(":").map(Number);
+                  if (![hE, mE, hM, mM].some((n) => Number.isNaN(n))) {
+                    if (hM * 60 + mM <= hE * 60 + mE + TOLERANCIA_CIERRE_MIN) return null;
+                  }
+                }
+              }
+            }
             const faltante = tipos.has("Entrada") ? "Salida" : tipos.has("Salida") ? "Entrada" : null;
             if (!faltante) return null;
             const motivo = ausenciasPersona.find((a) => a.fechaInicio <= iso && iso <= a.fechaFin);
