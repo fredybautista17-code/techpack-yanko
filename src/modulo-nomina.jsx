@@ -8523,6 +8523,11 @@ function idsADejarYBorrar(grupo) {
 function DiagnosticoDuplicadosView({ diasTrabajados, faltas, anomalias, retardos, trabajadores, onEliminar }) {
   const [eliminando, setEliminando] = useState(null);
   const [borrados, setBorrados] = useState({});
+  // (2026-09-17, a pedido de Fredy) Boton unico para limpiar todos los
+  // grupos duplicados de una vez, en vez de uno por uno cuando son
+  // muchos -- con confirmacion en la misma pantalla antes de borrar.
+  const [confirmandoTodo, setConfirmandoTodo] = useState(false);
+  const [limpiandoTodo, setLimpiandoTodo] = useState(false);
   const colecciones = [
     { coleccion: "nomina_dias_trabajados", label: "Días trabajados", docs: diasTrabajados },
     { coleccion: "nomina_faltas_sin_justificar", label: "Días sin justificar", docs: faltas },
@@ -8530,6 +8535,28 @@ function DiagnosticoDuplicadosView({ diasTrabajados, faltas, anomalias, retardos
     { coleccion: "nomina_retardos", label: "Retardos", docs: retardos },
   ].map((c) => ({ ...c, grupos: agruparDuplicadosHuellero(c.docs) }));
   const totalGrupos = colecciones.reduce((s, c) => s + c.grupos.length, 0);
+  const totalABorrar = colecciones.reduce((s, c) => s + c.grupos.reduce((s2, g) => s2 + (g.length - 1), 0), 0);
+  async function limpiarTodo() {
+    setLimpiandoTodo(true);
+    try {
+      const nuevosBorrados = {};
+      for (const c of colecciones) {
+        if (c.grupos.length === 0) continue;
+        let idsColeccion = [];
+        for (const grupo of c.grupos) {
+          const key = `${c.coleccion}__${grupo[0].idHuellero}__${grupo[0].fecha}`;
+          const { borrar } = idsADejarYBorrar(grupo);
+          idsColeccion = idsColeccion.concat(borrar.map((d) => d.id));
+          nuevosBorrados[key] = borrar.length;
+        }
+        if (idsColeccion.length > 0) await onEliminar(c.coleccion, idsColeccion);
+      }
+      setBorrados((b) => ({ ...b, ...nuevosBorrados }));
+    } finally {
+      setLimpiandoTodo(false);
+      setConfirmandoTodo(false);
+    }
+  }
   function nombreTrabajadorDe(idHuellero) {
     const t = (trabajadores || []).find((x) => String(x.idHuellero || "").trim() === String(idHuellero).trim());
     return t?.nombre || null;
@@ -8549,6 +8576,25 @@ function DiagnosticoDuplicadosView({ diasTrabajados, faltas, anomalias, retardos
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
         Detecta cuando el mismo día de la misma persona (mismo ID del huellero) quedó guardado en más de un documento -- típicamente porque el huellero reportó el nombre escrito distinto entre dos subidas, o porque el ID del dispositivo fue reasignado. Esto infla contadores como "Días trabajados". Al eliminar un grupo se conserva un solo documento por día (el más reciente) y se borran los demás -- esto sí borra datos, revisa antes de confirmar.
       </div>
+      {totalGrupos > 0 && (
+        <div style={{ marginBottom: 20, padding: 14, border: `1px solid ${C.border}`, borderRadius: 8, background: C.canvas }}>
+          {!confirmandoTodo ? (
+            <Btn variant="danger" onClick={() => setConfirmandoTodo(true)} disabled={limpiandoTodo}>
+              🧹 Limpiar TODOS los duplicados ({totalGrupos} día(s), {totalABorrar} documento(s) a borrar)
+            </Btn>
+          ) : (
+            <div>
+              <div style={{ fontSize: 13, color: C.ink, marginBottom: 8, fontWeight: 700 }}>
+                ¿Seguro? Se van a borrar {totalABorrar} documento(s) duplicado(s) en las 4 colecciones -- esto no se puede deshacer.
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Btn variant="danger" onClick={limpiarTodo} disabled={limpiandoTodo}>{limpiandoTodo ? "Borrando..." : "Sí, borrar todos"}</Btn>
+                <Btn variant="secondary" onClick={() => setConfirmandoTodo(false)} disabled={limpiandoTodo}>Cancelar</Btn>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {totalGrupos === 0 && <div style={{ padding: 20, color: C.slate, fontSize: 13 }}>No se encontraron duplicados. 🎉</div>}
       {colecciones.map((c) => c.grupos.length === 0 ? null : (
         <div key={c.coleccion} style={{ marginBottom: 24 }}>
