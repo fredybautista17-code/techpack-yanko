@@ -3478,6 +3478,21 @@ function CronogramaMuestrasView({ cronogramaMuestras, config, isAdmin, onAdd, on
 // generalizado para VARIAS imágenes en un solo drawing1.xml en vez de una
 // sola. Devuelve el Blob final listo para descargar, o null si ninguna de
 // las fotos recibidas era una data URL válida.
+// (2026-09-17, a pedido de Fredy) Descarga una foto guardada como link
+// de Storage y la convierte a dataURL base64 -- lo necesita
+// exportPreordenXLSX para poder seguir incrustando como imagen real en
+// el Excel las fotos que ahora viven en Storage (antes solo habia
+// fotos guardadas como dataURL, que ya se incrustaban bien).
+async function urlStorageADataUrl(url) {
+  const resp = await fetch(url);
+  const blob = await resp.blob();
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
 async function incrustarFotosEnXlsx(wbArrayBuffer, fotos) {
   const validas = (fotos || []).filter((f) => typeof f.dataUrl === "string" && /^data:image\/\w+;base64,/.test(f.dataUrl));
   if (!validas.length) return null;
@@ -4349,8 +4364,24 @@ async function exportPreordenXLSX(preorden) {
   });
   if (fotos.length) {
     try {
+      // (2026-09-17, a pedido de Fredy) Las fotos guardadas como link de
+      // Storage (no como dataURL) se descargan aqui y se convierten a
+      // dataURL -- incrustarFotosEnXlsx solo sabe incrustar ese formato.
+      // Si una foto puntual no se puede descargar, se omite del Excel
+      // sin tumbar el resto de la descarga.
+      await Promise.all(fotos.map(async (f) => {
+        if (typeof f.dataUrl === "string" && !f.dataUrl.startsWith("data:")) {
+          try {
+            f.dataUrl = await urlStorageADataUrl(f.dataUrl);
+          } catch (err) {
+            console.error("No se pudo descargar una foto de Storage para el Excel:", err);
+            f.dataUrl = null;
+          }
+        }
+      }));
+      const fotosParaIncrustar = fotos.filter((f) => f.dataUrl);
       const wbArrayBuffer = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-      const blob = await incrustarFotosEnXlsx(wbArrayBuffer, fotos);
+      const blob = await incrustarFotosEnXlsx(wbArrayBuffer, fotosParaIncrustar);
       if (blob) {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
