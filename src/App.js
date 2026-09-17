@@ -4200,17 +4200,30 @@ async function actualizarPreordenDesdeExcel(preorden, file, onActualizarPreorden
     };
     const imagenesFila = imagenesPorFilaCol[i] || {};
     try {
-      if (imagenesFila[colFoto]?.length) {
-        cambios.foto = await subirImagenExcelACartaColores(imagenesFila[colFoto][0]);
+      // (2026-09-17, a pedido de Fredy, caso "pruebas 1.xlsx") Cada foto
+      // se combina primero con los trazos de lapiz de su misma celda (si
+      // los tiene -- ver combinarTrazosSobreFoto) y despues se sube esa
+      // version combinada, para que la marca del cliente quede visible en
+      // la foto guardada.
+      const celdaFoto = imagenesFila[colFoto];
+      if (celdaFoto?.imagenes?.length) {
+        const combinada = await combinarTrazosSobreFoto(celdaFoto.imagenes[0].dataUrl, celdaFoto.imagenes[0], celdaFoto.trazos);
+        cambios.foto = await subirImagenExcelACartaColores(combinada);
       }
       if (colCarta !== -1) {
-        const todasCartaDataUrls = Object.keys(imagenesFila)
+        const colsCarta = Object.keys(imagenesFila)
           .map(Number)
           .filter((col) => col !== colFoto && col >= colCarta)
-          .sort((a, b) => a - b)
-          .flatMap((col) => imagenesFila[col]);
-        if (todasCartaDataUrls.length) {
-          cambios.cartaColores = await Promise.all(todasCartaDataUrls.map((du) => subirImagenExcelACartaColores(du)));
+          .sort((a, b) => a - b);
+        const todasCartaCombinadas = [];
+        for (const col of colsCarta) {
+          const celda = imagenesFila[col];
+          for (const imagen of celda.imagenes || []) {
+            todasCartaCombinadas.push(await combinarTrazosSobreFoto(imagen.dataUrl, imagen, celda.trazos));
+          }
+        }
+        if (todasCartaCombinadas.length) {
+          cambios.cartaColores = await Promise.all(todasCartaCombinadas.map((du) => subirImagenExcelACartaColores(du)));
         }
       }
     } catch (err) {
@@ -7514,15 +7527,64 @@ async function extraerImagenesPorFilaYColumna(zip, sheetPath, parser) {
     const anchors = [...xmlLocalAll(drawingDoc, "twoCellAnchor"), ...xmlLocalAll(drawingDoc, "oneCellAnchor")];
     for (const anchor of anchors) {
       const from = xmlLocalAll(anchor, "from")[0];
+      const to = xmlLocalAll(anchor, "to")[0];
       const rowEl = from && xmlLocalAll(from, "row")[0];
       const colEl = from && xmlLocalAll(from, "col")[0];
-      const blip = xmlLocalAll(anchor, "blip")[0];
-      if (!rowEl || !colEl || !blip) continue;
+      if (!rowEl || !colEl) continue;
       const fila = parseInt(rowEl.textContent, 10);
       const col = parseInt(colEl.textContent, 10);
+      if (Number.isNaN(fila) || Number.isNaN(col)) continue;
+      // (2026-09-17, a pedido de Fredy) Posicion/tamano de este anclaje
+      // dentro de su celda (en EMU) -- se guarda tanto para fotos reales
+      // como para trazos de lapiz, para poder ubicar despues cada trazo
+      // en el lugar correcto sobre su foto (ver combinarTrazosSobreFoto).
+      const colOffEl = from && xmlLocalAll(from, "colOff")[0];
+      const rowOffEl = from && xmlLocalAll(from, "rowOff")[0];
+      const toColEl = to && xmlLocalAll(to, "col")[0];
+      const toRowEl = to && xmlLocalAll(to, "row")[0];
+      const toColOffEl = to && xmlLocalAll(to, "colOff")[0];
+      const toRowOffEl = to && xmlLocalAll(to, "rowOff")[0];
+      const box = {
+        fromColOff: colOffEl ? parseInt(colOffEl.textContent, 10) : 0,
+        fromRowOff: rowOffEl ? parseInt(rowOffEl.textContent, 10) : 0,
+        toCol: toColEl ? parseInt(toColEl.textContent, 10) : col,
+        toRow: toRowEl ? parseInt(toRowEl.textContent, 10) : fila,
+        toColOff: toColOffEl ? parseInt(toColOffEl.textContent, 10) : 0,
+        toRowOff: toRowOffEl ? parseInt(toRowOffEl.textContent, 10) : 0,
+      };
+      // (2026-09-17, a pedido de Fredy, caso "pruebas 1.xlsx") Una
+      // anotacion de lapiz optico/tactil (contentPart) NO es una foto
+      // real -- antes se guardaba igual que una foto (el icono generico
+      // de respaldo que deja Excel, siempre el mismo, sin la marca real
+      // del cliente). Ahora se guarda aparte como "trazo" para
+      // combinarlo con la foto real de la misma celda mas adelante (ver
+      // parsePuntosInkml / combinarTrazosSobreFoto).
+      const contentPart = xmlLocalAll(anchor, "contentPart")[0];
+      if (contentPart) {
+        const inkRid = contentPart.getAttributeNS(OOXML_REL_NS, "id");
+        const relInk = drawingRelEls.find((r) => r.getAttribute("Id") === inkRid);
+        if (!relInk) continue;
+        const inkPath = resolverRutaXlsx(drawingDir, relInk.getAttribute("Target"));
+        const inkFile = zip.file(inkPath);
+        if (!inkFile) continue;
+        let trazo = null;
+        try {
+          const inkXmlText = await inkFile.async("text");
+          trazo = extraerTrazoInkml(inkXmlText, parser);
+        } catch (e) {
+          continue; // Trazo con XML atipico -- se ignora solo este trazo.
+        }
+        if (!trazo || trazo.puntos.length < 2) continue;
+        if (!porFila[fila]) porFila[fila] = {};
+        if (!porFila[fila][col]) porFila[fila][col] = { imagenes: [], trazos: [] };
+        porFila[fila][col].trazos.push({ ...box, puntos: trazo.puntos, color: trazo.color });
+        continue;
+      }
+      const blip = xmlLocalAll(anchor, "blip")[0];
+      if (!blip) continue;
       const embedRid = blip.getAttributeNS(OOXML_REL_NS, "embed");
       const relImg = drawingRelEls.find((r) => r.getAttribute("Id") === embedRid);
-      if (!relImg || Number.isNaN(fila) || Number.isNaN(col)) continue;
+      if (!relImg) continue;
       const mediaPath = resolverRutaXlsx(drawingDir, relImg.getAttribute("Target"));
       const mediaFile = zip.file(mediaPath);
       if (!mediaFile) continue;
@@ -7532,13 +7594,136 @@ async function extraerImagenesPorFilaYColumna(zip, sheetPath, parser) {
       const dataUrl = await comprimirImagenBytesABase64(bytes, mime);
       if (!dataUrl) continue;
       if (!porFila[fila]) porFila[fila] = {};
-      if (!porFila[fila][col]) porFila[fila][col] = [];
-      porFila[fila][col].push(dataUrl);
+      if (!porFila[fila][col]) porFila[fila][col] = { imagenes: [], trazos: [] };
+      porFila[fila][col].imagenes.push({ dataUrl, ...box });
     }
   } catch (e) {
     // Hoja con XML atípico -- se ignora solo la parte de fotos de esta hoja.
   }
   return porFila;
+}
+// (2026-09-17, a pedido de Fredy, caso "pruebas 1.xlsx") Decodifica el
+// texto de un <inkml:trace> (norma W3C InkML -- www.w3.org/TR/InkML) a una
+// lista de puntos absolutos por canal. Cada valor puede llevar un prefijo
+// que indica como interpretarlo: "!" valor explicito, "'" primera
+// diferencia (delta desde el valor anterior), \'"\' segunda diferencia
+// (delta del delta, o sea aceleracion); sin prefijo, el valor hereda el
+// modo anterior de ESE canal. Asi se puede dibujar la marca real que el
+// cliente hizo con lapiz optico/tactil, en vez de perderla o mostrar el
+// icono generico que Excel deja como respaldo visual.
+function parsePuntosInkml(traceText, nCanales) {
+  const puntos = [];
+  const modos = new Array(nCanales).fill("explicit");
+  const deltas = new Array(nCanales).fill(0);
+  const valores = new Array(nCanales).fill(0);
+  const tokenRe = /([!'"]?)(-?\d+)/g;
+  const rawPuntos = (traceText || "").trim().split(",");
+  for (const rp0 of rawPuntos) {
+    const rp = rp0.trim();
+    if (!rp) continue;
+    const comps = [...rp.matchAll(tokenRe)];
+    if (comps.length !== nCanales) continue;
+    comps.forEach(([, prefijo, numStr], ch) => {
+      const num = parseInt(numStr, 10);
+      if (prefijo === "!") {
+        modos[ch] = "explicit";
+        valores[ch] = num;
+        deltas[ch] = 0;
+      } else if (prefijo === "'") {
+        modos[ch] = "first";
+        deltas[ch] = num;
+        valores[ch] = valores[ch] + num;
+      } else if (prefijo === '"') {
+        modos[ch] = "second";
+        deltas[ch] = deltas[ch] + num;
+        valores[ch] = valores[ch] + deltas[ch];
+      } else if (modos[ch] === "explicit") {
+        valores[ch] = num;
+      } else if (modos[ch] === "first") {
+        deltas[ch] = num;
+        valores[ch] = valores[ch] + num;
+      } else {
+        deltas[ch] = deltas[ch] + num;
+        valores[ch] = valores[ch] + deltas[ch];
+      }
+    });
+    puntos.push(valores.slice());
+  }
+  return puntos;
+}
+function extraerTrazoInkml(inkXmlText, parser) {
+  const doc = parser.parseFromString(inkXmlText, "application/xml");
+  const traceEl = xmlLocalAll(doc, "trace")[0];
+  if (!traceEl) return null;
+  const brushEl = xmlLocalAll(doc, "brush")[0];
+  let color = "#000000";
+  if (brushEl) {
+    const propEl = xmlLocalAll(brushEl, "brushProperty").find((p) => p.getAttribute("name") === "color");
+    if (propEl) color = propEl.getAttribute("value") || color;
+  }
+  const traceFormatEl = xmlLocalAll(doc, "traceFormat")[0];
+  const nCanales = traceFormatEl ? xmlLocalAll(traceFormatEl, "channel").length : 3;
+  const puntos = parsePuntosInkml(traceEl.textContent, nCanales || 3);
+  return { puntos, color };
+}
+// (2026-09-17, a pedido de Fredy, caso "pruebas 1.xlsx") Dibuja los trazos
+// reales de lapiz (ya decodificados) encima de la foto real, usando la
+// posicion/tamano de cada anotacion (en EMU, relativos a la misma celda
+// que la foto) para ubicar la marca en el lugar correcto -- asi la foto
+// que se guarda en Atlas ya trae la marca del cliente visible.
+function combinarTrazosSobreFoto(dataUrlFoto, boxFoto, trazos) {
+  return new Promise((resolve) => {
+    if (!trazos || !trazos.length) { resolve(dataUrlFoto); return; }
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        const pw = boxFoto.toColOff - boxFoto.fromColOff;
+        const ph = boxFoto.toRowOff - boxFoto.fromRowOff;
+        if (pw > 0 && ph > 0) {
+          trazos.forEach((trazo) => {
+            // Si el trazo se sale de la celda de la foto (columna
+            // distinta), se omite -- caso raro, mejor no dibujar mal
+            // ubicado que arriesgar una marca fuera de lugar.
+            if (trazo.toCol !== trazo.fromCol) return;
+            const xs = trazo.puntos.map((p) => p[0]);
+            const ys = trazo.puntos.map((p) => p[1]);
+            const minx = Math.min(...xs), maxx = Math.max(...xs);
+            const miny = Math.min(...ys), maxy = Math.max(...ys);
+            const spanx = Math.max(maxx - minx, 1);
+            const spany = Math.max(maxy - miny, 1);
+            const boxX0 = trazo.fromColOff - boxFoto.fromColOff;
+            const boxY0 = trazo.fromRowOff - boxFoto.fromRowOff;
+            const boxW = trazo.toColOff - trazo.fromColOff;
+            const boxH = trazo.toRowOff - trazo.fromRowOff;
+            ctx.strokeStyle = trazo.color || "#000000";
+            ctx.lineWidth = Math.max(2, Math.round(img.width / 160));
+            ctx.lineJoin = "round";
+            ctx.lineCap = "round";
+            ctx.beginPath();
+            trazo.puntos.forEach((p, idx) => {
+              const nx = (p[0] - minx) / spanx;
+              const ny = (p[1] - miny) / spany;
+              const ex = ((boxX0 + nx * boxW) / pw) * img.width;
+              const ey = ((boxY0 + ny * boxH) / ph) * img.height;
+              if (idx === 0) ctx.moveTo(ex, ey); else ctx.lineTo(ex, ey);
+            });
+            ctx.stroke();
+          });
+        }
+        resolve(canvas.toDataURL("image/jpeg", 0.85));
+      } catch (e) {
+        console.error("No se pudo combinar el trazo de lapiz sobre la foto:", e);
+        resolve(dataUrlFoto);
+      }
+    };
+    img.onerror = () => resolve(dataUrlFoto);
+    img.src = dataUrlFoto;
+  });
 }
 // Lista de referencias creadas dentro de ATLAS (prototipos + referencias de
 // cápsulas) que TODAVÍA no están confirmadas en Busint — para que el equipo
