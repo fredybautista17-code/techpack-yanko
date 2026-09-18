@@ -1707,6 +1707,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     fechaRetiro: trabajador?.fechaRetiro || "",
     cesantiasAcumuladas: trabajador?.cesantiasAcumuladas ?? "",
     medirComoBaseAdministrativa: trabajador?.medirComoBaseAdministrativa ?? false,
+    salarioMinimoGarantizado: trabajador?.salarioMinimoGarantizado ?? false,
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   // (2026-09-09, a pedido de Fredy) Cargo depende de qué Área Interna se
@@ -1754,6 +1755,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       fechaRetiro: form.fechaRetiro || "",
       cesantiasAcumuladas: Number(form.cesantiasAcumuladas) || 0,
       medirComoBaseAdministrativa: !!form.medirComoBaseAdministrativa,
+      salarioMinimoGarantizado: !!form.salarioMinimoGarantizado,
     });
     onClose();
   }
@@ -1830,6 +1832,19 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
             Si ya sabes cuánto lleva acumulado en cesantías antes de septiembre, ponlo acá para que los intereses se calculen bien desde el arranque. Si no lo sabes, déjalo en 0 y ajústalo cuando lo tengas.
           </div>
           <Field label="Fecha de retiro (si ya no trabaja aquí)"><FInput type="date" value={form.fechaRetiro} onChange={set("fechaRetiro")} /></Field>
+        </>
+      )}
+      {form.tipoNomina === "Destajo" && (
+        <>
+          <Field label="Salario mínimo garantizado">
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="checkbox" id="salarioMinimoGarantizado" checked={!!form.salarioMinimoGarantizado} onChange={(e) => set("salarioMinimoGarantizado")(e.target.checked)} />
+              <label htmlFor="salarioMinimoGarantizado" style={{ fontSize: 12.5, color: C.ink, cursor: "pointer" }}>Pagarle siempre el salario mínimo (no por producción)</label>
+            </div>
+          </Field>
+          <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+            (2026-09-18, a pedido de Fredy) Con esto marcado, en su liquidación de Destajo ya NO se le paga lo que produjo -- se le paga fijo el salario mínimo de la quincena + su auxilio de transporte, sin importar cuánto haya producido. Su producción real se sigue guardando (para el histórico); si esa quincena produjo menos de lo que se le pagó fijo, la diferencia queda registrada sola como "ayuda" en el Ajuste de esa liquidación.
+          </div>
         </>
       )}
       {form.tipoNomina === "Fiscal" && (
@@ -6023,10 +6038,10 @@ function calcularLiquidacionDestajo(trabajador, netoProduccion) {
   // se guardaba el valor de la quincena directo y por eso este calculo NO
   // dividia entre 2; ahora si hay que dividir para sacar la quincena antes
   // de aplicar las tasas mensuales, igual que ya hacen
-  // calcularLiquidacionFiscal y calcularLiquidacionFiscalDestajo. El pago
-  // real de produccion (netoAPagar) sigue siendo aparte, sin tocar -- eso
-  // se sigue pagando por lo que de verdad hizo esa quincena, no por el
-  // sueldo minimo.
+  // calcularLiquidacionFiscal y calcularLiquidacionFiscalDestajo. Estas
+  // provisiones (cesantias/prima/vacaciones) NO cambian con la casilla de
+  // "Salario mínimo garantizado" de abajo -- siguen usando el campo
+  // "Sueldo" que ya tenga la ficha del trabajador, tal como siempre.
   const sueldoQuincena = sueldo / 2;
   const auxilioQuincena = auxilio / 2;
   const saldoCesantiasInicio = Number(trabajador.cesantiasAcumuladas) || 0;
@@ -6035,13 +6050,37 @@ function calcularLiquidacionDestajo(trabajador, netoProduccion) {
   const interesesPeriodo = cesantiasPeriodo * TASA_INTERES_CESANTIAS_ANUAL;
   const primaPeriodo = baseConAuxilio * TASA_PRIMA_MENSUAL;
   const vacacionesPeriodo = sueldoQuincena * TASA_VACACIONES_MENSUAL;
+  // (2026-09-18, a pedido de Fredy) "Salario mínimo garantizado": a quien
+  // tenga esta casilla marcada en su ficha ya NO se le paga por producción
+  // -- se le paga fijo el salario mínimo LEGAL de la quincena (SMMLV_2026,
+  // no el campo "Sueldo" de su ficha) + su auxilio de transporte, sin
+  // importar cuánto haya producido. Su producción real se sigue guardando
+  // (produccionReal) solo para saber si "alcanzó la meta"; si produjo
+  // MENOS de lo que se le pagó fijo, esa diferencia es "la ayuda" que tuvo
+  // que poner la empresa para completarle el sueldo -- se calcula sola,
+  // nadie la digita (ver NominaDestajoView/ResumenSemanalView, columna
+  // Ajuste). Si produjo igual o más, la ayuda queda en $0 -- no se le paga
+  // de más por eso, es sueldo fijo.
+  const salarioMinimoGarantizado = !!trabajador.salarioMinimoGarantizado;
+  let netoBase = netoProduccion;
+  let ayudaSalarioMinimo = 0;
+  let sueldoFijoQuincena = 0;
+  let auxilioFijoQuincena = 0;
+  if (salarioMinimoGarantizado) {
+    sueldoFijoQuincena = SMMLV_2026 / 2;
+    auxilioFijoQuincena = auxilioQuincena;
+    const pagoFijo = sueldoFijoQuincena + auxilioFijoQuincena;
+    ayudaSalarioMinimo = Math.max(0, pagoFijo - netoProduccion);
+    netoBase = pagoFijo;
+  }
   return {
-    netoAPagar: netoProduccion,
+    netoBase, salarioMinimoGarantizado, ayudaSalarioMinimo, produccionReal: netoProduccion,
+    sueldoFijoQuincena, auxilioFijoQuincena,
     cesantiasPeriodo, interesesPeriodo, primaPeriodo, vacacionesPeriodo,
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
 }
-function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, areasNomina }) {
+function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, areasNomina, ajustesDestajo, onGuardarAjusteDestajo, puedeAjustarDestajo }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -6050,6 +6089,15 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
   const [detalleFaltas, setDetalleFaltas] = useState(null); // { trabajador, fechas }
+  // (2026-09-18, a pedido de Fredy) "Ajuste de Nómina" -- solo administrador,
+  // Yuleisi Virginia y María Fernanda Páez (puedeAjustarDestajo) pueden
+  // agregarle a un trabajador (que NO tenga salario mínimo garantizado) un
+  // valor + observación en texto libre para esa quincena puntual. Se
+  // recalcula solo (ver `resultadosFinal` más abajo), sin tener que volver
+  // a darle "Calcular".
+  const [ajustando, setAjustando] = useState(null); // trabajador o null
+  const [ajusteValorForm, setAjusteValorForm] = useState("");
+  const [ajusteObsForm, setAjusteObsForm] = useState("");
 
   const [areaFiltro, setAreaFiltro] = useState("");
   const personas = trabajadores.filter((t) => t.tipoNomina === "Destajo" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro));
@@ -6078,17 +6126,51 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
       const base = calcularLiquidacionDestajo(t, netoProduccion);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
-      return { trabajador: t, calculo: { ...base, diasInasistencia, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar - descuentoCobros } };
+      return { trabajador: t, calculo: { ...base, diasInasistencia, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, descuentoCobros, cobrosDetalle, netoAntesDeAjuste: base.netoBase - descuentoCobros } };
     });
     setResultados(filas);
     setGuardadoOk(false);
   }
+  // (2026-09-18, a pedido de Fredy) Capa final que le monta a cada fila el
+  // Ajuste manual vigente (o, si el trabajador tiene salario mínimo
+  // garantizado, la "ayuda" ya calculada sola) -- separado de `calcular()`
+  // para que cambiar un Ajuste en Firestore recalcule esta pantalla al
+  // instante, sin tener que volver a darle "Calcular".
+  const resultadosFinal = useMemo(() => {
+    if (!resultados) return null;
+    return resultados.map((r) => {
+      if (r.calculo.salarioMinimoGarantizado) {
+        return { ...r, calculo: { ...r.calculo, ajusteValor: 0, ajusteObservacion: "", netoAPagar: r.calculo.netoAntesDeAjuste } };
+      }
+      const ajusteDoc = (ajustesDestajo || []).find((a) => a.id === `${r.trabajador.id}__${periodoId}`);
+      const ajusteValor = ajusteDoc ? Number(ajusteDoc.valor) || 0 : 0;
+      const ajusteObservacion = ajusteDoc ? (ajusteDoc.observacion || "") : "";
+      return { ...r, calculo: { ...r.calculo, ajusteValor, ajusteObservacion, netoAPagar: r.calculo.netoAntesDeAjuste + ajusteValor } };
+    });
+  }, [resultados, ajustesDestajo, periodoId]);
+  function abrirAjuste(t) {
+    const existente = (ajustesDestajo || []).find((a) => a.id === `${t.id}__${periodoId}`);
+    setAjusteValorForm(existente ? String(existente.valor) : "");
+    setAjusteObsForm(existente ? existente.observacion || "" : "");
+    setAjustando(t);
+  }
+  async function guardarAjuste() {
+    if (!ajustando) return;
+    await onGuardarAjusteDestajo({
+      trabajadorId: ajustando.id,
+      trabajadorNombre: ajustando.nombre,
+      periodoId,
+      valor: Number(ajusteValorForm) || 0,
+      observacion: ajusteObsForm,
+    });
+    setAjustando(null);
+  }
 
   async function confirmarYGuardar() {
-    if (!resultados) return;
+    if (!resultadosFinal) return;
     setGuardando(true);
     try {
-      for (const { trabajador, calculo } of resultados) {
+      for (const { trabajador, calculo } of resultadosFinal) {
         await onGuardarLiquidacion({
           id: `${trabajador.id}__${periodoId}`,
           periodoId, trabajadorId: trabajador.id, nombre: trabajador.nombre,
@@ -6104,14 +6186,16 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
     }
   }
 
-  const totales = resultados ? resultados.reduce((s, r) => ({
+  const totales = resultadosFinal ? resultadosFinal.reduce((s, r) => ({
     neto: s.neto + r.calculo.netoAPagar,
     descuentoCobros: s.descuentoCobros + (r.calculo.descuentoCobros || 0),
+    ajustes: s.ajustes + (r.calculo.ajusteValor || 0),
+    ayudaSalarioMinimo: s.ayudaSalarioMinimo + (r.calculo.ayudaSalarioMinimo || 0),
     cesantias: s.cesantias + r.calculo.cesantiasPeriodo,
     intereses: s.intereses + r.calculo.interesesPeriodo,
     prima: s.prima + r.calculo.primaPeriodo,
     vacaciones: s.vacaciones + r.calculo.vacacionesPeriodo,
-  }), { neto: 0, descuentoCobros: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
+  }), { neto: 0, descuentoCobros: 0, ajustes: 0, ayudaSalarioMinimo: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
 
   return (
     <div>
@@ -6126,6 +6210,23 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
           onLimpiar={(fecha) => onLimpiarFaltaJustificada(normalizarNombreHuellero(detalleFaltas.trabajador.nombre), fecha)}
           onClose={() => setDetalleFaltas(null)}
         />
+      )}
+      {ajustando && (
+        <Modal title={`Ajuste de Nómina — ${ajustando.nombre}`} onClose={() => setAjustando(null)} width={480}>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
+            Se descuenta o se suma solo de la quincena {periodoId} de este trabajador. Se recalcula solo, sin tener que volver a darle "Calcular".
+          </div>
+          <Field label="Valor del ajuste (positivo para sumar, negativo para restar)">
+            <FInput type="number" value={ajusteValorForm} onChange={setAjusteValorForm} placeholder="Ej: 50000 o -50000" />
+          </Field>
+          <Field label="Observación">
+            <FInput value={ajusteObsForm} onChange={setAjusteObsForm} placeholder="Ej: Le faltó contar 200 unidades de la referencia X" />
+          </Field>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+            <Btn variant="secondary" onClick={() => setAjustando(null)}>Cancelar</Btn>
+            <Btn onClick={guardarAjuste}>Guardar ajuste</Btn>
+          </div>
+        </Modal>
       )}
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
         Liquidación quincenal de los trabajadores "Destajo" (se les paga lo que produjeron, registrado en Registrar Producción) — acá se junta ese total con las prestaciones que se provisionan (cesantías, prima, vacaciones) sobre su sueldo de referencia. No se envía a TNS.
@@ -6160,6 +6261,8 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
             <KPI icon="💵" label="Neto a pagar (producción)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
             <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
+            <KPI icon="🛠" label="Ajustes manuales" value={fmtMoney(totales.ajustes)} color={C.amber} bg={C.amberBg} />
+            <KPI icon="🆘" label="Ayuda salario mínimo garantizado" value={fmtMoney(totales.ayudaSalarioMinimo)} color={C.red} bg={C.redBg} />
             <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
             <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
             <KPI icon="🏖️" label="Vacaciones (provisión)" value={fmtMoney(totales.vacaciones)} color={C.amber} bg={C.amberBg} />
@@ -6167,23 +6270,45 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
           <Tabla
             vacio="Sin resultados."
             columnas={[
-              { key: "nombre", label: "Nombre", render: (f) => f.trabajador.nombre },
+              { key: "nombre", label: "Nombre", render: (f) => (
+                <span>{f.trabajador.nombre}{f.calculo.salarioMinimoGarantizado && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.amberBg, color: C.amber }} title="Se le paga fijo el salario mínimo, no por producción">🔒 Mínimo</span>}</span>
+              ) },
               { key: "diasInasistencia", label: "Días sin justificar", align: "right", render: (f) => (
                 <span onClick={() => setDetalleFaltas({ trabajador: f.trabajador, fechas: f.calculo.fechasFalta || [] })} style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green, cursor: "pointer", textDecoration: "underline" }} title="Ver el detalle de las fechas">{f.calculo.diasInasistencia}</span>
               ) },
               { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
                 <span style={{ fontWeight: 700, color: C.green }}>{f.calculo.diasTrabajados}</span>
               ) },
+              { key: "produccionReal", label: "Producción real", align: "right", render: (f) => fmtMoney(f.calculo.produccionReal) },
               { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.calculo.descuentoCobros > 0 ? (
                 <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.cobrosDetalle || []).map((c) => `Lote ${c.numLote}: ${c.tipo || "cobro"} ${fmtMoney(c.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoCobros)}</span>
               ) : <span style={{ color: C.slate }}>—</span> },
-              { key: "netoAPagar", label: "Neto a pagar (producción)", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
+              { key: "ajuste", label: "Ajuste / Ayuda", align: "right", render: (f) => {
+                if (f.calculo.salarioMinimoGarantizado) {
+                  return f.calculo.ayudaSalarioMinimo > 0 ? (
+                    <span style={{ color: C.red, fontWeight: 700 }} title="Lo que produjo no alcanzó el salario mínimo garantizado -- esto es lo que tuvo que poner la empresa de más">🆘 {fmtMoney(f.calculo.ayudaSalarioMinimo)}</span>
+                  ) : (
+                    <span style={{ color: C.green, fontWeight: 700 }} title="Con lo que produjo alcanzaba igual o más del salario mínimo">✓ Alcanzó la meta</span>
+                  );
+                }
+                if (puedeAjustarDestajo) {
+                  return (
+                    <Btn small variant="secondary" onClick={() => abrirAjuste(f.trabajador)}>
+                      {f.calculo.ajusteValor ? `🛠 ${f.calculo.ajusteValor > 0 ? "+" : ""}${fmtMoney(f.calculo.ajusteValor)}` : "🛠 Ajuste"}
+                    </Btn>
+                  );
+                }
+                return f.calculo.ajusteValor ? (
+                  <span style={{ color: f.calculo.ajusteValor > 0 ? C.green : C.red, fontWeight: 700 }} title={f.calculo.ajusteObservacion}>{f.calculo.ajusteValor > 0 ? "+" : ""}{fmtMoney(f.calculo.ajusteValor)}</span>
+                ) : <span style={{ color: C.slate }}>—</span>;
+              } },
+              { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
               { key: "cesantiasPeriodo", label: "Cesantías (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.cesantiasPeriodo) },
               { key: "interesesPeriodo", label: "Intereses cesantías", align: "right", render: (f) => fmtMoney(f.calculo.interesesPeriodo) },
               { key: "primaPeriodo", label: "Prima (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.primaPeriodo) },
               { key: "vacacionesPeriodo", label: "Vacaciones (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.vacacionesPeriodo) },
             ]}
-            filas={resultados}
+            filas={resultadosFinal}
           />
           <div style={{ marginTop: 16 }}>
             <Btn onClick={confirmarYGuardar} disabled={guardando}>
@@ -7410,7 +7535,12 @@ function RegistrarHorasView({ trabajadores, horas, currentUser, onGuardar, onBor
 // que llama a window.print() — así el trabajador o el admin lo abre en el
 // navegador y ahí mismo lo guarda como PDF, sin depender de ninguna librería
 // nueva (jsPDF, etc.) que hubiera que instalar aparte.
-function exportDesprendiblePagoHTML({ trabajador, desde, hasta, label, produccionItems, horasItems, totalProduccion, totalHoras, totalGeneral }) {
+function exportDesprendiblePagoHTML({
+  trabajador, desde, hasta, label, produccionItems, horasItems, totalProduccion, totalHoras, totalGeneral,
+  cobrosDetalle, descuentoCobros,
+  salarioMinimoGarantizado, sueldoFijoQuincena, auxilioFijoQuincena,
+  ajusteValor, ajusteObservacion,
+}) {
   const fechaGen = new Date().toISOString().slice(0, 10);
   const filasProd = (produccionItems || [])
     .map(
@@ -7438,6 +7568,81 @@ function exportDesprendiblePagoHTML({ trabajador, desde, hasta, label, produccio
     </tr>`
     )
     .join("");
+  // (2026-09-18, a pedido de Fredy) Sección de Deducciones -- mismo detalle
+  // de cobros pendientes (motivo/valor/fecha) que ya se ve en Nómina, para
+  // que quede claro por qué el Total a Pagar es menor a lo producido.
+  const filasDeducciones = (cobrosDetalle || [])
+    .map(
+      (c, i) => `
+    <tr style="background:${i % 2 === 0 ? "#F7F4F0" : "#fff"}">
+      <td style="padding:8px 10px;color:#5A5A7A;font-size:12px">${c.fecha ? fmtFechaISO(c.fecha) : "—"}</td>
+      <td style="padding:8px 10px;font-weight:600">${c.tipo || "Cobro"}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:700;color:#E85D4A">-${fmtMoney(c.valor)}</td>
+    </tr>`
+    )
+    .join("");
+  // (2026-09-18, a pedido de Fredy) A quien tenga "Salario mínimo
+  // garantizado" ya no se le paga por producción -- el desprendible le
+  // muestra Sueldo + Auxilio de Transporte en vez de la tabla de
+  // Producción/Horas.
+  const seccionProduccionYHoras = salarioMinimoGarantizado
+    ? `<div class="section-title">💰 Salario</div>
+    <div class="info-row" style="grid-template-columns:1fr 1fr">
+      <div class="info-card"><label>Sueldo (quincena)</label><span>${fmtMoney(sueldoFijoQuincena)}</span></div>
+      <div class="info-card"><label>Auxilio de Transporte</label><span>${fmtMoney(auxilioFijoQuincena)}</span></div>
+    </div>`
+    : `<div class="section-title">🧵 Producción por Proceso</div>
+    ${
+      filasProd
+        ? `<table>
+          <thead><tr>
+            <th>Fecha</th><th>Proceso</th><th>Lote</th><th>Referencia</th>
+            <th style="text-align:right">Cant.</th><th style="text-align:right">Precio/Und</th><th style="text-align:right">Total</th>
+          </tr></thead>
+          <tbody>${filasProd}</tbody>
+        </table>`
+        : `<div class="no-rows">Sin producción registrada en esta quincena.</div>`
+    }
+    <div class="section-title">🕐 Horas Sueltas</div>
+    ${
+      filasHoras
+        ? `<table>
+          <thead><tr><th>Fecha</th><th>Concepto</th><th style="text-align:right">Horas</th><th style="text-align:right">Tarifa/Hora</th><th style="text-align:right">Total</th></tr></thead>
+          <tbody>${filasHoras}</tbody>
+        </table>`
+        : `<div class="no-rows">Sin horas sueltas registradas en esta quincena.</div>`
+    }`;
+  const seccionDeducciones = `
+    <div class="section-title">🔻 Deducciones</div>
+    ${
+      filasDeducciones
+        ? `<table>
+          <thead><tr><th>Fecha</th><th>Motivo</th><th style="text-align:right">Valor</th></tr></thead>
+          <tbody>${filasDeducciones}</tbody>
+        </table>`
+        : `<div class="no-rows">Sin deducciones pendientes esta quincena.</div>`
+    }`;
+  const seccionAjuste = (!salarioMinimoGarantizado && ajusteValor)
+    ? `<div class="section-title">🛠 Ajuste de Nómina</div>
+    <div class="info-card" style="max-width:100%">
+      <label>${ajusteObservacion || "Ajuste"}</label>
+      <span>${ajusteValor > 0 ? "+" : ""}${fmtMoney(ajusteValor)}</span>
+    </div>`
+    : "";
+  // Tarjetas de totales -- varían según si es salario mínimo garantizado,
+  // si tuvo deducciones y si tuvo un ajuste manual, para no mostrar
+  // tarjetas vacías/en $0 sin sentido.
+  const cards = [];
+  if (salarioMinimoGarantizado) {
+    cards.push({ label: "Sueldo + Auxilio", value: fmtMoney((sueldoFijoQuincena || 0) + (auxilioFijoQuincena || 0)), bg: "#EBF1F7", color: "#3D6B9E" });
+  } else {
+    cards.push({ label: "Total Producción", value: fmtMoney(totalProduccion), bg: "#EBF1F7", color: "#3D6B9E" });
+    cards.push({ label: "Total Horas", value: fmtMoney(totalHoras), bg: "#F3EEF9", color: "#7B5EA7" });
+  }
+  if (descuentoCobros > 0) cards.push({ label: "Deducciones", value: `-${fmtMoney(descuentoCobros)}`, bg: "#FDF0EE", color: "#E85D4A" });
+  if (!salarioMinimoGarantizado && ajusteValor) cards.push({ label: "Ajuste", value: `${ajusteValor > 0 ? "+" : ""}${fmtMoney(ajusteValor)}`, bg: "#FDF5E6", color: "#C47C1A" });
+  cards.push({ label: "Total a Pagar", value: fmtMoney(totalGeneral), bg: "#EBF7F2", color: "#2D9E6B" });
+  const totalesHTML = cards.map((c) => `<div class="total-card" style="background:${c.bg};color:${c.color}"><label>${c.label}</label><div class="val">${c.value}</div></div>`).join("");
   const html = `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -7462,7 +7667,7 @@ function exportDesprendiblePagoHTML({ trabajador, desde, hasta, label, produccio
   table{width:100%;border-collapse:collapse;font-size:12.5px}
   th{background:#1A1A2E;color:#C8B8A2;padding:9px 10px;text-align:left;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em}
   .no-rows{text-align:center;padding:20px;color:#5A5A7A;font-size:12.5px}
-  .totales{margin-top:22px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  .totales{margin-top:22px;display:grid;grid-template-columns:repeat(${cards.length},1fr);gap:12px}
   .total-card{border-radius:10px;padding:14px 16px;text-align:center}
   .total-card label{display:block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;opacity:0.85}
   .total-card .val{font-size:19px;font-weight:900}
@@ -7489,31 +7694,11 @@ function exportDesprendiblePagoHTML({ trabajador, desde, hasta, label, produccio
       <div class="info-card"><label>Cédula</label><span>${trabajador.cedula || "—"}</span></div>
       <div class="info-card"><label>Área</label><span>${trabajador.area || "—"}</span></div>
     </div>
-    <div class="section-title">🧵 Producción por Proceso</div>
-    ${
-      filasProd
-        ? `<table>
-          <thead><tr>
-            <th>Fecha</th><th>Proceso</th><th>Lote</th><th>Referencia</th>
-            <th style="text-align:right">Cant.</th><th style="text-align:right">Precio/Und</th><th style="text-align:right">Total</th>
-          </tr></thead>
-          <tbody>${filasProd}</tbody>
-        </table>`
-        : `<div class="no-rows">Sin producción registrada en esta quincena.</div>`
-    }
-    <div class="section-title">🕐 Horas Sueltas</div>
-    ${
-      filasHoras
-        ? `<table>
-          <thead><tr><th>Fecha</th><th>Concepto</th><th style="text-align:right">Horas</th><th style="text-align:right">Tarifa/Hora</th><th style="text-align:right">Total</th></tr></thead>
-          <tbody>${filasHoras}</tbody>
-        </table>`
-        : `<div class="no-rows">Sin horas sueltas registradas en esta quincena.</div>`
-    }
+    ${seccionProduccionYHoras}
+    ${seccionDeducciones}
+    ${seccionAjuste}
     <div class="totales">
-      <div class="total-card" style="background:#EBF1F7;color:#3D6B9E"><label>Total Producción</label><div class="val">${fmtMoney(totalProduccion)}</div></div>
-      <div class="total-card" style="background:#F3EEF9;color:#7B5EA7"><label>Total Horas</label><div class="val">${fmtMoney(totalHoras)}</div></div>
-      <div class="total-card" style="background:#EBF7F2;color:#2D9E6B"><label>Total a Pagar</label><div class="val">${fmtMoney(totalGeneral)}</div></div>
+      ${totalesHTML}
     </div>
     <div class="firma">
       <div>Firma del Trabajador</div>
@@ -7536,7 +7721,7 @@ function exportDesprendiblePagoHTML({ trabajador, desde, hasta, label, produccio
   a.click();
   URL.revokeObjectURL(url);
 }
-function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNomina, puedeCerrarQuincena, cierres, onCerrar, onReabrir, lotesConCobros }) {
+function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNomina, puedeCerrarQuincena, cierres, onCerrar, onReabrir, lotesConCobros, ajustesDestajo }) {
   const [qOffset, setQOffset] = useState(0);
   const [trabajadorAbierto, setTrabajadorAbierto] = useState(null);
   // (2026-09-12, a pedido de Fredy) Cierre de Quincena ahora es POR TIPO de
@@ -7550,7 +7735,11 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
   // Área, y el cierre queda guardado aparte del general (ver `onCerrar` /
   // `guardarCierre` en ModuloNomina, que ahora incluye el Área en el id).
   const [areaSel, setAreaSel] = useState("");
-  const { desde, hasta, label } = quincenaDe(qOffset);
+  const { desde, hasta, label, year, month, mitad } = quincenaDe(qOffset);
+  // Mismo formato de periodoId que arma Nómina -> Destajo
+  // (`${anio}-${mes}-Q${quincena}`) -- necesario para poder cruzar el
+  // Ajuste de Nómina de cada trabajador con lo que aparece acá.
+  const periodoIdActual = `${year}-${String(month + 1).padStart(2, "0")}-Q${mitad}`;
   const prodQuincena = produccion.filter((p) => p.fecha >= desde && p.fecha <= hasta);
   const horasQuincena = horas.filter((h) => h.fecha >= desde && h.fecha <= hasta);
   const cierre = (cierres || []).find((c) => c.desde === desde && c.tipoNomina === tipoSel && (c.area || "") === areaSel);
@@ -7569,7 +7758,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
     const trabajadoresTipo = trabajadores.filter((t) => t.tipoNomina === tipoSel && (!areaSel || (t.area || "Sin asignar") === areaSel));
     const idsTipo = new Set(trabajadoresTipo.map((t) => t.id));
     const mapa = new Map();
-    trabajadoresTipo.forEach((t) => mapa.set(t.id, { trabajadorId: t.id, nombre: t.nombre, totalProduccion: 0, totalHoras: 0, unidades: 0, horasCant: 0 }));
+    trabajadoresTipo.forEach((t) => mapa.set(t.id, { trabajadorId: t.id, nombre: t.nombre, totalProduccion: 0, totalHoras: 0, unidades: 0, horasCant: 0, salarioMinimoGarantizado: !!t.salarioMinimoGarantizado, auxilioTransporte: t.auxilioTransporte }));
     prodQuincena.forEach((p) => {
       if (!idsTipo.has(p.trabajadorId)) return;
       const g = mapa.get(p.trabajadorId);
@@ -7587,13 +7776,31 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         const totalBruto = g.totalProduccion + g.totalHoras;
         const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, g.trabajadorId);
         const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
-        return { ...g, totalBruto, descuentoCobros, cobrosDetalle, totalGeneral: totalBruto - descuentoCobros };
+        let ajusteValor = 0, ajusteObservacion = "", ayudaSalarioMinimo = 0;
+        let sueldoFijoQuincena = 0, auxilioFijoQuincena = 0;
+        let netoAntesDeAjuste = totalBruto - descuentoCobros;
+        const salarioMinimoGarantizado = tipoSel === "Destajo" && !!g.salarioMinimoGarantizado;
+        if (salarioMinimoGarantizado) {
+          sueldoFijoQuincena = SMMLV_2026 / 2;
+          auxilioFijoQuincena = (Number(g.auxilioTransporte) || 0) / 2;
+          const pagoFijo = sueldoFijoQuincena + auxilioFijoQuincena;
+          ayudaSalarioMinimo = Math.max(0, pagoFijo - totalBruto);
+          netoAntesDeAjuste = pagoFijo - descuentoCobros;
+        } else if (tipoSel === "Destajo") {
+          const ajusteDoc = (ajustesDestajo || []).find((a) => a.id === `${g.trabajadorId}__${periodoIdActual}`);
+          ajusteValor = ajusteDoc ? Number(ajusteDoc.valor) || 0 : 0;
+          ajusteObservacion = ajusteDoc ? (ajusteDoc.observacion || "") : "";
+        }
+        const totalGeneral = netoAntesDeAjuste + ajusteValor;
+        return { ...g, totalBruto, descuentoCobros, cobrosDetalle, salarioMinimoGarantizado, ayudaSalarioMinimo, sueldoFijoQuincena, auxilioFijoQuincena, ajusteValor, ajusteObservacion, totalGeneral };
       })
-      .filter((g) => g.totalBruto > 0 || g.unidades > 0 || g.horasCant > 0)
+      .filter((g) => g.totalBruto > 0 || g.unidades > 0 || g.horasCant > 0 || g.salarioMinimoGarantizado)
       .sort((a, b) => b.totalGeneral - a.totalGeneral);
-  }, [trabajadores, tipoSel, areaSel, prodQuincena, horasQuincena, lotesConCobros]);
+  }, [trabajadores, tipoSel, areaSel, prodQuincena, horasQuincena, lotesConCobros, ajustesDestajo, periodoIdActual]);
   const totalQuincena = porTrabajador.reduce((s, g) => s + g.totalGeneral, 0);
   const totalDescuentos = porTrabajador.reduce((s, g) => s + g.descuentoCobros, 0);
+  const totalAjustes = porTrabajador.reduce((s, g) => s + (g.ajusteValor || 0), 0);
+  const totalAyudaSalarioMinimo = porTrabajador.reduce((s, g) => s + (g.ayudaSalarioMinimo || 0), 0);
   const detalleAbierto = trabajadorAbierto
     ? {
         produccion: prodQuincena.filter((p) => p.trabajadorId === trabajadorAbierto.trabajadorId),
@@ -7630,6 +7837,13 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
       horasItems: horasQuincena.filter((h) => h.trabajadorId === g.trabajadorId),
       totalProduccion: g.totalProduccion,
       totalHoras: g.totalHoras,
+      cobrosDetalle: g.cobrosDetalle,
+      descuentoCobros: g.descuentoCobros,
+      salarioMinimoGarantizado: g.salarioMinimoGarantizado,
+      sueldoFijoQuincena: g.sueldoFijoQuincena,
+      auxilioFijoQuincena: g.auxilioFijoQuincena,
+      ajusteValor: g.ajusteValor,
+      ajusteObservacion: g.ajusteObservacion,
       totalGeneral: g.totalGeneral,
     });
   }
@@ -7698,6 +7912,12 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         <KPI icon="👷" label="Trabajadores con pago esta quincena" value={fmtNum(porTrabajador.length)} color={C.ink} bg={C.canvas} />
         <KPI icon="⏳" label="Descuentos por cobros pendientes" value={fmtMoney(totalDescuentos)} color={C.amber} bg={C.amberBg} />
         <KPI icon="💰" label="Total a Pagar" value={fmtMoney(totalQuincena)} color={C.green} bg={C.greenBg} />
+        {tipoSel === "Destajo" && (totalAjustes !== 0 || totalAyudaSalarioMinimo > 0) && (
+          <>
+            {totalAjustes !== 0 && <KPI icon="🛠" label="Ajustes manuales" value={fmtMoney(totalAjustes)} color={C.amber} bg={C.amberBg} />}
+            {totalAyudaSalarioMinimo > 0 && <KPI icon="🆘" label="Ayuda salario mínimo garantizado" value={fmtMoney(totalAyudaSalarioMinimo)} color={C.red} bg={C.redBg} />}
+          </>
+        )}
       </div>
       <div style={{ marginBottom: 14, display: "flex", gap: 10 }}>
         <Btn variant="secondary" small onClick={exportarExcel} disabled={!porTrabajador.length}>⬇ Exportar a Excel</Btn>
@@ -7715,12 +7935,24 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         vacio="Sin registros esta quincena."
         onRowClick={(f) => setTrabajadorAbierto(f)}
         columnas={[
-          { key: "nombre", label: "Trabajador" },
+          { key: "nombre", label: "Trabajador", render: (f) => (
+            <span>{f.nombre}{f.salarioMinimoGarantizado && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.amberBg, color: C.amber }} title="Se le paga fijo el salario mínimo, no por producción">🔒 Mínimo</span>}</span>
+          ) },
           { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
           { key: "totalProduccion", label: "Total Producción", align: "right", render: (f) => fmtMoney(f.totalProduccion) },
           { key: "horasCant", label: "Horas", align: "right", render: (f) => fmtNum(f.horasCant) },
           { key: "totalHoras", label: "Total Horas", align: "right", render: (f) => fmtMoney(f.totalHoras) },
           { key: "descuentoCobros", label: "Descuentos", align: "right", render: (f) => f.descuentoCobros > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>-{fmtMoney(f.descuentoCobros)}</span> : <span style={{ color: C.slate }}>—</span> },
+          { key: "ajuste", label: "Ajuste / Ayuda", align: "right", render: (f) => {
+            if (f.salarioMinimoGarantizado) {
+              return f.ayudaSalarioMinimo > 0
+                ? <span style={{ color: C.red, fontWeight: 700 }} title="Lo que produjo no alcanzó el salario mínimo garantizado -- esto es lo que tuvo que poner la empresa de más">🆘 {fmtMoney(f.ayudaSalarioMinimo)}</span>
+                : <span style={{ color: C.green, fontWeight: 700 }}>✓ Alcanzó la meta</span>;
+            }
+            return f.ajusteValor ? (
+              <span style={{ color: f.ajusteValor > 0 ? C.green : C.red, fontWeight: 700 }} title={f.ajusteObservacion}>{f.ajusteValor > 0 ? "+" : ""}{fmtMoney(f.ajusteValor)}</span>
+            ) : <span style={{ color: C.slate }}>—</span>;
+          } },
           { key: "totalGeneral", label: "Total a Pagar", align: "right", render: (f) => <strong>{fmtMoney(f.totalGeneral)}</strong> },
           {
             key: "acciones", label: "", align: "right",
@@ -8750,7 +8982,7 @@ function DiagnosticoDuplicadosView({ diasTrabajados, faltas, anomalias, retardos
     </div>
   );
 }
-export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual }) {
+export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
   // reducido, ya filtrado a su propia gente, en vez del panel completo de
@@ -8808,6 +9040,13 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // cobros (liquidaciones, Resumen, Deducciones) los vea igual sin importar
   // de dónde vinieron.
   const [cobrosManuales, setCobrosManuales] = useState([]);
+  // (2026-09-18, a pedido de Fredy) "Ajuste de Nómina" de Destajo -- un
+  // ajuste (valor + observación) por trabajador por quincena, editable
+  // solo por quien tenga "nomina_ajustar_destajo" (administrador, Yuleisi
+  // Virginia, María Fernanda Páez). Aplica solo a Destajo y solo a
+  // trabajadores SIN salario mínimo garantizado (a esos, en cambio, se les
+  // calcula sola la "ayuda" -- ver calcularLiquidacionDestajo).
+  const [ajustesDestajo, setAjustesDestajo] = useState([]);
   // (2026-09-02, a pedido de Fredy) Solo para el encadenamiento automático
   // Dije -> Terminación (ver guardarProduccion/encadenarDijeATerminacion
   // más abajo): quién es la líder dueña de "Terminación" (por areaNomina)
@@ -8842,6 +9081,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_prestamos"), (snap) => setPrestamos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => setLotesConCobros(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_cobros_manuales"), (snap) => setCobrosManuales(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_ajustes_destajo"), (snap) => setAjustesDestajo(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "users"), (snap) => setUsuariosApp(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "planeacion_programacion_procesos"), (snap) => setProgramacionesProcesos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
     ];
@@ -9172,6 +9412,21 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // Yuleisi Virginia, María Fernanda Páez). Queda "pendiente de cobrar"
   // exactamente igual que uno de Bodega: se descuenta solo de la SIGUIENTE
   // liquidación de ese trabajador (ver marcarCobrosComoCobrados arriba).
+  // (2026-09-18, a pedido de Fredy) Guarda/corrige el Ajuste de Nómina de
+  // un trabajador de Destajo para una quincena puntual -- id determinístico
+  // (trabajador+periodo) para que volver a guardar sobre el mismo corrija
+  // el valor/observación anterior en vez de duplicarlo.
+  async function guardarAjusteDestajo({ trabajadorId, trabajadorNombre, periodoId, valor, observacion }) {
+    await fsSave("nomina_ajustes_destajo", `${trabajadorId}__${periodoId}`, {
+      trabajadorId,
+      trabajadorNombre: trabajadorNombre || "",
+      periodoId,
+      valor: Number(valor) || 0,
+      observacion: (observacion || "").trim(),
+      registradoPor: currentUser?.name || currentUser?.username || "",
+      registradoEn: new Date().toISOString(),
+    });
+  }
   async function agregarCobroManual({ trabajadorId, trabajadorNombre, tipo, valor, fecha }) {
     const ref = doc(collection(db, "nomina_cobros_manuales"));
     await setDoc(ref, {
@@ -9354,7 +9609,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "dashboard" && !areaLider && !soloNovedades && <DashboardNominaView trabajadores={trabajadores} precios={precios} produccion={produccion} horas={horas} />}
           {subView === "produccion" && !soloNovedades && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} costosTeoricoProceso={costosTeoricoProceso} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
           {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
-          {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} />}
+          {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} ajustesDestajo={ajustesDestajo} />}
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
           {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
@@ -9384,7 +9639,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
           {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} />}
           {subView === "historial_fiscal_destajo" && !areaLider && !soloNovedades && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
-          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
+          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
           {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} />}
           {subView === "historial_lote" && !soloNovedades && <HistorialLoteView produccion={produccion} />}
