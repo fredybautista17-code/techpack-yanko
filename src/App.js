@@ -8958,7 +8958,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
     { area: "🏭 Planta", items: [["planta", "Planta"]] },
     { area: "📦 Bodega", items: [["bodega", "Bodega"]] },
-    { area: "👷 Nómina", items: [["nomina", "Completa (todo el módulo)"], ["nomina_novedades", "Solo Novedades"], ["nomina_editar_catalogos", "Puede editar catálogos (Trabajadores, Turnos, etc.) sin admin total"], ["nomina_ver_anomalias_huellero", "Puede ver Anomalías Huellero"], ["nomina_ver_duplicados_huellero", "Puede ver Diagnóstico de Duplicados"]] },
+    { area: "👷 Nómina", items: [["nomina", "Completa (todo el módulo)"], ["nomina_novedades", "Solo Novedades"], ["nomina_editar_catalogos", "Puede editar catálogos (Trabajadores, Turnos, etc.) sin admin total"], ["nomina_ver_anomalias_huellero", "Puede ver Anomalías Huellero"], ["nomina_ver_duplicados_huellero", "Puede ver Diagnóstico de Duplicados"], ["nomina_cerrar_quincena", "Puede cerrar Quincena (General y por Área)"]] },
     { area: "🎯 KPIs", items: [["kpis", "KPIs"]] },
     { area: "📋 Informes", items: [["informes", "Informes"]] },
     { area: "🗂️ Áreas", items: [["areas_centro_costo", "Centro de Costo"], ["areas_estadisticas", "Estadísticas"], ["areas_reclamos", "Reclamos"], ["areas_programador", "Programador"]] },
@@ -13084,6 +13084,13 @@ function AppInner() {
   // patrón que el de Anomalías Huellero -- permiso puntual para ver
   // "Diagnóstico de Duplicados (Huellero)" sin necesidad de admin total.
   const canVerDuplicadosHuellero = moduloVisible(userRoleData, "nomina_ver_duplicados_huellero", currentUser?.isAdmin);
+  // (2026-09-18, a pedido de Fredy) "nomina_cerrar_quincena": permiso
+  // puntual para cerrar la Quincena -- tanto por Área puntual como el
+  // cierre General de toda la empresa (los dos usan el mismo botón
+  // "Cerrar Quincena" en Resumen, solo cambia si hay un Área elegida o
+  // no). Antes solo isAdmin podía cerrar; ahora también quien tenga este
+  // permiso marcado, además de isAdmin de siempre.
+  const canCerrarQuincena = moduloVisible(userRoleData, "nomina_cerrar_quincena", currentUser?.isAdmin);
   // (2026-09-17, a pedido de Fredy) "contabilidad_bases_dado_por_cumplido":
   // permiso puntual para que alguien sin admin total pueda crear/configurar
   // las Categorías BASE (y porcentajes de la fórmula) de Dado por Cumplido
@@ -13289,7 +13296,7 @@ function AppInner() {
     return <ModuloBodega currentUser={currentUser} puedeAprobarDespacho={perms.aprobarDespacho} canAccessContabilidad={canAccessContabilidad} soloLecturaBodega={currentUser?.role === "Cliente"} puedeVerControlDespacho={perms.verControlDespacho} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "nomina") {
-    return <ModuloNomina currentUser={currentUser} soloNovedades={soloNovedadesNomina} puedeEditarCatalogos={canAccessNominaEditarCatalogos} puedeVerAnomaliasHuellero={canVerAnomaliasHuellero} puedeVerDuplicadosHuellero={canVerDuplicadosHuellero} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloNomina currentUser={currentUser} soloNovedades={soloNovedadesNomina} puedeEditarCatalogos={canAccessNominaEditarCatalogos} puedeVerAnomaliasHuellero={canVerAnomaliasHuellero} puedeVerDuplicadosHuellero={canVerDuplicadosHuellero} puedeCerrarQuincena={canCerrarQuincena} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "informes") {
     return <ModuloInformes currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;

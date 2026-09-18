@@ -7499,7 +7499,7 @@ function exportDesprendiblePagoHTML({ trabajador, desde, hasta, label, produccio
   a.click();
   URL.revokeObjectURL(url);
 }
-function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, cierres, onCerrar, onReabrir }) {
+function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNomina, puedeCerrarQuincena, cierres, onCerrar, onReabrir }) {
   const [qOffset, setQOffset] = useState(0);
   const [trabajadorAbierto, setTrabajadorAbierto] = useState(null);
   // (2026-09-12, a pedido de Fredy) Cierre de Quincena ahora es POR TIPO de
@@ -7507,12 +7507,29 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, cierres,
   // distinguir, y no quedaba claro cuál se estaba viendo o cerrando. Cada
   // tipo se calcula y se cierra de forma independiente.
   const [tipoSel, setTipoSel] = useState("Destajo");
+  // (2026-09-18, a pedido de Fredy) Cierre por Área -- "" significa "Toda
+  // la empresa" (el cierre general de siempre). Eligiendo un Área puntual,
+  // todo lo de abajo (tabla, total, botón Cerrar) se filtra solo a esa
+  // Área, y el cierre queda guardado aparte del general (ver `onCerrar` /
+  // `guardarCierre` en ModuloNomina, que ahora incluye el Área en el id).
+  const [areaSel, setAreaSel] = useState("");
   const { desde, hasta, label } = quincenaDe(qOffset);
   const prodQuincena = produccion.filter((p) => p.fecha >= desde && p.fecha <= hasta);
   const horasQuincena = horas.filter((h) => h.fecha >= desde && h.fecha <= hasta);
-  const cierre = (cierres || []).find((c) => c.desde === desde && c.tipoNomina === tipoSel);
+  const cierre = (cierres || []).find((c) => c.desde === desde && c.tipoNomina === tipoSel && (c.area || "") === areaSel);
+  // Áreas que tienen al menos un trabajador de este tipo -- son las que
+  // hay que cerrar una por una antes de poder cerrar el General de este
+  // tipo (ver `areasFaltantes` más abajo).
+  const areasDeEsteTipo = useMemo(() => {
+    const set = new Set();
+    trabajadores.filter((t) => t.tipoNomina === tipoSel).forEach((t) => set.add(t.area || "Sin asignar"));
+    return [...set].sort();
+  }, [trabajadores, tipoSel]);
+  const areasFaltantes = areaSel
+    ? []
+    : areasDeEsteTipo.filter((a) => !(cierres || []).some((c) => c.desde === desde && c.tipoNomina === tipoSel && c.area === a));
   const porTrabajador = useMemo(() => {
-    const trabajadoresTipo = trabajadores.filter((t) => t.tipoNomina === tipoSel);
+    const trabajadoresTipo = trabajadores.filter((t) => t.tipoNomina === tipoSel && (!areaSel || (t.area || "Sin asignar") === areaSel));
     const idsTipo = new Set(trabajadoresTipo.map((t) => t.id));
     const mapa = new Map();
     trabajadoresTipo.forEach((t) => mapa.set(t.id, { trabajadorId: t.id, nombre: t.nombre, totalProduccion: 0, totalHoras: 0, unidades: 0, horasCant: 0 }));
@@ -7532,7 +7549,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, cierres,
       .map((g) => ({ ...g, totalGeneral: g.totalProduccion + g.totalHoras }))
       .filter((g) => g.totalGeneral > 0 || g.unidades > 0 || g.horasCant > 0)
       .sort((a, b) => b.totalGeneral - a.totalGeneral);
-  }, [trabajadores, tipoSel, prodQuincena, horasQuincena]);
+  }, [trabajadores, tipoSel, areaSel, prodQuincena, horasQuincena]);
   const totalQuincena = porTrabajador.reduce((s, g) => s + g.totalGeneral, 0);
   const detalleAbierto = trabajadorAbierto
     ? {
@@ -7605,19 +7622,32 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, cierres,
           />
         </Modal>
       )}
-      <div style={{ marginBottom: 14, maxWidth: 260 }}>
-        <Field label="Nómina">
-          <FSel value={tipoSel} onChange={setTipoSel} options={[{ value: "Fiscal", label: "Fiscal" }, { value: "Fiscal Destajo", label: "Fiscal Destajo" }, { value: "Destajo", label: "Destajo" }]} />
-        </Field>
+      <div style={{ display: "flex", gap: 16, marginBottom: 14, flexWrap: "wrap" }}>
+        <div style={{ maxWidth: 260 }}>
+          <Field label="Nómina">
+            <FSel value={tipoSel} onChange={setTipoSel} options={[{ value: "Fiscal", label: "Fiscal" }, { value: "Fiscal Destajo", label: "Fiscal Destajo" }, { value: "Destajo", label: "Destajo" }]} />
+          </Field>
+        </div>
+        <div style={{ maxWidth: 260 }}>
+          <Field label="Área">
+            <FSel value={areaSel} onChange={setAreaSel} options={[{ value: "", label: "🏢 Toda la empresa" }, ...(areasNomina || []).map((a) => ({ value: a.nombre, label: a.nombre }))]} />
+          </Field>
+        </div>
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <button onClick={() => setQOffset((o) => o - 1)} style={{ padding: "6px 12px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: C.ink }}>← Anterior</button>
-        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{label} — {tipoSel}</div>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{label} — {tipoSel}{areaSel ? ` — ${areaSel}` : ""}</div>
         <button onClick={() => setQOffset((o) => o + 1)} style={{ padding: "6px 12px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: C.ink }}>Siguiente →</button>
       </div>
+      {!areaSel && !cierre && areasFaltantes.length > 0 && (
+        <div style={{ padding: "10px 14px", background: C.amberBg, border: `1px solid ${C.amber}44`, borderRadius: 10, marginBottom: 16 }}>
+          <div style={{ fontSize: 12, color: C.amber, fontWeight: 700, marginBottom: 4 }}>⚠ Faltan {areasFaltantes.length} área(s) por cerrar en {tipoSel} antes de poder cerrar el General de esta quincena:</div>
+          <div style={{ fontSize: 12, color: C.ink }}>{areasFaltantes.join(", ")}</div>
+        </div>
+      )}
       {cierre && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 14px", background: C.violetBg, border: `1px solid ${C.violet}44`, borderRadius: 10, marginBottom: 16 }}>
-          <div style={{ fontSize: 12, color: C.violet, fontWeight: 700 }}>🔒 Quincena cerrada por {cierre.cerradoPor || "—"} el {fmtFechaHora(cierre.cerradoEn)} — total: {fmtMoney(cierre.totalQuincena)}</div>
+          <div style={{ fontSize: 12, color: C.violet, fontWeight: 700 }}>🔒 {areaSel ? `${areaSel} — ` : "General — "}Quincena cerrada por {cierre.cerradoPor || "—"} el {fmtFechaHora(cierre.cerradoEn)} — total: {fmtMoney(cierre.totalQuincena)}</div>
           {isAdmin && <Btn variant="secondary" small onClick={() => onReabrir(cierre.id)}>Reabrir</Btn>}
         </div>
       )}
@@ -7627,8 +7657,13 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, cierres,
       </div>
       <div style={{ marginBottom: 14, display: "flex", gap: 10 }}>
         <Btn variant="secondary" small onClick={exportarExcel} disabled={!porTrabajador.length}>⬇ Exportar a Excel</Btn>
-        {isAdmin && !cierre && (
-          <Btn small onClick={() => onCerrar({ desde, hasta, label, totalQuincena, porTrabajador, tipoNomina: tipoSel })} disabled={!porTrabajador.length}>🔒 Cerrar Quincena</Btn>
+        {puedeCerrarQuincena && !cierre && (
+          <Btn
+            small
+            onClick={() => onCerrar({ desde, hasta, label, totalQuincena, porTrabajador, tipoNomina: tipoSel, area: areaSel || null })}
+            disabled={!porTrabajador.length || (!areaSel && areasFaltantes.length > 0)}
+            title={!areaSel && areasFaltantes.length > 0 ? `Faltan áreas por cerrar: ${areasFaltantes.join(", ")}` : ""}
+          >🔒 Cerrar {areaSel ? `Área (${areaSel})` : "Quincena (General)"}</Btn>
         )}
       </div>
       <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Clic en un trabajador para ver el desglose de su quincena.</div>
@@ -8670,7 +8705,7 @@ function DiagnosticoDuplicadosView({ diasTrabajados, faltas, anomalias, retardos
     </div>
   );
 }
-export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero }) {
+export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
   // reducido, ya filtrado a su propia gente, en vez del panel completo de
@@ -9088,9 +9123,11 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // Y tipo, ver cambio 2026-09-12) así que cerrar dos veces la misma
   // simplemente sobreescribe el mismo cierre de ese tipo, sin afectar a
   // los otros dos tipos de esa misma quincena.
-  async function guardarCierre({ desde, hasta, label, totalQuincena, porTrabajador, tipoNomina }) {
-    await fsSave("nomina_cierres", `${desde}__${tipoNomina}`, {
+  async function guardarCierre({ desde, hasta, label, totalQuincena, porTrabajador, tipoNomina, area }) {
+    const areaId = area || "general";
+    await fsSave("nomina_cierres", `${desde}__${tipoNomina}__${areaId}`, {
       desde, hasta, label, totalQuincena, tipoNomina,
+      area: area || null,
       porTrabajador,
       cerradoPor: currentUser?.name || currentUser?.username || "",
       cerradoEn: new Date().toISOString(),
@@ -9219,7 +9256,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "dashboard" && !areaLider && !soloNovedades && <DashboardNominaView trabajadores={trabajadores} precios={precios} produccion={produccion} horas={horas} />}
           {subView === "produccion" && !soloNovedades && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} costosTeoricoProceso={costosTeoricoProceso} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
           {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
-          {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} />}
+          {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} />}
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
           {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
