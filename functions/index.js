@@ -2301,6 +2301,64 @@ async function entradasLoteBusintBD(numLote) {
   const entradasPlantaPropia = agrupar(deEsteLotePlantaPropia);
   return { entradas, entradasPlantaPropia };
 }
+// (2026-09-18, a pedido de Fredy) Diagnostico TEMPORAL de solo lectura --
+// no escribe nada -- para un lote puntual, muestra cada entrada real de
+// "bmp - entrada plantaproc" con su Proceso, Codplanta (Planta) y Fecha
+// SIN agrupar, para poder ver a mano si un mismo Proceso quedo registrado
+// en mas de una planta propia con fechas distintas (caso real: Lote 7128,
+// Terminacion, quedo bajo la planta 1021 en vez de la 1002 -- ver nota de
+// CODPLANTAS_PROPIAS mas abajo). Se uso para investigar el Lote 7314.
+exports.getEntradasCrudasLoteBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const numLote = String(request.data?.numLote || "").trim();
+    if (!numLote) {
+      throw new HttpsError("invalid-argument", "Debes indicar el número de lote.");
+    }
+    let entradasRefTodas, cabeceraEntradas;
+    try {
+      [entradasRefTodas, cabeceraEntradas] = await Promise.all([
+        consultarTablaBusintBDCompleta("bmp - entrada plantaproc ref"),
+        consultarTablaBusintBDCompleta("bmp - entrada plantaproc"),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getEntradasCrudasLoteBusintBD)", { numLote, error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint: ${err?.message || String(err)}`);
+    }
+    const cabeceraPorEntrada = new Map();
+    cabeceraEntradas.forEach((f) => {
+      const num = f?.Entrada;
+      if (num === undefined || num === null) return;
+      cabeceraPorEntrada.set(String(num), {
+        fecha: fechaISODesdeCampoBusintBD(f?.Fecha),
+        codplanta: f?.Codplanta !== undefined && f?.Codplanta !== null ? Number(f.Codplanta) : null,
+      });
+    });
+    const filas = entradasRefTodas
+      .filter((f) => String(f?.NumLote) === numLote)
+      .map((f) => {
+        const num = f?.Entrada;
+        const cab = num !== undefined && num !== null ? cabeceraPorEntrada.get(String(num)) : null;
+        return {
+          entrada: num ?? null,
+          proceso: String(f?.Proceso || "(sin proceso)"),
+          codplanta: cab?.codplanta ?? null,
+          esPlantaPropia: cab?.codplanta != null ? CODPLANTAS_PROPIAS.has(cab.codplanta) : null,
+          fecha: cab?.fecha || null,
+          total: Number(f?.Total) || 0,
+          costo: Number(f?.Costo) || 0,
+        };
+      })
+      .sort((a, b) => (a.proceso || "").localeCompare(b.proceso || "") || String(a.fecha || "").localeCompare(String(b.fecha || "")));
+    return { numLote, filas };
+  }
+);
+
 exports.getMovimientosLoteBusintBD = onCall(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],

@@ -6562,6 +6562,12 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
   const [manualTipo, setManualTipo] = useState("");
   const [manualValor, setManualValor] = useState("");
   const [manualFecha, setManualFecha] = useState(today());
+  // (2026-09-18, a pedido de Fredy) Lote y Referencia -- opcionales, para
+  // que un cobro manual tambien pueda quedar ligado a un lote puntual (la
+  // tabla de detalle ya tenia estas columnas, pero siempre salian
+  // "Manual"/"--" porque no habia donde escribirlas).
+  const [manualNumLote, setManualNumLote] = useState("");
+  const [manualReferencia, setManualReferencia] = useState("");
   const [agregandoManual, setAgregandoManual] = useState(false);
   async function registrarCobroManual() {
     if (!manualTrabajadorId || !Number(manualValor)) return;
@@ -6574,9 +6580,13 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
         tipo: manualTipo,
         valor: Number(manualValor) || 0,
         fecha: manualFecha,
+        numLote: manualNumLote,
+        referencia: manualReferencia,
       });
       setManualTipo("");
       setManualValor("");
+      setManualNumLote("");
+      setManualReferencia("");
     } finally {
       setAgregandoManual(false);
     }
@@ -6652,6 +6662,8 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
             <FSel value={manualTrabajadorId} onChange={setManualTrabajadorId} options={[{ value: "", label: "Selecciona..." }, ...trabajadores.map((t) => ({ value: t.id, label: t.nombre }))]} />
           </Field>
           <Field label="Motivo"><FInput value={manualTipo} onChange={setManualTipo} placeholder="Ej: Daño de tela" /></Field>
+          <Field label="Lote (opcional)"><FInput value={manualNumLote} onChange={setManualNumLote} placeholder="Ej: 7301" /></Field>
+          <Field label="Referencia (opcional)"><FInput value={manualReferencia} onChange={setManualReferencia} placeholder="Ej: 985663" /></Field>
           <Field label="Valor"><FInput type="number" value={manualValor} onChange={setManualValor} placeholder="Ej: 50000" /></Field>
           <Field label="Fecha"><FInput type="date" value={manualFecha} onChange={setManualFecha} /></Field>
           <Btn onClick={registrarCobroManual} disabled={!manualTrabajadorId || !Number(manualValor) || agregandoManual}>➕ Agregar cobro manual</Btn>
@@ -6745,6 +6757,30 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   // no esté entre los 15 más recientes (que es lo que se muestra por
   // defecto cuando el campo de búsqueda está vacío).
   const [filtroLoteRegistros, setFiltroLoteRegistros] = useState("");
+  // (2026-09-18, a pedido de Fredy) Diagnostico TEMPORAL (solo admin) --
+  // para investigar casos como el Lote 7314, donde la Auditoria Busint vs
+  // Nomina mostraba una fecha de Busint que no coincidia con lo que Fredy
+  // veia directamente en Busint. Muestra cada entrada real sin agrupar,
+  // con su Proceso/Planta/Fecha, para ver a mano si el mismo proceso quedo
+  // registrado en mas de una planta con fechas distintas.
+  const [diagLote, setDiagLote] = useState("");
+  const [diagResultado, setDiagResultado] = useState(null);
+  const [diagCargando, setDiagCargando] = useState(false);
+  async function verEntradasCrudas() {
+    const n = diagLote.trim();
+    if (!n) return;
+    setDiagCargando(true);
+    setDiagResultado(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getEntradasCrudasLoteBusintBD");
+      const resp = await llamar({ numLote: n });
+      setDiagResultado(resp.data);
+    } catch (err) {
+      setDiagResultado({ error: err?.message || String(err) });
+    } finally {
+      setDiagCargando(false);
+    }
+  }
   async function buscarLote() {
     const n = numLote.trim();
     if (!n) return;
@@ -7428,6 +7464,50 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
         ]}
         filas={recientes}
       />
+      {isAdmin && (
+        <div style={{ marginTop: 24, border: `1px dashed ${C.slate}`, borderRadius: 8, padding: 14 }}>
+          <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 8, color: C.ink }}>🔍 Diagnóstico Busint (temporal, solo admin)</div>
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Muestra cada entrada real de Busint para un lote, con su Proceso, Planta y Fecha por separado (sin agrupar).</div>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 10 }}>
+            <Field label="N° de Lote"><FInput value={diagLote} onChange={setDiagLote} placeholder="Ej: 7314" /></Field>
+            <Btn onClick={verEntradasCrudas} disabled={!diagLote.trim() || diagCargando} small>{diagCargando ? "Consultando..." : "Ver entradas crudas"}</Btn>
+          </div>
+          {diagResultado?.error && <div style={{ color: C.red, fontSize: 12 }}>{diagResultado.error}</div>}
+          {diagResultado?.filas && (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ borderCollapse: "collapse", fontSize: 12, width: "100%" }}>
+                <thead>
+                  <tr style={{ textAlign: "left", borderBottom: `1px solid ${C.border}` }}>
+                    <th style={{ padding: 6 }}>Proceso</th>
+                    <th style={{ padding: 6 }}>Entrada</th>
+                    <th style={{ padding: 6 }}>Codplanta</th>
+                    <th style={{ padding: 6 }}>¿Propia?</th>
+                    <th style={{ padding: 6 }}>Fecha</th>
+                    <th style={{ padding: 6, textAlign: "right" }}>Total</th>
+                    <th style={{ padding: 6, textAlign: "right" }}>Costo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {diagResultado.filas.map((f, i) => (
+                    <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
+                      <td style={{ padding: 6 }}>{f.proceso}</td>
+                      <td style={{ padding: 6 }}>{f.entrada}</td>
+                      <td style={{ padding: 6 }}>{f.codplanta ?? "—"}</td>
+                      <td style={{ padding: 6 }}>{f.esPlantaPropia === null ? "—" : f.esPlantaPropia ? "Sí" : "No"}</td>
+                      <td style={{ padding: 6 }}>{f.fecha || "—"}</td>
+                      <td style={{ padding: 6, textAlign: "right" }}>{fmtNum(f.total)}</td>
+                      <td style={{ padding: 6, textAlign: "right" }}>{fmtNum(f.costo)}</td>
+                    </tr>
+                  ))}
+                  {!diagResultado.filas.length && (
+                    <tr><td colSpan={7} style={{ padding: 10, color: C.slate }}>Sin filas para este lote.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
       {modalEditar && formEditar && (
         <Modal title="Editar registro de producción" onClose={() => { setModalEditar(null); setFormEditar(null); }} width={480}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -9090,7 +9170,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const lotesConCobrosTotal = useMemo(() => {
     const manualesComoLotes = (cobrosManuales || []).map((c) => ({
       id: `manual__${c.id}`,
-      numLote: "Manual",
+      numLote: (c.numLote || "").trim() || "Manual",
+      referencia: c.referencia || "",
       esManual: true,
       cobrosBodega: [{
         trabajadorId: c.trabajadorId,
@@ -9427,7 +9508,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       registradoEn: new Date().toISOString(),
     });
   }
-  async function agregarCobroManual({ trabajadorId, trabajadorNombre, tipo, valor, fecha }) {
+  async function agregarCobroManual({ trabajadorId, trabajadorNombre, tipo, valor, fecha, numLote, referencia }) {
     const ref = doc(collection(db, "nomina_cobros_manuales"));
     await setDoc(ref, {
       trabajadorId,
@@ -9435,6 +9516,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       tipo: (tipo || "").trim() || "Cobro manual",
       valor: Number(valor) || 0,
       fecha: fecha || "",
+      numLote: (numLote || "").trim(),
+      referencia: (referencia || "").trim(),
       cobrado: false,
       periodoIdCobrado: "",
       creadoPor: currentUser?.name || currentUser?.username || "",
