@@ -6428,8 +6428,34 @@ function HistorialDestajoView({ liquidaciones, trabajadores }) {
   );
 }
 // ─── DEDUCCIONES (cobros de Bodega, descuento automatico en Nomina) ──────
-function DeduccionesNominaView({ lotesConCobros, trabajadores }) {
+function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobrosManual, onAgregarCobroManual }) {
   const [filtroEstado, setFiltroEstado] = useState("");
+  // (2026-09-18, a pedido de Fredy) Formulario para agregar un cobro manual
+  // -- solo lo ve quien tenga el permiso (administrador, Yuleisi Virginia,
+  // María Fernanda Páez). No depende de ningún lote de Bodega.
+  const [manualTrabajadorId, setManualTrabajadorId] = useState("");
+  const [manualTipo, setManualTipo] = useState("");
+  const [manualValor, setManualValor] = useState("");
+  const [manualFecha, setManualFecha] = useState(today());
+  const [agregandoManual, setAgregandoManual] = useState(false);
+  async function registrarCobroManual() {
+    if (!manualTrabajadorId || !Number(manualValor)) return;
+    const t = trabajadores.find((x) => x.id === manualTrabajadorId);
+    setAgregandoManual(true);
+    try {
+      await onAgregarCobroManual({
+        trabajadorId: manualTrabajadorId,
+        trabajadorNombre: t?.nombre || "",
+        tipo: manualTipo,
+        valor: Number(manualValor) || 0,
+        fecha: manualFecha,
+      });
+      setManualTipo("");
+      setManualValor("");
+    } finally {
+      setAgregandoManual(false);
+    }
+  }
   // (2026-09-12, a pedido de Fredy) Se guarda por trabajador -- un clic
   // abre el detalle de cada cobro en una ventana aparte, en vez de una
   // tabla plana con un renglón por cobro.
@@ -6493,8 +6519,19 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores }) {
         </Modal>
       )}
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
-        Todos los cobros que Bodega registró contra un trabajador (Despachos Generales / Estado de Despacho) — se descuentan solos de la SIGUIENTE liquidación de ese trabajador, sin importar cuánto tiempo llevaban esperando. Clic en un trabajador para ver el detalle de cada cobro suyo.
+        Todos los cobros pendientes contra un trabajador -- los que registra Bodega (Despachos Generales / Estado de Despacho) y los agregados manualmente aquí abajo -- se descuentan solos de la SIGUIENTE liquidación de ese trabajador, sin importar cuánto tiempo llevaban esperando. Clic en un trabajador para ver el detalle de cada cobro suyo.
       </div>
+      {puedeAgregarCobrosManual && (
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 20, border: `1px solid ${C.border}`, borderRadius: 8, padding: 14 }}>
+          <Field label="Trabajador">
+            <FSel value={manualTrabajadorId} onChange={setManualTrabajadorId} options={[{ value: "", label: "Selecciona..." }, ...trabajadores.map((t) => ({ value: t.id, label: t.nombre }))]} />
+          </Field>
+          <Field label="Motivo"><FInput value={manualTipo} onChange={setManualTipo} placeholder="Ej: Daño de tela" /></Field>
+          <Field label="Valor"><FInput type="number" value={manualValor} onChange={setManualValor} placeholder="Ej: 50000" /></Field>
+          <Field label="Fecha"><FInput type="date" value={manualFecha} onChange={setManualFecha} /></Field>
+          <Btn onClick={registrarCobroManual} disabled={!manualTrabajadorId || !Number(manualValor) || agregandoManual}>➕ Agregar cobro manual</Btn>
+        </div>
+      )}
       <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
         <KPI icon="⏳" label="Pendiente de cobrar" value={fmtMoney(totalPendiente)} color={C.amber} bg={C.amberBg} />
         <KPI icon="✅" label="Ya cobrado" value={fmtMoney(totalCobrado)} color={C.green} bg={C.greenBg} />
@@ -7499,7 +7536,7 @@ function exportDesprendiblePagoHTML({ trabajador, desde, hasta, label, produccio
   a.click();
   URL.revokeObjectURL(url);
 }
-function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNomina, puedeCerrarQuincena, cierres, onCerrar, onReabrir }) {
+function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNomina, puedeCerrarQuincena, cierres, onCerrar, onReabrir, lotesConCobros }) {
   const [qOffset, setQOffset] = useState(0);
   const [trabajadorAbierto, setTrabajadorAbierto] = useState(null);
   // (2026-09-12, a pedido de Fredy) Cierre de Quincena ahora es POR TIPO de
@@ -7546,11 +7583,17 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
       g.horasCant += h.horas || 0;
     });
     return [...mapa.values()]
-      .map((g) => ({ ...g, totalGeneral: g.totalProduccion + g.totalHoras }))
-      .filter((g) => g.totalGeneral > 0 || g.unidades > 0 || g.horasCant > 0)
+      .map((g) => {
+        const totalBruto = g.totalProduccion + g.totalHoras;
+        const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, g.trabajadorId);
+        const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
+        return { ...g, totalBruto, descuentoCobros, cobrosDetalle, totalGeneral: totalBruto - descuentoCobros };
+      })
+      .filter((g) => g.totalBruto > 0 || g.unidades > 0 || g.horasCant > 0)
       .sort((a, b) => b.totalGeneral - a.totalGeneral);
-  }, [trabajadores, tipoSel, areaSel, prodQuincena, horasQuincena]);
+  }, [trabajadores, tipoSel, areaSel, prodQuincena, horasQuincena, lotesConCobros]);
   const totalQuincena = porTrabajador.reduce((s, g) => s + g.totalGeneral, 0);
+  const totalDescuentos = porTrabajador.reduce((s, g) => s + g.descuentoCobros, 0);
   const detalleAbierto = trabajadorAbierto
     ? {
         produccion: prodQuincena.filter((p) => p.trabajadorId === trabajadorAbierto.trabajadorId),
@@ -7563,8 +7606,8 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
     const filas = [
       [`RESUMEN NÓMINA ${tipoSel.toUpperCase()} — QUINCENA`, `${fmtFechaISO(desde)} — ${fmtFechaISO(hasta)}`],
       [],
-      ["Trabajador", "Unidades", "Total Producción", "Horas", "Total Horas", "Total a Pagar"],
-      ...porTrabajador.map((g) => [g.nombre, g.unidades, g.totalProduccion, g.horasCant, g.totalHoras, g.totalGeneral]),
+      ["Trabajador", "Unidades", "Total Producción", "Horas", "Total Horas", "Descuentos", "Total a Pagar"],
+      ...porTrabajador.map((g) => [g.nombre, g.unidades, g.totalProduccion, g.horasCant, g.totalHoras, g.descuentoCobros, g.totalGeneral]),
       [],
       ["TOTAL QUINCENA", "", "", "", "", totalQuincena],
     ];
@@ -7651,8 +7694,9 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
           {isAdmin && <Btn variant="secondary" small onClick={() => onReabrir(cierre.id)}>Reabrir</Btn>}
         </div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 12, marginBottom: 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 20 }}>
         <KPI icon="👷" label="Trabajadores con pago esta quincena" value={fmtNum(porTrabajador.length)} color={C.ink} bg={C.canvas} />
+        <KPI icon="⏳" label="Descuentos por cobros pendientes" value={fmtMoney(totalDescuentos)} color={C.amber} bg={C.amberBg} />
         <KPI icon="💰" label="Total a Pagar" value={fmtMoney(totalQuincena)} color={C.green} bg={C.greenBg} />
       </div>
       <div style={{ marginBottom: 14, display: "flex", gap: 10 }}>
@@ -7676,6 +7720,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
           { key: "totalProduccion", label: "Total Producción", align: "right", render: (f) => fmtMoney(f.totalProduccion) },
           { key: "horasCant", label: "Horas", align: "right", render: (f) => fmtNum(f.horasCant) },
           { key: "totalHoras", label: "Total Horas", align: "right", render: (f) => fmtMoney(f.totalHoras) },
+          { key: "descuentoCobros", label: "Descuentos", align: "right", render: (f) => f.descuentoCobros > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>-{fmtMoney(f.descuentoCobros)}</span> : <span style={{ color: C.slate }}>—</span> },
           { key: "totalGeneral", label: "Total a Pagar", align: "right", render: (f) => <strong>{fmtMoney(f.totalGeneral)}</strong> },
           {
             key: "acciones", label: "", align: "right",
@@ -8705,7 +8750,7 @@ function DiagnosticoDuplicadosView({ diasTrabajados, faltas, anomalias, retardos
     </div>
   );
 }
-export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena }) {
+export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
   // reducido, ya filtrado a su propia gente, en vez del panel completo de
@@ -8753,6 +8798,16 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // trabajador (Despachos Generales / Estado de Despacho) -- Nomina los lee
   // de la MISMA coleccion que ya usa Bodega/Contabilidad, sin duplicar nada.
   const [lotesConCobros, setLotesConCobros] = useState([]);
+  // (2026-09-18, a pedido de Fredy) Cobros manuales que agrega directamente
+  // Nómina (solo quien tenga "nomina_agregar_cobros_manual" -- pensado para
+  // administrador, Yuleisi Virginia y María Fernanda Páez) -- viven en su
+  // PROPIA colección, nunca dentro de `dado_por_cumplido_lotes` (esa es de
+  // Bodega/Contabilidad), para no ensuciarles sus pantallas ni sus reportes.
+  // Se combinan con los cobros de Bodega solo en memoria (ver
+  // `lotesConCobrosTotal` más abajo) para que todo lo que ya descuenta
+  // cobros (liquidaciones, Resumen, Deducciones) los vea igual sin importar
+  // de dónde vinieron.
+  const [cobrosManuales, setCobrosManuales] = useState([]);
   // (2026-09-02, a pedido de Fredy) Solo para el encadenamiento automático
   // Dije -> Terminación (ver guardarProduccion/encadenarDijeATerminacion
   // más abajo): quién es la líder dueña de "Terminación" (por areaNomina)
@@ -8786,11 +8841,29 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_liquidaciones_retiro"), (snap) => setLiquidacionesRetiro(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_prestamos"), (snap) => setPrestamos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => setLotesConCobros(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_cobros_manuales"), (snap) => setCobrosManuales(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "users"), (snap) => setUsuariosApp(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "planeacion_programacion_procesos"), (snap) => setProgramacionesProcesos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
     ];
     return () => unsubs.forEach((u) => u());
   }, []);
+  const lotesConCobrosTotal = useMemo(() => {
+    const manualesComoLotes = (cobrosManuales || []).map((c) => ({
+      id: `manual__${c.id}`,
+      numLote: "Manual",
+      esManual: true,
+      cobrosBodega: [{
+        trabajadorId: c.trabajadorId,
+        trabajadorNombre: c.trabajadorNombre,
+        tipo: c.tipo,
+        valor: c.valor,
+        fecha: c.fecha,
+        cobrado: c.cobrado === true,
+        periodoIdCobrado: c.periodoIdCobrado || "",
+      }],
+    }));
+    return [...(lotesConCobros || []), ...manualesComoLotes];
+  }, [lotesConCobros, cobrosManuales]);
   // (2026-09-01, a pedido de Fredy) Auto-siembra la coleccion de motivos si
   // todavia esta vacia (primer despliegue de este cambio) -- preserva los
   // mismos 9 motivos/iconos que antes vivian fijos en el codigo, para que
@@ -9086,7 +9159,32 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         huboCambios = true;
       }
     });
+    cobrosManuales.forEach((c) => {
+      if (c.trabajadorId === trabajadorId && c.cobrado !== true) {
+        batch.set(doc(db, "nomina_cobros_manuales", c.id), { cobrado: true, periodoIdCobrado: periodoId }, { merge: true });
+        huboCambios = true;
+      }
+    });
     if (huboCambios) await batch.commit();
+  }
+  // (2026-09-18, a pedido de Fredy) Agregar un cobro/deducción manual --
+  // solo para quien tenga "nomina_agregar_cobros_manual" (administrador,
+  // Yuleisi Virginia, María Fernanda Páez). Queda "pendiente de cobrar"
+  // exactamente igual que uno de Bodega: se descuenta solo de la SIGUIENTE
+  // liquidación de ese trabajador (ver marcarCobrosComoCobrados arriba).
+  async function agregarCobroManual({ trabajadorId, trabajadorNombre, tipo, valor, fecha }) {
+    const ref = doc(collection(db, "nomina_cobros_manuales"));
+    await setDoc(ref, {
+      trabajadorId,
+      trabajadorNombre: trabajadorNombre || "",
+      tipo: (tipo || "").trim() || "Cobro manual",
+      valor: Number(valor) || 0,
+      fecha: fecha || "",
+      cobrado: false,
+      periodoIdCobrado: "",
+      creadoPor: currentUser?.name || currentUser?.username || "",
+      creadoEn: new Date().toISOString(),
+    });
   }
   // Sube en lote (upsert por "{numLote}_{PROCESO}") las filas del Excel de
   // Costos Teóricos por Proceso — se hace con writeBatch (no una por una)
@@ -9256,7 +9354,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "dashboard" && !areaLider && !soloNovedades && <DashboardNominaView trabajadores={trabajadores} precios={precios} produccion={produccion} horas={horas} />}
           {subView === "produccion" && !soloNovedades && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} costosTeoricoProceso={costosTeoricoProceso} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
           {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
-          {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} />}
+          {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} />}
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
           {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
@@ -9282,13 +9380,13 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "anomalias_huellero" && puedeVerAnomaliasHuellero && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
           {subView === "historial_asistencia_area" && <HistorialAsistenciaAreaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausenciasVisibles} anomalias={anomaliasVisibles} retardos={retardosVisibles} turnos={turnos} />}
-          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} />}
+          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
-          {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} />}
+          {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} />}
           {subView === "historial_fiscal_destajo" && !areaLider && !soloNovedades && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
-          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobros} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
+          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
-          {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobros} trabajadores={trabajadores} />}
+          {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} />}
           {subView === "historial_lote" && !soloNovedades && <HistorialLoteView produccion={produccion} />}
           {subView === "historial_trabajador" && !soloNovedades && <HistorialTrabajadorView trabajadores={trabajadoresVisibles} produccion={produccionVisible} liquidaciones={liquidacionesD} areasNomina={areasNomina} />}
         </div>
