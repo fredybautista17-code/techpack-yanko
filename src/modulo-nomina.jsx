@@ -1708,8 +1708,20 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     cesantiasAcumuladas: trabajador?.cesantiasAcumuladas ?? "",
     medirComoBaseAdministrativa: trabajador?.medirComoBaseAdministrativa ?? false,
     salarioMinimoGarantizado: trabajador?.salarioMinimoGarantizado ?? false,
+    pagoPorDia: trabajador?.pagoPorDia ?? false,
+    valorDia: trabajador?.valorDia ?? "",
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  // (2026-09-18, a pedido de Fredy) "Salario mínimo garantizado" y "Pagar
+  // por día" son excluyentes -- marcar uno desactiva el otro, para que no
+  // quede una ficha con los dos activos a la vez (el cálculo de Destajo
+  // solo sabe manejar uno u otro).
+  function setSalarioMinimoGarantizado(v) {
+    setForm((f) => ({ ...f, salarioMinimoGarantizado: v, pagoPorDia: v ? false : f.pagoPorDia }));
+  }
+  function setPagoPorDia(v) {
+    setForm((f) => ({ ...f, pagoPorDia: v, salarioMinimoGarantizado: v ? false : f.salarioMinimoGarantizado }));
+  }
   // (2026-09-09, a pedido de Fredy) Cargo depende de qué Área Interna se
   // eligió arriba -- si cambian el área a una que no tiene el cargo
   // actual, se limpia solo (evita guardar una combinación área/cargo que
@@ -1756,6 +1768,8 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       cesantiasAcumuladas: Number(form.cesantiasAcumuladas) || 0,
       medirComoBaseAdministrativa: !!form.medirComoBaseAdministrativa,
       salarioMinimoGarantizado: !!form.salarioMinimoGarantizado,
+      pagoPorDia: !!form.pagoPorDia,
+      valorDia: Number(form.valorDia) || 0,
     });
     onClose();
   }
@@ -1838,12 +1852,24 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
         <>
           <Field label="Salario mínimo garantizado">
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <input type="checkbox" id="salarioMinimoGarantizado" checked={!!form.salarioMinimoGarantizado} onChange={(e) => set("salarioMinimoGarantizado")(e.target.checked)} />
+              <input type="checkbox" id="salarioMinimoGarantizado" checked={!!form.salarioMinimoGarantizado} onChange={(e) => setSalarioMinimoGarantizado(e.target.checked)} />
               <label htmlFor="salarioMinimoGarantizado" style={{ fontSize: 12.5, color: C.ink, cursor: "pointer" }}>Pagarle siempre el salario mínimo (no por producción)</label>
             </div>
           </Field>
           <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
             (2026-09-18, a pedido de Fredy) Con esto marcado, en su liquidación de Destajo ya NO se le paga lo que produjo -- se le paga fijo el salario mínimo de la quincena + su auxilio de transporte, sin importar cuánto haya producido. Su producción real se sigue guardando (para el histórico); si esa quincena produjo menos de lo que se le pagó fijo, la diferencia queda registrada sola como "ayuda" en el Ajuste de esa liquidación.
+          </div>
+          <Field label="Pagar por día">
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="checkbox" id="pagoPorDia" checked={!!form.pagoPorDia} onChange={(e) => setPagoPorDia(e.target.checked)} />
+              <label htmlFor="pagoPorDia" style={{ fontSize: 12.5, color: C.ink, cursor: "pointer" }}>Pagarle por día trabajado (no por producción ni sueldo fijo)</label>
+            </div>
+          </Field>
+          {form.pagoPorDia && (
+            <Field label="Valor día"><FInput type="number" value={form.valorDia} onChange={set("valorDia")} placeholder="Ej: 45000" /></Field>
+          )}
+          <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+            (2026-09-18, a pedido de Fredy) Con esto marcado, se le paga (días trabajados según el huellero de la quincena) × (Valor día), más las Horas Sueltas que le registres -- sin producción, sin auxilio de transporte y sin cesantías/prima/vacaciones en la quincena. El "Sueldo" y "Auxilio de Transporte" de arriba se dejan de todos modos, porque esos sí se usan (solo) para su Liquidación de Retiro. Es excluyente con "Salario mínimo garantizado".
           </div>
         </>
       )}
@@ -5745,6 +5771,11 @@ function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
       <tr><td>Descuento por inasistencia</td><td style="text-align:right;color:#B23A48">-${fmtMoney((liquidacion.descuentoSueldo || 0) + (liquidacion.descuentoAuxilio || 0))}</td></tr>
       <tr><td>Sueldo quincena</td><td style="text-align:right">${fmtMoney(liquidacion.sueldoQuincena)}</td></tr>
       <tr><td>Auxilio quincena</td><td style="text-align:right">${fmtMoney(liquidacion.auxilioQuincena)}</td></tr>`
+    : liquidacion.pagoPorDia
+    ? `
+      <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasPagados == null ? "—" : liquidacion.diasPagados}</td></tr>
+      <tr><td>Valor día</td><td style="text-align:right">${fmtMoney(liquidacion.valorDia)}</td></tr>
+      <tr><td>Subtotal pago por día</td><td style="text-align:right">${fmtMoney(liquidacion.pagoDias)}</td></tr>`
     : `
       <tr><td>Producción registrada en la quincena</td><td style="text-align:right">${fmtMoney(liquidacion.netoAPagar)}</td></tr>
       <tr><td>Días trabajados (huellero)</td><td style="text-align:right">${liquidacion.diasTrabajados == null ? "—" : liquidacion.diasTrabajados}</td></tr>
@@ -6063,7 +6094,30 @@ function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
 //    corregir Fiscal Destajo también, es una decisión aparte pendiente de
 //    confirmar con Fredy antes de tocarla (afectaría liquidaciones ya
 //    confirmadas en su historial).
-function calcularLiquidacionDestajo(trabajador, netoProduccion, totalHoras = 0) {
+function calcularLiquidacionDestajo(trabajador, netoProduccion, totalHoras = 0, diasTrabajadosQuincena = 0) {
+  // (2026-09-18, a pedido de Fredy) "Pagar por día": no se liquida por
+  // producción ni por un sueldo fijo -- se paga (días trabajados según el
+  // huellero de la quincena) x (Valor día), más las Horas Sueltas que le
+  // registren. Sin auxilio de transporte ni cesantías/prima/vacaciones en
+  // la quincena (eso, cuando corresponda, se calcula aparte en su
+  // Liquidación de Retiro a partir del Sueldo/Auxilio que tenga guardados
+  // en su ficha -- ver calcularLiquidacionRetiro, que no cambia con esto).
+  // Excluyente con "Salario mínimo garantizado" (la ficha ya no deja
+  // marcar los dos a la vez).
+  if (trabajador.pagoPorDia) {
+    const valorDia = Number(trabajador.valorDia) || 0;
+    const diasPagados = Number(diasTrabajadosQuincena) || 0;
+    const totalHorasNum = Number(totalHoras) || 0;
+    const pagoDias = valorDia * diasPagados;
+    return {
+      netoBase: pagoDias + totalHorasNum, salarioMinimoGarantizado: false, ayudaSalarioMinimo: 0,
+      produccionReal: 0, totalHoras: totalHorasNum,
+      sueldoFijoQuincena: 0, auxilioFijoQuincena: 0,
+      pagoPorDia: true, valorDia, diasPagados, pagoDias,
+      cesantiasPeriodo: 0, interesesPeriodo: 0, primaPeriodo: 0, vacacionesPeriodo: 0,
+      saldoCesantiasInicio: Number(trabajador.cesantiasAcumuladas) || 0, saldoCesantiasFin: Number(trabajador.cesantiasAcumuladas) || 0,
+    };
+  }
   const sueldo = Number(trabajador.sueldo) || 0;
   const auxilio = Number(trabajador.auxilioTransporte) || 0;
   // (2026-09-14, corregido a pedido de Fredy) El sueldo/auxilio de Destajo
@@ -6167,7 +6221,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
       const horasDetalle = (horas || []).filter((h) => h.trabajadorId === t.id && h.fecha >= inicio && h.fecha <= fin);
       const totalHorasQuincena = horasDetalle.reduce((s, h) => s + (Number(h.total) || 0), 0);
       const horasCant = horasDetalle.reduce((s, h) => s + (Number(h.horas) || 0), 0);
-      const base = calcularLiquidacionDestajo(t, netoProduccion, totalHorasQuincena);
+      const base = calcularLiquidacionDestajo(t, netoProduccion, totalHorasQuincena, diasTrabajadosCount);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id, fin);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
       return { trabajador: t, calculo: { ...base, diasInasistencia, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, descuentoCobros, cobrosDetalle, netoAntesDeAjuste: base.netoBase - descuentoCobros } };
@@ -6317,7 +6371,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
             vacio="Sin resultados."
             columnas={[
               { key: "nombre", label: "Nombre", render: (f) => (
-                <span>{f.trabajador.nombre}{f.calculo.salarioMinimoGarantizado && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.amberBg, color: C.amber }} title="Se le paga fijo el salario mínimo, no por producción">🔒 Mínimo</span>}</span>
+                <span>{f.trabajador.nombre}{f.calculo.salarioMinimoGarantizado && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.amberBg, color: C.amber }} title="Se le paga fijo el salario mínimo, no por producción">🔒 Mínimo</span>}{f.calculo.pagoPorDia && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.blueBg, color: C.blue }} title="Se le paga por día trabajado, no por producción">📅 Por día</span>}</span>
               ) },
               { key: "diasInasistencia", label: "Días sin justificar", align: "right", render: (f) => (
                 <span onClick={() => setDetalleFaltas({ trabajador: f.trabajador, fechas: f.calculo.fechasFalta || [] })} style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green, cursor: "pointer", textDecoration: "underline" }} title="Ver el detalle de las fechas">{f.calculo.diasInasistencia}</span>
@@ -6325,7 +6379,9 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
               { key: "diasTrabajados", label: "Días trabajados (huellero)", align: "right", render: (f) => (
                 <span style={{ fontWeight: 700, color: C.green }}>{f.calculo.diasTrabajados}</span>
               ) },
-              { key: "produccionReal", label: "Producción real", align: "right", render: (f) => fmtMoney(f.calculo.produccionReal) },
+              { key: "produccionReal", label: "Producción real", align: "right", render: (f) => f.calculo.pagoPorDia ? (
+                <span title={`${f.calculo.diasPagados} día(s) × ${fmtMoney(f.calculo.valorDia)}`}><strong>{fmtMoney(f.calculo.pagoDias)}</strong> <span style={{ color: C.slate, fontWeight: 400 }}>({f.calculo.diasPagados} × {fmtMoney(f.calculo.valorDia)})</span></span>
+              ) : fmtMoney(f.calculo.produccionReal) },
               { key: "horasCant", label: "Horas", align: "right", render: (f) => (f.calculo.horasCant || 0) > 0 ? <span style={{ fontWeight: 700 }}>{fmtNum(f.calculo.horasCant)}</span> : <span style={{ color: C.slate }}>—</span> },
               { key: "totalHoras", label: "Total Horas", align: "right", render: (f) => (f.calculo.totalHoras || 0) > 0 ? fmtMoney(f.calculo.totalHoras) : <span style={{ color: C.slate }}>—</span> },
               { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.calculo.descuentoCobros > 0 ? (
@@ -7702,6 +7758,7 @@ function exportDesprendiblePagoHTML({
   trabajador, desde, hasta, label, produccionItems, horasItems, totalProduccion, totalHoras, totalGeneral,
   cobrosDetalle, descuentoCobros,
   salarioMinimoGarantizado, sueldoFijoQuincena, auxilioFijoQuincena,
+  pagoPorDia, valorDia, diasPagados, pagoDiasQuincena,
   ajusteValor, ajusteObservacion,
 }) {
   const fechaGen = new Date().toISOString().slice(0, 10);
@@ -7754,6 +7811,22 @@ function exportDesprendiblePagoHTML({
       <div class="info-card"><label>Sueldo (quincena)</label><span>${fmtMoney(sueldoFijoQuincena)}</span></div>
       <div class="info-card"><label>Auxilio de Transporte</label><span>${fmtMoney(auxilioFijoQuincena)}</span></div>
     </div>`
+    : pagoPorDia
+    ? `<div class="section-title">📅 Pago por Día</div>
+    <div class="info-row" style="grid-template-columns:1fr 1fr 1fr">
+      <div class="info-card"><label>Días trabajados</label><span>${fmtNum(diasPagados)}</span></div>
+      <div class="info-card"><label>Valor día</label><span>${fmtMoney(valorDia)}</span></div>
+      <div class="info-card"><label>Subtotal</label><span>${fmtMoney(pagoDiasQuincena)}</span></div>
+    </div>
+    <div class="section-title">🕐 Horas Sueltas</div>
+    ${
+      filasHoras
+        ? `<table>
+          <thead><tr><th>Fecha</th><th>Concepto</th><th style="text-align:right">Horas</th><th style="text-align:right">Tarifa/Hora</th><th style="text-align:right">Total</th></tr></thead>
+          <tbody>${filasHoras}</tbody>
+        </table>`
+        : `<div class="no-rows">Sin horas sueltas registradas en esta quincena.</div>`
+    }`
     : `<div class="section-title">🧵 Producción por Proceso</div>
     ${
       filasProd
@@ -7798,6 +7871,9 @@ function exportDesprendiblePagoHTML({
   const cards = [];
   if (salarioMinimoGarantizado) {
     cards.push({ label: "Sueldo + Auxilio", value: fmtMoney((sueldoFijoQuincena || 0) + (auxilioFijoQuincena || 0)), bg: "#EBF1F7", color: "#3D6B9E" });
+  } else if (pagoPorDia) {
+    cards.push({ label: `Pago por día (${fmtNum(diasPagados)} × ${fmtMoney(valorDia)})`, value: fmtMoney(pagoDiasQuincena), bg: "#EBF1F7", color: "#3D6B9E" });
+    cards.push({ label: "Total Horas", value: fmtMoney(totalHoras), bg: "#F3EEF9", color: "#7B5EA7" });
   } else {
     cards.push({ label: "Total Producción", value: fmtMoney(totalProduccion), bg: "#EBF1F7", color: "#3D6B9E" });
     cards.push({ label: "Total Horas", value: fmtMoney(totalHoras), bg: "#F3EEF9", color: "#7B5EA7" });
@@ -7884,7 +7960,7 @@ function exportDesprendiblePagoHTML({
   a.click();
   URL.revokeObjectURL(url);
 }
-function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNomina, puedeCerrarQuincena, cierres, onCerrar, onReabrir, lotesConCobros, ajustesDestajo }) {
+function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNomina, puedeCerrarQuincena, cierres, onCerrar, onReabrir, lotesConCobros, ajustesDestajo, diasTrabajados }) {
   const [qOffset, setQOffset] = useState(0);
   const [trabajadorAbierto, setTrabajadorAbierto] = useState(null);
   // (2026-09-12, a pedido de Fredy) Cierre de Quincena ahora es POR TIPO de
@@ -7921,7 +7997,14 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
     const trabajadoresTipo = trabajadores.filter((t) => t.tipoNomina === tipoSel && (!areaSel || (t.area || "Sin asignar") === areaSel));
     const idsTipo = new Set(trabajadoresTipo.map((t) => t.id));
     const mapa = new Map();
-    trabajadoresTipo.forEach((t) => mapa.set(t.id, { trabajadorId: t.id, nombre: t.nombre, totalProduccion: 0, totalHoras: 0, unidades: 0, horasCant: 0, salarioMinimoGarantizado: !!t.salarioMinimoGarantizado, auxilioTransporte: t.auxilioTransporte }));
+    trabajadoresTipo.forEach((t) => {
+      // (2026-09-18, a pedido de Fredy) Días trabajados (huellero) de la
+      // quincena -- se necesita para "Pagar por día", igual que ya hace
+      // Nómina Destajo.
+      const nombreNorm = normalizarNombreHuellero(t.nombre);
+      const diasTrabajadosCount = (diasTrabajados || []).filter((d) => coincideHuellero(d, t, nombreNorm) && d.fecha >= desde && d.fecha <= hasta).length;
+      mapa.set(t.id, { trabajadorId: t.id, nombre: t.nombre, totalProduccion: 0, totalHoras: 0, unidades: 0, horasCant: 0, salarioMinimoGarantizado: !!t.salarioMinimoGarantizado, pagoPorDia: !!t.pagoPorDia, valorDia: t.valorDia, diasTrabajadosCount, auxilioTransporte: t.auxilioTransporte });
+    });
     prodQuincena.forEach((p) => {
       if (!idsTipo.has(p.trabajadorId)) return;
       const g = mapa.get(p.trabajadorId);
@@ -7940,9 +8023,14 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, g.trabajadorId, hasta);
         const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
         let ajusteValor = 0, ajusteObservacion = "", ayudaSalarioMinimo = 0, excedenteSobreMinimo = 0;
-        let sueldoFijoQuincena = 0, auxilioFijoQuincena = 0;
+        let sueldoFijoQuincena = 0, auxilioFijoQuincena = 0, pagoDiasQuincena = 0;
         let netoAntesDeAjuste = totalBruto - descuentoCobros;
         const salarioMinimoGarantizado = tipoSel === "Destajo" && !!g.salarioMinimoGarantizado;
+        // (2026-09-18, a pedido de Fredy) "Pagar por día" -- mismo modelo
+        // que ya usa Nómina Destajo: días trabajados (huellero) x Valor
+        // día + Horas Sueltas, sin producción. Excluyente con "Salario
+        // mínimo garantizado" (la ficha ya no deja marcar los dos).
+        const pagoPorDia = tipoSel === "Destajo" && !salarioMinimoGarantizado && !!g.pagoPorDia;
         if (salarioMinimoGarantizado) {
           sueldoFijoQuincena = SMMLV_2026 / 2;
           auxilioFijoQuincena = (Number(g.auxilioTransporte) || 0) / 2;
@@ -7956,17 +8044,23 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
           // descuenta nada por esto.
           excedenteSobreMinimo = Math.max(0, totalBruto - pagoFijo);
           netoAntesDeAjuste = pagoFijo - descuentoCobros;
-        } else if (tipoSel === "Destajo") {
-          const ajusteDoc = (ajustesDestajo || []).find((a) => a.id === `${g.trabajadorId}__${periodoIdActual}`);
-          ajusteValor = ajusteDoc ? Number(ajusteDoc.valor) || 0 : 0;
-          ajusteObservacion = ajusteDoc ? (ajusteDoc.observacion || "") : "";
+        } else {
+          if (pagoPorDia) {
+            pagoDiasQuincena = (Number(g.valorDia) || 0) * (g.diasTrabajadosCount || 0);
+            netoAntesDeAjuste = pagoDiasQuincena + g.totalHoras - descuentoCobros;
+          }
+          if (tipoSel === "Destajo") {
+            const ajusteDoc = (ajustesDestajo || []).find((a) => a.id === `${g.trabajadorId}__${periodoIdActual}`);
+            ajusteValor = ajusteDoc ? Number(ajusteDoc.valor) || 0 : 0;
+            ajusteObservacion = ajusteDoc ? (ajusteDoc.observacion || "") : "";
+          }
         }
         const totalGeneral = netoAntesDeAjuste + ajusteValor;
-        return { ...g, totalBruto, descuentoCobros, cobrosDetalle, salarioMinimoGarantizado, ayudaSalarioMinimo, excedenteSobreMinimo, sueldoFijoQuincena, auxilioFijoQuincena, ajusteValor, ajusteObservacion, totalGeneral };
+        return { ...g, totalBruto, descuentoCobros, cobrosDetalle, salarioMinimoGarantizado, pagoPorDia, pagoDiasQuincena, ayudaSalarioMinimo, excedenteSobreMinimo, sueldoFijoQuincena, auxilioFijoQuincena, ajusteValor, ajusteObservacion, totalGeneral };
       })
-      .filter((g) => g.totalBruto > 0 || g.unidades > 0 || g.horasCant > 0 || g.salarioMinimoGarantizado)
+      .filter((g) => g.totalBruto > 0 || g.unidades > 0 || g.horasCant > 0 || g.salarioMinimoGarantizado || g.pagoPorDia)
       .sort((a, b) => b.totalGeneral - a.totalGeneral);
-  }, [trabajadores, tipoSel, areaSel, prodQuincena, horasQuincena, lotesConCobros, ajustesDestajo, periodoIdActual]);
+  }, [trabajadores, tipoSel, areaSel, prodQuincena, horasQuincena, lotesConCobros, ajustesDestajo, periodoIdActual, diasTrabajados, desde, hasta]);
   const totalQuincena = porTrabajador.reduce((s, g) => s + g.totalGeneral, 0);
   const totalDescuentos = porTrabajador.reduce((s, g) => s + g.descuentoCobros, 0);
   const totalAjustes = porTrabajador.reduce((s, g) => s + (g.ajusteValor || 0), 0);
@@ -8013,6 +8107,10 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
       salarioMinimoGarantizado: g.salarioMinimoGarantizado,
       sueldoFijoQuincena: g.sueldoFijoQuincena,
       auxilioFijoQuincena: g.auxilioFijoQuincena,
+      pagoPorDia: g.pagoPorDia,
+      valorDia: g.valorDia,
+      diasPagados: g.diasTrabajadosCount,
+      pagoDiasQuincena: g.pagoDiasQuincena,
       ajusteValor: g.ajusteValor,
       ajusteObservacion: g.ajusteObservacion,
       totalGeneral: g.totalGeneral,
@@ -8108,10 +8206,12 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         onRowClick={(f) => setTrabajadorAbierto(f)}
         columnas={[
           { key: "nombre", label: "Trabajador", render: (f) => (
-            <span>{f.nombre}{f.salarioMinimoGarantizado && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.amberBg, color: C.amber }} title="Se le paga fijo el salario mínimo, no por producción">🔒 Mínimo</span>}</span>
+            <span>{f.nombre}{f.salarioMinimoGarantizado && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.amberBg, color: C.amber }} title="Se le paga fijo el salario mínimo, no por producción">🔒 Mínimo</span>}{f.pagoPorDia && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.blueBg, color: C.blue }} title="Se le paga por día trabajado, no por producción">📅 Por día</span>}</span>
           ) },
           { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
-          { key: "totalProduccion", label: "Total Producción", align: "right", render: (f) => fmtMoney(f.totalProduccion) },
+          { key: "totalProduccion", label: "Total Producción", align: "right", render: (f) => f.pagoPorDia ? (
+            <span title={`${f.diasTrabajadosCount} día(s) × ${fmtMoney(f.valorDia)}`}><strong>{fmtMoney(f.pagoDiasQuincena)}</strong> <span style={{ color: C.slate, fontWeight: 400 }}>({f.diasTrabajadosCount} × {fmtMoney(f.valorDia)})</span></span>
+          ) : fmtMoney(f.totalProduccion) },
           { key: "horasCant", label: "Horas", align: "right", render: (f) => fmtNum(f.horasCant) },
           { key: "totalHoras", label: "Total Horas", align: "right", render: (f) => fmtMoney(f.totalHoras) },
           { key: "descuentoCobros", label: "Descuentos", align: "right", render: (f) => f.descuentoCobros > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>-{fmtMoney(f.descuentoCobros)}</span> : <span style={{ color: C.slate }}>—</span> },
@@ -9794,7 +9894,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "dashboard" && !areaLider && !soloNovedades && <DashboardNominaView trabajadores={trabajadores} precios={precios} produccion={produccion} horas={horas} />}
           {subView === "produccion" && !soloNovedades && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} costosTeoricoProceso={costosTeoricoProceso} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
           {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
-          {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} ajustesDestajo={ajustesDestajo} />}
+          {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} ajustesDestajo={ajustesDestajo} diasTrabajados={diasTrabajadosHuellero} />}
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
           {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
