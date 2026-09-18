@@ -2334,7 +2334,7 @@ exports.getEntradasCrudasLoteBusintBD = onCall(
     cabeceraEntradas.forEach((f) => {
       const num = f?.Entrada;
       if (num === undefined || num === null) return;
-      const raw = f?.Fecha;
+      const raw = mejorFechaCabeceraBusintBD(f);
       cabeceraPorEntrada.set(String(num), {
         fecha: fechaISODesdeCampoBusintBD(raw),
         codplanta: f?.Codplanta !== undefined && f?.Codplanta !== null ? Number(f.Codplanta) : null,
@@ -2451,13 +2451,27 @@ function fechaISODesdeCampoBusintBD(fechaRaw) {
   if (!y) return null;
   return new Date(Date.UTC(y, m - 1, d)).toISOString().slice(0, 10);
 }
+// (2026-09-18, a pedido de Fredy) La cabecera de entrada/salida de Busint
+// trae un campo "Fecha" que en realidad es el dia en que alguien DIGITO el
+// documento en el sistema (coincide con UFECHA/ufechadig) -- no
+// necesariamente el dia real en que se hizo el trabajo. Caso real que
+// confirmo esto: Lote 7314, Terminacion, documento 28598 -- el trabajo se
+// hizo el 15, pero Anny lo digito a las 7:43am del dia SIGUIENTE (16);
+// "Fecha" quedo en 16 pero "FECHAINI"/"FechaFin" (el rango real del
+// trabajo) quedaron en 15. Se prefiere FechaFin (fecha de fin real del
+// proceso); si no viene, FECHAINI; y solo si ninguna de las dos existe se
+// cae de respaldo a Fecha (para no romper tablas que no tengan estos
+// campos, como la cabecera de salidas -- no confirmado todavia).
+function mejorFechaCabeceraBusintBD(f) {
+  return f?.FechaFin || f?.FECHAINI || f?.Fecha || null;
+}
 async function fechasPorDocumentoBusintBD(tableNameCabecera, camposNumero) {
   const todas = await consultarTablaBusintBDCompleta(tableNameCabecera);
   const porNumero = new Map();
   todas.forEach((f) => {
     const num = primerCampoDefinido(f, camposNumero);
     if (num === undefined) return;
-    const fecha = fechaISODesdeCampoBusintBD(f?.Fecha);
+    const fecha = fechaISODesdeCampoBusintBD(mejorFechaCabeceraBusintBD(f));
     if (fecha) porNumero.set(String(num), fecha);
   });
   return porNumero;
@@ -2594,7 +2608,7 @@ async function correrAuditoriaBusintVsNomina({ inmediato = false } = {}) {
   cabeceraEntradas.forEach((f) => {
     const num = f?.Entrada;
     if (num === undefined || num === null) return;
-    const fecha = fechaISODesdeCampoBusintBD(f?.Fecha);
+    const fecha = fechaISODesdeCampoBusintBD(mejorFechaCabeceraBusintBD(f));
     if (fecha) fechasEntrada.set(String(num), fecha);
     if (f?.Codplanta !== undefined && f?.Codplanta !== null) codplantaPorEntrada.set(String(num), Number(f.Codplanta));
   });
