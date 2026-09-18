@@ -6553,7 +6553,7 @@ function HistorialDestajoView({ liquidaciones, trabajadores }) {
   );
 }
 // ─── DEDUCCIONES (cobros de Bodega, descuento automatico en Nomina) ──────
-function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobrosManual, onAgregarCobroManual }) {
+function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobrosManual, onAgregarCobroManual, isAdmin, onBorrarCobroManual }) {
   const [filtroEstado, setFiltroEstado] = useState("");
   // (2026-09-18, a pedido de Fredy) Formulario para agregar un cobro manual
   // -- solo lo ve quien tenga el permiso (administrador, Yuleisi Virginia,
@@ -6609,6 +6609,11 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
         fecha: c.fecha || "",
         cobrado: c.cobrado === true,
         periodoIdCobrado: c.periodoIdCobrado || "",
+        // (2026-09-18, a pedido de Fredy) Para poder borrar un cobro
+        // manual desde el detalle -- solo aplica a los manuales (no a los
+        // que registra Bodega), y solo lo ve el administrador.
+        esManual: !!l.esManual,
+        cobroManualId: l.esManual ? String(l.id).replace(/^manual__/, "") : null,
       });
     });
   });
@@ -6648,6 +6653,11 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
               ) : (
                 <span style={{ color: C.amber, fontWeight: 700 }}>Pendiente de cobrar</span>
               )) },
+              { key: "acciones", label: "", align: "right", render: (f) => (
+                isAdmin && f.esManual ? (
+                  <span onClick={() => onBorrarCobroManual(f.cobroManualId)} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>
+                ) : null
+              ) },
             ]}
             filas={trabajadorAbierto.cobros}
           />
@@ -9514,6 +9524,10 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       registradoEn: new Date().toISOString(),
     });
   }
+  // (2026-09-18, a pedido de Fredy) Borrar un cobro manual -- solo
+  // administrador (verificado tambien en DeduccionesNominaView, que solo
+  // muestra el boton "Borrar" cuando isAdmin es true).
+  async function borrarCobroManual(id) { await fsDelete("nomina_cobros_manuales", id); }
   async function agregarCobroManual({ trabajadorId, trabajadorNombre, tipo, valor, fecha, numLote, referencia }) {
     const ref = doc(collection(db, "nomina_cobros_manuales"));
     await setDoc(ref, {
@@ -9730,7 +9744,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "historial_fiscal_destajo" && !areaLider && !soloNovedades && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
           {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
-          {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} />}
+          {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} isAdmin={isAdmin} onBorrarCobroManual={borrarCobroManual} />}
           {subView === "historial_lote" && !soloNovedades && <HistorialLoteView produccion={produccion} />}
           {subView === "historial_trabajador" && !soloNovedades && <HistorialTrabajadorView trabajadores={trabajadoresVisibles} produccion={produccionVisible} liquidaciones={liquidacionesD} areasNomina={areasNomina} />}
         </div>
