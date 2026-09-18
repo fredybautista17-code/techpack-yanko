@@ -44,6 +44,8 @@ const C = {
   amberBg: "#FDF5E6",
   violet: "#7B5EA7",
   violetBg: "#F3EEF9",
+  teal: "#2A8C99",
+  tealBg: "#EAF6F7",
 };
 function uid() {
   return Math.random().toString(36).slice(2, 9);
@@ -67,6 +69,10 @@ function infoTipoAuditoria(tipo) {
     sobre_registrado: { texto: "Sobre-registrado", icono: "⚠️", color: C.amber },
     sin_entrada_busint: { texto: "Sin entrada en Busint", icono: "🟣", color: C.violet },
     diferencia_valor: { texto: "Diferencia de valor", icono: "💲", color: C.blue },
+    // (2026-09-18, a pedido de Fredy) Cantidad y valor coinciden, pero la
+    // fecha real de Busint no es la misma con la que quedo registrado en
+    // ATLAS -- caso real: lote 7301, DGM-512 (Busint el 15, Atlas el 16).
+    fecha_no_coincide: { texto: "Fecha no coincide", icono: "📅", color: C.teal },
   };
   return M[tipo] || { texto: tipo, icono: "❓", color: C.slate };
 }

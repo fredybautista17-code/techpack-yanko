@@ -2541,11 +2541,12 @@ async function correrAuditoriaBusintVsNomina({ inmediato = false } = {}) {
       const proceso = String(p.proceso || "").trim();
       if (!numLote || !proceso) return;
       const clave = `${numLote}||${proceso}`;
-      const actual = registradoPorClave.get(clave) || { cantidad: 0, valor: 0, ultima: null };
+      const actual = registradoPorClave.get(clave) || { cantidad: 0, valor: 0, primera: null, ultima: null };
       actual.cantidad += Number(p.cantidad) || 0;
       actual.valor += Number(p.total) || 0;
       const fechaProd = String(p.fecha || "");
       if (fechaProd && (!actual.ultima || fechaProd > actual.ultima)) actual.ultima = fechaProd;
+      if (fechaProd && (!actual.primera || fechaProd < actual.primera)) actual.primera = fechaProd;
       registradoPorClave.set(clave, actual);
     });
 
@@ -2568,7 +2569,7 @@ async function correrAuditoriaBusintVsNomina({ inmediato = false } = {}) {
     todasLasClaves.forEach((clave) => {
       const [numLote, proceso] = clave.split("||");
       const busint = busintPorClave.get(clave);
-      const registrado = registradoPorClave.get(clave) || { cantidad: 0, valor: 0, ultima: null };
+      const registrado = registradoPorClave.get(clave) || { cantidad: 0, valor: 0, primera: null, ultima: null };
       const entradaBusint = busint?.total || 0;
       const entradaBusintValor = busint?.valorTotal || 0;
       // (2026-09-07, a pedido de Fredy) Lote 7254/BAJADA DE VINILO salio
@@ -2583,6 +2584,34 @@ async function correrAuditoriaBusintVsNomina({ inmediato = false } = {}) {
       // flotante no dispare una alerta falsa.
       const diferencia = Math.round((entradaBusint - registrado.cantidad) * 100) / 100;
       const diferenciaValor = Math.round(entradaBusintValor - registrado.valor);
+      // (2026-09-18, a pedido de Fredy) Revision independiente de fecha --
+      // un lote+proceso puede tener la cantidad y el valor exactos pero con
+      // una fecha real distinta en Busint que la que quedo registrada en
+      // ATLAS (caso real: lote 7301, proceso de la referencia DGM-512 --
+      // Busint el 15, Atlas el 16). Solo aplica cuando el lote+proceso
+      // existe en AMBOS lados -- si falta de un lado ya sale como
+      // "falta_registrar"/"sobre_registrado"/"sin entrada en Busint" mas
+      // abajo, y comparar fechas ahi no aportaria nada.
+      if (busint && registrado.cantidad > 0) {
+        const fechaBusint = busint.primera || busint.ultima || null;
+        const fechaNomina = registrado.primera || registrado.ultima || null;
+        if (fechaBusint && fechaNomina && fechaBusint !== fechaNomina) {
+          discrepancias.push({
+            numLote,
+            proceso,
+            entradaBusint,
+            entradaBusintValor,
+            registradoNomina: registrado.cantidad,
+            registradoNominaValor: registrado.valor,
+            diferencia: 0,
+            diferenciaValor: 0,
+            tipo: "fecha_no_coincide",
+            fechaBusint,
+            fechaNomina,
+            ultimaEntrada: `Busint: ${fechaBusint} · ATLAS: ${fechaNomina}`,
+          });
+        }
+      }
       let tipo = null;
       if (!busint && registrado.cantidad > 0) {
         tipo = "sin_entrada_busint";
