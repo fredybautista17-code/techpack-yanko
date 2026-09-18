@@ -4546,12 +4546,21 @@ const TOPE_SUELDO_PARA_AUXILIO = SMMLV_2026 * 2;
 // del neto a pagar; luego se marcan como cobrados con el periodo que los
 // pago (ver marcarCobrosComoCobrados en ModuloNomina) para que nunca se
 // cobren dos veces ni se queden sin cobrar.
-function cobrosPendientesDeTrabajador(lotesConCobros, trabajadorId) {
+function cobrosPendientesDeTrabajador(lotesConCobros, trabajadorId, hastaFecha) {
   const pendientes = [];
   (lotesConCobros || []).forEach((l) => {
     (l.cobrosBodega || []).forEach((c) => {
-      if (c.trabajadorId === trabajadorId && c.cobrado !== true) {
-        pendientes.push({ loteId: l.id, numLote: l.numLote, tipo: c.tipo, valor: Number(c.valor) || 0, fecha: c.fecha || "" });
+      // (2026-09-18, a pedido de Fredy) "hastaFecha" es el cierre por
+      // quincena -- solo se toman los cobros con fecha hasta el fin de
+      // ESA quincena; uno fechado despues (ej. ya de la quincena
+      // siguiente) se queda pendiente para cuando le toque, en vez de
+      // descontarse antes de tiempo.
+      if (c.trabajadorId === trabajadorId && c.cobrado !== true && (!hastaFecha || !c.fecha || c.fecha <= hastaFecha)) {
+        // El "Valor" que guarda Bodega es POR UNIDAD -- "Cantidad" son
+        // las unidades de ese cobro (ej: 6 cobros de $26.000 c/u = deben
+        // descontar $156.000, no $26.000). Los cobros manuales no traen
+        // Cantidad, por eso el "|| 1" no les cambia nada.
+        pendientes.push({ loteId: l.id, numLote: l.numLote, tipo: c.tipo, valor: (Number(c.valor) || 0) * (Number(c.cantidad) || 1), fecha: c.fecha || "" });
       }
     });
   });
@@ -4949,7 +4958,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       const horasDetalle = (horas || []).filter((h) => h.trabajadorId === t.id && h.fecha >= inicio && h.fecha <= fin);
       const totalHoras = horasDetalle.reduce((s, h) => s + (Number(h.total) || 0), 0);
       const horasCant = horasDetalle.reduce((s, h) => s + (Number(h.horas) || 0), 0);
-      const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id);
+      const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id, fin);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
       return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar + totalHoras - descuentoCobros } };
     });
@@ -4969,7 +4978,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
           confirmadaEn: new Date().toISOString(),
         });
         await onGuardarTrabajador({ ...trabajador, cesantiasAcumuladas: calculo.saldoCesantiasFin });
-        if (calculo.descuentoCobros > 0) await onMarcarCobrosCobrados(trabajador.id, periodoId);
+        if (calculo.descuentoCobros > 0) await onMarcarCobrosCobrados(trabajador.id, periodoId, fin);
       }
       setGuardadoOk(true);
     } finally {
@@ -5574,7 +5583,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
       const horasDetalle = (horas || []).filter((h) => h.trabajadorId === t.id && h.fecha >= inicio && h.fecha <= fin);
       const totalHoras = horasDetalle.reduce((s, h) => s + (Number(h.total) || 0), 0);
       const horasCant = horasDetalle.reduce((s, h) => s + (Number(h.horas) || 0), 0);
-      const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id);
+      const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id, fin);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
       return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar + totalHoras - descuentoCobros } };
     });
@@ -5594,7 +5603,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
           confirmadaEn: new Date().toISOString(),
         });
         await onGuardarTrabajador({ ...trabajador, cesantiasAcumuladas: calculo.saldoCesantiasFin });
-        if (calculo.descuentoCobros > 0) await onMarcarCobrosCobrados(trabajador.id, periodoId);
+        if (calculo.descuentoCobros > 0) await onMarcarCobrosCobrados(trabajador.id, periodoId, fin);
       }
       setGuardadoOk(true);
     } finally {
@@ -6159,7 +6168,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
       const totalHorasQuincena = horasDetalle.reduce((s, h) => s + (Number(h.total) || 0), 0);
       const horasCant = horasDetalle.reduce((s, h) => s + (Number(h.horas) || 0), 0);
       const base = calcularLiquidacionDestajo(t, netoProduccion, totalHorasQuincena);
-      const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id);
+      const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id, fin);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
       return { trabajador: t, calculo: { ...base, diasInasistencia, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, descuentoCobros, cobrosDetalle, netoAntesDeAjuste: base.netoBase - descuentoCobros } };
     });
@@ -6213,7 +6222,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
           confirmadaEn: new Date().toISOString(),
         });
         await onGuardarTrabajador({ ...trabajador, cesantiasAcumuladas: calculo.saldoCesantiasFin });
-        if (calculo.descuentoCobros > 0) await onMarcarCobrosCobrados(trabajador.id, periodoId);
+        if (calculo.descuentoCobros > 0) await onMarcarCobrosCobrados(trabajador.id, periodoId, fin);
       }
       setGuardadoOk(true);
     } finally {
@@ -6644,7 +6653,7 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
         trabajadorId: c.trabajadorId || "",
         trabajadorNombre: c.trabajadorNombre || (trabajadores || []).find((t) => t.id === c.trabajadorId)?.nombre || "—",
         tipo: c.tipo || "—",
-        valor: Number(c.valor) || 0,
+        valor: (Number(c.valor) || 0) * (Number(c.cantidad) || 1),
         fecha: c.fecha || "",
         cobrado: c.cobrado === true,
         periodoIdCobrado: c.periodoIdCobrado || "",
@@ -7909,7 +7918,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
     return [...mapa.values()]
       .map((g) => {
         const totalBruto = g.totalProduccion + g.totalHoras;
-        const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, g.trabajadorId);
+        const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, g.trabajadorId, hasta);
         const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
         let ajusteValor = 0, ajusteObservacion = "", ayudaSalarioMinimo = 0, excedenteSobreMinimo = 0;
         let sueldoFijoQuincena = 0, auxilioFijoQuincena = 0;
@@ -9526,14 +9535,20 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // trabajadores o ya cobrados, quedan intactos) como cobrados con el
   // periodo que los pago, para que la siguiente liquidacion no los vuelva
   // a descontar.
-  async function marcarCobrosComoCobrados(trabajadorId, periodoId) {
+  async function marcarCobrosComoCobrados(trabajadorId, periodoId, hastaFecha) {
     const batch = writeBatch(db);
     let huboCambios = false;
+    // (2026-09-18, a pedido de Fredy) Cierre por quincena: solo se marca
+    // como cobrado lo que tiene fecha hasta el fin de ESA quincena -- lo
+    // que quede fechado despues (ej. dia 17 estando en la quincena de
+    // 1-15) se deja pendiente, para que se descuente en la quincena que
+    // realmente le corresponde y no se marque pagado sin haberse
+    // descontado de ningun neto.
     lotesConCobros.forEach((l) => {
       const cobros = l.cobrosBodega || [];
       let cambio = false;
       const nuevos = cobros.map((c) => {
-        if (c.trabajadorId === trabajadorId && c.cobrado !== true) {
+        if (c.trabajadorId === trabajadorId && c.cobrado !== true && (!hastaFecha || !c.fecha || c.fecha <= hastaFecha)) {
           cambio = true;
           return { ...c, cobrado: true, periodoIdCobrado: periodoId };
         }
@@ -9545,7 +9560,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       }
     });
     cobrosManuales.forEach((c) => {
-      if (c.trabajadorId === trabajadorId && c.cobrado !== true) {
+      if (c.trabajadorId === trabajadorId && c.cobrado !== true && (!hastaFecha || !c.fecha || c.fecha <= hastaFecha)) {
         batch.set(doc(db, "nomina_cobros_manuales", c.id), { cobrado: true, periodoIdCobrado: periodoId }, { merge: true });
         huboCambios = true;
       }

@@ -3651,7 +3651,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
     const grid = [encabezados.map((h) => celda(h, ESTILO_HEADER))];
     [...enviados, ...recibidos].forEach((l) => {
       const esRecibido = l.estadoEnvio === "recibido";
-      const cobrosTexto = (l.cobrosBodega || []).map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney(c.valor)}`).join(" / ");
+      const cobrosTexto = (l.cobrosBodega || []).map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney((Number(c.valor) || 0) * (Number(c.cantidad) || 1))}`).join(" / ");
       grid.push([
         celda(l.numLote || "", ESTILO_DATO),
         celda(l.referencia || "", ESTILO_DATO),
@@ -3712,7 +3712,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
         "Cant. Despachada Bodega": l.cantidadDespachadaBodega ?? "",
         "Sacrificios": l.sacrificios ?? "",
         "Segundas": l.segundas ?? "",
-        "Cobros": (l.cobrosBodega || []).map((c) => `${c.trabajadorNombre} (${c.tipo}): ${c.valor}`).join(" / "),
+        "Cobros": (l.cobrosBodega || []).map((c) => `${c.trabajadorNombre} (${c.tipo}): ${(Number(c.valor) || 0) * (Number(c.cantidad) || 1)}`).join(" / "),
         "Despacho": l.despachoCodigo || "",
         "Transportador": l.transportador || "",
         "Guía": l.numeroGuia || "",
@@ -4037,7 +4037,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
                             <div key={l.id} style={{ fontSize: 12, color: C.ink, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8, background: C.canvas }}>
                               <strong>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"}{" "}
                               <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: C.blueBg, color: C.blue, whiteSpace: "nowrap" }}>⏳ Por recibir</span> · Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
-                              {!!(l.cobrosBodega || []).length && <> · Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney(c.valor)}`).join(" / ")}</>}
+                              {!!(l.cobrosBodega || []).length && <> · Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney((Number(c.valor) || 0) * (Number(c.cantidad) || 1))}`).join(" / ")}</>}
                             </div>
                           ))}
                         </div>
@@ -4163,7 +4163,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
                       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                         {loteDetalle.cobrosBodega.map((c, i) => (
                           <div key={i} style={{ fontSize: 12, color: C.ink, padding: "6px 10px", background: C.canvas, borderRadius: 8 }}>
-                            {c.trabajadorNombre} ({c.tipo}): {fmtMoney(c.valor)}
+                            {c.trabajadorNombre} ({c.tipo}): {fmtMoney((Number(c.valor) || 0) * (Number(c.cantidad) || 1))}
                           </div>
                         ))}
                       </div>
@@ -4571,7 +4571,7 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
                       </div>
                       {!!(l.cobrosBodega || []).length && (
                         <div style={{ fontSize: 11, color: C.slate, borderTop: `1px dashed ${C.border}`, paddingTop: 6 }}>
-                          Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney(c.valor)}`).join(" / ")}
+                          Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney((Number(c.valor) || 0) * (Number(c.cantidad) || 1))}`).join(" / ")}
                         </div>
                       )}
                     </div>
@@ -4623,7 +4623,7 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
                       </div>
                       {!!(l.cobrosBodega || []).length && (
                         <div style={{ fontSize: 11, color: C.slate, borderTop: `1px dashed ${C.border}`, paddingTop: 6 }}>
-                          Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney(c.valor)}`).join(" / ")}
+                          Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney((Number(c.valor) || 0) * (Number(c.cantidad) || 1))}`).join(" / ")}
                         </div>
                       )}
                     </div>
