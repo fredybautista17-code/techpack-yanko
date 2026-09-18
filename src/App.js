@@ -4476,7 +4476,7 @@ function EstadoProduccionRef({ numeroPedido, referencia }) {
     </div>
   );
 }
-function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden }) {
+function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden }) {
   const [modo, setModo] = useState("lista");
   const [subTab, setSubTab] = useState("pendientes");
   const [estadoFiltro, setEstadoFiltro] = useState("todas");
@@ -4841,9 +4841,26 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
             onActualizarItemPreorden(p.id, it.itemId, { telaComprada: true, telaCompradaEn: nowISO(), telaCompradaPor: currentUser?.name || "" });
           }
         }
+        // (2026-09-17, a pedido de Fredy) Solo el administrador puede
+        // deshacer una compra de tela ya marcada -- vuelve la referencia
+        // al bloque de "pendientes de tela".
+        function devolverTelaPendiente(it) {
+          if (window.confirm(`¿Devolver la referencia "${it.referencia}" a pendiente de tela?`)) {
+            onActualizarItemPreorden(p.id, it.itemId, { telaComprada: false, telaCompradaEn: null, telaCompradaPor: null });
+          }
+        }
         function celdaTela(it) {
           if (estadoActual !== "aprobada") return <span style={{ color: T.slate }}>—</span>;
-          if (it.telaComprada) return <span style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.jadeBg, color: T.jade, whiteSpace: "nowrap" }}>🧵 Comprada</span>;
+          if (it.telaComprada) {
+            return (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <span style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.jadeBg, color: T.jade, whiteSpace: "nowrap" }}>🧵 Comprada</span>
+                {currentUser?.isAdmin && (
+                  <button onClick={() => devolverTelaPendiente(it)} title="Devolver a pendiente de tela" style={{ padding: "2px 6px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.coral, fontWeight: 700, fontSize: 10, cursor: "pointer", whiteSpace: "nowrap" }}>↩️ Devolver</button>
+                )}
+              </div>
+            );
+          }
           if (puedeMarcarTela) return <button onClick={() => marcarTelaComprada(it)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>🧵 Ya se compró</button>;
           return <span style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.amberBg, color: T.amber, whiteSpace: "nowrap" }}>⏳ Pendiente</span>;
         }
@@ -4910,6 +4927,15 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                         return { ...it, estadoLabel: refReal ? (STATUS[refReal.status]?.label || refReal.status) : "" };
                       }),
                     })}>📊 Descargar Excel</Btn>
+                    {estadoActual === "aprobada" && currentUser?.isAdmin && (
+                      <Btn
+                        variant="secondary"
+                        small
+                        onClick={() => {
+                          if (window.confirm("¿Devolver esta preorden a \"Montada\"? Se desbloqueará para edición y el Cliente ya no la verá como aprobada (podrá volver a aprobarla después).")) onDesaprobarPreorden(p.id);
+                        }}
+                      >🔓 Desaprobar</Btn>
+                    )}
                     {!bloqueada && (
                       <>
                         <input
@@ -12649,6 +12675,17 @@ function AppInner() {
     const p = bitacoraPreordenes.find((x) => x.id === preordenId);
     notify({ id: uid(), icon: "✅", title: "Preorden aprobada", msg: p?.cliente ? `${p.cliente} aprobó el colorido` : "Colorido aprobado" });
   }
+  // (2026-09-18, a pedido de Fredy) Solo el administrador puede deshacer
+  // la aprobación de una preorden completa -- la devuelve a "Montada"
+  // (se desbloquea otra vez y el Cliente puede volver a aprobarla). Los
+  // datos de compra de tela por referencia no se tocan, solo dejan de
+  // mostrarse mientras la preorden no esté aprobada (ver `celdaTela` en
+  // PreordenesView).
+  async function desaprobarPreorden(preordenId) {
+    await actualizarPreorden(preordenId, { estado: "montada", desaprobadaPor: currentUser?.name || "", desaprobadaEn: nowISO() });
+    const p = bitacoraPreordenes.find((x) => x.id === preordenId);
+    notify({ id: uid(), icon: "🔓", title: "Preorden devuelta a Montada", msg: p?.cliente ? `${p.cliente} — la aprobación fue deshecha` : "Aprobación deshecha" });
+  }
   // --- Módulo KPIs (toda la compañía) ---
   // Puestos: { id, area, nombre, funciones }. `area` viene de
   // config.kpiAreas (lista controlada, editable en Administrador General).
@@ -13462,6 +13499,7 @@ function AppInner() {
                 onCrearPreorden={crearPreorden}
                 onVincularPedido={vincularPreordenAPedido}
                 onAprobarPreorden={aprobarPreorden}
+                onDesaprobarPreorden={desaprobarPreorden}
                 onActualizarPreorden={actualizarPreorden}
                 onEliminarPreorden={deleteBitacoraPreorden}
                 onActualizarItemPreorden={actualizarItemPreorden}
