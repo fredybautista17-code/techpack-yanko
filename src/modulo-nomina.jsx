@@ -1062,6 +1062,89 @@ function TiposContratoView({ tipos, trabajadores, isAdmin, onSave, onDelete }) {
 // pantalla). Se guarda en cada trabajador junto a su Área Interna -- por
 // ahora es solo clasificación, no cambia nada de "líder ve solo su
 // gente" (eso sigue siendo por Área Interna).
+// (2026-09-18, a pedido de Fredy) Catálogo de "Conceptos de Deducción"
+// (seguros, funeraria, etc.) -- se usa en Deducciones Fijas (Seguros) para
+// apuntarle a cada trabajador un descuento fijo por quincena en Nómina
+// Fiscal / Fiscal Destajo. El "Código" es opcional, para cuando esto se
+// conecte con TNS más adelante.
+function ConceptoDeduccionModal({ concepto, onSave, onClose }) {
+  const [form, setForm] = useState({ nombre: concepto?.nombre || "", codigo: concepto?.codigo || "" });
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  function guardar() {
+    if (!form.nombre.trim()) return;
+    onSave({ nombre: form.nombre.trim(), codigo: form.codigo.trim() });
+    onClose();
+  }
+  return (
+    <Modal title={concepto ? "Editar Concepto de Deducción" : "Nuevo Concepto de Deducción"} onClose={onClose} width={400}>
+      <Field label="Nombre del Concepto"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Seguro Funerario Colfunerales" /></Field>
+      <Field label="Código (opcional)"><FInput value={form.codigo} onChange={set("codigo")} placeholder="Para cuando se conecte con TNS" /></Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar} disabled={!form.nombre.trim()}>Guardar</Btn>
+      </div>
+    </Modal>
+  );
+}
+function ConceptosDeduccionView({ conceptos, deduccionesTrabajador, isAdmin, onSave, onDelete }) {
+  const [modal, setModal] = useState(null); // null | "nuevo" | concepto
+  const [confirmDel, setConfirmDel] = useState(null);
+  const ordenados = [...(conceptos || [])].sort((a, b) => a.nombre.localeCompare(b.nombre));
+  function contarAsignados(conceptoId) {
+    return (deduccionesTrabajador || []).filter((d) => d.conceptoId === conceptoId && d.activa !== false).length;
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Conceptos de deducción (seguros, funeraria, etc.) que se le pueden apuntar a un trabajador desde "Deducciones Fijas (Seguros)" -- ahí se les pone el valor y se descuentan solos cada quincena en Nómina Fiscal / Fiscal Destajo.
+      </div>
+      {modal && (
+        <ConceptoDeduccionModal
+          concepto={modal === "nuevo" ? null : modal}
+          onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data } : { id: modal.id, ...data })}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {confirmDel && (
+        <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Eliminar el concepto <strong>{confirmDel.nombre}</strong>?
+            {contarAsignados(confirmDel.id) > 0 && (
+              <div style={{ marginTop: 10, color: C.red, fontWeight: 600 }}>⚠️ {contarAsignados(confirmDel.id)} trabajador(es) tienen este concepto activo en Deducciones Fijas -- no se les quita solo, revísalos primero ahí.</div>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={() => { onDelete(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+          </div>
+        </Modal>
+      )}
+      {isAdmin && (
+        <div style={{ marginBottom: 16 }}>
+          <Btn onClick={() => setModal("nuevo")}>+ Nuevo Concepto de Deducción</Btn>
+        </div>
+      )}
+      <Tabla
+        vacio="Sin conceptos de deducción registrados todavía."
+        columnas={[
+          { key: "nombre", label: "Concepto" },
+          { key: "codigo", label: "Código", render: (f) => f.codigo || <span style={{ color: C.slate }}>—</span> },
+          { key: "asignados", label: "Trabajadores activos", align: "right", render: (f) => contarAsignados(f.id) },
+          ...(isAdmin ? [{
+            key: "acciones", label: "", align: "right",
+            render: (f) => (
+              <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <span onClick={(e) => { e.stopPropagation(); setModal(f); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>Editar</span>
+                <span onClick={(e) => { e.stopPropagation(); setConfirmDel(f); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>
+              </span>
+            ),
+          }] : []),
+        ]}
+        filas={ordenados}
+      />
+    </div>
+  );
+}
 function ZonaNominaModal({ zona, areasNomina, gruposTrabajo, onSave, onClose }) {
   const [form, setForm] = useState({ nombre: zona?.nombre || "", areaId: zona?.areaId || "" });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
@@ -4595,6 +4678,16 @@ function cobrosPendientesDeTrabajador(lotesConCobros, trabajadorId, hastaFecha) 
 function sumaCobrosPendientes(cobrosDetalle) {
   return (cobrosDetalle || []).reduce((s, c) => s + (Number(c.valor) || 0), 0);
 }
+// (2026-09-18, a pedido de Fredy) Deducciones fijas por quincena (seguros,
+// funeraria, etc.) -- ver DeduccionesFijasView. Solo se toman las que
+// siguen ACTIVAS (nunca se borran, se desactivan cuando el trabajador
+// cancela el seguro, y esa fecha queda registrada en el propio documento).
+function deduccionesActivasDeTrabajador(deducciones, trabajadorId) {
+  return (deducciones || []).filter((d) => d.trabajadorId === trabajadorId && d.activa !== false);
+}
+function sumaDeducciones(deduccionesDetalle) {
+  return (deduccionesDetalle || []).reduce((s, d) => s + (Number(d.valor) || 0), 0);
+}
 // (2026-09-11/12, a pedido de Fredy) Motivos de ausencia que suspenden el
 // pago del auxilio de transporte (ademas de las faltas sin justificar, que
 // ya no lo pagan). De estos, Licencia No Remunerada es la unica que
@@ -5081,6 +5174,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
             <KPI icon="⏱" label="Horas sueltas pagadas" value={fmtMoney(totales.totalHoras)} color={C.blue} bg={C.blueBg} />
             <KPI icon="📉" label="EPS + Pensión trabajador (descontado)" value={fmtMoney(totales.epsTrabajador + totales.pensionTrabajador)} color={C.red} bg={C.redBg} />
             <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
+            <KPI icon="🛡️" label="Descuento seguros/deducciones" value={fmtMoney(totales.descuentoDeducciones)} color={C.red} bg={C.redBg} />
             <KPI icon="🏛️" label="Pensión + ARL + Caja (costo empresa)" value={fmtMoney(totales.pensionEmpleador + totales.arlEmpleador + totales.cajaCompensacionEmpleador)} color={C.violet} bg={C.violetBg} />
             <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
             <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
@@ -5111,6 +5205,9 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
               { key: "pensionTrabajador", label: "Pensión trab. (-4%)", align: "right", render: (f) => <span style={{ color: C.red }}>-{fmtMoney(f.calculo.pensionTrabajador)}</span> },
               { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.calculo.descuentoCobros > 0 ? (
                 <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.cobrosDetalle || []).map((c) => `Lote ${c.numLote}: ${c.tipo || "cobro"} ${fmtMoney(c.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoCobros)}</span>
+              ) : <span style={{ color: C.slate }}>—</span> },
+              { key: "descuentoDeducciones", label: "Descuento seguros", align: "right", render: (f) => f.calculo.descuentoDeducciones > 0 ? (
+                <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.deduccionesDetalle || []).map((d) => `${d.conceptoNombre || "Deducción"}: ${fmtMoney(d.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoDeducciones)}</span>
               ) : <span style={{ color: C.slate }}>—</span> },
               { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
               { key: "pensionEmpleador", label: "Pensión empresa (12%)", align: "right", render: (f) => fmtMoney(f.calculo.pensionEmpleador) },
@@ -5575,7 +5672,95 @@ function PrestamosView({ trabajadores, prestamos, onGuardar, onBorrar, currentUs
     </div>
   );
 }
-function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, horas }) {
+// (2026-09-18, a pedido de Fredy) Deducciones fijas por quincena (seguros,
+// funeraria, etc.) -- se le apunta a un trabajador un Concepto (del
+// catálogo de Conceptos de Deducción) con un valor fijo, y desde ahí se le
+// descuenta SOLO de su Neto a Pagar en Nómina Fiscal / Fiscal Destajo,
+// cada quincena, hasta que se desactive (nunca se borra, para conservar el
+// historial de cuándo estuvo activa). Un trabajador puede tener varias
+// deducciones activas a la vez.
+function DeduccionesFijasView({ trabajadores, conceptos, deducciones, isAdmin, onGuardar, onCambiarEstado, currentUser }) {
+  const [trabajadorId, setTrabajadorId] = useState("");
+  const [conceptoId, setConceptoId] = useState("");
+  const [valor, setValor] = useState("");
+  const [filtroTrabajador, setFiltroTrabajador] = useState("");
+  const [filtroEstado, setFiltroEstado] = useState("activa");
+  const [guardando, setGuardando] = useState(false);
+  async function registrar() {
+    if (!trabajadorId || !conceptoId || !Number(valor)) return;
+    const t = trabajadores.find((x) => x.id === trabajadorId);
+    const c = (conceptos || []).find((x) => x.id === conceptoId);
+    setGuardando(true);
+    try {
+      await onGuardar({
+        id: uid(), trabajadorId, trabajadorNombre: t?.nombre || "", conceptoId, conceptoNombre: c?.nombre || "",
+        valor: Number(valor) || 0, activa: true,
+        registradoPor: currentUser?.name || currentUser?.username || "", registradoEn: new Date().toISOString(),
+      });
+      setConceptoId("");
+      setValor("");
+    } finally {
+      setGuardando(false);
+    }
+  }
+  const filas = (deducciones || [])
+    .filter((d) => !filtroTrabajador || d.trabajadorId === filtroTrabajador)
+    .filter((d) => !filtroEstado || (filtroEstado === "activa" ? d.activa !== false : d.activa === false))
+    .slice()
+    .sort((a, b) => (b.registradoEn || "").localeCompare(a.registradoEn || ""));
+  const totalActivas = (deducciones || []).filter((d) => d.activa !== false).reduce((s, d) => s + (Number(d.valor) || 0), 0);
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Deducciones fijas por quincena (seguros, funeraria, etc.) -- se le apuntan a un trabajador y se descuentan solas cada quincena en Nómina Fiscal y Fiscal Destajo, hasta que las desactives (por ejemplo, cuando cancele el seguro). No se borran, para conservar el historial.
+      </div>
+      {isAdmin && (
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 20, border: `1px solid ${C.border}`, borderRadius: 8, padding: 14 }}>
+          <Field label="Trabajador">
+            <FSel value={trabajadorId} onChange={setTrabajadorId} options={[{ value: "", label: "Selecciona..." }, ...trabajadores.map((t) => ({ value: t.id, label: t.nombre }))]} />
+          </Field>
+          <Field label="Concepto">
+            <FSel value={conceptoId} onChange={setConceptoId} options={[{ value: "", label: "Selecciona..." }, ...(conceptos || []).map((c) => ({ value: c.id, label: c.nombre }))]} />
+          </Field>
+          <Field label="Valor por quincena"><FInput type="number" value={valor} onChange={setValor} placeholder="Ej: 10000" /></Field>
+          <Btn onClick={registrar} disabled={!trabajadorId || !conceptoId || !Number(valor) || guardando}>➕ Asignar deducción</Btn>
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 14, flexWrap: "wrap" }}>
+        <Field label="Filtrar por trabajador (opcional)">
+          <FSel value={filtroTrabajador} onChange={setFiltroTrabajador} options={[{ value: "", label: "Todos" }, ...trabajadores.map((t) => ({ value: t.id, label: t.nombre }))]} />
+        </Field>
+        <Field label="Estado">
+          <FSel value={filtroEstado} onChange={setFiltroEstado} options={[{ value: "activa", label: "Activas" }, { value: "inactiva", label: "Desactivadas" }, { value: "", label: "Todas" }]} />
+        </Field>
+        <KPI icon="🛡️" label="Total activas por quincena" value={fmtMoney(totalActivas)} color={C.violet} bg={C.violetBg} />
+      </div>
+      <Tabla
+        vacio="Sin deducciones registradas."
+        columnas={[
+          { key: "trabajadorNombre", label: "Trabajador" },
+          { key: "conceptoNombre", label: "Concepto" },
+          { key: "valor", label: "Valor / quincena", align: "right", render: (f) => <strong>{fmtMoney(f.valor)}</strong> },
+          { key: "estado", label: "Estado", render: (f) => f.activa !== false ? (
+            <span style={{ color: C.green, fontWeight: 700 }}>Activa</span>
+          ) : (
+            <span style={{ color: C.slate, fontWeight: 700 }}>Desactivada</span>
+          ) },
+          ...(isAdmin ? [{
+            key: "acciones", label: "", align: "right",
+            render: (f) => (
+              <span onClick={() => onCambiarEstado(f.id, f.activa === false)} style={{ cursor: "pointer", color: f.activa === false ? C.green : C.red, fontWeight: 700 }}>
+                {f.activa === false ? "Reactivar" : "Desactivar"}
+              </span>
+            ),
+          }] : []),
+        ]}
+        filas={filas}
+      />
+    </div>
+  );
+}
+function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, horas, deduccionesTrabajador }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -5611,7 +5796,11 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
       const horasCant = horasDetalle.reduce((s, h) => s + (Number(h.horas) || 0), 0);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id, fin);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
-      return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar + totalHoras - descuentoCobros } };
+      // (2026-09-18, a pedido de Fredy) Deducciones fijas por quincena
+      // (seguros, funeraria, etc.) -- ver DeduccionesFijasView.
+      const deduccionesDetalle = deduccionesActivasDeTrabajador(deduccionesTrabajador, t.id);
+      const descuentoDeducciones = sumaDeducciones(deduccionesDetalle);
+      return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, netoAPagar: base.netoAPagar + totalHoras - descuentoCobros - descuentoDeducciones } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -5640,12 +5829,13 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
   const totales = resultados ? resultados.reduce((s, r) => ({
     neto: s.neto + r.calculo.netoAPagar,
     descuentoCobros: s.descuentoCobros + (r.calculo.descuentoCobros || 0),
+    descuentoDeducciones: s.descuentoDeducciones + (r.calculo.descuentoDeducciones || 0),
     totalHoras: s.totalHoras + (r.calculo.totalHoras || 0),
     cesantias: s.cesantias + r.calculo.cesantiasPeriodo,
     intereses: s.intereses + r.calculo.interesesPeriodo,
     prima: s.prima + r.calculo.primaPeriodo,
     vacaciones: s.vacaciones + r.calculo.vacacionesPeriodo,
-  }), { neto: 0, descuentoCobros: 0, totalHoras: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
+  }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0, totalHoras: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
 
   return (
     <div>
@@ -5692,6 +5882,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
             <KPI icon="💵" label="Neto a pagar (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
             <KPI icon="⏱" label="Horas sueltas pagadas" value={fmtMoney(totales.totalHoras)} color={C.blue} bg={C.blueBg} />
             <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
+            <KPI icon="🛡️" label="Descuento seguros/deducciones" value={fmtMoney(totales.descuentoDeducciones)} color={C.red} bg={C.redBg} />
             <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
             <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
             <KPI icon="🏖️" label="Vacaciones (provisión)" value={fmtMoney(totales.vacaciones)} color={C.amber} bg={C.amberBg} />
@@ -5718,6 +5909,9 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
               { key: "totalHoras", label: "Total Horas", align: "right", render: (f) => (f.calculo.totalHoras || 0) > 0 ? fmtMoney(f.calculo.totalHoras) : <span style={{ color: C.slate }}>—</span> },
               { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.calculo.descuentoCobros > 0 ? (
                 <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.cobrosDetalle || []).map((c) => `Lote ${c.numLote}: ${c.tipo || "cobro"} ${fmtMoney(c.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoCobros)}</span>
+              ) : <span style={{ color: C.slate }}>—</span> },
+              { key: "descuentoDeducciones", label: "Descuento seguros", align: "right", render: (f) => f.calculo.descuentoDeducciones > 0 ? (
+                <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.deduccionesDetalle || []).map((d) => `${d.conceptoNombre || "Deducción"}: ${fmtMoney(d.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoDeducciones)}</span>
               ) : <span style={{ color: C.slate }}>—</span> },
               { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
               { key: "cesantiasPeriodo", label: "Cesantías (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.cesantiasPeriodo) },
@@ -5863,6 +6057,12 @@ function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
     <div class="section-title">🏭 Descuento por cobros de Bodega</div>
     <table><tbody>
       <tr><td>Descuento por cobros de Bodega (ya restado del neto)</td><td style="text-align:right;color:#B23A48">-${fmtMoney(liquidacion.descuentoCobros)}</td></tr>
+    </tbody></table>` : ""}
+    ${liquidacion.descuentoDeducciones > 0 ? `
+    <div class="section-title">🛡️ Deducciones (seguros)</div>
+    <table><tbody>
+      ${(liquidacion.deduccionesDetalle || []).map((d) => `<tr><td>${d.conceptoNombre || "Deducción"}</td><td style="text-align:right;color:#B23A48">-${fmtMoney(d.valor)}</td></tr>`).join("")}
+      <tr><td><strong>Total deducciones (ya restado del neto)</strong></td><td style="text-align:right;color:#B23A48"><strong>-${fmtMoney(liquidacion.descuentoDeducciones)}</strong></td></tr>
     </tbody></table>` : ""}
     <div class="totales">
       <div class="total-card" style="background:#EBF7F2;color:#2D9E6B"><label>Neto a Pagar</label><div class="val">${fmtMoney(liquidacion.netoAPagar)}</div></div>
@@ -9298,6 +9498,14 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [liquidacionesD, setLiquidacionesD] = useState([]);
   const [liquidacionesRetiro, setLiquidacionesRetiro] = useState([]);
   const [prestamos, setPrestamos] = useState([]);
+  // (2026-09-18, a pedido de Fredy) Deducciones de seguros/funeraria/etc.
+  // -- un catálogo de "Conceptos de Deducción" (ConceptosDeduccionView) y,
+  // por separado, la asignación fija por trabajador con su valor quincenal
+  // (DeduccionesFijasView) -- se descuentan solas del Neto a Pagar en
+  // Nómina Fiscal y Fiscal Destajo (NO en Destajo) cada quincena, mientras
+  // sigan activas (nunca se borran, se desactivan).
+  const [conceptosDeduccion, setConceptosDeduccion] = useState([]);
+  const [deduccionesTrabajador, setDeduccionesTrabajador] = useState([]);
   // (2026-09-10, a pedido de Fredy) Cobros que Bodega registra contra un
   // trabajador (Despachos Generales / Estado de Despacho) -- Nomina los lee
   // de la MISMA coleccion que ya usa Bodega/Contabilidad, sin duplicar nada.
@@ -9351,6 +9559,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_liquidaciones_retiro"), (snap) => setLiquidacionesRetiro(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_prestamos"), (snap) => setPrestamos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_conceptos_deduccion"), (snap) => setConceptosDeduccion(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_deducciones_trabajador"), (snap) => setDeduccionesTrabajador(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => setLotesConCobros(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_cobros_manuales"), (snap) => setCobrosManuales(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_ajustes_destajo"), (snap) => setAjustesDestajo(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -9467,6 +9677,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "zonas_nomina", icon: "🪪", label: "Cargo" },
             { id: "areas_tns", icon: "🏛️", label: "Área TNS" },
             { id: "tipos_contrato", icon: "📋", label: "Tipo de Contrato" },
+            { id: "conceptos_deduccion", icon: "🛡️", label: "Conceptos de Deducción" },
             { id: "motivos_ausencia", icon: "🏷️", label: "Motivos de Ausencia (catálogo)" },
             { id: "turnos", icon: "⏱️", label: "Turnos" },
             { id: "trabajadores", icon: "👷", label: "Trabajadores" },
@@ -9480,6 +9691,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
             { id: "novedades_quincena", icon: "🧾", label: "Listado de Novedades (quincena)" },
             { id: "deducciones", icon: "🧾", label: "Deducciones" },
+            { id: "deducciones_fijas", icon: "🛡️", label: "Deducciones Fijas (Seguros)" },
           ] },
         { group: "Liquidaciones", icon: "🧮", items: [
             { id: "liquidacion_retiro", icon: "📄", label: "Liquidación de Trabajador" },
@@ -9648,6 +9860,10 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function guardarLiquidacionRetiro(l) { await fsSave("nomina_liquidaciones_retiro", l.id, l); }
   async function guardarPrestamo(p) { await fsSave("nomina_prestamos", p.id, p); }
   async function borrarPrestamo(id) { await fsDelete("nomina_prestamos", id); }
+  async function guardarConceptoDeduccion(c) { await fsSave("nomina_conceptos_deduccion", c.id, c); }
+  async function borrarConceptoDeduccion(id) { await fsDelete("nomina_conceptos_deduccion", id); }
+  async function guardarDeduccionTrabajador(d) { await fsSave("nomina_deducciones_trabajador", d.id, d); }
+  async function cambiarEstadoDeduccionTrabajador(id, activa) { await fsSave("nomina_deducciones_trabajador", id, { activa, cambioEstadoEn: new Date().toISOString() }); }
   // (2026-09-10, "Design B" confirmado por Fredy) Al confirmar una
   // liquidacion que incluyo descuentoCobros > 0, esto marca esos cobros
   // especificos (y SOLO esos -- los demas cobros del mismo lote, de otros
@@ -9920,13 +10136,15 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "anomalias_huellero" && puedeVerAnomaliasHuellero && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
           {subView === "historial_asistencia_area" && <HistorialAsistenciaAreaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausenciasVisibles} anomalias={anomaliasVisibles} retardos={retardosVisibles} turnos={turnos} />}
-          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} horas={horas} />}
+          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
-          {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} horas={horas} />}
+          {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} />}
           {subView === "historial_fiscal_destajo" && !areaLider && !soloNovedades && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
           {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} horas={horas} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
           {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} isAdmin={isAdmin} onBorrarCobroManual={borrarCobroManual} />}
+          {subView === "conceptos_deduccion" && !areaLider && !soloNovedades && <ConceptosDeduccionView conceptos={conceptosDeduccion} deduccionesTrabajador={deduccionesTrabajador} isAdmin={isAdminCatalogos} onSave={guardarConceptoDeduccion} onDelete={borrarConceptoDeduccion} />}
+          {subView === "deducciones_fijas" && !areaLider && !soloNovedades && <DeduccionesFijasView trabajadores={trabajadores} conceptos={conceptosDeduccion} deducciones={deduccionesTrabajador} isAdmin={isAdminCatalogos} onGuardar={guardarDeduccionTrabajador} onCambiarEstado={cambiarEstadoDeduccionTrabajador} currentUser={currentUser} />}
           {subView === "historial_lote" && !soloNovedades && <HistorialLoteView produccion={produccion} />}
           {subView === "historial_trabajador" && !soloNovedades && <HistorialTrabajadorView trabajadores={trabajadoresVisibles} produccion={produccionVisible} liquidaciones={liquidacionesD} areasNomina={areasNomina} />}
         </div>
