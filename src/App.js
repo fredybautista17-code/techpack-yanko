@@ -4482,6 +4482,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
   const [estadoFiltro, setEstadoFiltro] = useState("todas");
   const [vinculando, setVinculando] = useState(null);
   const [buscaPedido, setBuscaPedido] = useState("");
+  const [numeroPedidoManual, setNumeroPedidoManual] = useState("");
   const [detallePedido, setDetallePedido] = useState(null);
   const [expandido, setExpandido] = useState(null);
   const [refrescando, setRefrescando] = useState(null);
@@ -4509,6 +4510,15 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
     onVincularPedido(vinculando.preordenId, vinculando.itemId, pedido);
     setVinculando(null);
     setBuscaPedido("");
+    setNumeroPedidoManual("");
+  }
+  // (2026-09-18, a pedido de Fredy) Respaldo cuando el pedido no aparece en
+  // la búsqueda -- se escribe el número a mano, sin exigir que calce con
+  // ningún pedido ya cargado.
+  function confirmarVinculoManual() {
+    const numero = numeroPedidoManual.trim();
+    if (!numero) return;
+    confirmarVinculo({ numero, cliente: "" });
   }
   // (2026-09-17, a pedido de Fredy) Botón "🔄 Actualizar" por referencia --
   // misma consulta a Busint que usa NuevaReprogramacionView.buscar(), pero
@@ -4705,7 +4715,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
         </Modal>
       )}
       {vinculando && (
-        <Modal title="Vincular a pedido" onClose={() => { setVinculando(null); setBuscaPedido(""); }} width={480}>
+        <Modal title="Vincular a pedido" onClose={() => { setVinculando(null); setBuscaPedido(""); setNumeroPedidoManual(""); }} width={480}>
           <p style={{ margin: "0 0 12px", fontSize: 13, color: T.slate }}>
             Busca el pedido al que pertenece esta referencia. No se modifica el pedido — solo se marca como vinculada y deja de salir en pendientes.
           </p>
@@ -4726,6 +4736,18 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                 <div style={{ fontSize: 12, color: T.slate }}>{p.cliente || "Sin cliente"}{p.fechaPedido ? ` · ${p.fechaPedido}` : ""}</div>
               </div>
             ))}
+          </div>
+          <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
+            <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>¿No aparece en la búsqueda? Escribe el número de pedido a mano:</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                value={numeroPedidoManual}
+                onChange={(e) => setNumeroPedidoManual(e.target.value)}
+                placeholder="Número de pedido"
+                style={{ flex: 1, padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+              />
+              <Btn variant="secondary" small disabled={!numeroPedidoManual.trim()} onClick={confirmarVinculoManual}>Vincular</Btn>
+            </div>
           </div>
         </Modal>
       )}
@@ -5008,6 +5030,10 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                                   );
                                 })() : bloqueada ? (
                                   <span style={{ color: T.slate, fontSize: 11, fontStyle: "italic" }}>🔒 Bloqueada</span>
+                                ) : estadoActual !== "aprobada" ? (
+                                  <span style={{ color: T.slate, fontSize: 11 }}>Sin pedido</span>
+                                ) : !it.telaComprada ? (
+                                  <span style={{ color: T.amber, fontSize: 11, fontWeight: 700 }}>Aprobado</span>
                                 ) : (
                                   <button onClick={() => setVinculando({ preordenId: p.id, itemId: it.itemId })} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Vincular</button>
                                 )}
