@@ -7486,6 +7486,8 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
                     <th style={{ padding: 6 }}>Fecha cruda (Busint)</th>
                     <th style={{ padding: 6, textAlign: "right" }}>Total</th>
                     <th style={{ padding: 6, textAlign: "right" }}>Costo</th>
+                    <th style={{ padding: 6 }}>Todos los campos (detalle)</th>
+                    <th style={{ padding: 6 }}>Todos los campos (cabecera)</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -7499,10 +7501,12 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
                       <td style={{ padding: 6, fontFamily: "monospace", fontSize: 11 }}>{f.fechaCruda ? JSON.stringify(f.fechaCruda) : "—"}</td>
                       <td style={{ padding: 6, textAlign: "right" }}>{fmtNum(f.total)}</td>
                       <td style={{ padding: 6, textAlign: "right" }}>{fmtNum(f.costo)}</td>
+                      <td style={{ padding: 6, fontFamily: "monospace", fontSize: 10, maxWidth: 320, wordBreak: "break-all" }}>{f.camposDetalle ? JSON.stringify(f.camposDetalle) : "—"}</td>
+                      <td style={{ padding: 6, fontFamily: "monospace", fontSize: 10, maxWidth: 320, wordBreak: "break-all" }}>{f.camposCabecera ? JSON.stringify(f.camposCabecera) : "—"}</td>
                     </tr>
                   ))}
                   {!diagResultado.filas.length && (
-                    <tr><td colSpan={8} style={{ padding: 10, color: C.slate }}>Sin filas para este lote.</td></tr>
+                    <tr><td colSpan={10} style={{ padding: 10, color: C.slate }}>Sin filas para este lote.</td></tr>
                   )}
                 </tbody>
               </table>

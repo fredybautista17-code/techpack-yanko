@@ -2351,6 +2351,12 @@ exports.getEntradasCrudasLoteBusintBD = onCall(
           minute: raw.minute ?? null,
           second: raw.second ?? null,
         } : raw ?? null,
+        // (2026-09-18) La fila COMPLETA de la cabecera, sin recortar --
+        // para buscar a mano si hay OTRO campo de fecha (distinto de
+        // "Fecha") que sea el que de verdad se ve en el reporte impreso de
+        // Busint (confirmado que "Fecha" trae el dia en que se guardo el
+        // documento en el sistema, no el dia de trabajo anotado).
+        filaCompleta: f,
       });
     });
     const filas = entradasRefTodas
@@ -2367,6 +2373,12 @@ exports.getEntradasCrudasLoteBusintBD = onCall(
           fechaCruda: cab?.fechaCruda ?? null,
           total: Number(f?.Total) || 0,
           costo: Number(f?.Costo) || 0,
+          // (2026-09-18) Todos los campos crudos, sin recortar, tanto de la
+          // fila de detalle (bmp - entrada plantaproc ref) como de su
+          // cabecera (bmp - entrada plantaproc) -- para encontrar el campo
+          // de fecha correcto.
+          camposDetalle: f,
+          camposCabecera: cab?.filaCompleta ?? null,
         };
       })
       .sort((a, b) => (a.proceso || "").localeCompare(b.proceso || "") || String(a.fecha || "").localeCompare(String(b.fecha || "")));
