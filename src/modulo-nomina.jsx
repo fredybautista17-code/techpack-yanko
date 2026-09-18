@@ -6617,8 +6617,24 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
   const [manualNumLote, setManualNumLote] = useState("");
   const [manualReferencia, setManualReferencia] = useState("");
   const [agregandoManual, setAgregandoManual] = useState(false);
+  const [errorManual, setErrorManual] = useState("");
   async function registrarCobroManual() {
     if (!manualTrabajadorId || !Number(manualValor)) return;
+    setErrorManual("");
+    // (2026-09-18, a pedido de Fredy) Si el lote que se escribe aqui ya
+    // tiene cobros registrados por Bodega/Contabilidad, no se deja agregar
+    // un cobro manual encima -- eso fue justo lo que causo un lote
+    // duplicado (el cobro real de Bodega + uno manual de mas). Si el cobro
+    // de ese lote esta mal, se corrige editando el lote directo en Bodega
+    // (Despachos Generales / Estado de Despacho).
+    const numLoteLimpio = String(manualNumLote || "").trim();
+    if (numLoteLimpio) {
+      const yaExiste = (lotesConCobros || []).some((l) => !l.esManual && String(l.numLote || "").trim() === numLoteLimpio);
+      if (yaExiste) {
+        setErrorManual(`El lote ${numLoteLimpio} ya tiene cobros registrados por Bodega -- edítalo directamente allá (Despachos Generales / Estado de Despacho) en vez de agregar un cobro manual aparte.`);
+        return;
+      }
+    }
     const t = trabajadores.find((x) => x.id === manualTrabajadorId);
     setAgregandoManual(true);
     try {
@@ -6715,16 +6731,19 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
         Todos los cobros pendientes contra un trabajador -- los que registra Bodega (Despachos Generales / Estado de Despacho) y los agregados manualmente aquí abajo -- se descuentan solos de la SIGUIENTE liquidación de ese trabajador, sin importar cuánto tiempo llevaban esperando. Clic en un trabajador para ver el detalle de cada cobro suyo.
       </div>
       {puedeAgregarCobrosManual && (
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 20, border: `1px solid ${C.border}`, borderRadius: 8, padding: 14 }}>
-          <Field label="Trabajador">
-            <FSel value={manualTrabajadorId} onChange={setManualTrabajadorId} options={[{ value: "", label: "Selecciona..." }, ...trabajadores.map((t) => ({ value: t.id, label: t.nombre }))]} />
-          </Field>
-          <Field label="Motivo"><FInput value={manualTipo} onChange={setManualTipo} placeholder="Ej: Daño de tela" /></Field>
-          <Field label="Lote (opcional)"><FInput value={manualNumLote} onChange={setManualNumLote} placeholder="Ej: 7301" /></Field>
-          <Field label="Referencia (opcional)"><FInput value={manualReferencia} onChange={setManualReferencia} placeholder="Ej: 985663" /></Field>
-          <Field label="Valor"><FInput type="number" value={manualValor} onChange={setManualValor} placeholder="Ej: 50000" /></Field>
-          <Field label="Fecha"><FInput type="date" value={manualFecha} onChange={setManualFecha} /></Field>
-          <Btn onClick={registrarCobroManual} disabled={!manualTrabajadorId || !Number(manualValor) || agregandoManual}>➕ Agregar cobro manual</Btn>
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", border: `1px solid ${C.border}`, borderRadius: 8, padding: 14 }}>
+            <Field label="Trabajador">
+              <FSel value={manualTrabajadorId} onChange={setManualTrabajadorId} options={[{ value: "", label: "Selecciona..." }, ...trabajadores.map((t) => ({ value: t.id, label: t.nombre }))]} />
+            </Field>
+            <Field label="Motivo"><FInput value={manualTipo} onChange={setManualTipo} placeholder="Ej: Daño de tela" /></Field>
+            <Field label="Lote (opcional)"><FInput value={manualNumLote} onChange={setManualNumLote} placeholder="Ej: 7301" /></Field>
+            <Field label="Referencia (opcional)"><FInput value={manualReferencia} onChange={setManualReferencia} placeholder="Ej: 985663" /></Field>
+            <Field label="Valor"><FInput type="number" value={manualValor} onChange={setManualValor} placeholder="Ej: 50000" /></Field>
+            <Field label="Fecha"><FInput type="date" value={manualFecha} onChange={setManualFecha} /></Field>
+            <Btn onClick={registrarCobroManual} disabled={!manualTrabajadorId || !Number(manualValor) || agregandoManual}>➕ Agregar cobro manual</Btn>
+          </div>
+          {errorManual && <div style={{ marginTop: 10, padding: "10px 14px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 13, fontWeight: 600 }}>⚠ {errorManual}</div>}
         </div>
       )}
       <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
