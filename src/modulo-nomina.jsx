@@ -7483,6 +7483,7 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
                     <th style={{ padding: 6 }}>Codplanta</th>
                     <th style={{ padding: 6 }}>¿Propia?</th>
                     <th style={{ padding: 6 }}>Fecha</th>
+                    <th style={{ padding: 6 }}>Fecha cruda (Busint)</th>
                     <th style={{ padding: 6, textAlign: "right" }}>Total</th>
                     <th style={{ padding: 6, textAlign: "right" }}>Costo</th>
                   </tr>
@@ -7495,12 +7496,13 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
                       <td style={{ padding: 6 }}>{f.codplanta ?? "—"}</td>
                       <td style={{ padding: 6 }}>{f.esPlantaPropia === null ? "—" : f.esPlantaPropia ? "Sí" : "No"}</td>
                       <td style={{ padding: 6 }}>{f.fecha || "—"}</td>
+                      <td style={{ padding: 6, fontFamily: "monospace", fontSize: 11 }}>{f.fechaCruda ? JSON.stringify(f.fechaCruda) : "—"}</td>
                       <td style={{ padding: 6, textAlign: "right" }}>{fmtNum(f.total)}</td>
                       <td style={{ padding: 6, textAlign: "right" }}>{fmtNum(f.costo)}</td>
                     </tr>
                   ))}
                   {!diagResultado.filas.length && (
-                    <tr><td colSpan={7} style={{ padding: 10, color: C.slate }}>Sin filas para este lote.</td></tr>
+                    <tr><td colSpan={8} style={{ padding: 10, color: C.slate }}>Sin filas para este lote.</td></tr>
                   )}
                 </tbody>
               </table>

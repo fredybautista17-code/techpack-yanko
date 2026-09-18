@@ -2334,9 +2334,23 @@ exports.getEntradasCrudasLoteBusintBD = onCall(
     cabeceraEntradas.forEach((f) => {
       const num = f?.Entrada;
       if (num === undefined || num === null) return;
+      const raw = f?.Fecha;
       cabeceraPorEntrada.set(String(num), {
-        fecha: fechaISODesdeCampoBusintBD(f?.Fecha),
+        fecha: fechaISODesdeCampoBusintBD(raw),
         codplanta: f?.Codplanta !== undefined && f?.Codplanta !== null ? Number(f.Codplanta) : null,
+        // (2026-09-18, a pedido de Fredy) Campos crudos de la fecha, tal
+        // cual los entrega Busint ANTES de cualquier conversion -- para
+        // diagnosticar el desfase de +1 dia confirmado con el documento
+        // 28598 del lote 7314 (Busint dice 15, esta funcion calculaba 16).
+        fechaCruda: raw && typeof raw === "object" ? {
+          isValidDateTime: raw.isValidDateTime ?? null,
+          year: raw.year ?? null,
+          month: raw.month ?? null,
+          day: raw.day ?? null,
+          hour: raw.hour ?? null,
+          minute: raw.minute ?? null,
+          second: raw.second ?? null,
+        } : raw ?? null,
       });
     });
     const filas = entradasRefTodas
@@ -2350,6 +2364,7 @@ exports.getEntradasCrudasLoteBusintBD = onCall(
           codplanta: cab?.codplanta ?? null,
           esPlantaPropia: cab?.codplanta != null ? CODPLANTAS_PROPIAS.has(cab.codplanta) : null,
           fecha: cab?.fecha || null,
+          fechaCruda: cab?.fechaCruda ?? null,
           total: Number(f?.Total) || 0,
           costo: Number(f?.Costo) || 0,
         };
