@@ -8749,14 +8749,16 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
 // tanto sale como "Pendiente". Se arma en memoria a partir de la MISMA
 // colección `nomina_cierres` que ya usa Cierre de Quincena, sin duplicar
 // nada.
-function HistoricoCierresView({ cierres }) {
+function HistoricoCierresView({ cierres, isAdmin, onEliminar }) {
+  const [confirmDel, setConfirmDel] = useState(null); // { id, label, tipo }
   const porQuincena = useMemo(() => {
     const generales = (cierres || []).filter((c) => !c.area);
     const mapa = new Map();
     generales.forEach((c) => {
-      if (!mapa.has(c.desde)) mapa.set(c.desde, { desde: c.desde, hasta: c.hasta, label: c.label, totales: {} });
+      if (!mapa.has(c.desde)) mapa.set(c.desde, { desde: c.desde, hasta: c.hasta, label: c.label, totales: {}, ids: {} });
       const fila = mapa.get(c.desde);
       fila.totales[c.tipoNomina] = c.totalQuincena;
+      fila.ids[c.tipoNomina] = c.id;
       if (!fila.hasta) fila.hasta = c.hasta;
       if (!fila.label) fila.label = c.label;
     });
@@ -8764,12 +8766,34 @@ function HistoricoCierresView({ cierres }) {
   }, [cierres]);
   function celda(fila, tipo) {
     const v = fila.totales[tipo];
-    return v == null
-      ? <span style={{ color: C.slate, fontStyle: "italic" }}>Pendiente</span>
-      : fmtMoney(v);
+    if (v == null) return <span style={{ color: C.slate, fontStyle: "italic" }}>Pendiente</span>;
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
+        {fmtMoney(v)}
+        {isAdmin && (
+          <span
+            onClick={() => setConfirmDel({ id: fila.ids[tipo], label: fila.label, tipo })}
+            style={{ cursor: "pointer", color: C.red, fontSize: 12 }}
+            title="Eliminar este cierre (vuelve a quedar Pendiente)"
+          >🗑</span>
+        )}
+      </span>
+    );
   }
   return (
     <div>
+      {confirmDel && (
+        <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Eliminar el cierre de <strong>{confirmDel.tipo}</strong> de la quincena <strong>{confirmDel.label}</strong>?
+            <div style={{ marginTop: 10, color: C.slate, fontSize: 13 }}>Esto solo quita el "sello" de cerrado -- vuelve a salir como "Pendiente" y se puede recalcular y cerrar de nuevo. Las liquidaciones ya guardadas de cada trabajador NO se borran.</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={() => { onEliminar(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+          </div>
+        </Modal>
+      )}
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
         Histórico de lo cerrado cada quincena, por tipo de nómina. Un tipo solo aparece con su valor acá una vez que cerraste TODAS sus áreas y le diste "🔒 Cerrar Quincena (General)" en Cierre de Quincena — mientras tanto sale como "Pendiente".
       </div>
@@ -10473,7 +10497,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "produccion" && !soloNovedades && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} costosTeoricoProceso={costosTeoricoProceso} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
           {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
           {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} ajustesDestajo={ajustesDestajo} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} deduccionesTrabajador={deduccionesTrabajador} />}
-          {subView === "historico_cierres" && !soloNovedades && <HistoricoCierresView cierres={cierres} />}
+          {subView === "historico_cierres" && !soloNovedades && <HistoricoCierresView cierres={cierres} isAdmin={isAdmin} onEliminar={reabrirCierre} />}
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
           {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
