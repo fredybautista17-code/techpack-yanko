@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, Fragment } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, onSnapshot } from "firebase/firestore";
 
@@ -202,6 +202,25 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
   const columnasPago = hayTrabajadoresSinAsignar ? [...EMPLEADORES_COLUMNAS, "Sin asignar"] : EMPLEADORES_COLUMNAS;
   const totalPorForma = (forma) => columnasPago.reduce((s, emp) => s + matrizPago[forma][emp], 0);
   const totalPorEmpleadorCol = (emp) => matrizPago.Efectivo[emp] + matrizPago.Banco[emp];
+  // (2026-09-19, a pedido de Fredy) El desglose por tipo de nómina también
+  // debe distinguir Yanko de Indutex, igual que la tabla de "¿Cómo pagar?"
+  // de arriba -- cada tipo se abre en una sub-fila por Empleador.
+  const porTipoConEmpleador = porTipo.map((g) => {
+    const porEmpleador = columnasPago.map((emp) => {
+      const liqsEmp = g.liquidaciones.filter((l) => {
+        const trabajador = trabajadores.find((t) => t.id === l.trabajadorId);
+        const empActual = trabajador?.empleador && EMPLEADORES_COLUMNAS.includes(trabajador.empleador) ? trabajador.empleador : "Sin asignar";
+        return empActual === emp;
+      });
+      return {
+        empleador: emp,
+        trabajadores: liqsEmp.length,
+        neto: liqsEmp.reduce((s, l) => s + (l.netoAPagar || 0), 0),
+        costoTotal: liqsEmp.reduce((s, l) => s + costoTotalLiquidacion(l), 0),
+      };
+    }).filter((e) => e.trabajadores > 0);
+    return { ...g, porEmpleador };
+  });
   const rangoTexto = tipoPeriodo === "quincena"
     ? `Quincena ${quincena} (${quincena === "1" ? "1-15" : "16-fin de mes"}) de ${MESES_LARGO[Number(mes) - 1]} ${anio}`
     : `Mes completo de ${MESES_LARGO[Number(mes) - 1]} ${anio}`;
@@ -311,15 +330,25 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {porTipo.filter((g) => g.liquidaciones.length > 0).map((g, i) => (
-                      <tr key={g.tipo} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                        <td style={{ padding: "7px 12px" }}>
-                          <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: g.bg, color: g.color }}>{g.tipo}</span>
-                        </td>
-                        <td style={{ padding: "7px 12px", textAlign: "right" }}>{g.liquidaciones.length}</td>
-                        <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtMoney(g.neto)}</td>
-                        <td style={{ padding: "7px 12px", textAlign: "right" }}>{fmtMoney(g.costoTotal - g.neto)}</td>
-                      </tr>
+                    {porTipoConEmpleador.filter((g) => g.liquidaciones.length > 0).map((g, i) => (
+                      <Fragment key={g.tipo}>
+                        <tr style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: g.porEmpleador.length > 1 ? "none" : `1px solid ${C.border}` }}>
+                          <td style={{ padding: "7px 12px" }}>
+                            <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: g.bg, color: g.color }}>{g.tipo}</span>
+                          </td>
+                          <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 800 }}>{g.liquidaciones.length}</td>
+                          <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(g.neto)}</td>
+                          <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(g.costoTotal - g.neto)}</td>
+                        </tr>
+                        {g.porEmpleador.length > 1 && g.porEmpleador.map((e, j) => (
+                          <tr key={e.empleador} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: j === g.porEmpleador.length - 1 ? `1px solid ${C.border}` : "none" }}>
+                            <td style={{ padding: "3px 12px 3px 28px", fontSize: 11, color: C.slate }}>— {e.empleador}</td>
+                            <td style={{ padding: "3px 12px", textAlign: "right", fontSize: 11, color: C.slate }}>{e.trabajadores}</td>
+                            <td style={{ padding: "3px 12px", textAlign: "right", fontSize: 11, color: C.slate }}>{fmtMoney(e.neto)}</td>
+                            <td style={{ padding: "3px 12px", textAlign: "right", fontSize: 11, color: C.slate }}>{fmtMoney(e.costoTotal - e.neto)}</td>
+                          </tr>
+                        ))}
+                      </Fragment>
                     ))}
                   </tbody>
                 </table>
