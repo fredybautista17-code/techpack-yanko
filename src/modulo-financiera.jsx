@@ -1,6 +1,6 @@
 import { useState, useEffect, Fragment } from "react";
 import { initializeApp, getApps } from "firebase/app";
-import { getFirestore, collection, onSnapshot } from "firebase/firestore";
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -12,6 +12,12 @@ const firebaseConfig = {
 };
 const fbApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
+async function fsSave(col, id, data) {
+  await setDoc(doc(db, col, id), data, { merge: true });
+}
+async function fsDelete(col, id) {
+  await deleteDoc(doc(db, col, id));
+}
 
 // ─── TOKENS (mismos de los demás módulos, para mantener el mismo look) ────────
 const C = {
@@ -70,6 +76,53 @@ function FSel({ value, onChange, options, placeholder = "Seleccionar..." }) {
         <option key={o.value ?? o} value={o.value ?? o}>{o.label ?? o}</option>
       ))}
     </select>
+  );
+}
+function Btn({ children, onClick, variant = "primary", small, disabled }) {
+  const S = {
+    primary: { background: C.ink, color: C.white, border: "none" },
+    secondary: { background: C.canvas, color: C.ink, border: `1px solid ${C.border}` },
+    success: { background: C.green, color: C.white, border: "none" },
+    danger: { background: C.red, color: C.white, border: "none" },
+    ghost: { background: "transparent", color: C.blue, border: `1.5px solid ${C.blue}` },
+  };
+  const s = S[variant] || S.primary;
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        ...s,
+        borderRadius: 8,
+        padding: small ? "5px 10px" : "9px 18px",
+        fontWeight: 700,
+        fontSize: small ? 12 : 13,
+        cursor: disabled ? "not-allowed" : "pointer",
+        fontFamily: "inherit",
+        opacity: disabled ? 0.5 : 1,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+function Modal({ title, onClose, children, width = 560 }) {
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+      onClick={onClose}
+    >
+      <div
+        style={{ background: C.white, borderRadius: 14, width: "100%", maxWidth: width, maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ padding: "18px 24px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+          <span style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>{title}</span>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: C.slate }}>×</button>
+        </div>
+        <div style={{ padding: 24, overflowY: "auto" }}>{children}</div>
+      </div>
+    </div>
   );
 }
 function KPI({ icon, label, value, color, bg, sub }) {
@@ -137,6 +190,7 @@ const FORMA_PAGO_POR_TIPO = {
 const EMPLEADORES_COLUMNAS = ["YANKO", "INDUTEX"];
 // ═══════════════════════════════════════════════════════════════════════════
 export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
+  const isAdmin = currentUser?.isAdmin;
   const hoy = new Date();
   const [tipoPeriodo, setTipoPeriodo] = useState("mes"); // "quincena" | "mes"
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
@@ -149,6 +203,18 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
   const [liquidacionesD, setLiquidacionesD] = useState([]);
   const [liquidacionesPS, setLiquidacionesPS] = useState([]);
   const [loading, setLoading] = useState(true);
+  // (2026-09-19, a pedido de Fredy) "Registrar pago" -- pagos ya hechos,
+  // guardados en su propia colección `financiera_pagos` (no toca las
+  // liquidaciones ni las nóminas). Cada pago queda amarrado a la celda
+  // exacta de la tabla "¿Cómo pagar?" (Forma de pago + Empleador) y al
+  // período en que se registró -- ver pagoAplicaAlPeriodo() más abajo.
+  const [pagos, setPagos] = useState([]);
+  const [formPago, setFormPago] = useState(null); // { forma, empleador, montoEsperado, montoPagadoPrevio }
+  const [fechaPago, setFechaPago] = useState("");
+  const [montoPago, setMontoPago] = useState("");
+  const [obsPago, setObsPago] = useState("");
+  const [guardandoPago, setGuardandoPago] = useState(false);
+  const [confirmDelPago, setConfirmDelPago] = useState(null); // { id, monto, fecha, forma, empleador }
 
   useEffect(() => {
     const unsubs = [
@@ -157,6 +223,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
       onSnapshot(collection(db, "nomina_fiscal_destajo_liquidaciones"), (snap) => setLiquidacionesFD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_prestacion_servicios_liquidaciones"), (snap) => setLiquidacionesPS(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "financiera_pagos"), (snap) => setPagos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
     ];
     return () => unsubs.forEach((u) => u());
   }, []);
@@ -202,6 +269,50 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
   const columnasPago = hayTrabajadoresSinAsignar ? [...EMPLEADORES_COLUMNAS, "Sin asignar"] : EMPLEADORES_COLUMNAS;
   const totalPorForma = (forma) => columnasPago.reduce((s, emp) => s + matrizPago[forma][emp], 0);
   const totalPorEmpleadorCol = (emp) => matrizPago.Efectivo[emp] + matrizPago.Banco[emp];
+  // (2026-09-19, a pedido de Fredy) Un pago registrado en una quincena
+  // específica SÍ cuenta cuando se ve el "Mes completo" (es parte de ese
+  // mes); pero un pago registrado viendo "Mes completo" (sin quincena) no
+  // se reparte entre las 2 quincenas -- solo se ve en la vista de Mes.
+  function pagoAplicaAlPeriodo(p) {
+    if (p.anio !== anio || p.mes !== mes) return false;
+    if (tipoPeriodo === "mes") return true;
+    return p.quincena === quincena;
+  }
+  const pagosPeriodo = pagos.filter(pagoAplicaAlPeriodo);
+  function pagosDeCelda(forma, empleador) {
+    return pagosPeriodo.filter((p) => p.forma === forma && p.empleador === empleador);
+  }
+  function montoPagadoCelda(forma, empleador) {
+    return pagosDeCelda(forma, empleador).reduce((s, p) => s + (p.monto || 0), 0);
+  }
+  function abrirFormPago(forma, empleador) {
+    const montoEsperado = matrizPago[forma][empleador];
+    const montoPagadoPrevio = montoPagadoCelda(forma, empleador);
+    setFormPago({ forma, empleador, montoEsperado, montoPagadoPrevio });
+    setFechaPago(new Date().toISOString().slice(0, 10));
+    setMontoPago(montoEsperado > montoPagadoPrevio ? String(montoEsperado - montoPagadoPrevio) : "");
+    setObsPago("");
+  }
+  async function guardarPago() {
+    if (!formPago || !fechaPago || !montoPago) return;
+    setGuardandoPago(true);
+    try {
+      const ref = doc(collection(db, "financiera_pagos"));
+      await setDoc(ref, {
+        anio, mes, tipoPeriodo, quincena: tipoPeriodo === "quincena" ? quincena : null,
+        forma: formPago.forma, empleador: formPago.empleador,
+        fecha: fechaPago, monto: Number(montoPago) || 0, observacion: (obsPago || "").trim(),
+        registradoPor: currentUser?.name || currentUser?.username || currentUser?.email || "",
+        creadoEn: new Date().toISOString(),
+      });
+      setFormPago(null);
+    } finally {
+      setGuardandoPago(false);
+    }
+  }
+  async function eliminarPago(id) {
+    await fsDelete("financiera_pagos", id);
+  }
   // (2026-09-19, a pedido de Fredy) El desglose por tipo de nómina también
   // debe distinguir Yanko de Indutex, igual que la tabla de "¿Cómo pagar?"
   // de arriba -- cada tipo se abre en una sub-fila por Empleador.
@@ -301,9 +412,29 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
                         <td style={{ padding: "7px 12px" }}>
                           <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: forma === "Efectivo" ? C.amberBg : C.blueBg, color: forma === "Efectivo" ? C.amber : C.blue }}>{forma === "Efectivo" ? "💵 Efectivo" : "🏦 Banco"}</span>
                         </td>
-                        {columnasPago.map((emp) => (
-                          <td key={emp} style={{ padding: "7px 12px", textAlign: "right" }}>{fmtMoney(matrizPago[forma][emp])}</td>
-                        ))}
+                        {columnasPago.map((emp) => {
+                          const montoEsperado = matrizPago[forma][emp];
+                          const montoPagado = montoPagadoCelda(forma, emp);
+                          return (
+                            <td key={emp} style={{ padding: "7px 12px", textAlign: "right" }}>
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
+                                <span>{fmtMoney(montoEsperado)}</span>
+                                {montoEsperado > 0 && (
+                                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                    {montoPagado > 0 && (
+                                      <span style={{ padding: "1px 6px", borderRadius: 20, fontSize: 9, fontWeight: 800, background: montoPagado >= montoEsperado ? C.greenBg : C.amberBg, color: montoPagado >= montoEsperado ? C.green : C.amber }}>
+                                        {montoPagado >= montoEsperado ? "✅ Pagado" : `Parcial ${fmtMoney(montoPagado)}`}
+                                      </span>
+                                    )}
+                                    <span onClick={() => abrirFormPago(forma, emp)} style={{ cursor: "pointer", color: C.blue, fontSize: 10, fontWeight: 700 }}>
+                                      + Pago
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                          );
+                        })}
                         <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(totalPorForma(forma))}</td>
                       </tr>
                     ))}
@@ -317,6 +448,50 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
                   </tbody>
                 </table>
               </div>
+
+              <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>Pagos registrados {tipoPeriodo === "quincena" ? "de esta quincena" : "de este mes"}</div>
+              {pagosPeriodo.length === 0 ? (
+                <div style={{ padding: "10px 14px", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, color: C.slate, fontSize: 12, marginBottom: 24, maxWidth: 780 }}>
+                  Todavía no has registrado ningún pago para este período. Usa "+ Pago" en la tabla de arriba.
+                </div>
+              ) : (
+                <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto", marginBottom: 24 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ background: C.ink }}>
+                        <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Fecha</th>
+                        <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Forma</th>
+                        <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Empleador</th>
+                        <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Monto</th>
+                        <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Observación</th>
+                        <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Registrado por</th>
+                        {isAdmin && <th style={{ padding: "9px 12px", color: C.seam, textAlign: "center", fontWeight: 700, fontSize: 10 }}></th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...pagosPeriodo].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")).map((p, i) => (
+                        <tr key={p.id} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                          <td style={{ padding: "7px 12px" }}>{p.fecha}</td>
+                          <td style={{ padding: "7px 12px" }}>{p.forma === "Efectivo" ? "💵 Efectivo" : "🏦 Banco"}</td>
+                          <td style={{ padding: "7px 12px" }}>{p.empleador}</td>
+                          <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 700 }}>{fmtMoney(p.monto)}</td>
+                          <td style={{ padding: "7px 12px", color: C.slate }}>{p.observacion || "—"}</td>
+                          <td style={{ padding: "7px 12px", color: C.slate }}>{p.registradoPor || "—"}</td>
+                          {isAdmin && (
+                            <td style={{ padding: "7px 12px", textAlign: "center" }}>
+                              <span
+                                onClick={() => setConfirmDelPago(p)}
+                                style={{ cursor: "pointer", color: C.red, fontSize: 12 }}
+                                title="Eliminar este pago"
+                              >🗑</span>
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
 
               <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>Desglose por tipo de nómina</div>
               <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto", marginBottom: 8 }}>
@@ -360,6 +535,41 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
           )}
         </div>
       </div>
+
+      {formPago && (
+        <Modal title={`Registrar pago — ${formPago.forma === "Efectivo" ? "💵 Efectivo" : "🏦 Banco"} · ${formPago.empleador}`} onClose={() => setFormPago(null)} width={460}>
+          <Field label="Fecha del pago">
+            <FInput type="date" value={fechaPago} onChange={setFechaPago} />
+          </Field>
+          <Field label="Monto pagado">
+            <FInput type="number" value={montoPago} onChange={setMontoPago} placeholder="0" />
+          </Field>
+          <Field label="Observación / comprobante (opcional)">
+            <FInput value={obsPago} onChange={setObsPago} placeholder="N° de comprobante, banco, nota..." />
+          </Field>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 20 }}>
+            Se debía pagar {fmtMoney(formPago.montoEsperado)} en {formPago.forma} para {formPago.empleador}
+            {formPago.montoPagadoPrevio > 0 && <> — ya hay {fmtMoney(formPago.montoPagadoPrevio)} registrado.</>}
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setFormPago(null)}>Cancelar</Btn>
+            <Btn onClick={guardarPago} disabled={!fechaPago || !montoPago || guardandoPago}>{guardandoPago ? "Guardando..." : "Guardar pago"}</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {confirmDelPago && (
+        <Modal title="Confirmar eliminación" onClose={() => setConfirmDelPago(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Eliminar el pago de <strong>{fmtMoney(confirmDelPago.monto)}</strong> registrado el {confirmDelPago.fecha} ({confirmDelPago.forma} · {confirmDelPago.empleador})?
+            <div style={{ marginTop: 10, color: C.slate, fontSize: 13 }}>Esta acción no se puede deshacer.</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDelPago(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={async () => { await eliminarPago(confirmDelPago.id); setConfirmDelPago(null); }}>Sí, eliminar</Btn>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
