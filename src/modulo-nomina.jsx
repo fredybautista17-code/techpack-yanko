@@ -7297,7 +7297,7 @@ function HistorialDestajoView({ liquidaciones, trabajadores }) {
   );
 }
 // ─── DEDUCCIONES (cobros de Bodega, descuento automatico en Nomina) ──────
-function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobrosManual, onAgregarCobroManual, isAdmin, onBorrarCobroManual }) {
+function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobrosManual, onAgregarCobroManual, isAdmin, onBorrarCobroManual, onRevertirCobro }) {
   const [filtroEstado, setFiltroEstado] = useState("");
   // (2026-09-18, a pedido de Fredy) Formulario para agregar un cobro manual
   // -- solo lo ve quien tenga el permiso (administrador, Yuleisi Virginia,
@@ -7355,11 +7355,23 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
   // abre el detalle de cada cobro en una ventana aparte, en vez de una
   // tabla plana con un renglón por cobro.
   const [trabajadorAbierto, setTrabajadorAbierto] = useState(null);
+  // (2026-09-19, a pedido de Fredy) "Revertir a pendiente" -- para cuando
+  // se reabre una nómina ya cerrada y hay que recalcular el cruce de
+  // deducciones: un cobro ya marcado "Cobrado" no se vuelve a descontar
+  // solo, así que el administrador puede revertirlo puntualmente. Con
+  // confirmación, igual que Reabrir Cierre.
+  const [confirmRevertir, setConfirmRevertir] = useState(null);
   const filas = [];
   (lotesConCobros || []).forEach((l) => {
     (l.cobrosBodega || []).forEach((c, idx) => {
       filas.push({
         id: `${l.id}__${idx}`,
+        // (2026-09-19, a pedido de Fredy) loteId/idxEnLote -- para poder
+        // revertir ESTE cobro puntual a "Pendiente" sin tocar los demás
+        // cobros del mismo lote (ver onRevertirCobro). Solo aplica a los
+        // de Bodega -- los manuales se revierten por cobroManualId.
+        loteId: l.id,
+        idxEnLote: idx,
         numLote: l.numLote,
         referencia: l.referencia,
         trabajadorId: c.trabajadorId || "",
@@ -7409,7 +7421,16 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
               { key: "valor", label: "Valor", align: "right", render: (f) => fmtMoney(f.valor) },
               { key: "fecha", label: "Fecha del cobro", render: (f) => (f.fecha ? fmtFechaISO(f.fecha) : "—") },
               { key: "estado", label: "Estado", render: (f) => (f.cobrado ? (
-                <span style={{ color: C.green, fontWeight: 700 }}>Cobrado en {f.periodoIdCobrado || "—"}</span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ color: C.green, fontWeight: 700 }}>Cobrado en {f.periodoIdCobrado || "—"}</span>
+                  {isAdmin && (
+                    <span
+                      onClick={() => setConfirmRevertir(f)}
+                      style={{ cursor: "pointer", color: C.amber, fontSize: 11, fontWeight: 700 }}
+                      title="Revertir a Pendiente de cobrar"
+                    >↩ Revertir</span>
+                  )}
+                </span>
               ) : (
                 <span style={{ color: C.amber, fontWeight: 700 }}>Pendiente de cobrar</span>
               )) },
@@ -7421,6 +7442,18 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
             ]}
             filas={trabajadorAbierto.cobros}
           />
+        </Modal>
+      )}
+      {confirmRevertir && (
+        <Modal title="Confirmar reversión" onClose={() => setConfirmRevertir(null)} width={440}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Revertir a <strong>"Pendiente de cobrar"</strong> el cobro de <strong>{fmtMoney(confirmRevertir.valor)}</strong> ({confirmRevertir.tipo}) de <strong>{confirmRevertir.trabajadorNombre}</strong>, cobrado en <strong>{confirmRevertir.periodoIdCobrado || "—"}</strong>?
+            <div style={{ marginTop: 10, color: C.slate, fontSize: 13 }}>Se volverá a descontar solo de la SIGUIENTE liquidación que confirmes de este trabajador -- si estás recalculando esa misma quincena, quedará listo para el cruce otra vez. No afecta a los demás cobros de este trabajador ni de otros.</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmRevertir(null)}>Cancelar</Btn>
+            <Btn onClick={async () => { await onRevertirCobro(confirmRevertir); setConfirmRevertir(null); }}>Sí, revertir</Btn>
+          </div>
         </Modal>
       )}
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
@@ -10478,6 +10511,23 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // administrador (verificado tambien en DeduccionesNominaView, que solo
   // muestra el boton "Borrar" cuando isAdmin es true).
   async function borrarCobroManual(id) { await fsDelete("nomina_cobros_manuales", id); }
+  // (2026-09-19, a pedido de Fredy) "Revertir a pendiente" -- cuando se
+  // reabre una nómina ya cerrada (Cierre de Quincena -> Reabrir) hay que
+  // recalcular el cruce de deducciones, pero un cobro que ya quedó
+  // marcado "Cobrado" al confirmar la liquidación la primera vez no se
+  // vuelve a descontar solo. Esto lo revierte puntualmente -- solo ESE
+  // cobro, sin tocar los demás del mismo lote/trabajador/período. Ver
+  // botón "↩ Revertir" en DeduccionesNominaView (solo administrador).
+  async function revertirCobroAPendiente(fila) {
+    if (fila.esManual) {
+      await fsSave("nomina_cobros_manuales", fila.cobroManualId, { cobrado: false, periodoIdCobrado: "" });
+    } else {
+      const lote = (lotesConCobros || []).find((l) => l.id === fila.loteId);
+      if (!lote) return;
+      const nuevos = (lote.cobrosBodega || []).map((c, i) => (i === fila.idxEnLote ? { ...c, cobrado: false, periodoIdCobrado: "" } : c));
+      await fsSave("dado_por_cumplido_lotes", fila.loteId, { cobrosBodega: nuevos });
+    }
+  }
   async function agregarCobroManual({ trabajadorId, trabajadorNombre, tipo, valor, fecha, numLote, referencia }) {
     const ref = doc(collection(db, "nomina_cobros_manuales"));
     await setDoc(ref, {
@@ -10697,7 +10747,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "historial_prestacion_servicios" && !areaLider && !soloNovedades && <HistorialPrestacionServicioView liquidaciones={liquidacionesPS} trabajadores={trabajadores} />}
           {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} horas={horas} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
-          {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} isAdmin={isAdmin} onBorrarCobroManual={borrarCobroManual} />}
+          {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} isAdmin={isAdmin} onBorrarCobroManual={borrarCobroManual} onRevertirCobro={revertirCobroAPendiente} />}
           {subView === "conceptos_deduccion" && !areaLider && !soloNovedades && <ConceptosDeduccionView conceptos={conceptosDeduccion} deduccionesTrabajador={deduccionesTrabajador} isAdmin={isAdminCatalogos} onSave={guardarConceptoDeduccion} onDelete={borrarConceptoDeduccion} />}
           {subView === "deducciones_fijas" && !areaLider && !soloNovedades && <DeduccionesFijasView trabajadores={trabajadores} conceptos={conceptosDeduccion} deducciones={deduccionesTrabajador} isAdmin={isAdminCatalogos} onGuardar={guardarDeduccionTrabajador} onCambiarEstado={cambiarEstadoDeduccionTrabajador} currentUser={currentUser} />}
           {subView === "historial_lote" && !soloNovedades && <HistorialLoteView produccion={produccion} />}
