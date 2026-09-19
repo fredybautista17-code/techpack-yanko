@@ -5064,6 +5064,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
   const [detalleFaltas, setDetalleFaltas] = useState(null); // { trabajador, fechas }
 
   const [areaFiltro, setAreaFiltro] = useState("");
+  const [busqueda, setBusqueda] = useState("");
   const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
@@ -5133,6 +5134,8 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
     prima: s.prima + r.calculo.primaPeriodo,
     vacaciones: s.vacaciones + r.calculo.vacacionesPeriodo,
   }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0, totalHoras: 0, epsTrabajador: 0, pensionTrabajador: 0, pensionEmpleador: 0, arlEmpleador: 0, cajaCompensacionEmpleador: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
+  const busquedaNorm = normalizarNombreParaComparar(busqueda);
+  const resultadosFiltrados = resultados && busquedaNorm ? resultados.filter((f) => normalizarNombreParaComparar(f.trabajador.nombre).includes(busquedaNorm)) : resultados;
 
   return (
     <div>
@@ -5194,6 +5197,15 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
             <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
             <KPI icon="🏖️" label="Vacaciones (provisión)" value={fmtMoney(totales.vacaciones)} color={C.amber} bg={C.amberBg} />
           </div>
+          <div style={{ position: "relative", maxWidth: 280, marginBottom: 12 }}>
+            <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: C.slate, pointerEvents: "none" }}>🔍</span>
+            <input
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              placeholder="Buscar trabajador..."
+              style={{ width: "100%", padding: "9px 12px 9px 30px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", outline: "none" }}
+            />
+          </div>
           <Tabla
             vacio="Sin resultados."
             columnas={[
@@ -5232,7 +5244,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
               { key: "primaPeriodo", label: "Prima (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.primaPeriodo) },
               { key: "vacacionesPeriodo", label: "Vacaciones (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.vacacionesPeriodo) },
             ]}
-            filas={resultados}
+            filas={resultadosFiltrados}
           />
           <div style={{ marginTop: 16 }}>
             <Btn onClick={confirmarYGuardar} disabled={guardando}>
@@ -5796,6 +5808,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
   const [guardadoOk, setGuardadoOk] = useState(false);
   const [detalleFaltas, setDetalleFaltas] = useState(null); // { trabajador, fechas }
 
+  const [busqueda, setBusqueda] = useState("");
   const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal Destajo" && t.activo !== false);
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
@@ -5862,6 +5875,8 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
     prima: s.prima + r.calculo.primaPeriodo,
     vacaciones: s.vacaciones + r.calculo.vacacionesPeriodo,
   }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0, totalHoras: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
+  const busquedaNorm = normalizarNombreParaComparar(busqueda);
+  const resultadosFiltrados = resultados && busquedaNorm ? resultados.filter((f) => normalizarNombreParaComparar(f.trabajador.nombre).includes(busquedaNorm)) : resultados;
 
   return (
     <div>
@@ -5913,6 +5928,15 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
             <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
             <KPI icon="🏖️" label="Vacaciones (provisión)" value={fmtMoney(totales.vacaciones)} color={C.amber} bg={C.amberBg} />
           </div>
+          <div style={{ position: "relative", maxWidth: 280, marginBottom: 12 }}>
+            <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: C.slate, pointerEvents: "none" }}>🔍</span>
+            <input
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              placeholder="Buscar trabajador..."
+              style={{ width: "100%", padding: "9px 12px 9px 30px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", outline: "none" }}
+            />
+          </div>
           <Tabla
             vacio="Sin resultados."
             columnas={[
@@ -5945,7 +5969,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
               { key: "primaPeriodo", label: "Prima (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.primaPeriodo) },
               { key: "vacacionesPeriodo", label: "Vacaciones (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.vacacionesPeriodo) },
             ]}
-            filas={resultados}
+            filas={resultadosFiltrados}
           />
           <div style={{ marginTop: 16 }}>
             <Btn onClick={confirmarYGuardar} disabled={guardando}>
@@ -6321,6 +6345,7 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
 
+  const [busqueda, setBusqueda] = useState("");
   const personas = trabajadores.filter((t) => t.tipoNomina === "Prestación de Servicios" && t.activo !== false);
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
@@ -6363,6 +6388,8 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
     descuentoCobros: s.descuentoCobros + (r.calculo.descuentoCobros || 0),
     descuentoDeducciones: s.descuentoDeducciones + (r.calculo.descuentoDeducciones || 0),
   }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0 }) : null;
+  const busquedaNorm = normalizarNombreParaComparar(busqueda);
+  const resultadosFiltrados = resultados && busquedaNorm ? resultados.filter((f) => normalizarNombreParaComparar(f.trabajador.nombre).includes(busquedaNorm)) : resultados;
 
   return (
     <div>
@@ -6398,6 +6425,15 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
             <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
             <KPI icon="🛡️" label="Descuento seguros/deducciones" value={fmtMoney(totales.descuentoDeducciones)} color={C.red} bg={C.redBg} />
           </div>
+          <div style={{ position: "relative", maxWidth: 280, marginBottom: 12 }}>
+            <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: C.slate, pointerEvents: "none" }}>🔍</span>
+            <input
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              placeholder="Buscar trabajador..."
+              style={{ width: "100%", padding: "9px 12px 9px 30px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", outline: "none" }}
+            />
+          </div>
           <Tabla
             vacio="Sin resultados."
             columnas={[
@@ -6411,7 +6447,7 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
               ) : <span style={{ color: C.slate }}>—</span> },
               { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
             ]}
-            filas={resultados}
+            filas={resultadosFiltrados}
           />
           <div style={{ marginTop: 16 }}>
             <Btn onClick={confirmarYGuardar} disabled={guardando}>
@@ -6602,6 +6638,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
   const [ajusteObsForm, setAjusteObsForm] = useState("");
 
   const [areaFiltro, setAreaFiltro] = useState("");
+  const [busqueda, setBusqueda] = useState("");
   const personas = trabajadores.filter((t) => t.tipoNomina === "Destajo" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
@@ -6702,6 +6739,8 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
     prima: s.prima + r.calculo.primaPeriodo,
     vacaciones: s.vacaciones + r.calculo.vacacionesPeriodo,
   }), { neto: 0, descuentoCobros: 0, totalHoras: 0, ajustes: 0, ayudaSalarioMinimo: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
+  const busquedaNorm = normalizarNombreParaComparar(busqueda);
+  const resultadosFinalFiltrados = resultadosFinal && busquedaNorm ? resultadosFinal.filter((f) => normalizarNombreParaComparar(f.trabajador.nombre).includes(busquedaNorm)) : resultadosFinal;
 
   return (
     <div>
@@ -6774,6 +6813,15 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
             <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
             <KPI icon="🏖️" label="Vacaciones (provisión)" value={fmtMoney(totales.vacaciones)} color={C.amber} bg={C.amberBg} />
           </div>
+          <div style={{ position: "relative", maxWidth: 280, marginBottom: 12 }}>
+            <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: C.slate, pointerEvents: "none" }}>🔍</span>
+            <input
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              placeholder="Buscar trabajador..."
+              style={{ width: "100%", padding: "9px 12px 9px 30px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", outline: "none" }}
+            />
+          </div>
           <Tabla
             vacio="Sin resultados."
             columnas={[
@@ -6819,7 +6867,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
               { key: "primaPeriodo", label: "Prima (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.primaPeriodo) },
               { key: "vacacionesPeriodo", label: "Vacaciones (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.vacacionesPeriodo) },
             ]}
-            filas={resultadosFinal}
+            filas={resultadosFinalFiltrados}
           />
           <div style={{ marginTop: 16 }}>
             <Btn onClick={confirmarYGuardar} disabled={guardando}>
@@ -6855,7 +6903,7 @@ function costoTotalLiquidacion(l) {
     + (l.pensionEmpleador || 0) + (l.arlEmpleador || 0) + (l.cajaCompensacionEmpleador || 0) + (l.epsEmpleador || 0)
     + (l.cesantiasPeriodo || 0) + (l.interesesPeriodo || 0) + (l.primaPeriodo || 0) + (l.vacacionesPeriodo || 0);
 }
-function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesFD, liquidacionesD }) {
+function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesFD, liquidacionesD, liquidacionesPS }) {
   const hoy = new Date();
   const [tipoPeriodo, setTipoPeriodo] = useState("quincena"); // "quincena" | "mes"
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
@@ -6872,6 +6920,7 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
     ...liquidacionesF.filter(enPeriodo).map((l) => ({ l, tipoNomina: "Fiscal" })),
     ...liquidacionesFD.filter(enPeriodo).map((l) => ({ l, tipoNomina: "Fiscal Destajo" })),
     ...liquidacionesD.filter(enPeriodo).map((l) => ({ l, tipoNomina: "Destajo" })),
+    ...(liquidacionesPS || []).filter(enPeriodo).map((l) => ({ l, tipoNomina: "Prestación de Servicios" })),
   ].map(({ l, tipoNomina }) => {
     const trabajador = trabajadores.find((t) => t.id === l.trabajadorId);
     return {
@@ -6920,7 +6969,7 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
-        Junta las liquidaciones YA CONFIRMADAS de Nómina Fiscal, Fiscal Destajo y Destajo del período elegido, agrupadas por Área Interna y por Empleador — para ver cuánto se debe pagar en total y por cada empresa. El Área y Empleador que se muestran son los que tiene HOY cada trabajador.
+        Junta las liquidaciones YA CONFIRMADAS de Nómina Fiscal, Fiscal Destajo, Destajo y Prestación de Servicios del período elegido, agrupadas por Área Interna y por Empleador — para ver cuánto se debe pagar en total y por cada empresa. El Área y Empleador que se muestran son los que tiene HOY cada trabajador.
       </div>
       <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
         <Field label="Período">
@@ -6939,7 +6988,7 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
 
       {filas.length === 0 ? (
         <div style={{ padding: "12px 16px", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, color: C.slate, fontSize: 13, maxWidth: 560 }}>
-          No hay ninguna liquidación confirmada (Fiscal, Fiscal Destajo o Destajo) para este período todavía.
+          No hay ninguna liquidación confirmada (Fiscal, Fiscal Destajo, Destajo o Prestación de Servicios) para este período todavía.
         </div>
       ) : (
         <>
@@ -6975,7 +7024,7 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
                     { key: "nombre", label: "Nombre" },
                     { key: "empleador", label: "Empleador" },
                     { key: "tipoNomina", label: "Tipo Nómina", render: (f) => (
-                      <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: f.tipoNomina === "Fiscal Destajo" ? C.violetBg : f.tipoNomina === "Destajo" ? C.amberBg : C.blueBg, color: f.tipoNomina === "Fiscal Destajo" ? C.violet : f.tipoNomina === "Destajo" ? C.amber : C.blue }}>
+                      <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: f.tipoNomina === "Fiscal Destajo" ? C.violetBg : f.tipoNomina === "Destajo" ? C.amberBg : f.tipoNomina === "Prestación de Servicios" ? C.greenBg : C.blueBg, color: f.tipoNomina === "Fiscal Destajo" ? C.violet : f.tipoNomina === "Destajo" ? C.amber : f.tipoNomina === "Prestación de Servicios" ? C.green : C.blue }}>
                         {f.tipoNomina}
                       </span>
                     ) },
@@ -10407,7 +10456,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
           {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} ajustesDestajo={ajustesDestajo} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} deduccionesTrabajador={deduccionesTrabajador} />}
           {subView === "historico_cierres" && !soloNovedades && <HistoricoCierresView cierres={cierres} />}
-          {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} />}
+          {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
           {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
           {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} grupos={gruposTrabajo} turnos={turnos} isAdmin={isAdminCatalogos} onSave={guardarAreaNomina} onAplicarTurno={aplicarTurnoATrabajadores} onDelete={borrarAreaNomina} />}
