@@ -27,6 +27,24 @@ async function fsSave(col, id, data) {
 async function fsDelete(col, id) {
   await deleteDoc(doc(db, col, id));
 }
+// (2026-09-19, a pedido de Fredy) Firebase rechaza guardar un campo con
+// valor `undefined` (incluso adentro de objetos/arreglos anidados) -- esto
+// convierte cualquier `undefined` a `null` de forma recursiva antes de
+// guardar, para que un campo opcional que no aplica a cierto trabajador
+// (ej. `valorDia` en alguien que no tiene "Pagar por día") nunca vuelva a
+// tumbar el guardado.
+function limpiarUndefined(valor) {
+  if (Array.isArray(valor)) return valor.map(limpiarUndefined);
+  if (valor && typeof valor === "object" && !(valor instanceof Date)) {
+    const limpio = {};
+    for (const key of Object.keys(valor)) {
+      const v = valor[key];
+      limpio[key] = v === undefined ? null : limpiarUndefined(v);
+    }
+    return limpio;
+  }
+  return valor;
+}
 // ─── TOKENS (mismos de los demás módulos, para mantener el mismo look) ────────
 const C = {
   ink: "#1A1A2E",
@@ -10323,13 +10341,13 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // los otros dos tipos de esa misma quincena.
   async function guardarCierre({ desde, hasta, label, totalQuincena, porTrabajador, tipoNomina, area }) {
     const areaId = area || "general";
-    await fsSave("nomina_cierres", `${desde}__${tipoNomina}__${areaId}`, {
+    await fsSave("nomina_cierres", `${desde}__${tipoNomina}__${areaId}`, limpiarUndefined({
       desde, hasta, label, totalQuincena, tipoNomina,
       area: area || null,
       porTrabajador,
       cerradoPor: currentUser?.name || currentUser?.username || "",
       cerradoEn: new Date().toISOString(),
-    });
+    }));
   }
   async function reabrirCierre(id) { await fsDelete("nomina_cierres", id); }
   if (loading) {
