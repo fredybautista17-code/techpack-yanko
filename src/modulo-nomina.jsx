@@ -1931,6 +1931,15 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
           <Field label="Fecha de retiro (si ya no trabaja aquí)"><FInput type="date" value={form.fechaRetiro} onChange={set("fechaRetiro")} /></Field>
         </>
       )}
+      {form.tipoNomina === "Prestación de Servicios" && (
+        <>
+          <Field label="Valor mensual del contrato"><FInput type="number" value={form.sueldo} onChange={set("sueldo")} placeholder="Ej: 2800000" /></Field>
+          <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+            (2026-09-19, a pedido de Fredy) Es un contratista independiente, no un empleado -- se le paga la mitad de este valor cada quincena, sin auxilio de transporte, sin que la empresa le descuente EPS/pensión, y sin cesantías/prima/vacaciones (no tiene contrato laboral). Sí se le puede aplicar descuentos de cobros de Bodega y de seguros/deducciones.
+          </div>
+          <Field label="Fecha de retiro (si ya no presta el servicio)"><FInput type="date" value={form.fechaRetiro} onChange={set("fechaRetiro")} /></Field>
+        </>
+      )}
       {form.tipoNomina === "Destajo" && (
         <>
           <Field label="Salario mínimo garantizado">
@@ -5345,6 +5354,18 @@ function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia, diasSinA
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
 }
+// (2026-09-19, a pedido de Fredy) "Prestación de Servicios" -- contratistas
+// independientes, no empleados: valor fijo por quincena (mitad del "Sueldo
+// mensual" de su ficha), SIN auxilio de transporte, SIN EPS/pensión (pagan
+// su propia seguridad social) y SIN cesantías/prima/vacaciones (no tienen
+// contrato laboral). No se les descuenta por inasistencia -- se les paga
+// el valor del contrato completo cada quincena. Sí se les aplican los
+// descuentos de cobros de Bodega y de seguros/deducciones, igual que a los
+// demás (ver NominaPrestacionServicioView).
+function calcularLiquidacionPrestacionServicio(trabajador) {
+  const valorQuincena = (Number(trabajador.sueldo) || 0) / 2;
+  return { valorQuincena, netoAPagar: valorQuincena };
+}
 // (2026-09-12, a pedido de Fredy) Listado de todas las novedades (faltas
 // sin justificar del huellero + ausencias registradas) de una quincena,
 // con el descuento que cada una genera en sueldo y/o auxilio de
@@ -5941,6 +5962,7 @@ function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
   const fechaGen = new Date().toISOString().slice(0, 10);
   const esFiscal = tipoNomina === "Fiscal Destajo";
   const esFiscalConSegSocial = tipoNomina === "Fiscal";
+  const esPrestacionServicios = tipoNomina === "Prestación de Servicios";
   const nombre = trabajador?.nombre || liquidacion.nombre || "—";
   const cedula = trabajador?.cedula || "—";
   const area = trabajador?.area || "—";
@@ -5948,7 +5970,11 @@ function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
   const auxilioBasico = Number(trabajador?.auxilioTransporte) || 0;
   const totalPrestaciones = (liquidacion.cesantiasPeriodo || 0) + (liquidacion.interesesPeriodo || 0) + (liquidacion.primaPeriodo || 0) + (liquidacion.vacacionesPeriodo || 0);
   const totalAportesPatronales = (liquidacion.pensionEmpleador || 0) + (liquidacion.arlEmpleador || 0) + (liquidacion.cajaCompensacionEmpleador || 0);
-  const filasPago = esFiscalConSegSocial
+  const filasPago = esPrestacionServicios
+    ? `
+      <tr><td>Valor mensual del contrato</td><td style="text-align:right">${fmtMoney(sueldoBasico)}</td></tr>
+      <tr><td>Valor quincena</td><td style="text-align:right">${fmtMoney(liquidacion.valorQuincena)}</td></tr>`
+    : esFiscalConSegSocial
     ? `
       <tr><td>Sueldo básico (mensual)</td><td style="text-align:right">${fmtMoney(sueldoBasico)}</td></tr>
       <tr><td>Auxilio de transporte (mensual)</td><td style="text-align:right">${fmtMoney(auxilioBasico)}</td></tr>
@@ -6045,6 +6071,7 @@ function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
     <div class="section-title">💰 Pago de la quincena</div>
     <table><tbody>${filasPago}</tbody></table>
     ${seccionAportesPatronales}
+    ${esPrestacionServicios ? "" : `
     <div class="section-title">📦 Prestaciones sociales (provisión de esta quincena)</div>
     <table><tbody>
       <tr><td>Cesantías</td><td style="text-align:right">${fmtMoney(liquidacion.cesantiasPeriodo)}</td></tr>
@@ -6052,7 +6079,7 @@ function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
       <tr><td>Prima</td><td style="text-align:right">${fmtMoney(liquidacion.primaPeriodo)}</td></tr>
       <tr><td>Vacaciones</td><td style="text-align:right">${fmtMoney(liquidacion.vacacionesPeriodo)}</td></tr>
       <tr><td>Saldo acumulado de cesantías (a la fecha)</td><td style="text-align:right">${fmtMoney(liquidacion.saldoCesantiasFin)}</td></tr>
-    </tbody></table>
+    </tbody></table>`}
     ${liquidacion.totalHoras > 0 ? `
     <div class="section-title">🕐 Horas Sueltas</div>
     <table><tbody>
@@ -6071,7 +6098,7 @@ function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
     </tbody></table>` : ""}
     <div class="totales">
       <div class="total-card" style="background:#EBF7F2;color:#2D9E6B"><label>Neto a Pagar</label><div class="val">${fmtMoney(liquidacion.netoAPagar)}</div></div>
-      <div class="total-card" style="background:#F3EEF9;color:#7B5EA7"><label>Total Prestaciones Provisionadas</label><div class="val">${fmtMoney(totalPrestaciones)}</div></div>
+      ${esPrestacionServicios ? "" : `<div class="total-card" style="background:#F3EEF9;color:#7B5EA7"><label>Total Prestaciones Provisionadas</label><div class="val">${fmtMoney(totalPrestaciones)}</div></div>`}
       ${totalCardAportesPatronales}
     </div>
     <div class="firma">
@@ -6267,6 +6294,181 @@ function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
               { key: "interesesPeriodo", label: "Intereses cesantías", align: "right", render: (f) => fmtMoney(f.interesesPeriodo) },
               { key: "primaPeriodo", label: "Prima (prov.)", align: "right", render: (f) => fmtMoney(f.primaPeriodo) },
               { key: "vacacionesPeriodo", label: "Vacaciones (prov.)", align: "right", render: (f) => fmtMoney(f.vacacionesPeriodo) },
+              { key: "confirmadaEn", label: "Confirmada", render: (f) => f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : "—" },
+              { key: "acciones", label: "", align: "right", render: (f) => (
+                <span onClick={() => descargarRecibo(f)} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }} title="Descargar recibo de liquidación">🖨</span>
+              ) },
+            ]}
+            filas={filas}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+// (2026-09-19, a pedido de Fredy) Nómina "Prestación de Servicios" --
+// contratistas independientes, no empleados: valor fijo por quincena (ver
+// calcularLiquidacionPrestacionServicio), sin faltas/huellero, sin horas
+// sueltas, sin seguridad social ni parafiscales -- solo se le aplican los
+// descuentos de cobros de Bodega y de seguros/deducciones, igual que a los
+// demás tipos de nómina.
+function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, deduccionesTrabajador }) {
+  const hoy = new Date();
+  const [anio, setAnio] = useState(String(hoy.getFullYear()));
+  const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
+  const [quincena, setQuincena] = useState(hoy.getDate() <= 15 ? "1" : "2");
+  const [resultados, setResultados] = useState(null); // null | [{trabajador, calculo}]
+  const [guardando, setGuardando] = useState(false);
+  const [guardadoOk, setGuardadoOk] = useState(false);
+
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Prestación de Servicios" && t.activo !== false);
+  const periodoId = `${anio}-${mes}-Q${quincena}`;
+  const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
+  const { inicio, fin } = rangoQuincena(anio, mes, quincena);
+
+  function calcular() {
+    const filas = personas.map((t) => {
+      const base = calcularLiquidacionPrestacionServicio(t);
+      const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id, fin);
+      const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
+      const deduccionesDetalle = deduccionesActivasDeTrabajador(deduccionesTrabajador, t.id);
+      const descuentoDeducciones = sumaDeducciones(deduccionesDetalle);
+      return { trabajador: t, calculo: { ...base, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, netoAPagar: base.netoAPagar - descuentoCobros - descuentoDeducciones } };
+    });
+    setResultados(filas);
+    setGuardadoOk(false);
+  }
+
+  async function confirmarYGuardar() {
+    if (!resultados) return;
+    setGuardando(true);
+    try {
+      for (const { trabajador, calculo } of resultados) {
+        await onGuardarLiquidacion({
+          id: `${trabajador.id}__${periodoId}`,
+          periodoId, trabajadorId: trabajador.id, nombre: trabajador.nombre,
+          inicio, fin, ...calculo,
+          confirmadaEn: new Date().toISOString(),
+        });
+        if (calculo.descuentoCobros > 0) await onMarcarCobrosCobrados(trabajador.id, periodoId, fin);
+      }
+      setGuardadoOk(true);
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  const totales = resultados ? resultados.reduce((s, r) => ({
+    neto: s.neto + r.calculo.netoAPagar,
+    descuentoCobros: s.descuentoCobros + (r.calculo.descuentoCobros || 0),
+    descuentoDeducciones: s.descuentoDeducciones + (r.calculo.descuentoDeducciones || 0),
+  }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0 }) : null;
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Liquidación quincenal de "Prestación de Servicios" (contratistas independientes) — valor fijo por quincena, sin auxilio de transporte, sin seguridad social ni parafiscales. Solo se descuentan los cobros de Bodega y las deducciones de seguros que tengan activas.
+      </div>
+      {personas.length === 0 && (
+        <div style={{ padding: "12px 16px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          Nadie tiene tipo de nómina "Prestación de Servicios" todavía. Ve a Trabajadores y asígnale ese tipo a quien corresponda.
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Año"><FInput type="number" value={anio} onChange={setAnio} /></Field>
+        <Field label="Mes">
+          <FSel value={mes} onChange={setMes} options={Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1).padStart(2, "0"), label: String(i + 1).padStart(2, "0") }))} />
+        </Field>
+        <Field label="Quincena">
+          <FSel value={quincena} onChange={setQuincena} options={[{ value: "1", label: "1 (días 1-15)" }, { value: "2", label: "2 (16-fin de mes)" }]} />
+        </Field>
+        <Btn onClick={calcular} disabled={personas.length === 0}>🧮 Calcular</Btn>
+      </div>
+
+      {yaLiquidado && (
+        <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          ⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.
+        </div>
+      )}
+
+      {resultados && (
+        <>
+          <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+            <KPI icon="💵" label="Neto a pagar (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
+            <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
+            <KPI icon="🛡️" label="Descuento seguros/deducciones" value={fmtMoney(totales.descuentoDeducciones)} color={C.red} bg={C.redBg} />
+          </div>
+          <Tabla
+            vacio="Sin resultados."
+            columnas={[
+              { key: "nombre", label: "Nombre", render: (f) => f.trabajador.nombre },
+              { key: "valorQuincena", label: "Valor quincena", align: "right", render: (f) => fmtMoney(f.calculo.valorQuincena) },
+              { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.calculo.descuentoCobros > 0 ? (
+                <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.cobrosDetalle || []).map((c) => `Lote ${c.numLote}: ${c.tipo || "cobro"} ${fmtMoney(c.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoCobros)}</span>
+              ) : <span style={{ color: C.slate }}>—</span> },
+              { key: "descuentoDeducciones", label: "Descuento seguros", align: "right", render: (f) => f.calculo.descuentoDeducciones > 0 ? (
+                <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.deduccionesDetalle || []).map((d) => `${d.conceptoNombre || "Deducción"}: ${fmtMoney(d.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoDeducciones)}</span>
+              ) : <span style={{ color: C.slate }}>—</span> },
+              { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
+            ]}
+            filas={resultados}
+          />
+          <div style={{ marginTop: 16 }}>
+            <Btn onClick={confirmarYGuardar} disabled={guardando}>
+              {guardando ? "Guardando..." : "✅ Confirmar y guardar liquidación de la quincena"}
+            </Btn>
+            {guardadoOk && <span style={{ marginLeft: 10, fontSize: 12, color: C.green, fontWeight: 700 }}>✅ Liquidación guardada.</span>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+function HistorialPrestacionServicioView({ liquidaciones, trabajadores }) {
+  const periodos = [...new Set(liquidaciones.map((l) => l.periodoId))].sort().reverse();
+  const [periodoFiltro, setPeriodoFiltro] = useState("");
+  const filas = [...liquidaciones]
+    .filter((l) => !periodoFiltro || l.periodoId === periodoFiltro)
+    .sort((a, b) => (b.periodoId || "").localeCompare(a.periodoId || "") || (a.nombre || "").localeCompare(b.nombre || ""));
+  const totales = filas.reduce((s, l) => ({
+    neto: s.neto + (l.netoAPagar || 0),
+    descuentoCobros: s.descuentoCobros + (l.descuentoCobros || 0),
+    descuentoDeducciones: s.descuentoDeducciones + (l.descuentoDeducciones || 0),
+  }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0 });
+  function descargarRecibo(l) {
+    const trabajador = (trabajadores || []).find((t) => t.id === l.trabajadorId);
+    exportReciboLiquidacionHTML({ tipoNomina: "Prestación de Servicios", trabajador, liquidacion: l });
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Todas las quincenas de "Prestación de Servicios" ya confirmadas y guardadas — para consultar o comparar períodos pasados.
+      </div>
+      {liquidaciones.length === 0 ? (
+        <div style={{ padding: "12px 16px", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, color: C.slate, fontSize: 13, maxWidth: 480 }}>
+          Todavía no hay ninguna quincena confirmada. Ve a "Nómina Prestación de Servicios", calcula una y dale "Confirmar y guardar".
+        </div>
+      ) : (
+        <>
+          <div style={{ marginBottom: 16, maxWidth: 260 }}>
+            <Field label="Filtrar por período">
+              <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
+            </Field>
+          </div>
+          <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+            <KPI icon="💵" label="Neto pagado (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
+            <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
+            <KPI icon="🛡️" label="Descuento seguros/deducciones" value={fmtMoney(totales.descuentoDeducciones)} color={C.red} bg={C.redBg} />
+          </div>
+          <Tabla
+            vacio="Sin resultados para este período."
+            columnas={[
+              { key: "periodoId", label: "Período" },
+              { key: "nombre", label: "Nombre" },
+              { key: "valorQuincena", label: "Valor quincena", align: "right", render: (f) => fmtMoney(f.valorQuincena) },
+              { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.descuentoCobros > 0 ? <span style={{ color: C.red, fontWeight: 700 }}>-{fmtMoney(f.descuentoCobros)}</span> : <span style={{ color: C.slate }}>—</span> },
+              { key: "descuentoDeducciones", label: "Descuento seguros", align: "right", render: (f) => f.descuentoDeducciones > 0 ? <span style={{ color: C.red, fontWeight: 700 }}>-{fmtMoney(f.descuentoDeducciones)}</span> : <span style={{ color: C.slate }}>—</span> },
+              { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.netoAPagar)}</strong> },
               { key: "confirmadaEn", label: "Confirmada", render: (f) => f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : "—" },
               { key: "acciones", label: "", align: "right", render: (f) => (
                 <span onClick={() => descargarRecibo(f)} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }} title="Descargar recibo de liquidación">🖨</span>
@@ -8177,12 +8379,10 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
   // fijo (no por producción) -- antes esta pantalla siempre les daba $0 y
   // se quedaban bloqueados sin poder cerrarse. Ver el cálculo más abajo.
   const esFiscalTipo = tipoSel === "Fiscal" || tipoSel === "Fiscal Destajo";
-  // (2026-09-18, a pedido de Fredy) Cierre por Área -- "" significa "Toda
-  // la empresa" (el cierre general de siempre). Eligiendo un Área puntual,
-  // todo lo de abajo (tabla, total, botón Cerrar) se filtra solo a esa
-  // Área, y el cierre queda guardado aparte del general (ver `onCerrar` /
-  // `guardarCierre` en ModuloNomina, que ahora incluye el Área en el id).
-  const [areaSel, setAreaSel] = useState("");
+  // (2026-09-19, a pedido de Fredy) "Prestación de Servicios" -- contratistas
+  // independientes: valor fijo por quincena (ver
+  // calcularLiquidacionPrestacionServicio), sin producción/horas/faltas.
+  const esPrestacionTipo = tipoSel === "Prestación de Servicios";
   const { desde, hasta, label, year, month, mitad } = quincenaDe(qOffset);
   // Mismo formato de periodoId que arma Nómina -> Destajo
   // (`${anio}-${mes}-Q${quincena}`) -- necesario para poder cruzar el
@@ -8190,20 +8390,12 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
   const periodoIdActual = `${year}-${String(month + 1).padStart(2, "0")}-Q${mitad}`;
   const prodQuincena = produccion.filter((p) => p.fecha >= desde && p.fecha <= hasta);
   const horasQuincena = horas.filter((h) => h.fecha >= desde && h.fecha <= hasta);
-  const cierre = (cierres || []).find((c) => c.desde === desde && c.tipoNomina === tipoSel && (c.area || "") === areaSel);
-  // Áreas que tienen al menos un trabajador de este tipo -- son las que
-  // hay que cerrar una por una antes de poder cerrar el General de este
-  // tipo (ver `areasFaltantes` más abajo).
-  const areasDeEsteTipo = useMemo(() => {
-    const set = new Set();
-    trabajadores.filter((t) => t.tipoNomina === tipoSel).forEach((t) => set.add(t.area || "Sin asignar"));
-    return [...set].sort();
-  }, [trabajadores, tipoSel]);
-  const areasFaltantes = areaSel
-    ? []
-    : areasDeEsteTipo.filter((a) => !(cierres || []).some((c) => c.desde === desde && c.tipoNomina === tipoSel && c.area === a));
+  // (2026-09-19, a pedido de Fredy) Se quitó el cierre por Área -- ya tiene
+  // el desglose por área en "Reporte por Área", así que acá solo queda el
+  // cierre General de todo el tipo de nómina de una vez.
+  const cierre = (cierres || []).find((c) => c.desde === desde && c.tipoNomina === tipoSel && !c.area);
   const porTrabajador = useMemo(() => {
-    const trabajadoresTipo = trabajadores.filter((t) => t.tipoNomina === tipoSel && (!areaSel || (t.area || "Sin asignar") === areaSel));
+    const trabajadoresTipo = trabajadores.filter((t) => t.tipoNomina === tipoSel);
     const idsTipo = new Set(trabajadoresTipo.map((t) => t.id));
     const mapa = new Map();
     trabajadoresTipo.forEach((t) => {
@@ -8231,10 +8423,10 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         const totalBruto = g.totalProduccion + g.totalHoras;
         const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, g.trabajadorId, hasta);
         const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
-        // (2026-09-19, a pedido de Fredy) Deducciones de seguros -- solo
-        // aplican a Fiscal / Fiscal Destajo, nunca a Destajo (igual que en
-        // Nómina Fiscal / Fiscal Destajo).
-        const deduccionesDetalle = esFiscalTipo ? deduccionesActivasDeTrabajador(deduccionesTrabajador, g.trabajadorId) : [];
+        // (2026-09-19, a pedido de Fredy) Deducciones de seguros -- aplican
+        // a Fiscal / Fiscal Destajo y a Prestación de Servicios, nunca a
+        // Destajo (igual que en Nómina Fiscal / Fiscal Destajo).
+        const deduccionesDetalle = (esFiscalTipo || esPrestacionTipo) ? deduccionesActivasDeTrabajador(deduccionesTrabajador, g.trabajadorId) : [];
         const descuentoDeducciones = sumaDeducciones(deduccionesDetalle);
         let ajusteValor = 0, ajusteObservacion = "", ayudaSalarioMinimo = 0, excedenteSobreMinimo = 0;
         let sueldoFijoQuincena = 0, auxilioFijoQuincena = 0, pagoDiasQuincena = 0;
@@ -8265,6 +8457,13 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
           sueldoQuincena = base.sueldoQuincena;
           auxilioQuincena = base.auxilioQuincena;
           netoAntesDeAjuste = base.netoAPagar + g.totalHoras - descuentoCobros - descuentoDeducciones;
+        } else if (esPrestacionTipo) {
+          // (2026-09-19, a pedido de Fredy) Valor fijo por quincena, sin
+          // descuento por inasistencia ni horas sueltas -- solo se le
+          // descuentan cobros de Bodega y deducciones de seguros.
+          const base = calcularLiquidacionPrestacionServicio(g.trabajador);
+          sueldoQuincena = base.valorQuincena;
+          netoAntesDeAjuste = base.netoAPagar - descuentoCobros - descuentoDeducciones;
         } else if (salarioMinimoGarantizado) {
           sueldoFijoQuincena = SMMLV_2026 / 2;
           auxilioFijoQuincena = (Number(g.auxilioTransporte) || 0) / 2;
@@ -8294,7 +8493,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
       })
       .filter((g) => g.totalBruto > 0 || g.unidades > 0 || g.horasCant > 0 || g.salarioMinimoGarantizado || g.pagoPorDia || g.sueldoQuincena > 0 || g.auxilioQuincena > 0)
       .sort((a, b) => b.totalGeneral - a.totalGeneral);
-  }, [trabajadores, tipoSel, esFiscalTipo, areaSel, prodQuincena, horasQuincena, lotesConCobros, ajustesDestajo, periodoIdActual, diasTrabajados, desde, hasta, faltas, ausencias, turnos, deduccionesTrabajador]);
+  }, [trabajadores, tipoSel, esFiscalTipo, esPrestacionTipo, prodQuincena, horasQuincena, lotesConCobros, ajustesDestajo, periodoIdActual, diasTrabajados, desde, hasta, faltas, ausencias, turnos, deduccionesTrabajador]);
   const totalQuincena = porTrabajador.reduce((s, g) => s + g.totalGeneral, 0);
   const totalDescuentos = porTrabajador.reduce((s, g) => s + g.descuentoCobros, 0);
   const totalAjustes = porTrabajador.reduce((s, g) => s + (g.ajusteValor || 0), 0);
@@ -8386,29 +8585,18 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
       <div style={{ display: "flex", gap: 16, marginBottom: 14, flexWrap: "wrap" }}>
         <div style={{ maxWidth: 260 }}>
           <Field label="Nómina">
-            <FSel value={tipoSel} onChange={setTipoSel} options={[{ value: "Fiscal", label: "Fiscal" }, { value: "Fiscal Destajo", label: "Fiscal Destajo" }, { value: "Destajo", label: "Destajo" }]} />
-          </Field>
-        </div>
-        <div style={{ maxWidth: 260 }}>
-          <Field label="Área">
-            <FSel value={areaSel} onChange={setAreaSel} options={[{ value: "", label: "🏢 Toda la empresa" }, ...(areasNomina || []).map((a) => ({ value: a.nombre, label: a.nombre }))]} />
+            <FSel value={tipoSel} onChange={setTipoSel} options={[{ value: "Fiscal", label: "Fiscal" }, { value: "Fiscal Destajo", label: "Fiscal Destajo" }, { value: "Destajo", label: "Destajo" }, { value: "Prestación de Servicios", label: "Prestación de Servicios" }]} />
           </Field>
         </div>
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <button onClick={() => setQOffset((o) => o - 1)} style={{ padding: "6px 12px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: C.ink }}>← Anterior</button>
-        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{label} — {tipoSel}{areaSel ? ` — ${areaSel}` : ""}</div>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{label} — {tipoSel}</div>
         <button onClick={() => setQOffset((o) => o + 1)} style={{ padding: "6px 12px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: C.ink }}>Siguiente →</button>
       </div>
-      {!areaSel && !cierre && areasFaltantes.length > 0 && (
-        <div style={{ padding: "10px 14px", background: C.amberBg, border: `1px solid ${C.amber}44`, borderRadius: 10, marginBottom: 16 }}>
-          <div style={{ fontSize: 12, color: C.amber, fontWeight: 700, marginBottom: 4 }}>⚠ Faltan {areasFaltantes.length} área(s) por cerrar en {tipoSel} antes de poder cerrar el General de esta quincena:</div>
-          <div style={{ fontSize: 12, color: C.ink }}>{areasFaltantes.join(", ")}</div>
-        </div>
-      )}
       {cierre && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 14px", background: C.violetBg, border: `1px solid ${C.violet}44`, borderRadius: 10, marginBottom: 16 }}>
-          <div style={{ fontSize: 12, color: C.violet, fontWeight: 700 }}>🔒 {areaSel ? `${areaSel} — ` : "General — "}Quincena cerrada por {cierre.cerradoPor || "—"} el {fmtFechaHora(cierre.cerradoEn)} — total: {fmtMoney(cierre.totalQuincena)}</div>
+          <div style={{ fontSize: 12, color: C.violet, fontWeight: 700 }}>🔒 General — Quincena cerrada por {cierre.cerradoPor || "—"} el {fmtFechaHora(cierre.cerradoEn)} — total: {fmtMoney(cierre.totalQuincena)}</div>
           {isAdmin && <Btn variant="secondary" small onClick={() => onReabrir(cierre.id)}>Reabrir</Btn>}
         </div>
       )}
@@ -8423,17 +8611,16 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
             {totalExcedenteSobreMinimo > 0 && <KPI icon="📈" label="Generado sobre el mínimo garantizado" value={fmtMoney(totalExcedenteSobreMinimo)} color={C.green} bg={C.greenBg} />}
           </>
         )}
-        {esFiscalTipo && totalDescuentoDeducciones > 0 && <KPI icon="🛡️" label="Descuento seguros/deducciones" value={fmtMoney(totalDescuentoDeducciones)} color={C.red} bg={C.redBg} />}
+        {(esFiscalTipo || esPrestacionTipo) && totalDescuentoDeducciones > 0 && <KPI icon="🛡️" label="Descuento seguros/deducciones" value={fmtMoney(totalDescuentoDeducciones)} color={C.red} bg={C.redBg} />}
       </div>
       <div style={{ marginBottom: 14, display: "flex", gap: 10 }}>
         <Btn variant="secondary" small onClick={exportarExcel} disabled={!porTrabajador.length}>⬇ Exportar a Excel</Btn>
         {puedeCerrarQuincena && !cierre && (
           <Btn
             small
-            onClick={() => onCerrar({ desde, hasta, label, totalQuincena, porTrabajador, tipoNomina: tipoSel, area: areaSel || null })}
-            disabled={!porTrabajador.length || (!areaSel && areasFaltantes.length > 0)}
-            title={!areaSel && areasFaltantes.length > 0 ? `Faltan áreas por cerrar: ${areasFaltantes.join(", ")}` : ""}
-          >🔒 Cerrar {areaSel ? `Área (${areaSel})` : "Quincena (General)"}</Btn>
+            onClick={() => onCerrar({ desde, hasta, label, totalQuincena, porTrabajador, tipoNomina: tipoSel, area: null })}
+            disabled={!porTrabajador.length}
+          >🔒 Cerrar Quincena (General)</Btn>
         )}
       </div>
       <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Clic en un trabajador para ver el desglose de su quincena.</div>
@@ -8447,6 +8634,8 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
           ...(esFiscalTipo ? [
             { key: "sueldoQuincena", label: "Sueldo quincena", align: "right", render: (f) => fmtMoney(f.sueldoQuincena) },
             { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.auxilioQuincena) },
+          ] : esPrestacionTipo ? [
+            { key: "sueldoQuincena", label: "Valor quincena", align: "right", render: (f) => fmtMoney(f.sueldoQuincena) },
           ] : [
             { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
             { key: "totalProduccion", label: "Total Producción", align: "right", render: (f) => f.pagoPorDia ? (
@@ -8456,7 +8645,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
           { key: "horasCant", label: "Horas", align: "right", render: (f) => fmtNum(f.horasCant) },
           { key: "totalHoras", label: "Total Horas", align: "right", render: (f) => fmtMoney(f.totalHoras) },
           { key: "descuentoCobros", label: "Descuentos", align: "right", render: (f) => f.descuentoCobros > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>-{fmtMoney(f.descuentoCobros)}</span> : <span style={{ color: C.slate }}>—</span> },
-          ...(esFiscalTipo ? [
+          ...(esFiscalTipo || esPrestacionTipo ? [
             { key: "descuentoDeducciones", label: "Descuento seguros", align: "right", render: (f) => f.descuentoDeducciones > 0 ? (
               <span style={{ color: C.red, fontWeight: 700 }} title={(f.deduccionesDetalle || []).map((d) => `${d.conceptoNombre || "Deducción"}: ${fmtMoney(d.valor)}`).join(" | ")}>-{fmtMoney(f.descuentoDeducciones)}</span>
             ) : <span style={{ color: C.slate }}>—</span> },
@@ -8524,8 +8713,9 @@ function HistoricoCierresView({ cierres }) {
           { key: "Fiscal", label: "Fiscal", align: "right", render: (f) => celda(f, "Fiscal") },
           { key: "FiscalDestajo", label: "Fiscal Destajo", align: "right", render: (f) => celda(f, "Fiscal Destajo") },
           { key: "Destajo", label: "Destajo", align: "right", render: (f) => celda(f, "Destajo") },
+          { key: "PrestacionServicios", label: "Prestación de Servicios", align: "right", render: (f) => celda(f, "Prestación de Servicios") },
           { key: "total", label: "Total General", align: "right", render: (f) => {
-            const tipos = ["Fiscal", "Fiscal Destajo", "Destajo"];
+            const tipos = ["Fiscal", "Fiscal Destajo", "Destajo", "Prestación de Servicios"];
             const faltan = tipos.some((t) => f.totales[t] == null);
             const suma = tipos.reduce((s, t) => s + (f.totales[t] || 0), 0);
             return faltan
@@ -9596,6 +9786,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [liquidacionesF, setLiquidacionesF] = useState([]);
   const [liquidacionesFD, setLiquidacionesFD] = useState([]);
   const [liquidacionesD, setLiquidacionesD] = useState([]);
+  const [liquidacionesPS, setLiquidacionesPS] = useState([]);
   const [liquidacionesRetiro, setLiquidacionesRetiro] = useState([]);
   const [prestamos, setPrestamos] = useState([]);
   // (2026-09-18, a pedido de Fredy) Deducciones de seguros/funeraria/etc.
@@ -9657,6 +9848,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_fiscal_liquidaciones"), (snap) => setLiquidacionesF(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_fiscal_destajo_liquidaciones"), (snap) => setLiquidacionesFD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_prestacion_servicios_liquidaciones"), (snap) => setLiquidacionesPS(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_liquidaciones_retiro"), (snap) => setLiquidacionesRetiro(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_prestamos"), (snap) => setPrestamos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_conceptos_deduccion"), (snap) => setConceptosDeduccion(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -9808,6 +10000,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "fiscal", icon: "🏛️", label: "Nómina Fiscal", historial: { id: "historial_fiscal", icon: "🗂️", label: "Historial Fiscal" } },
             { id: "fiscal_destajo", icon: "💼", label: "Nómina Fiscal Destajo", historial: { id: "historial_fiscal_destajo", icon: "🗂️", label: "Historial Fiscal Destajo" } },
             { id: "destajo", icon: "💼", label: "Nómina Destajo", historial: { id: "historial_destajo", icon: "🗂️", label: "Historial Destajo" } },
+            { id: "prestacion_servicios", icon: "🤝", label: "Nómina Prestación de Servicios", historial: { id: "historial_prestacion_servicios", icon: "🗂️", label: "Historial Prestación de Servicios" } },
           ] },
       ];
   // Versión "aplanada" del menú (sin grupos) — sirve para buscar el label
@@ -9958,6 +10151,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function guardarLiquidacionF(l) { await fsSave("nomina_fiscal_liquidaciones", l.id, l); }
   async function guardarLiquidacionFD(l) { await fsSave("nomina_fiscal_destajo_liquidaciones", l.id, l); }
   async function guardarLiquidacionD(l) { await fsSave("nomina_destajo_liquidaciones", l.id, l); }
+  async function guardarLiquidacionPS(l) { await fsSave("nomina_prestacion_servicios_liquidaciones", l.id, l); }
   async function guardarLiquidacionRetiro(l) { await fsSave("nomina_liquidaciones_retiro", l.id, l); }
   async function guardarPrestamo(p) { await fsSave("nomina_prestamos", p.id, p); }
   async function borrarPrestamo(id) { await fsDelete("nomina_prestamos", id); }
@@ -10242,6 +10436,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
           {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} />}
           {subView === "historial_fiscal_destajo" && !areaLider && !soloNovedades && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
+          {subView === "prestacion_servicios" && !areaLider && !soloNovedades && <NominaPrestacionServicioView trabajadores={trabajadores} liquidaciones={liquidacionesPS} onGuardarLiquidacion={guardarLiquidacionPS} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} deduccionesTrabajador={deduccionesTrabajador} />}
+          {subView === "historial_prestacion_servicios" && !areaLider && !soloNovedades && <HistorialPrestacionServicioView liquidaciones={liquidacionesPS} trabajadores={trabajadores} />}
           {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} horas={horas} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
           {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} isAdmin={isAdmin} onBorrarCobroManual={borrarCobroManual} />}
