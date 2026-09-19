@@ -120,6 +120,21 @@ function costoTotalLiquidacion(l) {
 // Pendiente para una siguiente vuelta (a pedido de Fredy, se deja para
 // después de validar estos 2 números): descuentos pendientes por cobrar,
 // lo recaudado por préstamos, y el desglose de la deducción "Los Olivos".
+//
+// (2026-09-19, a pedido de Fredy) "¿Cómo pagar?" -- además de saber CUÁNTO
+// pagar, Fredy necesita saber en qué FORMA pagarlo (Efectivo o Banco) y a
+// cuál empresa corresponde (Yanko o Indutex, el campo "Empleador" que ya
+// tiene cada trabajador). La forma de pago no se guarda por trabajador --
+// la definió Fredy directamente por tipo de nómina (confirmado por chat):
+// Destajo, Fiscal Destajo y Prestación de Servicios se pagan en Efectivo;
+// Fiscal se paga por Banco.
+const FORMA_PAGO_POR_TIPO = {
+  "Fiscal": "Banco",
+  "Fiscal Destajo": "Efectivo",
+  "Destajo": "Efectivo",
+  "Prestación de Servicios": "Efectivo",
+};
+const EMPLEADORES_COLUMNAS = ["YANKO", "INDUTEX"];
 // ═══════════════════════════════════════════════════════════════════════════
 export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
   const hoy = new Date();
@@ -128,6 +143,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
   const [quincena, setQuincena] = useState(hoy.getDate() <= 15 ? "1" : "2");
 
+  const [trabajadores, setTrabajadores] = useState([]);
   const [liquidacionesF, setLiquidacionesF] = useState([]);
   const [liquidacionesFD, setLiquidacionesFD] = useState([]);
   const [liquidacionesD, setLiquidacionesD] = useState([]);
@@ -136,7 +152,8 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
 
   useEffect(() => {
     const unsubs = [
-      onSnapshot(collection(db, "nomina_fiscal_liquidaciones"), (snap) => { setLiquidacionesF(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setLoading(false); }),
+      onSnapshot(collection(db, "nomina_trabajadores"), (snap) => { setTrabajadores(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setLoading(false); }),
+      onSnapshot(collection(db, "nomina_fiscal_liquidaciones"), (snap) => setLiquidacionesF(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_fiscal_destajo_liquidaciones"), (snap) => setLiquidacionesFD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesD(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_prestacion_servicios_liquidaciones"), (snap) => setLiquidacionesPS(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -162,6 +179,29 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
   const totalAPagar = porTipo.reduce((s, g) => s + g.neto, 0);
   const totalCostoEmpresa = porTipo.reduce((s, g) => s + g.costoTotal, 0);
   const provision = totalCostoEmpresa - totalAPagar;
+  // (2026-09-19, a pedido de Fredy) Matriz "¿Cómo pagar?" -- Forma de pago
+  // (Efectivo/Banco, según FORMA_PAGO_POR_TIPO) x Empleador (Yanko/Indutex,
+  // el que tiene HOY cada trabajador -- si ya no está en el sistema o no
+  // tiene Empleador asignado, cae en "Sin asignar" para no perderlo del
+  // total). Suma el Neto a Pagar, que es lo que de verdad hay que
+  // desembolsar (no el costo total con provisión).
+  const matrizPago = { Efectivo: {}, Banco: {} };
+  [...EMPLEADORES_COLUMNAS, "Sin asignar"].forEach((emp) => {
+    matrizPago.Efectivo[emp] = 0;
+    matrizPago.Banco[emp] = 0;
+  });
+  porTipo.forEach((g) => {
+    const forma = FORMA_PAGO_POR_TIPO[g.tipo] || "Efectivo";
+    g.liquidaciones.forEach((l) => {
+      const trabajador = trabajadores.find((t) => t.id === l.trabajadorId);
+      const empleador = trabajador?.empleador && EMPLEADORES_COLUMNAS.includes(trabajador.empleador) ? trabajador.empleador : "Sin asignar";
+      matrizPago[forma][empleador] += l.netoAPagar || 0;
+    });
+  });
+  const hayTrabajadoresSinAsignar = matrizPago.Efectivo["Sin asignar"] > 0 || matrizPago.Banco["Sin asignar"] > 0;
+  const columnasPago = hayTrabajadoresSinAsignar ? [...EMPLEADORES_COLUMNAS, "Sin asignar"] : EMPLEADORES_COLUMNAS;
+  const totalPorForma = (forma) => columnasPago.reduce((s, emp) => s + matrizPago[forma][emp], 0);
+  const totalPorEmpleadorCol = (emp) => matrizPago.Efectivo[emp] + matrizPago.Banco[emp];
   const rangoTexto = tipoPeriodo === "quincena"
     ? `Quincena ${quincena} (${quincena === "1" ? "1-15" : "16-fin de mes"}) de ${MESES_LARGO[Number(mes) - 1]} ${anio}`
     : `Mes completo de ${MESES_LARGO[Number(mes) - 1]} ${anio}`;
@@ -219,6 +259,44 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
                 <KPI icon="💵" label="Total a pagar" value={fmtMoney(totalAPagar)} color={C.green} bg={C.greenBg} sub="Neto a pagar de las 4 nóminas" />
                 <KPI icon="🏛️" label="Provisión (seg. social + prestaciones sociales)" value={fmtMoney(provision)} color={C.violet} bg={C.violetBg} sub="Aparte del Neto a Pagar" />
                 <KPI icon="📊" label="Costo total de nómina" value={fmtMoney(totalCostoEmpresa)} color={C.ink} bg={C.canvas} sub="Total a pagar + Provisión" />
+              </div>
+
+              <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>¿Cómo pagar?</div>
+              <div style={{ fontSize: 12, color: C.slate, marginBottom: 10, maxWidth: 780 }}>
+                Destajo, Fiscal Destajo y Prestación de Servicios se pagan en Efectivo; Fiscal se paga por Banco — separado por Empleador (Yanko / Indutex).
+              </div>
+              <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto", marginBottom: 24 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ background: C.ink }}>
+                      <th style={{ padding: "9px 12px", color: C.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Forma de pago</th>
+                      {columnasPago.map((emp) => (
+                        <th key={emp} style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>{emp}</th>
+                      ))}
+                      <th style={{ padding: "9px 12px", color: C.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {["Efectivo", "Banco"].map((forma, i) => (
+                      <tr key={forma} style={{ background: i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                        <td style={{ padding: "7px 12px" }}>
+                          <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: forma === "Efectivo" ? C.amberBg : C.blueBg, color: forma === "Efectivo" ? C.amber : C.blue }}>{forma === "Efectivo" ? "💵 Efectivo" : "🏦 Banco"}</span>
+                        </td>
+                        {columnasPago.map((emp) => (
+                          <td key={emp} style={{ padding: "7px 12px", textAlign: "right" }}>{fmtMoney(matrizPago[forma][emp])}</td>
+                        ))}
+                        <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(totalPorForma(forma))}</td>
+                      </tr>
+                    ))}
+                    <tr style={{ background: C.canvas, borderTop: `2px solid ${C.border}` }}>
+                      <td style={{ padding: "7px 12px", fontWeight: 800 }}>TOTAL</td>
+                      {columnasPago.map((emp) => (
+                        <td key={emp} style={{ padding: "7px 12px", textAlign: "right", fontWeight: 800 }}>{fmtMoney(totalPorEmpleadorCol(emp))}</td>
+                      ))}
+                      <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 900 }}>{fmtMoney(totalAPagar)}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
 
               <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>Desglose por tipo de nómina</div>
