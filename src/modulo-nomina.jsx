@@ -5044,7 +5044,7 @@ function DetalleDiasSinJustificarModal({ trabajador, fechas, ausencias, trabajad
     </Modal>
   );
 }
-function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, areasNomina, horas }) {
+function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, areasNomina, horas, deduccionesTrabajador }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -5079,7 +5079,11 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       const horasCant = horasDetalle.reduce((s, h) => s + (Number(h.horas) || 0), 0);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id, fin);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
-      return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, descuentoCobros, cobrosDetalle, netoAPagar: base.netoAPagar + totalHoras - descuentoCobros } };
+      // (2026-09-18, a pedido de Fredy) Deducciones fijas por quincena
+      // (seguros, funeraria, etc.) -- ver DeduccionesFijasView.
+      const deduccionesDetalle = deduccionesActivasDeTrabajador(deduccionesTrabajador, t.id);
+      const descuentoDeducciones = sumaDeducciones(deduccionesDetalle);
+      return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, netoAPagar: base.netoAPagar + totalHoras - descuentoCobros - descuentoDeducciones } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -5108,6 +5112,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
   const totales = resultados ? resultados.reduce((s, r) => ({
     neto: s.neto + r.calculo.netoAPagar,
     descuentoCobros: s.descuentoCobros + (r.calculo.descuentoCobros || 0),
+    descuentoDeducciones: s.descuentoDeducciones + (r.calculo.descuentoDeducciones || 0),
     totalHoras: s.totalHoras + (r.calculo.totalHoras || 0),
     epsTrabajador: s.epsTrabajador + r.calculo.epsTrabajador,
     pensionTrabajador: s.pensionTrabajador + r.calculo.pensionTrabajador,
@@ -5118,7 +5123,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
     intereses: s.intereses + r.calculo.interesesPeriodo,
     prima: s.prima + r.calculo.primaPeriodo,
     vacaciones: s.vacaciones + r.calculo.vacacionesPeriodo,
-  }), { neto: 0, descuentoCobros: 0, totalHoras: 0, epsTrabajador: 0, pensionTrabajador: 0, pensionEmpleador: 0, arlEmpleador: 0, cajaCompensacionEmpleador: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
+  }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0, totalHoras: 0, epsTrabajador: 0, pensionTrabajador: 0, pensionEmpleador: 0, arlEmpleador: 0, cajaCompensacionEmpleador: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
 
   return (
     <div>
