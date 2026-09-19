@@ -3567,6 +3567,14 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases }) {
   const [busquedaDadoPorCumplido, setBusquedaDadoPorCumplido] = useState("");
   const [subVistaPendientes, setSubVistaPendientes] = useState("conFactura");
   const [vaciandoHistorico, setVaciandoHistorico] = useState(false);
+  // (2026-09-19, a pedido de Fredy) Un lote marcado "Con factura" puede ser
+  // por una factura real de Busint, O por un Traslado en Consignación/
+  // Externo (TCO/TEX) -- Busint todavía no emite la factura real hasta que
+  // el cliente confirma la venta (ver sincronizarDadoPorCumplidoPendientes
+  // en functions/index.js). Antes de aprobar uno de estos últimos, se pide
+  // confirmación aparte porque el Costo Real Total todavía no se puede
+  // sacar de una factura real.
+  const [confirmAprobarTraslado, setConfirmAprobarTraslado] = useState(null);
 
   useEffect(() => {
     const unsubLotes = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
@@ -3963,12 +3971,25 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases }) {
                 });
                 const sinFactura = l.tieneFactura === false;
                 const listoParaAprobar = Number(l.costoRealTotal) > 0 && !!l.categoriaBaseId && !sinFactura;
+                // (2026-09-19, a pedido de Fredy) "Con factura" en este
+                // sistema junta 2 casos que en Busint son MUY distintos:
+                // una factura real (FAC), o un Traslado en Consignación/
+                // Externo (TCO/TEX) que todavía no tiene factura real --
+                // ver comentario junto a confirmAprobarTraslado más arriba.
+                // Antes esto no se distinguía en pantalla y parecía que el
+                // lote ya estaba facturado en Busint cuando en realidad no.
+                const esTraslado = String(l.observacionesFactura || "").startsWith("Traslado");
                 return (
                   <div key={l.id} style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white }}>
                     <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
                       <div>
                         <div style={{ fontWeight: 800, fontSize: 15, color: C.ink }}>Lote {l.numLote} — {l.referencia || "(sin referencia)"}</div>
                         <div style={{ fontSize: 12, color: C.slate }}>{l.cliente || "(sin cliente)"} · {l.fecha || "(sin fecha)"}</div>
+                        {l.observacionesFactura && (
+                          <div style={{ fontSize: 11, fontWeight: 700, marginTop: 4, color: esTraslado ? C.amber : C.green }}>
+                            {esTraslado ? "🔄 " : "🧾 "}{l.observacionesFactura}
+                          </div>
+                        )}
                       </div>
                       <div style={{ display: "flex", gap: 18, fontSize: 12, color: C.slate, flexWrap: "wrap" }}>
                         <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -4035,7 +4056,7 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases }) {
                           ))}
                         </select>
                       </Field>
-                      <Btn onClick={() => aprobar(l.id)} disabled={!listoParaAprobar || aprobandoId === l.id}>
+                      <Btn onClick={() => (esTraslado ? setConfirmAprobarTraslado(l) : aprobar(l.id))} disabled={!listoParaAprobar || aprobandoId === l.id}>
                         {aprobandoId === l.id ? "Aprobando..." : "✅ Aprobar"}
                       </Btn>
                     </div>
@@ -4091,6 +4112,21 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases }) {
             </div>
           )}
         </div>
+      )}
+
+      {confirmAprobarTraslado && (
+        <Modal title="Confirmar aprobación sin factura real" onClose={() => setConfirmAprobarTraslado(null)} width={480}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            El Lote <strong>{confirmAprobarTraslado.numLote}</strong> ({confirmAprobarTraslado.cliente || "sin cliente"}) todavía NO tiene una factura real en Busint — lo que hay es un <strong>Traslado en Consignación/Externo</strong>, que Busint registra antes de que el cliente confirme la venta.
+            <div style={{ marginTop: 10, color: C.slate, fontSize: 13 }}>
+              El Costo Real Total que escribiste no viene de una factura de Busint todavía, así que puede quedar corto o largo si Busint factura después con un número distinto. ¿Apruebas este lote de todas formas?
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmAprobarTraslado(null)}>Cancelar</Btn>
+            <Btn onClick={() => { aprobar(confirmAprobarTraslado.id); setConfirmAprobarTraslado(null); }}>Sí, aprobar de todas formas</Btn>
+          </div>
+        </Modal>
       )}
     </div>
   );
