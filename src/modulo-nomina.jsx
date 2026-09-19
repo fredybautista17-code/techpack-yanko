@@ -45,6 +45,17 @@ function limpiarUndefined(valor) {
   }
   return valor;
 }
+// (2026-09-19, a pedido de Fredy) Helper único para "Exportar a Excel" en
+// las 4 Nóminas y sus 4 Históricos -- cada vista arma su propio AOA (con
+// las mismas columnas que su Tabla en pantalla + una fila TOTAL) y llama
+// esto para bajarlo. Mismo patrón que ya usaba Resumen Semanal.
+async function descargarExcel(nombreArchivo, nombreHoja, aoa) {
+  const XLSX = await import("xlsx");
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  XLSX.utils.book_append_sheet(wb, ws, nombreHoja);
+  XLSX.writeFile(wb, nombreArchivo);
+}
 // ─── TOKENS (mismos de los demás módulos, para mantener el mismo look) ────────
 const C = {
   ink: "#1A1A2E",
@@ -5154,6 +5165,36 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
   }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0, totalHoras: 0, epsTrabajador: 0, pensionTrabajador: 0, pensionEmpleador: 0, arlEmpleador: 0, cajaCompensacionEmpleador: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
   const busquedaNorm = normalizarNombreParaComparar(busqueda);
   const resultadosFiltrados = resultados && busquedaNorm ? resultados.filter((f) => normalizarNombreParaComparar(f.trabajador.nombre).includes(busquedaNorm)) : resultados;
+  async function exportarExcel() {
+    const filas = resultadosFiltrados || [];
+    const t = filas.reduce((s, f) => ({
+      totalHoras: s.totalHoras + (f.calculo.totalHoras || 0),
+      epsTrabajador: s.epsTrabajador + f.calculo.epsTrabajador,
+      pensionTrabajador: s.pensionTrabajador + f.calculo.pensionTrabajador,
+      descuentoCobros: s.descuentoCobros + (f.calculo.descuentoCobros || 0),
+      descuentoDeducciones: s.descuentoDeducciones + (f.calculo.descuentoDeducciones || 0),
+      neto: s.neto + f.calculo.netoAPagar,
+      pensionEmpleador: s.pensionEmpleador + f.calculo.pensionEmpleador,
+      arlEmpleador: s.arlEmpleador + f.calculo.arlEmpleador,
+      cajaCompensacionEmpleador: s.cajaCompensacionEmpleador + f.calculo.cajaCompensacionEmpleador,
+      cesantias: s.cesantias + f.calculo.cesantiasPeriodo,
+      intereses: s.intereses + f.calculo.interesesPeriodo,
+      prima: s.prima + f.calculo.primaPeriodo,
+      vacaciones: s.vacaciones + f.calculo.vacacionesPeriodo,
+    }), { totalHoras: 0, epsTrabajador: 0, pensionTrabajador: 0, descuentoCobros: 0, descuentoDeducciones: 0, neto: 0, pensionEmpleador: 0, arlEmpleador: 0, cajaCompensacionEmpleador: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 });
+    const encabezado = ["Nombre", "Clase ARL", "Días sin justificar", "Días trabajados", "Días sin aux. transporte", "Días sin sueldo", "Sueldo quincena", "Auxilio quincena", "Horas", "Total Horas", "EPS trab.", "Pensión trab.", "Descuento cobros Bodega", "Descuento seguros", "Neto a pagar", "Pensión empresa", "ARL empresa", "Caja Comp.", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)"];
+    const filasHoja = filas.map((f) => [
+      f.trabajador.nombre,
+      f.trabajador.claseRiesgoARL ? labelClaseARL(f.trabajador.claseRiesgoARL) : "Sin asignar",
+      f.calculo.diasInasistencia, f.calculo.diasTrabajados, f.calculo.diasSinAuxilio || 0, f.calculo.diasSinSueldo || 0,
+      f.calculo.sueldoQuincena, f.calculo.auxilioQuincena, f.calculo.horasCant || 0, f.calculo.totalHoras || 0,
+      f.calculo.epsTrabajador, f.calculo.pensionTrabajador, f.calculo.descuentoCobros, f.calculo.descuentoDeducciones, f.calculo.netoAPagar,
+      f.calculo.pensionEmpleador, f.calculo.arlEmpleador, f.calculo.cajaCompensacionEmpleador,
+      f.calculo.cesantiasPeriodo, f.calculo.interesesPeriodo, f.calculo.primaPeriodo, f.calculo.vacacionesPeriodo,
+    ]);
+    const filaTotal = ["TOTAL", "", "", "", "", "", "", "", "", t.totalHoras, t.epsTrabajador, t.pensionTrabajador, t.descuentoCobros, t.descuentoDeducciones, t.neto, t.pensionEmpleador, t.arlEmpleador, t.cajaCompensacionEmpleador, t.cesantias, t.intereses, t.prima, t.vacaciones];
+    await descargarExcel(`Nomina_Fiscal_${periodoId}.xlsx`, "Nómina Fiscal", [[`NÓMINA FISCAL — QUINCENA ${periodoId}`], [], encabezado, ...filasHoja, [], filaTotal]);
+  }
 
   return (
     <div>
@@ -5215,14 +5256,17 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
             <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
             <KPI icon="🏖️" label="Vacaciones (provisión)" value={fmtMoney(totales.vacaciones)} color={C.amber} bg={C.amberBg} />
           </div>
-          <div style={{ position: "relative", maxWidth: 280, marginBottom: 12 }}>
-            <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: C.slate, pointerEvents: "none" }}>🔍</span>
-            <input
-              value={busqueda}
-              onChange={(e) => setBusqueda(e.target.value)}
-              placeholder="Buscar trabajador..."
-              style={{ width: "100%", padding: "9px 12px 9px 30px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", outline: "none" }}
-            />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+            <div style={{ position: "relative", maxWidth: 280, flex: 1, minWidth: 220 }}>
+              <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: C.slate, pointerEvents: "none" }}>🔍</span>
+              <input
+                value={busqueda}
+                onChange={(e) => setBusqueda(e.target.value)}
+                placeholder="Buscar trabajador..."
+                style={{ width: "100%", padding: "9px 12px 9px 30px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", outline: "none" }}
+              />
+            </div>
+            <Btn variant="secondary" small onClick={exportarExcel} disabled={!resultadosFiltrados.length}>⬇ Exportar a Excel</Btn>
           </div>
           <Tabla
             vacio="Sin resultados."
@@ -5299,6 +5343,17 @@ function HistorialFiscalView({ liquidaciones, trabajadores }) {
     const trabajador = (trabajadores || []).find((t) => t.id === l.trabajadorId);
     exportReciboLiquidacionHTML({ tipoNomina: "Fiscal", trabajador, liquidacion: l });
   }
+  async function exportarExcel() {
+    const encabezado = ["Período", "Nombre", "Días sin justificar", "Días trabajados", "Sueldo quincena", "Auxilio quincena", "EPS trab.", "Pensión trab.", "Descuento cobros Bodega", "Neto a pagar", "Pensión empresa", "ARL empresa", "Caja Comp.", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)", "Confirmada"];
+    const filasHoja = filas.map((f) => [
+      f.periodoId, f.nombre, f.diasInasistencia || 0, f.diasTrabajados == null ? "" : f.diasTrabajados,
+      f.sueldoQuincena, f.auxilioQuincena, f.epsTrabajador, f.pensionTrabajador, f.descuentoCobros || 0, f.netoAPagar,
+      f.pensionEmpleador, f.arlEmpleador, f.cajaCompensacionEmpleador, f.cesantiasPeriodo, f.interesesPeriodo, f.primaPeriodo, f.vacacionesPeriodo,
+      f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : "",
+    ]);
+    const filaTotal = ["TOTAL", "", "", "", "", "", totales.epsTrabajador, totales.pensionTrabajador, totales.descuentoCobros, totales.neto, totales.pensionEmpleador, totales.arlEmpleador, totales.cajaCompensacionEmpleador, totales.cesantias, totales.intereses, totales.prima, totales.vacaciones, ""];
+    await descargarExcel(`Historial_Fiscal${periodoFiltro ? "_" + periodoFiltro : ""}.xlsx`, "Historial Fiscal", [["HISTORIAL NÓMINA FISCAL"], [], encabezado, ...filasHoja, [], filaTotal]);
+  }
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
@@ -5310,10 +5365,13 @@ function HistorialFiscalView({ liquidaciones, trabajadores }) {
         </div>
       ) : (
         <>
-          <div style={{ marginBottom: 16, maxWidth: 260 }}>
-            <Field label="Filtrar por período">
-              <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
-            </Field>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+            <div style={{ maxWidth: 260 }}>
+              <Field label="Filtrar por período">
+                <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
+              </Field>
+            </div>
+            <Btn variant="secondary" small onClick={exportarExcel} disabled={!filas.length}>⬇ Exportar a Excel</Btn>
           </div>
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
             <KPI icon="💵" label="Neto pagado (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
@@ -5895,6 +5953,28 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
   }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0, totalHoras: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
   const busquedaNorm = normalizarNombreParaComparar(busqueda);
   const resultadosFiltrados = resultados && busquedaNorm ? resultados.filter((f) => normalizarNombreParaComparar(f.trabajador.nombre).includes(busquedaNorm)) : resultados;
+  async function exportarExcel() {
+    const filas = resultadosFiltrados || [];
+    const t = filas.reduce((s, f) => ({
+      totalHoras: s.totalHoras + (f.calculo.totalHoras || 0),
+      descuentoCobros: s.descuentoCobros + (f.calculo.descuentoCobros || 0),
+      descuentoDeducciones: s.descuentoDeducciones + (f.calculo.descuentoDeducciones || 0),
+      neto: s.neto + f.calculo.netoAPagar,
+      cesantias: s.cesantias + f.calculo.cesantiasPeriodo,
+      intereses: s.intereses + f.calculo.interesesPeriodo,
+      prima: s.prima + f.calculo.primaPeriodo,
+      vacaciones: s.vacaciones + f.calculo.vacacionesPeriodo,
+    }), { totalHoras: 0, descuentoCobros: 0, descuentoDeducciones: 0, neto: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 });
+    const encabezado = ["Nombre", "Días sin justificar", "Días trabajados", "Días sin aux. transporte", "Días sin sueldo", "Sueldo quincena", "Auxilio quincena", "Horas", "Total Horas", "Descuento cobros Bodega", "Descuento seguros", "Neto a pagar", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)"];
+    const filasHoja = filas.map((f) => [
+      f.trabajador.nombre, f.calculo.diasInasistencia, f.calculo.diasTrabajados, f.calculo.diasSinAuxilio || 0, f.calculo.diasSinSueldo || 0,
+      f.calculo.sueldoQuincena, f.calculo.auxilioQuincena, f.calculo.horasCant || 0, f.calculo.totalHoras || 0,
+      f.calculo.descuentoCobros, f.calculo.descuentoDeducciones, f.calculo.netoAPagar,
+      f.calculo.cesantiasPeriodo, f.calculo.interesesPeriodo, f.calculo.primaPeriodo, f.calculo.vacacionesPeriodo,
+    ]);
+    const filaTotal = ["TOTAL", "", "", "", "", "", "", t.totalHoras, "", t.descuentoCobros, t.descuentoDeducciones, t.neto, t.cesantias, t.intereses, t.prima, t.vacaciones];
+    await descargarExcel(`Nomina_FiscalDestajo_${periodoId}.xlsx`, "Nómina Fiscal Destajo", [[`NÓMINA FISCAL DESTAJO — QUINCENA ${periodoId}`], [], encabezado, ...filasHoja, [], filaTotal]);
+  }
 
   return (
     <div>
@@ -5946,14 +6026,17 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
             <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
             <KPI icon="🏖️" label="Vacaciones (provisión)" value={fmtMoney(totales.vacaciones)} color={C.amber} bg={C.amberBg} />
           </div>
-          <div style={{ position: "relative", maxWidth: 280, marginBottom: 12 }}>
-            <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: C.slate, pointerEvents: "none" }}>🔍</span>
-            <input
-              value={busqueda}
-              onChange={(e) => setBusqueda(e.target.value)}
-              placeholder="Buscar trabajador..."
-              style={{ width: "100%", padding: "9px 12px 9px 30px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", outline: "none" }}
-            />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+            <div style={{ position: "relative", maxWidth: 280, flex: 1, minWidth: 220 }}>
+              <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: C.slate, pointerEvents: "none" }}>🔍</span>
+              <input
+                value={busqueda}
+                onChange={(e) => setBusqueda(e.target.value)}
+                placeholder="Buscar trabajador..."
+                style={{ width: "100%", padding: "9px 12px 9px 30px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", outline: "none" }}
+              />
+            </div>
+            <Btn variant="secondary" small onClick={exportarExcel} disabled={!resultadosFiltrados.length}>⬇ Exportar a Excel</Btn>
           </div>
           <Tabla
             vacio="Sin resultados."
@@ -6293,6 +6376,17 @@ function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
     const trabajador = (trabajadores || []).find((t) => t.id === l.trabajadorId);
     exportReciboLiquidacionHTML({ tipoNomina: "Fiscal Destajo", trabajador, liquidacion: l });
   }
+  async function exportarExcel() {
+    const encabezado = ["Período", "Nombre", "Días sin justificar", "Días trabajados", "Sueldo quincena", "Auxilio quincena", "Descuento cobros Bodega", "Neto a pagar", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)", "Confirmada"];
+    const filasHoja = filas.map((f) => [
+      f.periodoId, f.nombre, f.diasInasistencia || 0, f.diasTrabajados == null ? "" : f.diasTrabajados,
+      f.sueldoQuincena, f.auxilioQuincena, f.descuentoCobros || 0, f.netoAPagar,
+      f.cesantiasPeriodo, f.interesesPeriodo, f.primaPeriodo, f.vacacionesPeriodo,
+      f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : "",
+    ]);
+    const filaTotal = ["TOTAL", "", "", "", "", "", totales.descuentoCobros, totales.neto, totales.cesantias, totales.intereses, totales.prima, totales.vacaciones, ""];
+    await descargarExcel(`Historial_FiscalDestajo${periodoFiltro ? "_" + periodoFiltro : ""}.xlsx`, "Historial Fiscal Destajo", [["HISTORIAL NÓMINA FISCAL DESTAJO"], [], encabezado, ...filasHoja, [], filaTotal]);
+  }
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
@@ -6304,10 +6398,13 @@ function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
         </div>
       ) : (
         <>
-          <div style={{ marginBottom: 16, maxWidth: 260 }}>
-            <Field label="Filtrar por período">
-              <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
-            </Field>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+            <div style={{ maxWidth: 260 }}>
+              <Field label="Filtrar por período">
+                <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
+              </Field>
+            </div>
+            <Btn variant="secondary" small onClick={exportarExcel} disabled={!filas.length}>⬇ Exportar a Excel</Btn>
           </div>
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
             <KPI icon="💵" label="Neto pagado (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
@@ -6408,6 +6505,19 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
   }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0 }) : null;
   const busquedaNorm = normalizarNombreParaComparar(busqueda);
   const resultadosFiltrados = resultados && busquedaNorm ? resultados.filter((f) => normalizarNombreParaComparar(f.trabajador.nombre).includes(busquedaNorm)) : resultados;
+  async function exportarExcel() {
+    const filas = resultadosFiltrados || [];
+    const t = filas.reduce((s, f) => ({
+      valorQuincena: s.valorQuincena + (f.calculo.valorQuincena || 0),
+      descuentoCobros: s.descuentoCobros + (f.calculo.descuentoCobros || 0),
+      descuentoDeducciones: s.descuentoDeducciones + (f.calculo.descuentoDeducciones || 0),
+      neto: s.neto + f.calculo.netoAPagar,
+    }), { valorQuincena: 0, descuentoCobros: 0, descuentoDeducciones: 0, neto: 0 });
+    const encabezado = ["Nombre", "Valor quincena", "Descuento cobros Bodega", "Descuento seguros", "Neto a pagar"];
+    const filasHoja = filas.map((f) => [f.trabajador.nombre, f.calculo.valorQuincena, f.calculo.descuentoCobros, f.calculo.descuentoDeducciones, f.calculo.netoAPagar]);
+    const filaTotal = ["TOTAL", t.valorQuincena, t.descuentoCobros, t.descuentoDeducciones, t.neto];
+    await descargarExcel(`Nomina_PrestacionServicios_${periodoId}.xlsx`, "Prestación de Servicios", [[`NÓMINA PRESTACIÓN DE SERVICIOS — QUINCENA ${periodoId}`], [], encabezado, ...filasHoja, [], filaTotal]);
+  }
 
   return (
     <div>
@@ -6443,14 +6553,17 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
             <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
             <KPI icon="🛡️" label="Descuento seguros/deducciones" value={fmtMoney(totales.descuentoDeducciones)} color={C.red} bg={C.redBg} />
           </div>
-          <div style={{ position: "relative", maxWidth: 280, marginBottom: 12 }}>
-            <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: C.slate, pointerEvents: "none" }}>🔍</span>
-            <input
-              value={busqueda}
-              onChange={(e) => setBusqueda(e.target.value)}
-              placeholder="Buscar trabajador..."
-              style={{ width: "100%", padding: "9px 12px 9px 30px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", outline: "none" }}
-            />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+            <div style={{ position: "relative", maxWidth: 280, flex: 1, minWidth: 220 }}>
+              <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: C.slate, pointerEvents: "none" }}>🔍</span>
+              <input
+                value={busqueda}
+                onChange={(e) => setBusqueda(e.target.value)}
+                placeholder="Buscar trabajador..."
+                style={{ width: "100%", padding: "9px 12px 9px 30px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", outline: "none" }}
+              />
+            </div>
+            <Btn variant="secondary" small onClick={exportarExcel} disabled={!resultadosFiltrados.length}>⬇ Exportar a Excel</Btn>
           </div>
           <Tabla
             vacio="Sin resultados."
@@ -6493,6 +6606,15 @@ function HistorialPrestacionServicioView({ liquidaciones, trabajadores }) {
     const trabajador = (trabajadores || []).find((t) => t.id === l.trabajadorId);
     exportReciboLiquidacionHTML({ tipoNomina: "Prestación de Servicios", trabajador, liquidacion: l });
   }
+  async function exportarExcel() {
+    const encabezado = ["Período", "Nombre", "Valor quincena", "Descuento cobros Bodega", "Descuento seguros", "Neto a pagar", "Confirmada"];
+    const filasHoja = filas.map((f) => [
+      f.periodoId, f.nombre, f.valorQuincena, f.descuentoCobros || 0, f.descuentoDeducciones || 0, f.netoAPagar,
+      f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : "",
+    ]);
+    const filaTotal = ["TOTAL", "", "", totales.descuentoCobros, totales.descuentoDeducciones, totales.neto, ""];
+    await descargarExcel(`Historial_PrestacionServicios${periodoFiltro ? "_" + periodoFiltro : ""}.xlsx`, "Historial Prest. Servicios", [["HISTORIAL PRESTACIÓN DE SERVICIOS"], [], encabezado, ...filasHoja, [], filaTotal]);
+  }
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
@@ -6504,10 +6626,13 @@ function HistorialPrestacionServicioView({ liquidaciones, trabajadores }) {
         </div>
       ) : (
         <>
-          <div style={{ marginBottom: 16, maxWidth: 260 }}>
-            <Field label="Filtrar por período">
-              <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
-            </Field>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+            <div style={{ maxWidth: 260 }}>
+              <Field label="Filtrar por período">
+                <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
+              </Field>
+            </div>
+            <Btn variant="secondary" small onClick={exportarExcel} disabled={!filas.length}>⬇ Exportar a Excel</Btn>
           </div>
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
             <KPI icon="💵" label="Neto pagado (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
@@ -6759,6 +6884,31 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
   }), { neto: 0, descuentoCobros: 0, totalHoras: 0, ajustes: 0, ayudaSalarioMinimo: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
   const busquedaNorm = normalizarNombreParaComparar(busqueda);
   const resultadosFinalFiltrados = resultadosFinal && busquedaNorm ? resultadosFinal.filter((f) => normalizarNombreParaComparar(f.trabajador.nombre).includes(busquedaNorm)) : resultadosFinal;
+  async function exportarExcel() {
+    const filas = resultadosFinalFiltrados || [];
+    const t = filas.reduce((s, f) => ({
+      totalHoras: s.totalHoras + (f.calculo.totalHoras || 0),
+      descuentoCobros: s.descuentoCobros + (f.calculo.descuentoCobros || 0),
+      ajustes: s.ajustes + (f.calculo.salarioMinimoGarantizado ? 0 : (f.calculo.ajusteValor || 0)),
+      ayudaSalarioMinimo: s.ayudaSalarioMinimo + (f.calculo.salarioMinimoGarantizado ? (f.calculo.ayudaSalarioMinimo || 0) : 0),
+      neto: s.neto + f.calculo.netoAPagar,
+      cesantias: s.cesantias + f.calculo.cesantiasPeriodo,
+      intereses: s.intereses + f.calculo.interesesPeriodo,
+      prima: s.prima + f.calculo.primaPeriodo,
+      vacaciones: s.vacaciones + f.calculo.vacacionesPeriodo,
+    }), { totalHoras: 0, descuentoCobros: 0, ajustes: 0, ayudaSalarioMinimo: 0, neto: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 });
+    const encabezado = ["Nombre", "Días sin justificar", "Días trabajados", "Producción real", "Horas", "Total Horas", "Descuento cobros Bodega", "Ajuste manual", "Ayuda salario mínimo", "Neto a pagar", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)"];
+    const filasHoja = filas.map((f) => [
+      f.trabajador.nombre, f.calculo.diasInasistencia, f.calculo.diasTrabajados,
+      f.calculo.pagoPorDia ? f.calculo.pagoDias : f.calculo.produccionReal,
+      f.calculo.horasCant || 0, f.calculo.totalHoras || 0, f.calculo.descuentoCobros,
+      f.calculo.salarioMinimoGarantizado ? 0 : (f.calculo.ajusteValor || 0),
+      f.calculo.salarioMinimoGarantizado ? (f.calculo.ayudaSalarioMinimo || 0) : 0,
+      f.calculo.netoAPagar, f.calculo.cesantiasPeriodo, f.calculo.interesesPeriodo, f.calculo.primaPeriodo, f.calculo.vacacionesPeriodo,
+    ]);
+    const filaTotal = ["TOTAL", "", "", "", "", t.totalHoras, t.descuentoCobros, t.ajustes, t.ayudaSalarioMinimo, t.neto, t.cesantias, t.intereses, t.prima, t.vacaciones];
+    await descargarExcel(`Nomina_Destajo_${periodoId}.xlsx`, "Nómina Destajo", [[`NÓMINA DESTAJO — QUINCENA ${periodoId}`], [], encabezado, ...filasHoja, [], filaTotal]);
+  }
 
   return (
     <div>
@@ -6831,14 +6981,17 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
             <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
             <KPI icon="🏖️" label="Vacaciones (provisión)" value={fmtMoney(totales.vacaciones)} color={C.amber} bg={C.amberBg} />
           </div>
-          <div style={{ position: "relative", maxWidth: 280, marginBottom: 12 }}>
-            <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: C.slate, pointerEvents: "none" }}>🔍</span>
-            <input
-              value={busqueda}
-              onChange={(e) => setBusqueda(e.target.value)}
-              placeholder="Buscar trabajador..."
-              style={{ width: "100%", padding: "9px 12px 9px 30px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", outline: "none" }}
-            />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+            <div style={{ position: "relative", maxWidth: 280, flex: 1, minWidth: 220 }}>
+              <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: C.slate, pointerEvents: "none" }}>🔍</span>
+              <input
+                value={busqueda}
+                onChange={(e) => setBusqueda(e.target.value)}
+                placeholder="Buscar trabajador..."
+                style={{ width: "100%", padding: "9px 12px 9px 30px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", outline: "none" }}
+              />
+            </div>
+            <Btn variant="secondary" small onClick={exportarExcel} disabled={!resultadosFinalFiltrados.length}>⬇ Exportar a Excel</Btn>
           </div>
           <Tabla
             vacio="Sin resultados."
@@ -7077,6 +7230,16 @@ function HistorialDestajoView({ liquidaciones, trabajadores }) {
     const trabajador = (trabajadores || []).find((t) => t.id === l.trabajadorId);
     exportReciboLiquidacionHTML({ tipoNomina: "Destajo", trabajador, liquidacion: l });
   }
+  async function exportarExcel() {
+    const encabezado = ["Período", "Nombre", "Días sin justificar", "Días trabajados", "Descuento cobros Bodega", "Neto a pagar (producción)", "Cesantías (prov.)", "Intereses cesantías", "Prima (prov.)", "Vacaciones (prov.)", "Confirmada"];
+    const filasHoja = filas.map((f) => [
+      f.periodoId, f.nombre, f.diasInasistencia || 0, f.diasTrabajados == null ? "" : f.diasTrabajados,
+      f.descuentoCobros || 0, f.netoAPagar, f.cesantiasPeriodo, f.interesesPeriodo, f.primaPeriodo, f.vacacionesPeriodo,
+      f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : "",
+    ]);
+    const filaTotal = ["TOTAL", "", "", "", totales.descuentoCobros, totales.neto, totales.cesantias, totales.intereses, totales.prima, totales.vacaciones, ""];
+    await descargarExcel(`Historial_Destajo${periodoFiltro ? "_" + periodoFiltro : ""}.xlsx`, "Historial Destajo", [["HISTORIAL NÓMINA DESTAJO"], [], encabezado, ...filasHoja, [], filaTotal]);
+  }
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
@@ -7088,10 +7251,13 @@ function HistorialDestajoView({ liquidaciones, trabajadores }) {
         </div>
       ) : (
         <>
-          <div style={{ marginBottom: 16, maxWidth: 260 }}>
-            <Field label="Filtrar por período">
-              <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
-            </Field>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+            <div style={{ maxWidth: 260 }}>
+              <Field label="Filtrar por período">
+                <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos.map((p) => ({ value: p, label: p }))} placeholder="Todos los períodos" />
+              </Field>
+            </div>
+            <Btn variant="secondary" small onClick={exportarExcel} disabled={!filas.length}>⬇ Exportar a Excel</Btn>
           </div>
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
             <KPI icon="💵" label="Neto pagado (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
