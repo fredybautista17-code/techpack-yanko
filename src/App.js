@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import ModuloCorte from "./modulo-corte";
 import ModuloContabilidad from "./modulo-contabilidad";
 import ModuloPlaneacion, { MiDiaStandalone, ProgramadorProcesosStandalone, AreasStandalone, MiDiaNominaStandalone } from "./modulo-planeacion";
+import { FinancieraStandalone } from "./modulo-financiera";
 import ModuloPlanta from "./modulo-planta";
 import ModuloBodega from "./modulo-bodega";
 import ModuloNomina from "./modulo-nomina";
@@ -8962,6 +8963,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     { area: "🎯 KPIs", items: [["kpis", "KPIs"]] },
     { area: "📋 Informes", items: [["informes", "Informes"]] },
     { area: "🗂️ Áreas", items: [["areas_centro_costo", "Centro de Costo"], ["areas_estadisticas", "Estadísticas"], ["areas_reclamos", "Reclamos"], ["areas_programador", "Programador"]] },
+    { area: "💰 Financiera", items: [["financiera", "Financiera"]] },
   ];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["notificaciones", "🔔 Notificaciones"], ["papelera", "🗑 Papelera"], ["busint_test", "🔌 Busint (prueba)"]];
   const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", grupo: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
@@ -13121,6 +13123,12 @@ function AppInner() {
   const canAccessAreasReclamos = moduloVisible(userRoleData, "areas_reclamos", currentUser?.isAdmin);
   const canAccessAreasProgramador = moduloVisible(userRoleData, "areas_programador", currentUser?.isAdmin);
   const canAccessAreas = canAccessAreasCentroCosto || canAccessAreasEstadisticas || canAccessAreasReclamos || canAccessAreasProgramador;
+  // "Financiera" -- módulo nuevo de nivel superior (2026-09-19, pedido
+  // explícito de Fredy): cuánto hay que pagar y cuánta provisión (seguridad
+  // social + prestaciones sociales) hay que tener, juntando las
+  // liquidaciones YA CONFIRMADAS de las 4 nóminas. Ver FinancieraStandalone
+  // en modulo-financiera.jsx.
+  const canAccessFinanciera = moduloVisible(userRoleData, "financiera", currentUser?.isAdmin);
   // "admin_diseno" es un permiso aparte del admin general: da entrada al panel
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
@@ -13205,6 +13213,9 @@ function AppInner() {
     ...(canAccessAreas
       ? [{ id: "areas_internas_area", icon: "🗂️", label: "Áreas", items: [{ id: "areas_internas_area", icon: "🗂️", label: "Módulo Áreas" }] }]
       : []),
+    ...(canAccessFinanciera
+      ? [{ id: "financiera_area", icon: "💰", label: "Financiera", items: [{ id: "financiera_area", icon: "💰", label: "Módulo Financiera" }] }]
+      : []),
   ];
   const [areaAbierta, setAreaAbierta] = useState("diseno");
   function isViewActive(itemId) {
@@ -13222,6 +13233,7 @@ function AppInner() {
     if (itemId === "nomina_area") return moduloActivo === "nomina";
     if (itemId === "informes_area") return moduloActivo === "informes";
     if (itemId === "areas_internas_area") return moduloActivo === "areas_internas";
+    if (itemId === "financiera_area") return moduloActivo === "financiera";
     return view === itemId;
   }
   function navClick(itemId) {
@@ -13233,6 +13245,7 @@ function AppInner() {
     if (itemId === "nomina_area") { setModuloActivo("nomina"); return; }
     if (itemId === "informes_area") { setModuloActivo("informes"); return; }
     if (itemId === "areas_internas_area") { setModuloActivo("areas_internas"); return; }
+    if (itemId === "financiera_area") { setModuloActivo("financiera"); return; }
     setView(itemId);
   }
   // "Planeador puro": solo tiene Corte y NINGUNA otra sección de Diseño (ni
@@ -13313,6 +13326,9 @@ function AppInner() {
   }
   if (moduloActivo === "areas_internas") {
     return <AreasStandalone currentUser={currentUser} puedeCentroCosto={canAccessAreasCentroCosto} puedeEstadisticas={canAccessAreasEstadisticas} puedeReclamos={canAccessAreasReclamos} puedeProgramador={canAccessAreasProgramador} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+  }
+  if (moduloActivo === "financiera") {
+    return <FinancieraStandalone currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   return (
     <div style={{ minHeight: "100vh", background: T.canvas, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,sans-serif" }}>
