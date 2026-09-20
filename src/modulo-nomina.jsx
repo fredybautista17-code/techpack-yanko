@@ -7172,17 +7172,38 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
 // calcularLiquidacionDestajo/ResumenSemanalView. Vive en Novedades, junto
 // a Deducciones.
 function parseExcelCausacionManual(filasArchivo) {
-  const encabezado = (filasArchivo[0] || []).map((h) => normalizarNombreParaComparar(h));
-  let colCedula = encabezado.findIndex((h) => h.includes("CEDULA"));
-  let colSueldo = encabezado.findIndex((h) => h.includes("SUELDO") || h.includes("VALOR") || h.includes("BASE"));
-  const empiezaEn = colCedula >= 0 || colSueldo >= 0 ? 1 : 0;
+  // (2026-09-20, corregido a pedido de Fredy) Antes asumia que el
+  // encabezado siempre estaba en la fila 0 -- pero la plantilla que se
+  // descarga trae un titulo y una fila en blanco ANTES del encabezado
+  // real, asi que terminaba leyendo el titulo como si fuera un
+  // trabajador y, al no reconocer ninguna columna, caia al reemplazo de
+  // emergencia (columna A = Cedula, columna B = Valor) -- pero la
+  // columna B de la plantilla es "Nombre", no el valor, por eso salia
+  // siempre $0. Ahora busca la fila de encabezado donde sea que este
+  // (revisa las primeras 10 filas) y reconoce "Producción real" como la
+  // columna del valor, no solo "Sueldo"/"Valor"/"Base".
+  let filaEncabezadoIdx = -1;
+  let colCedula = -1;
+  let colValor = -1;
+  for (let i = 0; i < Math.min(filasArchivo.length, 10); i++) {
+    const fila = (filasArchivo[i] || []).map((h) => normalizarNombreParaComparar(h));
+    const cCedula = fila.findIndex((h) => h.includes("CEDULA"));
+    const cValor = fila.findIndex((h) => h.includes("PRODUCCION") || h.includes("SUELDO") || h.includes("VALOR") || h.includes("BASE"));
+    if (cCedula >= 0 || cValor >= 0) {
+      filaEncabezadoIdx = i;
+      colCedula = cCedula;
+      colValor = cValor;
+      break;
+    }
+  }
+  const empiezaEn = filaEncabezadoIdx >= 0 ? filaEncabezadoIdx + 1 : 0;
   if (colCedula < 0) colCedula = 0;
-  if (colSueldo < 0) colSueldo = 1;
+  if (colValor < 0) colValor = 1;
   const out = [];
   for (let i = empiezaEn; i < filasArchivo.length; i++) {
     const fila = filasArchivo[i] || [];
     const cedula = String(fila[colCedula] ?? "").trim();
-    const valor = Number(fila[colSueldo]) || 0;
+    const valor = Number(fila[colValor]) || 0;
     if (!cedula) continue;
     out.push({ cedula, valor });
   }
