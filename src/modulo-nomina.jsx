@@ -1822,6 +1822,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     salarioMinimoGarantizado: trabajador?.salarioMinimoGarantizado ?? false,
     pagoPorDia: trabajador?.pagoPorDia ?? false,
     valorDia: trabajador?.valorDia ?? "",
+    minimoGarantizadoCausacion: trabajador?.minimoGarantizadoCausacion ?? false,
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   // (2026-09-18, a pedido de Fredy) "Salario mínimo garantizado" y "Pagar
@@ -1882,6 +1883,7 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       salarioMinimoGarantizado: !!form.salarioMinimoGarantizado,
       pagoPorDia: !!form.pagoPorDia,
       valorDia: Number(form.valorDia) || 0,
+      minimoGarantizadoCausacion: !!form.minimoGarantizadoCausacion,
     });
     onClose();
   }
@@ -2001,6 +2003,19 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
           </Field>
           <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
             Define la tasa de ARL que paga la empresa por esta persona (según el riesgo de su labor) -- la necesita Nómina Fiscal para calcular cuánto se debe pagar.
+          </div>
+        </>
+      )}
+      {(form.tipoNomina === "Fiscal" || form.tipoNomina === "Fiscal Destajo") && (
+        <>
+          <Field label="Mínimo garantizado por causación">
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input type="checkbox" id="minimoGarantizadoCausacion" checked={!!form.minimoGarantizadoCausacion} onChange={(e) => set("minimoGarantizadoCausacion")(e.target.checked)} />
+              <label htmlFor="minimoGarantizadoCausacion" style={{ fontSize: 12.5, color: C.ink, cursor: "pointer" }}>Compararle el mínimo contra lo que causó (Causación Manual)</label>
+            </div>
+          </Field>
+          <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+            (2026-09-20, a pedido de Fredy) Con esto marcado, cuando esta persona tenga un valor cargado en Causación Manual esa quincena, se compara contra el salario mínimo legal de la quincena (SMMLV ÷ 2): si causó más, la diferencia se le paga de más como Bonificación; si causó menos, se le sigue pagando su sueldo Fiscal completo (nada le cambia) y la diferencia queda solo como Ayuda, de referencia para costeo. Sin Causación Manual cargada esa quincena, su liquidación sigue exactamente igual que siempre. Es un mecanismo distinto al "Salario mínimo garantizado" de Destajo (ese paga siempre fijo, sin bonificación cuando produce de más -- este sí paga de más).
           </div>
         </>
       )}
@@ -5026,7 +5041,7 @@ function calcularCesantiasDelAnio(trabajador, anio, ausencias, areasNomina = [],
   const intereses = (cesantias * dias * TASA_INTERES_CESANTIAS_ANUAL) / 360;
   return { dias, cesantias, intereses, total: cesantias + intereses, incompleto: hastaTope < hastaAnio };
 }
-function calcularLiquidacionFiscal(trabajador, diasInasistencia, diasSinAuxilio = 0, diasSinSueldo = 0) {
+function calcularLiquidacionFiscal(trabajador, diasInasistencia, diasSinAuxilio = 0, diasSinSueldo = 0, causacionManualValor = null) {
   const sueldo = Number(trabajador.sueldo) || 0;
   const auxilioMensual = sueldo > TOPE_SUELDO_PARA_AUXILIO ? 0 : (Number(trabajador.auxilioTransporte) || 0);
   // (2026-09-12) diasSinSueldo son los dias de Licencia No Remunerada --
@@ -5049,10 +5064,26 @@ function calcularLiquidacionFiscal(trabajador, diasInasistencia, diasSinAuxilio 
   const interesesPeriodo = cesantiasPeriodo * TASA_INTERES_CESANTIAS_ANUAL;
   const primaPeriodo = baseConAuxilio * TASA_PRIMA_MENSUAL;
   const vacacionesPeriodo = sueldoQuincena * TASA_VACACIONES_MENSUAL;
+  // (2026-09-20, a pedido de Fredy) "Mínimo garantizado por causación":
+  // solo aplica si la ficha tiene el check Y hay un valor cargado en
+  // Causación Manual esa quincena (si no hay causación cargada, esta
+  // liquidacion queda exactamente igual que siempre). Se compara lo
+  // causado contra el salario minimo LEGAL de la quincena (SMMLV_2026,
+  // no el campo "Sueldo" de la ficha) -- a diferencia del "Salario minimo
+  // garantizado" de Destajo, aca SI hay bonificacion cuando causa de mas.
+  let causacionManual = false, causacionManualValorNum = 0, bonificacionCausacion = 0, ayudaCausacion = 0;
+  if (trabajador.minimoGarantizadoCausacion && causacionManualValor != null) {
+    causacionManual = true;
+    causacionManualValorNum = Number(causacionManualValor) || 0;
+    const pagoFijoMinimoCausacion = SMMLV_2026 / 2;
+    bonificacionCausacion = Math.max(0, causacionManualValorNum - pagoFijoMinimoCausacion);
+    ayudaCausacion = Math.max(0, pagoFijoMinimoCausacion - causacionManualValorNum);
+  }
   return {
     diasInasistencia, diasSinAuxilio, diasSinSueldo, descuentoSueldo, descuentoAuxilio, sueldoQuincena, auxilioQuincena,
     epsTrabajador, pensionTrabajador, pensionEmpleador, arlEmpleador, cajaCompensacionEmpleador, epsEmpleador,
-    netoAPagar: sueldoQuincena + auxilioQuincena - epsTrabajador - pensionTrabajador,
+    causacionManual, causacionManualValor: causacionManualValorNum, bonificacionCausacion, ayudaCausacion,
+    netoAPagar: sueldoQuincena + auxilioQuincena - epsTrabajador - pensionTrabajador + bonificacionCausacion,
     cesantiasPeriodo, interesesPeriodo, primaPeriodo, vacacionesPeriodo,
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
@@ -5107,7 +5138,7 @@ function DetalleDiasSinJustificarModal({ trabajador, fechas, ausencias, trabajad
     </Modal>
   );
 }
-function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, areasNomina, horas, deduccionesTrabajador }) {
+function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, areasNomina, horas, deduccionesTrabajador, causacionManual }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -5134,7 +5165,8 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       const turno = (turnos || []).find((tu) => tu.id === t.turnoId);
       const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, inicio, fin);
       const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin);
-      const base = calcularLiquidacionFiscal(t, dias, diasSinAuxilio, diasSinSueldo);
+      const causacionDoc = (causacionManual || []).find((c) => c.id === `${t.id}__${periodoId}`);
+      const base = calcularLiquidacionFiscal(t, dias, diasSinAuxilio, diasSinSueldo, causacionDoc ? causacionDoc.valor : null);
       // (2026-09-18, a pedido de Fredy) Horas Sueltas (Registrar
       // Producción -> Horas) de la quincena -- se suman al Neto a Pagar,
       // igual que ya hace Resumen Semanal / Cierre de Quincena.
@@ -5187,7 +5219,9 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
     intereses: s.intereses + r.calculo.interesesPeriodo,
     prima: s.prima + r.calculo.primaPeriodo,
     vacaciones: s.vacaciones + r.calculo.vacacionesPeriodo,
-  }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0, totalHoras: 0, epsTrabajador: 0, pensionTrabajador: 0, pensionEmpleador: 0, arlEmpleador: 0, cajaCompensacionEmpleador: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
+    bonificacionCausacion: s.bonificacionCausacion + (r.calculo.bonificacionCausacion || 0),
+    ayudaCausacion: s.ayudaCausacion + (r.calculo.ayudaCausacion || 0),
+  }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0, totalHoras: 0, epsTrabajador: 0, pensionTrabajador: 0, pensionEmpleador: 0, arlEmpleador: 0, cajaCompensacionEmpleador: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0, bonificacionCausacion: 0, ayudaCausacion: 0 }) : null;
   const busquedaNorm = normalizarNombreParaComparar(busqueda);
   const resultadosFiltrados = resultados && busquedaNorm ? resultados.filter((f) => normalizarNombreParaComparar(f.trabajador.nombre).includes(busquedaNorm)) : resultados;
   async function exportarExcel() {
@@ -5280,6 +5314,12 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
             <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
             <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
             <KPI icon="🏖️" label="Vacaciones (provisión)" value={fmtMoney(totales.vacaciones)} color={C.amber} bg={C.amberBg} />
+            {(totales.bonificacionCausacion > 0 || totales.ayudaCausacion > 0) && (
+              <>
+                <KPI icon="🎯" label="Bonificación (causación)" value={fmtMoney(totales.bonificacionCausacion)} color={C.green} bg={C.greenBg} />
+                <KPI icon="🤝" label="Ayuda (causación, no se paga)" value={fmtMoney(totales.ayudaCausacion)} color={C.violet} bg={C.violetBg} />
+              </>
+            )}
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
             <div style={{ position: "relative", maxWidth: 280, flex: 1, minWidth: 220 }}>
@@ -5296,7 +5336,9 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
           <Tabla
             vacio="Sin resultados."
             columnas={[
-              { key: "nombre", label: "Nombre", render: (f) => f.trabajador.nombre },
+              { key: "nombre", label: "Nombre", render: (f) => (
+                <span>{f.trabajador.nombre}{f.calculo.causacionManual && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.violetBg, color: C.violet }} title="Esta quincena se comparó su Causación Manual contra el salario mínimo">🖊 Causación</span>}</span>
+              ) },
               { key: "claseRiesgoARL", label: "Clase ARL", render: (f) => f.trabajador.claseRiesgoARL ? labelClaseARL(f.trabajador.claseRiesgoARL) : <span style={{ color: C.slate }}>Sin asignar</span> },
               { key: "dias", label: "Días sin justificar", align: "right", render: (f) => (
                 <span onClick={() => setDetalleFaltas({ trabajador: f.trabajador, fechas: f.calculo.fechasFalta || [] })} style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green, cursor: "pointer", textDecoration: "underline" }} title="Ver el detalle de las fechas">{f.calculo.diasInasistencia}</span>
@@ -5321,6 +5363,12 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
               ) : <span style={{ color: C.slate }}>—</span> },
               { key: "descuentoDeducciones", label: "Descuento seguros", align: "right", render: (f) => f.calculo.descuentoDeducciones > 0 ? (
                 <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.deduccionesDetalle || []).map((d) => `${d.conceptoNombre || "Deducción"}: ${fmtMoney(d.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoDeducciones)}</span>
+              ) : <span style={{ color: C.slate }}>—</span> },
+              { key: "causacionManualValor", label: "Producción/Causación", align: "right", render: (f) => f.calculo.causacionManual ? fmtMoney(f.calculo.causacionManualValor) : <span style={{ color: C.slate }}>—</span> },
+              { key: "bonoAyudaCausacion", label: "Bonificación / Ayuda", align: "right", render: (f) => f.calculo.bonificacionCausacion > 0 ? (
+                <span style={{ color: C.green, fontWeight: 700 }}>+{fmtMoney(f.calculo.bonificacionCausacion)}</span>
+              ) : f.calculo.ayudaCausacion > 0 ? (
+                <span style={{ color: C.violet, fontWeight: 700 }} title="No se le paga de más ni de menos -- es solo referencia de costeo">Ayuda {fmtMoney(f.calculo.ayudaCausacion)}</span>
               ) : <span style={{ color: C.slate }}>—</span> },
               { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
               { key: "pensionEmpleador", label: "Pensión empresa (12%)", align: "right", render: (f) => fmtMoney(f.calculo.pensionEmpleador) },
@@ -5444,7 +5492,7 @@ function HistorialFiscalView({ liquidaciones, trabajadores }) {
     </div>
   );
 }
-function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia, diasSinAuxilio = 0, diasSinSueldo = 0) {
+function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia, diasSinAuxilio = 0, diasSinSueldo = 0, causacionManualValor = null) {
   const sueldo = Number(trabajador.sueldo) || 0;
   const auxilio = Number(trabajador.auxilioTransporte) || 0;
   // (2026-09-12) Mismo criterio que calcularLiquidacionFiscal: diasSinSueldo
@@ -5460,9 +5508,20 @@ function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia, diasSinA
   const interesesPeriodo = saldoCesantiasInicio * (TASA_INTERES_CESANTIAS_ANUAL / 24);
   const primaPeriodo = baseParafiscales * TASA_PRIMA_MENSUAL;
   const vacacionesPeriodo = baseParafiscales * TASA_VACACIONES_MENSUAL;
+  // (2026-09-20, a pedido de Fredy) Mismo mecanismo de "Mínimo garantizado
+  // por causación" que calcularLiquidacionFiscal -- ver comentario ahí.
+  let causacionManual = false, causacionManualValorNum = 0, bonificacionCausacion = 0, ayudaCausacion = 0;
+  if (trabajador.minimoGarantizadoCausacion && causacionManualValor != null) {
+    causacionManual = true;
+    causacionManualValorNum = Number(causacionManualValor) || 0;
+    const pagoFijoMinimoCausacion = SMMLV_2026 / 2;
+    bonificacionCausacion = Math.max(0, causacionManualValorNum - pagoFijoMinimoCausacion);
+    ayudaCausacion = Math.max(0, pagoFijoMinimoCausacion - causacionManualValorNum);
+  }
   return {
     diasInasistencia, diasSinAuxilio, diasSinSueldo, descuentoSueldo, descuentoAuxilio, sueldoQuincena, auxilioQuincena,
-    netoAPagar: sueldoQuincena + auxilioQuincena,
+    causacionManual, causacionManualValor: causacionManualValorNum, bonificacionCausacion, ayudaCausacion,
+    netoAPagar: sueldoQuincena + auxilioQuincena + bonificacionCausacion,
     cesantiasPeriodo, interesesPeriodo, primaPeriodo, vacacionesPeriodo,
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
@@ -5899,7 +5958,7 @@ function DeduccionesFijasView({ trabajadores, conceptos, deducciones, isAdmin, o
     </div>
   );
 }
-function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, horas, deduccionesTrabajador }) {
+function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, horas, deduccionesTrabajador, causacionManual }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -5927,7 +5986,8 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
       const turno = (turnos || []).find((tu) => tu.id === t.turnoId);
       const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, inicio, fin);
       const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin);
-      const base = calcularLiquidacionFiscalDestajo(t, dias, diasSinAuxilio, diasSinSueldo);
+      const causacionDoc = (causacionManual || []).find((c) => c.id === `${t.id}__${periodoId}`);
+      const base = calcularLiquidacionFiscalDestajo(t, dias, diasSinAuxilio, diasSinSueldo, causacionDoc ? causacionDoc.valor : null);
       // (2026-09-18, a pedido de Fredy) Horas Sueltas de la quincena --
       // igual que en Nómina Fiscal, para que el total coincida con Resumen
       // Semanal / Cierre de Quincena.
@@ -5975,7 +6035,9 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
     intereses: s.intereses + r.calculo.interesesPeriodo,
     prima: s.prima + r.calculo.primaPeriodo,
     vacaciones: s.vacaciones + r.calculo.vacacionesPeriodo,
-  }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0, totalHoras: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
+    bonificacionCausacion: s.bonificacionCausacion + (r.calculo.bonificacionCausacion || 0),
+    ayudaCausacion: s.ayudaCausacion + (r.calculo.ayudaCausacion || 0),
+  }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0, totalHoras: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0, bonificacionCausacion: 0, ayudaCausacion: 0 }) : null;
   const busquedaNorm = normalizarNombreParaComparar(busqueda);
   const resultadosFiltrados = resultados && busquedaNorm ? resultados.filter((f) => normalizarNombreParaComparar(f.trabajador.nombre).includes(busquedaNorm)) : resultados;
   async function exportarExcel() {
@@ -6050,6 +6112,12 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
             <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
             <KPI icon="🎁" label="Prima (provisión)" value={fmtMoney(totales.prima)} color={C.blue} bg={C.blueBg} />
             <KPI icon="🏖️" label="Vacaciones (provisión)" value={fmtMoney(totales.vacaciones)} color={C.amber} bg={C.amberBg} />
+            {(totales.bonificacionCausacion > 0 || totales.ayudaCausacion > 0) && (
+              <>
+                <KPI icon="🎯" label="Bonificación (causación)" value={fmtMoney(totales.bonificacionCausacion)} color={C.green} bg={C.greenBg} />
+                <KPI icon="🤝" label="Ayuda (causación, no se paga)" value={fmtMoney(totales.ayudaCausacion)} color={C.violet} bg={C.violetBg} />
+              </>
+            )}
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
             <div style={{ position: "relative", maxWidth: 280, flex: 1, minWidth: 220 }}>
@@ -6066,7 +6134,9 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
           <Tabla
             vacio="Sin resultados."
             columnas={[
-              { key: "nombre", label: "Nombre", render: (f) => f.trabajador.nombre },
+              { key: "nombre", label: "Nombre", render: (f) => (
+                <span>{f.trabajador.nombre}{f.calculo.causacionManual && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.violetBg, color: C.violet }} title="Esta quincena se comparó su Causación Manual contra el salario mínimo">🖊 Causación</span>}</span>
+              ) },
               { key: "dias", label: "Días sin justificar", align: "right", render: (f) => (
                 <span onClick={() => setDetalleFaltas({ trabajador: f.trabajador, fechas: f.calculo.fechasFalta || [] })} style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green, cursor: "pointer", textDecoration: "underline" }} title="Ver el detalle de las fechas">{f.calculo.diasInasistencia}</span>
               ) },
@@ -6088,6 +6158,12 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
               ) : <span style={{ color: C.slate }}>—</span> },
               { key: "descuentoDeducciones", label: "Descuento seguros", align: "right", render: (f) => f.calculo.descuentoDeducciones > 0 ? (
                 <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.deduccionesDetalle || []).map((d) => `${d.conceptoNombre || "Deducción"}: ${fmtMoney(d.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoDeducciones)}</span>
+              ) : <span style={{ color: C.slate }}>—</span> },
+              { key: "causacionManualValor", label: "Producción/Causación", align: "right", render: (f) => f.calculo.causacionManual ? fmtMoney(f.calculo.causacionManualValor) : <span style={{ color: C.slate }}>—</span> },
+              { key: "bonoAyudaCausacion", label: "Bonificación / Ayuda", align: "right", render: (f) => f.calculo.bonificacionCausacion > 0 ? (
+                <span style={{ color: C.green, fontWeight: 700 }}>+{fmtMoney(f.calculo.bonificacionCausacion)}</span>
+              ) : f.calculo.ayudaCausacion > 0 ? (
+                <span style={{ color: C.violet, fontWeight: 700 }} title="No se le paga de más ni de menos -- es solo referencia de costeo">Ayuda {fmtMoney(f.calculo.ayudaCausacion)}</span>
               ) : <span style={{ color: C.slate }}>—</span> },
               { key: "netoAPagar", label: "Neto a pagar", align: "right", render: (f) => <strong>{fmtMoney(f.calculo.netoAPagar)}</strong> },
               { key: "cesantiasPeriodo", label: "Cesantías (prov.)", align: "right", render: (f) => fmtMoney(f.calculo.cesantiasPeriodo) },
@@ -7140,7 +7216,7 @@ function CargarCausacionManualModal({ trabajadoresElegibles, causacionManual, pe
         const existente = (causacionManual || []).find((c) => c.id === `${trabajador.id}__${periodoId}`);
         encontradas.push({ trabajador, cedula: f.cedula, valorAnterior: existente ? (Number(existente.valor) || 0) : null, valorNuevo: f.valor });
       }
-      if (!encontradas.length) { setError("No se encontró ninguna cédula del archivo entre los trabajadores elegibles (tipo de nómina Destajo)."); return; }
+      if (!encontradas.length) { setError("No se encontró ninguna cédula del archivo entre los trabajadores elegibles de esta área."); return; }
       setPreview({ filas: encontradas, sinCoincidencia });
     } catch (err) {
       setError(err?.message || String(err));
@@ -7167,7 +7243,7 @@ function CargarCausacionManualModal({ trabajadoresElegibles, causacionManual, pe
   return (
     <Modal title={`Cargar Causación Manual — Quincena ${periodoId}`} onClose={onClose} width={640}>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 14 }}>
-        Excel con dos columnas: <strong>Cédula</strong> y <strong>Producción real</strong> (lo que se les paga esa quincena, ya sin dividir, en vez del $0 de Registrar Producción). Aplica a cualquier trabajador con tipo de nómina Destajo -- las demás cédulas del archivo se ignoran.
+        Excel con dos columnas: <strong>Cédula</strong> y <strong>Producción real</strong> (lo que causó/produjo esa quincena, ya sin dividir). Aplica a los trabajadores elegibles del área seleccionada (Destajo, Fiscal o Fiscal Destajo) -- las demás cédulas del archivo se ignoran.
       </div>
       <div onClick={() => fileRef.current.click()} style={{ border: `2px dashed ${C.blue}`, borderRadius: 12, padding: 28, textAlign: "center", cursor: "pointer", background: C.blueBg, marginBottom: 16 }}>
         <div style={{ fontSize: 30, marginBottom: 6 }}>📂</div>
@@ -7192,7 +7268,7 @@ function CargarCausacionManualModal({ trabajadoresElegibles, causacionManual, pe
           </div>
           {preview.sinCoincidencia.length > 0 && (
             <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
-              {preview.sinCoincidencia.length} cédula(s) del archivo no corresponden a ningún trabajador con tipo de nómina Destajo -- se ignoran: {preview.sinCoincidencia.join(", ")}.
+              {preview.sinCoincidencia.length} cédula(s) del archivo no corresponden a ningún trabajador elegible de esta área -- se ignoran: {preview.sinCoincidencia.join(", ")}.
             </div>
           )}
         </>
@@ -7206,16 +7282,23 @@ function CargarCausacionManualModal({ trabajadoresElegibles, causacionManual, pe
     </Modal>
   );
 }
-function CausacionManualView({ trabajadores, causacionManual, isAdmin, puedeAjustarDestajo, onGuardar, onBorrar }) {
+function CausacionManualView({ trabajadores, causacionManual, isAdmin, puedeAjustarDestajo, onGuardar, onBorrar, areasNomina }) {
   const puedeGestionar = isAdmin || !!puedeAjustarDestajo;
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
   const [quincena, setQuincena] = useState(hoy.getDate() <= 15 ? "1" : "2");
+  // (2026-09-20, a pedido de Fredy) Antes solo dejaba elegir entre los
+  // trabajadores Destajo -- ahora se elige por Área Interna (ej. Maquila)
+  // y trae a todos los elegibles de esa área sin importar el tipo de
+  // nómina, porque en una misma área hay gente Destajo, Fiscal y Fiscal
+  // Destajo a quien igual hay que registrarle cuánto causó.
+  const [areaFiltro, setAreaFiltro] = useState("");
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const [modal, setModal] = useState(false);
   const [confirmBorrar, setConfirmBorrar] = useState(null);
-  const trabajadoresElegibles = trabajadores.filter((t) => t.tipoNomina === "Destajo" && t.activo !== false);
+  const TIPOS_ELEGIBLES_CAUSACION = ["Destajo", "Fiscal", "Fiscal Destajo"];
+  const trabajadoresElegibles = trabajadores.filter((t) => TIPOS_ELEGIBLES_CAUSACION.includes(t.tipoNomina) && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro));
   const cargadosDeEstaQuincena = (causacionManual || []).filter((c) => c.periodoId === periodoId);
   async function descargarPlantilla() {
     const filas = trabajadoresElegibles.map((t) => {
@@ -7248,9 +7331,12 @@ function CausacionManualView({ trabajadores, causacionManual, isAdmin, puedeAjus
         </Modal>
       )}
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
-        Para trabajadores Destajo que no tienen producción medida (ej. Maquila, que no tiene precios cargados para sus operaciones): acá cargas cuánto produjeron esa quincena en vez de que salga en $0. El valor reemplaza la "Producción real" en Nómina Destajo y Cierre de Quincena -- las deducciones de Bodega y un Ajuste manual se le siguen aplicando encima, igual que siempre.
+        Para trabajadores que no tienen producción medida (ej. Maquila, que no tiene precios cargados para sus operaciones), sin importar si son Destajo, Fiscal o Fiscal Destajo: acá cargas cuánto causaron/produjeron esa quincena. Elige el área para ver a sus trabajadores elegibles. En Destajo, el valor reemplaza la "Producción real" en Nómina Destajo y Cierre de Quincena. En Fiscal/Fiscal Destajo solo tiene efecto en quien tenga marcado "Mínimo garantizado por causación" en su ficha -- a los demás les queda guardado como dato de referencia, sin afectar su pago.
       </div>
       <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Área">
+          <FSel value={areaFiltro} onChange={setAreaFiltro} options={(areasNomina || []).map((a) => a.nombre)} placeholder="Todas las áreas" />
+        </Field>
         <Field label="Año"><FInput type="number" value={anio} onChange={setAnio} /></Field>
         <Field label="Mes">
           <FSel value={mes} onChange={setMes} options={Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1).padStart(2, "0"), label: String(i + 1).padStart(2, "0") }))} />
@@ -7267,7 +7353,7 @@ function CausacionManualView({ trabajadores, causacionManual, isAdmin, puedeAjus
       </div>
       {trabajadoresElegibles.length === 0 && (
         <div style={{ padding: "12px 16px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
-          Nadie tiene hoy tipo de nómina "Destajo" -- sin eso no hay a quién cargarle una causación manual.
+          {areaFiltro ? `El área "${areaFiltro}" no tiene trabajadores Destajo, Fiscal o Fiscal Destajo activos -- sin eso no hay a quién cargarle una causación manual.` : `Nadie tiene hoy tipo de nómina Destajo, Fiscal o Fiscal Destajo -- sin eso no hay a quién cargarle una causación manual.`}
         </div>
       )}
       <Tabla
@@ -7325,12 +7411,24 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
     ...(liquidacionesPS || []).filter(enPeriodo).map((l) => ({ l, tipoNomina: "Prestación de Servicios" })),
   ].map(({ l, tipoNomina }) => {
     const trabajador = trabajadores.find((t) => t.id === l.trabajadorId);
+    // (2026-09-20, a pedido de Fredy) Producción/Causación + Bonificación/
+    // Ayuda para el detalle por trabajador -- en Destajo ya existían
+    // (produccionReal, ayudaSalarioMinimo, causacionManual); en Fiscal y
+    // Fiscal Destajo son los campos nuevos de "Mínimo garantizado por
+    // causación". Nunca hay bonificación en Destajo (ese mecanismo solo
+    // paga fijo, sin bono).
+    const esDestajo = tipoNomina === "Destajo";
+    const causacionManual = !!l.causacionManual;
+    const causacionValor = esDestajo ? (l.produccionReal ?? null) : (causacionManual ? (l.causacionManualValor ?? 0) : null);
+    const bonificacionCausacion = esDestajo ? 0 : (l.bonificacionCausacion || 0);
+    const ayudaCausacion = esDestajo ? (l.ayudaSalarioMinimo || 0) : (l.ayudaCausacion || 0);
     return {
       id: `${tipoNomina}__${l.id}`,
       nombre: l.nombre || trabajador?.nombre || "—",
       area: trabajador?.area || "Sin asignar",
       empleador: trabajador?.empleador || "Sin asignar",
       tipoNomina,
+      causacionManual, causacionValor, bonificacionCausacion, ayudaCausacion,
       netoAPagar: l.netoAPagar || 0,
       costoTotal: costoTotalLiquidacion(l),
     };
@@ -7345,6 +7443,9 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
         filas: filasArea,
         neto: filasArea.reduce((s, f) => s + f.netoAPagar, 0),
         costo: filasArea.reduce((s, f) => s + f.costoTotal, 0),
+        causado: filasArea.reduce((s, f) => s + (f.causacionValor || 0), 0),
+        bonificacion: filasArea.reduce((s, f) => s + (f.bonificacionCausacion || 0), 0),
+        ayuda: filasArea.reduce((s, f) => s + (f.ayudaCausacion || 0), 0),
         trabajadores: filasArea.length,
         porEmpleador: empleadores.map((emp) => {
           const filasEmp = filasArea.filter((f) => f.empleador === emp);
@@ -7358,6 +7459,9 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
     trabajadores: filas.length,
     neto: filas.reduce((s, f) => s + f.netoAPagar, 0),
     costo: filas.reduce((s, f) => s + f.costoTotal, 0),
+    causado: filas.reduce((s, f) => s + (f.causacionValor || 0), 0),
+    bonificacion: filas.reduce((s, f) => s + (f.bonificacionCausacion || 0), 0),
+    ayuda: filas.reduce((s, f) => s + (f.ayudaCausacion || 0), 0),
   };
   const totalPorEmpleador = [...new Set(filas.map((f) => f.empleador))].sort().map((emp) => ({
     empleador: emp,
@@ -7371,7 +7475,7 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
-        Junta las liquidaciones YA CONFIRMADAS de Nómina Fiscal, Fiscal Destajo, Destajo y Prestación de Servicios del período elegido, agrupadas por Área Interna y por Empleador — para ver cuánto se debe pagar en total y por cada empresa. El Área y Empleador que se muestran son los que tiene HOY cada trabajador.
+        Junta las liquidaciones YA CONFIRMADAS de Nómina Fiscal, Fiscal Destajo, Destajo y Prestación de Servicios del período elegido, agrupadas por Área Interna y por Empleador — para ver cuánto se debe pagar en total y por cada empresa. El Área y Empleador que se muestran son los que tiene HOY cada trabajador. Cuando un trabajador tiene Causación Manual (Destajo) o "Mínimo garantizado por causación" (Fiscal/Fiscal Destajo), también se ve cuánto causó y su Bonificación/Ayuda.
       </div>
       <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
         <Field label="Período">
@@ -7401,6 +7505,9 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
             {totalPorEmpleador.map((e) => (
               <KPI key={e.empleador} icon="🏢" label={`Costo Total ${e.empleador}`} value={fmtMoney(e.costo)} color={C.amber} bg={C.amberBg} />
             ))}
+            {totalGeneral.causado > 0 && <KPI icon="🌾" label="Producción/Causación (total)" value={fmtMoney(totalGeneral.causado)} color={C.blue} bg={C.blueBg} />}
+            {totalGeneral.bonificacion > 0 && <KPI icon="🎯" label="Bonificación (causación)" value={fmtMoney(totalGeneral.bonificacion)} color={C.green} bg={C.greenBg} />}
+            {totalGeneral.ayuda > 0 && <KPI icon="🤝" label="Ayuda (causación, no se paga)" value={fmtMoney(totalGeneral.ayuda)} color={C.violet} bg={C.violetBg} />}
           </div>
 
           {grupos.map((g) => (
@@ -7415,6 +7522,8 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
                   {g.porEmpleador.map((e) => (
                     <span key={e.empleador} style={{ color: C.slate }}>{e.empleador}: <strong style={{ color: C.ink }}>{fmtMoney(e.costo)}</strong></span>
                   ))}
+                  {g.causado > 0 && <span style={{ color: C.blue }}>Causado: <strong>{fmtMoney(g.causado)}</strong></span>}
+                  {g.bonificacion > 0 && <span style={{ color: C.green }}>Bonificación: <strong>{fmtMoney(g.bonificacion)}</strong></span>}
                   <span style={{ color: C.green, fontWeight: 700 }}>Neto: {fmtMoney(g.neto)}</span>
                   <span style={{ color: C.violet, fontWeight: 800 }}>Costo Total: {fmtMoney(g.costo)}</span>
                 </div>
@@ -7423,13 +7532,21 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
                 <Tabla
                   vacio="Sin trabajadores."
                   columnas={[
-                    { key: "nombre", label: "Nombre" },
+                    { key: "nombre", label: "Nombre", render: (f) => (
+                      <span>{f.nombre}{f.causacionManual && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.violetBg, color: C.violet }} title="Causación Manual esta quincena">🖊</span>}</span>
+                    ) },
                     { key: "empleador", label: "Empleador" },
                     { key: "tipoNomina", label: "Tipo Nómina", render: (f) => (
                       <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: f.tipoNomina === "Fiscal Destajo" ? C.violetBg : f.tipoNomina === "Destajo" ? C.amberBg : f.tipoNomina === "Prestación de Servicios" ? C.greenBg : C.blueBg, color: f.tipoNomina === "Fiscal Destajo" ? C.violet : f.tipoNomina === "Destajo" ? C.amber : f.tipoNomina === "Prestación de Servicios" ? C.green : C.blue }}>
                         {f.tipoNomina}
                       </span>
                     ) },
+                    { key: "causacionValor", label: "Producción/Causación", align: "right", render: (f) => f.causacionValor != null ? fmtMoney(f.causacionValor) : <span style={{ color: C.slate }}>—</span> },
+                    { key: "bonoAyuda", label: "Bonificación / Ayuda", align: "right", render: (f) => f.bonificacionCausacion > 0 ? (
+                      <span style={{ color: C.green, fontWeight: 700 }}>+{fmtMoney(f.bonificacionCausacion)}</span>
+                    ) : f.ayudaCausacion > 0 ? (
+                      <span style={{ color: C.violet, fontWeight: 700 }}>Ayuda {fmtMoney(f.ayudaCausacion)}</span>
+                    ) : <span style={{ color: C.slate }}>—</span> },
                     { key: "netoAPagar", label: "Neto a Pagar", align: "right", render: (f) => fmtMoney(f.netoAPagar) },
                     { key: "costoTotal", label: "Costo Total Empresa", align: "right", render: (f) => <strong>{fmtMoney(f.costoTotal)}</strong> },
                   ]}
@@ -11104,16 +11221,16 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "anomalias_huellero" && puedeVerAnomaliasHuellero && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
           {subView === "historial_asistencia_area" && <HistorialAsistenciaAreaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausenciasVisibles} anomalias={anomaliasVisibles} retardos={retardosVisibles} turnos={turnos} />}
-          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} />}
+          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
-          {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} />}
+          {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} />}
           {subView === "historial_fiscal_destajo" && !areaLider && !soloNovedades && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
           {subView === "prestacion_servicios" && !areaLider && !soloNovedades && <NominaPrestacionServicioView trabajadores={trabajadores} liquidaciones={liquidacionesPS} onGuardarLiquidacion={guardarLiquidacionPS} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} deduccionesTrabajador={deduccionesTrabajador} />}
           {subView === "historial_prestacion_servicios" && !areaLider && !soloNovedades && <HistorialPrestacionServicioView liquidaciones={liquidacionesPS} trabajadores={trabajadores} />}
           {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} horas={horas} causacionManual={causacionManual} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
           {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} isAdmin={isAdmin} onBorrarCobroManual={borrarCobroManual} onRevertirCobro={revertirCobroAPendiente} />}
-          {subView === "causacion_manual" && !areaLider && !soloNovedades && <CausacionManualView trabajadores={trabajadores} causacionManual={causacionManual} isAdmin={isAdmin} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} onGuardar={guardarCausacionManual} onBorrar={borrarCausacionManual} />}
+          {subView === "causacion_manual" && !areaLider && !soloNovedades && <CausacionManualView trabajadores={trabajadores} causacionManual={causacionManual} isAdmin={isAdmin} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} onGuardar={guardarCausacionManual} onBorrar={borrarCausacionManual} areasNomina={areasNomina} />}
           {subView === "conceptos_deduccion" && !areaLider && !soloNovedades && <ConceptosDeduccionView conceptos={conceptosDeduccion} deduccionesTrabajador={deduccionesTrabajador} isAdmin={isAdminCatalogos} onSave={guardarConceptoDeduccion} onDelete={borrarConceptoDeduccion} />}
           {subView === "deducciones_fijas" && !areaLider && !soloNovedades && <DeduccionesFijasView trabajadores={trabajadores} conceptos={conceptosDeduccion} deducciones={deduccionesTrabajador} isAdmin={isAdminCatalogos} onGuardar={guardarDeduccionTrabajador} onCambiarEstado={cambiarEstadoDeduccionTrabajador} currentUser={currentUser} />}
           {subView === "historial_lote" && !soloNovedades && <HistorialLoteView produccion={produccion} />}
