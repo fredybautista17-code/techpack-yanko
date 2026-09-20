@@ -4685,6 +4685,31 @@ const TASA_CAJA_COMPENSACION_EMPLEADOR = 0.04;
 const SMMLV_2026 = 1750905;
 const AUXILIO_TRANSPORTE_2026 = 249095;
 const TOPE_SUELDO_PARA_AUXILIO = SMMLV_2026 * 2;
+// (2026-09-19, a pedido de Fredy) Horas Extras -- recargos legales vigentes
+// en Colombia desde el 15 de julio de 2026 (jornada máxima bajó a 42h
+// semanales, Ley 2101 de 2021; el horario nocturno ahora arranca a las
+// 7:00pm en vez de las 9:00pm). Revisar/actualizar estos porcentajes y el
+// divisor si la ley vuelve a cambiar -- no son un valor que Fredy configure
+// en pantalla, así que quedan fijos acá igual que el SMMLV de arriba.
+// Divisor de horas mensuales: 42h/semana × 6 días ÷ 6 días × 30 días = 210h.
+const DIVISOR_HORAS_MES_EXTRA = 210;
+const RECARGOS_HORA_EXTRA = {
+  diurna: { label: "Diurna (6:00am-7:00pm) +25%", factor: 1.25 },
+  nocturna: { label: "Nocturna (7:00pm-6:00am) +75%", factor: 1.75 },
+  dominical_diurna: { label: "Dominical/Festiva diurna +115%", factor: 2.15 },
+  dominical_nocturna: { label: "Dominical/Festiva nocturna +165%", factor: 2.65 },
+};
+// Se calcula SIEMPRE con el Sueldo que tiene hoy la ficha del trabajador
+// (campo "sueldo" en Trabajadores) -- a pedido explícito de Fredy, nunca
+// con la Tarifa/Hora manual que ya usa "Registrar Horas" (Horas Sueltas),
+// que es un concepto aparte y no cambia con esto.
+function calcularHoraExtra(sueldo, tipo, horasCant) {
+  const valorHoraOrdinaria = (Number(sueldo) || 0) / DIVISOR_HORAS_MES_EXTRA;
+  const factor = RECARGOS_HORA_EXTRA[tipo]?.factor || 0;
+  const valorHora = valorHoraOrdinaria * factor;
+  const total = valorHora * (Number(horasCant) || 0);
+  return { valorHoraOrdinaria, factor, valorHora, total };
+}
 // (2026-09-10, "Design B" confirmado por Fredy) Cada Cobro que Bodega
 // registra contra un trabajador (Despachos Generales / Estado de Despacho)
 // queda "pendiente de cobrar" hasta que a ESE trabajador se le calcule y
@@ -6761,7 +6786,7 @@ function calcularLiquidacionDestajo(trabajador, netoProduccion, totalHoras = 0, 
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
 }
-function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, areasNomina, ajustesDestajo, onGuardarAjusteDestajo, puedeAjustarDestajo, horas }) {
+function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, areasNomina, ajustesDestajo, onGuardarAjusteDestajo, puedeAjustarDestajo, horas, causacionManual }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -6789,9 +6814,20 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
 
   function calcular() {
     const filas = personas.map((t) => {
-      const netoProduccion = produccion
-        .filter((p) => p.trabajadorId === t.id && p.fecha >= inicio && p.fecha <= fin)
-        .reduce((s, p) => s + (Number(p.total) || 0), 0);
+      // (2026-09-20, a pedido de Fredy) "Causación Manual" -- si Fredy
+      // cargó un valor para esta quincena de este trabajador (ver
+      // CausacionManualView), ESE valor reemplaza la Producción real que
+      // saldría de Registrar Producción -- pensado para Maquila, que no
+      // tiene precios/medición de sus operaciones y por eso siempre daba
+      // $0. Si no cargó nada, sigue sumando la producción real registrada,
+      // exactamente igual que siempre.
+      const causacionDoc = (causacionManual || []).find((c) => c.id === `${t.id}__${periodoId}`);
+      const tieneCausacionManual = !!causacionDoc;
+      const netoProduccion = tieneCausacionManual
+        ? (Number(causacionDoc.valor) || 0)
+        : produccion
+            .filter((p) => p.trabajadorId === t.id && p.fecha >= inicio && p.fecha <= fin)
+            .reduce((s, p) => s + (Number(p.total) || 0), 0);
       // (2026-08-31) Dias trabajados = dias CON marca en el huellero dentro
       // de la quincena -- puramente informativo/verificacion (pedido de
       // Fredy). El "neto a pagar" de Destajo sigue siendo, sin cambios, la
@@ -6811,7 +6847,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
       const base = calcularLiquidacionDestajo(t, netoProduccion, totalHorasQuincena, diasTrabajadosCount);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id, fin);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
-      return { trabajador: t, calculo: { ...base, diasInasistencia, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, descuentoCobros, cobrosDetalle, netoAntesDeAjuste: base.netoBase - descuentoCobros } };
+      return { trabajador: t, calculo: { ...base, causacionManual: tieneCausacionManual, diasInasistencia, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, descuentoCobros, cobrosDetalle, netoAntesDeAjuste: base.netoBase - descuentoCobros } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -6997,7 +7033,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
             vacio="Sin resultados."
             columnas={[
               { key: "nombre", label: "Nombre", render: (f) => (
-                <span>{f.trabajador.nombre}{f.calculo.salarioMinimoGarantizado && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.amberBg, color: C.amber }} title="Se le paga fijo el salario mínimo, no por producción">🔒 Mínimo</span>}{f.calculo.pagoPorDia && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.blueBg, color: C.blue }} title="Se le paga por día trabajado, no por producción">📅 Por día</span>}</span>
+                <span>{f.trabajador.nombre}{f.calculo.salarioMinimoGarantizado && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.amberBg, color: C.amber }} title="Se le paga fijo el salario mínimo, no por producción">🔒 Mínimo</span>}{f.calculo.causacionManual && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.violetBg, color: C.violet }} title="La Producción real de esta quincena viene de Causación Manual, no de Registrar Producción">🖊 Manual</span>}{f.calculo.pagoPorDia && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.blueBg, color: C.blue }} title="Se le paga por día trabajado, no por producción">📅 Por día</span>}</span>
               ) },
               { key: "diasInasistencia", label: "Días sin justificar", align: "right", render: (f) => (
                 <span onClick={() => setDetalleFaltas({ trabajador: f.trabajador, fechas: f.calculo.fechasFalta || [] })} style={{ fontWeight: 800, color: f.calculo.diasInasistencia > 0 ? C.red : C.green, cursor: "pointer", textDecoration: "underline" }} title="Ver el detalle de las fechas">{f.calculo.diasInasistencia}</span>
@@ -7048,6 +7084,201 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
           </div>
         </>
       )}
+    </div>
+  );
+}
+// (2026-09-19, a pedido de Fredy) "Causación Manual" -- pantalla para
+// Maquila: trabajadores Destajo con "Salario mínimo garantizado" marcado
+// que no tienen producción medida (no hay precios cargados para sus
+// operaciones), así que Fredy decide cuánto pagarles cada quincena y lo
+// carga acá de una sola vez para toda el área, por Excel (Cédula + Sueldo).
+// Ese valor reemplaza al SMMLV legal como sueldo fijo -- ver
+// calcularLiquidacionDestajo/ResumenSemanalView. Vive en Novedades, junto
+// a Deducciones.
+function parseExcelCausacionManual(filasArchivo) {
+  const encabezado = (filasArchivo[0] || []).map((h) => normalizarNombreParaComparar(h));
+  let colCedula = encabezado.findIndex((h) => h.includes("CEDULA"));
+  let colSueldo = encabezado.findIndex((h) => h.includes("SUELDO") || h.includes("VALOR") || h.includes("BASE"));
+  const empiezaEn = colCedula >= 0 || colSueldo >= 0 ? 1 : 0;
+  if (colCedula < 0) colCedula = 0;
+  if (colSueldo < 0) colSueldo = 1;
+  const out = [];
+  for (let i = empiezaEn; i < filasArchivo.length; i++) {
+    const fila = filasArchivo[i] || [];
+    const cedula = String(fila[colCedula] ?? "").trim();
+    const valor = Number(fila[colSueldo]) || 0;
+    if (!cedula) continue;
+    out.push({ cedula, valor });
+  }
+  return out;
+}
+function CargarCausacionManualModal({ trabajadoresElegibles, causacionManual, periodoId, onGuardar, onClose }) {
+  const fileRef = useRef(null);
+  const [nombreArchivo, setNombreArchivo] = useState("");
+  const [preview, setPreview] = useState(null); // null | { filas, sinCoincidencia }
+  const [error, setError] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  async function handleFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setError("");
+    setPreview(null);
+    setNombreArchivo(file.name);
+    try {
+      const XLSX = await import("xlsx");
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array", cellDates: false });
+      const filasArchivo = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: "" });
+      const filas = parseExcelCausacionManual(filasArchivo);
+      const sinCoincidencia = [];
+      const encontradas = [];
+      for (const f of filas) {
+        const cedNorm = normalizarCedula(f.cedula);
+        const trabajador = trabajadoresElegibles.find((t) => normalizarCedula(t.cedula) === cedNorm);
+        if (!trabajador) { sinCoincidencia.push(f.cedula); continue; }
+        const existente = (causacionManual || []).find((c) => c.id === `${trabajador.id}__${periodoId}`);
+        encontradas.push({ trabajador, cedula: f.cedula, valorAnterior: existente ? (Number(existente.valor) || 0) : null, valorNuevo: f.valor });
+      }
+      if (!encontradas.length) { setError("No se encontró ninguna cédula del archivo entre los trabajadores elegibles (tipo de nómina Destajo)."); return; }
+      setPreview({ filas: encontradas, sinCoincidencia });
+    } catch (err) {
+      setError(err?.message || String(err));
+    }
+  }
+  async function confirmar() {
+    if (!preview?.filas?.length) return;
+    setGuardando(true);
+    try {
+      for (const f of preview.filas) {
+        await onGuardar({
+          id: `${f.trabajador.id}__${periodoId}`,
+          trabajadorId: f.trabajador.id,
+          trabajadorNombre: f.trabajador.nombre,
+          periodoId,
+          valor: f.valorNuevo,
+        });
+      }
+      onClose();
+    } finally {
+      setGuardando(false);
+    }
+  }
+  return (
+    <Modal title={`Cargar Causación Manual — Quincena ${periodoId}`} onClose={onClose} width={640}>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 14 }}>
+        Excel con dos columnas: <strong>Cédula</strong> y <strong>Producción real</strong> (lo que se les paga esa quincena, ya sin dividir, en vez del $0 de Registrar Producción). Aplica a cualquier trabajador con tipo de nómina Destajo -- las demás cédulas del archivo se ignoran.
+      </div>
+      <div onClick={() => fileRef.current.click()} style={{ border: `2px dashed ${C.blue}`, borderRadius: 12, padding: 28, textAlign: "center", cursor: "pointer", background: C.blueBg, marginBottom: 16 }}>
+        <div style={{ fontSize: 30, marginBottom: 6 }}>📂</div>
+        <div style={{ fontWeight: 700, color: C.ink }}>{nombreArchivo || "Subir Excel (.xlsx)"}</div>
+        <div style={{ fontSize: 12, color: C.slate, marginTop: 4 }}>Columnas: Cédula, Producción real</div>
+        <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={handleFile} />
+      </div>
+      {error && <div style={{ padding: "10px 14px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>⚠ {error}</div>}
+      {preview && !error && (
+        <>
+          <div style={{ maxHeight: 340, overflowY: "auto", marginBottom: 16 }}>
+            <Tabla
+              vacio=""
+              columnas={[
+                { key: "nombre", label: "Nombre", render: (f) => f.trabajador.nombre },
+                { key: "cedula", label: "Cédula" },
+                { key: "valorAnterior", label: "Valor anterior", align: "right", render: (f) => f.valorAnterior != null ? fmtMoney(f.valorAnterior) : <span style={{ color: C.slate }}>— (nuevo)</span> },
+                { key: "valorNuevo", label: "Valor nuevo", align: "right", render: (f) => <strong style={{ color: C.green }}>{fmtMoney(f.valorNuevo)}</strong> },
+              ]}
+              filas={preview.filas}
+            />
+          </div>
+          {preview.sinCoincidencia.length > 0 && (
+            <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
+              {preview.sinCoincidencia.length} cédula(s) del archivo no corresponden a ningún trabajador con tipo de nómina Destajo -- se ignoran: {preview.sinCoincidencia.join(", ")}.
+            </div>
+          )}
+        </>
+      )}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        {preview?.filas?.length > 0 && (
+          <Btn onClick={confirmar} disabled={guardando}>{guardando ? "Guardando..." : `Confirmar y guardar (${preview.filas.length})`}</Btn>
+        )}
+      </div>
+    </Modal>
+  );
+}
+function CausacionManualView({ trabajadores, causacionManual, isAdmin, puedeAjustarDestajo, onGuardar, onBorrar }) {
+  const puedeGestionar = isAdmin || !!puedeAjustarDestajo;
+  const hoy = new Date();
+  const [anio, setAnio] = useState(String(hoy.getFullYear()));
+  const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
+  const [quincena, setQuincena] = useState(hoy.getDate() <= 15 ? "1" : "2");
+  const periodoId = `${anio}-${mes}-Q${quincena}`;
+  const [modal, setModal] = useState(false);
+  const [confirmBorrar, setConfirmBorrar] = useState(null);
+  const trabajadoresElegibles = trabajadores.filter((t) => t.tipoNomina === "Destajo" && t.activo !== false);
+  const cargadosDeEstaQuincena = (causacionManual || []).filter((c) => c.periodoId === periodoId);
+  async function descargarPlantilla() {
+    const filas = trabajadoresElegibles.map((t) => {
+      const existente = cargadosDeEstaQuincena.find((c) => c.trabajadorId === t.id);
+      return [t.cedula || "", t.nombre, existente ? existente.valor : ""];
+    });
+    await descargarExcel(`Plantilla_Causacion_Manual_${periodoId}.xlsx`, "Causación Manual", [[`CAUSACIÓN MANUAL — QUINCENA ${periodoId}`], [], ["Cédula", "Nombre", "Producción real"], ...filas]);
+  }
+  return (
+    <div>
+      {modal && (
+        <CargarCausacionManualModal
+          trabajadoresElegibles={trabajadoresElegibles}
+          causacionManual={causacionManual}
+          periodoId={periodoId}
+          onGuardar={onGuardar}
+          onClose={() => setModal(false)}
+        />
+      )}
+      {confirmBorrar && (
+        <Modal title="Confirmar eliminación" onClose={() => setConfirmBorrar(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Borrar el valor cargado de <strong>{confirmBorrar.trabajadorNombre}</strong> para la quincena <strong>{periodoId}</strong>?
+            <div style={{ marginTop: 10, color: C.slate, fontSize: 13 }}>Su Producción real vuelve a salir de Registrar Producción (o en $0 si no tiene nada registrado), como si no se hubiera cargado nada.</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmBorrar(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={() => { onBorrar(confirmBorrar.id); setConfirmBorrar(null); }}>Sí, borrar</Btn>
+          </div>
+        </Modal>
+      )}
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Para trabajadores Destajo que no tienen producción medida (ej. Maquila, que no tiene precios cargados para sus operaciones): acá cargas cuánto produjeron esa quincena en vez de que salga en $0. El valor reemplaza la "Producción real" en Nómina Destajo y Cierre de Quincena -- las deducciones de Bodega y un Ajuste manual se le siguen aplicando encima, igual que siempre.
+      </div>
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Año"><FInput type="number" value={anio} onChange={setAnio} /></Field>
+        <Field label="Mes">
+          <FSel value={mes} onChange={setMes} options={Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1).padStart(2, "0"), label: String(i + 1).padStart(2, "0") }))} />
+        </Field>
+        <Field label="Quincena">
+          <FSel value={quincena} onChange={setQuincena} options={[{ value: "1", label: "1 (días 1-15)" }, { value: "2", label: "2 (16-fin de mes)" }]} />
+        </Field>
+        {puedeGestionar && trabajadoresElegibles.length > 0 && (
+          <>
+            <Btn variant="secondary" onClick={descargarPlantilla}>📥 Descargar plantilla</Btn>
+            <Btn onClick={() => setModal(true)}>📤 Subir Excel</Btn>
+          </>
+        )}
+      </div>
+      {trabajadoresElegibles.length === 0 && (
+        <div style={{ padding: "12px 16px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          Nadie tiene hoy tipo de nómina "Destajo" -- sin eso no hay a quién cargarle una causación manual.
+        </div>
+      )}
+      <Tabla
+        vacio={`Sin causación manual cargada para la quincena ${periodoId}.`}
+        columnas={[
+          { key: "trabajadorNombre", label: "Trabajador" },
+          { key: "valor", label: "Producción real cargada", align: "right", render: (f) => <strong>{fmtMoney(f.valor)}</strong> },
+          ...(puedeGestionar ? [{ key: "acciones", label: "", align: "right", render: (f) => <span onClick={() => setConfirmBorrar(f)} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span> }] : []),
+        ]}
+        filas={cargadosDeEstaQuincena}
+      />
     </div>
   );
 }
@@ -8417,6 +8648,101 @@ function RegistrarHorasView({ trabajadores, horas, currentUser, onGuardar, onBor
     </div>
   );
 }
+// (2026-09-19, a pedido de Fredy) "Horas Extras" -- concepto APARTE de
+// Horas Sueltas (arriba): se calcula solo con el Sueldo de la ficha del
+// trabajador y los recargos legales (ver RECARGOS_HORA_EXTRA/
+// calcularHoraExtra más arriba), nunca con una tarifa/hora manual. Vive en
+// el grupo "Novedades" del menú, no junto a "Registrar Horas". Pendiente
+// (próximo paso, a confirmar con Fredy): sumar este total al Neto a Pagar
+// de las 4 nóminas y a la columna Efectivo de Financiera -- por ahora esta
+// pantalla solo registra y calcula, todavía no está conectada a esos dos
+// lugares.
+function RegistrarHorasExtrasView({ trabajadores, horasExtras, currentUser, onGuardar, onBorrar, isAdmin }) {
+  const [trabajadorId, setTrabajadorId] = useState("");
+  const [fecha, setFecha] = useState(today());
+  const [tipo, setTipo] = useState("diurna");
+  const [horasCant, setHorasCant] = useState("");
+  const [observacion, setObservacion] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const trabajadoresActivos = trabajadores.filter((t) => t.activo);
+  const trabajadorSel = trabajadores.find((t) => t.id === trabajadorId);
+  const calculo = calcularHoraExtra(trabajadorSel?.sueldo, tipo, horasCant);
+  const puedeGuardar = trabajadorId && Number(horasCant) > 0 && !guardando;
+  async function guardar() {
+    if (!puedeGuardar) return;
+    setGuardando(true);
+    try {
+      await onGuardar({
+        id: uid(),
+        trabajadorId,
+        trabajadorNombre: trabajadorSel?.nombre || "",
+        fecha,
+        tipo,
+        horas: Number(horasCant) || 0,
+        sueldoBase: Number(trabajadorSel?.sueldo) || 0,
+        valorHoraOrdinaria: calculo.valorHoraOrdinaria,
+        factor: calculo.factor,
+        valorHora: calculo.valorHora,
+        total: calculo.total,
+        observacion: observacion.trim(),
+        creadoPor: currentUser?.name || currentUser?.username || "",
+        creadoEn: new Date().toISOString(),
+      });
+      setHorasCant("");
+      setObservacion("");
+    } finally {
+      setGuardando(false);
+    }
+  }
+  const recientes = [...horasExtras].sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || "")).slice(0, 15);
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Se calcula solo con el Sueldo que tiene HOY el trabajador en su ficha (no con una tarifa manual), según los recargos legales vigentes en Colombia -- jornada de 42h semanales desde el 15 de julio de 2026. Se paga siempre en efectivo.
+      </div>
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20, marginBottom: 24, maxWidth: 620 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Trabajador">
+            <FSel value={trabajadorId} onChange={setTrabajadorId} options={trabajadoresActivos.map((t) => ({ value: t.id, label: `${t.nombre}${t.sueldo ? ` (${fmtMoney(t.sueldo)}/mes)` : ""}` }))} />
+          </Field>
+          <Field label="Fecha"><FInput type="date" value={fecha} onChange={setFecha} /></Field>
+        </div>
+        <Field label="Tipo de hora extra">
+          <FSel value={tipo} onChange={setTipo} options={Object.entries(RECARGOS_HORA_EXTRA).map(([value, r]) => ({ value, label: r.label }))} />
+        </Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "end" }}>
+          <Field label="Horas"><FInput type="number" value={horasCant} onChange={setHorasCant} /></Field>
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>Total (efectivo)</div>
+            <div style={{ padding: "9px 12px", background: C.canvas, borderRadius: 8, fontWeight: 800, color: C.ink, fontSize: 14 }}>{fmtMoney(calculo.total)}</div>
+          </div>
+        </div>
+        <Field label="Observación (opcional)"><FInput value={observacion} onChange={setObservacion} placeholder="Ej: cierre de pedido urgente" /></Field>
+        {trabajadorSel && !trabajadorSel.sueldo && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>Este trabajador no tiene Sueldo configurado en su ficha -- el total va a salir en $0. Complétalo en "Trabajadores".</div>}
+        {trabajadorSel && Number(trabajadorSel.sueldo) > 0 && Number(horasCant) > 0 && (
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>
+            Hora ordinaria: {fmtMoney(calculo.valorHoraOrdinaria)} × {calculo.factor} = {fmtMoney(calculo.valorHora)}/hora
+          </div>
+        )}
+        <Btn onClick={guardar} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Registrar Hora Extra"}</Btn>
+      </div>
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>ÚLTIMOS REGISTROS</div>
+      <Tabla
+        vacio="Sin horas extras registradas todavía."
+        columnas={[
+          { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+          { key: "trabajadorNombre", label: "Trabajador" },
+          { key: "tipo", label: "Tipo", render: (f) => RECARGOS_HORA_EXTRA[f.tipo]?.label || f.tipo },
+          { key: "horas", label: "Horas", align: "right", render: (f) => fmtNum(f.horas) },
+          { key: "valorHora", label: "Valor/Hora", align: "right", render: (f) => fmtMoney(f.valorHora) },
+          { key: "total", label: "Total", align: "right", render: (f) => fmtMoney(f.total) },
+          ...(isAdmin ? [{ key: "acciones", label: "", align: "right", render: (f) => <span onClick={(e) => { e.stopPropagation(); onBorrar(f.id); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span> }] : []),
+        ]}
+        filas={recientes}
+      />
+    </div>
+  );
+}
 // ─── RESUMEN SEMANAL (lunes a domingo) ──────────────────────────────────────
 // Junta Producción + Horas Sueltas de la semana activa, agrupado por
 // trabajador, para armar el pago — clic en un trabajador abre el desglose
@@ -8633,7 +8959,7 @@ function exportDesprendiblePagoHTML({
   a.click();
   URL.revokeObjectURL(url);
 }
-function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNomina, puedeCerrarQuincena, cierres, onCerrar, onReabrir, lotesConCobros, ajustesDestajo, diasTrabajados, faltas, ausencias, turnos, deduccionesTrabajador }) {
+function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNomina, puedeCerrarQuincena, cierres, onCerrar, onReabrir, lotesConCobros, ajustesDestajo, causacionManual, diasTrabajados, faltas, ausencias, turnos, deduccionesTrabajador }) {
   const [qOffset, setQOffset] = useState(0);
   const [trabajadorAbierto, setTrabajadorAbierto] = useState(null);
   // (2026-09-12, a pedido de Fredy) Cierre de Quincena ahora es POR TIPO de
@@ -8684,6 +9010,17 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
       g.totalHoras += h.total || 0;
       g.horasCant += h.horas || 0;
     });
+    // (2026-09-20, a pedido de Fredy) "Causación Manual" -- mismo criterio
+    // que ya aplica Nómina Destajo (ver NominaDestajoView.calcular): si hay
+    // un valor cargado para esta quincena de un trabajador Destajo, ESE
+    // valor reemplaza la Producción real, para que las dos pantallas
+    // cuadren igual.
+    if (tipoSel === "Destajo") {
+      mapa.forEach((g) => {
+        const causacionDoc = (causacionManual || []).find((c) => c.id === `${g.trabajadorId}__${periodoIdActual}`);
+        if (causacionDoc) { g.totalProduccion = Number(causacionDoc.valor) || 0; g.causacionManual = true; }
+      });
+    }
     return [...mapa.values()]
       .map((g) => {
         const totalBruto = g.totalProduccion + g.totalHoras;
@@ -8759,7 +9096,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
       })
       .filter((g) => g.totalBruto > 0 || g.unidades > 0 || g.horasCant > 0 || g.salarioMinimoGarantizado || g.pagoPorDia || g.sueldoQuincena > 0 || g.auxilioQuincena > 0)
       .sort((a, b) => b.totalGeneral - a.totalGeneral);
-  }, [trabajadores, tipoSel, esFiscalTipo, esPrestacionTipo, prodQuincena, horasQuincena, lotesConCobros, ajustesDestajo, periodoIdActual, diasTrabajados, desde, hasta, faltas, ausencias, turnos, deduccionesTrabajador]);
+  }, [trabajadores, tipoSel, esFiscalTipo, esPrestacionTipo, prodQuincena, horasQuincena, lotesConCobros, ajustesDestajo, causacionManual, periodoIdActual, diasTrabajados, desde, hasta, faltas, ausencias, turnos, deduccionesTrabajador]);
   const totalQuincena = porTrabajador.reduce((s, g) => s + g.totalGeneral, 0);
   const totalDescuentos = porTrabajador.reduce((s, g) => s + g.descuentoCobros, 0);
   const totalAjustes = porTrabajador.reduce((s, g) => s + (g.ajusteValor || 0), 0);
@@ -10066,6 +10403,9 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   const [gruposTrabajo, setGruposTrabajo] = useState([]);
   const [produccion, setProduccion] = useState([]);
   const [horas, setHoras] = useState([]);
+  // (2026-09-19, a pedido de Fredy) "Horas Extras" -- estado aparte de
+  // Horas Sueltas (arriba). Ver RegistrarHorasExtrasView.
+  const [horasExtras, setHorasExtras] = useState([]);
   const [cierres, setCierres] = useState([]);
   const [costosTeoricoProceso, setCostosTeoricoProceso] = useState([]);
   const [ausencias, setAusencias] = useState([]);
@@ -10108,6 +10448,11 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // trabajadores SIN salario mínimo garantizado (a esos, en cambio, se les
   // calcula sola la "ayuda" -- ver calcularLiquidacionDestajo).
   const [ajustesDestajo, setAjustesDestajo] = useState([]);
+  // (2026-09-19, a pedido de Fredy) "Causación Manual" -- para Destajo con
+  // salario mínimo garantizado (ej. Maquila), el valor que Fredy carga por
+  // Excel para pagar esa quincena en vez del SMMLV legal. Ver
+  // CausacionManualView / calcularLiquidacionDestajo.
+  const [causacionManual, setCausacionManual] = useState([]);
   // (2026-09-02, a pedido de Fredy) Solo para el encadenamiento automático
   // Dije -> Terminación (ver guardarProduccion/encadenarDijeATerminacion
   // más abajo): quién es la líder dueña de "Terminación" (por areaNomina)
@@ -10128,6 +10473,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "nomina_grupos_trabajo"), (snap) => setGruposTrabajo(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_produccion"), (snap) => setProduccion(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_horas"), (snap) => setHoras(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_horas_extras"), (snap) => setHorasExtras(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_cierres"), (snap) => setCierres(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_costos_teorico_proceso"), (snap) => setCostosTeoricoProceso(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_ausencias"), (snap) => setAusencias(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -10146,6 +10492,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => setLotesConCobros(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_cobros_manuales"), (snap) => setCobrosManuales(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_ajustes_destajo"), (snap) => setAjustesDestajo(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_causacion_manual"), (snap) => setCausacionManual(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "users"), (snap) => setUsuariosApp(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "planeacion_programacion_procesos"), (snap) => setProgramacionesProcesos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
     ];
@@ -10273,7 +10620,9 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
             { id: "novedades_quincena", icon: "🧾", label: "Listado de Novedades (quincena)" },
             { id: "deducciones", icon: "🧾", label: "Deducciones" },
+            { id: "causacion_manual", icon: "🖊️", label: "Causación Manual" },
             { id: "deducciones_fijas", icon: "🛡️", label: "Deducciones Fijas (Seguros)" },
+            { id: "horas_extras", icon: "⏱️", label: "Horas Extras" },
           ] },
         { group: "Liquidaciones", icon: "🧮", items: [
             { id: "liquidacion_retiro", icon: "📄", label: "Liquidación de Trabajador" },
@@ -10399,6 +10748,10 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function borrarProduccion(id) { await fsDelete("nomina_produccion", id); }
   async function guardarHoras(h) { await fsSave("nomina_horas", h.id, h); }
   async function borrarHoras(id) { await fsDelete("nomina_horas", id); }
+  // (2026-09-19, a pedido de Fredy) "Horas Extras" -- aparte de Horas
+  // Sueltas. Ver RegistrarHorasExtrasView.
+  async function guardarHorasExtras(h) { await fsSave("nomina_horas_extras", h.id, h); }
+  async function borrarHorasExtras(id) { await fsDelete("nomina_horas_extras", id); }
   async function guardarAusencia(a) { await fsSave("nomina_ausencias", a.id, a); }
   async function borrarAusencia(id) { await fsDelete("nomina_ausencias", id); }
   // (2026-09-15, a pedido de Fredy) El líder ajusta una anomalía de
@@ -10507,6 +10860,17 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       registradoEn: new Date().toISOString(),
     });
   }
+  // (2026-09-19, a pedido de Fredy) "Causación Manual" -- id determinístico
+  // (trabajador+periodo), igual que el Ajuste de Nómina, para que volver a
+  // cargar la misma quincena corrija el valor anterior en vez de duplicar.
+  async function guardarCausacionManual({ id, trabajadorId, trabajadorNombre, periodoId, valor }) {
+    await fsSave("nomina_causacion_manual", id || `${trabajadorId}__${periodoId}`, {
+      trabajadorId, trabajadorNombre: trabajadorNombre || "", periodoId, valor: Number(valor) || 0,
+      registradoPor: currentUser?.name || currentUser?.username || "",
+      registradoEn: new Date().toISOString(),
+    });
+  }
+  async function borrarCausacionManual(id) { await fsDelete("nomina_causacion_manual", id); }
   // (2026-09-18, a pedido de Fredy) Borrar un cobro manual -- solo
   // administrador (verificado tambien en DeduccionesNominaView, que solo
   // muestra el boton "Borrar" cuando isAdmin es true).
@@ -10712,7 +11076,8 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "dashboard" && !areaLider && !soloNovedades && <DashboardNominaView trabajadores={trabajadores} precios={precios} produccion={produccion} horas={horas} />}
           {subView === "produccion" && !soloNovedades && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} costosTeoricoProceso={costosTeoricoProceso} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
           {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
-          {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} ajustesDestajo={ajustesDestajo} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} deduccionesTrabajador={deduccionesTrabajador} />}
+          {subView === "horas_extras" && !soloNovedades && <RegistrarHorasExtrasView trabajadores={trabajadoresVisibles} horasExtras={horasExtras} currentUser={currentUser} onGuardar={guardarHorasExtras} onBorrar={borrarHorasExtras} isAdmin={isAdmin} />}
+          {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} ajustesDestajo={ajustesDestajo} causacionManual={causacionManual} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} deduccionesTrabajador={deduccionesTrabajador} />}
           {subView === "historico_cierres" && !soloNovedades && <HistoricoCierresView cierres={cierres} isAdmin={isAdmin} onEliminar={reabrirCierre} />}
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
@@ -10745,9 +11110,10 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "historial_fiscal_destajo" && !areaLider && !soloNovedades && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
           {subView === "prestacion_servicios" && !areaLider && !soloNovedades && <NominaPrestacionServicioView trabajadores={trabajadores} liquidaciones={liquidacionesPS} onGuardarLiquidacion={guardarLiquidacionPS} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} deduccionesTrabajador={deduccionesTrabajador} />}
           {subView === "historial_prestacion_servicios" && !areaLider && !soloNovedades && <HistorialPrestacionServicioView liquidaciones={liquidacionesPS} trabajadores={trabajadores} />}
-          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} horas={horas} />}
+          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} horas={horas} causacionManual={causacionManual} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
           {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} isAdmin={isAdmin} onBorrarCobroManual={borrarCobroManual} onRevertirCobro={revertirCobroAPendiente} />}
+          {subView === "causacion_manual" && !areaLider && !soloNovedades && <CausacionManualView trabajadores={trabajadores} causacionManual={causacionManual} isAdmin={isAdmin} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} onGuardar={guardarCausacionManual} onBorrar={borrarCausacionManual} />}
           {subView === "conceptos_deduccion" && !areaLider && !soloNovedades && <ConceptosDeduccionView conceptos={conceptosDeduccion} deduccionesTrabajador={deduccionesTrabajador} isAdmin={isAdminCatalogos} onSave={guardarConceptoDeduccion} onDelete={borrarConceptoDeduccion} />}
           {subView === "deducciones_fijas" && !areaLider && !soloNovedades && <DeduccionesFijasView trabajadores={trabajadores} conceptos={conceptosDeduccion} deducciones={deduccionesTrabajador} isAdmin={isAdminCatalogos} onGuardar={guardarDeduccionTrabajador} onCambiarEstado={cambiarEstadoDeduccionTrabajador} currentUser={currentUser} />}
           {subView === "historial_lote" && !soloNovedades && <HistorialLoteView produccion={produccion} />}
