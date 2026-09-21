@@ -262,7 +262,16 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
     g.liquidaciones.forEach((l) => {
       const trabajador = trabajadores.find((t) => t.id === l.trabajadorId);
       const empleador = trabajador?.empleador && EMPLEADORES_COLUMNAS.includes(trabajador.empleador) ? trabajador.empleador : "Sin asignar";
-      matrizPago[forma][empleador] += l.netoAPagar || 0;
+      // (2026-09-21, a pedido de Fredy) Horas Extras SIEMPRE se pagan en
+      // Efectivo, sin importar la forma de pago normal del tipo de nómina
+      // (ej. Fiscal se paga por Banco, pero su Hora Extra va aparte por
+      // Efectivo) -- se separa del resto del Neto a Pagar. Cuando la forma
+      // ya es Efectivo (Destajo/Fiscal Destajo/Prestación de Servicios),
+      // las dos líneas de abajo caen en el mismo bolsillo y el total no
+      // cambia.
+      const totalHorasExtra = l.totalHorasExtra || 0;
+      matrizPago[forma][empleador] += (l.netoAPagar || 0) - totalHorasExtra;
+      matrizPago.Efectivo[empleador] += totalHorasExtra;
     });
   });
   const hayTrabajadoresSinAsignar = matrizPago.Efectivo["Sin asignar"] > 0 || matrizPago.Banco["Sin asignar"] > 0;
@@ -393,7 +402,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
 
               <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>¿Cómo pagar?</div>
               <div style={{ fontSize: 12, color: C.slate, marginBottom: 10, maxWidth: 780 }}>
-                Destajo, Fiscal Destajo y Prestación de Servicios se pagan en Efectivo; Fiscal se paga por Banco — separado por Empleador (Yanko / Indutex).
+                Destajo, Fiscal Destajo y Prestación de Servicios se pagan en Efectivo; Fiscal se paga por Banco — separado por Empleador (Yanko / Indutex). Las Horas Extras de cualquier tipo de nómina siempre van por Efectivo, aparte del resto.
               </div>
               <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto", marginBottom: 24 }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>

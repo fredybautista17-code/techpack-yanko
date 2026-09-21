@@ -4725,6 +4725,16 @@ function calcularHoraExtra(sueldo, tipo, horasCant) {
   const total = valorHora * (Number(horasCant) || 0);
   return { valorHoraOrdinaria, factor, valorHora, total };
 }
+// (2026-09-21, a pedido de Fredy) Suma el total de Horas Extras (ver
+// RegistrarHorasExtrasView) de un trabajador dentro de un rango de fechas
+// (la quincena activa de cada pantalla) -- se paga SIEMPRE en efectivo (ver
+// modulo-financiera.jsx), sin importar el tipo de nomina ni su forma de
+// pago normal. Aplica a los 4 tipos de nomina.
+function sumaHorasExtraTrabajador(horasExtras, trabajadorId, desde, hasta) {
+  return (horasExtras || [])
+    .filter((h) => h.trabajadorId === trabajadorId && h.fecha >= desde && h.fecha <= hasta)
+    .reduce((s, h) => s + (Number(h.total) || 0), 0);
+}
 // (2026-09-10, "Design B" confirmado por Fredy) Cada Cobro que Bodega
 // registra contra un trabajador (Despachos Generales / Estado de Despacho)
 // queda "pendiente de cobrar" hasta que a ESE trabajador se le calcule y
@@ -5138,7 +5148,7 @@ function DetalleDiasSinJustificarModal({ trabajador, fechas, ausencias, trabajad
     </Modal>
   );
 }
-function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, areasNomina, horas, deduccionesTrabajador, causacionManual }) {
+function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, areasNomina, horas, deduccionesTrabajador, causacionManual, horasExtras }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -5173,13 +5183,17 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       const horasDetalle = (horas || []).filter((h) => h.trabajadorId === t.id && h.fecha >= inicio && h.fecha <= fin);
       const totalHoras = horasDetalle.reduce((s, h) => s + (Number(h.total) || 0), 0);
       const horasCant = horasDetalle.reduce((s, h) => s + (Number(h.horas) || 0), 0);
+      // (2026-09-21, a pedido de Fredy) Horas Extras (ver Registrar Horas
+      // Extras) -- se pagan SIEMPRE en efectivo (ver Financiera), aparte
+      // del sueldo que se pague por Banco.
+      const totalHorasExtra = sumaHorasExtraTrabajador(horasExtras, t.id, inicio, fin);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id, fin);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
       // (2026-09-18, a pedido de Fredy) Deducciones fijas por quincena
       // (seguros, funeraria, etc.) -- ver DeduccionesFijasView.
       const deduccionesDetalle = deduccionesActivasDeTrabajador(deduccionesTrabajador, t.id);
       const descuentoDeducciones = sumaDeducciones(deduccionesDetalle);
-      return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, netoAPagar: base.netoAPagar + totalHoras - descuentoCobros - descuentoDeducciones } };
+      return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, totalHorasExtra, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, netoAPagar: base.netoAPagar + totalHoras + totalHorasExtra - descuentoCobros - descuentoDeducciones } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -5210,6 +5224,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
     descuentoCobros: s.descuentoCobros + (r.calculo.descuentoCobros || 0),
     descuentoDeducciones: s.descuentoDeducciones + (r.calculo.descuentoDeducciones || 0),
     totalHoras: s.totalHoras + (r.calculo.totalHoras || 0),
+    totalHorasExtra: s.totalHorasExtra + (r.calculo.totalHorasExtra || 0),
     epsTrabajador: s.epsTrabajador + r.calculo.epsTrabajador,
     pensionTrabajador: s.pensionTrabajador + r.calculo.pensionTrabajador,
     pensionEmpleador: s.pensionEmpleador + r.calculo.pensionEmpleador,
@@ -5221,7 +5236,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
     vacaciones: s.vacaciones + r.calculo.vacacionesPeriodo,
     bonificacionCausacion: s.bonificacionCausacion + (r.calculo.bonificacionCausacion || 0),
     ayudaCausacion: s.ayudaCausacion + (r.calculo.ayudaCausacion || 0),
-  }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0, totalHoras: 0, epsTrabajador: 0, pensionTrabajador: 0, pensionEmpleador: 0, arlEmpleador: 0, cajaCompensacionEmpleador: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0, bonificacionCausacion: 0, ayudaCausacion: 0 }) : null;
+  }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0, totalHoras: 0, totalHorasExtra: 0, epsTrabajador: 0, pensionTrabajador: 0, pensionEmpleador: 0, arlEmpleador: 0, cajaCompensacionEmpleador: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0, bonificacionCausacion: 0, ayudaCausacion: 0 }) : null;
   const busquedaNorm = normalizarNombreParaComparar(busqueda);
   const resultadosFiltrados = resultados && busquedaNorm ? resultados.filter((f) => normalizarNombreParaComparar(f.trabajador.nombre).includes(busquedaNorm)) : resultados;
   async function exportarExcel() {
@@ -5307,6 +5322,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
             <KPI icon="💵" label="Neto a pagar (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
             <KPI icon="⏱" label="Horas sueltas pagadas" value={fmtMoney(totales.totalHoras)} color={C.blue} bg={C.blueBg} />
+            {totales.totalHorasExtra > 0 && <KPI icon="🕐" label="Horas Extras pagadas" value={fmtMoney(totales.totalHorasExtra)} color={C.amber} bg={C.amberBg} />}
             <KPI icon="📉" label="EPS + Pensión trabajador (descontado)" value={fmtMoney(totales.epsTrabajador + totales.pensionTrabajador)} color={C.red} bg={C.redBg} />
             <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
             <KPI icon="🛡️" label="Descuento seguros/deducciones" value={fmtMoney(totales.descuentoDeducciones)} color={C.red} bg={C.redBg} />
@@ -5356,6 +5372,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
               { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.calculo.auxilioQuincena) },
               { key: "horasCant", label: "Horas", align: "right", render: (f) => (f.calculo.horasCant || 0) > 0 ? <span style={{ fontWeight: 700 }}>{fmtNum(f.calculo.horasCant)}</span> : <span style={{ color: C.slate }}>—</span> },
               { key: "totalHoras", label: "Total Horas", align: "right", render: (f) => (f.calculo.totalHoras || 0) > 0 ? fmtMoney(f.calculo.totalHoras) : <span style={{ color: C.slate }}>—</span> },
+              { key: "totalHorasExtra", label: "Horas Extra", align: "right", render: (f) => (f.calculo.totalHorasExtra || 0) > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(f.calculo.totalHorasExtra)}</span> : <span style={{ color: C.slate }}>—</span> },
               { key: "epsTrabajador", label: "EPS trab. (-4%)", align: "right", render: (f) => <span style={{ color: C.red }}>-{fmtMoney(f.calculo.epsTrabajador)}</span> },
               { key: "pensionTrabajador", label: "Pensión trab. (-4%)", align: "right", render: (f) => <span style={{ color: C.red }}>-{fmtMoney(f.calculo.pensionTrabajador)}</span> },
               { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.calculo.descuentoCobros > 0 ? (
@@ -5958,7 +5975,7 @@ function DeduccionesFijasView({ trabajadores, conceptos, deducciones, isAdmin, o
     </div>
   );
 }
-function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, horas, deduccionesTrabajador, causacionManual }) {
+function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, horas, deduccionesTrabajador, causacionManual, horasExtras }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -5994,13 +6011,15 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
       const horasDetalle = (horas || []).filter((h) => h.trabajadorId === t.id && h.fecha >= inicio && h.fecha <= fin);
       const totalHoras = horasDetalle.reduce((s, h) => s + (Number(h.total) || 0), 0);
       const horasCant = horasDetalle.reduce((s, h) => s + (Number(h.horas) || 0), 0);
+      // (2026-09-21, a pedido de Fredy) Horas Extras -- siempre en efectivo.
+      const totalHorasExtra = sumaHorasExtraTrabajador(horasExtras, t.id, inicio, fin);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id, fin);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
       // (2026-09-18, a pedido de Fredy) Deducciones fijas por quincena
       // (seguros, funeraria, etc.) -- ver DeduccionesFijasView.
       const deduccionesDetalle = deduccionesActivasDeTrabajador(deduccionesTrabajador, t.id);
       const descuentoDeducciones = sumaDeducciones(deduccionesDetalle);
-      return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, netoAPagar: base.netoAPagar + totalHoras - descuentoCobros - descuentoDeducciones } };
+      return { trabajador: t, calculo: { ...base, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHoras, totalHorasExtra, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, netoAPagar: base.netoAPagar + totalHoras + totalHorasExtra - descuentoCobros - descuentoDeducciones } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -6031,13 +6050,14 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
     descuentoCobros: s.descuentoCobros + (r.calculo.descuentoCobros || 0),
     descuentoDeducciones: s.descuentoDeducciones + (r.calculo.descuentoDeducciones || 0),
     totalHoras: s.totalHoras + (r.calculo.totalHoras || 0),
+    totalHorasExtra: s.totalHorasExtra + (r.calculo.totalHorasExtra || 0),
     cesantias: s.cesantias + r.calculo.cesantiasPeriodo,
     intereses: s.intereses + r.calculo.interesesPeriodo,
     prima: s.prima + r.calculo.primaPeriodo,
     vacaciones: s.vacaciones + r.calculo.vacacionesPeriodo,
     bonificacionCausacion: s.bonificacionCausacion + (r.calculo.bonificacionCausacion || 0),
     ayudaCausacion: s.ayudaCausacion + (r.calculo.ayudaCausacion || 0),
-  }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0, totalHoras: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0, bonificacionCausacion: 0, ayudaCausacion: 0 }) : null;
+  }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0, totalHoras: 0, totalHorasExtra: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0, bonificacionCausacion: 0, ayudaCausacion: 0 }) : null;
   const busquedaNorm = normalizarNombreParaComparar(busqueda);
   const resultadosFiltrados = resultados && busquedaNorm ? resultados.filter((f) => normalizarNombreParaComparar(f.trabajador.nombre).includes(busquedaNorm)) : resultados;
   async function exportarExcel() {
@@ -6107,6 +6127,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
             <KPI icon="💵" label="Neto a pagar (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
             <KPI icon="⏱" label="Horas sueltas pagadas" value={fmtMoney(totales.totalHoras)} color={C.blue} bg={C.blueBg} />
+            {totales.totalHorasExtra > 0 && <KPI icon="🕐" label="Horas Extras pagadas" value={fmtMoney(totales.totalHorasExtra)} color={C.amber} bg={C.amberBg} />}
             <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
             <KPI icon="🛡️" label="Descuento seguros/deducciones" value={fmtMoney(totales.descuentoDeducciones)} color={C.red} bg={C.redBg} />
             <KPI icon="📦" label="Cesantías (provisión)" value={fmtMoney(totales.cesantias)} color={C.violet} bg={C.violetBg} />
@@ -6153,6 +6174,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
               { key: "auxilioQuincena", label: "Auxilio quincena", align: "right", render: (f) => fmtMoney(f.calculo.auxilioQuincena) },
               { key: "horasCant", label: "Horas", align: "right", render: (f) => (f.calculo.horasCant || 0) > 0 ? <span style={{ fontWeight: 700 }}>{fmtNum(f.calculo.horasCant)}</span> : <span style={{ color: C.slate }}>—</span> },
               { key: "totalHoras", label: "Total Horas", align: "right", render: (f) => (f.calculo.totalHoras || 0) > 0 ? fmtMoney(f.calculo.totalHoras) : <span style={{ color: C.slate }}>—</span> },
+              { key: "totalHorasExtra", label: "Horas Extra", align: "right", render: (f) => (f.calculo.totalHorasExtra || 0) > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(f.calculo.totalHorasExtra)}</span> : <span style={{ color: C.slate }}>—</span> },
               { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.calculo.descuentoCobros > 0 ? (
                 <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.cobrosDetalle || []).map((c) => `Lote ${c.numLote}: ${c.tipo || "cobro"} ${fmtMoney(c.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoCobros)}</span>
               ) : <span style={{ color: C.slate }}>—</span> },
@@ -6552,7 +6574,7 @@ function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
 // sueltas, sin seguridad social ni parafiscales -- solo se le aplican los
 // descuentos de cobros de Bodega y de seguros/deducciones, igual que a los
 // demás tipos de nómina.
-function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, deduccionesTrabajador }) {
+function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, deduccionesTrabajador, horasExtras }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -6574,7 +6596,10 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
       const deduccionesDetalle = deduccionesActivasDeTrabajador(deduccionesTrabajador, t.id);
       const descuentoDeducciones = sumaDeducciones(deduccionesDetalle);
-      return { trabajador: t, calculo: { ...base, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, netoAPagar: base.netoAPagar - descuentoCobros - descuentoDeducciones } };
+      // (2026-09-21, a pedido de Fredy) Horas Extras -- aplica tambien a
+      // Prestación de Servicios, siempre en efectivo (ver Financiera).
+      const totalHorasExtra = sumaHorasExtraTrabajador(horasExtras, t.id, inicio, fin);
+      return { trabajador: t, calculo: { ...base, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, totalHorasExtra, netoAPagar: base.netoAPagar - descuentoCobros - descuentoDeducciones + totalHorasExtra } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -6603,7 +6628,8 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
     neto: s.neto + r.calculo.netoAPagar,
     descuentoCobros: s.descuentoCobros + (r.calculo.descuentoCobros || 0),
     descuentoDeducciones: s.descuentoDeducciones + (r.calculo.descuentoDeducciones || 0),
-  }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0 }) : null;
+    totalHorasExtra: s.totalHorasExtra + (r.calculo.totalHorasExtra || 0),
+  }), { neto: 0, descuentoCobros: 0, descuentoDeducciones: 0, totalHorasExtra: 0 }) : null;
   const busquedaNorm = normalizarNombreParaComparar(busqueda);
   const resultadosFiltrados = resultados && busquedaNorm ? resultados.filter((f) => normalizarNombreParaComparar(f.trabajador.nombre).includes(busquedaNorm)) : resultados;
   async function exportarExcel() {
@@ -6651,6 +6677,7 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
         <>
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
             <KPI icon="💵" label="Neto a pagar (total)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
+            {totales.totalHorasExtra > 0 && <KPI icon="🕐" label="Horas Extras pagadas" value={fmtMoney(totales.totalHorasExtra)} color={C.amber} bg={C.amberBg} />}
             <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
             <KPI icon="🛡️" label="Descuento seguros/deducciones" value={fmtMoney(totales.descuentoDeducciones)} color={C.red} bg={C.redBg} />
           </div>
@@ -6671,6 +6698,7 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
             columnas={[
               { key: "nombre", label: "Nombre", render: (f) => f.trabajador.nombre },
               { key: "valorQuincena", label: "Valor quincena", align: "right", render: (f) => fmtMoney(f.calculo.valorQuincena) },
+              { key: "totalHorasExtra", label: "Horas Extra", align: "right", render: (f) => (f.calculo.totalHorasExtra || 0) > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(f.calculo.totalHorasExtra)}</span> : <span style={{ color: C.slate }}>—</span> },
               { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.calculo.descuentoCobros > 0 ? (
                 <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.cobrosDetalle || []).map((c) => `Lote ${c.numLote}: ${c.tipo || "cobro"} ${fmtMoney(c.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoCobros)}</span>
               ) : <span style={{ color: C.slate }}>—</span> },
@@ -6862,7 +6890,7 @@ function calcularLiquidacionDestajo(trabajador, netoProduccion, totalHoras = 0, 
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
 }
-function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, areasNomina, ajustesDestajo, onGuardarAjusteDestajo, puedeAjustarDestajo, horas, causacionManual }) {
+function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, areasNomina, ajustesDestajo, onGuardarAjusteDestajo, puedeAjustarDestajo, horas, causacionManual, horasExtras }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -6920,10 +6948,14 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
       const horasDetalle = (horas || []).filter((h) => h.trabajadorId === t.id && h.fecha >= inicio && h.fecha <= fin);
       const totalHorasQuincena = horasDetalle.reduce((s, h) => s + (Number(h.total) || 0), 0);
       const horasCant = horasDetalle.reduce((s, h) => s + (Number(h.horas) || 0), 0);
+      // (2026-09-21, a pedido de Fredy) Horas Extras -- se suman siempre,
+      // incluso con Salario mínimo garantizado (ese sigue siendo fijo, pero
+      // la Hora Extra es aparte y siempre se paga).
+      const totalHorasExtra = sumaHorasExtraTrabajador(horasExtras, t.id, inicio, fin);
       const base = calcularLiquidacionDestajo(t, netoProduccion, totalHorasQuincena, diasTrabajadosCount);
       const cobrosDetalle = cobrosPendientesDeTrabajador(lotesConCobros, t.id, fin);
       const descuentoCobros = sumaCobrosPendientes(cobrosDetalle);
-      return { trabajador: t, calculo: { ...base, causacionManual: tieneCausacionManual, diasInasistencia, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, descuentoCobros, cobrosDetalle, netoAntesDeAjuste: base.netoBase - descuentoCobros } };
+      return { trabajador: t, calculo: { ...base, causacionManual: tieneCausacionManual, diasInasistencia, fechasFalta: faltasDetalle.map((f) => f.fecha), diasTrabajados: diasTrabajadosCount, horasDetalle, horasCant, totalHorasExtra, descuentoCobros, cobrosDetalle, netoAntesDeAjuste: base.netoBase - descuentoCobros + totalHorasExtra } };
     });
     setResultados(filas);
     setGuardadoOk(false);
@@ -6987,13 +7019,14 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
     neto: s.neto + r.calculo.netoAPagar,
     descuentoCobros: s.descuentoCobros + (r.calculo.descuentoCobros || 0),
     totalHoras: s.totalHoras + (r.calculo.totalHoras || 0),
+    totalHorasExtra: s.totalHorasExtra + (r.calculo.totalHorasExtra || 0),
     ajustes: s.ajustes + (r.calculo.ajusteValor || 0),
     ayudaSalarioMinimo: s.ayudaSalarioMinimo + (r.calculo.ayudaSalarioMinimo || 0),
     cesantias: s.cesantias + r.calculo.cesantiasPeriodo,
     intereses: s.intereses + r.calculo.interesesPeriodo,
     prima: s.prima + r.calculo.primaPeriodo,
     vacaciones: s.vacaciones + r.calculo.vacacionesPeriodo,
-  }), { neto: 0, descuentoCobros: 0, totalHoras: 0, ajustes: 0, ayudaSalarioMinimo: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
+  }), { neto: 0, descuentoCobros: 0, totalHoras: 0, totalHorasExtra: 0, ajustes: 0, ayudaSalarioMinimo: 0, cesantias: 0, intereses: 0, prima: 0, vacaciones: 0 }) : null;
   const busquedaNorm = normalizarNombreParaComparar(busqueda);
   const resultadosFinalFiltrados = resultadosFinal && busquedaNorm ? resultadosFinal.filter((f) => normalizarNombreParaComparar(f.trabajador.nombre).includes(busquedaNorm)) : resultadosFinal;
   async function exportarExcel() {
@@ -7086,6 +7119,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
             <KPI icon="💵" label="Neto a pagar (producción)" value={fmtMoney(totales.neto)} color={C.green} bg={C.greenBg} />
             <KPI icon="⏱" label="Horas sueltas pagadas" value={fmtMoney(totales.totalHoras)} color={C.blue} bg={C.blueBg} />
+            {totales.totalHorasExtra > 0 && <KPI icon="🕐" label="Horas Extras pagadas" value={fmtMoney(totales.totalHorasExtra)} color={C.amber} bg={C.amberBg} />}
             <KPI icon="🔻" label="Descuento cobros de Bodega" value={fmtMoney(totales.descuentoCobros)} color={C.red} bg={C.redBg} />
             <KPI icon="🛠" label="Ajustes manuales" value={fmtMoney(totales.ajustes)} color={C.amber} bg={C.amberBg} />
             <KPI icon="🆘" label="Ayuda salario mínimo garantizado" value={fmtMoney(totales.ayudaSalarioMinimo)} color={C.red} bg={C.redBg} />
@@ -7122,6 +7156,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
               ) : fmtMoney(f.calculo.produccionReal) },
               { key: "horasCant", label: "Horas", align: "right", render: (f) => (f.calculo.horasCant || 0) > 0 ? <span style={{ fontWeight: 700 }}>{fmtNum(f.calculo.horasCant)}</span> : <span style={{ color: C.slate }}>—</span> },
               { key: "totalHoras", label: "Total Horas", align: "right", render: (f) => (f.calculo.totalHoras || 0) > 0 ? fmtMoney(f.calculo.totalHoras) : <span style={{ color: C.slate }}>—</span> },
+              { key: "totalHorasExtra", label: "Horas Extra", align: "right", render: (f) => (f.calculo.totalHorasExtra || 0) > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(f.calculo.totalHorasExtra)}</span> : <span style={{ color: C.slate }}>—</span> },
               { key: "descuentoCobros", label: "Descuento cobros Bodega", align: "right", render: (f) => f.calculo.descuentoCobros > 0 ? (
                 <span style={{ color: C.red, fontWeight: 700 }} title={(f.calculo.cobrosDetalle || []).map((c) => `Lote ${c.numLote}: ${c.tipo || "cobro"} ${fmtMoney(c.valor)}`).join(" | ")}>-{fmtMoney(f.calculo.descuentoCobros)}</span>
               ) : <span style={{ color: C.slate }}>—</span> },
@@ -8810,11 +8845,12 @@ function RegistrarHorasView({ trabajadores, horas, currentUser, onGuardar, onBor
 // Horas Sueltas (arriba): se calcula solo con el Sueldo de la ficha del
 // trabajador y los recargos legales (ver RECARGOS_HORA_EXTRA/
 // calcularHoraExtra más arriba), nunca con una tarifa/hora manual. Vive en
-// el grupo "Novedades" del menú, no junto a "Registrar Horas". Pendiente
-// (próximo paso, a confirmar con Fredy): sumar este total al Neto a Pagar
-// de las 4 nóminas y a la columna Efectivo de Financiera -- por ahora esta
-// pantalla solo registra y calcula, todavía no está conectada a esos dos
-// lugares.
+// el grupo "Novedades" del menú, no junto a "Registrar Horas".
+// (2026-09-21, a pedido de Fredy) Este total ya se suma al Neto a Pagar de
+// las 4 nóminas (Fiscal, Fiscal Destajo, Destajo, Prestación de Servicios
+// -- ver sumaHorasExtraTrabajador() más arriba) y a la columna Efectivo de
+// Financiera, sin importar la forma de pago normal de cada tipo (ver
+// modulo-financiera.jsx).
 function RegistrarHorasExtrasView({ trabajadores, horasExtras, currentUser, onGuardar, onBorrar, isAdmin }) {
   const [trabajadorId, setTrabajadorId] = useState("");
   const [fecha, setFecha] = useState(today());
@@ -9117,7 +9153,7 @@ function exportDesprendiblePagoHTML({
   a.click();
   URL.revokeObjectURL(url);
 }
-function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNomina, puedeCerrarQuincena, cierres, onCerrar, onReabrir, lotesConCobros, ajustesDestajo, causacionManual, diasTrabajados, faltas, ausencias, turnos, deduccionesTrabajador }) {
+function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNomina, puedeCerrarQuincena, cierres, onCerrar, onReabrir, lotesConCobros, ajustesDestajo, causacionManual, diasTrabajados, faltas, ausencias, turnos, deduccionesTrabajador, horasExtras }) {
   const [qOffset, setQOffset] = useState(0);
   const [trabajadorAbierto, setTrabajadorAbierto] = useState(null);
   // (2026-09-12, a pedido de Fredy) Cierre de Quincena ahora es POR TIPO de
@@ -9249,8 +9285,12 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
             ajusteObservacion = ajusteDoc ? (ajusteDoc.observacion || "") : "";
           }
         }
-        const totalGeneral = netoAntesDeAjuste + ajusteValor;
-        return { ...g, totalBruto, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, salarioMinimoGarantizado, pagoPorDia, pagoDiasQuincena, ayudaSalarioMinimo, excedenteSobreMinimo, sueldoFijoQuincena, auxilioFijoQuincena, sueldoQuincena, auxilioQuincena, ajusteValor, ajusteObservacion, totalGeneral };
+        // (2026-09-21, a pedido de Fredy) Horas Extras -- se suman siempre,
+        // en los 4 tipos de nómina, se pagan siempre en efectivo (ver
+        // Financiera).
+        const totalHorasExtra = sumaHorasExtraTrabajador(horasExtras, g.trabajadorId, desde, hasta);
+        const totalGeneral = netoAntesDeAjuste + ajusteValor + totalHorasExtra;
+        return { ...g, totalBruto, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, salarioMinimoGarantizado, pagoPorDia, pagoDiasQuincena, ayudaSalarioMinimo, excedenteSobreMinimo, sueldoFijoQuincena, auxilioFijoQuincena, sueldoQuincena, auxilioQuincena, ajusteValor, ajusteObservacion, totalHorasExtra, totalGeneral };
       })
       .filter((g) => g.totalBruto > 0 || g.unidades > 0 || g.horasCant > 0 || g.salarioMinimoGarantizado || g.pagoPorDia || g.sueldoQuincena > 0 || g.auxilioQuincena > 0)
       // (2026-09-21, corregido a pedido de Fredy) Este sort iba por
@@ -9266,6 +9306,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
   const totalAyudaSalarioMinimo = porTrabajador.reduce((s, g) => s + (g.ayudaSalarioMinimo || 0), 0);
   const totalExcedenteSobreMinimo = porTrabajador.reduce((s, g) => s + (g.excedenteSobreMinimo || 0), 0);
   const totalDescuentoDeducciones = porTrabajador.reduce((s, g) => s + (g.descuentoDeducciones || 0), 0);
+  const totalHorasExtraGeneral = porTrabajador.reduce((s, g) => s + (g.totalHorasExtra || 0), 0);
   // (2026-09-21, a pedido de Fredy) Visualizador de solo consulta por
   // Área dentro de Cierre de Quincena -- el cierre en sí sigue siendo
   // General (a pedido de Fredy del 2026-09-19, ver más abajo), esto es
@@ -9384,6 +9425,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         <KPI icon="👷" label="Trabajadores con pago esta quincena" value={fmtNum(porTrabajador.length)} color={C.ink} bg={C.canvas} />
         <KPI icon="⏳" label="Descuentos por cobros pendientes" value={fmtMoney(totalDescuentos)} color={C.amber} bg={C.amberBg} />
         <KPI icon="💰" label="Total a Pagar" value={fmtMoney(totalQuincena)} color={C.green} bg={C.greenBg} />
+        {totalHorasExtraGeneral > 0 && <KPI icon="🕐" label="Horas Extras pagadas" value={fmtMoney(totalHorasExtraGeneral)} color={C.amber} bg={C.amberBg} />}
         {tipoSel === "Destajo" && (totalAjustes !== 0 || totalAyudaSalarioMinimo > 0 || totalExcedenteSobreMinimo > 0) && (
           <>
             {totalAjustes !== 0 && <KPI icon="🛠" label="Ajustes manuales" value={fmtMoney(totalAjustes)} color={C.amber} bg={C.amberBg} />}
@@ -11269,7 +11311,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "produccion" && !soloNovedades && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} costosTeoricoProceso={costosTeoricoProceso} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
           {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
           {subView === "horas_extras" && !soloNovedades && <RegistrarHorasExtrasView trabajadores={trabajadoresVisibles} horasExtras={horasExtras} currentUser={currentUser} onGuardar={guardarHorasExtras} onBorrar={borrarHorasExtras} isAdmin={isAdmin} />}
-          {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} ajustesDestajo={ajustesDestajo} causacionManual={causacionManual} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} deduccionesTrabajador={deduccionesTrabajador} />}
+          {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} ajustesDestajo={ajustesDestajo} causacionManual={causacionManual} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} deduccionesTrabajador={deduccionesTrabajador} horasExtras={horasExtras} />}
           {subView === "historico_cierres" && !soloNovedades && <HistoricoCierresView cierres={cierres} isAdmin={isAdmin} onEliminar={reabrirCierre} />}
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} causacionManual={causacionManual} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
@@ -11296,13 +11338,13 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "anomalias_huellero" && puedeVerAnomaliasHuellero && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
           {subView === "historial_asistencia_area" && <HistorialAsistenciaAreaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausenciasVisibles} anomalias={anomaliasVisibles} retardos={retardosVisibles} turnos={turnos} />}
-          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} />}
+          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} horasExtras={horasExtras} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
-          {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} />}
+          {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} horasExtras={horasExtras} />}
           {subView === "historial_fiscal_destajo" && !areaLider && !soloNovedades && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
-          {subView === "prestacion_servicios" && !areaLider && !soloNovedades && <NominaPrestacionServicioView trabajadores={trabajadores} liquidaciones={liquidacionesPS} onGuardarLiquidacion={guardarLiquidacionPS} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} deduccionesTrabajador={deduccionesTrabajador} />}
+          {subView === "prestacion_servicios" && !areaLider && !soloNovedades && <NominaPrestacionServicioView trabajadores={trabajadores} liquidaciones={liquidacionesPS} onGuardarLiquidacion={guardarLiquidacionPS} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} deduccionesTrabajador={deduccionesTrabajador} horasExtras={horasExtras} />}
           {subView === "historial_prestacion_servicios" && !areaLider && !soloNovedades && <HistorialPrestacionServicioView liquidaciones={liquidacionesPS} trabajadores={trabajadores} />}
-          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} horas={horas} causacionManual={causacionManual} />}
+          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} horas={horas} causacionManual={causacionManual} horasExtras={horasExtras} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
           {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} isAdmin={isAdmin} onBorrarCobroManual={borrarCobroManual} onRevertirCobro={revertirCobroAPendiente} />}
           {subView === "causacion_manual" && !areaLider && !soloNovedades && <CausacionManualView trabajadores={trabajadores} causacionManual={causacionManual} isAdmin={isAdmin} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} onGuardar={guardarCausacionManual} onBorrar={borrarCausacionManual} areasNomina={areasNomina} />}
