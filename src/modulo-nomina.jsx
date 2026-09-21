@@ -7711,6 +7711,16 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
       };
     })
     .sort((a, b) => b.costo - a.costo);
+  // (2026-09-21, a pedido de Fredy) Desglose "por Tipo de Nómina" -- además
+  // del desglose por Área que ya existía, para responder rápido "cuánto
+  // estamos pagando" separado por Fiscal / Fiscal Destajo / Destajo /
+  // Prestación de Servicios, en el mismo Dashboard.
+  const gruposPorTipo = ["Fiscal", "Fiscal Destajo", "Destajo", "Prestación de Servicios"]
+    .map((tipoNomina) => {
+      const filasTipo = filas.filter((f) => f.tipoNomina === tipoNomina);
+      return { tipoNomina, trabajadores: filasTipo.length, neto: filasTipo.reduce((s, f) => s + f.netoAPagar, 0), costo: filasTipo.reduce((s, f) => s + f.costoTotal, 0) };
+    })
+    .filter((g) => g.trabajadores > 0);
 
   const totalGeneral = {
     trabajadores: filas.length,
@@ -7772,6 +7782,18 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
             {totalGeneral.ayuda > 0 && <KPI icon="🤝" label="Ayuda (causación, no se paga)" value={fmtMoney(totalGeneral.ayuda)} color={C.violet} bg={C.violetBg} />}
           </div>
 
+          {gruposPorTipo.length > 0 && (
+            <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+              {gruposPorTipo.map((g) => (
+                <div key={g.tipoNomina} style={{ padding: "10px 16px", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 10, minWidth: 190 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4 }}>{g.tipoNomina}</div>
+                  <div style={{ fontSize: 12, color: C.slate, marginBottom: 2 }}>{g.trabajadores} trabajador{g.trabajadores === 1 ? "" : "es"}</div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: C.green }}>{fmtMoney(g.neto)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {grupos.map((g) => (
             <div key={g.area} style={{ marginBottom: 14, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
               <div onClick={() => toggleArea(g.area)} style={{ cursor: "pointer", padding: "12px 16px", background: C.canvas, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
@@ -7817,6 +7839,106 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
               )}
             </div>
           ))}
+        </>
+      )}
+    </div>
+  );
+}
+// (2026-09-21, a pedido de Fredy) "Historial de Quincenas" -- junta en UNA
+// sola tabla las liquidaciones YA CONFIRMADAS de las 4 nominas (Fiscal,
+// Fiscal Destajo, Destajo, Prestacion de Servicios), reemplazando a los 4
+// historiales sueltos que habia antes (uno por nomina) y al historico de
+// "Cierre de Quincena" (que se quito del menu por recalcular todo de cero
+// cada vez y desajustar los valores -- ver ResumenSemanalView). Se llena
+// sola: cada vez que se confirma una quincena en cualquiera de las 4
+// nominas, aparece aca de inmediato (lee directo de las mismas 4
+// colecciones que ya usa Financiera, nunca recalcula nada por su cuenta).
+function HistorialQuincenasView({ liquidacionesF, liquidacionesFD, liquidacionesD, liquidacionesPS, trabajadores }) {
+  const filasBase = [
+    ...liquidacionesF.map((l) => ({ l, tipoNomina: "Fiscal" })),
+    ...liquidacionesFD.map((l) => ({ l, tipoNomina: "Fiscal Destajo" })),
+    ...liquidacionesD.map((l) => ({ l, tipoNomina: "Destajo" })),
+    ...(liquidacionesPS || []).map((l) => ({ l, tipoNomina: "Prestación de Servicios" })),
+  ].map(({ l, tipoNomina }) => {
+    const trabajador = trabajadores.find((t) => t.id === l.trabajadorId);
+    return {
+      id: `${tipoNomina}__${l.id}`,
+      liquidacion: l,
+      trabajador,
+      tipoNomina,
+      periodoId: l.periodoId,
+      nombre: l.nombre || trabajador?.nombre || "—",
+      area: trabajador?.area || "Sin asignar",
+      empleador: trabajador?.empleador || "Sin asignar",
+      netoAPagar: l.netoAPagar || 0,
+      confirmadaEn: l.confirmadaEn,
+    };
+  });
+  const periodos = [...new Set(filasBase.map((f) => f.periodoId))].sort().reverse();
+  const areas = [...new Set(filasBase.map((f) => f.area))].sort((a, b) => a.localeCompare(b, "es"));
+  const [periodoFiltro, setPeriodoFiltro] = useState("");
+  const [tipoFiltro, setTipoFiltro] = useState("");
+  const [areaFiltro, setAreaFiltro] = useState("");
+  const filas = filasBase
+    .filter((f) => !periodoFiltro || f.periodoId === periodoFiltro)
+    .filter((f) => !tipoFiltro || f.tipoNomina === tipoFiltro)
+    .filter((f) => !areaFiltro || f.area === areaFiltro)
+    .sort((a, b) => (b.periodoId || "").localeCompare(a.periodoId || "") || (a.nombre || "").localeCompare(b.nombre || "", "es"));
+  const totalNeto = filas.reduce((s, f) => s + f.netoAPagar, 0);
+  function descargarRecibo(f) {
+    exportReciboLiquidacionHTML({ tipoNomina: f.tipoNomina, trabajador: f.trabajador, liquidacion: f.liquidacion });
+  }
+  async function exportarExcel() {
+    const encabezado = ["Período", "Nombre", "Área", "Empleador", "Tipo Nómina", "Neto a Pagar", "Confirmada"];
+    const filasHoja = filas.map((f) => [f.periodoId, f.nombre, f.area, f.empleador, f.tipoNomina, f.netoAPagar, f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : ""]);
+    const filaTotal = ["TOTAL", "", "", "", "", totalNeto, ""];
+    await descargarExcel(`Historial_Quincenas${periodoFiltro ? "_" + periodoFiltro : ""}.xlsx`, "Historial Quincenas", [["HISTORIAL DE QUINCENAS"], [], encabezado, ...filasHoja, [], filaTotal]);
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Junta en una sola tabla todas las liquidaciones ya confirmadas de Nómina Fiscal, Fiscal Destajo, Destajo y Prestación de Servicios -- para buscar cualquier quincena ya cerrada sin tener que entrar nómina por nómina. El Área y Empleador que se muestran son los que tiene HOY cada trabajador.
+      </div>
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Período">
+          <FSel value={periodoFiltro} onChange={setPeriodoFiltro} options={periodos} placeholder="Todos los períodos" />
+        </Field>
+        <Field label="Tipo de Nómina">
+          <FSel value={tipoFiltro} onChange={setTipoFiltro} options={["Fiscal", "Fiscal Destajo", "Destajo", "Prestación de Servicios"]} placeholder="Todos los tipos" />
+        </Field>
+        <Field label="Área">
+          <FSel value={areaFiltro} onChange={setAreaFiltro} options={areas} placeholder="Todas las áreas" />
+        </Field>
+        <Btn variant="secondary" small onClick={exportarExcel} disabled={!filas.length}>⬇ Exportar a Excel</Btn>
+      </div>
+      {filasBase.length === 0 ? (
+        <div style={{ padding: "12px 16px", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, color: C.slate, fontSize: 13, maxWidth: 560 }}>
+          Todavía no hay ninguna quincena confirmada en ninguna nómina.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+            <KPI icon="👷" label="Registros" value={filas.length} color={C.blue} bg={C.blueBg} />
+            <KPI icon="💵" label="Neto a Pagar (total)" value={fmtMoney(totalNeto)} color={C.green} bg={C.greenBg} />
+          </div>
+          <Tabla
+            vacio="Sin resultados."
+            columnas={[
+              { key: "periodoId", label: "Período" },
+              { key: "nombre", label: "Nombre" },
+              { key: "area", label: "Área" },
+              { key: "empleador", label: "Empleador" },
+              { key: "tipoNomina", label: "Tipo Nómina", render: (f) => (
+                <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: f.tipoNomina === "Fiscal Destajo" ? C.violetBg : f.tipoNomina === "Destajo" ? C.amberBg : f.tipoNomina === "Prestación de Servicios" ? C.greenBg : C.blueBg, color: f.tipoNomina === "Fiscal Destajo" ? C.violet : f.tipoNomina === "Destajo" ? C.amber : f.tipoNomina === "Prestación de Servicios" ? C.green : C.blue }}>
+                  {f.tipoNomina}
+                </span>
+              ) },
+              { key: "netoAPagar", label: "Neto a Pagar", align: "right", render: (f) => <strong>{fmtMoney(f.netoAPagar)}</strong> },
+              { key: "confirmadaEn", label: "Confirmada", render: (f) => f.confirmadaEn ? new Date(f.confirmadaEn).toLocaleString("es-CO") : "—" },
+              { key: "recibo", label: "", render: (f) => <span onClick={() => descargarRecibo(f)} style={{ cursor: "pointer", color: C.blue, fontSize: 12, fontWeight: 700, textDecoration: "underline" }}>⬇ Recibo</span> },
+            ]}
+            filas={filas}
+          />
         </>
       )}
     </div>
@@ -11235,13 +11357,12 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
         { group: "Reporte de Nómina", icon: "📊", items: [
             { id: "historial_lote", icon: "📦", label: "Historial de Lote" },
             { id: "historial_trabajador", icon: "🧑‍🏭", label: "Historial de Trabajador" },
-            { id: "resumen", icon: "💰", label: "Cierre de Quincena" },
-            { id: "historico_cierres", icon: "🗂️", label: "Histórico de Cierres" },
-            { id: "reporte_area", icon: "📊", label: "Reporte por Área" },
-            { id: "fiscal", icon: "🏛️", label: "Nómina Fiscal", historial: { id: "historial_fiscal", icon: "🗂️", label: "Historial Fiscal" } },
-            { id: "fiscal_destajo", icon: "💼", label: "Nómina Fiscal Destajo", historial: { id: "historial_fiscal_destajo", icon: "🗂️", label: "Historial Fiscal Destajo" } },
-            { id: "destajo", icon: "💼", label: "Nómina Destajo", historial: { id: "historial_destajo", icon: "🗂️", label: "Historial Destajo" } },
-            { id: "prestacion_servicios", icon: "🤝", label: "Nómina Prestación de Servicios", historial: { id: "historial_prestacion_servicios", icon: "🗂️", label: "Historial Prestación de Servicios" } },
+            { id: "historial_quincenas", icon: "🗂️", label: "Historial de Quincenas" },
+            { id: "reporte_area", icon: "📊", label: "Dashboard de Quincenas" },
+            { id: "fiscal", icon: "🏛️", label: "Nómina Fiscal" },
+            { id: "fiscal_destajo", icon: "💼", label: "Nómina Fiscal Destajo" },
+            { id: "destajo", icon: "💼", label: "Nómina Destajo" },
+            { id: "prestacion_servicios", icon: "🤝", label: "Nómina Prestación de Servicios" },
           ] },
       ];
   // Versión "aplanada" del menú (sin grupos) — sirve para buscar el label
@@ -11741,6 +11862,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "bonificaciones" && !soloNovedades && <RegistrarBonificacionView trabajadores={trabajadoresVisibles} bonificaciones={bonificaciones} currentUser={currentUser} onGuardar={guardarBonificacion} onBorrar={borrarBonificacion} isAdmin={isAdmin} />}
           {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} ajustesDestajo={ajustesDestajo} causacionManual={causacionManual} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} deduccionesTrabajador={deduccionesTrabajador} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
           {subView === "historico_cierres" && !soloNovedades && <HistoricoCierresView cierres={cierres} isAdmin={isAdmin} onEliminar={reabrirCierre} />}
+          {subView === "historial_quincenas" && !areaLider && !soloNovedades && <HistorialQuincenasView liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} trabajadores={trabajadores} />}
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} causacionManual={causacionManual} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
           {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
