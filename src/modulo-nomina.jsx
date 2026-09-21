@@ -5149,7 +5149,7 @@ function DetalleDiasSinJustificarModal({ trabajador, fechas, ausencias, trabajad
     </Modal>
   );
 }
-function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, areasNomina, horas, deduccionesTrabajador, causacionManual, horasExtras, bonificaciones }) {
+function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, areasNomina, horas, deduccionesTrabajador, causacionManual, horasExtras, bonificaciones, isAdmin, onAbrirQuincena }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -5165,6 +5165,9 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
   const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro) && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
+  // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- ver
+  // abrirQuincenaParaEditar en ModuloNomina.
+  const [confirmAbrir, setConfirmAbrir] = useState(false);
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
   const sinClaseARL = personas.filter((t) => !t.claseRiesgoARL);
 
@@ -5325,8 +5328,25 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
 
       {yaLiquidado && (
         <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
-          ⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.
+          <div>⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.</div>
+          {isAdmin && (
+            <div style={{ marginTop: 8 }}>
+              <Btn small variant="secondary" onClick={() => setConfirmAbrir(true)}>🔓 Abrir quincena para editar</Btn>
+            </div>
+          )}
         </div>
+      )}
+      {confirmAbrir && (
+        <Modal title="Abrir quincena para editar" onClose={() => setConfirmAbrir(false)} width={460}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Abrir la quincena <strong>{periodoId}</strong> para editarla? Esto revierte a <strong>"Pendiente de cobrar"</strong> todos los cobros de Bodega y manuales que quedaron marcados como cobrados al confirmar esta quincena, para que los puedas corregir sin tener que revertirlos uno por uno en Deducciones.
+            <div style={{ marginTop: 10, color: C.slate, fontSize: 13 }}>Al volver a darle "Confirmar y guardar liquidación de la quincena", se vuelven a descontar (incluyendo cualquier cobro nuevo que se haya registrado mientras tanto).</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmAbrir(false)}>Cancelar</Btn>
+            <Btn onClick={async () => { await onAbrirQuincena(liquidaciones.filter((l) => l.periodoId === periodoId).map((l) => l.trabajadorId), periodoId); setConfirmAbrir(false); }}>Sí, abrir quincena</Btn>
+          </div>
+        </Modal>
       )}
 
       {resultados && (
@@ -5994,7 +6014,7 @@ function DeduccionesFijasView({ trabajadores, conceptos, deducciones, isAdmin, o
     </div>
   );
 }
-function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, horas, deduccionesTrabajador, causacionManual, horasExtras, bonificaciones }) {
+function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, horas, deduccionesTrabajador, causacionManual, horasExtras, bonificaciones, isAdmin, onAbrirQuincena }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -6009,6 +6029,9 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
   const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal Destajo" && t.activo !== false && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
+  // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- ver
+  // abrirQuincenaParaEditar en ModuloNomina.
+  const [confirmAbrir, setConfirmAbrir] = useState(false);
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
 
   function calcular() {
@@ -6148,8 +6171,25 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
 
       {yaLiquidado && (
         <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
-          ⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.
+          <div>⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.</div>
+          {isAdmin && (
+            <div style={{ marginTop: 8 }}>
+              <Btn small variant="secondary" onClick={() => setConfirmAbrir(true)}>🔓 Abrir quincena para editar</Btn>
+            </div>
+          )}
         </div>
+      )}
+      {confirmAbrir && (
+        <Modal title="Abrir quincena para editar" onClose={() => setConfirmAbrir(false)} width={460}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Abrir la quincena <strong>{periodoId}</strong> para editarla? Esto revierte a <strong>"Pendiente de cobrar"</strong> todos los cobros de Bodega y manuales que quedaron marcados como cobrados al confirmar esta quincena, para que los puedas corregir sin tener que revertirlos uno por uno en Deducciones.
+            <div style={{ marginTop: 10, color: C.slate, fontSize: 13 }}>Al volver a darle "Confirmar y guardar liquidación de la quincena", se vuelven a descontar (incluyendo cualquier cobro nuevo que se haya registrado mientras tanto).</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmAbrir(false)}>Cancelar</Btn>
+            <Btn onClick={async () => { await onAbrirQuincena(liquidaciones.filter((l) => l.periodoId === periodoId).map((l) => l.trabajadorId), periodoId); setConfirmAbrir(false); }}>Sí, abrir quincena</Btn>
+          </div>
+        </Modal>
       )}
 
       {resultados && (
@@ -6605,7 +6645,7 @@ function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
 // sueltas, sin seguridad social ni parafiscales -- solo se le aplican los
 // descuentos de cobros de Bodega y de seguros/deducciones, igual que a los
 // demás tipos de nómina.
-function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, deduccionesTrabajador, horasExtras, bonificaciones }) {
+function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, deduccionesTrabajador, horasExtras, bonificaciones, isAdmin, onAbrirQuincena }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -6619,6 +6659,9 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
   const personas = trabajadores.filter((t) => t.tipoNomina === "Prestación de Servicios" && t.activo !== false && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
+  // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- ver
+  // abrirQuincenaParaEditar en ModuloNomina.
+  const [confirmAbrir, setConfirmAbrir] = useState(false);
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
 
   function calcular() {
@@ -6712,8 +6755,25 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
 
       {yaLiquidado && (
         <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
-          ⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.
+          <div>⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.</div>
+          {isAdmin && (
+            <div style={{ marginTop: 8 }}>
+              <Btn small variant="secondary" onClick={() => setConfirmAbrir(true)}>🔓 Abrir quincena para editar</Btn>
+            </div>
+          )}
         </div>
+      )}
+      {confirmAbrir && (
+        <Modal title="Abrir quincena para editar" onClose={() => setConfirmAbrir(false)} width={460}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Abrir la quincena <strong>{periodoId}</strong> para editarla? Esto revierte a <strong>"Pendiente de cobrar"</strong> todos los cobros de Bodega y manuales que quedaron marcados como cobrados al confirmar esta quincena, para que los puedas corregir sin tener que revertirlos uno por uno en Deducciones.
+            <div style={{ marginTop: 10, color: C.slate, fontSize: 13 }}>Al volver a darle "Confirmar y guardar liquidación de la quincena", se vuelven a descontar (incluyendo cualquier cobro nuevo que se haya registrado mientras tanto).</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmAbrir(false)}>Cancelar</Btn>
+            <Btn onClick={async () => { await onAbrirQuincena(liquidaciones.filter((l) => l.periodoId === periodoId).map((l) => l.trabajadorId), periodoId); setConfirmAbrir(false); }}>Sí, abrir quincena</Btn>
+          </div>
+        </Modal>
       )}
 
       {resultados && (
@@ -6935,7 +6995,7 @@ function calcularLiquidacionDestajo(trabajador, netoProduccion, totalHoras = 0, 
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
 }
-function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, areasNomina, ajustesDestajo, onGuardarAjusteDestajo, puedeAjustarDestajo, horas, causacionManual, horasExtras, bonificaciones }) {
+function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, areasNomina, ajustesDestajo, onGuardarAjusteDestajo, puedeAjustarDestajo, horas, causacionManual, horasExtras, bonificaciones, isAdmin, onAbrirQuincena }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -6960,6 +7020,9 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
   const personas = trabajadores.filter((t) => t.tipoNomina === "Destajo" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro) && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
+  // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- ver
+  // abrirQuincenaParaEditar en ModuloNomina.
+  const [confirmAbrir, setConfirmAbrir] = useState(false);
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
 
   function calcular() {
@@ -7166,8 +7229,25 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
 
       {yaLiquidado && (
         <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
-          ⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.
+          <div>⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.</div>
+          {isAdmin && (
+            <div style={{ marginTop: 8 }}>
+              <Btn small variant="secondary" onClick={() => setConfirmAbrir(true)}>🔓 Abrir quincena para editar</Btn>
+            </div>
+          )}
         </div>
+      )}
+      {confirmAbrir && (
+        <Modal title="Abrir quincena para editar" onClose={() => setConfirmAbrir(false)} width={460}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Abrir la quincena <strong>{periodoId}</strong> para editarla? Esto revierte a <strong>"Pendiente de cobrar"</strong> todos los cobros de Bodega y manuales que quedaron marcados como cobrados al confirmar esta quincena, para que los puedas corregir sin tener que revertirlos uno por uno en Deducciones.
+            <div style={{ marginTop: 10, color: C.slate, fontSize: 13 }}>Al volver a darle "Confirmar y guardar liquidación de la quincena", se vuelven a descontar (incluyendo cualquier cobro nuevo que se haya registrado mientras tanto).</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmAbrir(false)}>Cancelar</Btn>
+            <Btn onClick={async () => { await onAbrirQuincena(liquidaciones.filter((l) => l.periodoId === periodoId).map((l) => l.trabajadorId), periodoId); setConfirmAbrir(false); }}>Sí, abrir quincena</Btn>
+          </div>
+        </Modal>
       )}
 
       {resultados && (
@@ -11318,6 +11398,44 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
     });
     if (huboCambios) await batch.commit();
   }
+  // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- en las 4
+  // pantallas de Nómina (Fiscal, Fiscal Destajo, Destajo, Prestación de
+  // Servicios). Cuando una quincena ya fue confirmada y Fredy necesita
+  // corregir algo y volver a calcularla, esto revierte de una sola vez a
+  // "Pendiente de cobrar" TODOS los cobros (de Bodega y manuales) de los
+  // trabajadores de esa liquidación que quedaron marcados como cobrados en
+  // ESE período exacto -- sin tocar cobros de otros períodos ni de otros
+  // trabajadores. Espejo masivo de revertirCobroAPendiente. Solo
+  // administrador (ver botón "🔓 Abrir quincena para editar" en cada vista
+  // de Nómina).
+  async function abrirQuincenaParaEditar(trabajadorIds, periodoId) {
+    if (!trabajadorIds || !trabajadorIds.length) return;
+    const idsSet = new Set(trabajadorIds);
+    const batch = writeBatch(db);
+    let huboCambios = false;
+    lotesConCobros.forEach((l) => {
+      const cobros = l.cobrosBodega || [];
+      let cambio = false;
+      const nuevos = cobros.map((c) => {
+        if (idsSet.has(c.trabajadorId) && c.cobrado === true && c.periodoIdCobrado === periodoId) {
+          cambio = true;
+          return { ...c, cobrado: false, periodoIdCobrado: "" };
+        }
+        return c;
+      });
+      if (cambio) {
+        batch.set(doc(db, "dado_por_cumplido_lotes", l.id), { cobrosBodega: nuevos }, { merge: true });
+        huboCambios = true;
+      }
+    });
+    cobrosManuales.forEach((c) => {
+      if (idsSet.has(c.trabajadorId) && c.cobrado === true && c.periodoIdCobrado === periodoId) {
+        batch.set(doc(db, "nomina_cobros_manuales", c.id), { cobrado: false, periodoIdCobrado: "" }, { merge: true });
+        huboCambios = true;
+      }
+    });
+    if (huboCambios) await batch.commit();
+  }
   // (2026-09-18, a pedido de Fredy) Agregar un cobro/deducción manual --
   // solo para quien tenga "nomina_agregar_cobros_manual" (administrador,
   // Yuleisi Virginia, María Fernanda Páez). Queda "pendiente de cobrar"
@@ -11600,13 +11718,13 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "anomalias_huellero" && puedeVerAnomaliasHuellero && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
           {subView === "historial_asistencia_area" && <HistorialAsistenciaAreaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausenciasVisibles} anomalias={anomaliasVisibles} retardos={retardosVisibles} turnos={turnos} />}
-          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
+          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
-          {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
+          {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
           {subView === "historial_fiscal_destajo" && !areaLider && !soloNovedades && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
-          {subView === "prestacion_servicios" && !areaLider && !soloNovedades && <NominaPrestacionServicioView trabajadores={trabajadores} liquidaciones={liquidacionesPS} onGuardarLiquidacion={guardarLiquidacionPS} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} deduccionesTrabajador={deduccionesTrabajador} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
+          {subView === "prestacion_servicios" && !areaLider && !soloNovedades && <NominaPrestacionServicioView trabajadores={trabajadores} liquidaciones={liquidacionesPS} onGuardarLiquidacion={guardarLiquidacionPS} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} deduccionesTrabajador={deduccionesTrabajador} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
           {subView === "historial_prestacion_servicios" && !areaLider && !soloNovedades && <HistorialPrestacionServicioView liquidaciones={liquidacionesPS} trabajadores={trabajadores} />}
-          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} horas={horas} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
+          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} horas={horas} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
           {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} isAdmin={isAdmin} onBorrarCobroManual={borrarCobroManual} onRevertirCobro={revertirCobroAPendiente} onMarcarCobroManual={marcarCobroComoCobradoManual} />}
           {subView === "causacion_manual" && !areaLider && !soloNovedades && <CausacionManualView trabajadores={trabajadores} causacionManual={causacionManual} isAdmin={isAdmin} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} onGuardar={guardarCausacionManual} onBorrar={borrarCausacionManual} areasNomina={areasNomina} />}
