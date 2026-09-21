@@ -4636,6 +4636,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
   const [resultadoLimpieza, setResultadoLimpieza] = useState(null);
   const [aplicandoLimpieza, setAplicandoLimpieza] = useState(false);
   const [reparando, setReparando] = useState(false);
+  const [buscarLista, setBuscarLista] = useState("");
   function itemGraduado(it) {
     return !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidos);
   }
@@ -4645,6 +4646,15 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
   })).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
   const porSubTab = subTab === "pendientes" ? preordenesConEstado.filter((p) => p.pendientes > 0) : preordenesConEstado;
   const visibles = estadoFiltro === "todas" ? porSubTab : porSubTab.filter((p) => (p.estado || "montada") === estadoFiltro);
+  // (2026-09-21, a pedido de Fredy) Buscador de la lista de preórdenes ya
+  // montadas -- por cliente, N° de pedido, o cualquier referencia contenida
+  // en la preorden (útil cuando hay varias preórdenes del mismo cliente).
+  const bqLista = foldTexto(buscarLista);
+  const visiblesBuscadas = !bqLista ? visibles : visibles.filter((p) =>
+    foldTexto(p.cliente).includes(bqLista) ||
+    foldTexto(p.numPedido).includes(bqLista) ||
+    (p.items || []).some((it) => foldTexto(it.referencia).includes(bqLista) || foldTexto(it.nombre).includes(bqLista))
+  );
   const bq = buscaPedido.trim().toLowerCase();
   const pedidosEncontrados = bq
     ? (pedidos || []).filter((p) => String(p.numero || "").toLowerCase().includes(bq) || (p.cliente || "").toLowerCase().includes(bq)).slice(0, 30)
@@ -4978,12 +4988,20 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
           <button key={v} onClick={() => setEstadoFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${estadoFiltro === v ? T.jade : T.border}`, background: estadoFiltro === v ? T.jadeBg : T.white, color: estadoFiltro === v ? T.jade : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
-      {!visibles.length && (
+      <div style={{ marginBottom: 16 }}>
+        <input
+          value={buscarLista}
+          onChange={(e) => setBuscarLista(e.target.value)}
+          placeholder="🔍 Buscar por cliente, N° de pedido o referencia..."
+          style={{ padding: "7px 12px", border: `1.5px solid ${buscarLista ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 280, outline: "none", fontFamily: "inherit" }}
+        />
+      </div>
+      {!visiblesBuscadas.length && (
         <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>
-          {subTab === "pendientes" ? "No hay preórdenes pendientes de convertirse en pedido. 🎉" : "Todavía no hay preórdenes registradas."}
+          {bqLista ? "Ninguna preorden coincide con esa búsqueda." : (subTab === "pendientes" ? "No hay preórdenes pendientes de convertirse en pedido. 🎉" : "Todavía no hay preórdenes registradas.")}
         </div>
       )}
-      {visibles.map((p) => {
+      {visiblesBuscadas.map((p) => {
         const abierto = expandido === p.id;
         const resumen = resumenPreordenPorCategoria(p.items);
         const totalUnidades = resumen.reduce((s, r) => s + r.unidades, 0);
