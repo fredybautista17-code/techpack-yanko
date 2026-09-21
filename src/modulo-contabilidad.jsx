@@ -3575,6 +3575,9 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases }) {
   // confirmación aparte porque el Costo Real Total todavía no se puede
   // sacar de una factura real.
   const [confirmAprobarTraslado, setConfirmAprobarTraslado] = useState(null);
+  // (2026-09-21, a pedido de Fredy) Lote elegido para "marcar con factura a
+  // mano" -- ver guardarFacturaManual mas abajo.
+  const [confirmFacturaManual, setConfirmFacturaManual] = useState(null);
 
   useEffect(() => {
     const unsubLotes = onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => {
@@ -3655,6 +3658,20 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases }) {
   // marcado como manual, aprobarDadoPorCumplido ya no lo recalcula.
   async function guardarCostoDefinitivoManual(id, valor) {
     await fsSave("dado_por_cumplido_lotes", id, { costoDefinitivo: parseFloat(valor) || 0, costoDefinitivoManual: true });
+  }
+
+  // Marcar "Con factura" a mano -- para cuando la persona que digita la
+  // factura en Busint olvido escribir "LOTE <numero>" en el comentario y
+  // por eso la sincronizacion automatica (loteDesdeComentarios, en
+  // functions/index.js) nunca lo puede emparejar solo. Una vez marcado,
+  // queda igual que un match real: se habilita Costo Real Total/Categoria
+  // BASE y el boton Aprobar.
+  async function guardarFacturaManual(id) {
+    await fsSave("dado_por_cumplido_lotes", id, {
+      tieneFactura: true,
+      tieneFacturaManual: true,
+      observacionesFactura: "Marcado a mano como facturado -- la factura de Busint no traia el numero de lote en el comentario.",
+    });
   }
 
   // Descarga la pantalla completa (pendientes + aprobados) con la misma
@@ -3990,6 +4007,12 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases }) {
                             {esTraslado ? "🔄 " : "🧾 "}{l.observacionesFactura}
                           </div>
                         )}
+                        {sinFactura && (
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: C.red }}>🚫 Sin factura de Busint (no se encontró el número de lote en ningún comentario)</span>
+                            <Btn small variant="secondary" onClick={() => setConfirmFacturaManual(l)}>📝 Marcar con factura a mano</Btn>
+                          </div>
+                        )}
                       </div>
                       <div style={{ display: "flex", gap: 18, fontSize: 12, color: C.slate, flexWrap: "wrap" }}>
                         <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -4125,6 +4148,20 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases }) {
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => setConfirmAprobarTraslado(null)}>Cancelar</Btn>
             <Btn onClick={() => { aprobar(confirmAprobarTraslado.id); setConfirmAprobarTraslado(null); }}>Sí, aprobar de todas formas</Btn>
+          </div>
+        </Modal>
+      )}
+      {confirmFacturaManual && (
+        <Modal title="Marcar con factura a mano" onClose={() => setConfirmFacturaManual(null)} width={480}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            El Lote <strong>{confirmFacturaManual.numLote}</strong> ({confirmFacturaManual.cliente || "sin cliente"}) va a quedar marcado como <strong>facturado</strong> sin que el sistema haya encontrado la factura sola en Busint.
+            <div style={{ marginTop: 10, color: C.slate, fontSize: 13 }}>
+              Úsalo solo cuando ya verificaste que la factura sí existe en Busint (usualmente porque a quien la digitó se le olvidó escribir "LOTE {confirmFacturaManual.numLote}" en el comentario). Después de marcarlo, completa Costo Real Total y Categoría BASE para poder aprobarlo.
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmFacturaManual(null)}>Cancelar</Btn>
+            <Btn onClick={() => { guardarFacturaManual(confirmFacturaManual.id); setConfirmFacturaManual(null); }}>Sí, marcar como facturado</Btn>
           </div>
         </Modal>
       )}
