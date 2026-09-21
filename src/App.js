@@ -3815,7 +3815,7 @@ function resumenPreordenPorCategoria(items) {
   });
   return [...mapa.values()].sort((a, b) => b.unidades - a.unidades);
 }
-function NuevaReprogramacionView({ capsulas, pedidos, config, currentUser, esOrdenNueva, onAddCapsula, onAddRef, onGuardar, onCancelar }) {
+function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, currentUser, esOrdenNueva, onAddCapsula, onAddRef, onGuardar, onCancelar }) {
   const [header, setHeader] = useState({ cliente: "", numPedido: "" });
   const esCliente = currentUser?.role === "Cliente";
   // (2026-09-16) Un cliente puede tener más de una marca asociada -- si solo
@@ -3848,16 +3848,33 @@ function NuevaReprogramacionView({ capsulas, pedidos, config, currentUser, esOrd
     const telaNorm = foldTexto(busquedaTela);
     const refNorm = normalizarRefComparacion(busquedaRefLibre);
     if (!telaNorm && !refNorm) return [];
+    const vistos = new Set();
     const encontrados = [];
+    const agregarSiCoincide = (item) => {
+      const refN = normalizarRefComparacion(item.reference);
+      const key = refN || item.reference;
+      if (!key || vistos.has(key)) return;
+      if (telaNorm && !foldTexto(item.tipoTela).includes(telaNorm)) return;
+      if (refNorm && !refN.includes(refNorm)) return;
+      vistos.add(key);
+      encontrados.push(item);
+    };
+    // Cápsulas (catálogo de Diseño)
     for (const cap of capsulas || []) {
       for (const r of cap.referencias || []) {
-        if (telaNorm && !foldTexto(r.tipoTela).includes(telaNorm)) continue;
-        if (refNorm && !normalizarRefComparacion(r.reference).includes(refNorm)) continue;
-        encontrados.push({ cap, ref: r });
+        agregarSiCoincide({ capsulaId: cap.id, refId: r.id, reference: r.reference, name: r.name, categoria: r.categoria, silueta: r.silueta, rango: r.rango || (r.tallas?.[0] || ""), tipoTela: r.tipoTela, image: r.image });
+      }
+    }
+    // (2026-09-21, a pedido de Fredy) Preórdenes ya creadas -- ahí es donde
+    // realmente queda guardada la tela de casi todas las referencias, no
+    // solo en Cápsulas.
+    for (const p of preordenes || []) {
+      for (const it of p.items || []) {
+        agregarSiCoincide({ capsulaId: it.capsulaId || null, refId: it.itemId || null, reference: it.referencia, name: it.nombre, categoria: it.categoria, silueta: it.silueta, rango: it.rango, tipoTela: it.tela, image: it.foto });
       }
     }
     return encontrados.slice(0, 30);
-  }, [busquedaTela, busquedaRefLibre, capsulas]);
+  }, [busquedaTela, busquedaRefLibre, capsulas, preordenes]);
   async function buscar() {
     const ref = referencia.trim();
     if (!ref) return;
@@ -3949,11 +3966,11 @@ function NuevaReprogramacionView({ capsulas, pedidos, config, currentUser, esOrd
   // Agrega directo desde el buscador de Tela/Referencia -- sin pasar por el
   // paso de "Buscar en Busint", porque el dato ya viene de Cápsulas. Curva/
   // Cantidad/Precio quedan en blanco para completarlos con "✏️ Editar".
-  function agregarDesdeBusqueda(cap, ref) {
+  function agregarDesdeBusqueda(item) {
     setFilas((fs) => [...fs, {
-      capsulaId: cap.id, refId: ref.id, reference: ref.reference, name: ref.name || ref.reference, image: ref.image || null,
-      categoria: ref.categoria || "", silueta: ref.silueta || "", rango: ref.rango || (ref.tallas?.[0] || ""),
-      tipoTela: ref.tipoTela || "", consumo: "", _tipo: "",
+      capsulaId: item.capsulaId || null, refId: item.refId || null, reference: item.reference, name: item.name || item.reference, image: item.image || null,
+      categoria: item.categoria || "", silueta: item.silueta || "", rango: item.rango || "",
+      tipoTela: item.tipoTela || "", consumo: "", _tipo: "",
       _colombiaCurva: "", _colombiaCantidad: "",
       _venezuelaCurva: "", _venezuelaCantidad: "",
       _precio: "", _observacionesCliente: "",
@@ -4078,13 +4095,13 @@ function NuevaReprogramacionView({ capsulas, pedidos, config, currentUser, esOrd
                   </tr>
                 </thead>
                 <tbody>
-                  {resultadosBusquedaTela.map(({ cap, ref }) => (
-                    <tr key={`${cap.id}-${ref.id}`} style={{ borderBottom: `1px solid ${T.border}` }}>
-                      <td style={{ padding: "6px 10px", fontWeight: 700 }}>{ref.reference || "—"}</td>
-                      <td style={{ padding: "6px 10px" }}>{ref.name || "—"}</td>
-                      <td style={{ padding: "6px 10px" }}>{ref.categoria || "—"}</td>
-                      <td style={{ padding: "6px 10px" }}>{ref.tipoTela || "—"}</td>
-                      <td style={{ padding: "6px 10px" }}><Btn small onClick={() => agregarDesdeBusqueda(cap, ref)}>+ Agregar</Btn></td>
+                  {resultadosBusquedaTela.map((item, idx) => (
+                    <tr key={`${item.reference}-${idx}`} style={{ borderBottom: `1px solid ${T.border}` }}>
+                      <td style={{ padding: "6px 10px", fontWeight: 700 }}>{item.reference || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{item.name || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{item.categoria || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{item.tipoTela || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}><Btn small onClick={() => agregarDesdeBusqueda(item)}>+ Agregar</Btn></td>
                     </tr>
                   ))}
                 </tbody>
@@ -4813,6 +4830,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
       <NuevaReprogramacionView
         capsulas={capsulas}
         pedidos={pedidos}
+        preordenes={preordenes}
         config={config}
         currentUser={currentUser}
         esOrdenNueva={modo === "orden_nueva"}
