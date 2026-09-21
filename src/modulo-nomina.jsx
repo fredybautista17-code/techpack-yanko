@@ -9253,7 +9253,12 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         return { ...g, totalBruto, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, salarioMinimoGarantizado, pagoPorDia, pagoDiasQuincena, ayudaSalarioMinimo, excedenteSobreMinimo, sueldoFijoQuincena, auxilioFijoQuincena, sueldoQuincena, auxilioQuincena, ajusteValor, ajusteObservacion, totalGeneral };
       })
       .filter((g) => g.totalBruto > 0 || g.unidades > 0 || g.horasCant > 0 || g.salarioMinimoGarantizado || g.pagoPorDia || g.sueldoQuincena > 0 || g.auxilioQuincena > 0)
-      .sort((a, b) => b.totalGeneral - a.totalGeneral);
+      // (2026-09-21, corregido a pedido de Fredy) Este sort iba por
+      // totalGeneral descendente y le ganaba al orden alfabetico que ya
+      // se le habia puesto a trabajadoresTipo mas arriba -- por eso el
+      // pedido anterior de "orden alfabetico en las nominas" no se veia
+      // reflejado en esta pantalla.
+      .sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   }, [trabajadores, tipoSel, esFiscalTipo, esPrestacionTipo, prodQuincena, horasQuincena, lotesConCobros, ajustesDestajo, causacionManual, periodoIdActual, diasTrabajados, desde, hasta, faltas, ausencias, turnos, deduccionesTrabajador]);
   const totalQuincena = porTrabajador.reduce((s, g) => s + g.totalGeneral, 0);
   const totalDescuentos = porTrabajador.reduce((s, g) => s + g.descuentoCobros, 0);
@@ -9261,6 +9266,20 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
   const totalAyudaSalarioMinimo = porTrabajador.reduce((s, g) => s + (g.ayudaSalarioMinimo || 0), 0);
   const totalExcedenteSobreMinimo = porTrabajador.reduce((s, g) => s + (g.excedenteSobreMinimo || 0), 0);
   const totalDescuentoDeducciones = porTrabajador.reduce((s, g) => s + (g.descuentoDeducciones || 0), 0);
+  // (2026-09-21, a pedido de Fredy) Visualizador de solo consulta por
+  // Área dentro de Cierre de Quincena -- el cierre en sí sigue siendo
+  // General (a pedido de Fredy del 2026-09-19, ver más abajo), esto es
+  // solo para ver de un vistazo cómo se reparte el total entre áreas
+  // antes de cerrar. No tiene botón de cerrar por área.
+  const porArea = [...porTrabajador.reduce((mapa, g) => {
+    const area = g.trabajador?.area || "Sin asignar";
+    const actual = mapa.get(area) || { area, cantidad: 0, total: 0, descuentos: 0 };
+    actual.cantidad += 1;
+    actual.total += g.totalGeneral;
+    actual.descuentos += g.descuentoCobros || 0;
+    mapa.set(area, actual);
+    return mapa;
+  }, new Map()).values()].sort((a, b) => a.area.localeCompare(b.area, "es"));
   const detalleAbierto = trabajadorAbierto
     ? {
         produccion: prodQuincena.filter((p) => p.trabajadorId === trabajadorAbierto.trabajadorId),
@@ -9374,6 +9393,21 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         )}
         {(esFiscalTipo || esPrestacionTipo) && totalDescuentoDeducciones > 0 && <KPI icon="🛡️" label="Descuento seguros/deducciones" value={fmtMoney(totalDescuentoDeducciones)} color={C.red} bg={C.redBg} />}
       </div>
+      {porArea.length > 0 && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 8 }}>📊 Por Área (solo consulta -- el cierre sigue siendo general)</div>
+          <Tabla
+            vacio=""
+            columnas={[
+              { key: "area", label: "Área" },
+              { key: "cantidad", label: "Trabajadores", align: "right" },
+              { key: "descuentos", label: "Descuentos", align: "right", render: (f) => f.descuentos > 0 ? fmtMoney(f.descuentos) : <span style={{ color: C.slate }}>—</span> },
+              { key: "total", label: "Total a Pagar", align: "right", render: (f) => <strong>{fmtMoney(f.total)}</strong> },
+            ]}
+            filas={porArea}
+          />
+        </div>
+      )}
       <div style={{ marginBottom: 14, display: "flex", gap: 10 }}>
         <Btn variant="secondary" small onClick={exportarExcel} disabled={!porTrabajador.length}>⬇ Exportar a Excel</Btn>
         {puedeCerrarQuincena && !cierre && (
