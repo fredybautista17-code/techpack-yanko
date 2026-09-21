@@ -3674,6 +3674,15 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases }) {
     });
   }
 
+  // Corrección manual de Precio Venta Unitario -- necesario sobre todo para
+  // los lotes marcados "con factura a mano" (ver guardarFacturaManual), que
+  // nunca hicieron match automático y por eso llegan con precio en $0 (lo
+  // que deja Venta T. y Ganancia mal calculados). Si más adelante sí llega
+  // un match real de Busint, ese valor real pisa a este igual que siempre.
+  async function guardarPrecioVentaManual(id, valor) {
+    await fsSave("dado_por_cumplido_lotes", id, { precioVentaUnitario: parseFloat(valor) || 0, precioVentaUnitarioManual: true });
+  }
+
   // Descarga la pantalla completa (pendientes + aprobados) con la misma
   // estructura de columnas del Excel histórico de Contabilidad. Para los
   // lotes aún no aprobados, calcula con la misma fórmula que la vista previa
@@ -4046,7 +4055,17 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases }) {
                             </>
                           )}
                         </span>
-                        <span>Precio Venta U.: <strong style={{ color: C.ink }}>{fmtPesos(l.precioVentaUnitario)}</strong></span>
+                        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          Precio Venta U.:
+                          <input
+                            type="number"
+                            value={l.precioVentaUnitario ?? ""}
+                            onChange={(e) => guardarPrecioVentaManual(l.id, e.target.value)}
+                            title={l.precioVentaUnitarioManual ? "Corregido a mano -- ya no se sobreescribe salvo que llegue una factura real de Busint." : "Viene de Busint (factura real o traslado). Si el lote se marcó \"con factura a mano\", complétalo aquí con el valor real de la factura."}
+                            style={{ width: 90, padding: "2px 6px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit", fontWeight: 700, color: C.ink }}
+                          />
+                          {l.precioVentaUnitarioManual && <span title="Corregido a mano">✍️</span>}
+                        </span>
                       </div>
                     </div>
                     {despachadaSospechosa && (
