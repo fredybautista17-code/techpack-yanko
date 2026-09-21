@@ -7779,7 +7779,7 @@ function HistorialDestajoView({ liquidaciones, trabajadores }) {
   );
 }
 // ─── DEDUCCIONES (cobros de Bodega, descuento automatico en Nomina) ──────
-function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobrosManual, onAgregarCobroManual, isAdmin, onBorrarCobroManual, onRevertirCobro }) {
+function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobrosManual, onAgregarCobroManual, isAdmin, onBorrarCobroManual, onRevertirCobro, onMarcarCobroManual }) {
   const [filtroEstado, setFiltroEstado] = useState("");
   // (2026-09-18, a pedido de Fredy) Formulario para agregar un cobro manual
   // -- solo lo ve quien tenga el permiso (administrador, Yuleisi Virginia,
@@ -7843,6 +7843,13 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
   // solo, así que el administrador puede revertirlo puntualmente. Con
   // confirmación, igual que Reabrir Cierre.
   const [confirmRevertir, setConfirmRevertir] = useState(null);
+  // (2026-09-21, a pedido de Fredy) "Marcar como Cobrado" a mano -- para
+  // cuando un cobro quedo pendiente porque su fecha todavia no le tocaba
+  // en ninguna nomina confirmada (o por cualquier otro motivo), y Fredy
+  // quiere forzarlo sin tener que reabrir/recalcular/reconfirmar una
+  // liquidacion ya cerrada solo para disparar el marcado automatico. Es
+  // el espejo de "Revertir a pendiente" de abajo.
+  const [confirmMarcar, setConfirmMarcar] = useState(null);
   const filas = [];
   (lotesConCobros || []).forEach((l) => {
     (l.cobrosBodega || []).forEach((c, idx) => {
@@ -7914,7 +7921,16 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
                   )}
                 </span>
               ) : (
-                <span style={{ color: C.amber, fontWeight: 700 }}>Pendiente de cobrar</span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ color: C.amber, fontWeight: 700 }}>Pendiente de cobrar</span>
+                  {isAdmin && (
+                    <span
+                      onClick={() => setConfirmMarcar(f)}
+                      style={{ cursor: "pointer", color: C.green, fontSize: 11, fontWeight: 700 }}
+                      title="Marcar como Cobrado a mano, sin esperar a que se confirme la nómina"
+                    >✅ Marcar Cobrado</span>
+                  )}
+                </span>
               )) },
               { key: "acciones", label: "", align: "right", render: (f) => (
                 isAdmin && f.esManual ? (
@@ -7935,6 +7951,18 @@ function DeduccionesNominaView({ lotesConCobros, trabajadores, puedeAgregarCobro
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => setConfirmRevertir(null)}>Cancelar</Btn>
             <Btn onClick={async () => { await onRevertirCobro(confirmRevertir); setConfirmRevertir(null); }}>Sí, revertir</Btn>
+          </div>
+        </Modal>
+      )}
+      {confirmMarcar && (
+        <Modal title="Confirmar marcar como Cobrado" onClose={() => setConfirmMarcar(null)} width={440}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Marcar como <strong>"Cobrado"</strong> el cobro de <strong>{fmtMoney(confirmMarcar.valor)}</strong> ({confirmMarcar.tipo}) de <strong>{confirmMarcar.trabajadorNombre}</strong>, sin esperar a que se confirme su nómina?
+            <div style={{ marginTop: 10, color: C.slate, fontSize: 13 }}>Úsalo solo cuando ya sepas que se descontó o se cobró por otro lado -- deja de aparecer como pendiente y NO se le va a volver a descontar de la siguiente liquidación de este trabajador.</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmMarcar(null)}>Cancelar</Btn>
+            <Btn onClick={async () => { await onMarcarCobroManual(confirmMarcar); setConfirmMarcar(null); }}>Sí, marcar como Cobrado</Btn>
           </div>
         </Modal>
       )}
@@ -11342,6 +11370,23 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
       await fsSave("dado_por_cumplido_lotes", fila.loteId, { cobrosBodega: nuevos });
     }
   }
+  // (2026-09-21, a pedido de Fredy) "Marcar como Cobrado" a mano -- espejo
+  // de revertirCobroAPendiente de arriba, para cuando un cobro se quedo
+  // pendiente (tipicamente porque su fecha no le tocaba todavia en
+  // ninguna nomina ya confirmada) y Fredy quiere forzarlo sin reabrir y
+  // reconfirmar una liquidacion ya cerrada solo para disparar el marcado
+  // automatico. Solo administrador (ver boton "✅ Marcar Cobrado" en
+  // DeduccionesNominaView).
+  async function marcarCobroComoCobradoManual(fila) {
+    if (fila.esManual) {
+      await fsSave("nomina_cobros_manuales", fila.cobroManualId, { cobrado: true, periodoIdCobrado: "Manual" });
+    } else {
+      const lote = (lotesConCobros || []).find((l) => l.id === fila.loteId);
+      if (!lote) return;
+      const nuevos = (lote.cobrosBodega || []).map((c, i) => (i === fila.idxEnLote ? { ...c, cobrado: true, periodoIdCobrado: "Manual" } : c));
+      await fsSave("dado_por_cumplido_lotes", fila.loteId, { cobrosBodega: nuevos });
+    }
+  }
   async function agregarCobroManual({ trabajadorId, trabajadorNombre, tipo, valor, fecha, numLote, referencia }) {
     const ref = doc(collection(db, "nomina_cobros_manuales"));
     await setDoc(ref, {
@@ -11563,7 +11608,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "historial_prestacion_servicios" && !areaLider && !soloNovedades && <HistorialPrestacionServicioView liquidaciones={liquidacionesPS} trabajadores={trabajadores} />}
           {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} horas={horas} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
-          {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} isAdmin={isAdmin} onBorrarCobroManual={borrarCobroManual} onRevertirCobro={revertirCobroAPendiente} />}
+          {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} isAdmin={isAdmin} onBorrarCobroManual={borrarCobroManual} onRevertirCobro={revertirCobroAPendiente} onMarcarCobroManual={marcarCobroComoCobradoManual} />}
           {subView === "causacion_manual" && !areaLider && !soloNovedades && <CausacionManualView trabajadores={trabajadores} causacionManual={causacionManual} isAdmin={isAdmin} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} onGuardar={guardarCausacionManual} onBorrar={borrarCausacionManual} areasNomina={areasNomina} />}
           {subView === "conceptos_deduccion" && !areaLider && !soloNovedades && <ConceptosDeduccionView conceptos={conceptosDeduccion} deduccionesTrabajador={deduccionesTrabajador} isAdmin={isAdminCatalogos} onSave={guardarConceptoDeduccion} onDelete={borrarConceptoDeduccion} />}
           {subView === "deducciones_fijas" && !areaLider && !soloNovedades && <DeduccionesFijasView trabajadores={trabajadores} conceptos={conceptosDeduccion} deducciones={deduccionesTrabajador} isAdmin={isAdminCatalogos} onGuardar={guardarDeduccionTrabajador} onCambiarEstado={cambiarEstadoDeduccionTrabajador} currentUser={currentUser} />}
