@@ -7412,7 +7412,7 @@ function costoTotalLiquidacion(l) {
     + (l.pensionEmpleador || 0) + (l.arlEmpleador || 0) + (l.cajaCompensacionEmpleador || 0) + (l.epsEmpleador || 0)
     + (l.cesantiasPeriodo || 0) + (l.interesesPeriodo || 0) + (l.primaPeriodo || 0) + (l.vacacionesPeriodo || 0);
 }
-function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesFD, liquidacionesD, liquidacionesPS }) {
+function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesFD, liquidacionesD, liquidacionesPS, causacionManual: causacionManualDocs }) {
   const hoy = new Date();
   const [tipoPeriodo, setTipoPeriodo] = useState("quincena"); // "quincena" | "mes"
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
@@ -7443,13 +7443,28 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
     const causacionValor = esDestajo ? (l.produccionReal ?? null) : (causacionManual ? (l.causacionManualValor ?? 0) : null);
     const bonificacionCausacion = esDestajo ? 0 : (l.bonificacionCausacion || 0);
     const ayudaCausacion = esDestajo ? (l.ayudaSalarioMinimo || 0) : (l.ayudaCausacion || 0);
+    // (2026-09-21, a pedido de Fredy) Avisar cuando la liquidación
+    // confirmada quedó desactualizada frente a lo que hay HOY en
+    // Causación Manual para ese trabajador+quincena -- pasa cuando se
+    // sube/edita/borra una causación DESPUÉS de haber confirmado la
+    // quincena, y a Fredy se le olvida volver a Calcular/Confirmar.
+    // En Destajo la causación siempre aplica; en Fiscal/Fiscal Destajo
+    // solo si el trabajador tiene el check "Mínimo garantizado por
+    // causación" (si no lo tiene, subir/cambiar la causación no le
+    // afecta el pago y no hay nada que avisar).
+    const causacionDoc = (causacionManualDocs || []).find((c) => c.id === `${l.trabajadorId}__${l.periodoId}`);
+    const valorCausacionCargadoHoy = causacionDoc ? (Number(causacionDoc.valor) || 0) : null;
+    const aplicaCausacion = esDestajo || !!trabajador?.minimoGarantizadoCausacion;
+    const desactualizado = aplicaCausacion && (valorCausacionCargadoHoy != null
+      ? (!causacionManual || Number(causacionValor || 0) !== valorCausacionCargadoHoy)
+      : causacionManual);
     return {
       id: `${tipoNomina}__${l.id}`,
       nombre: l.nombre || trabajador?.nombre || "—",
       area: trabajador?.area || "Sin asignar",
       empleador: trabajador?.empleador || "Sin asignar",
       tipoNomina,
-      causacionManual, causacionValor, bonificacionCausacion, ayudaCausacion,
+      causacionManual, causacionValor, bonificacionCausacion, ayudaCausacion, desactualizado,
       netoAPagar: l.netoAPagar || 0,
       costoTotal: costoTotalLiquidacion(l),
     };
@@ -7519,6 +7534,11 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
         </div>
       ) : (
         <>
+          {filas.some((f) => f.desactualizado) && (
+            <div style={{ padding: "12px 16px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+              ⚠ {filas.filter((f) => f.desactualizado).length} liquidación(es) marcadas con ⚠ más abajo tienen Causación Manual cargada (o cambiada/borrada) DESPUÉS de haberse confirmado -- su Neto a Pagar de este reporte todavía no refleja eso. Ve a su pantalla de Nómina (Fiscal, Fiscal Destajo o Destajo), esa misma quincena, y dale "🧮 Calcular" y "✅ Confirmar y guardar" de nuevo para actualizarla.
+            </div>
+          )}
           <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
             <KPI icon="👷" label="Trabajadores incluidos" value={totalGeneral.trabajadores} color={C.blue} bg={C.blueBg} />
             <KPI icon="💵" label="Neto a Pagar (total)" value={fmtMoney(totalGeneral.neto)} color={C.green} bg={C.greenBg} />
@@ -7554,7 +7574,7 @@ function ReporteNominaPorAreaView({ trabajadores, liquidacionesF, liquidacionesF
                   vacio="Sin trabajadores."
                   columnas={[
                     { key: "nombre", label: "Nombre", render: (f) => (
-                      <span>{f.nombre}{f.causacionManual && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.violetBg, color: C.violet }} title="Causación Manual esta quincena">🖊</span>}</span>
+                      <span>{f.nombre}{f.causacionManual && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.violetBg, color: C.violet }} title="Causación Manual esta quincena">🖊</span>}{f.desactualizado && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.redBg, color: C.red }} title="La Causación Manual cambió después de confirmar esta liquidación -- hay que Calcular y Confirmar de nuevo en su Nómina">⚠ Desactualizado</span>}</span>
                     ) },
                     { key: "empleador", label: "Empleador" },
                     { key: "tipoNomina", label: "Tipo Nómina", render: (f) => (
@@ -11217,7 +11237,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "horas_extras" && !soloNovedades && <RegistrarHorasExtrasView trabajadores={trabajadoresVisibles} horasExtras={horasExtras} currentUser={currentUser} onGuardar={guardarHorasExtras} onBorrar={borrarHorasExtras} isAdmin={isAdmin} />}
           {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} ajustesDestajo={ajustesDestajo} causacionManual={causacionManual} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} deduccionesTrabajador={deduccionesTrabajador} />}
           {subView === "historico_cierres" && !soloNovedades && <HistoricoCierresView cierres={cierres} isAdmin={isAdmin} onEliminar={reabrirCierre} />}
-          {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} />}
+          {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} causacionManual={causacionManual} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
           {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
           {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} grupos={gruposTrabajo} turnos={turnos} isAdmin={isAdminCatalogos} onSave={guardarAreaNomina} onAplicarTurno={aplicarTurnoATrabajadores} onDelete={borrarAreaNomina} />}
