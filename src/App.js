@@ -4637,6 +4637,11 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
   const [aplicandoLimpieza, setAplicandoLimpieza] = useState(false);
   const [reparando, setReparando] = useState(false);
   const [buscarLista, setBuscarLista] = useState("");
+  // (2026-09-21, a pedido de Fredy) Buscador DENTRO de cada preorden ya
+  // abierta -- para encontrar una referencia puntual sin desplazarse por
+  // toda la tabla (algunas tienen 40+ referencias). Un objeto {preordenId:
+  // texto} porque son varias tarjetas en la misma pantalla.
+  const [buscarItemPorPreorden, setBuscarItemPorPreorden] = useState({});
   function itemGraduado(it) {
     return !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidos);
   }
@@ -5019,8 +5024,13 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
         // "bloqueada" para el resto de edición -- el Cliente solo la ve,
         // de solo lectura.
         const puedeMarcarTela = currentUser?.role !== "Cliente";
-        const itemsPendientesTela = (p.items || []).filter((it) => !it.telaComprada);
-        const itemsConTela = (p.items || []).filter((it) => it.telaComprada);
+        const buscarItem = buscarItemPorPreorden[p.id] || "";
+        const bqItem = foldTexto(buscarItem);
+        const itemsFiltrados = !bqItem ? (p.items || []) : (p.items || []).filter((it) =>
+          foldTexto(it.referencia).includes(bqItem) || foldTexto(it.nombre).includes(bqItem) || foldTexto(it.tela).includes(bqItem)
+        );
+        const itemsPendientesTela = itemsFiltrados.filter((it) => !it.telaComprada);
+        const itemsConTela = itemsFiltrados.filter((it) => it.telaComprada);
         function marcarTelaComprada(it) {
           if (window.confirm(`¿Marcar la referencia "${it.referencia}" como tela ya comprada?`)) {
             onActualizarItemPreorden(p.id, it.itemId, { telaComprada: true, telaCompradaEn: nowISO(), telaCompradaPor: currentUser?.name || "" });
@@ -5139,6 +5149,15 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                     )}
                   </div>
                 </div>
+                <div style={{ marginBottom: 12 }}>
+                  <input
+                    value={buscarItem}
+                    onChange={(e) => setBuscarItemPorPreorden((s) => ({ ...s, [p.id]: e.target.value }))}
+                    placeholder="🔍 Buscar referencia, nombre o tela dentro de esta orden..."
+                    style={{ padding: "7px 12px", border: `1.5px solid ${buscarItem ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 300, outline: "none", fontFamily: "inherit" }}
+                  />
+                  {bqItem && <span style={{ marginLeft: 10, fontSize: 12, color: T.slate }}>{itemsFiltrados.length} de {(p.items || []).length} referencia{(p.items || []).length !== 1 ? "s" : ""}</span>}
+                </div>
                 <div style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                     <thead>
@@ -5222,7 +5241,10 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                           );
                         }
                         if (estadoActual !== "aprobada") {
-                          return (p.items || []).map((it, i) => filaItem(it, i));
+                          if (bqItem && !itemsFiltrados.length) {
+                            return <tr><td colSpan={19} style={{ padding: "12px 10px", color: T.slate, fontStyle: "italic" }}>Ninguna referencia de esta orden coincide con esa búsqueda.</td></tr>;
+                          }
+                          return itemsFiltrados.map((it, i) => filaItem(it, i));
                         }
                         return (
                           <>
