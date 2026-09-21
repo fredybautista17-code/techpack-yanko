@@ -1521,7 +1521,6 @@ const COLUMNAS_EXCEL_TRABAJADORES = [
   { campo: "auxilioTransporte", label: "Auxilio de Transporte", tipo: "numero" },
   { campo: "fechaIngreso", label: "Fecha de Ingreso (AAAA-MM-DD)", tipo: "fecha" },
   { campo: "fechaRetiro", label: "Fecha de Retiro (AAAA-MM-DD)", tipo: "fecha" },
-  { campo: "cesantiasAcumuladas", label: "Cesantías Acumuladas", tipo: "numero" },
   { campo: "tarifaHora", label: "Tarifa por Hora", tipo: "numero" },
   { campo: "tnsCodigo", label: "Código TNS", tipo: "texto" },
   { campo: "turnoId", label: "Turno", tipo: "catalogo_turno" },
@@ -1538,7 +1537,6 @@ async function exportarTrabajadoresExcel(trabajadores, turnos) {
     switch (col.campo) {
       case "sueldo":
       case "auxilioTransporte":
-      case "cesantiasAcumuladas":
       case "tarifaHora":
         return Number(t[col.campo] || 0);
       case "activo":
@@ -1817,7 +1815,6 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     auxilioTransporte: trabajador?.auxilioTransporte ?? "",
     fechaIngreso: trabajador?.fechaIngreso || "",
     fechaRetiro: trabajador?.fechaRetiro || "",
-    cesantiasAcumuladas: trabajador?.cesantiasAcumuladas ?? "",
     medirComoBaseAdministrativa: trabajador?.medirComoBaseAdministrativa ?? false,
     salarioMinimoGarantizado: trabajador?.salarioMinimoGarantizado ?? false,
     pagoPorDia: trabajador?.pagoPorDia ?? false,
@@ -1878,7 +1875,6 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       auxilioTransporte: Number(form.auxilioTransporte) || 0,
       fechaIngreso: form.fechaIngreso || "",
       fechaRetiro: form.fechaRetiro || "",
-      cesantiasAcumuladas: Number(form.cesantiasAcumuladas) || 0,
       medirComoBaseAdministrativa: !!form.medirComoBaseAdministrativa,
       salarioMinimoGarantizado: !!form.salarioMinimoGarantizado,
       pagoPorDia: !!form.pagoPorDia,
@@ -1953,12 +1949,6 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
           <Field label="Sueldo mensual fijo"><FInput type="number" value={form.sueldo} onChange={set("sueldo")} placeholder="Ej: 1750905" /></Field>
           <Field label="Auxilio de transporte mensual"><FInput type="number" value={form.auxilioTransporte} onChange={set("auxilioTransporte")} placeholder="Ej: 249095" /></Field>
           <Field label="Fecha de ingreso (para el acumulado de parafiscales)"><FInput type="date" value={form.fechaIngreso} onChange={set("fechaIngreso")} /></Field>
-          <Field label="Cesantías ya acumuladas antes de empezar en Atlas (opcional)">
-            <FInput type="number" value={form.cesantiasAcumuladas} onChange={set("cesantiasAcumuladas")} placeholder="0 si arranca de cero" />
-          </Field>
-          <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
-            Si ya sabes cuánto lleva acumulado en cesantías antes de septiembre, ponlo acá para que los intereses se calculen bien desde el arranque. Si no lo sabes, déjalo en 0 y ajústalo cuando lo tengas.
-          </div>
           <Field label="Fecha de retiro (si ya no trabaja aquí)"><FInput type="date" value={form.fechaRetiro} onChange={set("fechaRetiro")} /></Field>
         </>
       )}
@@ -5224,7 +5214,6 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
           inicio, fin, ...calculo,
           confirmadaEn: new Date().toISOString(),
         });
-        await onGuardarTrabajador({ ...trabajador, cesantiasAcumuladas: calculo.saldoCesantiasFin });
         if (calculo.descuentoCobros > 0) await onMarcarCobrosCobrados(trabajador.id, periodoId, fin);
       }
       setGuardadoOk(true);
@@ -5539,7 +5528,12 @@ function calcularLiquidacionFiscalDestajo(trabajador, diasInasistencia, diasSinA
   const saldoCesantiasInicio = Number(trabajador.cesantiasAcumuladas) || 0;
   const baseParafiscales = PARAFISCALES_SOBRE_SUELDO_DESCONTADO ? sueldoQuincena : sueldo / 2;
   const cesantiasPeriodo = baseParafiscales * TASA_CESANTIAS_MENSUAL;
-  const interesesPeriodo = saldoCesantiasInicio * (TASA_INTERES_CESANTIAS_ANUAL / 24);
+  // (2026-09-21, a pedido de Fredy) Antes esto se calculaba sobre el saldo
+  // acumulado guardado en la ficha del trabajador (Cesantías Acumuladas),
+  // campo que se eliminó -- ahora se calcula igual que en Nómina Fiscal:
+  // con base en la cesantía de ESTA quincena, sin depender de ningún
+  // acumulado guardado.
+  const interesesPeriodo = cesantiasPeriodo * TASA_INTERES_CESANTIAS_ANUAL;
   const primaPeriodo = baseParafiscales * TASA_PRIMA_MENSUAL;
   const vacacionesPeriodo = baseParafiscales * TASA_VACACIONES_MENSUAL;
   // (2026-09-20, a pedido de Fredy) Mismo mecanismo de "Mínimo garantizado
@@ -6056,7 +6050,6 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
           inicio, fin, ...calculo,
           confirmadaEn: new Date().toISOString(),
         });
-        await onGuardarTrabajador({ ...trabajador, cesantiasAcumuladas: calculo.saldoCesantiasFin });
         if (calculo.descuentoCobros > 0) await onMarcarCobrosCobrados(trabajador.id, periodoId, fin);
       }
       setGuardadoOk(true);
@@ -6349,7 +6342,6 @@ function exportReciboLiquidacionHTML({ tipoNomina, trabajador, liquidacion }) {
       <tr><td>Intereses de cesantías</td><td style="text-align:right">${fmtMoney(liquidacion.interesesPeriodo)}</td></tr>
       <tr><td>Prima</td><td style="text-align:right">${fmtMoney(liquidacion.primaPeriodo)}</td></tr>
       <tr><td>Vacaciones</td><td style="text-align:right">${fmtMoney(liquidacion.vacacionesPeriodo)}</td></tr>
-      <tr><td>Saldo acumulado de cesantías (a la fecha)</td><td style="text-align:right">${fmtMoney(liquidacion.saldoCesantiasFin)}</td></tr>
     </tbody></table>`}
     ${liquidacion.totalHoras > 0 ? `
     <div class="section-title">🕐 Horas Sueltas</div>
@@ -7038,7 +7030,6 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
           inicio, fin, ...calculo,
           confirmadaEn: new Date().toISOString(),
         });
-        await onGuardarTrabajador({ ...trabajador, cesantiasAcumuladas: calculo.saldoCesantiasFin });
         if (calculo.descuentoCobros > 0) await onMarcarCobrosCobrados(trabajador.id, periodoId, fin);
       }
       setGuardadoOk(true);
