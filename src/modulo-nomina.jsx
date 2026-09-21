@@ -5160,8 +5160,9 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
   const [detalleFaltas, setDetalleFaltas] = useState(null); // { trabajador, fechas }
 
   const [areaFiltro, setAreaFiltro] = useState("");
+  const [empresaFiltro, setEmpresaFiltro] = useState("");
   const [busqueda, setBusqueda] = useState("");
-  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro) && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
@@ -5304,6 +5305,13 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
         <Field label="Área (opcional, para filtrar)">
           <FSel value={areaFiltro} onChange={setAreaFiltro} options={(areasNomina || []).map((a) => a.nombre)} placeholder="Todas las áreas" />
+        </Field>
+        <Field label="Empresa (opcional, para filtrar)">
+          <div style={{ display: "flex", gap: 6 }}>
+            <Btn small variant={!empresaFiltro ? "primary" : "secondary"} onClick={() => setEmpresaFiltro("")}>Todas</Btn>
+            <Btn small variant={empresaFiltro === "YANKO" ? "primary" : "secondary"} onClick={() => setEmpresaFiltro("YANKO")}>Yanko</Btn>
+            <Btn small variant={empresaFiltro === "INDUTEX" ? "primary" : "secondary"} onClick={() => setEmpresaFiltro("INDUTEX")}>Indutex</Btn>
+          </div>
         </Field>
         <Field label="Año"><FInput type="number" value={anio} onChange={setAnio} /></Field>
         <Field label="Mes">
@@ -5996,8 +6004,9 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
   const [guardadoOk, setGuardadoOk] = useState(false);
   const [detalleFaltas, setDetalleFaltas] = useState(null); // { trabajador, fechas }
 
+  const [empresaFiltro, setEmpresaFiltro] = useState("");
   const [busqueda, setBusqueda] = useState("");
-  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal Destajo" && t.activo !== false).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal Destajo" && t.activo !== false && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
@@ -6120,6 +6129,13 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
         </div>
       )}
       <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Empresa (opcional, para filtrar)">
+          <div style={{ display: "flex", gap: 6 }}>
+            <Btn small variant={!empresaFiltro ? "primary" : "secondary"} onClick={() => setEmpresaFiltro("")}>Todas</Btn>
+            <Btn small variant={empresaFiltro === "YANKO" ? "primary" : "secondary"} onClick={() => setEmpresaFiltro("YANKO")}>Yanko</Btn>
+            <Btn small variant={empresaFiltro === "INDUTEX" ? "primary" : "secondary"} onClick={() => setEmpresaFiltro("INDUTEX")}>Indutex</Btn>
+          </div>
+        </Field>
         <Field label="Año"><FInput type="number" value={anio} onChange={setAnio} /></Field>
         <Field label="Mes">
           <FSel value={mes} onChange={setMes} options={Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1).padStart(2, "0"), label: String(i + 1).padStart(2, "0") }))} />
@@ -6598,8 +6614,9 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
 
+  const [empresaFiltro, setEmpresaFiltro] = useState("");
   const [busqueda, setBusqueda] = useState("");
-  const personas = trabajadores.filter((t) => t.tipoNomina === "Prestación de Servicios" && t.activo !== false).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Prestación de Servicios" && t.activo !== false && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
@@ -6676,6 +6693,13 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
         </div>
       )}
       <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Empresa (opcional, para filtrar)">
+          <div style={{ display: "flex", gap: 6 }}>
+            <Btn small variant={!empresaFiltro ? "primary" : "secondary"} onClick={() => setEmpresaFiltro("")}>Todas</Btn>
+            <Btn small variant={empresaFiltro === "YANKO" ? "primary" : "secondary"} onClick={() => setEmpresaFiltro("YANKO")}>Yanko</Btn>
+            <Btn small variant={empresaFiltro === "INDUTEX" ? "primary" : "secondary"} onClick={() => setEmpresaFiltro("INDUTEX")}>Indutex</Btn>
+          </div>
+        </Field>
         <Field label="Año"><FInput type="number" value={anio} onChange={setAnio} /></Field>
         <Field label="Mes">
           <FSel value={mes} onChange={setMes} options={Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1).padStart(2, "0"), label: String(i + 1).padStart(2, "0") }))} />
@@ -6931,8 +6955,9 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
   const [ajusteObsForm, setAjusteObsForm] = useState("");
 
   const [areaFiltro, setAreaFiltro] = useState("");
+  const [empresaFiltro, setEmpresaFiltro] = useState("");
   const [busqueda, setBusqueda] = useState("");
-  const personas = trabajadores.filter((t) => t.tipoNomina === "Destajo" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Destajo" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro) && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
@@ -7121,6 +7146,13 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
       <div style={{ display: "flex", gap: 12, alignItems: "flex-end", marginBottom: 16, flexWrap: "wrap" }}>
         <Field label="Área (opcional, para filtrar)">
           <FSel value={areaFiltro} onChange={setAreaFiltro} options={(areasNomina || []).map((a) => a.nombre)} placeholder="Todas las áreas" />
+        </Field>
+        <Field label="Empresa (opcional, para filtrar)">
+          <div style={{ display: "flex", gap: 6 }}>
+            <Btn small variant={!empresaFiltro ? "primary" : "secondary"} onClick={() => setEmpresaFiltro("")}>Todas</Btn>
+            <Btn small variant={empresaFiltro === "YANKO" ? "primary" : "secondary"} onClick={() => setEmpresaFiltro("YANKO")}>Yanko</Btn>
+            <Btn small variant={empresaFiltro === "INDUTEX" ? "primary" : "secondary"} onClick={() => setEmpresaFiltro("INDUTEX")}>Indutex</Btn>
+          </div>
         </Field>
         <Field label="Año"><FInput type="number" value={anio} onChange={setAnio} /></Field>
         <Field label="Mes">
