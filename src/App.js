@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import ModuloCorte from "./modulo-corte";
 import ModuloContabilidad from "./modulo-contabilidad";
 import ModuloPlaneacion, { MiDiaStandalone, ProgramadorProcesosStandalone, AreasStandalone, MiDiaNominaStandalone } from "./modulo-planeacion";
@@ -937,6 +937,12 @@ function buscarEntradaCodigoReferencia(categoria, linea, cliente, config) {
 // probarReferenciaBusint.
 function normalizarRefComparacion(v) {
   return String(v || "").trim().toUpperCase().replace(/-/g, "");
+}
+// (2026-09-21, a pedido de Fredy) Para el buscador de Preórdenes por Tipo de
+// Tela -- minúsculas + sin tildes, para que "Amorela"/"amorela" o con/sin
+// acentos encuentren lo mismo.
+function foldTexto(v) {
+  return String(v || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 // Extrae, de una o varias listas de códigos de referencia, los números
 // (corridos absolutos, ej. 401) que caen DENTRO de un rango [inicio, fin]
@@ -3827,6 +3833,31 @@ function NuevaReprogramacionView({ capsulas, pedidos, config, currentUser, esOrd
   const [resultado, setResultado] = useState(null);
   const [manual, setManual] = useState({ tipo: "", colombiaCurva: "", colombiaCantidad: "", venezuelaCurva: "", venezuelaCantidad: "", precio: "", observacionesCliente: "" });
   const [guardando, setGuardando] = useState(false);
+  // (2026-09-21, a pedido de Fredy) Buscador de referencias por Tipo de Tela
+  // y/o Referencia (parcial) contra lo que ya existe en Cápsulas -- para
+  // cuando no se sabe la referencia exacta y se quiere ver qué hay de una
+  // tela dada (ej. "Amorela").
+  const [busquedaTela, setBusquedaTela] = useState("");
+  const [busquedaRefLibre, setBusquedaRefLibre] = useState("");
+  // Índice (en filas) de la referencia que se está editando -- null cuando
+  // no hay ninguna en edición. Antes solo se podía "Quitar" y volver a
+  // agregarla para corregir algo.
+  const [editandoIdx, setEditandoIdx] = useState(null);
+  const [editForm, setEditForm] = useState(null);
+  const resultadosBusquedaTela = useMemo(() => {
+    const telaNorm = foldTexto(busquedaTela);
+    const refNorm = normalizarRefComparacion(busquedaRefLibre);
+    if (!telaNorm && !refNorm) return [];
+    const encontrados = [];
+    for (const cap of capsulas || []) {
+      for (const r of cap.referencias || []) {
+        if (telaNorm && !foldTexto(r.tipoTela).includes(telaNorm)) continue;
+        if (refNorm && !normalizarRefComparacion(r.reference).includes(refNorm)) continue;
+        encontrados.push({ cap, ref: r });
+      }
+    }
+    return encontrados.slice(0, 30);
+  }, [busquedaTela, busquedaRefLibre, capsulas]);
   async function buscar() {
     const ref = referencia.trim();
     if (!ref) return;
@@ -3915,6 +3946,39 @@ function NuevaReprogramacionView({ capsulas, pedidos, config, currentUser, esOrd
     setManual({ tipo: "", colombiaCurva: "", colombiaCantidad: "", venezuelaCurva: "", venezuelaCantidad: "", precio: "", observacionesCliente: "" });
   }
   function quitarFila(i) { setFilas((fs) => fs.filter((_, idx) => idx !== i)); }
+  // Agrega directo desde el buscador de Tela/Referencia -- sin pasar por el
+  // paso de "Buscar en Busint", porque el dato ya viene de Cápsulas. Curva/
+  // Cantidad/Precio quedan en blanco para completarlos con "✏️ Editar".
+  function agregarDesdeBusqueda(cap, ref) {
+    setFilas((fs) => [...fs, {
+      capsulaId: cap.id, refId: ref.id, reference: ref.reference, name: ref.name || ref.reference, image: ref.image || null,
+      categoria: ref.categoria || "", silueta: ref.silueta || "", rango: ref.rango || (ref.tallas?.[0] || ""),
+      tipoTela: ref.tipoTela || "", consumo: "", _tipo: "",
+      _colombiaCurva: "", _colombiaCantidad: "",
+      _venezuelaCurva: "", _venezuelaCantidad: "",
+      _precio: "", _observacionesCliente: "",
+    }]);
+  }
+  // "✏️ Editar" en una fila ya agregada -- antes tocaba Quitar y volver a
+  // agregar para corregir Curva/Cantidad/Precio/etc.
+  function abrirEdicionFila(i) {
+    const f = filas[i];
+    setEditandoIdx(i);
+    setEditForm({
+      tipo: f._tipo || "", colombiaCurva: f._colombiaCurva || "", colombiaCantidad: f._colombiaCantidad || "",
+      venezuelaCurva: f._venezuelaCurva || "", venezuelaCantidad: f._venezuelaCantidad || "",
+      precio: f._precio || "", observacionesCliente: f._observacionesCliente || "",
+    });
+  }
+  function guardarEdicionFila() {
+    setFilas((fs) => fs.map((f, idx) => idx !== editandoIdx ? f : {
+      ...f,
+      _tipo: editForm.tipo, _colombiaCurva: editForm.colombiaCurva, _colombiaCantidad: editForm.colombiaCantidad,
+      _venezuelaCurva: editForm.venezuelaCurva, _venezuelaCantidad: editForm.venezuelaCantidad,
+      _precio: editForm.precio, _observacionesCliente: editForm.observacionesCliente,
+    }));
+    setEditandoIdx(null); setEditForm(null);
+  }
   async function guardar() {
     if (!filas.length) return;
     setGuardando(true);
@@ -3991,6 +4055,46 @@ function NuevaReprogramacionView({ capsulas, pedidos, config, currentUser, esOrd
           </div>
         )}
       </div>
+      <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 20, marginBottom: 20 }}>
+        <div style={{ fontWeight: 800, fontSize: 15, color: T.ink, marginBottom: 4 }}>Buscar por Tela o Referencia</div>
+        <div style={{ fontSize: 12, color: T.slate, marginBottom: 12 }}>Consulta qué referencias ya existen en Cápsulas — útil cuando no sabes el código exacto pero sí la tela.</div>
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 12, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 160 }}>
+            <Field label="Tipo de Tela"><FInput value={busquedaTela} onChange={setBusquedaTela} placeholder="Ej: Amorela" /></Field>
+          </div>
+          <div style={{ flex: 1, minWidth: 160 }}>
+            <Field label="Referencia"><FInput value={busquedaRefLibre} onChange={setBusquedaRefLibre} placeholder="Ej: C-5008" /></Field>
+          </div>
+        </div>
+        {(busquedaTela.trim() || busquedaRefLibre.trim()) && (
+          resultadosBusquedaTela.length ? (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: T.canvas }}>
+                    {["Ref", "Nombre", "Categoría", "Tela", ""].map((h) => (
+                      <th key={h} style={{ padding: "8px 10px", color: T.slate, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {resultadosBusquedaTela.map(({ cap, ref }) => (
+                    <tr key={`${cap.id}-${ref.id}`} style={{ borderBottom: `1px solid ${T.border}` }}>
+                      <td style={{ padding: "6px 10px", fontWeight: 700 }}>{ref.reference || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{ref.name || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{ref.categoria || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{ref.tipoTela || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}><Btn small onClick={() => agregarDesdeBusqueda(cap, ref)}>+ Agregar</Btn></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: T.slate }}>Ninguna referencia en Cápsulas coincide con esa búsqueda.</div>
+          )
+        )}
+      </div>
       {filas.length > 0 && (
         <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 20, marginBottom: 20 }}>
           <div style={{ fontWeight: 800, fontSize: 15, color: T.ink, marginBottom: 12 }}>Referencias agregadas ({filas.length})</div>
@@ -4017,7 +4121,10 @@ function NuevaReprogramacionView({ capsulas, pedidos, config, currentUser, esOrd
                     <td style={{ padding: "6px 10px" }}>{f._venezuelaCantidad || "—"}</td>
                     <td style={{ padding: "6px 10px", fontWeight: 700 }}>{(Number(f._colombiaCantidad) || 0) + (Number(f._venezuelaCantidad) || 0)}</td>
                     <td style={{ padding: "6px 10px" }}>{f._precio || "—"}</td>
-                    <td style={{ padding: "6px 10px" }}><button onClick={() => quitarFila(i)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Quitar</button></td>
+                    <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
+                      <button onClick={() => abrirEdicionFila(i)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", marginRight: 6 }}>Editar</button>
+                      <button onClick={() => quitarFila(i)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Quitar</button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -4043,6 +4150,25 @@ function NuevaReprogramacionView({ capsulas, pedidos, config, currentUser, esOrd
             <Btn onClick={guardar} disabled={guardando}>{guardando ? "Guardando..." : "💾 Guardar Preorden"}</Btn>
           </div>
         </div>
+      )}
+      {editandoIdx !== null && editForm && (
+        <Modal title={`Editar — ${filas[editandoIdx]?.reference || ""}`} onClose={() => { setEditandoIdx(null); setEditForm(null); }} width={560}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+            <Field label="Tipo (Dama/Caballero/Niño)"><FInput value={editForm.tipo} onChange={(v) => setEditForm((f) => ({ ...f, tipo: v }))} placeholder="Si no se clasificó" /></Field>
+            <Field label="Curva Colombia"><FInput value={editForm.colombiaCurva} onChange={(v) => setEditForm((f) => ({ ...f, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+            <Field label="Cantidad Colombia"><FInput value={editForm.colombiaCantidad} onChange={(v) => setEditForm((f) => ({ ...f, colombiaCantidad: v }))} placeholder="0" /></Field>
+            <Field label="Precio"><FInput value={editForm.precio} onChange={(v) => setEditForm((f) => ({ ...f, precio: v }))} placeholder="0" /></Field>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr", gap: 10, marginBottom: 20 }}>
+            <Field label="Curva Venezuela"><FInput value={editForm.venezuelaCurva} onChange={(v) => setEditForm((f) => ({ ...f, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+            <Field label="Cantidad Venezuela"><FInput value={editForm.venezuelaCantidad} onChange={(v) => setEditForm((f) => ({ ...f, venezuelaCantidad: v }))} placeholder="0" /></Field>
+            <Field label="Obs. Cliente"><FInput value={editForm.observacionesCliente} onChange={(v) => setEditForm((f) => ({ ...f, observacionesCliente: v }))} placeholder="Opcional" /></Field>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => { setEditandoIdx(null); setEditForm(null); }}>Cancelar</Btn>
+            <Btn onClick={guardarEdicionFila}>Guardar cambios</Btn>
+          </div>
+        </Modal>
       )}
     </div>
   );
