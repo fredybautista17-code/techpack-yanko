@@ -9292,6 +9292,13 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
   // independientes: valor fijo por quincena (ver
   // calcularLiquidacionPrestacionServicio), sin producción/horas/faltas.
   const esPrestacionTipo = tipoSel === "Prestación de Servicios";
+  // (2026-09-21, a pedido de Fredy) "Por Área" -- en vez de elegir un Tipo
+  // de Nómina, se elige un Área y se ven TODOS sus trabajadores sin
+  // importar de qué tipo de nómina sean (cada uno con la fórmula de SU
+  // propio tipo), para saber cuánto cuesta el área completa. Ver
+  // calcularPorTipo/porTrabajadorArea más abajo.
+  const [modo, setModo] = useState("tipo");
+  const [areaSel, setAreaSel] = useState("");
   const { desde, hasta, label, year, month, mitad } = quincenaDe(qOffset);
   // Mismo formato de periodoId que arma Nómina -> Destajo
   // (`${anio}-${mes}-Q${quincena}`) -- necesario para poder cruzar el
@@ -9303,8 +9310,17 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
   // el desglose por área en "Reporte por Área", así que acá solo queda el
   // cierre General de todo el tipo de nómina de una vez.
   const cierre = (cierres || []).find((c) => c.desde === desde && c.tipoNomina === tipoSel && !c.area);
-  const porTrabajador = useMemo(() => {
-    const trabajadoresTipo = trabajadores.filter((t) => t.tipoNomina === tipoSel).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  // (2026-09-21, a pedido de Fredy) Este cálculo (antes fijo a tipoSel) se
+  // volvió una función que recibe el tipo como parámetro, para poder
+  // correrla 1 vez (modo "Tipo de Nómina", como siempre) o 4 veces -- una
+  // por cada tipo -- y juntar los trabajadores de una misma Área sin
+  // importar de qué tipo sean (modo "Área"). La fórmula de cada
+  // trabajador sigue siendo la de SU tipo, solo cambia cómo se agrupan
+  // los resultados.
+  function calcularPorTipo(tipo) {
+    const tipoEsFiscal = tipo === "Fiscal" || tipo === "Fiscal Destajo";
+    const tipoEsPrestacion = tipo === "Prestación de Servicios";
+    const trabajadoresTipo = trabajadores.filter((t) => t.tipoNomina === tipo).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
     const idsTipo = new Set(trabajadoresTipo.map((t) => t.id));
     const mapa = new Map();
     trabajadoresTipo.forEach((t) => {
@@ -9332,7 +9348,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
     // un valor cargado para esta quincena de un trabajador Destajo, ESE
     // valor reemplaza la Producción real, para que las dos pantallas
     // cuadren igual.
-    if (tipoSel === "Destajo") {
+    if (tipo === "Destajo") {
       mapa.forEach((g) => {
         const causacionDoc = (causacionManual || []).find((c) => c.id === `${g.trabajadorId}__${periodoIdActual}`);
         if (causacionDoc) { g.totalProduccion = Number(causacionDoc.valor) || 0; g.causacionManual = true; }
@@ -9346,19 +9362,19 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         // (2026-09-19, a pedido de Fredy) Deducciones de seguros -- aplican
         // a Fiscal / Fiscal Destajo y a Prestación de Servicios, nunca a
         // Destajo (igual que en Nómina Fiscal / Fiscal Destajo).
-        const deduccionesDetalle = (esFiscalTipo || esPrestacionTipo) ? deduccionesActivasDeTrabajador(deduccionesTrabajador, g.trabajadorId) : [];
+        const deduccionesDetalle = (tipoEsFiscal || tipoEsPrestacion) ? deduccionesActivasDeTrabajador(deduccionesTrabajador, g.trabajadorId) : [];
         const descuentoDeducciones = sumaDeducciones(deduccionesDetalle);
         let ajusteValor = 0, ajusteObservacion = "", ayudaSalarioMinimo = 0, excedenteSobreMinimo = 0;
         let sueldoFijoQuincena = 0, auxilioFijoQuincena = 0, pagoDiasQuincena = 0;
         let sueldoQuincena = 0, auxilioQuincena = 0;
         let netoAntesDeAjuste = totalBruto - descuentoCobros;
-        const salarioMinimoGarantizado = tipoSel === "Destajo" && !!g.salarioMinimoGarantizado;
+        const salarioMinimoGarantizado = tipo === "Destajo" && !!g.salarioMinimoGarantizado;
         // (2026-09-18, a pedido de Fredy) "Pagar por día" -- mismo modelo
         // que ya usa Nómina Destajo: días trabajados (huellero) x Valor
         // día + Horas Sueltas, sin producción. Excluyente con "Salario
         // mínimo garantizado" (la ficha ya no deja marcar los dos).
-        const pagoPorDia = tipoSel === "Destajo" && !salarioMinimoGarantizado && !!g.pagoPorDia;
-        if (esFiscalTipo) {
+        const pagoPorDia = tipo === "Destajo" && !salarioMinimoGarantizado && !!g.pagoPorDia;
+        if (tipoEsFiscal) {
           // (2026-09-19, a pedido de Fredy) Fiscal / Fiscal Destajo se
           // pagan sueldo fijo, no por producción -- mismo cálculo que ya
           // usan Nómina Fiscal / Fiscal Destajo (sueldo + auxilio de
@@ -9371,13 +9387,13 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
           const turno = (turnos || []).find((tu) => tu.id === t.turnoId);
           const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, desde, hasta);
           const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, desde, hasta);
-          const base = tipoSel === "Fiscal"
+          const base = tipo === "Fiscal"
             ? calcularLiquidacionFiscal(t, diasInasistencia, diasSinAuxilio, diasSinSueldo)
             : calcularLiquidacionFiscalDestajo(t, diasInasistencia, diasSinAuxilio, diasSinSueldo);
           sueldoQuincena = base.sueldoQuincena;
           auxilioQuincena = base.auxilioQuincena;
           netoAntesDeAjuste = base.netoAPagar + g.totalHoras - descuentoCobros - descuentoDeducciones;
-        } else if (esPrestacionTipo) {
+        } else if (tipoEsPrestacion) {
           // (2026-09-19, a pedido de Fredy) Valor fijo por quincena, sin
           // descuento por inasistencia ni horas sueltas -- solo se le
           // descuentan cobros de Bodega y deducciones de seguros.
@@ -9402,7 +9418,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
             pagoDiasQuincena = (Number(g.valorDia) || 0) * (g.diasTrabajadosCount || 0);
             netoAntesDeAjuste = pagoDiasQuincena + g.totalHoras - descuentoCobros;
           }
-          if (tipoSel === "Destajo") {
+          if (tipo === "Destajo") {
             const ajusteDoc = (ajustesDestajo || []).find((a) => a.id === `${g.trabajadorId}__${periodoIdActual}`);
             ajusteValor = ajusteDoc ? Number(ajusteDoc.valor) || 0 : 0;
             ajusteObservacion = ajusteDoc ? (ajusteDoc.observacion || "") : "";
@@ -9416,7 +9432,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         // siempre, en los 4 tipos de nómina, se paga siempre en efectivo.
         const bonificacionPuntual = valorBonificacion(bonificaciones, g.trabajadorId, periodoIdActual);
         const totalGeneral = netoAntesDeAjuste + ajusteValor + totalHorasExtra + bonificacionPuntual;
-        return { ...g, totalBruto, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, salarioMinimoGarantizado, pagoPorDia, pagoDiasQuincena, ayudaSalarioMinimo, excedenteSobreMinimo, sueldoFijoQuincena, auxilioFijoQuincena, sueldoQuincena, auxilioQuincena, ajusteValor, ajusteObservacion, totalHorasExtra, bonificacionPuntual, totalGeneral };
+        return { ...g, tipoNomina: tipo, totalBruto, descuentoCobros, cobrosDetalle, deduccionesDetalle, descuentoDeducciones, salarioMinimoGarantizado, pagoPorDia, pagoDiasQuincena, ayudaSalarioMinimo, excedenteSobreMinimo, sueldoFijoQuincena, auxilioFijoQuincena, sueldoQuincena, auxilioQuincena, ajusteValor, ajusteObservacion, totalHorasExtra, bonificacionPuntual, totalGeneral };
       })
       .filter((g) => g.totalBruto > 0 || g.unidades > 0 || g.horasCant > 0 || g.salarioMinimoGarantizado || g.pagoPorDia || g.sueldoQuincena > 0 || g.auxilioQuincena > 0)
       // (2026-09-21, corregido a pedido de Fredy) Este sort iba por
@@ -9425,7 +9441,21 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
       // pedido anterior de "orden alfabetico en las nominas" no se veia
       // reflejado en esta pantalla.
       .sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
-  }, [trabajadores, tipoSel, esFiscalTipo, esPrestacionTipo, prodQuincena, horasQuincena, lotesConCobros, ajustesDestajo, causacionManual, periodoIdActual, diasTrabajados, desde, hasta, faltas, ausencias, turnos, deduccionesTrabajador]);
+  }
+  const porTrabajadorTipo = useMemo(() => calcularPorTipo(tipoSel), [trabajadores, tipoSel, prodQuincena, horasQuincena, lotesConCobros, ajustesDestajo, causacionManual, periodoIdActual, diasTrabajados, desde, hasta, faltas, ausencias, turnos, deduccionesTrabajador, horasExtras, bonificaciones]);
+  // (2026-09-21, a pedido de Fredy) Modo "Por Área" -- corre el mismo
+  // cálculo para los 4 tipos de nómina y junta solo los trabajadores del
+  // Área elegida, sin importar de qué tipo de nómina sean, para ver el
+  // costo TOTAL del área completa. Solo de consulta -- no tiene botón de
+  // Cerrar (el cierre sigue siendo por tipo de nómina, como siempre).
+  const porTrabajadorArea = useMemo(() => {
+    if (modo !== "area" || !areaSel) return [];
+    return ["Fiscal", "Fiscal Destajo", "Destajo", "Prestación de Servicios"]
+      .flatMap((tipo) => calcularPorTipo(tipo))
+      .filter((g) => (g.trabajador?.area || "Sin asignar") === areaSel)
+      .sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  }, [modo, areaSel, trabajadores, prodQuincena, horasQuincena, lotesConCobros, ajustesDestajo, causacionManual, periodoIdActual, diasTrabajados, desde, hasta, faltas, ausencias, turnos, deduccionesTrabajador, horasExtras, bonificaciones]);
+  const porTrabajador = modo === "area" ? porTrabajadorArea : porTrabajadorTipo;
   const totalQuincena = porTrabajador.reduce((s, g) => s + g.totalGeneral, 0);
   const totalDescuentos = porTrabajador.reduce((s, g) => s + g.descuentoCobros, 0);
   const totalAjustes = porTrabajador.reduce((s, g) => s + (g.ajusteValor || 0), 0);
@@ -9458,7 +9488,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
     const XLSX = await import("xlsx");
     const wb = XLSX.utils.book_new();
     const filas = [
-      [`RESUMEN NÓMINA ${tipoSel.toUpperCase()} — QUINCENA`, `${fmtFechaISO(desde)} — ${fmtFechaISO(hasta)}`],
+      [`RESUMEN ${modo === "area" ? `ÁREA ${(areaSel || "").toUpperCase()}` : `NÓMINA ${tipoSel.toUpperCase()}`} — QUINCENA`, `${fmtFechaISO(desde)} — ${fmtFechaISO(hasta)}`],
       [],
       ["Trabajador", "Unidades", "Total Producción", "Horas", "Total Horas", "Descuentos", "Total a Pagar"],
       ...porTrabajador.map((g) => [g.nombre, g.unidades, g.totalProduccion, g.horasCant, g.totalHoras, g.descuentoCobros, g.totalGeneral]),
@@ -9467,7 +9497,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
     ];
     const ws = XLSX.utils.aoa_to_sheet(filas);
     XLSX.utils.book_append_sheet(wb, ws, "Resumen Nómina");
-    XLSX.writeFile(wb, `Nomina_${tipoSel.replace(/\s+/g, "")}_${desde}_a_${hasta}.xlsx`);
+    XLSX.writeFile(wb, `Nomina_${modo === "area" ? "Area_" + (areaSel || "").replace(/\s+/g, "") : tipoSel.replace(/\s+/g, "")}_${desde}_a_${hasta}.xlsx`);
   }
   // Arma y descarga el desprendible de UN trabajador puntual de la quincena
   // activa — se usa tanto desde el botón dentro del detalle como desde el
@@ -9531,18 +9561,31 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         </Modal>
       )}
       <div style={{ display: "flex", gap: 16, marginBottom: 14, flexWrap: "wrap" }}>
-        <div style={{ maxWidth: 260 }}>
-          <Field label="Nómina">
-            <FSel value={tipoSel} onChange={setTipoSel} options={[{ value: "Fiscal", label: "Fiscal" }, { value: "Fiscal Destajo", label: "Fiscal Destajo" }, { value: "Destajo", label: "Destajo" }, { value: "Prestación de Servicios", label: "Prestación de Servicios" }]} />
+        <div style={{ maxWidth: 220 }}>
+          <Field label="Ver por">
+            <FSel value={modo} onChange={setModo} options={[{ value: "tipo", label: "Tipo de Nómina" }, { value: "area", label: "Área" }]} />
           </Field>
         </div>
+        {modo === "area" ? (
+          <div style={{ maxWidth: 260 }}>
+            <Field label="Área">
+              <FSel value={areaSel} onChange={setAreaSel} options={[...(areasNomina || []).map((a) => a.nombre), "Sin asignar"]} placeholder="Selecciona un área..." />
+            </Field>
+          </div>
+        ) : (
+          <div style={{ maxWidth: 260 }}>
+            <Field label="Nómina">
+              <FSel value={tipoSel} onChange={setTipoSel} options={[{ value: "Fiscal", label: "Fiscal" }, { value: "Fiscal Destajo", label: "Fiscal Destajo" }, { value: "Destajo", label: "Destajo" }, { value: "Prestación de Servicios", label: "Prestación de Servicios" }]} />
+            </Field>
+          </div>
+        )}
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <button onClick={() => setQOffset((o) => o - 1)} style={{ padding: "6px 12px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: C.ink }}>← Anterior</button>
-        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{label} — {tipoSel}</div>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{label} — {modo === "area" ? (areaSel || "elige un área") : tipoSel}</div>
         <button onClick={() => setQOffset((o) => o + 1)} style={{ padding: "6px 12px", background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13, color: C.ink }}>Siguiente →</button>
       </div>
-      {cierre && (
+      {cierre && modo === "tipo" && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 14px", background: C.violetBg, border: `1px solid ${C.violet}44`, borderRadius: 10, marginBottom: 16 }}>
           <div style={{ fontSize: 12, color: C.violet, fontWeight: 700 }}>🔒 General — Quincena cerrada por {cierre.cerradoPor || "—"} el {fmtFechaHora(cierre.cerradoEn)} — total: {fmtMoney(cierre.totalQuincena)}</div>
           {isAdmin && <Btn variant="secondary" small onClick={() => onReabrir(cierre.id)}>Reabrir</Btn>}
@@ -9554,16 +9597,16 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
         <KPI icon="💰" label="Total a Pagar" value={fmtMoney(totalQuincena)} color={C.green} bg={C.greenBg} />
         {totalHorasExtraGeneral > 0 && <KPI icon="🕐" label="Horas Extras pagadas" value={fmtMoney(totalHorasExtraGeneral)} color={C.amber} bg={C.amberBg} />}
         {totalBonificacionPuntualGeneral > 0 && <KPI icon="🎯" label="Bonificación puntual" value={fmtMoney(totalBonificacionPuntualGeneral)} color={C.green} bg={C.greenBg} />}
-        {tipoSel === "Destajo" && (totalAjustes !== 0 || totalAyudaSalarioMinimo > 0 || totalExcedenteSobreMinimo > 0) && (
+        {(totalAjustes !== 0 || totalAyudaSalarioMinimo > 0 || totalExcedenteSobreMinimo > 0) && (
           <>
             {totalAjustes !== 0 && <KPI icon="🛠" label="Ajustes manuales" value={fmtMoney(totalAjustes)} color={C.amber} bg={C.amberBg} />}
             {totalAyudaSalarioMinimo > 0 && <KPI icon="🆘" label="Ayuda salario mínimo garantizado" value={fmtMoney(totalAyudaSalarioMinimo)} color={C.red} bg={C.redBg} />}
             {totalExcedenteSobreMinimo > 0 && <KPI icon="📈" label="Generado sobre el mínimo garantizado" value={fmtMoney(totalExcedenteSobreMinimo)} color={C.green} bg={C.greenBg} />}
           </>
         )}
-        {(esFiscalTipo || esPrestacionTipo) && totalDescuentoDeducciones > 0 && <KPI icon="🛡️" label="Descuento seguros/deducciones" value={fmtMoney(totalDescuentoDeducciones)} color={C.red} bg={C.redBg} />}
+        {totalDescuentoDeducciones > 0 && <KPI icon="🛡️" label="Descuento seguros/deducciones" value={fmtMoney(totalDescuentoDeducciones)} color={C.red} bg={C.redBg} />}
       </div>
-      {porArea.length > 0 && (
+      {modo === "tipo" && porArea.length > 0 && (
         <div style={{ marginBottom: 20 }}>
           <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 8 }}>📊 Por Área (solo consulta -- el cierre sigue siendo general)</div>
           <Tabla
@@ -9580,7 +9623,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
       )}
       <div style={{ marginBottom: 14, display: "flex", gap: 10 }}>
         <Btn variant="secondary" small onClick={exportarExcel} disabled={!porTrabajador.length}>⬇ Exportar a Excel</Btn>
-        {puedeCerrarQuincena && !cierre && (
+        {modo === "tipo" && puedeCerrarQuincena && !cierre && (
           <Btn
             small
             onClick={() => onCerrar({ desde, hasta, label, totalQuincena, porTrabajador, tipoNomina: tipoSel, area: null })}
@@ -9590,9 +9633,22 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
       </div>
       <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Clic en un trabajador para ver el desglose de su quincena.</div>
       <Tabla
-        vacio="Sin registros esta quincena."
+        vacio={modo === "area" ? (areaSel ? "Sin registros de esta área en esta quincena." : "Selecciona un área arriba para ver sus trabajadores.") : "Sin registros esta quincena."}
         onRowClick={(f) => setTrabajadorAbierto(f)}
-        columnas={[
+        columnas={modo === "area" ? [
+          { key: "nombre", label: "Trabajador", render: (f) => f.nombre },
+          { key: "tipoNomina", label: "Tipo de Nómina", render: (f) => f.tipoNomina },
+          { key: "totalHorasExtra", label: "Horas Extra", align: "right", render: (f) => (f.totalHorasExtra || 0) > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(f.totalHorasExtra)}</span> : <span style={{ color: C.slate }}>—</span> },
+          { key: "bonificacionPuntual", label: "Bonificación", align: "right", render: (f) => (f.bonificacionPuntual || 0) > 0 ? <span style={{ color: C.green, fontWeight: 700 }}>{fmtMoney(f.bonificacionPuntual)}</span> : <span style={{ color: C.slate }}>—</span> },
+          { key: "descuentoCobros", label: "Descuentos", align: "right", render: (f) => f.descuentoCobros > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>-{fmtMoney(f.descuentoCobros)}</span> : <span style={{ color: C.slate }}>—</span> },
+          { key: "totalGeneral", label: "Total a Pagar", align: "right", render: (f) => <strong>{fmtMoney(f.totalGeneral)}</strong> },
+          {
+            key: "acciones", label: "", align: "right",
+            render: (f) => (
+              <span onClick={(e) => { e.stopPropagation(); descargarDesprendible(f); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }} title="Descargar desprendible de pago">🖨</span>
+            ),
+          },
+        ] : [
           { key: "nombre", label: "Trabajador", render: (f) => (
             <span>{f.nombre}{f.salarioMinimoGarantizado && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.amberBg, color: C.amber }} title="Se le paga fijo el salario mínimo, no por producción">🔒 Mínimo</span>}{f.pagoPorDia && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.blueBg, color: C.blue }} title="Se le paga por día trabajado, no por producción">📅 Por día</span>}</span>
           ) },
