@@ -5168,6 +5168,12 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
   // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- ver
   // abrirQuincenaParaEditar en ModuloNomina.
   const [confirmAbrir, setConfirmAbrir] = useState(false);
+  // (2026-09-21, a pedido de Fredy) Guarda el periodoId que se dejo
+  // "abierto" -- para que el aviso cambie a "Quincena abierta" en vez de
+  // "ya fue confirmada antes" mientras siga en ese estado, sin importar si
+  // Fredy navega a otra pantalla y vuelve.
+  const [periodoAbierto, setPeriodoAbierto] = useState("");
+  const estaAbierta = periodoAbierto === periodoId;
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
   const sinClaseARL = personas.filter((t) => !t.claseRiesgoARL);
 
@@ -5220,6 +5226,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
         });
         if (calculo.descuentoCobros > 0) await onMarcarCobrosCobrados(trabajador.id, periodoId, fin);
       }
+      setPeriodoAbierto("");
       setGuardadoOk(true);
     } finally {
       setGuardando(false);
@@ -5326,7 +5333,12 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
         <Btn onClick={calcular} disabled={personas.length === 0}>🧮 Calcular</Btn>
       </div>
 
-      {yaLiquidado && (
+      {yaLiquidado && estaAbierta && (
+        <div style={{ padding: "10px 14px", background: C.blueBg, borderRadius: 8, color: C.blue, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          🔓 Quincena abierta para editar ({periodoId}) — corrige lo que necesites y dale "🧮 Calcular" y "✅ Confirmar y guardar" de nuevo.
+        </div>
+      )}
+      {yaLiquidado && !estaAbierta && (
         <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
           <div>⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.</div>
           {isAdmin && (
@@ -5344,7 +5356,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => setConfirmAbrir(false)}>Cancelar</Btn>
-            <Btn onClick={async () => { await onAbrirQuincena(liquidaciones.filter((l) => l.periodoId === periodoId).map((l) => l.trabajadorId), periodoId); setConfirmAbrir(false); }}>Sí, abrir quincena</Btn>
+            <Btn onClick={async () => { await onAbrirQuincena(liquidaciones.filter((l) => l.periodoId === periodoId).map((l) => l.trabajadorId), periodoId); setPeriodoAbierto(periodoId); setConfirmAbrir(false); }}>Sí, abrir quincena</Btn>
           </div>
         </Modal>
       )}
@@ -6032,6 +6044,12 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
   // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- ver
   // abrirQuincenaParaEditar en ModuloNomina.
   const [confirmAbrir, setConfirmAbrir] = useState(false);
+  // (2026-09-21, a pedido de Fredy) Guarda el periodoId que se dejo
+  // "abierto" -- para que el aviso cambie a "Quincena abierta" en vez de
+  // "ya fue confirmada antes" mientras siga en ese estado, sin importar si
+  // Fredy navega a otra pantalla y vuelve.
+  const [periodoAbierto, setPeriodoAbierto] = useState("");
+  const estaAbierta = periodoAbierto === periodoId;
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
 
   function calcular() {
@@ -6084,6 +6102,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
         });
         if (calculo.descuentoCobros > 0) await onMarcarCobrosCobrados(trabajador.id, periodoId, fin);
       }
+      setPeriodoAbierto("");
       setGuardadoOk(true);
     } finally {
       setGuardando(false);
@@ -6169,7 +6188,12 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
         <Btn onClick={calcular} disabled={personas.length === 0}>🧮 Calcular</Btn>
       </div>
 
-      {yaLiquidado && (
+      {yaLiquidado && estaAbierta && (
+        <div style={{ padding: "10px 14px", background: C.blueBg, borderRadius: 8, color: C.blue, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          🔓 Quincena abierta para editar ({periodoId}) — corrige lo que necesites y dale "🧮 Calcular" y "✅ Confirmar y guardar" de nuevo.
+        </div>
+      )}
+      {yaLiquidado && !estaAbierta && (
         <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
           <div>⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.</div>
           {isAdmin && (
@@ -6187,7 +6211,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => setConfirmAbrir(false)}>Cancelar</Btn>
-            <Btn onClick={async () => { await onAbrirQuincena(liquidaciones.filter((l) => l.periodoId === periodoId).map((l) => l.trabajadorId), periodoId); setConfirmAbrir(false); }}>Sí, abrir quincena</Btn>
+            <Btn onClick={async () => { await onAbrirQuincena(liquidaciones.filter((l) => l.periodoId === periodoId).map((l) => l.trabajadorId), periodoId); setPeriodoAbierto(periodoId); setConfirmAbrir(false); }}>Sí, abrir quincena</Btn>
           </div>
         </Modal>
       )}
@@ -6662,6 +6686,12 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
   // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- ver
   // abrirQuincenaParaEditar en ModuloNomina.
   const [confirmAbrir, setConfirmAbrir] = useState(false);
+  // (2026-09-21, a pedido de Fredy) Guarda el periodoId que se dejo
+  // "abierto" -- para que el aviso cambie a "Quincena abierta" en vez de
+  // "ya fue confirmada antes" mientras siga en ese estado, sin importar si
+  // Fredy navega a otra pantalla y vuelve.
+  const [periodoAbierto, setPeriodoAbierto] = useState("");
+  const estaAbierta = periodoAbierto === periodoId;
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
 
   function calcular() {
@@ -6696,6 +6726,7 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
         });
         if (calculo.descuentoCobros > 0) await onMarcarCobrosCobrados(trabajador.id, periodoId, fin);
       }
+      setPeriodoAbierto("");
       setGuardadoOk(true);
     } finally {
       setGuardando(false);
@@ -6753,7 +6784,12 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
         <Btn onClick={calcular} disabled={personas.length === 0}>🧮 Calcular</Btn>
       </div>
 
-      {yaLiquidado && (
+      {yaLiquidado && estaAbierta && (
+        <div style={{ padding: "10px 14px", background: C.blueBg, borderRadius: 8, color: C.blue, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          🔓 Quincena abierta para editar ({periodoId}) — corrige lo que necesites y dale "🧮 Calcular" y "✅ Confirmar y guardar" de nuevo.
+        </div>
+      )}
+      {yaLiquidado && !estaAbierta && (
         <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
           <div>⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.</div>
           {isAdmin && (
@@ -6771,7 +6807,7 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => setConfirmAbrir(false)}>Cancelar</Btn>
-            <Btn onClick={async () => { await onAbrirQuincena(liquidaciones.filter((l) => l.periodoId === periodoId).map((l) => l.trabajadorId), periodoId); setConfirmAbrir(false); }}>Sí, abrir quincena</Btn>
+            <Btn onClick={async () => { await onAbrirQuincena(liquidaciones.filter((l) => l.periodoId === periodoId).map((l) => l.trabajadorId), periodoId); setPeriodoAbierto(periodoId); setConfirmAbrir(false); }}>Sí, abrir quincena</Btn>
           </div>
         </Modal>
       )}
@@ -7023,6 +7059,12 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
   // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- ver
   // abrirQuincenaParaEditar en ModuloNomina.
   const [confirmAbrir, setConfirmAbrir] = useState(false);
+  // (2026-09-21, a pedido de Fredy) Guarda el periodoId que se dejo
+  // "abierto" -- para que el aviso cambie a "Quincena abierta" en vez de
+  // "ya fue confirmada antes" mientras siga en ese estado, sin importar si
+  // Fredy navega a otra pantalla y vuelve.
+  const [periodoAbierto, setPeriodoAbierto] = useState("");
+  const estaAbierta = periodoAbierto === periodoId;
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
 
   function calcular() {
@@ -7120,6 +7162,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
         });
         if (calculo.descuentoCobros > 0) await onMarcarCobrosCobrados(trabajador.id, periodoId, fin);
       }
+      setPeriodoAbierto("");
       setGuardadoOk(true);
     } finally {
       setGuardando(false);
@@ -7227,7 +7270,12 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
         <Btn onClick={calcular} disabled={personas.length === 0}>🧮 Calcular</Btn>
       </div>
 
-      {yaLiquidado && (
+      {yaLiquidado && estaAbierta && (
+        <div style={{ padding: "10px 14px", background: C.blueBg, borderRadius: 8, color: C.blue, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          🔓 Quincena abierta para editar ({periodoId}) — corrige lo que necesites y dale "🧮 Calcular" y "✅ Confirmar y guardar" de nuevo.
+        </div>
+      )}
+      {yaLiquidado && !estaAbierta && (
         <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
           <div>⚠ Esta quincena ({periodoId}) ya fue confirmada antes. Si vuelves a confirmar, se sobreescribe.</div>
           {isAdmin && (
@@ -7245,7 +7293,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => setConfirmAbrir(false)}>Cancelar</Btn>
-            <Btn onClick={async () => { await onAbrirQuincena(liquidaciones.filter((l) => l.periodoId === periodoId).map((l) => l.trabajadorId), periodoId); setConfirmAbrir(false); }}>Sí, abrir quincena</Btn>
+            <Btn onClick={async () => { await onAbrirQuincena(liquidaciones.filter((l) => l.periodoId === periodoId).map((l) => l.trabajadorId), periodoId); setPeriodoAbierto(periodoId); setConfirmAbrir(false); }}>Sí, abrir quincena</Btn>
           </div>
         </Modal>
       )}
