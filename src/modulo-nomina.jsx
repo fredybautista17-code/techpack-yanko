@@ -5150,7 +5150,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
 
   const [areaFiltro, setAreaFiltro] = useState("");
   const [busqueda, setBusqueda] = useState("");
-  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro));
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
@@ -5969,7 +5969,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
   const [detalleFaltas, setDetalleFaltas] = useState(null); // { trabajador, fechas }
 
   const [busqueda, setBusqueda] = useState("");
-  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal Destajo" && t.activo !== false);
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal Destajo" && t.activo !== false).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
@@ -6562,7 +6562,7 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
   const [guardadoOk, setGuardadoOk] = useState(false);
 
   const [busqueda, setBusqueda] = useState("");
-  const personas = trabajadores.filter((t) => t.tipoNomina === "Prestación de Servicios" && t.activo !== false);
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Prestación de Servicios" && t.activo !== false).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
@@ -6883,7 +6883,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
 
   const [areaFiltro, setAreaFiltro] = useState("");
   const [busqueda, setBusqueda] = useState("");
-  const personas = trabajadores.filter((t) => t.tipoNomina === "Destajo" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro));
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Destajo" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
@@ -9125,7 +9125,7 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
   // cierre General de todo el tipo de nómina de una vez.
   const cierre = (cierres || []).find((c) => c.desde === desde && c.tipoNomina === tipoSel && !c.area);
   const porTrabajador = useMemo(() => {
-    const trabajadoresTipo = trabajadores.filter((t) => t.tipoNomina === tipoSel);
+    const trabajadoresTipo = trabajadores.filter((t) => t.tipoNomina === tipoSel).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
     const idsTipo = new Set(trabajadoresTipo.map((t) => t.id));
     const mapa = new Map();
     trabajadoresTipo.forEach((t) => {
