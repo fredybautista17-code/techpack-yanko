@@ -3529,7 +3529,20 @@ function rangoQuincenaCC(anio, mes, quincena) {
   const ultimoDia = new Date(Number(anio), Number(mes), 0).getDate();
   return { inicio: `${anio}-${mm}-16`, fin: `${anio}-${mm}-${String(ultimoDia).padStart(2, "0")}` };
 }
-function calcularCausadoDestajoCC(trabajador, netoProduccion, totalHoras) {
+function diasHabilesEnRangoCC(fechaInicioISO, fechaFinISO) {
+  const ini = new Date(`${fechaInicioISO}T00:00:00`);
+  const fin = new Date(`${fechaFinISO}T00:00:00`);
+  if (isNaN(ini) || isNaN(fin) || fin < ini) return 0;
+  let dias = 0;
+  const d = new Date(ini);
+  while (d <= fin) {
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) dias++;
+    d.setDate(d.getDate() + 1);
+  }
+  return dias;
+}
+function calcularCausadoDestajoCC(trabajador, netoProduccion, totalHoras, proporcionMinimo = 1) {
   if (trabajador.pagoPorDia) {
     // Los "Por dia" dependen del huellero de la quincena, que Centro de
     // Costo no trae -- se deja en $0 causado hasta que se confirme en
@@ -3549,7 +3562,14 @@ function calcularCausadoDestajoCC(trabajador, netoProduccion, totalHoras) {
   let netoBase = totalBruto;
   let ayudaSalarioMinimo = 0;
   if (salarioMinimoGarantizado) {
-    const pagoFijo = SMMLV_2026_CC / 2 + auxilioQuincena;
+    // (2026-09-22, a pedido de Fredy) Mientras la quincena sigue en curso
+    // (todavia sin confirmar), no tiene sentido exigirle de una vez el
+    // minimo COMPLETO de toda la quincena -- se prorratea por los dias
+    // habiles que ya pasaron de esa quincena (proporcionMinimo, ver
+    // causadoDestajoEnPeriodoCC). Una vez la quincena se confirma en
+    // Nomina -> Destajo (calcularLiquidacionDestajo, el calculo real), ahi
+    // si se exige el minimo completo -- esto NO cambia ese calculo real.
+    const pagoFijo = (SMMLV_2026_CC / 2 + auxilioQuincena) * proporcionMinimo;
     ayudaSalarioMinimo = Math.max(0, pagoFijo - totalBruto);
     netoBase = pagoFijo;
   }
@@ -3579,7 +3599,7 @@ function cobrosPendientesDeTrabajadorCC(lotesConCobros, trabajadorId, hastaFecha
 // periodoId de periodosDestajoSeleccionados que no tenga ya un registro
 // real. Devuelve la misma forma (valorProducido/costo) que ya arma el
 // useMemo para las liquidaciones SI confirmadas, para poder sumarlos igual.
-function causadoDestajoEnPeriodoCC(t, periodoId, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosCC) {
+function causadoDestajoEnPeriodoCC(t, periodoId, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosCC) {
   const [anio, mes, qLabel] = periodoId.split("-");
   const quincena = qLabel.replace("Q", "");
   const { inicio, fin } = rangoQuincenaCC(anio, mes, quincena);
@@ -3588,7 +3608,19 @@ function causadoDestajoEnPeriodoCC(t, periodoId, produccion, causacionManualCC, 
     ? (Number(causacionDoc.valor) || 0)
     : (produccion || []).filter((p) => p.trabajadorId === t.id && p.fecha >= inicio && p.fecha <= fin).reduce((s, p) => s + (Number(p.total) || 0), 0);
   const totalHorasQuincena = (horasCC || []).filter((h) => h.trabajadorId === t.id && h.fecha >= inicio && h.fecha <= fin).reduce((s, h) => s + (Number(h.total) || 0), 0);
-  const base = calcularCausadoDestajoCC(t, netoProduccion, totalHorasQuincena);
+  // (2026-09-22, a pedido de Fredy) Proporcion de dias habiles ya
+  // transcurridos de ESTA quincena (para prorratear el Salario minimo
+  // garantizado -- ver calcularCausadoDestajoCC). Si la quincena ya paso
+  // por completo (hoy > fin, ej. viendo "Mes" con la Q1 sin confirmar
+  // todavia) o es una quincena futura sin haber empezado, se cae de
+  // vuelta a los casos limite (100% o 0%) en vez de dividir raro.
+  const diasHabilesTotales = diasHabilesEnRangoCC(inicio, fin);
+  let proporcionMinimo = 1;
+  if (diasHabilesTotales > 0) {
+    if (hoy < inicio) proporcionMinimo = 0;
+    else if (hoy < fin) proporcionMinimo = Math.min(1, diasHabilesEnRangoCC(inicio, hoy) / diasHabilesTotales);
+  }
+  const base = calcularCausadoDestajoCC(t, netoProduccion, totalHorasQuincena, proporcionMinimo);
   const totalHorasExtra = sumaHorasExtraTrabajadorCC(horasExtrasCC, t.id, inicio, fin);
   const bonificacionPuntual = valorBonificacionCC(bonificacionesCC, t.id, periodoId);
   const descuentoCobros = cobrosPendientesDeTrabajadorCC(lotesConCobrosCC, t.id, fin);
@@ -4008,7 +4040,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
               valorRealDestajo += liq.pagoPorDia ? (Number(liq.pagoDias) || 0) : (Number(liq.produccionReal) || 0);
               costoRealDestajo += (Number(liq.netoAPagar) || 0) + (Number(liq.cesantiasPeriodo) || 0) + (Number(liq.primaPeriodo) || 0) + (Number(liq.vacacionesPeriodo) || 0);
             } else {
-              const causado = causadoDestajoEnPeriodoCC(t, pid, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC);
+              const causado = causadoDestajoEnPeriodoCC(t, pid, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC);
               valorRealDestajo += causado.valorProducido;
               costoRealDestajo += causado.costo;
               huboCausado = true;
@@ -4029,7 +4061,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
         };
       })
       .sort((a, b) => b.valorProducido - a.valorProducido);
-  }, [trabajadoresArea, porTrabajador, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin, liquidacionesDestajo, periodosDestajoSeleccionados, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC]);
+  }, [trabajadoresArea, porTrabajador, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin, liquidacionesDestajo, periodosDestajoSeleccionados, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
   const totalUnidades = filas.reduce((s, f) => s + f.unidades, 0);
   const totalValor = filas.reduce((s, f) => s + f.valorProducido, 0);
   const totalCosto = filas.reduce((s, f) => s + (f.sinSueldo ? 0 : f.costo), 0);
