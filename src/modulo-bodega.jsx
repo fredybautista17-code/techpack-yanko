@@ -54,6 +54,12 @@ function uid() {
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
+// (2026-09-22, a pedido de Fredy) Igual que su gemela en App.js -- para
+// poder buscar/armar el id de una tela en la Bitácora sin que "Diamante"
+// y "diamante" (o con tilde/sin tilde) cuenten como telas distintas.
+function foldTexto(v) {
+  return String(v || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
 // (2026-09-14, a pedido de Fredy) Fecha de corte para los rangos rapidos
 // del Historial (Ultimos 7/30/90 dias) -- evita cargar de una vez listas
 // de cientos o miles de lotes que solo van a crecer con el tiempo.
@@ -4761,6 +4767,15 @@ function BodegaHubView({ onSeleccionar, onVolver, onLogout, puedeVerControlDespa
 // Bodega, "Ver" para Diseño) -- ver GRUPOS_MODULOS_DEF en App.js.
 // ═══════════════════════════════════════════════════════════════════════════
 const COL_FICHAS_TELA = "bodega_fichas_tela";
+// (2026-09-22, a pedido de Fredy) Bitácora de Telas -- catálogo maestro,
+// UNA fila por cada tela distinta (no una por cada llegada/uso, eso ya lo
+// cubre COL_FICHAS_TELA arriba). La edita el área de Diseño (o quien tenga
+// el permiso "Editar Bitácora (Diseño)"/admin, ver puedeEditarBitacora más
+// abajo) y también se auto-alimenta desde App.js cuando se crea un
+// Prototipo o una Cápsula con una tela que todavía no está acá (ver
+// sincronizarBitacoraTela en App.js). El id de cada documento es la tela
+// normalizada con foldTexto.
+const COL_BITACORA_TELAS = "bodega_bitacora_telas";
 function FichaTelaModal({ onClose, onGuardar, guardando }) {
   const [form, setForm] = useState({
     tela: "", proveedor: "", fechaRecepcion: today(), lote: "",
@@ -4832,8 +4847,138 @@ function ConfigVistoBuenoModal({ config, areasNomina, onClose, onGuardar }) {
     </Modal>
   );
 }
-export function FichaTelaStandalone({ currentUser, puedeCrear, puedeVer, onVolver, onLogout }) {
+// (2026-09-22, a pedido de Fredy) Modal para crear/editar UNA fila de la
+// Bitácora de Telas a mano. "usadoEn" no se edita acá -- lo maneja solo
+// sincronizarBitacoraTela desde App.js cuando se crea un Prototipo/Cápsula.
+function BitacoraTelaModal({ inicial, onClose, onGuardar, guardando }) {
+  const [form, setForm] = useState({
+    tela: inicial?.tela || "", proveedor: inicial?.proveedor || "", lote: inicial?.lote || "",
+    ancho: inicial?.ancho || "", rendimiento: inicial?.rendimiento || "",
+    composicion: inicial?.composicion || "", observaciones: inicial?.observaciones || "",
+  });
+  function campo(k) {
+    return { value: form[k], onChange: (v) => setForm((f) => ({ ...f, [k]: v })) };
+  }
+  const puedeGuardar = form.tela.trim();
+  return (
+    <Modal title={inicial ? `🧵 Editar — ${inicial.tela}` : "🧵 Nueva tela en la Bitácora"} onClose={onClose} width={620}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+        <Field label="Tela / Referencia"><FInput {...campo("tela")} placeholder="Ej. Jersey Algodón 24/1" /></Field>
+        <Field label="Proveedor"><FInput {...campo("proveedor")} placeholder="Nombre del proveedor" /></Field>
+        <Field label="Lote / Rollo"><FInput {...campo("lote")} placeholder="Ej. R-4521" /></Field>
+        <Field label="Ancho de tela"><FInput {...campo("ancho")} placeholder="Ej. 1.80 m" /></Field>
+        <Field label="Rendimiento"><FInput {...campo("rendimiento")} placeholder="Ej. 3.2 m/kg" /></Field>
+      </div>
+      <Field label="Composición"><FInput {...campo("composicion")} placeholder="Ej. 95% Algodón · 5% Elastano" /></Field>
+      <Field label="Observaciones">
+        <textarea
+          value={form.observaciones}
+          onChange={(e) => setForm((f) => ({ ...f, observaciones: e.target.value }))}
+          rows={3}
+          style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit", resize: "vertical" }}
+        />
+      </Field>
+      {inicial?.usadoEn?.nombre && (
+        <div style={{ padding: "10px 14px", background: C.greenBg, borderRadius: 8, color: C.green, fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>
+          Usada en {inicial.usadoEn.tipo === "Cápsula" ? "📦" : "🧪"} {inicial.usadoEn.tipo} "{inicial.usadoEn.nombre}" — esto lo actualiza solo el sistema cuando se crea un Prototipo/Cápsula con esta tela.
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 6 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={() => onGuardar(form)} disabled={!puedeGuardar || guardando}>{guardando ? "Guardando..." : "Guardar"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+// (2026-09-22, a pedido de Fredy) Bitácora de Telas -- catálogo maestro:
+// una fila por tela, con si ya se usó en un Prototipo/Cápsula o no. Vive
+// como pestaña nueva dentro de FichaTelaStandalone (ver más abajo).
+function BitacoraTelasView({ puedeEditar }) {
+  const [telas, setTelas] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busqueda, setBusqueda] = useState("");
+  const [modalTela, setModalTela] = useState(null); // null=cerrado, {}=nueva, {...}=editar
+  const [guardando, setGuardando] = useState(false);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, COL_BITACORA_TELAS), (snap) => {
+      setTelas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+  const telasFiltradas = useMemo(() => {
+    const q = foldTexto(busqueda);
+    return [...telas]
+      .filter((t) => !q || foldTexto(t.tela).includes(q) || foldTexto(t.proveedor).includes(q) || foldTexto(t.lote).includes(q))
+      .sort((a, b) => foldTexto(a.tela).localeCompare(foldTexto(b.tela)));
+  }, [telas, busqueda]);
+  const usadas = telas.filter((t) => t.usadoEn && t.usadoEn.nombre).length;
+  async function guardarTela(form) {
+    setGuardando(true);
+    try {
+      const telaId = modalTela?.id ? modalTela.id : foldTexto(form.tela).replace(/\//g, "-").replace(/\s+/g, " ").trim();
+      if (!telaId) return;
+      await fsSave(COL_BITACORA_TELAS, telaId, {
+        tela: form.tela.trim(), proveedor: form.proveedor.trim(), lote: form.lote.trim(),
+        ancho: form.ancho.trim(), rendimiento: form.rendimiento.trim(),
+        composicion: form.composicion.trim(), observaciones: form.observaciones.trim(),
+      });
+      setModalTela(null);
+    } finally {
+      setGuardando(false);
+    }
+  }
+  if (loading) {
+    return <div style={{ padding: 40, textAlign: "center", color: C.slate, fontSize: 13 }}>Cargando Bitácora de Telas...</div>;
+  }
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18, gap: 16, flexWrap: "wrap" }}>
+        <p style={{ margin: "6px 0 0", fontSize: 13, color: C.slate, maxWidth: 640 }}>
+          Catálogo maestro: una fila por cada tela distinta. Se llena a mano o automáticamente cuando Diseño crea un Prototipo o una Cápsula con esa tela.
+        </p>
+        {puedeEditar && <Btn onClick={() => setModalTela({})}>+ Nueva tela</Btn>}
+      </div>
+      <div style={{ display: "flex", gap: 14, marginBottom: 18, flexWrap: "wrap" }}>
+        <KPI icon="🧵" label="Telas en catálogo" value={telas.length} color={C.ink} bg={C.white} />
+        <KPI icon="✅" label="Ya usadas en una muestra" value={usadas} color={C.green} bg={C.greenBg} />
+        <KPI icon="⏳" label="Sin usar todavía" value={telas.length - usadas} color={C.amber} bg={C.amberBg} />
+      </div>
+      <div style={{ maxWidth: 340, marginBottom: 14 }}>
+        <FInput value={busqueda} onChange={setBusqueda} placeholder="🔎 Buscar tela, proveedor o lote..." />
+      </div>
+      <Tabla
+        columnas={[
+          { key: "tela", label: "Tela", render: (f) => <b>{f.tela}</b> },
+          { key: "proveedor", label: "Proveedor", render: (f) => f.proveedor || "—" },
+          { key: "lote", label: "Lote", render: (f) => f.lote || "—" },
+          { key: "ancho", label: "Ancho", render: (f) => f.ancho || "—" },
+          { key: "rendimiento", label: "Rendimiento", render: (f) => f.rendimiento || "—" },
+          { key: "composicion", label: "Composición", render: (f) => f.composicion || "—" },
+          { key: "observaciones", label: "Observaciones", render: (f) => f.observaciones || "—" },
+          {
+            key: "usadoEn", label: "Usado en",
+            render: (f) => (f.usadoEn && f.usadoEn.nombre ? `${f.usadoEn.tipo === "Cápsula" ? "📦" : "🧪"} ${f.usadoEn.tipo} "${f.usadoEn.nombre}"` : "— Sin usar aún"),
+            color: (f) => (f.usadoEn && f.usadoEn.nombre ? C.green : C.slate),
+          },
+        ]}
+        filas={telasFiltradas}
+        vacio="Todavía no hay ninguna tela registrada en la Bitácora."
+        onRowClick={puedeEditar ? (f) => setModalTela(f) : undefined}
+      />
+      {modalTela !== null && (
+        <BitacoraTelaModal inicial={modalTela.id ? modalTela : null} onClose={() => setModalTela(null)} onGuardar={guardarTela} guardando={guardando} />
+      )}
+    </div>
+  );
+}
+export function FichaTelaStandalone({ currentUser, puedeCrear, puedeVer, puedeEditarBitacora, onVolver, onLogout }) {
   const isAdmin = !!currentUser?.isAdmin;
+  // (2026-09-22, a pedido de Fredy) Pestaña activa: "recepcion" (lo que ya
+  // existía) o "bitacora" (catálogo maestro nuevo). Si el usuario solo
+  // tiene el permiso de Bitácora (sin Crear ni Ver de Recepción), arranca
+  // directo ahí para no aterrizar en una pestaña vacía sin acceso.
+  const [tab, setTab] = useState(puedeCrear || puedeVer ? "recepcion" : "bitacora");
   const [fichas, setFichas] = useState([]);
   const [areasNomina, setAreasNomina] = useState([]);
   const [config, setConfig] = useState({ modoVistoBueno: "", areaVistoBueno: "", personaVistoBuenoNombre: "", personaVistoBuenoUsername: "" });
@@ -4909,7 +5054,7 @@ export function FichaTelaStandalone({ currentUser, puedeCrear, puedeVer, onVolve
             ← Volver
           </button>
         )}
-        <div style={{ flex: 1, fontSize: 14, fontWeight: 800, color: C.white }}>🧵 Fichas de Recepción de Tela</div>
+        <div style={{ flex: 1, fontSize: 14, fontWeight: 800, color: C.white }}>🧵 Fichas de Tela</div>
         {isAdmin && (
           <button onClick={() => setModalConfig(true)} style={{ background: "transparent", border: "1px solid rgba(200,184,162,0.3)", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 12, color: C.seam }}>
             ⚙️ Configurar Visto Bueno
@@ -4921,6 +5066,17 @@ export function FichaTelaStandalone({ currentUser, puedeCrear, puedeVer, onVolve
           </button>
         )}
       </div>
+      <div style={{ display: "flex", gap: 4, padding: "0 32px", background: C.white, borderBottom: `2px solid ${C.border}` }}>
+        {(puedeCrear || puedeVer) && (
+          <button onClick={() => setTab("recepcion")} style={{ padding: "12px 20px", fontSize: 13, fontWeight: 800, color: tab === "recepcion" ? C.ink : C.slate, background: "transparent", border: "none", borderBottom: tab === "recepcion" ? `3px solid ${C.amber}` : "3px solid transparent", cursor: "pointer", fontFamily: "inherit" }}>
+            📋 Recepción de Tela
+          </button>
+        )}
+        <button onClick={() => setTab("bitacora")} style={{ padding: "12px 20px", fontSize: 13, fontWeight: 800, color: tab === "bitacora" ? C.ink : C.slate, background: "transparent", border: "none", borderBottom: tab === "bitacora" ? `3px solid ${C.amber}` : "3px solid transparent", cursor: "pointer", fontFamily: "inherit" }}>
+          📚 Bitácora de Telas
+        </button>
+      </div>
+      {tab === "recepcion" && (puedeCrear || puedeVer) && (
       <div style={{ padding: "28px 32px" }}>
         <div style={{ maxWidth: 1100, margin: "0 auto" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 22, gap: 16, flexWrap: "wrap" }}>
@@ -4957,6 +5113,16 @@ export function FichaTelaStandalone({ currentUser, puedeCrear, puedeVer, onVolve
           )}
         </div>
       </div>
+      )}
+      {tab === "bitacora" && (
+      <div style={{ padding: "28px 32px" }}>
+        <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+          <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>📚 Bitácora de Telas</h2>
+          <div style={{ height: 18 }} />
+          <BitacoraTelasView puedeEditar={!!puedeEditarBitacora || isAdmin} />
+        </div>
+      </div>
+      )}
       {modalNueva && <FichaTelaModal onClose={() => setModalNueva(false)} onGuardar={guardarFicha} guardando={guardandoNueva} />}
       {fichaAbierta && (
         <Modal title="📋 Ficha de Recepción de Tela" onClose={() => setFichaAbierta(null)} width={640}>

@@ -9148,7 +9148,11 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     { area: "📋 Informes", items: [["informes", "Informes"]] },
     { area: "🗂️ Áreas", items: [["areas_centro_costo", "Centro de Costo"], ["areas_estadisticas", "Estadísticas"], ["areas_reclamos", "Reclamos"], ["areas_programador", "Programador"]] },
     { area: "💰 Financiera", items: [["financiera", "Financiera"]] },
-    { area: "🧵 Fichas de Tela", items: [["fichas_tela_crear", "Crear (Bodega)"], ["fichas_tela_ver", "Ver (Diseño)"]] },
+    // (2026-09-22, a pedido de Fredy) "Editar Bitácora" es un permiso
+    // aparte de "Ver" -- Diseño ya podía VER las Fichas de Recepción, pero
+    // la Bitácora de Telas (catálogo maestro, ver Bitácora de Telas más
+    // abajo en modulo-bodega.jsx) además la puede EDITAR directamente.
+    { area: "🧵 Fichas de Tela", items: [["fichas_tela_crear", "Crear (Bodega)"], ["fichas_tela_ver", "Ver (Diseño)"], ["bitacora_telas_editar", "Editar Bitácora (Diseño)"]] },
   ];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["notificaciones", "🔔 Notificaciones"], ["papelera", "🗑 Papelera"], ["busint_test", "🔌 Busint (prueba)"]];
   const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", grupo: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
@@ -12688,9 +12692,43 @@ function AppInner() {
     setPedidoConfig((c) => ({ ...c, ...partial }));
     await fsUpdate("pedidos_config", "main", partial);
   }
-  async function addProto(p) { const updated = [...protos, p]; setProtos(updated); await fsSave("prototipos", p.id, p); notify({ id: uid(), icon: "🧪", title: "Prototipo creado", msg: p.name }); }
+  // (2026-09-22, a pedido de Fredy) Bitácora de Telas -- catálogo maestro
+  // (una fila por tela, ver "Bitácora de Telas" en modulo-bodega.jsx) que
+  // se auto-alimenta cada vez que se crea un Prototipo o una Cápsula: toma
+  // solo la tela PRINCIPAL de "Tipo de Tela" (lo que esté antes de la
+  // primera coma, si escriben varias separadas por coma -- a pedido
+  // explícito de Fredy) y, si esa tela todavía no está en la Bitácora, crea
+  // la fila con "usadoEn" ya lleno (el resto de campos -- proveedor, lote,
+  // etc. -- quedan para que Diseño/Bodega los complete después); si ya
+  // existía, solo actualiza "usadoEn" sin pisar los demás campos (fsSave ya
+  // guarda con merge:true). El id del documento se normaliza con foldTexto
+  // para que "Diamante" y "diamante" no generen dos filas distintas.
+  async function sincronizarBitacoraTela(tipoTelaTexto, origen) {
+    const principal = String(tipoTelaTexto || "").split(",")[0].trim();
+    if (!principal) return;
+    const telaId = foldTexto(principal).replace(/\//g, "-").replace(/\s+/g, " ").trim();
+    if (!telaId) return;
+    try {
+      await fsSave("bodega_bitacora_telas", telaId, { tela: principal, usadoEn: origen });
+    } catch (e) {
+      console.error("No se pudo sincronizar la Bitácora de Telas:", e);
+    }
+  }
+  async function addProto(p) {
+    const updated = [...protos, p];
+    setProtos(updated);
+    await fsSave("prototipos", p.id, p);
+    notify({ id: uid(), icon: "🧪", title: "Prototipo creado", msg: p.name });
+    sincronizarBitacoraTela(p.tipoTela, { tipo: "Prototipo", nombre: p.name, id: p.id, fecha: today() });
+  }
   async function updateProto(id, patch) { const updated = protos.map((x) => (x.id === id ? { ...x, ...patch } : x)); setProtos(updated); const item = updated.find((x) => x.id === id); await fsSave("prototipos", id, item); if (patch.status === "enviado") syncCronogramaEnviado(id); }
-  async function addCapsula(c) { const updated = [...capsulas, c]; setCapsulas(updated); await fsSave("capsulas", c.id, c); notify({ id: uid(), icon: "🗂", title: "Cápsula creada", msg: c.name }); }
+  async function addCapsula(c) {
+    const updated = [...capsulas, c];
+    setCapsulas(updated);
+    await fsSave("capsulas", c.id, c);
+    notify({ id: uid(), icon: "🗂", title: "Cápsula creada", msg: c.name });
+    sincronizarBitacoraTela(c.tipoTela, { tipo: "Cápsula", nombre: c.name, id: c.id, fecha: today() });
+  }
   async function updateCapsulasAndSave(newCapsulas) { setCapsulas(newCapsulas); await fsBatch("capsulas", newCapsulas); }
   async function addRef(capId, ref) { const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, referencias: [...c.referencias, ref] })); await updateCapsulasAndSave(updated); }
   async function updateRef(capId, refId, patch) {
@@ -13321,7 +13359,8 @@ function AppInner() {
   // modulo-bodega.jsx.
   const canAccessFichasTelaCrear = moduloVisible(userRoleData, "fichas_tela_crear", currentUser?.isAdmin);
   const canAccessFichasTelaVer = moduloVisible(userRoleData, "fichas_tela_ver", currentUser?.isAdmin);
-  const canAccessFichasTela = canAccessFichasTelaCrear || canAccessFichasTelaVer;
+  const canAccessBitacoraTelasEditar = moduloVisible(userRoleData, "bitacora_telas_editar", currentUser?.isAdmin);
+  const canAccessFichasTela = canAccessFichasTelaCrear || canAccessFichasTelaVer || canAccessBitacoraTelasEditar;
   // "admin_diseno" es un permiso aparte del admin general: da entrada al panel
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
@@ -13358,6 +13397,9 @@ function AppInner() {
             ...(canAccessAdminDiseno ? [{ id: "admin", icon: "⚙", label: "Administrador General" }] : []),
           ],
         }]
+      : []),
+    ...(canAccessFichasTela
+      ? [{ id: "fichas_tela_area", icon: "🧵", label: "Fichas de Tela", items: [{ id: "fichas_tela_area", icon: "🧵", label: "Ficha de Recepción de Tela" }] }]
       : []),
     ...(canAccessPedidosArea
       ? [{
@@ -13408,9 +13450,6 @@ function AppInner() {
       : []),
     ...(canAccessFinanciera
       ? [{ id: "financiera_area", icon: "💰", label: "Financiera", items: [{ id: "financiera_area", icon: "💰", label: "Módulo Financiera" }] }]
-      : []),
-    ...(canAccessFichasTela
-      ? [{ id: "fichas_tela_area", icon: "🧵", label: "Fichas de Tela", items: [{ id: "fichas_tela_area", icon: "🧵", label: "Ficha de Recepción de Tela" }] }]
       : []),
   ];
   const [areaAbierta, setAreaAbierta] = useState("diseno");
@@ -13529,7 +13568,7 @@ function AppInner() {
     return <FinancieraStandalone currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "fichas_tela") {
-    return <FichaTelaStandalone currentUser={currentUser} puedeCrear={canAccessFichasTelaCrear} puedeVer={canAccessFichasTelaVer} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <FichaTelaStandalone currentUser={currentUser} puedeCrear={canAccessFichasTelaCrear} puedeVer={canAccessFichasTelaVer} puedeEditarBitacora={canAccessBitacoraTelasEditar} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   return (
     <div style={{ minHeight: "100vh", background: T.canvas, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,sans-serif" }}>
