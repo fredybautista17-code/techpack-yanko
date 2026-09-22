@@ -5171,7 +5171,7 @@ function cargarLiquidacionesGuardadas(liquidaciones, trabajadores, periodoId) {
       calculo: l,
     }));
 }
-function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, areasNomina, horas, deduccionesTrabajador, causacionManual, horasExtras, bonificaciones, isAdmin, onAbrirQuincena }) {
+function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, areasNomina, horas, deduccionesTrabajador, causacionManual, horasExtras, bonificaciones, isAdmin, onAbrirQuincena, onEliminarLiquidacion }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -5192,6 +5192,18 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
   // recargaba TODOS los que ya tuvieran esa quincena guardada (de
   // cualquier área/empresa), no solo los que se acababan de confirmar.
   const yaLiquidado = personas.some((t) => liquidaciones.some((l) => l.periodoId === periodoId && l.trabajadorId === t.id));
+  // (2026-09-22, a pedido de Fredy) Registros huerfanos: liquidaciones ya
+  // guardadas en esta quincena para trabajadores que HOY ya no tienen este
+  // tipo de nomina (les cambiaste el tipo despues de confirmar, ej. de
+  // Fiscal Destajo a Destajo) -- Financiera sigue sumando estos registros
+  // aunque el trabajador ya no aparezca en esta pantalla, y eso descuadra
+  // sus totales. Se detectan aqui para que Fredy los pueda borrar el mismo.
+  const registrosHuerfanos = liquidaciones.filter((l) => {
+    if (l.periodoId !== periodoId) return false;
+    const t = trabajadores.find((tt) => tt.id === l.trabajadorId);
+    return t && t.tipoNomina !== "Fiscal";
+  });
+  const [confirmBorrarHuerfano, setConfirmBorrarHuerfano] = useState(null);
   // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- ver
   // abrirQuincenaParaEditar en ModuloNomina.
   const [confirmAbrir, setConfirmAbrir] = useState(false);
@@ -5394,6 +5406,35 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => setConfirmAbrir(false)}>Cancelar</Btn>
             <Btn onClick={async () => { await onAbrirQuincena(liquidaciones.filter((l) => l.periodoId === periodoId).map((l) => l.trabajadorId), periodoId); setPeriodoAbierto(periodoId); setConfirmAbrir(false); }}>Sí, abrir quincena</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {registrosHuerfanos.length > 0 && (
+        <div style={{ padding: "10px 14px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          <div>⚠ Hay {registrosHuerfanos.length} registro(s) guardado(s) en esta quincena de trabajador(es) que ya cambiaron de tipo de nómina (ya no son "Fiscal"). Financiera los sigue sumando aquí -- bórralos para que sus totales no salgan descuadrados.</div>
+          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+            {registrosHuerfanos.map((l) => {
+              const t = trabajadores.find((tt) => tt.id === l.trabajadorId);
+              return (
+                <div key={l.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, background: C.white, borderRadius: 6, padding: "6px 10px", flexWrap: "wrap" }}>
+                  <span>{l.nombre || t?.nombre || "(trabajador)"} — ahora es <strong>{t?.tipoNomina || "sin tipo"}</strong> — {fmtMoney(l.netoAPagar)}</span>
+                  <Btn small variant="danger" onClick={() => setConfirmBorrarHuerfano(l)}>🗑 Eliminar registro obsoleto</Btn>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {confirmBorrarHuerfano && (
+        <Modal title="Eliminar registro obsoleto" onClose={() => setConfirmBorrarHuerfano(null)} width={460}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Eliminar el registro de <strong>{confirmBorrarHuerfano.nombre}</strong> guardado en "Fiscal" para la quincena <strong>{periodoId}</strong> ({fmtMoney(confirmBorrarHuerfano.netoAPagar)})?
+            <div style={{ marginTop: 10, color: C.slate, fontSize: 13 }}>Este trabajador ya no es "Fiscal" -- si ya le confirmaste su liquidación en su nómina actual, este registro viejo ya no hace falta y solo hace que Financiera sume de más.</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmBorrarHuerfano(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={async () => { await onEliminarLiquidacion(confirmBorrarHuerfano.id); setConfirmBorrarHuerfano(null); }}>Sí, eliminar</Btn>
           </div>
         </Modal>
       )}
@@ -6063,7 +6104,7 @@ function DeduccionesFijasView({ trabajadores, conceptos, deducciones, isAdmin, o
     </div>
   );
 }
-function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, horas, deduccionesTrabajador, causacionManual, horasExtras, bonificaciones, isAdmin, onAbrirQuincena }) {
+function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, horas, deduccionesTrabajador, causacionManual, horasExtras, bonificaciones, isAdmin, onAbrirQuincena, onEliminarLiquidacion }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -6083,6 +6124,18 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
   // recargaba TODOS los que ya tuvieran esa quincena guardada (de
   // cualquier área/empresa), no solo los que se acababan de confirmar.
   const yaLiquidado = personas.some((t) => liquidaciones.some((l) => l.periodoId === periodoId && l.trabajadorId === t.id));
+  // (2026-09-22, a pedido de Fredy) Registros huerfanos: liquidaciones ya
+  // guardadas en esta quincena para trabajadores que HOY ya no tienen este
+  // tipo de nomina (les cambiaste el tipo despues de confirmar, ej. de
+  // Fiscal Destajo a Destajo) -- Financiera sigue sumando estos registros
+  // aunque el trabajador ya no aparezca en esta pantalla, y eso descuadra
+  // sus totales. Se detectan aqui para que Fredy los pueda borrar el mismo.
+  const registrosHuerfanos = liquidaciones.filter((l) => {
+    if (l.periodoId !== periodoId) return false;
+    const t = trabajadores.find((tt) => tt.id === l.trabajadorId);
+    return t && t.tipoNomina !== "Fiscal Destajo";
+  });
+  const [confirmBorrarHuerfano, setConfirmBorrarHuerfano] = useState(null);
   // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- ver
   // abrirQuincenaParaEditar en ModuloNomina.
   const [confirmAbrir, setConfirmAbrir] = useState(false);
@@ -6264,6 +6317,35 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => setConfirmAbrir(false)}>Cancelar</Btn>
             <Btn onClick={async () => { await onAbrirQuincena(liquidaciones.filter((l) => l.periodoId === periodoId).map((l) => l.trabajadorId), periodoId); setPeriodoAbierto(periodoId); setConfirmAbrir(false); }}>Sí, abrir quincena</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {registrosHuerfanos.length > 0 && (
+        <div style={{ padding: "10px 14px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          <div>⚠ Hay {registrosHuerfanos.length} registro(s) guardado(s) en esta quincena de trabajador(es) que ya cambiaron de tipo de nómina (ya no son "Fiscal Destajo"). Financiera los sigue sumando aquí -- bórralos para que sus totales no salgan descuadrados.</div>
+          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+            {registrosHuerfanos.map((l) => {
+              const t = trabajadores.find((tt) => tt.id === l.trabajadorId);
+              return (
+                <div key={l.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, background: C.white, borderRadius: 6, padding: "6px 10px", flexWrap: "wrap" }}>
+                  <span>{l.nombre || t?.nombre || "(trabajador)"} — ahora es <strong>{t?.tipoNomina || "sin tipo"}</strong> — {fmtMoney(l.netoAPagar)}</span>
+                  <Btn small variant="danger" onClick={() => setConfirmBorrarHuerfano(l)}>🗑 Eliminar registro obsoleto</Btn>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {confirmBorrarHuerfano && (
+        <Modal title="Eliminar registro obsoleto" onClose={() => setConfirmBorrarHuerfano(null)} width={460}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Eliminar el registro de <strong>{confirmBorrarHuerfano.nombre}</strong> guardado en "Fiscal Destajo" para la quincena <strong>{periodoId}</strong> ({fmtMoney(confirmBorrarHuerfano.netoAPagar)})?
+            <div style={{ marginTop: 10, color: C.slate, fontSize: 13 }}>Este trabajador ya no es "Fiscal Destajo" -- si ya le confirmaste su liquidación en su nómina actual, este registro viejo ya no hace falta y solo hace que Financiera sume de más.</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmBorrarHuerfano(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={async () => { await onEliminarLiquidacion(confirmBorrarHuerfano.id); setConfirmBorrarHuerfano(null); }}>Sí, eliminar</Btn>
           </div>
         </Modal>
       )}
@@ -6721,7 +6803,7 @@ function HistorialFiscalDestajoView({ liquidaciones, trabajadores }) {
 // sueltas, sin seguridad social ni parafiscales -- solo se le aplican los
 // descuentos de cobros de Bodega y de seguros/deducciones, igual que a los
 // demás tipos de nómina.
-function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, deduccionesTrabajador, horasExtras, bonificaciones, isAdmin, onAbrirQuincena }) {
+function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, deduccionesTrabajador, horasExtras, bonificaciones, isAdmin, onAbrirQuincena, onEliminarLiquidacion }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -6740,6 +6822,18 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
   // recargaba TODOS los que ya tuvieran esa quincena guardada (de
   // cualquier área/empresa), no solo los que se acababan de confirmar.
   const yaLiquidado = personas.some((t) => liquidaciones.some((l) => l.periodoId === periodoId && l.trabajadorId === t.id));
+  // (2026-09-22, a pedido de Fredy) Registros huerfanos: liquidaciones ya
+  // guardadas en esta quincena para trabajadores que HOY ya no tienen este
+  // tipo de nomina (les cambiaste el tipo despues de confirmar, ej. de
+  // Fiscal Destajo a Destajo) -- Financiera sigue sumando estos registros
+  // aunque el trabajador ya no aparezca en esta pantalla, y eso descuadra
+  // sus totales. Se detectan aqui para que Fredy los pueda borrar el mismo.
+  const registrosHuerfanos = liquidaciones.filter((l) => {
+    if (l.periodoId !== periodoId) return false;
+    const t = trabajadores.find((tt) => tt.id === l.trabajadorId);
+    return t && t.tipoNomina !== "Prestación de Servicios";
+  });
+  const [confirmBorrarHuerfano, setConfirmBorrarHuerfano] = useState(null);
   // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- ver
   // abrirQuincenaParaEditar en ModuloNomina.
   const [confirmAbrir, setConfirmAbrir] = useState(false);
@@ -6875,6 +6969,35 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => setConfirmAbrir(false)}>Cancelar</Btn>
             <Btn onClick={async () => { await onAbrirQuincena(liquidaciones.filter((l) => l.periodoId === periodoId).map((l) => l.trabajadorId), periodoId); setPeriodoAbierto(periodoId); setConfirmAbrir(false); }}>Sí, abrir quincena</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {registrosHuerfanos.length > 0 && (
+        <div style={{ padding: "10px 14px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          <div>⚠ Hay {registrosHuerfanos.length} registro(s) guardado(s) en esta quincena de trabajador(es) que ya cambiaron de tipo de nómina (ya no son "Prestación de Servicios"). Financiera los sigue sumando aquí -- bórralos para que sus totales no salgan descuadrados.</div>
+          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+            {registrosHuerfanos.map((l) => {
+              const t = trabajadores.find((tt) => tt.id === l.trabajadorId);
+              return (
+                <div key={l.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, background: C.white, borderRadius: 6, padding: "6px 10px", flexWrap: "wrap" }}>
+                  <span>{l.nombre || t?.nombre || "(trabajador)"} — ahora es <strong>{t?.tipoNomina || "sin tipo"}</strong> — {fmtMoney(l.netoAPagar)}</span>
+                  <Btn small variant="danger" onClick={() => setConfirmBorrarHuerfano(l)}>🗑 Eliminar registro obsoleto</Btn>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {confirmBorrarHuerfano && (
+        <Modal title="Eliminar registro obsoleto" onClose={() => setConfirmBorrarHuerfano(null)} width={460}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Eliminar el registro de <strong>{confirmBorrarHuerfano.nombre}</strong> guardado en "Prestación de Servicios" para la quincena <strong>{periodoId}</strong> ({fmtMoney(confirmBorrarHuerfano.netoAPagar)})?
+            <div style={{ marginTop: 10, color: C.slate, fontSize: 13 }}>Este trabajador ya no es "Prestación de Servicios" -- si ya le confirmaste su liquidación en su nómina actual, este registro viejo ya no hace falta y solo hace que Financiera sume de más.</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmBorrarHuerfano(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={async () => { await onEliminarLiquidacion(confirmBorrarHuerfano.id); setConfirmBorrarHuerfano(null); }}>Sí, eliminar</Btn>
           </div>
         </Modal>
       )}
@@ -7098,7 +7221,7 @@ function calcularLiquidacionDestajo(trabajador, netoProduccion, totalHoras = 0, 
     saldoCesantiasInicio, saldoCesantiasFin: saldoCesantiasInicio + cesantiasPeriodo,
   };
 }
-function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, areasNomina, ajustesDestajo, onGuardarAjusteDestajo, puedeAjustarDestajo, horas, causacionManual, horasExtras, bonificaciones, isAdmin, onAbrirQuincena }) {
+function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, areasNomina, ajustesDestajo, onGuardarAjusteDestajo, puedeAjustarDestajo, horas, causacionManual, horasExtras, bonificaciones, isAdmin, onAbrirQuincena, onEliminarLiquidacion }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
@@ -7128,6 +7251,18 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
   // recargaba TODOS los que ya tuvieran esa quincena guardada (de
   // cualquier área/empresa), no solo los que se acababan de confirmar.
   const yaLiquidado = personas.some((t) => liquidaciones.some((l) => l.periodoId === periodoId && l.trabajadorId === t.id));
+  // (2026-09-22, a pedido de Fredy) Registros huerfanos: liquidaciones ya
+  // guardadas en esta quincena para trabajadores que HOY ya no tienen este
+  // tipo de nomina (les cambiaste el tipo despues de confirmar, ej. de
+  // Fiscal Destajo a Destajo) -- Financiera sigue sumando estos registros
+  // aunque el trabajador ya no aparezca en esta pantalla, y eso descuadra
+  // sus totales. Se detectan aqui para que Fredy los pueda borrar el mismo.
+  const registrosHuerfanos = liquidaciones.filter((l) => {
+    if (l.periodoId !== periodoId) return false;
+    const t = trabajadores.find((tt) => tt.id === l.trabajadorId);
+    return t && t.tipoNomina !== "Destajo";
+  });
+  const [confirmBorrarHuerfano, setConfirmBorrarHuerfano] = useState(null);
   // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- ver
   // abrirQuincenaParaEditar en ModuloNomina.
   const [confirmAbrir, setConfirmAbrir] = useState(false);
@@ -7376,6 +7511,35 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => setConfirmAbrir(false)}>Cancelar</Btn>
             <Btn onClick={async () => { await onAbrirQuincena(liquidaciones.filter((l) => l.periodoId === periodoId).map((l) => l.trabajadorId), periodoId); setPeriodoAbierto(periodoId); setConfirmAbrir(false); }}>Sí, abrir quincena</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {registrosHuerfanos.length > 0 && (
+        <div style={{ padding: "10px 14px", background: C.redBg, borderRadius: 8, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          <div>⚠ Hay {registrosHuerfanos.length} registro(s) guardado(s) en esta quincena de trabajador(es) que ya cambiaron de tipo de nómina (ya no son "Destajo"). Financiera los sigue sumando aquí -- bórralos para que sus totales no salgan descuadrados.</div>
+          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+            {registrosHuerfanos.map((l) => {
+              const t = trabajadores.find((tt) => tt.id === l.trabajadorId);
+              return (
+                <div key={l.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, background: C.white, borderRadius: 6, padding: "6px 10px", flexWrap: "wrap" }}>
+                  <span>{l.nombre || t?.nombre || "(trabajador)"} — ahora es <strong>{t?.tipoNomina || "sin tipo"}</strong> — {fmtMoney(l.netoAPagar)}</span>
+                  <Btn small variant="danger" onClick={() => setConfirmBorrarHuerfano(l)}>🗑 Eliminar registro obsoleto</Btn>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {confirmBorrarHuerfano && (
+        <Modal title="Eliminar registro obsoleto" onClose={() => setConfirmBorrarHuerfano(null)} width={460}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+            ¿Eliminar el registro de <strong>{confirmBorrarHuerfano.nombre}</strong> guardado en "Destajo" para la quincena <strong>{periodoId}</strong> ({fmtMoney(confirmBorrarHuerfano.netoAPagar)})?
+            <div style={{ marginTop: 10, color: C.slate, fontSize: 13 }}>Este trabajador ya no es "Destajo" -- si ya le confirmaste su liquidación en su nómina actual, este registro viejo ya no hace falta y solo hace que Financiera sume de más.</div>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmBorrarHuerfano(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={async () => { await onEliminarLiquidacion(confirmBorrarHuerfano.id); setConfirmBorrarHuerfano(null); }}>Sí, eliminar</Btn>
           </div>
         </Modal>
       )}
@@ -11648,6 +11812,14 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function guardarLiquidacionFD(l) { await fsSave("nomina_fiscal_destajo_liquidaciones", l.id, l); }
   async function guardarLiquidacionD(l) { await fsSave("nomina_destajo_liquidaciones", l.id, l); }
   async function guardarLiquidacionPS(l) { await fsSave("nomina_prestacion_servicios_liquidaciones", l.id, l); }
+  // (2026-09-22, a pedido de Fredy) Borrar un registro de liquidacion
+  // 'huerfano' -- ver comentario junto a registrosHuerfanos en cada vista de
+  // Nomina mas arriba (queda de un trabajador que ya cambio de tipo de
+  // nomina y Financiera lo seguia sumando).
+  async function eliminarLiquidacionF(id) { await fsDelete("nomina_fiscal_liquidaciones", id); }
+  async function eliminarLiquidacionFD(id) { await fsDelete("nomina_fiscal_destajo_liquidaciones", id); }
+  async function eliminarLiquidacionD(id) { await fsDelete("nomina_destajo_liquidaciones", id); }
+  async function eliminarLiquidacionPS(id) { await fsDelete("nomina_prestacion_servicios_liquidaciones", id); }
   async function guardarLiquidacionRetiro(l) { await fsSave("nomina_liquidaciones_retiro", l.id, l); }
   async function guardarPrestamo(p) { await fsSave("nomina_prestamos", p.id, p); }
   async function borrarPrestamo(id) { await fsDelete("nomina_prestamos", id); }
@@ -12014,13 +12186,13 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "anomalias_huellero" && puedeVerAnomaliasHuellero && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
           {subView === "historial_asistencia_area" && <HistorialAsistenciaAreaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausenciasVisibles} anomalias={anomaliasVisibles} retardos={retardosVisibles} turnos={turnos} />}
-          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
+          {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} onEliminarLiquidacion={eliminarLiquidacionF} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
-          {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
+          {subView === "fiscal_destajo" && !areaLider && !soloNovedades && <NominaFiscalDestajoView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesFD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionFD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} onEliminarLiquidacion={eliminarLiquidacionFD} />}
           {subView === "historial_fiscal_destajo" && !areaLider && !soloNovedades && <HistorialFiscalDestajoView liquidaciones={liquidacionesFD} trabajadores={trabajadores} />}
-          {subView === "prestacion_servicios" && !areaLider && !soloNovedades && <NominaPrestacionServicioView trabajadores={trabajadores} liquidaciones={liquidacionesPS} onGuardarLiquidacion={guardarLiquidacionPS} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} deduccionesTrabajador={deduccionesTrabajador} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
+          {subView === "prestacion_servicios" && !areaLider && !soloNovedades && <NominaPrestacionServicioView trabajadores={trabajadores} liquidaciones={liquidacionesPS} onGuardarLiquidacion={guardarLiquidacionPS} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} deduccionesTrabajador={deduccionesTrabajador} horasExtras={horasExtras} bonificaciones={bonificaciones} onEliminarLiquidacion={eliminarLiquidacionPS} />}
           {subView === "historial_prestacion_servicios" && !areaLider && !soloNovedades && <HistorialPrestacionServicioView liquidaciones={liquidacionesPS} trabajadores={trabajadores} />}
-          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} horas={horas} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
+          {subView === "destajo" && !areaLider && !soloNovedades && <NominaDestajoView areasNomina={areasNomina} trabajadores={trabajadores} produccion={produccion} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesD} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionD} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} ajustesDestajo={ajustesDestajo} onGuardarAjusteDestajo={guardarAjusteDestajo} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} horas={horas} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} onEliminarLiquidacion={eliminarLiquidacionD} />}
           {subView === "historial_destajo" && !areaLider && !soloNovedades && <HistorialDestajoView liquidaciones={liquidacionesD} trabajadores={trabajadores} />}
           {subView === "deducciones" && !areaLider && !soloNovedades && <DeduccionesNominaView lotesConCobros={lotesConCobrosTotal} trabajadores={trabajadores} puedeAgregarCobrosManual={isAdmin || !!puedeAgregarCobrosManual} onAgregarCobroManual={agregarCobroManual} isAdmin={isAdmin} onBorrarCobroManual={borrarCobroManual} onRevertirCobro={revertirCobroAPendiente} onMarcarCobroManual={marcarCobroComoCobradoManual} />}
           {subView === "causacion_manual" && !areaLider && !soloNovedades && <CausacionManualView trabajadores={trabajadores} causacionManual={causacionManual} isAdmin={isAdmin} puedeAjustarDestajo={isAdmin || !!puedeAjustarDestajo} onGuardar={guardarCausacionManual} onBorrar={borrarCausacionManual} areasNomina={areasNomina} />}
