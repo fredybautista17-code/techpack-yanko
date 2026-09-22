@@ -5181,7 +5181,12 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
   const [busqueda, setBusqueda] = useState("");
   const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro) && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
-  const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
+  // (2026-09-22, a pedido de Fredy) yaLiquidado y la recarga de "lo ya
+  // guardado" deben respetar los mismos filtros (Área/Empresa) que
+  // "personas" -- si no, al confirmar con un filtro puesto, la pantalla
+  // recargaba TODOS los que ya tuvieran esa quincena guardada (de
+  // cualquier área/empresa), no solo los que se acababan de confirmar.
+  const yaLiquidado = personas.some((t) => liquidaciones.some((l) => l.periodoId === periodoId && l.trabajadorId === t.id));
   // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- ver
   // abrirQuincenaParaEditar en ModuloNomina.
   const [confirmAbrir, setConfirmAbrir] = useState(false);
@@ -5196,11 +5201,12 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
   // cargarLiquidacionesGuardadas mas arriba.
   useEffect(() => {
     if (yaLiquidado && !estaAbierta) {
-      setResultados(cargarLiquidacionesGuardadas(liquidaciones, trabajadores, periodoId));
+      const idsPersonas = new Set(personas.map((t) => t.id));
+      setResultados(cargarLiquidacionesGuardadas(liquidaciones, trabajadores, periodoId).filter((r) => idsPersonas.has(r.trabajador.id)));
     } else if (!yaLiquidado) {
       setResultados(null);
     }
-  }, [periodoId, yaLiquidado, estaAbierta, liquidaciones, trabajadores]);
+  }, [periodoId, yaLiquidado, estaAbierta, liquidaciones, trabajadores, areaFiltro, empresaFiltro]);
   const sinClaseARL = personas.filter((t) => !t.claseRiesgoARL);
 
   function calcular() {
@@ -6066,7 +6072,12 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
   const [busqueda, setBusqueda] = useState("");
   const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal Destajo" && t.activo !== false && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
-  const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
+  // (2026-09-22, a pedido de Fredy) yaLiquidado y la recarga de "lo ya
+  // guardado" deben respetar los mismos filtros (Área/Empresa) que
+  // "personas" -- si no, al confirmar con un filtro puesto, la pantalla
+  // recargaba TODOS los que ya tuvieran esa quincena guardada (de
+  // cualquier área/empresa), no solo los que se acababan de confirmar.
+  const yaLiquidado = personas.some((t) => liquidaciones.some((l) => l.periodoId === periodoId && l.trabajadorId === t.id));
   // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- ver
   // abrirQuincenaParaEditar en ModuloNomina.
   const [confirmAbrir, setConfirmAbrir] = useState(false);
@@ -6081,11 +6092,12 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
   // cargarLiquidacionesGuardadas mas arriba.
   useEffect(() => {
     if (yaLiquidado && !estaAbierta) {
-      setResultados(cargarLiquidacionesGuardadas(liquidaciones, trabajadores, periodoId));
+      const idsPersonas = new Set(personas.map((t) => t.id));
+      setResultados(cargarLiquidacionesGuardadas(liquidaciones, trabajadores, periodoId).filter((r) => idsPersonas.has(r.trabajador.id)));
     } else if (!yaLiquidado) {
       setResultados(null);
     }
-  }, [periodoId, yaLiquidado, estaAbierta, liquidaciones, trabajadores]);
+  }, [periodoId, yaLiquidado, estaAbierta, liquidaciones, trabajadores, empresaFiltro]);
 
   function calcular() {
     const filas = personas.map((t) => {
@@ -6717,7 +6729,12 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
   const [busqueda, setBusqueda] = useState("");
   const personas = trabajadores.filter((t) => t.tipoNomina === "Prestación de Servicios" && t.activo !== false && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
-  const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
+  // (2026-09-22, a pedido de Fredy) yaLiquidado y la recarga de "lo ya
+  // guardado" deben respetar los mismos filtros (Área/Empresa) que
+  // "personas" -- si no, al confirmar con un filtro puesto, la pantalla
+  // recargaba TODOS los que ya tuvieran esa quincena guardada (de
+  // cualquier área/empresa), no solo los que se acababan de confirmar.
+  const yaLiquidado = personas.some((t) => liquidaciones.some((l) => l.periodoId === periodoId && l.trabajadorId === t.id));
   // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- ver
   // abrirQuincenaParaEditar en ModuloNomina.
   const [confirmAbrir, setConfirmAbrir] = useState(false);
@@ -6732,11 +6749,12 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
   // cargarLiquidacionesGuardadas mas arriba.
   useEffect(() => {
     if (yaLiquidado && !estaAbierta) {
-      setResultados(cargarLiquidacionesGuardadas(liquidaciones, trabajadores, periodoId));
+      const idsPersonas = new Set(personas.map((t) => t.id));
+      setResultados(cargarLiquidacionesGuardadas(liquidaciones, trabajadores, periodoId).filter((r) => idsPersonas.has(r.trabajador.id)));
     } else if (!yaLiquidado) {
       setResultados(null);
     }
-  }, [periodoId, yaLiquidado, estaAbierta, liquidaciones, trabajadores]);
+  }, [periodoId, yaLiquidado, estaAbierta, liquidaciones, trabajadores, empresaFiltro]);
 
   function calcular() {
     const filas = personas.map((t) => {
@@ -7099,7 +7117,12 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
   const [busqueda, setBusqueda] = useState("");
   const personas = trabajadores.filter((t) => t.tipoNomina === "Destajo" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro) && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
-  const yaLiquidado = liquidaciones.some((l) => l.periodoId === periodoId);
+  // (2026-09-22, a pedido de Fredy) yaLiquidado y la recarga de "lo ya
+  // guardado" deben respetar los mismos filtros (Área/Empresa) que
+  // "personas" -- si no, al confirmar con un filtro puesto, la pantalla
+  // recargaba TODOS los que ya tuvieran esa quincena guardada (de
+  // cualquier área/empresa), no solo los que se acababan de confirmar.
+  const yaLiquidado = personas.some((t) => liquidaciones.some((l) => l.periodoId === periodoId && l.trabajadorId === t.id));
   // (2026-09-21, a pedido de Fredy) "Abrir quincena para editar" -- ver
   // abrirQuincenaParaEditar en ModuloNomina.
   const [confirmAbrir, setConfirmAbrir] = useState(false);
@@ -7114,11 +7137,12 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
   // cargarLiquidacionesGuardadas mas arriba.
   useEffect(() => {
     if (yaLiquidado && !estaAbierta) {
-      setResultados(cargarLiquidacionesGuardadas(liquidaciones, trabajadores, periodoId));
+      const idsPersonas = new Set(personas.map((t) => t.id));
+      setResultados(cargarLiquidacionesGuardadas(liquidaciones, trabajadores, periodoId).filter((r) => idsPersonas.has(r.trabajador.id)));
     } else if (!yaLiquidado) {
       setResultados(null);
     }
-  }, [periodoId, yaLiquidado, estaAbierta, liquidaciones, trabajadores]);
+  }, [periodoId, yaLiquidado, estaAbierta, liquidaciones, trabajadores, areaFiltro, empresaFiltro]);
 
   function calcular() {
     const filas = personas.map((t) => {
