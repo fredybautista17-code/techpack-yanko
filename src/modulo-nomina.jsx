@@ -5149,6 +5149,23 @@ function DetalleDiasSinJustificarModal({ trabajador, fechas, ausencias, trabajad
     </Modal>
   );
 }
+// (2026-09-22, a pedido de Fredy) Mientras una quincena esta cerrada
+// (confirmada y no abierta para editar), la pantalla debe mostrar SIEMPRE lo
+// que quedo guardado de verdad -- nunca una vista previa nueva -- porque
+// "Calcular" vuelve a traer los cobros de Bodega pendientes EN VIVO (con los
+// datos de HOY) y esos van cambiando con el tiempo, lo que hacia parecer que
+// el numero guardado "se dañaba" cada vez que se le daba Calcular de nuevo
+// sin haber abierto la quincena. onGuardarLiquidacion guarda todos los
+// campos de "calculo" al mismo nivel del documento, asi que el documento
+// guardado sirve tal cual como "calculo" para reconstruir la fila.
+function cargarLiquidacionesGuardadas(liquidaciones, trabajadores, periodoId) {
+  return (liquidaciones || [])
+    .filter((l) => l.periodoId === periodoId)
+    .map((l) => ({
+      trabajador: (trabajadores || []).find((t) => t.id === l.trabajadorId) || { id: l.trabajadorId, nombre: l.nombre },
+      calculo: l,
+    }));
+}
 function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles, onJustificarFalta, onLimpiarFaltaJustificada, diasTrabajados, liquidaciones, onGuardarTrabajador, onGuardarLiquidacion, lotesConCobros, onMarcarCobrosCobrados, turnos, areasNomina, horas, deduccionesTrabajador, causacionManual, horasExtras, bonificaciones, isAdmin, onAbrirQuincena }) {
   const hoy = new Date();
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
@@ -5175,6 +5192,15 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
   const [periodoAbierto, setPeriodoAbierto] = useState("");
   const estaAbierta = periodoAbierto === periodoId;
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
+  // (2026-09-22, a pedido de Fredy) Ver comentario junto a
+  // cargarLiquidacionesGuardadas mas arriba.
+  useEffect(() => {
+    if (yaLiquidado && !estaAbierta) {
+      setResultados(cargarLiquidacionesGuardadas(liquidaciones, trabajadores, periodoId));
+    } else if (!yaLiquidado) {
+      setResultados(null);
+    }
+  }, [periodoId, yaLiquidado, estaAbierta, liquidaciones, trabajadores]);
   const sinClaseARL = personas.filter((t) => !t.claseRiesgoARL);
 
   function calcular() {
@@ -5330,7 +5356,7 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
         <Field label="Quincena">
           <FSel value={quincena} onChange={setQuincena} options={[{ value: "1", label: "1 (días 1-15)" }, { value: "2", label: "2 (16-fin de mes)" }]} />
         </Field>
-        <Btn onClick={calcular} disabled={personas.length === 0}>🧮 Calcular</Btn>
+        <Btn onClick={calcular} disabled={personas.length === 0 || (yaLiquidado && !estaAbierta)}>🧮 Calcular</Btn>
       </div>
 
       {yaLiquidado && estaAbierta && (
@@ -6051,6 +6077,15 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
   const [periodoAbierto, setPeriodoAbierto] = useState("");
   const estaAbierta = periodoAbierto === periodoId;
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
+  // (2026-09-22, a pedido de Fredy) Ver comentario junto a
+  // cargarLiquidacionesGuardadas mas arriba.
+  useEffect(() => {
+    if (yaLiquidado && !estaAbierta) {
+      setResultados(cargarLiquidacionesGuardadas(liquidaciones, trabajadores, periodoId));
+    } else if (!yaLiquidado) {
+      setResultados(null);
+    }
+  }, [periodoId, yaLiquidado, estaAbierta, liquidaciones, trabajadores]);
 
   function calcular() {
     const filas = personas.map((t) => {
@@ -6185,7 +6220,7 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
         <Field label="Quincena">
           <FSel value={quincena} onChange={setQuincena} options={[{ value: "1", label: "1 (días 1-15)" }, { value: "2", label: "2 (16-fin de mes)" }]} />
         </Field>
-        <Btn onClick={calcular} disabled={personas.length === 0}>🧮 Calcular</Btn>
+        <Btn onClick={calcular} disabled={personas.length === 0 || (yaLiquidado && !estaAbierta)}>🧮 Calcular</Btn>
       </div>
 
       {yaLiquidado && estaAbierta && (
@@ -6693,6 +6728,15 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
   const [periodoAbierto, setPeriodoAbierto] = useState("");
   const estaAbierta = periodoAbierto === periodoId;
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
+  // (2026-09-22, a pedido de Fredy) Ver comentario junto a
+  // cargarLiquidacionesGuardadas mas arriba.
+  useEffect(() => {
+    if (yaLiquidado && !estaAbierta) {
+      setResultados(cargarLiquidacionesGuardadas(liquidaciones, trabajadores, periodoId));
+    } else if (!yaLiquidado) {
+      setResultados(null);
+    }
+  }, [periodoId, yaLiquidado, estaAbierta, liquidaciones, trabajadores]);
 
   function calcular() {
     const filas = personas.map((t) => {
@@ -6781,7 +6825,7 @@ function NominaPrestacionServicioView({ trabajadores, liquidaciones, onGuardarLi
         <Field label="Quincena">
           <FSel value={quincena} onChange={setQuincena} options={[{ value: "1", label: "1 (días 1-15)" }, { value: "2", label: "2 (16-fin de mes)" }]} />
         </Field>
-        <Btn onClick={calcular} disabled={personas.length === 0}>🧮 Calcular</Btn>
+        <Btn onClick={calcular} disabled={personas.length === 0 || (yaLiquidado && !estaAbierta)}>🧮 Calcular</Btn>
       </div>
 
       {yaLiquidado && estaAbierta && (
@@ -7066,6 +7110,15 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
   const [periodoAbierto, setPeriodoAbierto] = useState("");
   const estaAbierta = periodoAbierto === periodoId;
   const { inicio, fin } = rangoQuincena(anio, mes, quincena);
+  // (2026-09-22, a pedido de Fredy) Ver comentario junto a
+  // cargarLiquidacionesGuardadas mas arriba.
+  useEffect(() => {
+    if (yaLiquidado && !estaAbierta) {
+      setResultados(cargarLiquidacionesGuardadas(liquidaciones, trabajadores, periodoId));
+    } else if (!yaLiquidado) {
+      setResultados(null);
+    }
+  }, [periodoId, yaLiquidado, estaAbierta, liquidaciones, trabajadores]);
 
   function calcular() {
     const filas = personas.map((t) => {
@@ -7267,7 +7320,7 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
         <Field label="Quincena">
           <FSel value={quincena} onChange={setQuincena} options={[{ value: "1", label: "1 (días 1-15)" }, { value: "2", label: "2 (16-fin de mes)" }]} />
         </Field>
-        <Btn onClick={calcular} disabled={personas.length === 0}>🧮 Calcular</Btn>
+        <Btn onClick={calcular} disabled={personas.length === 0 || (yaLiquidado && !estaAbierta)}>🧮 Calcular</Btn>
       </div>
 
       {yaLiquidado && estaAbierta && (
