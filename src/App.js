@@ -4,7 +4,7 @@ import ModuloContabilidad from "./modulo-contabilidad";
 import ModuloPlaneacion, { MiDiaStandalone, ProgramadorProcesosStandalone, AreasStandalone, MiDiaNominaStandalone } from "./modulo-planeacion";
 import { FinancieraStandalone } from "./modulo-financiera";
 import ModuloPlanta from "./modulo-planta";
-import ModuloBodega from "./modulo-bodega";
+import ModuloBodega, { FichaTelaStandalone } from "./modulo-bodega";
 import ModuloNomina from "./modulo-nomina";
 import ModuloInformes from "./modulo-informes";
 import { initializeApp } from "firebase/app";
@@ -9148,6 +9148,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     { area: "📋 Informes", items: [["informes", "Informes"]] },
     { area: "🗂️ Áreas", items: [["areas_centro_costo", "Centro de Costo"], ["areas_estadisticas", "Estadísticas"], ["areas_reclamos", "Reclamos"], ["areas_programador", "Programador"]] },
     { area: "💰 Financiera", items: [["financiera", "Financiera"]] },
+    { area: "🧵 Fichas de Tela", items: [["fichas_tela_crear", "Crear (Bodega)"], ["fichas_tela_ver", "Ver (Diseño)"]] },
   ];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["notificaciones", "🔔 Notificaciones"], ["papelera", "🗑 Papelera"], ["busint_test", "🔌 Busint (prueba)"]];
   const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", grupo: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
@@ -13313,6 +13314,14 @@ function AppInner() {
   // liquidaciones YA CONFIRMADAS de las 4 nóminas. Ver FinancieraStandalone
   // en modulo-financiera.jsx.
   const canAccessFinanciera = moduloVisible(userRoleData, "financiera", currentUser?.isAdmin);
+  // "Fichas de Tela" -- módulo nuevo de nivel superior (2026-09-22, pedido
+  // explícito de Fredy): Bodega registra la ficha de recepción de cada tela
+  // comprada (sin cantidad recibida, a pedido explícito de Fredy), Diseño la
+  // puede ver, y Colecciones da el visto bueno. Ver FichaTelaStandalone en
+  // modulo-bodega.jsx.
+  const canAccessFichasTelaCrear = moduloVisible(userRoleData, "fichas_tela_crear", currentUser?.isAdmin);
+  const canAccessFichasTelaVer = moduloVisible(userRoleData, "fichas_tela_ver", currentUser?.isAdmin);
+  const canAccessFichasTela = canAccessFichasTelaCrear || canAccessFichasTelaVer;
   // "admin_diseno" es un permiso aparte del admin general: da entrada al panel
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
@@ -13400,6 +13409,9 @@ function AppInner() {
     ...(canAccessFinanciera
       ? [{ id: "financiera_area", icon: "💰", label: "Financiera", items: [{ id: "financiera_area", icon: "💰", label: "Módulo Financiera" }] }]
       : []),
+    ...(canAccessFichasTela
+      ? [{ id: "fichas_tela_area", icon: "🧵", label: "Fichas de Tela", items: [{ id: "fichas_tela_area", icon: "🧵", label: "Ficha de Recepción de Tela" }] }]
+      : []),
   ];
   const [areaAbierta, setAreaAbierta] = useState("diseno");
   function isViewActive(itemId) {
@@ -13418,6 +13430,7 @@ function AppInner() {
     if (itemId === "informes_area") return moduloActivo === "informes";
     if (itemId === "areas_internas_area") return moduloActivo === "areas_internas";
     if (itemId === "financiera_area") return moduloActivo === "financiera";
+    if (itemId === "fichas_tela_area") return moduloActivo === "fichas_tela";
     return view === itemId;
   }
   function navClick(itemId) {
@@ -13430,6 +13443,7 @@ function AppInner() {
     if (itemId === "informes_area") { setModuloActivo("informes"); return; }
     if (itemId === "areas_internas_area") { setModuloActivo("areas_internas"); return; }
     if (itemId === "financiera_area") { setModuloActivo("financiera"); return; }
+    if (itemId === "fichas_tela_area") { setModuloActivo("fichas_tela"); return; }
     setView(itemId);
   }
   // "Planeador puro": solo tiene Corte y NINGUNA otra sección de Diseño (ni
@@ -13513,6 +13527,9 @@ function AppInner() {
   }
   if (moduloActivo === "financiera") {
     return <FinancieraStandalone currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+  }
+  if (moduloActivo === "fichas_tela") {
+    return <FichaTelaStandalone currentUser={currentUser} puedeCrear={canAccessFichasTelaCrear} puedeVer={canAccessFichasTelaVer} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   return (
     <div style={{ minHeight: "100vh", background: T.canvas, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,sans-serif" }}>

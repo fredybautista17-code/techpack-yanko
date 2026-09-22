@@ -4745,6 +4745,258 @@ function BodegaHubView({ onSeleccionar, onVolver, onLogout, puedeVerControlDespa
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// FICHA DE RECEPCIÓN DE TELA (2026-09-22, a pedido de Fredy) -- módulo nuevo
+// de nivel superior (igual que Financiera/Áreas), NO una pantalla dentro de
+// Despacho y Saldo -- son flujos totalmente distintos. Bodega llena la ficha
+// cuando llega una tela comprada (nombre/referencia, proveedor, lote, ancho,
+// rendimiento, composición, observaciones -- SIN "cantidad recibida", a
+// pedido explícito de Fredy, esa cantidad no se llena acá); Diseño puede ver
+// todas las fichas para seguir el detalle tela por tela; alguien de
+// Colecciones da el "visto bueno" confirmando que ya la recibió y en qué
+// fecha -- configurable (solo admin) entre UNA PERSONA puntual o CUALQUIERA
+// de un Área Interna (reutiliza el mismo campo "Área Interna"/areaNomina que
+// ya existe en Nómina/Usuarios, no se inventa un catálogo nuevo).
+// Acceso: dos permisos nuevos en Administración → Roles ("Crear" para
+// Bodega, "Ver" para Diseño) -- ver GRUPOS_MODULOS_DEF en App.js.
+// ═══════════════════════════════════════════════════════════════════════════
+const COL_FICHAS_TELA = "bodega_fichas_tela";
+function FichaTelaModal({ onClose, onGuardar, guardando }) {
+  const [form, setForm] = useState({
+    tela: "", proveedor: "", fechaRecepcion: today(), lote: "",
+    ancho: "", rendimiento: "", composicion: "", observaciones: "",
+  });
+  function campo(k) {
+    return { value: form[k], onChange: (v) => setForm((f) => ({ ...f, [k]: v })) };
+  }
+  const puedeGuardar = form.tela.trim() && form.proveedor.trim() && form.fechaRecepcion;
+  return (
+    <Modal title="📋 Nueva Ficha de Recepción de Tela" onClose={onClose} width={620}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+        <Field label="Tela / Referencia"><FInput {...campo("tela")} placeholder="Ej. Jersey Algodón 24/1" /></Field>
+        <Field label="Proveedor"><FInput {...campo("proveedor")} placeholder="Nombre del proveedor" /></Field>
+        <Field label="Fecha de recepción"><FInput type="date" {...campo("fechaRecepcion")} /></Field>
+        <Field label="Lote / Rollo"><FInput {...campo("lote")} placeholder="Ej. R-4521" /></Field>
+        <Field label="Ancho de tela"><FInput {...campo("ancho")} placeholder="Ej. 1.80 m" /></Field>
+        <Field label="Rendimiento"><FInput {...campo("rendimiento")} placeholder="Ej. 3.2 m/kg" /></Field>
+      </div>
+      <Field label="Composición"><FInput {...campo("composicion")} placeholder="Ej. 95% Algodón · 5% Elastano" /></Field>
+      <Field label="Observaciones">
+        <textarea
+          value={form.observaciones}
+          onChange={(e) => setForm((f) => ({ ...f, observaciones: e.target.value }))}
+          rows={3}
+          style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit", resize: "vertical" }}
+        />
+      </Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 6 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={() => onGuardar(form)} disabled={!puedeGuardar || guardando}>{guardando ? "Guardando..." : "Guardar ficha"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+function ConfigVistoBuenoModal({ config, areasNomina, onClose, onGuardar }) {
+  const [modo, setModo] = useState(config.modoVistoBueno || "area");
+  const [area, setArea] = useState(config.areaVistoBueno || "");
+  const [personaNombre, setPersonaNombre] = useState(config.personaVistoBuenoNombre || "");
+  const [personaUsername, setPersonaUsername] = useState(config.personaVistoBuenoUsername || "");
+  return (
+    <Modal title="⚙️ Configurar Visto Bueno" onClose={onClose} width={480}>
+      <div style={{ fontSize: 13, color: C.slate, marginBottom: 16 }}>¿Quién puede dar el visto bueno de que Colecciones recibió la ficha?</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", border: `1.5px solid ${modo === "area" ? C.blue : C.border}`, borderRadius: 10, cursor: "pointer" }}>
+          <input type="radio" checked={modo === "area"} onChange={() => setModo("area")} />
+          <span style={{ fontSize: 13, fontWeight: 700 }}>Cualquiera de un Área Interna</span>
+        </label>
+        {modo === "area" && (
+          <div style={{ marginLeft: 26 }}>
+            <FSel value={area} onChange={setArea} options={areasNomina.map((a) => a.nombre)} placeholder="Elegir Área Interna..." />
+          </div>
+        )}
+        <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", border: `1.5px solid ${modo === "persona" ? C.blue : C.border}`, borderRadius: 10, cursor: "pointer" }}>
+          <input type="radio" checked={modo === "persona"} onChange={() => setModo("persona")} />
+          <span style={{ fontSize: 13, fontWeight: 700 }}>Una persona puntual</span>
+        </label>
+        {modo === "persona" && (
+          <div style={{ marginLeft: 26, display: "grid", gap: 8 }}>
+            <FInput value={personaNombre} onChange={setPersonaNombre} placeholder="Nombre (ej. María Fernanda Páez)" />
+            <FInput value={personaUsername} onChange={setPersonaUsername} placeholder="Usuario (el mismo con el que entra a Atlas)" />
+          </div>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={() => onGuardar({ modoVistoBueno: modo, areaVistoBueno: modo === "area" ? area : "", personaVistoBuenoNombre: modo === "persona" ? personaNombre.trim() : "", personaVistoBuenoUsername: modo === "persona" ? personaUsername.trim() : "" })}>Guardar configuración</Btn>
+      </div>
+    </Modal>
+  );
+}
+export function FichaTelaStandalone({ currentUser, puedeCrear, puedeVer, onVolver, onLogout }) {
+  const isAdmin = !!currentUser?.isAdmin;
+  const [fichas, setFichas] = useState([]);
+  const [areasNomina, setAreasNomina] = useState([]);
+  const [config, setConfig] = useState({ modoVistoBueno: "", areaVistoBueno: "", personaVistoBuenoNombre: "", personaVistoBuenoUsername: "" });
+  const [loading, setLoading] = useState(true);
+  const [modalNueva, setModalNueva] = useState(false);
+  const [guardandoNueva, setGuardandoNueva] = useState(false);
+  const [fichaAbierta, setFichaAbierta] = useState(null);
+  const [fechaVistoBueno, setFechaVistoBueno] = useState(today());
+  const [modalConfig, setModalConfig] = useState(false);
+  useEffect(() => {
+    const unsubs = [
+      onSnapshot(collection(db, COL_FICHAS_TELA), (snap) => { setFichas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setLoading(false); }),
+      onSnapshot(collection(db, "nomina_areas"), (snap) => setAreasNomina(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(doc(db, "bodega_config", "fichas_tela_config"), (snap) => { if (snap.exists()) setConfig(snap.data()); }),
+    ];
+    return () => unsubs.forEach((u) => u());
+  }, []);
+  const fichasOrdenadas = [...fichas].sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || ""));
+  function puedeDarVistoBueno() {
+    if (isAdmin) return true;
+    if (config.modoVistoBueno === "persona") return !!config.personaVistoBuenoUsername && config.personaVistoBuenoUsername === currentUser?.username;
+    if (config.modoVistoBueno === "area") return !!config.areaVistoBueno && config.areaVistoBueno === currentUser?.areaNomina;
+    return false;
+  }
+  async function guardarFicha(form) {
+    setGuardandoNueva(true);
+    try {
+      await fsSave(COL_FICHAS_TELA, uid(), {
+        tela: form.tela.trim(), proveedor: form.proveedor.trim(), fechaRecepcion: form.fechaRecepcion,
+        lote: form.lote.trim(), ancho: form.ancho.trim(), rendimiento: form.rendimiento.trim(),
+        composicion: form.composicion.trim(), observaciones: form.observaciones.trim(),
+        revisadoPor: currentUser?.name || currentUser?.username || "",
+        creadoPor: currentUser?.username || "", creadoEn: new Date().toISOString(),
+        vistoBueno: null,
+      });
+      setModalNueva(false);
+    } finally {
+      setGuardandoNueva(false);
+    }
+  }
+  async function confirmarVistoBueno() {
+    if (!fichaAbierta) return;
+    const vistoBueno = {
+      confirmadoPorNombre: currentUser?.name || currentUser?.username || "",
+      confirmadoPorUsername: currentUser?.username || "",
+      fechaRecepcionColecciones: fechaVistoBueno,
+      confirmadoEn: new Date().toISOString(),
+    };
+    await fsSave(COL_FICHAS_TELA, fichaAbierta.id, { vistoBueno });
+    setFichaAbierta((f) => (f ? { ...f, vistoBueno } : f));
+  }
+  async function guardarConfig(nuevo) {
+    setConfig(nuevo);
+    await fsSave("bodega_config", "fichas_tela_config", nuevo);
+    setModalConfig(false);
+  }
+  if (loading) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.canvas }}>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>🧵</div>
+          <div style={{ color: C.slate }}>Cargando Fichas de Tela...</div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ minHeight: "100vh", background: C.canvas, fontFamily: "'Inter',-apple-system,sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;}`}</style>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "16px 32px", background: C.ink }}>
+        {onVolver && (
+          <button onClick={onVolver} style={{ background: "transparent", border: "1px solid rgba(200,184,162,0.3)", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, color: C.seam }}>
+            ← Volver
+          </button>
+        )}
+        <div style={{ flex: 1, fontSize: 14, fontWeight: 800, color: C.white }}>🧵 Fichas de Recepción de Tela</div>
+        {isAdmin && (
+          <button onClick={() => setModalConfig(true)} style={{ background: "transparent", border: "1px solid rgba(200,184,162,0.3)", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 12, color: C.seam }}>
+            ⚙️ Configurar Visto Bueno
+          </button>
+        )}
+        {onLogout && (
+          <button onClick={onLogout} style={{ background: "transparent", border: "none", cursor: "pointer", color: "rgba(232,93,74,0.85)", fontWeight: 700, fontSize: 12 }}>
+            ⏏ Cerrar sesión
+          </button>
+        )}
+      </div>
+      <div style={{ padding: "28px 32px" }}>
+        <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 22, gap: 16, flexWrap: "wrap" }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, color: C.ink }}>🧵 Fichas de Recepción de Tela</h2>
+              <p style={{ margin: "6px 0 0", fontSize: 13, color: C.slate, maxWidth: 640 }}>
+                Bodega la llena cuando llega una tela comprada. Diseño puede ver todas estas fichas para seguir el detalle tela por tela. Aparte, alguien de Colecciones da el "visto bueno" confirmando que ya la recibió y en qué fecha.
+              </p>
+            </div>
+            {puedeCrear && <Btn onClick={() => setModalNueva(true)}>+ Nueva ficha</Btn>}
+          </div>
+          {!fichasOrdenadas.length ? (
+            <div style={{ padding: "40px 20px", textAlign: "center", background: C.white, border: `1px dashed ${C.border}`, borderRadius: 14, color: C.slate, fontSize: 13 }}>
+              Todavía no hay ninguna ficha registrada.
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: 12 }}>
+              {fichasOrdenadas.map((f) => (
+                <div
+                  key={f.id}
+                  onClick={() => { setFichaAbierta(f); setFechaVistoBueno(today()); }}
+                  style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: "14px 18px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap" }}
+                >
+                  <div>
+                    <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{f.tela}</div>
+                    <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>{f.proveedor} · Lote {f.lote || "—"} · {fmtFechaISO(f.fechaRecepcion)}</div>
+                  </div>
+                  <span style={{ padding: "4px 12px", borderRadius: 20, fontSize: 11, fontWeight: 800, background: f.vistoBueno ? C.greenBg : C.amberBg, color: f.vistoBueno ? C.green : C.amber }}>
+                    {f.vistoBueno ? "✅ Confirmado" : "⏳ Pendiente de visto bueno"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      {modalNueva && <FichaTelaModal onClose={() => setModalNueva(false)} onGuardar={guardarFicha} guardando={guardandoNueva} />}
+      {fichaAbierta && (
+        <Modal title="📋 Ficha de Recepción de Tela" onClose={() => setFichaAbierta(null)} width={640}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 20px", marginBottom: 8 }}>
+            <Field label="Tela / Referencia"><div style={{ fontWeight: 700, color: C.ink }}>{fichaAbierta.tela}</div></Field>
+            <Field label="Proveedor"><div style={{ fontWeight: 700, color: C.ink }}>{fichaAbierta.proveedor}</div></Field>
+            <Field label="Fecha de recepción"><div style={{ color: C.ink }}>{fmtFechaISO(fichaAbierta.fechaRecepcion)}</div></Field>
+            <Field label="Lote / Rollo"><div style={{ color: C.ink }}>{fichaAbierta.lote || "—"}</div></Field>
+            <Field label="Ancho de tela"><div style={{ color: C.ink }}>{fichaAbierta.ancho || "—"}</div></Field>
+            <Field label="Rendimiento"><div style={{ color: C.ink }}>{fichaAbierta.rendimiento || "—"}</div></Field>
+          </div>
+          <Field label="Composición"><div style={{ color: C.ink }}>{fichaAbierta.composicion || "—"}</div></Field>
+          <Field label="Observaciones"><div style={{ color: C.ink, whiteSpace: "pre-wrap" }}>{fichaAbierta.observaciones || "—"}</div></Field>
+          <Field label="Revisó (Bodega)"><div style={{ color: C.ink }}>{fichaAbierta.revisadoPor || "—"}</div></Field>
+          <div style={{ marginTop: 18, paddingTop: 18, borderTop: `1px solid ${C.border}` }}>
+            <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>✅ Visto Bueno — Colecciones</div>
+            {fichaAbierta.vistoBueno ? (
+              <div style={{ padding: "10px 14px", background: C.greenBg, borderRadius: 8, color: C.green, fontSize: 13, fontWeight: 600 }}>
+                Confirmado por {fichaAbierta.vistoBueno.confirmadoPorNombre} el {fmtFechaISO(fichaAbierta.vistoBueno.fechaRecepcionColecciones)}.
+              </div>
+            ) : puedeDarVistoBueno() ? (
+              <div>
+                <Field label="Fecha de recepción (Colecciones)"><FInput type="date" value={fechaVistoBueno} onChange={setFechaVistoBueno} /></Field>
+                <Btn onClick={confirmarVistoBueno}>Confirmar visto bueno</Btn>
+              </div>
+            ) : (
+              <div style={{ padding: "10px 14px", background: C.amberBg, borderRadius: 8, color: C.amber, fontSize: 13, fontWeight: 600 }}>
+                ⏳ Pendiente de visto bueno{config.modoVistoBueno === "persona" && config.personaVistoBuenoNombre ? ` — lo confirma ${config.personaVistoBuenoNombre}` : config.modoVistoBueno === "area" && config.areaVistoBueno ? ` — lo confirma cualquiera de ${config.areaVistoBueno}` : " — todavía no se ha configurado quién puede confirmarlo (pídele a un administrador que lo configure)"}.
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
+      {modalConfig && (
+        <ConfigVistoBuenoModal config={config} areasNomina={areasNomina} onClose={() => setModalConfig(false)} onGuardar={guardarConfig} />
+      )}
+    </div>
+  );
+}
+
 export default function ModuloBodega({ currentUser, puedeAprobarDespacho, canAccessContabilidad, soloLecturaBodega, puedeVerControlDespacho, puedeRevertirDespacho, onVolver, onLogout }) {
   const [vista, setVista] = useState("hub");
   // Administrador siempre ve "Control de Despacho" aunque el rol no tenga
