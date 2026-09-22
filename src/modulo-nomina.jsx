@@ -4726,15 +4726,20 @@ function sumaHorasExtraTrabajador(horasExtras, trabajadorId, desde, hasta) {
     .reduce((s, h) => s + (Number(h.total) || 0), 0);
 }
 // (2026-09-21, a pedido de Fredy) Bonificación puntual -- ver
-// RegistrarBonificacionView. Un valor manual (por ejemplo por cumplir una
-// meta) que Fredy le agrega a un trabajador para una quincena puntual,
-// aplica a los 4 tipos de nómina y se paga SIEMPRE en efectivo (ver
-// modulo-financiera.jsx). A diferencia de Horas Extras, es UN solo valor
-// por trabajador+quincena (id determinístico) -- si se vuelve a guardar,
-// se corrige, no se acumula.
+// RegistrarBonificacionView. Un valor manual que Fredy le agrega a un
+// trabajador para una quincena puntual, aplica a los 4 tipos de nómina y
+// se paga SIEMPRE en efectivo (ver modulo-financiera.jsx).
+// (2026-09-22, a pedido de Fredy) Admite DOS tipos independientes por
+// trabajador+quincena -- "meta" y "otra" (concepto libre) -- que se
+// SUMAN entre sí al pagar (antes era un solo valor que se reemplazaba).
+// También suma el documento "viejo" sin sufijo de tipo (de antes de este
+// cambio) por si todavía no se ha migrado -- ver guardar() en
+// RegistrarBonificacionView, que lo migra solo al volver a guardar.
 function valorBonificacion(bonificaciones, trabajadorId, periodoId) {
-  const doc = (bonificaciones || []).find((b) => b.id === `${trabajadorId}__${periodoId}`);
-  return doc ? (Number(doc.valor) || 0) : 0;
+  const base = `${trabajadorId}__${periodoId}`;
+  return (bonificaciones || [])
+    .filter((b) => b.id === base || b.id.startsWith(`${base}__`))
+    .reduce((s, b) => s + (Number(b.valor) || 0), 0);
 }
 // (2026-09-10, "Design B" confirmado por Fredy) Cada Cobro que Bodega
 // registra contra un trabajador (Despachos Generales / Estado de Despacho)
@@ -9364,34 +9369,68 @@ function RegistrarBonificacionView({ trabajadores, bonificaciones, currentUser, 
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
   const [quincena, setQuincena] = useState(hoy.getDate() <= 15 ? "1" : "2");
+  // (2026-09-22, a pedido de Fredy) Dos tipos de bonificación
+  // INDEPENDIENTES por trabajador+quincena -- una por Metas y otra de
+  // concepto libre -- para que registrar una no le borre el valor a la
+  // otra (antes era un solo valor que se reemplazaba). Se guardan en
+  // documentos separados ("__meta" / "__otra") y se suman las dos al
+  // pagar -- ver valorBonificacion más arriba.
+  const [tipo, setTipo] = useState("meta"); // "meta" | "otra"
   const [valor, setValor] = useState("");
   const [motivo, setMotivo] = useState("");
   const [guardando, setGuardando] = useState(false);
   const trabajadoresActivos = trabajadores.filter((t) => t.activo !== false).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const trabajadorSel = trabajadores.find((t) => t.id === trabajadorId);
   const periodoId = `${anio}-${mes}-Q${quincena}`;
-  const existente = trabajadorId ? (bonificaciones || []).find((b) => b.id === `${trabajadorId}__${periodoId}`) : null;
+  // (2026-09-22) Antes de este cambio "meta" era el único tipo y su
+  // documento no llevaba sufijo -- si todavía existe ese documento
+  // "viejo" para este trabajador+quincena, se muestra como la
+  // bonificación de Metas hasta que se vuelva a guardar (ahí migra sola
+  // al id nuevo, ver guardar() más abajo).
+  function buscarExistente(id, periodo, t) {
+    if (!id) return null;
+    const nuevo = (bonificaciones || []).find((b) => b.id === `${id}__${periodo}__${t}`);
+    if (nuevo) return nuevo;
+    if (t === "meta") return (bonificaciones || []).find((b) => b.id === `${id}__${periodo}`) || null;
+    return null;
+  }
+  const existente = buscarExistente(trabajadorId, periodoId, tipo);
   const puedeGuardar = trabajadorId && Number(valor) !== 0 && !guardando;
-  function seleccionarTrabajador(id) {
-    setTrabajadorId(id);
-    const doc = (bonificaciones || []).find((b) => b.id === `${id}__${periodoId}`);
+  function cargarCampos(id, periodo, t) {
+    const doc = buscarExistente(id, periodo, t);
     setValor(doc ? String(doc.valor) : "");
     setMotivo(doc ? (doc.motivo || "") : "");
+  }
+  function seleccionarTrabajador(id) {
+    setTrabajadorId(id);
+    cargarCampos(id, periodoId, tipo);
+  }
+  function seleccionarTipo(t) {
+    setTipo(t);
+    cargarCampos(trabajadorId, periodoId, t);
   }
   async function guardar() {
     if (!puedeGuardar) return;
     setGuardando(true);
     try {
       await onGuardar({
-        id: `${trabajadorId}__${periodoId}`,
+        id: `${trabajadorId}__${periodoId}__${tipo}`,
         trabajadorId,
         trabajadorNombre: trabajadorSel?.nombre || "",
         periodoId,
+        tipo,
         valor: Number(valor) || 0,
         motivo: motivo.trim(),
         registradoPor: currentUser?.name || currentUser?.username || "",
         registradoEn: new Date().toISOString(),
       });
+      // Migra el documento viejo sin sufijo de tipo (solo aplica a
+      // "meta", que era el único tipo que existía antes) para que no se
+      // sume dos veces en valorBonificacion.
+      if (tipo === "meta") {
+        const legado = (bonificaciones || []).find((b) => b.id === `${trabajadorId}__${periodoId}`);
+        if (legado) await onBorrar(legado.id);
+      }
       setTrabajadorId("");
       setValor("");
       setMotivo("");
@@ -9400,10 +9439,13 @@ function RegistrarBonificacionView({ trabajadores, bonificaciones, currentUser, 
     }
   }
   const recientes = [...(bonificaciones || [])].sort((a, b) => (b.registradoEn || "").localeCompare(a.registradoEn || "")).slice(0, 15);
+  function etiquetaTipo(f) {
+    return f.tipo === "otra" ? "📝 Otra" : "🎯 Metas";
+  }
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
-        Valor manual que se le agrega a UN trabajador en UNA quincena puntual (por ejemplo por cumplir una meta) -- aplica a Fiscal, Fiscal Destajo, Destajo y Prestación de Servicios por igual, y se paga SIEMPRE en efectivo. Si vuelves a guardar para el mismo trabajador y la misma quincena, se corrige el valor anterior (no se duplica).
+        Valor manual que se le agrega a UN trabajador en UNA quincena puntual -- aplica a Fiscal, Fiscal Destajo, Destajo y Prestación de Servicios por igual, y se paga SIEMPRE en efectivo. Puedes registrar hasta DOS bonificaciones independientes por trabajador y quincena -- una por Metas y otra de concepto libre -- y las dos se suman al pagar. Si vuelves a guardar la MISMA (mismo tipo), se corrige esa, sin afectar la otra.
       </div>
       <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20, marginBottom: 24, maxWidth: 620 }}>
         <Field label="Trabajador">
@@ -9418,9 +9460,15 @@ function RegistrarBonificacionView({ trabajadores, bonificaciones, currentUser, 
             <FSel value={quincena} onChange={setQuincena} options={[{ value: "1", label: "1 (días 1-15)" }, { value: "2", label: "2 (16-fin de mes)" }]} />
           </Field>
         </div>
+        <Field label="Tipo de bonificación">
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="button" onClick={() => seleccionarTipo("meta")} style={{ flex: 1, padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${tipo === "meta" ? C.ink : C.border}`, background: tipo === "meta" ? C.ink : C.white, color: tipo === "meta" ? "#fff" : C.ink, fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>🎯 Bonificación por Metas</button>
+            <button type="button" onClick={() => seleccionarTipo("otra")} style={{ flex: 1, padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${tipo === "otra" ? C.ink : C.border}`, background: tipo === "otra" ? C.ink : C.white, color: tipo === "otra" ? "#fff" : C.ink, fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>📝 Otra bonificación</button>
+          </div>
+        </Field>
         <Field label="Valor de la bonificación"><FInput type="number" value={valor} onChange={setValor} placeholder="Ej: 50000" /></Field>
-        <Field label="Motivo"><FInput value={motivo} onChange={setMotivo} placeholder="Ej: Cumplió meta de calidad de la quincena" /></Field>
-        {existente && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>⚠ Ya hay una bonificación guardada para este trabajador en esta quincena ({fmtMoney(existente.valor)}) -- si guardas, la reemplaza.</div>}
+        <Field label={tipo === "otra" ? "Concepto" : "Motivo"}><FInput value={motivo} onChange={setMotivo} placeholder={tipo === "otra" ? "Escribe aquí el concepto (ej: Apoyo transporte extra)" : "Ej: Cumplió meta de calidad de la quincena"} /></Field>
+        {existente && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>⚠ Ya hay una bonificación de este tipo guardada para este trabajador en esta quincena ({fmtMoney(existente.valor)}) -- si guardas, la reemplaza (la otra bonificación, si tiene, no se toca).</div>}
         <Btn onClick={guardar} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Guardar Bonificación"}</Btn>
       </div>
       <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>ÚLTIMOS REGISTROS</div>
@@ -9429,6 +9477,7 @@ function RegistrarBonificacionView({ trabajadores, bonificaciones, currentUser, 
         columnas={[
           { key: "periodoId", label: "Quincena", render: (f) => f.periodoId },
           { key: "trabajadorNombre", label: "Trabajador" },
+          { key: "tipo", label: "Tipo", render: (f) => etiquetaTipo(f) },
           { key: "valor", label: "Valor", align: "right", render: (f) => <strong>{fmtMoney(f.valor)}</strong> },
           { key: "motivo", label: "Motivo", render: (f) => f.motivo || <span style={{ color: C.slate }}>—</span> },
           ...(isAdmin ? [{ key: "acciones", label: "", align: "right", render: (f) => <span onClick={(e) => { e.stopPropagation(); onBorrar(f.id); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span> }] : []),
