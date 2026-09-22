@@ -3534,9 +3534,49 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   const [fechaRangoInicio, setFechaRangoInicio] = useState(`${hoy.slice(0, 7)}-01`);
   const [fechaRangoFin, setFechaRangoFin] = useState(hoy);
   const [areaSel, setAreaSel] = useState(areaFija || "");
+  // (2026-09-22, a pedido de Fredy) Quinta opción de período, "Quincena" --
+  // para áreas con trabajadores tipo "Destajo" (Maquila), que se liquidan
+  // por quincena completa en Nómina -> Destajo (ver hayDestajoReal más abajo).
+  const [quincenaSel, setQuincenaSel] = useState("1");
+  // (2026-09-22, a pedido de Fredy) "Costo real total" de un área: Gastos
+  // (facturas de insumos digitadas a mano -- hilos, agujas, etc.) y Ventas
+  // (digitadas a mano también), sumados/comparados con el costo de nómina
+  // de arriba -- ver el bloque "Costo real total" más abajo en el render.
+  // Genérico por área (no solo Maquila), guardado directo con fsSave/
+  // fsDelete igual que el resto de este archivo (sin pasar por props).
+  const [gastosCentroCosto, setGastosCentroCosto] = useState([]);
+  const [ventasCentroCosto, setVentasCentroCosto] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "centro_costo_gastos"), (snap) => setGastosCentroCosto(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "centro_costo_ventas"), (snap) => setVentasCentroCosto(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    return () => unsub();
+  }, []);
+  const [gastoModalAbierto, setGastoModalAbierto] = useState(false);
+  const [gastoForm, setGastoForm] = useState({ proveedor: "", numeroFactura: "", monto: "", fecha: hoy });
+  const [ventaModalAbierto, setVentaModalAbierto] = useState(false);
+  const [ventaForm, setVentaForm] = useState({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", fecha: hoy });
+  // (2026-09-22, a pedido de Fredy) Liquidaciones YA CONFIRMADAS de Nómina
+  // -> Destajo (misma colección que usa NominaDestajoView en
+  // modulo-nomina.jsx) -- para sacar el costo/valor REAL de los
+  // trabajadores tipo "Destajo" (Maquila) en vez de Registrar Producción /
+  // sueldo cargado. Ver hayDestajoReal y el useMemo de "filas" más abajo.
+  const [liquidacionesDestajo, setLiquidacionesDestajo] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesDestajo(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    return () => unsub();
+  }, []);
   function enPeriodo(fechaISO) {
     if (!fechaISO) return false;
     if (periodo === "dia") return fechaISO === fechaDia;
+    if (periodo === "quincena") {
+      const mm = String(mesSel).padStart(2, "0");
+      if (fechaISO.slice(0, 7) !== `${anioSel}-${mm}`) return false;
+      const dia = Number(fechaISO.slice(8, 10));
+      return quincenaSel === "1" ? dia <= 15 : dia >= 16;
+    }
     if (periodo === "mes") return fechaISO.slice(0, 7) === `${anioSel}-${String(mesSel).padStart(2, "0")}`;
     if (periodo === "anio") return fechaISO.slice(0, 4) === String(anioSel);
     if (periodo === "rango") return fechaISO >= fechaRangoInicio && fechaISO <= fechaRangoFin;
@@ -3667,6 +3707,31 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     const sinLideresBaseAdmin = activos.filter((t) => !t.medirComoBaseAdministrativa);
     return areaSel ? sinLideresBaseAdmin.filter((t) => areaEnFecha(t, fechaReferenciaPeriodo) === areaSel) : sinLideresBaseAdmin;
   }, [trabajadores, areaSel, fechaReferenciaPeriodo]);
+  // (2026-09-22, a pedido de Fredy) Cuando el área tiene trabajadores tipo
+  // "Destajo" (Maquila), Centro de Costo pasa a datos REALES desde Nómina
+  // -> Destajo -- ver el useMemo de "filas" más abajo. Como esa nómina se
+  // liquida por quincena completa (no hay dato diario ya calculado), el
+  // selector de período se limita a Quincena/Mes/Año (Día y Rango se
+  // ocultan más abajo cuando esto es true).
+  const hayDestajoReal = useMemo(() => trabajadoresArea.some((t) => t.tipoNomina === "Destajo"), [trabajadoresArea]);
+  useEffect(() => {
+    if (hayDestajoReal && (periodo === "dia" || periodo === "rango")) setPeriodo("mes");
+  }, [hayDestajoReal, periodo]);
+  // Lista de periodoId de quincena ("YYYY-MM-QN") que caen dentro del
+  // período elegido -- Mes suma sus 2 quincenas, Año las 24 del año,
+  // Quincena es una sola. Día/Rango quedan sin periodoIds (sin dato real
+  // exacto para esos).
+  const periodosDestajoSeleccionados = useMemo(() => {
+    const ids = [];
+    const pushMes = (anio, mes) => {
+      const mm = String(mes).padStart(2, "0");
+      ids.push(`${anio}-${mm}-Q1`, `${anio}-${mm}-Q2`);
+    };
+    if (periodo === "mes") pushMes(anioSel, mesSel);
+    else if (periodo === "anio") { for (let m = 1; m <= 12; m++) pushMes(anioSel, m); }
+    else if (periodo === "quincena") ids.push(`${anioSel}-${String(mesSel).padStart(2, "0")}-Q${quincenaSel}`);
+    return ids;
+  }, [periodo, anioSel, mesSel, quincenaSel]);
   const produccionPeriodo = useMemo(
     () => (produccion || []).filter((p) => enPeriodo(p.fecha)),
     [produccion, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]
@@ -3705,24 +3770,40 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     return trabajadoresArea
       .map((t) => {
         const datos = porTrabajador.get(t.id);
+        // (2026-09-22, a pedido de Fredy) Para trabajadores tipo "Destajo"
+        // (pensado para Maquila) el valor y el costo reales NO salen de
+        // Registrar Producción ni del sueldo cargado en la ficha -- salen
+        // de las liquidaciones YA CONFIRMADAS en Nómina -> Destajo (que ya
+        // incluyen Causación Manual + provisiones), sumando las quincenas
+        // que caen dentro del período elegido (periodosDestajoSeleccionados).
+        // Si todavía no se ha confirmado esa quincena, se ve en $0 -- se
+        // avisa aparte en el render de "Costo real total".
+        const esDestajoReal = t.tipoNomina === "Destajo";
+        const liqsTrabajador = esDestajoReal
+          ? (liquidacionesDestajo || []).filter((l) => l.trabajadorId === t.id && periodosDestajoSeleccionados.includes(l.periodoId))
+          : [];
+        const valorRealDestajo = liqsTrabajador.reduce((s, l) => s + (l.pagoPorDia ? (Number(l.pagoDias) || 0) : (Number(l.produccionReal) || 0)), 0);
+        const costoRealDestajo = liqsTrabajador.reduce((s, l) => s + (Number(l.netoAPagar) || 0) + (Number(l.cesantiasPeriodo) || 0) + (Number(l.primaPeriodo) || 0) + (Number(l.vacacionesPeriodo) || 0), 0);
         return {
           id: t.id,
           nombre: t.nombre,
           area: t.area || "Sin asignar",
           unidades: datos?.unidades || 0,
-          valorProducido: datos?.valor || 0,
-          costo: costoPeriodo((Number(t.sueldo) || 0) + (Number(t.auxilioTransporte) || 0)),
-          sinSueldo: !t.sueldo,
+          valorProducido: esDestajoReal ? valorRealDestajo : (datos?.valor || 0),
+          costo: esDestajoReal ? costoRealDestajo : costoPeriodo((Number(t.sueldo) || 0) + (Number(t.auxilioTransporte) || 0)),
+          sinSueldo: esDestajoReal ? false : !t.sueldo,
+          esDestajoReal,
+          liquidacionesEnPeriodo: liqsTrabajador.length,
         };
       })
       .sort((a, b) => b.valorProducido - a.valorProducido);
-  }, [trabajadoresArea, porTrabajador, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]);
+  }, [trabajadoresArea, porTrabajador, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin, liquidacionesDestajo, periodosDestajoSeleccionados]);
   const totalUnidades = filas.reduce((s, f) => s + f.unidades, 0);
   const totalValor = filas.reduce((s, f) => s + f.valorProducido, 0);
   const totalCosto = filas.reduce((s, f) => s + (f.sinSueldo ? 0 : f.costo), 0);
   const balance = totalValor - totalCosto;
   const pctCobertura = totalCosto > 0 ? (totalValor / totalCosto) * 100 : 0;
-  const algunoSinSueldo = trabajadoresArea.some((t) => !t.sueldo);
+  const algunoSinSueldo = trabajadoresArea.some((t) => t.tipoNomina !== "Destajo" && !t.sueldo);
   // ── Modo apoyo: unidades movidas (Busint) en los procesos del área ──────
   const movimientosArea = useMemo(() => {
     if (modoMedicion !== "busint_unidades") return [];
@@ -3944,6 +4025,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   const costoPorPrenda = despachadoTotal.unidades > 0 ? costoAreaApoyo / despachadoTotal.unidades : 0;
   const etiquetaPeriodo =
     periodo === "dia" ? fmtFechaISO(fechaDia)
+    : periodo === "quincena" ? `Q${quincenaSel} ${MESES_CORTOS[mesSel - 1]} ${anioSel}`
     : periodo === "mes" ? `${MESES_CORTOS[mesSel - 1]} ${anioSel}`
     : periodo === "rango" ? `${fmtFechaISO(fechaRangoInicio)} – ${fmtFechaISO(fechaRangoFin)}`
     : String(anioSel);
@@ -4022,6 +4104,84 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     const periodoTexto = etiquetaPeriodo.replace(/[^\w-]+/g, "_");
     XLSX.writeFile(wb, `Detalle_${nombreTexto}_${periodoTexto}.xlsx`);
   }
+  // ─── Gastos (facturas de insumos) y Ventas ───────────────────────────────
+  // (2026-09-22, a pedido de Fredy) Costo real total de un área = costo de
+  // nómina (arriba) + gastos de insumos digitados a mano (hilos, agujas,
+  // etc., por factura) -- comparado contra las ventas, también digitadas a
+  // mano. Aplica a cualquier área con una seleccionada (no "Todas las
+  // áreas" ni "Líderes").
+  const gastosPeriodo = useMemo(
+    () => (gastosCentroCosto || []).filter((g) => g.area === areaSel && enPeriodo(g.fecha)),
+    [gastosCentroCosto, areaSel, periodo, fechaDia, mesSel, anioSel, quincenaSel, fechaRangoInicio, fechaRangoFin]
+  );
+  const ventasCentroCostoPeriodo = useMemo(
+    () => (ventasCentroCosto || []).filter((v) => v.area === areaSel && enPeriodo(v.fecha)),
+    [ventasCentroCosto, areaSel, periodo, fechaDia, mesSel, anioSel, quincenaSel, fechaRangoInicio, fechaRangoFin]
+  );
+  const totalGastosPeriodo = gastosPeriodo.reduce((s, g) => s + (Number(g.monto) || 0), 0);
+  const totalVentasCentroCostoPeriodo = ventasCentroCostoPeriodo.reduce((s, v) => s + (Number(v.total) || 0), 0);
+  const costoNominaParaTotal = modoMedicion === "destajo" ? totalCosto : costoAreaApoyo;
+  const costoTotalConInsumos = costoNominaParaTotal + totalGastosPeriodo;
+  const balanceRealConVentas = totalVentasCentroCostoPeriodo - costoTotalConInsumos;
+  function campoTexto(label, value, onChange, opts = {}) {
+    return (
+      <div style={{ marginBottom: 14 }}>
+        <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>{label}</label>
+        <input
+          type={opts.type || "text"}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={opts.placeholder || ""}
+          style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
+        />
+      </div>
+    );
+  }
+  function abrirNuevoGasto() {
+    setGastoForm({ proveedor: "", numeroFactura: "", monto: "", fecha: hoy });
+    setGastoModalAbierto(true);
+  }
+  async function guardarGastoForm() {
+    if (!gastoForm.proveedor.trim() || !gastoForm.monto) return;
+    const nuevo = {
+      id: uid(),
+      area: areaSel,
+      proveedor: gastoForm.proveedor.trim(),
+      numeroFactura: gastoForm.numeroFactura.trim(),
+      monto: Number(gastoForm.monto) || 0,
+      fecha: gastoForm.fecha,
+      creadoEn: new Date().toISOString(),
+    };
+    await fsSave("centro_costo_gastos", nuevo.id, nuevo);
+    setGastoModalAbierto(false);
+  }
+  async function borrarGasto(id) {
+    await fsDelete("centro_costo_gastos", id);
+  }
+  function abrirNuevaVenta() {
+    setVentaForm({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", fecha: hoy });
+    setVentaModalAbierto(true);
+  }
+  async function guardarVentaForm() {
+    if (!ventaForm.referencia.trim() || !ventaForm.total) return;
+    const nuevo = {
+      id: uid(),
+      area: areaSel,
+      referencia: ventaForm.referencia.trim(),
+      lote: ventaForm.lote.trim(),
+      cantidad: Number(ventaForm.cantidad) || 0,
+      precio: Number(ventaForm.precio) || 0,
+      total: Number(ventaForm.total) || 0,
+      cliente: ventaForm.cliente.trim(),
+      fecha: ventaForm.fecha,
+      creadoEn: new Date().toISOString(),
+    };
+    await fsSave("centro_costo_ventas", nuevo.id, nuevo);
+    setVentaModalAbierto(false);
+  }
+  async function borrarVenta(id) {
+    await fsDelete("centro_costo_ventas", id);
+  }
   return (
     <div>
       <div style={{ marginBottom: 22 }}>
@@ -4039,12 +4199,25 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
         </p>
       </div>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 18 }}>
-        {btnPeriodo("dia", "Día")}
+        {!hayDestajoReal && btnPeriodo("dia", "Día")}
         {btnPeriodo("mes", "Mes")}
         {btnPeriodo("anio", "Año")}
-        {btnPeriodo("rango", "Rango")}
+        {hayDestajoReal && btnPeriodo("quincena", "Quincena")}
+        {!hayDestajoReal && btnPeriodo("rango", "Rango")}
         {periodo === "dia" && (
           <input type="date" value={fechaDia} onChange={(e) => setFechaDia(e.target.value)} style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
+        )}
+        {periodo === "quincena" && (
+          <>
+            <select value={quincenaSel} onChange={(e) => setQuincenaSel(e.target.value)} style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }}>
+              <option value="1">Quincena 1 (días 1-15)</option>
+              <option value="2">Quincena 2 (16-fin de mes)</option>
+            </select>
+            <select value={mesSel} onChange={(e) => setMesSel(Number(e.target.value))} style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }}>
+              {MESES_CORTOS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+            </select>
+            <input type="number" value={anioSel} onChange={(e) => setAnioSel(Number(e.target.value))} style={{ width: 90, padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
+          </>
         )}
         {periodo === "mes" && (
           <>
@@ -4261,6 +4434,91 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                 </Modal>
               )}
             </>
+          )}
+          {areaSel && areaSel !== "__lideres_base_admin__" && (
+            <div style={{ marginTop: 28, paddingTop: 24, borderTop: `1.5px solid ${C.border}` }}>
+              <div style={{ fontWeight: 900, fontSize: 16, color: C.ink, marginBottom: 4 }}>💵 Costo real total — {areaSel}</div>
+              <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 700 }}>
+                Gastos de insumos (facturas digitadas a mano) y ventas registradas de esta área, sumados/comparados con el costo de nómina de arriba, para ver la ganancia real del período ({etiquetaPeriodo}).
+              </div>
+              {hayDestajoReal && periodosDestajoSeleccionados.length > 0 && filas.every((f) => !f.liquidacionesEnPeriodo) && (
+                <div style={{ background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: C.ink, marginBottom: 16 }}>
+                  ⚠️ Todavía no hay ninguna quincena confirmada en Nómina → Destajo para este período — el costo de nómina de esta área va a salir en $0 hasta que la confirmes ahí.
+                </div>
+              )}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 }}>
+                <KPI icon="🧵" label={`Costo insumos (${etiquetaPeriodo})`} value={fmtMoney(totalGastosPeriodo)} color={C.amber} bg={C.amberBg} sub={`${gastosPeriodo.length} factura(s)`} />
+                <KPI icon="🏦" label="Costo total (nómina + insumos)" value={fmtMoney(costoTotalConInsumos)} color={C.violet} bg={C.violetBg} />
+                <KPI icon="🧾" label={`Ventas (${etiquetaPeriodo})`} value={fmtMoney(totalVentasCentroCostoPeriodo)} color={C.blue} bg={C.blueBg} sub={`${ventasCentroCostoPeriodo.length} venta(s)`} />
+                <KPI icon={balanceRealConVentas >= 0 ? "✅" : "⚠️"} label="Ganancia real (Ventas − Costo total)" value={fmtMoney(balanceRealConVentas)} color={balanceRealConVentas >= 0 ? C.green : C.red} bg={balanceRealConVentas >= 0 ? C.greenBg : C.redBg} />
+              </div>
+              <div style={{ display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap" }}>
+                <div style={{ flex: "1 1 380px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>Gastos (facturas de insumos)</div>
+                    <Btn small onClick={abrirNuevoGasto}>+ Agregar gasto</Btn>
+                  </div>
+                  <Tabla
+                    vacio="Sin gastos digitados en este período."
+                    columnas={[
+                      { key: "fecha", label: "Fecha", render: (g) => fmtFechaISO(g.fecha) },
+                      { key: "proveedor", label: "Proveedor" },
+                      { key: "numeroFactura", label: "N° Factura" },
+                      { key: "monto", label: "Monto", align: "right", render: (g) => fmtMoney(g.monto) },
+                      { key: "acciones", label: "", align: "right", render: (g) => <Btn small variant="danger" onClick={() => borrarGasto(g.id)}>🗑</Btn> },
+                    ]}
+                    filas={gastosPeriodo}
+                  />
+                </div>
+                <div style={{ flex: "1 1 460px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>Ventas</div>
+                    <Btn small onClick={abrirNuevaVenta}>+ Agregar venta</Btn>
+                  </div>
+                  <Tabla
+                    vacio="Sin ventas digitadas en este período."
+                    columnas={[
+                      { key: "fecha", label: "Fecha", render: (v) => fmtFechaISO(v.fecha) },
+                      { key: "referencia", label: "Ref" },
+                      { key: "lote", label: "Lote" },
+                      { key: "cliente", label: "Cliente" },
+                      { key: "cantidad", label: "Cant.", align: "right", render: (v) => fmtNum(v.cantidad) },
+                      { key: "precio", label: "Precio", align: "right", render: (v) => fmtMoney(v.precio) },
+                      { key: "total", label: "Total", align: "right", render: (v) => <strong>{fmtMoney(v.total)}</strong> },
+                      { key: "acciones", label: "", align: "right", render: (v) => <Btn small variant="danger" onClick={() => borrarVenta(v.id)}>🗑</Btn> },
+                    ]}
+                    filas={ventasCentroCostoPeriodo}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+          {gastoModalAbierto && (
+            <Modal title="Nuevo gasto (factura de insumos)" onClose={() => setGastoModalAbierto(false)} width={420}>
+              {campoTexto("Proveedor", gastoForm.proveedor, (v) => setGastoForm((f) => ({ ...f, proveedor: v })), { placeholder: "Ej: Coats, Hilos XYZ..." })}
+              {campoTexto("N° de Factura", gastoForm.numeroFactura, (v) => setGastoForm((f) => ({ ...f, numeroFactura: v })))}
+              {campoTexto("Monto", gastoForm.monto, (v) => setGastoForm((f) => ({ ...f, monto: v })), { type: "number", placeholder: "Ej: 850000" })}
+              {campoTexto("Fecha", gastoForm.fecha, (v) => setGastoForm((f) => ({ ...f, fecha: v })), { type: "date" })}
+              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+                <Btn variant="secondary" onClick={() => setGastoModalAbierto(false)}>Cancelar</Btn>
+                <Btn onClick={guardarGastoForm} disabled={!gastoForm.proveedor.trim() || !gastoForm.monto}>Guardar</Btn>
+              </div>
+            </Modal>
+          )}
+          {ventaModalAbierto && (
+            <Modal title="Nueva venta" onClose={() => setVentaModalAbierto(false)} width={420}>
+              {campoTexto("Referencia", ventaForm.referencia, (v) => setVentaForm((f) => ({ ...f, referencia: v })))}
+              {campoTexto("Lote", ventaForm.lote, (v) => setVentaForm((f) => ({ ...f, lote: v })))}
+              {campoTexto("Cliente", ventaForm.cliente, (v) => setVentaForm((f) => ({ ...f, cliente: v })))}
+              {campoTexto("Cantidad", ventaForm.cantidad, (v) => setVentaForm((f) => ({ ...f, cantidad: v })), { type: "number" })}
+              {campoTexto("Precio", ventaForm.precio, (v) => setVentaForm((f) => ({ ...f, precio: v })), { type: "number" })}
+              {campoTexto("Total", ventaForm.total, (v) => setVentaForm((f) => ({ ...f, total: v })), { type: "number" })}
+              {campoTexto("Fecha", ventaForm.fecha, (v) => setVentaForm((f) => ({ ...f, fecha: v })), { type: "date" })}
+              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+                <Btn variant="secondary" onClick={() => setVentaModalAbierto(false)}>Cancelar</Btn>
+                <Btn onClick={guardarVentaForm} disabled={!ventaForm.referencia.trim() || !ventaForm.total}>Guardar</Btn>
+              </div>
+            </Modal>
           )}
         </div>
       </div>
