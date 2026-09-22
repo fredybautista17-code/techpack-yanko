@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, Fragment } from "react";
+import { useState, useEffect, useMemo, useRef, Fragment } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import {
   getFirestore,
@@ -9,6 +9,7 @@ import {
   onSnapshot,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -20,6 +21,7 @@ const firebaseConfig = {
 const fbApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
 const functionsClient = getFunctions(fbApp);
+const storage = getStorage(fbApp);
 async function fsSave(col, id, data) {
   await setDoc(doc(db, col, id), data, { merge: true });
 }
@@ -3509,8 +3511,99 @@ function costoMensualCompletoCC(t) {
   }
   return sueldo + auxilio + prestaciones + aportesPatronales;
 }
-function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movimientos, cargandoMovimientos, onActualizarMovimientos, reclamosCalidad, areaFija }) {
+// (2026-09-22, a pedido de Fredy) "Lo causado" -- para trabajadores tipo
+// Destajo cuya quincena TODAVIA no se confirma en Nomina -> Destajo,
+// Centro de Costo ya no se queda en $0: calcula en vivo, con la misma
+// formula que usa calcularLiquidacionDestajo en modulo-nomina.jsx, lo que
+// lleva causado hasta el momento (produccion o Causacion Manual + horas
+// sueltas + horas extra + bonificacion puntual + ajuste manual - cobros
+// pendientes de Bodega). Es un ESTIMADO que se actualiza solo a medida que
+// se registra produccion -- en cuanto Fredy confirma esa quincena en
+// Nomina -> Destajo, este calculo deja de usarse para esa quincena y se ve
+// el numero real ya guardado (ver el useMemo de "filas" mas abajo).
+// Duplicado a proposito (mismo patron que costoMensualCompletoCC arriba)
+// en vez de importarlo de modulo-nomina.jsx -- mantener igual si cambia alla.
+function rangoQuincenaCC(anio, mes, quincena) {
+  const mm = String(mes).padStart(2, "0");
+  if (Number(quincena) === 1) return { inicio: `${anio}-${mm}-01`, fin: `${anio}-${mm}-15` };
+  const ultimoDia = new Date(Number(anio), Number(mes), 0).getDate();
+  return { inicio: `${anio}-${mm}-16`, fin: `${anio}-${mm}-${String(ultimoDia).padStart(2, "0")}` };
+}
+function calcularCausadoDestajoCC(trabajador, netoProduccion, totalHoras) {
+  if (trabajador.pagoPorDia) {
+    // Los "Por dia" dependen del huellero de la quincena, que Centro de
+    // Costo no trae -- se deja en $0 causado hasta que se confirme en
+    // Nomina -> Destajo (caso poco comun, no es el de Zona Calor/Maquila).
+    return { netoBase: 0, salarioMinimoGarantizado: false, ayudaSalarioMinimo: 0, produccionReal: 0, cesantiasPeriodo: 0, primaPeriodo: 0, vacacionesPeriodo: 0 };
+  }
+  const sueldo = Number(trabajador.sueldo) || 0;
+  const auxilio = Number(trabajador.auxilioTransporte) || 0;
+  const sueldoQuincena = sueldo / 2;
+  const auxilioQuincena = auxilio / 2;
+  const baseConAuxilio = sueldoQuincena + auxilioQuincena;
+  const cesantiasPeriodo = baseConAuxilio * TASA_CESANTIAS_MENSUAL_CC;
+  const primaPeriodo = baseConAuxilio * TASA_PRIMA_MENSUAL_CC;
+  const vacacionesPeriodo = sueldoQuincena * TASA_VACACIONES_MENSUAL_CC;
+  const salarioMinimoGarantizado = !!trabajador.salarioMinimoGarantizado;
+  const totalBruto = netoProduccion + (Number(totalHoras) || 0);
+  let netoBase = totalBruto;
+  let ayudaSalarioMinimo = 0;
+  if (salarioMinimoGarantizado) {
+    const pagoFijo = SMMLV_2026_CC / 2 + auxilioQuincena;
+    ayudaSalarioMinimo = Math.max(0, pagoFijo - totalBruto);
+    netoBase = pagoFijo;
+  }
+  return { netoBase, salarioMinimoGarantizado, ayudaSalarioMinimo, produccionReal: netoProduccion, cesantiasPeriodo, primaPeriodo, vacacionesPeriodo };
+}
+function sumaHorasExtraTrabajadorCC(horasExtras, trabajadorId, desde, hasta) {
+  return (horasExtras || []).filter((h) => h.trabajadorId === trabajadorId && h.fecha >= desde && h.fecha <= hasta).reduce((s, h) => s + (Number(h.total) || 0), 0);
+}
+function valorBonificacionCC(bonificaciones, trabajadorId, periodoId) {
+  const base = `${trabajadorId}__${periodoId}`;
+  return (bonificaciones || []).filter((b) => b.id === base || b.id.startsWith(`${base}__`)).reduce((s, b) => s + (Number(b.valor) || 0), 0);
+}
+function cobrosPendientesDeTrabajadorCC(lotesConCobros, trabajadorId, hastaFecha) {
+  const pendientes = [];
+  (lotesConCobros || []).forEach((l) => {
+    (l.cobrosBodega || []).forEach((c) => {
+      if (c.trabajadorId === trabajadorId && c.cobrado !== true && (!hastaFecha || !c.fecha || c.fecha <= hastaFecha)) {
+        pendientes.push((Number(c.valor) || 0) * (Number(c.cantidad) || 1));
+      }
+    });
+  });
+  return pendientes.reduce((s, v) => s + v, 0);
+}
+// Calcula lo causado de UN trabajador para UN periodoId puntual (una
+// quincena que todavia no tiene liquidacion confirmada) -- se usa desde
+// el useMemo de "filas" de CentroCostoPlaneacionView, una vez por cada
+// periodoId de periodosDestajoSeleccionados que no tenga ya un registro
+// real. Devuelve la misma forma (valorProducido/costo) que ya arma el
+// useMemo para las liquidaciones SI confirmadas, para poder sumarlos igual.
+function causadoDestajoEnPeriodoCC(t, periodoId, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosCC) {
+  const [anio, mes, qLabel] = periodoId.split("-");
+  const quincena = qLabel.replace("Q", "");
+  const { inicio, fin } = rangoQuincenaCC(anio, mes, quincena);
+  const causacionDoc = (causacionManualCC || []).find((c) => c.id === `${t.id}__${periodoId}`);
+  const netoProduccion = causacionDoc
+    ? (Number(causacionDoc.valor) || 0)
+    : (produccion || []).filter((p) => p.trabajadorId === t.id && p.fecha >= inicio && p.fecha <= fin).reduce((s, p) => s + (Number(p.total) || 0), 0);
+  const totalHorasQuincena = (horasCC || []).filter((h) => h.trabajadorId === t.id && h.fecha >= inicio && h.fecha <= fin).reduce((s, h) => s + (Number(h.total) || 0), 0);
+  const base = calcularCausadoDestajoCC(t, netoProduccion, totalHorasQuincena);
+  const totalHorasExtra = sumaHorasExtraTrabajadorCC(horasExtrasCC, t.id, inicio, fin);
+  const bonificacionPuntual = valorBonificacionCC(bonificacionesCC, t.id, periodoId);
+  const descuentoCobros = cobrosPendientesDeTrabajadorCC(lotesConCobrosCC, t.id, fin);
+  const ajusteDoc = (ajustesDestajoCC || []).find((a) => a.id === `${t.id}__${periodoId}`);
+  const ajusteValor = (!base.salarioMinimoGarantizado && ajusteDoc) ? (Number(ajusteDoc.valor) || 0) : 0;
+  const netoAPagar = base.netoBase - descuentoCobros + totalHorasExtra + bonificacionPuntual + ajusteValor;
+  return { valorProducido: netoProduccion, costo: netoAPagar + base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo };
+}
+function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movimientos, cargandoMovimientos, onActualizarMovimientos, reclamosCalidad, areaFija, currentUser }) {
   const hoy = today();
+  // (2026-09-22, a pedido de Fredy) Admin -- gatea "Reabrir mes" en el
+  // Historial de Facturas y Ventas más abajo (Cerrar mes lo puede hacer
+  // cualquiera con acceso a Centro de Costo, igual que Cerrar Quincena en
+  // Nómina).
+  const isAdmin = currentUser?.isAdmin;
   // (2026-09-17, a pedido de Fredy) Botón "Actualizar" del modo $/Destajo
   // (default). Los datos de "produccion" ya llegan en vivo (onSnapshot),
   // así que aquí no hay nada que consultar -- el botón solo le confirma
@@ -3568,6 +3661,101 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     const unsub = onSnapshot(collection(db, "nomina_destajo_liquidaciones"), (snap) => setLiquidacionesDestajo(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
     return () => unsub();
   }, []);
+  // (2026-09-22, a pedido de Fredy) Datos crudos para calcular "lo
+  // causado" (ver causadoDestajoEnPeriodoCC arriba) de las quincenas de
+  // Destajo que todavia no se confirman en Nomina -> Destajo. Mismas
+  // colecciones que ya lee NominaDestajoView, leidas aca de nuevo (en vez
+  // de pasarlas por props) porque Centro de Costo vive en un modulo
+  // distinto (Planeacion) y no comparte el estado de ModuloNomina.
+  const [causacionManualCC, setCausacionManualCC] = useState([]);
+  const [horasCC, setHorasCC] = useState([]);
+  const [horasExtrasCC, setHorasExtrasCC] = useState([]);
+  const [bonificacionesCC, setBonificacionesCC] = useState([]);
+  const [ajustesDestajoCC, setAjustesDestajoCC] = useState([]);
+  const [lotesConCobrosCrudoCC, setLotesConCobrosCrudoCC] = useState([]);
+  const [cobrosManualesCC, setCobrosManualesCC] = useState([]);
+  useEffect(() => {
+    const unsubs = [
+      onSnapshot(collection(db, "nomina_causacion_manual"), (snap) => setCausacionManualCC(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_horas"), (snap) => setHorasCC(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_horas_extras"), (snap) => setHorasExtrasCC(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_bonificaciones"), (snap) => setBonificacionesCC(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_ajustes_destajo"), (snap) => setAjustesDestajoCC(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "dado_por_cumplido_lotes"), (snap) => setLotesConCobrosCrudoCC(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+      onSnapshot(collection(db, "nomina_cobros_manuales"), (snap) => setCobrosManualesCC(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
+    ];
+    return () => unsubs.forEach((u) => u());
+  }, []);
+  const lotesConCobrosTotalCC = useMemo(() => {
+    const manualesComoLotes = (cobrosManualesCC || []).map((c) => ({
+      id: `manual__${c.id}`,
+      cobrosBodega: [{ trabajadorId: c.trabajadorId, tipo: c.tipo, valor: c.valor, cantidad: 1, fecha: c.fecha, cobrado: c.cobrado === true }],
+    }));
+    return [...(lotesConCobrosCrudoCC || []), ...manualesComoLotes];
+  }, [lotesConCobrosCrudoCC, cobrosManualesCC]);
+  // (2026-09-22, a pedido de Fredy) "Cierre de mes" de Centro de Costo --
+  // congela SOLO Gastos/Ventas/Balance de un mes ya revisado (NO el costo
+  // de nómina, que sigue viniendo en vivo de Nómina -> Destajo/Trabajadores
+  // para cualquier período elegido arriba). Mientras un mes está cerrado no
+  // se pueden agregar/borrar gastos ni ventas con fecha dentro de ese mes --
+  // solo un admin puede reabrirlo. Genérico por área, doc id "{area}__{YYYY-MM}".
+  const [cierresMes, setCierresMes] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "centro_costo_cierres_mes"), (snap) => setCierresMes(snap.docs.map((d) => ({ ...d.data(), id: d.id }))));
+    return () => unsub();
+  }, []);
+  function cierreDe(fechaISO) {
+    if (!fechaISO || !areaSel) return null;
+    return (cierresMes || []).find((c) => c.id === `${areaSel}__${fechaISO.slice(0, 7)}`) || null;
+  }
+  async function cerrarMes(claveYYYYMM, totales) {
+    const [anio, mes] = claveYYYYMM.split("-").map(Number);
+    const id = `${areaSel}__${claveYYYYMM}`;
+    await fsSave("centro_costo_cierres_mes", id, {
+      id,
+      area: areaSel,
+      anio,
+      mes,
+      totalGastos: totales.totalGastos,
+      totalVentas: totales.totalVentas,
+      balance: totales.balance,
+      cerradoEn: new Date().toISOString(),
+      cerradoPor: currentUser?.nombre || currentUser?.email || "—",
+    });
+  }
+  async function reabrirMes(id) {
+    await fsDelete("centro_costo_cierres_mes", id);
+  }
+  // (2026-09-22, a pedido de Fredy) Adjuntar foto/PDF de la factura a un
+  // gasto o venta -- mismo patrón de Storage que ImageListUploader en
+  // App.js, pero con uploadBytes (no uploadString) porque acá el archivo
+  // puede ser un PDF, no solo una foto comprimida a data_url.
+  const [subiendoArchivo, setSubiendoArchivo] = useState(false);
+  const [gastoArchivoFile, setGastoArchivoFile] = useState(null);
+  const [ventaArchivoFile, setVentaArchivoFile] = useState(null);
+  async function subirArchivoFactura(file) {
+    if (!file) return "";
+    const ext = (file.name.split(".").pop() || "bin").toLowerCase();
+    const ref = storageRef(storage, `centro_costo_facturas/${uid()}.${ext}`);
+    await uploadBytes(ref, file);
+    return await getDownloadURL(ref);
+  }
+  // (2026-09-22, a pedido de Fredy) "Historial de Facturas y Ventas" por
+  // mes -- un solo mes abierto a la vez (acordeón).
+  const [mesHistorialAbierto, setMesHistorialAbierto] = useState(null);
+  // (2026-09-22, a pedido de Fredy) Ranking de a qué trabajadores se les ha
+  // dado más "Ayuda salario mínimo garantizado" en el año -- incluye
+  // trabajadores que ya quedaron inactivos, porque usa directamente las
+  // liquidaciones de Nómina -> Destajo (no se borran al desactivar a
+  // alguien), no trabajadoresArea (que sí filtra activos). Ver rankingAyudas
+  // más abajo.
+  const [anioRanking, setAnioRanking] = useState(new Date().getFullYear());
+  // (2026-09-22, a pedido de Fredy) Carga de gastos por Excel -- mismo
+  // patrón de import dinámico de xlsx que el resto de este archivo, pero
+  // leyendo un archivo en vez de generarlo.
+  const excelGastosInputRef = useRef(null);
+  const [cargandoExcelGastos, setCargandoExcelGastos] = useState(false);
+  const [resultadoExcelGastos, setResultadoExcelGastos] = useState(null);
   function enPeriodo(fechaISO) {
     if (!fechaISO) return false;
     if (periodo === "dia") return fechaISO === fechaDia;
@@ -3732,6 +3920,33 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     else if (periodo === "quincena") ids.push(`${anioSel}-${String(mesSel).padStart(2, "0")}-Q${quincenaSel}`);
     return ids;
   }, [periodo, anioSel, mesSel, quincenaSel]);
+  // (2026-09-22, a pedido de Fredy) Ranking anual de "Ayuda salario mínimo
+  // garantizado" por trabajador -- usa el área ACTUAL de la ficha del
+  // trabajador (la liquidación no guarda el área en que estaba en ese
+  // momento), e incluye inactivos porque busca por trabajadorId sobre TODA
+  // la lista de trabajadores recibida (no sobre trabajadoresArea, que ya
+  // filtra activos).
+  const trabajadoresPorId = useMemo(() => {
+    const m = new Map();
+    (trabajadores || []).forEach((t) => m.set(t.id, t));
+    return m;
+  }, [trabajadores]);
+  const rankingAyudas = useMemo(() => {
+    if (!areaSel || areaSel === "__lideres_base_admin__") return [];
+    const m = new Map();
+    (liquidacionesDestajo || []).forEach((l) => {
+      if (!l.periodoId || !l.periodoId.startsWith(`${anioRanking}-`)) return;
+      const ayuda = Number(l.ayudaSalarioMinimo) || 0;
+      if (ayuda <= 0) return;
+      const t = trabajadoresPorId.get(l.trabajadorId);
+      if (!t || (t.area || "Sin asignar") !== areaSel) return;
+      if (!m.has(l.trabajadorId)) m.set(l.trabajadorId, { trabajadorId: l.trabajadorId, nombre: l.nombre || t.nombre, activo: t.activo !== false, totalAyuda: 0, quincenas: 0 });
+      const acc = m.get(l.trabajadorId);
+      acc.totalAyuda += ayuda;
+      acc.quincenas += 1;
+    });
+    return [...m.values()].sort((a, b) => b.totalAyuda - a.totalAyuda);
+  }, [liquidacionesDestajo, trabajadoresPorId, areaSel, anioRanking]);
   const produccionPeriodo = useMemo(
     () => (produccion || []).filter((p) => enPeriodo(p.fecha)),
     [produccion, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin]
@@ -3771,19 +3986,35 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
       .map((t) => {
         const datos = porTrabajador.get(t.id);
         // (2026-09-22, a pedido de Fredy) Para trabajadores tipo "Destajo"
-        // (pensado para Maquila) el valor y el costo reales NO salen de
-        // Registrar Producción ni del sueldo cargado en la ficha -- salen
-        // de las liquidaciones YA CONFIRMADAS en Nómina -> Destajo (que ya
-        // incluyen Causación Manual + provisiones), sumando las quincenas
-        // que caen dentro del período elegido (periodosDestajoSeleccionados).
-        // Si todavía no se ha confirmado esa quincena, se ve en $0 -- se
-        // avisa aparte en el render de "Costo real total".
+        // (pensado para Maquila) el valor y el costo NO salen de Registrar
+        // Producción ni del sueldo cargado en la ficha -- para cada quincena
+        // dentro del período elegido (periodosDestajoSeleccionados): si ya
+        // hay una liquidación CONFIRMADA en Nómina -> Destajo para esa
+        // quincena, se usa ese número real (incluye Causación Manual +
+        // provisiones); si todavía no se confirma, se calcula "lo causado"
+        // en vivo con causadoDestajoEnPeriodoCC (misma fórmula, pero es un
+        // ESTIMADO que se sigue moviendo hasta que se confirme). Se avisa
+        // aparte cuál caso es (ver "huboCausado" y el render de abajo).
         const esDestajoReal = t.tipoNomina === "Destajo";
-        const liqsTrabajador = esDestajoReal
-          ? (liquidacionesDestajo || []).filter((l) => l.trabajadorId === t.id && periodosDestajoSeleccionados.includes(l.periodoId))
-          : [];
-        const valorRealDestajo = liqsTrabajador.reduce((s, l) => s + (l.pagoPorDia ? (Number(l.pagoDias) || 0) : (Number(l.produccionReal) || 0)), 0);
-        const costoRealDestajo = liqsTrabajador.reduce((s, l) => s + (Number(l.netoAPagar) || 0) + (Number(l.cesantiasPeriodo) || 0) + (Number(l.primaPeriodo) || 0) + (Number(l.vacacionesPeriodo) || 0), 0);
+        let valorRealDestajo = 0;
+        let costoRealDestajo = 0;
+        let liquidacionesEnPeriodo = 0;
+        let huboCausado = false;
+        if (esDestajoReal) {
+          periodosDestajoSeleccionados.forEach((pid) => {
+            const liq = (liquidacionesDestajo || []).find((l) => l.trabajadorId === t.id && l.periodoId === pid);
+            if (liq) {
+              liquidacionesEnPeriodo++;
+              valorRealDestajo += liq.pagoPorDia ? (Number(liq.pagoDias) || 0) : (Number(liq.produccionReal) || 0);
+              costoRealDestajo += (Number(liq.netoAPagar) || 0) + (Number(liq.cesantiasPeriodo) || 0) + (Number(liq.primaPeriodo) || 0) + (Number(liq.vacacionesPeriodo) || 0);
+            } else {
+              const causado = causadoDestajoEnPeriodoCC(t, pid, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC);
+              valorRealDestajo += causado.valorProducido;
+              costoRealDestajo += causado.costo;
+              huboCausado = true;
+            }
+          });
+        }
         return {
           id: t.id,
           nombre: t.nombre,
@@ -3793,11 +4024,12 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
           costo: esDestajoReal ? costoRealDestajo : costoPeriodo((Number(t.sueldo) || 0) + (Number(t.auxilioTransporte) || 0)),
           sinSueldo: esDestajoReal ? false : !t.sueldo,
           esDestajoReal,
-          liquidacionesEnPeriodo: liqsTrabajador.length,
+          liquidacionesEnPeriodo,
+          huboCausado,
         };
       })
       .sort((a, b) => b.valorProducido - a.valorProducido);
-  }, [trabajadoresArea, porTrabajador, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin, liquidacionesDestajo, periodosDestajoSeleccionados]);
+  }, [trabajadoresArea, porTrabajador, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin, liquidacionesDestajo, periodosDestajoSeleccionados, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC]);
   const totalUnidades = filas.reduce((s, f) => s + f.unidades, 0);
   const totalValor = filas.reduce((s, f) => s + f.valorProducido, 0);
   const totalCosto = filas.reduce((s, f) => s + (f.sinSueldo ? 0 : f.costo), 0);
@@ -4042,7 +4274,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     { key: "area", label: "Área Interna" },
     { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
     { key: "valorProducido", label: "Valor producido", align: "right", render: (f) => fmtMoney(f.valorProducido) },
-    { key: "costo", label: `Costo nómina (${etiquetaPeriodo})`, align: "right", render: (f) => (f.sinSueldo ? <span style={{ color: C.amber }}>⚠️ sin sueldo</span> : fmtMoney(f.costo)) },
+    { key: "costo", label: `Costo nómina (${etiquetaPeriodo})`, align: "right", render: (f) => (f.sinSueldo ? <span style={{ color: C.amber }}>⚠️ sin sueldo</span> : <span>{fmtMoney(f.costo)}{f.huboCausado && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.amberBg, color: C.amber }} title="Todavía no se confirma esa quincena en Nómina → Destajo -- este número es lo causado hasta hoy y puede cambiar">🟡 causado</span>}</span>) },
     { key: "balance", label: "Balance", align: "right", render: (f) => <span style={{ color: f.valorProducido - f.costo >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtMoney(f.valorProducido - f.costo)}</span> },
   ];
   const columnasApoyo = [
@@ -4120,6 +4352,32 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   );
   const totalGastosPeriodo = gastosPeriodo.reduce((s, g) => s + (Number(g.monto) || 0), 0);
   const totalVentasCentroCostoPeriodo = ventasCentroCostoPeriodo.reduce((s, v) => s + (Number(v.total) || 0), 0);
+  // (2026-09-22, a pedido de Fredy) "Historial de Facturas y Ventas" -- a
+  // diferencia de gastosPeriodo/ventasCentroCostoPeriodo (que dependen del
+  // selector de período de arriba), esto agrupa TODOS los gastos/ventas del
+  // área por mes calendario, para poder revisarlos y cerrarlos mes a mes
+  // sin importar en qué período esté parado el selector de arriba.
+  const gastosArea = useMemo(() => (gastosCentroCosto || []).filter((g) => g.area === areaSel), [gastosCentroCosto, areaSel]);
+  const ventasAreaTodas = useMemo(() => (ventasCentroCosto || []).filter((v) => v.area === areaSel), [ventasCentroCosto, areaSel]);
+  const mesesHistorial = useMemo(() => {
+    const set = new Set();
+    gastosArea.forEach((g) => g.fecha && set.add(g.fecha.slice(0, 7)));
+    ventasAreaTodas.forEach((v) => v.fecha && set.add(v.fecha.slice(0, 7)));
+    (cierresMes || []).forEach((c) => c.area === areaSel && set.add(`${c.anio}-${String(c.mes).padStart(2, "0")}`));
+    return [...set].sort().reverse();
+  }, [gastosArea, ventasAreaTodas, cierresMes, areaSel]);
+  function nombreMesHistorial(claveYYYYMM) {
+    const [anio, mes] = claveYYYYMM.split("-").map(Number);
+    return `${MESES_CORTOS[mes - 1]} ${anio}`;
+  }
+  function datosDelMesHistorial(claveYYYYMM) {
+    const gastos = gastosArea.filter((g) => (g.fecha || "").slice(0, 7) === claveYYYYMM);
+    const ventas = ventasAreaTodas.filter((v) => (v.fecha || "").slice(0, 7) === claveYYYYMM);
+    const totalGastos = gastos.reduce((s, g) => s + (Number(g.monto) || 0), 0);
+    const totalVentas = ventas.reduce((s, v) => s + (Number(v.total) || 0), 0);
+    const cierre = (cierresMes || []).find((c) => c.id === `${areaSel}__${claveYYYYMM}`) || null;
+    return { gastos, ventas, totalGastos, totalVentas, balance: totalVentas - totalGastos, cierre };
+  }
   const costoNominaParaTotal = modoMedicion === "destajo" ? totalCosto : costoAreaApoyo;
   const costoTotalConInsumos = costoNominaParaTotal + totalGastosPeriodo;
   const balanceRealConVentas = totalVentasCentroCostoPeriodo - costoTotalConInsumos;
@@ -4139,48 +4397,132 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   }
   function abrirNuevoGasto() {
     setGastoForm({ proveedor: "", numeroFactura: "", monto: "", fecha: hoy });
+    setGastoArchivoFile(null);
     setGastoModalAbierto(true);
   }
   async function guardarGastoForm() {
     if (!gastoForm.proveedor.trim() || !gastoForm.monto) return;
-    const nuevo = {
-      id: uid(),
-      area: areaSel,
-      proveedor: gastoForm.proveedor.trim(),
-      numeroFactura: gastoForm.numeroFactura.trim(),
-      monto: Number(gastoForm.monto) || 0,
-      fecha: gastoForm.fecha,
-      creadoEn: new Date().toISOString(),
-    };
-    await fsSave("centro_costo_gastos", nuevo.id, nuevo);
-    setGastoModalAbierto(false);
+    if (cierreDe(gastoForm.fecha)) {
+      alert("Ese mes ya está cerrado en Centro de Costo -- pídele a un admin que lo reabra en el Historial antes de agregar gastos.");
+      return;
+    }
+    setSubiendoArchivo(true);
+    try {
+      const facturaUrl = gastoArchivoFile ? await subirArchivoFactura(gastoArchivoFile) : "";
+      const nuevo = {
+        id: uid(),
+        area: areaSel,
+        proveedor: gastoForm.proveedor.trim(),
+        numeroFactura: gastoForm.numeroFactura.trim(),
+        monto: Number(gastoForm.monto) || 0,
+        fecha: gastoForm.fecha,
+        facturaUrl,
+        creadoEn: new Date().toISOString(),
+      };
+      await fsSave("centro_costo_gastos", nuevo.id, nuevo);
+      setGastoArchivoFile(null);
+      setGastoModalAbierto(false);
+    } finally {
+      setSubiendoArchivo(false);
+    }
   }
-  async function borrarGasto(id) {
-    await fsDelete("centro_costo_gastos", id);
+  async function borrarGasto(g) {
+    if (cierreDe(g.fecha)) {
+      alert("Ese mes ya está cerrado en Centro de Costo -- pídele a un admin que lo reabra en el Historial antes de borrar gastos.");
+      return;
+    }
+    await fsDelete("centro_costo_gastos", g.id);
+  }
+  async function handleExcelGastos(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCargandoExcelGastos(true);
+    setResultadoExcelGastos(null);
+    try {
+      const XLSX = await import("xlsx");
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array", cellDates: true });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      function col(row, ...nombres) {
+        const keys = Object.keys(row);
+        for (const nombre of nombres) {
+          const norm = nombre.toLowerCase().replace(/[^a-z0-9]/g, "");
+          const k = keys.find((kk) => kk.toLowerCase().replace(/[^a-z0-9]/g, "") === norm);
+          if (k !== undefined) return row[k];
+        }
+        return undefined;
+      }
+      let importados = 0;
+      let saltados = 0;
+      for (const r of rows) {
+        const proveedor = String(col(r, "Proveedor") || "").trim();
+        const monto = Number(col(r, "Monto")) || 0;
+        const fRaw = col(r, "Fecha");
+        const fecha = fRaw instanceof Date ? fRaw.toISOString().slice(0, 10) : String(fRaw || "").slice(0, 10);
+        if (!proveedor || !monto || !fecha) { saltados++; continue; }
+        if (cierreDe(fecha)) { saltados++; continue; }
+        const nuevo = {
+          id: uid(),
+          area: areaSel,
+          proveedor,
+          numeroFactura: String(col(r, "N° Factura", "NFactura", "Numero Factura", "NumeroFactura", "Factura") || "").trim(),
+          monto,
+          fecha,
+          facturaUrl: "",
+          creadoEn: new Date().toISOString(),
+        };
+        await fsSave("centro_costo_gastos", nuevo.id, nuevo);
+        importados++;
+      }
+      setResultadoExcelGastos({ importados, saltados, total: rows.length });
+    } catch (err) {
+      setResultadoExcelGastos({ error: err?.message || String(err) });
+    } finally {
+      setCargandoExcelGastos(false);
+      if (excelGastosInputRef.current) excelGastosInputRef.current.value = "";
+    }
   }
   function abrirNuevaVenta() {
     setVentaForm({ referencia: "", lote: "", cantidad: "", precio: "", total: "", cliente: "", fecha: hoy });
+    setVentaArchivoFile(null);
     setVentaModalAbierto(true);
   }
   async function guardarVentaForm() {
     if (!ventaForm.referencia.trim() || !ventaForm.total) return;
-    const nuevo = {
-      id: uid(),
-      area: areaSel,
-      referencia: ventaForm.referencia.trim(),
-      lote: ventaForm.lote.trim(),
-      cantidad: Number(ventaForm.cantidad) || 0,
-      precio: Number(ventaForm.precio) || 0,
-      total: Number(ventaForm.total) || 0,
-      cliente: ventaForm.cliente.trim(),
-      fecha: ventaForm.fecha,
-      creadoEn: new Date().toISOString(),
-    };
-    await fsSave("centro_costo_ventas", nuevo.id, nuevo);
-    setVentaModalAbierto(false);
+    if (cierreDe(ventaForm.fecha)) {
+      alert("Ese mes ya está cerrado en Centro de Costo -- pídele a un admin que lo reabra en el Historial antes de agregar ventas.");
+      return;
+    }
+    setSubiendoArchivo(true);
+    try {
+      const facturaUrl = ventaArchivoFile ? await subirArchivoFactura(ventaArchivoFile) : "";
+      const nuevo = {
+        id: uid(),
+        area: areaSel,
+        referencia: ventaForm.referencia.trim(),
+        lote: ventaForm.lote.trim(),
+        cantidad: Number(ventaForm.cantidad) || 0,
+        precio: Number(ventaForm.precio) || 0,
+        total: Number(ventaForm.total) || 0,
+        cliente: ventaForm.cliente.trim(),
+        fecha: ventaForm.fecha,
+        facturaUrl,
+        creadoEn: new Date().toISOString(),
+      };
+      await fsSave("centro_costo_ventas", nuevo.id, nuevo);
+      setVentaArchivoFile(null);
+      setVentaModalAbierto(false);
+    } finally {
+      setSubiendoArchivo(false);
+    }
   }
-  async function borrarVenta(id) {
-    await fsDelete("centro_costo_ventas", id);
+  async function borrarVenta(v) {
+    if (cierreDe(v.fecha)) {
+      alert("Ese mes ya está cerrado en Centro de Costo -- pídele a un admin que lo reabra en el Historial antes de borrar ventas.");
+      return;
+    }
+    await fsDelete("centro_costo_ventas", v.id);
   }
   return (
     <div>
@@ -4393,8 +4735,8 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 24 }}>
                 <KPI icon="📦" label="Unidades producidas" value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
                 <KPI icon="✅" label="Unidades en Terminadas" value={fmtNum(unidadesTerminadasPeriodo)} color={C.amber} bg={C.amberBg} sub="proceso Terminación, toda la empresa" />
-                <KPI icon="💵" label="Valor producido" value={fmtMoney(totalValor)} color={C.green} bg={C.greenBg} />
-                <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(totalCosto)} color={C.violet} bg={C.violetBg} />
+                <KPI icon="💵" label="Valor producido" value={fmtMoney(totalValor)} color={C.green} bg={C.greenBg} sub={filas.some((f) => f.huboCausado) ? "🟡 incluye causado sin confirmar" : undefined} />
+                <KPI icon="🏦" label={`Costo nómina (${etiquetaPeriodo})`} value={fmtMoney(totalCosto)} color={C.violet} bg={C.violetBg} sub={filas.some((f) => f.huboCausado) ? "🟡 incluye causado sin confirmar" : undefined} />
                 <KPI icon="💰" label={`Presupuesto (${etiquetaPeriodo})`} value={presupuestoPeriodoArea > 0 ? fmtMoney(presupuestoPeriodoArea) : "Sin presupuesto"} color={C.slate} bg={C.canvas} />
                 {presupuestoPeriodoArea > 0 && (
                   <KPI icon={dentroPresupuesto ? "✅" : "⚠️"} label="Presupuesto nómina" value={`${pctPresupuesto.toFixed(0)}%`} color={dentroPresupuesto ? C.green : C.red} bg={dentroPresupuesto ? C.greenBg : C.redBg} sub={dentroPresupuesto ? "✓ Dentro del presupuesto" : "⚠ Se pasó del presupuesto"} />
@@ -4441,9 +4783,9 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
               <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 700 }}>
                 Gastos de insumos (facturas digitadas a mano) y ventas registradas de esta área, sumados/comparados con el costo de nómina de arriba, para ver la ganancia real del período ({etiquetaPeriodo}).
               </div>
-              {hayDestajoReal && periodosDestajoSeleccionados.length > 0 && filas.every((f) => !f.liquidacionesEnPeriodo) && (
+              {hayDestajoReal && periodosDestajoSeleccionados.length > 0 && filas.some((f) => f.huboCausado) && (
                 <div style={{ background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: C.ink, marginBottom: 16 }}>
-                  ⚠️ Todavía no hay ninguna quincena confirmada en Nómina → Destajo para este período — el costo de nómina de esta área va a salir en $0 hasta que la confirmes ahí.
+                  🟡 Todavía no confirmas esa quincena en Nómina → Destajo — lo que ves marcado "🟡 causado" es un estimado con lo que lleva registrado hasta hoy (producción, horas, ajustes), no el número definitivo. Va a seguir cambiando hasta que le des "Confirmar y guardar liquidación de la quincena" allá.
                 </div>
               )}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 20 }}>
@@ -4454,10 +4796,22 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
               </div>
               <div style={{ display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap" }}>
                 <div style={{ flex: "1 1 380px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
                     <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>Gastos (facturas de insumos)</div>
-                    <Btn small onClick={abrirNuevoGasto}>+ Agregar gasto</Btn>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <input ref={excelGastosInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={handleExcelGastos} />
+                      <Btn small variant="secondary" onClick={() => excelGastosInputRef.current?.click()} disabled={cargandoExcelGastos}>{cargandoExcelGastos ? "Cargando..." : "📤 Cargar Excel"}</Btn>
+                      <Btn small onClick={abrirNuevoGasto}>+ Agregar gasto</Btn>
+                    </div>
                   </div>
+                  {resultadoExcelGastos && (
+                    <div style={{ fontSize: 11.5, marginBottom: 10, padding: "8px 12px", borderRadius: 8, background: resultadoExcelGastos.error ? C.redBg : C.greenBg, color: resultadoExcelGastos.error ? C.red : C.green, fontWeight: 600 }}>
+                      {resultadoExcelGastos.error
+                        ? `⚠ ${resultadoExcelGastos.error}`
+                        : `✓ ${resultadoExcelGastos.importados} gasto(s) importado(s) de ${resultadoExcelGastos.total} fila(s)${resultadoExcelGastos.saltados ? ` -- ${resultadoExcelGastos.saltados} se saltaron (fila incompleta o mes ya cerrado)` : ""}.`}
+                    </div>
+                  )}
+                  <div style={{ fontSize: 10.5, color: C.slate, marginBottom: 10 }}>El Excel debe tener columnas: Proveedor, N° Factura, Monto, Fecha.</div>
                   <Tabla
                     vacio="Sin gastos digitados en este período."
                     columnas={[
@@ -4465,7 +4819,8 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                       { key: "proveedor", label: "Proveedor" },
                       { key: "numeroFactura", label: "N° Factura" },
                       { key: "monto", label: "Monto", align: "right", render: (g) => fmtMoney(g.monto) },
-                      { key: "acciones", label: "", align: "right", render: (g) => <Btn small variant="danger" onClick={() => borrarGasto(g.id)}>🗑</Btn> },
+                      { key: "factura", label: "", render: (g) => (g.facturaUrl ? <a href={g.facturaUrl} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 700, fontSize: 12 }}>📎 Ver</a> : null) },
+                      { key: "acciones", label: "", align: "right", render: (g) => <Btn small variant="danger" onClick={() => borrarGasto(g)}>🗑</Btn> },
                     ]}
                     filas={gastosPeriodo}
                   />
@@ -4485,12 +4840,116 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                       { key: "cantidad", label: "Cant.", align: "right", render: (v) => fmtNum(v.cantidad) },
                       { key: "precio", label: "Precio", align: "right", render: (v) => fmtMoney(v.precio) },
                       { key: "total", label: "Total", align: "right", render: (v) => <strong>{fmtMoney(v.total)}</strong> },
-                      { key: "acciones", label: "", align: "right", render: (v) => <Btn small variant="danger" onClick={() => borrarVenta(v.id)}>🗑</Btn> },
+                      { key: "factura", label: "", render: (v) => (v.facturaUrl ? <a href={v.facturaUrl} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 700, fontSize: 12 }}>📎 Ver</a> : null) },
+                      { key: "acciones", label: "", align: "right", render: (v) => <Btn small variant="danger" onClick={() => borrarVenta(v)}>🗑</Btn> },
                     ]}
                     filas={ventasCentroCostoPeriodo}
                   />
                 </div>
               </div>
+            </div>
+          )}
+          {areaSel && areaSel !== "__lideres_base_admin__" && (
+            <div style={{ marginTop: 28, paddingTop: 24, borderTop: `1.5px solid ${C.border}` }}>
+              <div style={{ fontWeight: 900, fontSize: 16, color: C.ink, marginBottom: 4 }}>📚 Historial de Facturas y Ventas — {areaSel}</div>
+              <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 700 }}>
+                Clic en un mes para ver el detalle. "Cerrar mes" congela sus totales de Gastos/Ventas/Balance (el costo de nómina sigue viniendo en vivo del período elegido arriba).
+              </div>
+              {!mesesHistorial.length && <div style={{ fontSize: 13, color: C.slate }}>Todavía no hay gastos ni ventas digitados para esta área.</div>}
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {mesesHistorial.map((clave) => {
+                  const d = datosDelMesHistorial(clave);
+                  const abierto = mesHistorialAbierto === clave;
+                  return (
+                    <div key={clave} style={{ border: `1.5px solid ${C.border}`, borderRadius: 12, overflow: "hidden", background: C.white }}>
+                      <div
+                        onClick={() => setMesHistorialAbierto(abierto ? null : clave)}
+                        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, padding: "12px 16px", cursor: "pointer", background: abierto ? C.canvas : C.white, flexWrap: "wrap" }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <span style={{ display: "inline-block", transition: "transform .15s", transform: abierto ? "rotate(90deg)" : "none" }}>▶</span>
+                          <span style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>{nombreMesHistorial(clave)}</span>
+                          {d.cierre && <span style={{ fontSize: 11, fontWeight: 700, color: C.violet, background: C.violetBg, padding: "2px 8px", borderRadius: 6 }}>🔒 Cerrado</span>}
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 18, fontSize: 12.5, flexWrap: "wrap" }}>
+                          <span style={{ color: C.slate }}>Gastos: <strong style={{ color: C.ink }}>{fmtMoney(d.totalGastos)}</strong></span>
+                          <span style={{ color: C.slate }}>Ventas: <strong style={{ color: C.ink }}>{fmtMoney(d.totalVentas)}</strong></span>
+                          <span style={{ color: d.balance >= 0 ? C.green : C.red, fontWeight: 800 }}>{fmtMoney(d.balance)}</span>
+                        </div>
+                      </div>
+                      {abierto && (
+                        <div onClick={(e) => e.stopPropagation()} style={{ padding: 16, borderTop: `1px solid ${C.border}` }}>
+                          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+                            {d.cierre ? (
+                              isAdmin && <Btn small variant="secondary" onClick={() => reabrirMes(d.cierre.id)}>Reabrir mes</Btn>
+                            ) : (
+                              <Btn small onClick={() => cerrarMes(clave, d)}>🔒 Cerrar mes</Btn>
+                            )}
+                          </div>
+                          {d.cierre && (
+                            <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 14 }}>
+                              Cerrado por {d.cierre.cerradoPor || "—"} el {new Date(d.cierre.cerradoEn).toLocaleString("es-CO")}.
+                            </div>
+                          )}
+                          <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+                            <div style={{ flex: "1 1 380px" }}>
+                              <div style={{ fontWeight: 800, fontSize: 12.5, color: C.ink, marginBottom: 8 }}>Gastos</div>
+                              <Tabla
+                                vacio="Sin gastos este mes."
+                                columnas={[
+                                  { key: "fecha", label: "Fecha", render: (g) => fmtFechaISO(g.fecha) },
+                                  { key: "proveedor", label: "Proveedor" },
+                                  { key: "numeroFactura", label: "N° Factura" },
+                                  { key: "monto", label: "Monto", align: "right", render: (g) => fmtMoney(g.monto) },
+                                  { key: "factura", label: "", render: (g) => (g.facturaUrl ? <a href={g.facturaUrl} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 700, fontSize: 12 }}>📎 Ver</a> : null) },
+                                  { key: "acciones", label: "", align: "right", render: (g) => <Btn small variant="danger" onClick={() => borrarGasto(g)}>🗑</Btn> },
+                                ]}
+                                filas={d.gastos}
+                              />
+                            </div>
+                            <div style={{ flex: "1 1 460px" }}>
+                              <div style={{ fontWeight: 800, fontSize: 12.5, color: C.ink, marginBottom: 8 }}>Ventas</div>
+                              <Tabla
+                                vacio="Sin ventas este mes."
+                                columnas={[
+                                  { key: "fecha", label: "Fecha", render: (v) => fmtFechaISO(v.fecha) },
+                                  { key: "referencia", label: "Ref" },
+                                  { key: "cliente", label: "Cliente" },
+                                  { key: "total", label: "Total", align: "right", render: (v) => <strong>{fmtMoney(v.total)}</strong> },
+                                  { key: "factura", label: "", render: (v) => (v.facturaUrl ? <a href={v.facturaUrl} target="_blank" rel="noreferrer" style={{ color: C.blue, fontWeight: 700, fontSize: 12 }}>📎 Ver</a> : null) },
+                                  { key: "acciones", label: "", align: "right", render: (v) => <Btn small variant="danger" onClick={() => borrarVenta(v)}>🗑</Btn> },
+                                ]}
+                                filas={d.ventas}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {areaSel && areaSel !== "__lideres_base_admin__" && hayDestajoReal && (
+            <div style={{ marginTop: 28, paddingTop: 24, borderTop: `1.5px solid ${C.border}` }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4, flexWrap: "wrap", gap: 10 }}>
+                <div style={{ fontWeight: 900, fontSize: 16, color: C.ink }}>🆘 Ranking — Ayuda salario mínimo garantizado ({anioRanking})</div>
+                <input type="number" value={anioRanking} onChange={(e) => setAnioRanking(Number(e.target.value))} style={{ width: 90, padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
+              </div>
+              <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 700 }}>
+                A qué trabajadores de esta área se les ha ayudado más con el salario mínimo garantizado durante el año — incluye trabajadores que ya quedaron inactivos.
+              </div>
+              <Tabla
+                vacio="Sin ayudas de salario mínimo registradas para esta área en el año elegido."
+                columnas={[
+                  { key: "nombre", label: "Trabajador" },
+                  { key: "activo", label: "Estado", render: (r) => <span style={{ fontSize: 11, fontWeight: 700, color: r.activo ? C.green : C.slate, background: r.activo ? C.greenBg : C.canvas, padding: "2px 8px", borderRadius: 6 }}>{r.activo ? "Activo" : "Inactivo"}</span> },
+                  { key: "quincenas", label: "Quincenas ayudado", align: "right", render: (r) => fmtNum(r.quincenas) },
+                  { key: "totalAyuda", label: "Total ayudado", align: "right", render: (r) => <strong>{fmtMoney(r.totalAyuda)}</strong> },
+                ]}
+                filas={rankingAyudas}
+              />
             </div>
           )}
           {gastoModalAbierto && (
@@ -4499,9 +4958,13 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
               {campoTexto("N° de Factura", gastoForm.numeroFactura, (v) => setGastoForm((f) => ({ ...f, numeroFactura: v })))}
               {campoTexto("Monto", gastoForm.monto, (v) => setGastoForm((f) => ({ ...f, monto: v })), { type: "number", placeholder: "Ej: 850000" })}
               {campoTexto("Fecha", gastoForm.fecha, (v) => setGastoForm((f) => ({ ...f, fecha: v })), { type: "date" })}
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>Factura (foto o PDF, opcional)</label>
+                <input type="file" accept="application/pdf,image/*" onChange={(e) => setGastoArchivoFile(e.target.files?.[0] || null)} style={{ fontSize: 12 }} />
+              </div>
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
                 <Btn variant="secondary" onClick={() => setGastoModalAbierto(false)}>Cancelar</Btn>
-                <Btn onClick={guardarGastoForm} disabled={!gastoForm.proveedor.trim() || !gastoForm.monto}>Guardar</Btn>
+                <Btn onClick={guardarGastoForm} disabled={!gastoForm.proveedor.trim() || !gastoForm.monto || subiendoArchivo}>{subiendoArchivo ? "Guardando..." : "Guardar"}</Btn>
               </div>
             </Modal>
           )}
@@ -4514,9 +4977,13 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
               {campoTexto("Precio", ventaForm.precio, (v) => setVentaForm((f) => ({ ...f, precio: v })), { type: "number" })}
               {campoTexto("Total", ventaForm.total, (v) => setVentaForm((f) => ({ ...f, total: v })), { type: "number" })}
               {campoTexto("Fecha", ventaForm.fecha, (v) => setVentaForm((f) => ({ ...f, fecha: v })), { type: "date" })}
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ fontSize: 12, fontWeight: 700, color: C.ink, display: "block", marginBottom: 6 }}>Factura (foto o PDF, opcional)</label>
+                <input type="file" accept="application/pdf,image/*" onChange={(e) => setVentaArchivoFile(e.target.files?.[0] || null)} style={{ fontSize: 12 }} />
+              </div>
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
                 <Btn variant="secondary" onClick={() => setVentaModalAbierto(false)}>Cancelar</Btn>
-                <Btn onClick={guardarVentaForm} disabled={!ventaForm.referencia.trim() || !ventaForm.total}>Guardar</Btn>
+                <Btn onClick={guardarVentaForm} disabled={!ventaForm.referencia.trim() || !ventaForm.total || subiendoArchivo}>{subiendoArchivo ? "Guardando..." : "Guardar"}</Btn>
               </div>
             </Modal>
           )}
@@ -5557,6 +6024,7 @@ export function AreasStandalone({ currentUser, onVolver, onLogout, puedeCentroCo
                   cargandoMovimientos={cargandoMovimientos}
                   onActualizarMovimientos={actualizarMovimientos}
                   reclamosCalidad={reclamos}
+                  currentUser={currentUser}
                 />
               )}
               {seccion === "estadisticas" && PERMISO_TAB.estadisticas && (
@@ -6365,6 +6833,7 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
               cargandoMovimientos={cargandoMovimientosEstadisticas}
               onActualizarMovimientos={actualizarMovimientosEstadisticas}
               reclamosCalidad={reclamosCalidad}
+              currentUser={currentUser}
             />
           )}
           {subView === "estadisticas" && (
