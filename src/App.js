@@ -13,12 +13,14 @@ import {
   getFirestore,
   collection,
   doc,
+  getDoc,
   getDocs,
   setDoc,
   updateDoc,
   deleteDoc,
   writeBatch,
   onSnapshot,
+  runTransaction,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 // (2026-09-17, a pedido de Fredy) Storage -- para subir las fotos de
@@ -3759,6 +3761,42 @@ async function exportBitacoraEnvioToExcel(envio) {
   }
   XLSX.writeFile(wb, nombreArchivo);
 }
+// (2026-09-23, a pedido de Fredy) Descarga TODO el historial de la
+// Bitácora de Envíos en un solo Excel (una fila por referencia por envío,
+// sin agrupar ni filtrar) -- a diferencia de exportBitacoraEnvioToExcel de
+// arriba, que exporta un solo envío/grupo a la vez con el formato del
+// ANEXO. Las filas ya vienen armadas (con el estado ACTUAL resuelto en
+// vivo) desde BitacoraEnviosView, que es quien tiene a mano
+// protos/capsulas para resolverlo -- esta función solo las escribe.
+async function exportarTodaBitacoraEnviosExcel(filas) {
+  const XLSX = await import("xlsx");
+  function numOTexto(v) {
+    if (v === "" || v === null || v === undefined) return "";
+    const n = Number(v);
+    return Number.isNaN(n) ? v : n;
+  }
+  const encabezados = [
+    "FECHA ENVIADO", "TIPO", "COLECCIÓN", "CLIENTE", "N° PEDIDO", "EMPRESA TRANSPORTE", "N° GUÍA",
+    "FECHA RECIBIDO CLIENTE", "REF", "NOMBRE", "ESTADO ACTUAL", "CATEGORÍA", "SILUETA", "RANGO", "TELA",
+    "CURVA COL.", "CANT. COL.", "CURVA VEN.", "CANT. VEN.", "PRECIO", "OBSERVACIONES CLIENTE",
+  ];
+  const aoa = [
+    encabezados,
+    ...filas.map((f) => [
+      f.fechaEnviado || "", f.tipo || "", f.coleccion || "", f.cliente || "", f.numPedido || "",
+      f.empresaTransporte || "", f.guia || "", f.fechaRecibidoCliente || "",
+      f.referencia || "", f.nombre || "", f.estadoActual || "",
+      f.categoria || "", f.silueta || "", f.rango || "", f.tela || "",
+      f.colombiaCurva || "", numOTexto(f.colombiaCantidad), f.venezuelaCurva || "", numOTexto(f.venezuelaCantidad),
+      numOTexto(f.precio), f.observacionesCliente || "",
+    ]),
+  ];
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"] = encabezados.map((h) => ({ wch: h === "OBSERVACIONES CLIENTE" ? 30 : h === "COLECCIÓN" || h === "NOMBRE" ? 22 : 14 }));
+  XLSX.utils.book_append_sheet(wb, ws, "Bitácora de Envíos");
+  XLSX.writeFile(wb, `Bitacora_Envios_${today()}.xlsx`);
+}
 // Envuelve las dos bitácoras (Envíos / Aprobados sin Pedido) en pestañas
 // dentro de un solo ítem de menú "Bitácoras" — antes eran dos entradas
 // sueltas, ahora comparten pantalla como ya hace Historial con sus propias
@@ -5910,6 +5948,33 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
   const declinadasEsteMes = (historial || []).filter((h) => h.resultado === "declinado" && h.mes === mesActual).length;
   const mesesDisponibles = [...new Set(envios.map((e) => mesDe(e)).filter(Boolean))].sort((a, b) => b.localeCompare(a));
   function labelMes(m) { return new Date(m + "-02").toLocaleDateString("es-CO", { month: "long", year: "numeric" }); }
+  // (2026-09-23, a pedido de Fredy) "Descargar todo" -- TODO el historial de
+  // envíos (sin importar el filtro de Pendientes/Todos ni la búsqueda de
+  // arriba), una fila por referencia por envío, con el estado ACTUAL
+  // resuelto en vivo (liveItemFor) -- a diferencia del botón "Exportar" de
+  // cada tarjeta (exportBitacoraEnvioToExcel), que solo exporta un
+  // envío/grupo a la vez con el formato del ANEXO.
+  function exportarTodo() {
+    const filas = [...envios]
+      .sort((a, b) => (b.fechaEnviado || "").localeCompare(a.fechaEnviado || ""))
+      .flatMap((e) => {
+        const tipo = e.items[0]?.kind === "proto" ? "Prototipo" : "Cápsula";
+        return e.items.map((it) => {
+          const live = liveItemFor(it);
+          return {
+            fechaEnviado: e.fechaEnviado, tipo, coleccion: e.coleccion, cliente: e.cliente, numPedido: e.numPedido,
+            empresaTransporte: e.empresaTransporte, guia: e.guia, fechaRecibidoCliente: e.fechaRecibidoCliente,
+            referencia: it.referencia, nombre: it.nombre,
+            estadoActual: live ? (STATUS[live.status]?.label || "") : "",
+            categoria: it.categoria, silueta: it.silueta, rango: it.rango, tela: it.tela,
+            colombiaCurva: it.colombiaCurva, colombiaCantidad: it.colombiaCantidad,
+            venezuelaCurva: it.venezuelaCurva, venezuelaCantidad: it.venezuelaCantidad,
+            precio: it.precio, observacionesCliente: it.observacionesCliente,
+          };
+        });
+      });
+    exportarTodaBitacoraEnviosExcel(filas);
+  }
   return (
     <div>
       {envioDetalle && (
@@ -5983,12 +6048,20 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Bitácora de Envíos</h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Historial de colecciones/lotes enviados al cliente</p>
         </div>
-        <input
-          value={busqueda}
-          onChange={(e) => setBusqueda(e.target.value)}
-          placeholder="Buscar por colección, cliente o N° pedido..."
-          style={{ padding: "9px 14px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, minWidth: 260, outline: "none", fontFamily: "inherit" }}
-        />
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            onClick={exportarTodo}
+            disabled={!envios.length}
+            title="Descarga TODO el historial de envíos a Excel, sin importar el filtro de arriba"
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", background: envios.length ? "#217346" : T.border, color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: envios.length ? "pointer" : "not-allowed", whiteSpace: "nowrap" }}
+          >📊 Descargar todo</button>
+          <input
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar por colección, cliente o N° pedido..."
+            style={{ padding: "9px 14px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, minWidth: 260, outline: "none", fontFamily: "inherit" }}
+          />
+        </div>
       </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
         {[["pendientes", "⏳ Pendientes"], ["todos", "Todos"]].map(([v, label]) => (
@@ -13409,11 +13482,28 @@ function AppInner() {
   }
   async function updateCapsulasAndSave(newCapsulas) { setCapsulas(newCapsulas); await fsBatch("capsulas", newCapsulas); }
   async function addRef(capId, ref) { const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, referencias: [...c.referencias, ref] })); await updateCapsulasAndSave(updated); }
+  // (2026-09-23, a pedido de Fredy, tras el bug real: "Vincular a pedido" se
+  // guardaba pero después reaparecía en "sin pedido") Antes, esto tomaba TODA
+  // la lista de cápsulas que hubiera en memoria en ese momento y la volvía a
+  // guardar completa -- si la copia local de esa cápsula estaba un poco
+  // desactualizada (p.ej. alguien más de Diseño le acababa de cambiar otra
+  // referencia), ese guardado la pisaba con datos viejos y borraba el vínculo
+  // recién puesto. Ahora se actualiza solo la UI al toque (para que se sienta
+  // igual de rápido), pero el guardado real vuelve a leer esa cápsula directo
+  // de Firestore justo antes de escribir (con una transacción) y le aplica el
+  // cambio ahí -- así nunca pisa un cambio concurrente de otra referencia de
+  // la misma cápsula. Ya no se reescriben las demás cápsulas (fsBatch de
+  // todas) en cada edición de una sola referencia.
   async function updateRef(capId, refId, patch) {
     const updated = capsulas.map((c) => (c.id !== capId ? c : { ...c, referencias: c.referencias.map((r) => (r.id !== refId ? r : { ...r, ...patch })) }));
-    await updateCapsulasAndSave(updated);
-    const cap = updated.find((c) => c.id === capId);
-    await fsSave("capsulas", capId, cap);
+    setCapsulas(updated);
+    await runTransaction(db, async (tx) => {
+      const capRef = doc(db, "capsulas", capId);
+      const snap = await tx.get(capRef);
+      const real = snap.exists() ? snap.data() : updated.find((c) => c.id === capId);
+      const referencias = (real.referencias || []).map((r) => (r.id !== refId ? r : { ...r, ...patch }));
+      tx.set(capRef, { ...real, referencias }, { merge: true });
+    });
     if (patch.status === "enviado") syncCronogramaEnviado(refId);
   }
   // --- Bitácora de Envíos ---
