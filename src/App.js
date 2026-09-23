@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { createPortal } from "react-dom";
 import ModuloCorte from "./modulo-corte";
 import ModuloContabilidad from "./modulo-contabilidad";
 import ModuloPlaneacion, { MiDiaStandalone, ProgramadorProcesosStandalone, AreasStandalone, MiDiaNominaStandalone } from "./modulo-planeacion";
@@ -1290,7 +1291,15 @@ function Modal({ title, onClose, children, width = 560 }) {
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   }
-  return (
+  // (2026-09-23, a pedido de Fredy) Portal a document.body -- si no, un
+  // cuadro abierto desde ADENTRO de otro (ej. "Registrar entrega" encima de
+  // "Ingreso de Telas") queda atrapado dentro de la caja del de afuera (el
+  // `transform` de acá abajo crea un "containing block" para sus hijos con
+  // position:fixed, que es justo lo que usa este mismo Modal) -- se ve
+  // recortado y no se puede mover/agrandar de verdad. Con el portal, TODOS
+  // los cuadros -- estén anidados o no -- se dibujan siempre directo sobre
+  // toda la pantalla, cada uno de forma independiente.
+  return createPortal(
     <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={onClose}>
       <div
         style={{
@@ -1335,7 +1344,8 @@ function Modal({ title, onClose, children, width = 560 }) {
           </svg>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 function Field({ label, children }) {
