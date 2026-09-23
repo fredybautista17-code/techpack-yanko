@@ -1117,6 +1117,7 @@ const MODULOS_CLIENTE_OPCIONES = [
   { id: "protos", label: "Prototipos" },
   { id: "capsulas", label: "Cápsulas" },
   { id: "pedidos", label: "Pedidos" },
+  { id: "bitacora", label: "Bitácora" },
   { id: "cronograma_muestras", label: "Cronograma de Muestras" },
   { id: "bodega", label: "Bodega" },
   { id: "preordenes", label: "Preórdenes" },
@@ -5562,7 +5563,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         // (2026-09-16, a pedido de Fredy) Aprobada = bloqueada para todo el
         // mundo menos el administrador, que siempre puede seguir editando.
         const bloqueada = estadoActual === "aprobada" && !currentUser?.isAdmin;
-        const puedeAprobar = currentUser?.role === "Cliente" && clientesDeUsuario(currentUser).includes(p.cliente) && estadoActual !== "aprobada";
+        const puedeAprobar = currentUser?.role === "Cliente" && !currentUser?.soloLecturaCliente && clientesDeUsuario(currentUser).includes(p.cliente) && estadoActual !== "aprobada";
         const puedeEliminar = currentUser?.isAdmin || (currentUser?.role !== "Cliente" && !bloqueada);
         const faltaCartaColores = !(p.items || []).length || (p.items || []).some((it) => !cartaColoresLista(it).length);
         const buscarItem = buscarItemPorPreorden[p.id] || "";
@@ -5841,7 +5842,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   );
 }
 
-function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial, onGoHistorial }) {
+function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial, onGoHistorial, soloLectura }) {
   const [subTab, setSubTab] = useState("pendientes");
   const [kindFiltro, setKindFiltro] = useState("todos");
   const [busqueda, setBusqueda] = useState("");
@@ -5988,7 +5989,8 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
               <input
                 type="date"
                 value={envioDetalle.fechaRecibidoCliente || ""}
-                onChange={(e) => { onUpdateEnvio(envioDetalle.id, { fechaRecibidoCliente: e.target.value }); setEnvioDetalle((d) => (d ? { ...d, fechaRecibidoCliente: e.target.value } : d)); }}
+                disabled={soloLectura}
+                onChange={(e) => { if (soloLectura) return; onUpdateEnvio(envioDetalle.id, { fechaRecibidoCliente: e.target.value }); setEnvioDetalle((d) => (d ? { ...d, fechaRecibidoCliente: e.target.value } : d)); }}
                 style={{ padding: "6px 10px", border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit" }}
               />
             </div>
@@ -6150,7 +6152,8 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
                       <input
                         type="date"
                         value={g.envios[0].fechaRecibidoCliente || ""}
-                        onChange={(e) => onUpdateEnvio(g.envios[0].id, { fechaRecibidoCliente: e.target.value })}
+                        disabled={soloLectura}
+                        onChange={(e) => { if (soloLectura) return; onUpdateEnvio(g.envios[0].id, { fechaRecibidoCliente: e.target.value }); }}
                         style={{ padding: "6px 10px", border: `1.5px solid ${T.border}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit" }}
                       />
                     </div>
@@ -6217,7 +6220,7 @@ function BitacoraEnviosView({ envios, onUpdateEnvio, protos, capsulas, historial
 // misma señal que ya usa Historial con el badge "🚫 Sin pedido", pero acá
 // presentada con el mismo formato de tabla (foto/ref/nombre/categoría/...)
 // que usa la Bitácora de Envíos, agrupada por cápsula.
-function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVincularPedido, currentUser }) {
+function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVincularPedido, currentUser, soloLectura }) {
   const [busqueda, setBusqueda] = useState("");
   // Vincular a pedido a mano: cuando el cruce automático (por código exacto
   // de referencia) no encuentra el pedido — por formato distinto del código,
@@ -6338,12 +6341,14 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVinc
                     <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.rango || r.tallas?.[0] || "—"}</td>
                     <td onClick={() => onSelectRef && onSelectRef(cap.id, r.id)} style={{ padding: "6px 10px", cursor: onSelectRef ? "pointer" : "default" }}>{r.tipoTela || "—"}</td>
                     <td style={{ padding: "6px 10px" }}>
-                      <button
-                        onClick={() => setVinculando({ capId: cap.id, refId: r.id })}
-                        style={{ background: T.denimBg, border: "none", borderRadius: 6, padding: "4px 8px", color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}
-                      >
-                        🔗 Vincular a pedido
-                      </button>
+                      {!soloLectura && (
+                        <button
+                          onClick={() => setVinculando({ capId: cap.id, refId: r.id })}
+                          style={{ background: T.denimBg, border: "none", borderRadius: 6, padding: "4px 8px", color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}
+                        >
+                          🔗 Vincular a pedido
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -7119,7 +7124,7 @@ function KPIsView({ areas, puestos, personas, catalogo, registros, isAdmin, onAd
     </div>
   );
 }
-function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms, stages, isAdmin, onBackfill, onSelectProto, onSelectRef, onPromote, initialResultado, initialTipoFiltro, onVincularPedido, currentUser }) {
+function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms, stages, isAdmin, onBackfill, onSelectProto, onSelectRef, onPromote, initialResultado, initialTipoFiltro, onVincularPedido, currentUser, soloLectura }) {
   const [modo, setModo] = useState("todos");
   const [clienteSel, setClienteSel] = useState("");
   const [resultado, setResultado] = useState(initialResultado || "todos");
@@ -7220,7 +7225,7 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
           </div>
           <div style={{ fontSize: 11, color: T.slate, marginTop: 2 }}>{h.cliente}{h.fecha ? ` · ${h.fecha}` : ""}</div>
         </div>
-        {sinPedido && h.tipo !== "proto" && (
+        {!soloLectura && sinPedido && h.tipo !== "proto" && (
           <button
             onClick={(e) => { e.stopPropagation(); setVinculando({ capId: h.capsulaId, refId: item.id }); }}
             style={{ background: T.denimBg, border: "none", borderRadius: 6, padding: "4px 8px", color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}
@@ -8030,7 +8035,7 @@ function EditNombreModal({ item, tipo, config, onSave, onClose }) {
 function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesosNomina }) {
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState(null);
-  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false });
+  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false });
   const [changePwdId, setChangePwdId] = useState(null);
   const [newPwd, setNewPwd] = useState("");
   const [showPwd, setShowPwd] = useState(false);
@@ -8065,8 +8070,8 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
     }
     setMigrando(false);
   }
-  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false }); setEditUser(null); setShowForm(true); setError(""); }
-  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", clientesAsociados: u.clientesAsociados || [], modulosCliente: u.modulosCliente || [], email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false }); setEditUser(u); setShowForm(true); setError(""); }
+  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false }); setEditUser(null); setShowForm(true); setError(""); }
+  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", clientesAsociados: u.clientesAsociados || [], modulosCliente: u.modulosCliente || [], soloLecturaCliente: u.soloLecturaCliente || false, email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false }); setEditUser(u); setShowForm(true); setError(""); }
   // Crear usuario nuevo pasa por la Cloud Function `adminCrearUsuario` (Fase
   // B): a diferencia de editar, crear SÍ necesita generar una cuenta real de
   // Firebase Auth para que esa persona pueda entrar — eso no lo puede hacer
@@ -8083,7 +8088,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
       if (!form.name) { setError("El nombre es obligatorio."); return; }
       if (form.email && form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) { setError("El correo no parece válido."); return; }
       const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, avatar } : u)));
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, avatar } : u)));
       setShowForm(false);
       return;
     }
@@ -8095,7 +8100,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
     setCreando(true);
     try {
       const llamar = httpsCallable(functionsClient, "adminCrearUsuario");
-      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado, clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas });
+      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado, clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas });
       setShowForm(false);
     } catch (err) {
       setError(err?.message || "No se pudo crear el usuario.");
@@ -8265,6 +8270,19 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
                   })}
                 </div>
                 <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Sin ninguno marcado, ve todos los módulos de cliente (como hoy). Marca alguno para limitarlo solo a esos.</div>
+              </div>
+            )}
+            {form.role === "Cliente" && (
+              <div>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, fontWeight: 700, color: T.ink, padding: "10px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={!!form.soloLecturaCliente}
+                    onChange={(e) => setForm((f) => ({ ...f, soloLecturaCliente: e.target.checked }))}
+                  />
+                  🔒 Solo lectura (no puede aprobar, declinar, vincular a pedido ni editar nada)
+                </label>
+                <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Marca esto para un cliente que solo debe poder ver el avance en los módulos de arriba, sin tocar nada. No afecta a otros usuarios del rol Cliente.</div>
               </div>
             )}
             <div>
@@ -11682,7 +11700,7 @@ function SubirPedidoModal2({ onSave, onClose, pedidoConfig, pedidos, clientes })
   );
 }
 
-function PedidoDetailView({ pedido, onBack, onUpdatePedido }) {
+function PedidoDetailView({ pedido, onBack, onUpdatePedido, soloLectura }) {
   const [showConfirmCumplido, setShowConfirmCumplido] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const TALLA_LABELS = ["U-2/4-2 PLUS", "4 XS", "6-6/8 S-S/M", "8 M-M/L", "10-10/12 L-L/XL", "12 XL-1XL", "14-14/16 2XL", "16 3XL", "18 4XL", "20"];
@@ -11701,7 +11719,7 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido }) {
     TALLA_LABELS.forEach((t) => { exc[t] = (ref.tallas?.[t] || 0) - (cortado[t] || 0); });
     return exc;
   }
-  function toggleEtapa(stage) { onUpdatePedido({ ...pedido, seguimiento: { ...pedido.seguimiento, [stage]: !pedido.seguimiento?.[stage] } }); }
+  function toggleEtapa(stage) { if (soloLectura) return; onUpdatePedido({ ...pedido, seguimiento: { ...pedido.seguimiento, [stage]: !pedido.seguimiento?.[stage] } }); }
   // "cerrado" es el único estado de cierre desde el rediseño (antes había
   // "cumplido"/"cancelado_busint"/"venta_perdida_busint" por separado). Se
   // guarda el motivo en motivoCierre — "manual" cuando se marca aquí a
@@ -11734,11 +11752,11 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido }) {
         </div>
         <div style={{ padding: "6px 14px", background: sem.bg, color: sem.color, borderRadius: 20, fontWeight: 800, fontSize: 13 }}>📅 {pedido.fechaDespacho} · {sem.label}</div>
         {pedido.estado === "terminado" && <span style={{ padding: "6px 14px", background: T.jadeBg, color: T.jade, borderRadius: 20, fontWeight: 800, fontSize: 13 }}>✅ TERMINADO</span>}
-        <Btn variant="ghost" small onClick={() => setShowEdit(true)}>✏ Editar</Btn>
-        {pedido.estado === "activo" && <Btn variant="amber" onClick={marcarTerminado}>🏁 Marcar Terminado</Btn>}
-        {pedido.estado === "terminado" && <Btn variant="secondary" small onClick={deshacerTerminado}>↩ Deshacer Terminado</Btn>}
-        {pedido.estado === "cerrado" && <Btn variant="secondary" small onClick={() => onUpdatePedido({ ...pedido, estado: "activo", motivoCierre: null, fechaCumplido: null })}>↩ Reactivar</Btn>}
-        {pedido.estado !== "cerrado" && <Btn variant="success" onClick={() => setShowConfirmCumplido(true)}>✓ Cumplido</Btn>}
+        {!soloLectura && <Btn variant="ghost" small onClick={() => setShowEdit(true)}>✏ Editar</Btn>}
+        {!soloLectura && pedido.estado === "activo" && <Btn variant="amber" onClick={marcarTerminado}>🏁 Marcar Terminado</Btn>}
+        {!soloLectura && pedido.estado === "terminado" && <Btn variant="secondary" small onClick={deshacerTerminado}>↩ Deshacer Terminado</Btn>}
+        {!soloLectura && pedido.estado === "cerrado" && <Btn variant="secondary" small onClick={() => onUpdatePedido({ ...pedido, estado: "activo", motivoCierre: null, fechaCumplido: null })}>↩ Reactivar</Btn>}
+        {!soloLectura && pedido.estado !== "cerrado" && <Btn variant="success" onClick={() => setShowConfirmCumplido(true)}>✓ Cumplido</Btn>}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 20 }}>
         {[
@@ -11806,8 +11824,8 @@ function PedidoDetailView({ pedido, onBack, onUpdatePedido }) {
           {PEDIDO_STAGES.map((stage, i) => {
             const done = !!pedido.seguimiento?.[stage];
             return (
-              <label key={stage} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: done ? T.jadeBg : T.canvas, border: `1px solid ${done ? T.jade + "44" : T.border}`, borderRadius: 8, cursor: "pointer", fontSize: 12 }}>
-                <input type="checkbox" checked={done} onChange={() => toggleEtapa(stage)} style={{ width: 16, height: 16 }} />
+              <label key={stage} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: done ? T.jadeBg : T.canvas, border: `1px solid ${done ? T.jade + "44" : T.border}`, borderRadius: 8, cursor: soloLectura ? "default" : "pointer", fontSize: 12 }}>
+                <input type="checkbox" checked={done} disabled={soloLectura} onChange={() => toggleEtapa(stage)} style={{ width: 16, height: 16 }} />
                 <span style={{ color: done ? T.jade : T.ink, fontWeight: done ? 700 : 500 }}>{i + 1}. {stage}</span>
               </label>
             );
@@ -12990,7 +13008,7 @@ function motivoCierreInfo(motivo) {
   }
 }
 
-function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, pedidoConfig, onSavePedidoConfig, isAdmin, currentUser }) {
+function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, pedidoConfig, onSavePedidoConfig, isAdmin, currentUser, soloLectura }) {
   const [filtro, setFiltro] = useState("activos");
   const [editPedido, setEditPedido] = useState(null);
   const [busqueda, setBusqueda] = useState("");
@@ -13018,9 +13036,11 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
       {editPedido && <EditPedidoModal pedido={editPedido} onSave={(p) => { onUpdatePedido(p); setEditPedido(null); }} onClose={() => setEditPedido(null)} />}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div><h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Pedidos</h2><p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Base de pedidos vigentes — se actualiza desde "📡 Vigentes por Cliente (Busint)"</p></div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <Btn variant="secondary" onClick={onNewPedido}>+ Pedido manual</Btn>
-        </div>
+        {!soloLectura && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <Btn variant="secondary" onClick={onNewPedido}>+ Pedido manual</Btn>
+          </div>
+        )}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 20 }}>
         {[
@@ -13117,7 +13137,7 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
                       {isTerminado ? <span style={{ padding: "3px 10px", background: T.jadeBg, color: T.jade, borderRadius: 20, fontSize: 11, fontWeight: 800 }}>✅ Terminado</span> : <span style={{ padding: "3px 10px", background: T.denimBg, color: T.denim, borderRadius: 20, fontSize: 11, fontWeight: 800 }}>⚡ Activo</span>}
                     </td>
                     <td style={{ padding: "12px 10px", textAlign: "center" }}>
-                      <button onClick={(e) => { e.stopPropagation(); setEditPedido(p); }} style={{ background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 6, padding: "4px 8px", fontSize: 11, fontWeight: 700, color: T.slate, cursor: "pointer" }}>✏</button>
+                      {!soloLectura && <button onClick={(e) => { e.stopPropagation(); setEditPedido(p); }} style={{ background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 6, padding: "4px 8px", fontSize: 11, fontWeight: 700, color: T.slate, cursor: "pointer" }}>✏</button>}
                     </td>
                   </tr>
                 );
@@ -13148,10 +13168,12 @@ function PedidosView({ pedidos, onSelectPedido, onNewPedido, onUpdatePedido, ped
                     {p.motivoCierre === "venta_perdida" && p.ventasPerdidasUds ? ` · ${fmtNum(p.ventasPerdidasUds)} uds dadas de baja` : ""}
                   </div>
                 </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={(e) => { e.stopPropagation(); onUpdatePedido({ ...p, estado: "activo", motivoCierre: null, fechaCumplido: null }); }} style={{ background: T.amberBg, border: `1px solid ${T.amber}44`, borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, color: T.amber, cursor: "pointer" }}>↩ Reactivar</button>
-                  <button onClick={(e) => { e.stopPropagation(); setEditPedido(p); }} style={{ background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 6, padding: "4px 8px", fontSize: 11, fontWeight: 700, color: T.slate, cursor: "pointer" }}>✏</button>
-                </div>
+                {!soloLectura && (
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={(e) => { e.stopPropagation(); onUpdatePedido({ ...p, estado: "activo", motivoCierre: null, fechaCumplido: null }); }} style={{ background: T.amberBg, border: `1px solid ${T.amber}44`, borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, color: T.amber, cursor: "pointer" }}>↩ Reactivar</button>
+                    <button onClick={(e) => { e.stopPropagation(); setEditPedido(p); }} style={{ background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 6, padding: "4px 8px", fontSize: 11, fontWeight: 700, color: T.slate, cursor: "pointer" }}>✏</button>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -13216,6 +13238,11 @@ function AppInner() {
   // "Kamila Colombia" cuenten como el mismo cliente.
   const clientesUsuarioNorm = clientesUsuario.map(foldTexto);
   const preordenesVisibles = clientesUsuarioNorm.length ? bitacoraPreordenes.filter((p) => clientesUsuarioNorm.includes(foldTexto(p.cliente))) : bitacoraPreordenes;
+  // (2026-09-23, a pedido de Fredy) La Bitácora de Envíos no se estaba
+  // filtrando por cliente como sí pasa con protosVisibles/capsulasVisibles/
+  // pedidosVisibles/preordenesVisibles -- un usuario Cliente con acceso a
+  // Bitácora veía los envíos de TODOS los clientes, no solo los suyos.
+  const bitacoraEnviosVisibles = clientesUsuarioNorm.length ? bitacoraEnvios.filter((e) => clientesUsuarioNorm.includes(foldTexto(e.cliente))) : bitacoraEnvios;
   // Al entrar a Historial desde el enlace "❌ N declinadas" de Bitácora, se
   // usa esto para que abra ya filtrado en Declinados (HistorialDisenoView lo
   // lee una sola vez, al montar, vía initialResultado/initialTipoFiltro).
@@ -14063,25 +14090,33 @@ function AppInner() {
   const totalOverdue = [...protos, ...capsulas.flatMap((c) => c.referencias)].filter((x) => isOverdue(x, config.stages)).length;
   const role = currentUser?.role || "Equipo Interno";
   const userRoleData = config.roles.find((r) => r.name === role);
+  // (2026-09-23, a pedido de Fredy) "Solo lectura" para un usuario Cliente
+  // PUNTUAL -- distinto de los demás permisos, que son por ROL (todo el rol
+  // Cliente comparte los mismos perms). Este flag vive en el propio usuario
+  // (se marca en Usuarios → Editar) para poder darle a un cliente acceso de
+  // solo ver (Prototipos/Cápsulas/Pedidos/Bitácora) sin aprobar/declinar/
+  // editar nada, mientras otros usuarios del mismo rol Cliente siguen
+  // aprobando sus diseños como siempre.
+  const esClienteSoloLectura = role === "Cliente" && !!currentUser?.soloLecturaCliente;
   const perms = {
-    editar: userRoleData?.perms?.includes("editar") ?? false,
-    aprobar: userRoleData?.perms?.includes("aprobar") ?? false,
-    declinar: userRoleData?.perms?.includes("declinar") ?? false,
+    editar: !esClienteSoloLectura && (userRoleData?.perms?.includes("editar") ?? false),
+    aprobar: !esClienteSoloLectura && (userRoleData?.perms?.includes("aprobar") ?? false),
+    declinar: !esClienteSoloLectura && (userRoleData?.perms?.includes("declinar") ?? false),
     admin: userRoleData?.perms?.includes("admin") ?? false,
     corte: userRoleData?.perms?.includes("corte") ?? false,
     // Permiso dedicado para aprobar/devolver ilustración (Cápsulas y
     // Prototipos/Referencias en etapa Ilustración), pensado para un rol tipo
     // "Directora Creativa" sin darle el resto de permisos de "admin".
-    ilustracion: userRoleData?.perms?.includes("ilustracion") ?? false,
+    ilustracion: !esClienteSoloLectura && (userRoleData?.perms?.includes("ilustracion") ?? false),
     // Permiso dedicado para aprobar la Programación de Mesones en Corte (el
     // "analista" que revisa lo que el cortador ingresó como datos teóricos
     // antes de que cuente como confirmado) — separado de "aprobar" genérico
     // para no mezclarlo con la aprobación de Pedidos/Prototipos.
-    aprobarCorte: userRoleData?.perms?.includes("aprobar_corte") ?? false,
+    aprobarCorte: !esClienteSoloLectura && (userRoleData?.perms?.includes("aprobar_corte") ?? false),
     // Permiso dedicado para aprobar despachos en módulo Bodega (revisa lo que
     // la persona de bodega montó) — separado de "admin" para poder asignarlo
     // a alguien puntual sin darle el resto de permisos de administrador.
-    aprobarDespacho: userRoleData?.perms?.includes("aprobar_despacho") ?? false,
+    aprobarDespacho: !esClienteSoloLectura && (userRoleData?.perms?.includes("aprobar_despacho") ?? false),
     // Ver la tarjeta "Control de Despacho" dentro de Bodega (Despachos
     // Generales + Estado de Despacho) -- separado del acceso a Bodega en
     // si, para poder dejar algunos roles solo con "Despacho y Saldo".
@@ -14089,7 +14124,7 @@ function AppInner() {
     // Permiso dedicado para editar el módulo de KPIs (puestos, funciones,
     // catálogo de KPIs — crear/editar/borrar/trasladar) sin darle a la
     // persona el resto de permisos de administrador general.
-    editarKpis: userRoleData?.perms?.includes("editar_kpis") ?? false,
+    editarKpis: !esClienteSoloLectura && (userRoleData?.perms?.includes("editar_kpis") ?? false),
   };
   // Visibilidad de módulos, decidida sección por sección con moduloVisible en
   // vez de reutilizar directamente perms.corte / perms.admin — así cada
@@ -14104,7 +14139,7 @@ function AppInner() {
   const canAccessStats = moduloVisible(userRoleData, "stats", currentUser?.isAdmin);
   const canAccessHistorial = moduloVisible(userRoleData, "historial", currentUser?.isAdmin);
   const canAccessCronograma = moduloVisible(userRoleData, "cronograma_muestras", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "cronograma_muestras");
-  const canAccessBitacora = moduloVisible(userRoleData, "bitacora", currentUser?.isAdmin);
+  const canAccessBitacora = moduloVisible(userRoleData, "bitacora", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "bitacora");
   const canAccessKpis = moduloVisible(userRoleData, "kpis", currentUser?.isAdmin);
   const canAccessCorte = moduloVisible(userRoleData, "corte", currentUser?.isAdmin);
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
@@ -14532,7 +14567,7 @@ function AppInner() {
             )}
             {view === "bitacora" && (
               <BitacorasView
-                envios={bitacoraEnvios}
+                envios={bitacoraEnviosVisibles}
                 onUpdateEnvio={updateBitacoraEnvio}
                 protos={protosVisibles}
                 capsulas={capsulasVisibles}
@@ -14542,6 +14577,7 @@ function AppInner() {
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
                 onVincularPedido={(capId, refId, patch) => updateRef(capId, refId, patch)}
                 currentUser={currentUser}
+                soloLectura={esClienteSoloLectura}
               />
             )}
             {view === "kpis" && (
@@ -14594,9 +14630,10 @@ function AppInner() {
                 onSavePedidoConfig={savePedidoConfig}
                 isAdmin={currentUser?.isAdmin}
                 currentUser={currentUser}
+                soloLectura={esClienteSoloLectura}
               />
             )}
-            {view === "pedido-detail" && selPedido && <PedidoDetailView pedido={selPedido} onBack={() => setView("pedidos")} onUpdatePedido={updatePedido} />}
+            {view === "pedido-detail" && selPedido && <PedidoDetailView pedido={selPedido} onBack={() => setView("pedidos")} onUpdatePedido={updatePedido} soloLectura={esClienteSoloLectura} />}
             {view === "pedidos_admin" && currentUser?.isAdmin && <AdminPedidosView pedidoConfig={pedidoConfig} onSave={savePedidoConfig} config={config} onSaveConfig={saveConfig} />}
             {view === "pedidos_clientes" && <ClientesPedidosView clientes={config.clientes} pedidos={pedidosVisibles} protos={protosVisibles} capsulas={capsulasVisibles} />}
             {view === "preordenes" && (
@@ -14634,6 +14671,7 @@ function AppInner() {
                 initialTipoFiltro={historialFiltroInicial?.tipo}
                 onVincularPedido={(capId, refId, patch) => updateRef(capId, refId, patch)}
                 currentUser={currentUser}
+                soloLectura={esClienteSoloLectura}
               />
             )}
             {view === "cronograma_muestras" && (
