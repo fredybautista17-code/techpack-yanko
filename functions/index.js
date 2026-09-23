@@ -4431,6 +4431,12 @@ async function guardarReferenciasBusintEnFirestore(filasBusint) {
       ref: String(f.ref || "").trim(),
       categoria: (f.categoria || "").trim(),
       descripcion: (f.descripcionLarga || f.descripcion || "").trim(),
+      // (2026-09-23) "linea" (hombre/dama, tal cual la trae Busint) -- la usa
+      // "Cargar líneas reales desde Busint" en Administración → Códigos de
+      // Referencia. Es DISTINTA de "Línea" (config.lineas, Dama/Caballero de
+      // ATLAS) y de "nivel" (básica/premium, solo de import manual Excel) --
+      // no confundir ni pisar esas otras dos con esta.
+      linea: (f.linea || "").trim(),
     }))
     .filter((r) => r.ref);
 
@@ -4447,6 +4453,7 @@ async function guardarReferenciasBusintEnFirestore(filasBusint) {
     ref: r.ref,
     categoria: r.categoria,
     descripcion: r.descripcion,
+    linea: r.linea,
     actualizadoEn: ahora,
   }));
 

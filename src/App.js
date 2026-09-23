@@ -8927,22 +8927,29 @@ function combinarTrazosSobreFoto(dataUrlFoto, boxFoto, trazos) {
 // import manual de Excel (sin actualizadoEn), se cuenta como pendiente.
 function ReferenciasNoEnBusintView({ protos, capsulas }) {
   const [busint, setBusint] = useState(null); // null = todavía cargando
+  // (2026-09-23, a pedido de Fredy) Antes esto leía la bitácora UNA sola vez
+  // (getDocs) al abrir la pantalla -- si sincronizabas mientras la pantalla
+  // ya estaba abierta, esta lista seguía mostrando datos viejos hasta
+  // recargar la página, aunque la sincronización sí hubiera funcionado.
+  // Con onSnapshot queda en vivo, igual que useMaestroReferenciasBusint.
   useEffect(() => {
-    let activo = true;
-    getDocs(collection(db, "busint_referencias")).then((snap) => {
-      if (!activo) return;
-      // Indexado SIN guion (ver normalizarRefComparacion) — así una ref de
-      // ATLAS con guion ("98-5609") sí reconoce que Busint ya la tiene
-      // aunque esté guardada sin guion ("985609").
-      const mapa = {};
-      snap.docs.forEach((d) => {
-        const data = d.data();
-        const norm = normalizarRefComparacion(data.ref || d.id);
-        if (norm) mapa[norm] = data;
-      });
-      setBusint(mapa);
-    });
-    return () => { activo = false; };
+    const unsub = onSnapshot(
+      collection(db, "busint_referencias"),
+      (snap) => {
+        // Indexado SIN guion (ver normalizarRefComparacion) — así una ref de
+        // ATLAS con guion ("98-5609") sí reconoce que Busint ya la tiene
+        // aunque esté guardada sin guion ("985609").
+        const mapa = {};
+        snap.docs.forEach((d) => {
+          const data = d.data();
+          const norm = normalizarRefComparacion(data.ref || d.id);
+          if (norm) mapa[norm] = data;
+        });
+        setBusint(mapa);
+      },
+      () => setBusint({})
+    );
+    return () => unsub();
   }, []);
 
   if (busint === null) {
