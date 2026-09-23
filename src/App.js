@@ -4,7 +4,7 @@ import ModuloContabilidad from "./modulo-contabilidad";
 import ModuloPlaneacion, { MiDiaStandalone, ProgramadorProcesosStandalone, AreasStandalone, MiDiaNominaStandalone } from "./modulo-planeacion";
 import { FinancieraStandalone } from "./modulo-financiera";
 import ModuloPlanta from "./modulo-planta";
-import ModuloBodega, { FichaTelaStandalone } from "./modulo-bodega";
+import ModuloBodega from "./modulo-bodega";
 import ModuloNomina from "./modulo-nomina";
 import ModuloInformes from "./modulo-informes";
 import { initializeApp } from "firebase/app";
@@ -3763,11 +3763,11 @@ function BitacorasView(props) {
   return (
     <div>
       <div style={{ display: "flex", gap: 6, marginBottom: 20 }}>
-        {[["envios", "📦 Bitácora de Envíos"], ["sin_pedido", "🚫 Bitácora de Aprobados sin Pedido"]].map(([v, label]) => (
+        {[["envios", "📦 Bitácora de Envíos"], ["sin_pedido", "🚫 Bitácora de Aprobados sin Pedido"], ["telas", "🧵 Bitácora de Telas"]].map(([v, label]) => (
           <button key={v} onClick={() => setTab(v)} style={{ padding: "8px 16px", borderRadius: 8, border: `1.5px solid ${tab === v ? T.ink : T.border}`, background: tab === v ? T.ink : T.white, color: tab === v ? T.white : T.ink, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
-      {tab === "envios" ? <BitacoraEnviosView {...props} /> : <BitacoraAprobadosSinPedidoView {...props} />}
+      {tab === "envios" ? <BitacoraEnviosView {...props} /> : tab === "sin_pedido" ? <BitacoraAprobadosSinPedidoView {...props} /> : <BitacoraTelasView />}
     </div>
   );
 }
@@ -4757,7 +4757,61 @@ function AgregarReferenciaPreordenModal({ capsulas, pedidos, config, onClose, on
     </Modal>
   );
 }
-function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden }) {
+// (2026-09-23, a pedido de Fredy) Reemplaza al módulo aparte "Fichas de
+// Tela": Bodega o Contabilidad ingresan acá los datos de la tela apenas
+// llega, referencia por referencia, directo dentro de la Preorden. Diseño
+// ve estos mismos datos y confirma la recepción (ver confirmarRecepcionTela
+// en PreordenesView) -- recién ahí queda lista para "Vincular" a un pedido.
+function IngresarTelaModal({ item, onClose, onGuardar }) {
+  const [form, setForm] = useState({
+    proveedor: item?.telaInfo?.proveedor || "", lote: item?.telaInfo?.lote || "",
+    ancho: item?.telaInfo?.ancho || "", rendimiento: item?.telaInfo?.rendimiento || "",
+    composicion: item?.telaInfo?.composicion || "", fechaRecepcion: item?.telaInfo?.fechaRecepcion || today(),
+    observaciones: item?.telaInfo?.observaciones || "",
+  });
+  const [guardando, setGuardando] = useState(false);
+  function campo(k) {
+    return { value: form[k], onChange: (v) => setForm((f) => ({ ...f, [k]: v })) };
+  }
+  const puedeGuardar = form.proveedor.trim() && form.lote.trim();
+  async function guardar() {
+    setGuardando(true);
+    try {
+      await onGuardar({
+        proveedor: form.proveedor.trim(), lote: form.lote.trim(), ancho: form.ancho.trim(),
+        rendimiento: form.rendimiento.trim(), composicion: form.composicion.trim(),
+        fechaRecepcion: form.fechaRecepcion, observaciones: form.observaciones.trim(),
+      });
+    } finally {
+      setGuardando(false);
+    }
+  }
+  return (
+    <Modal title={`🧵 Ingresar tela — Ref. ${item?.referencia || ""}`} onClose={onClose} width={620}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+        <Field label="Proveedor"><FInput {...campo("proveedor")} placeholder="Nombre del proveedor" /></Field>
+        <Field label="Lote / Rollo"><FInput {...campo("lote")} placeholder="Ej. R-4521" /></Field>
+        <Field label="Ancho de tela"><FInput {...campo("ancho")} placeholder="Ej. 1.80 m" /></Field>
+        <Field label="Rendimiento"><FInput {...campo("rendimiento")} placeholder="Ej. 3.2 m/kg" /></Field>
+      </div>
+      <Field label="Composición"><FInput {...campo("composicion")} placeholder="Ej. 95% Algodón · 5% Elastano" /></Field>
+      <Field label="Fecha de recepción"><FInput type="date" {...campo("fechaRecepcion")} /></Field>
+      <Field label="Observaciones">
+        <textarea
+          value={form.observaciones}
+          onChange={(e) => setForm((f) => ({ ...f, observaciones: e.target.value }))}
+          rows={2}
+          style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical" }}
+        />
+      </Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 6 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar} disabled={!puedeGuardar || guardando}>{guardando ? "Guardando..." : "Guardar"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden }) {
   const [modo, setModo] = useState("lista");
   const [subTab, setSubTab] = useState("pendientes");
   const [estadoFiltro, setEstadoFiltro] = useState("todas");
@@ -4782,6 +4836,17 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
   // (2026-09-23, a pedido de Fredy) Id de la preorden a la que se le está
   // agregando una referencia nueva (o null si el modal está cerrado).
   const [agregandoRefA, setAgregandoRefA] = useState(null);
+  // (2026-09-23, a pedido de Fredy) { preordenId, itemId } de la referencia a
+  // la que se le está ingresando/editando la tela (o null si está cerrado).
+  const [ingresandoTela, setIngresandoTela] = useState(null);
+  // (2026-09-23, a pedido de Fredy) La columna de tela (ingreso + confirmación
+  // de recepción) es de uso interno -- Bodega/Contabilidad la ingresan y
+  // Diseño la confirma -- el Cliente no debe ver nada de esto, ni la columna
+  // ni el agrupamiento "pendientes de tela / con tela" de la tabla.
+  const esCliente = currentUser?.role === "Cliente";
+  const puedeIngresarTela = canAccessBodega || canAccessContabilidad;
+  const puedeConfirmarTela = canAccessDiseno;
+  const columnasPreorden = ["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", ...(esCliente ? [] : ["Recepción de Tela"]), "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Carta Colores", "Pedido", "Acciones"];
   function itemGraduado(it) {
     return !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidos);
   }
@@ -5073,6 +5138,21 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
           </div>
         </Modal>
       )}
+      {ingresandoTela && (() => {
+        const preordenIngresando = preordenesConEstado.find((pp) => pp.id === ingresandoTela.preordenId);
+        const itemIngresando = preordenIngresando?.items?.find((it) => it.itemId === ingresandoTela.itemId);
+        if (!itemIngresando) return null;
+        return (
+          <IngresarTelaModal
+            item={itemIngresando}
+            onClose={() => setIngresandoTela(null)}
+            onGuardar={async (telaInfo) => {
+              await onActualizarItemPreorden(ingresandoTela.preordenId, ingresandoTela.itemId, { telaInfo, telaIngresada: true, telaIngresadaEn: nowISO(), telaIngresadaPor: currentUser?.name || "" });
+              setIngresandoTela(null);
+            }}
+          />
+        );
+      })()}
       {agregandoRefA && (
         <AgregarReferenciaPreordenModal
           capsulas={capsulas}
@@ -5170,13 +5250,6 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
         const puedeAprobar = currentUser?.role === "Cliente" && clientesDeUsuario(currentUser).includes(p.cliente) && estadoActual !== "aprobada";
         const puedeEliminar = currentUser?.isAdmin || (currentUser?.role !== "Cliente" && !bloqueada);
         const faltaCartaColores = !(p.items || []).length || (p.items || []).some((it) => !cartaColoresLista(it).length);
-        // (2026-09-17, a pedido de Fredy) Compra de tela por referencia --
-        // solo tiene sentido una vez la preorden está "aprobada" (antes de
-        // eso no hay nada que comprar todavía). Cualquier usuario interno
-        // (no Cliente) puede marcarla, incluso si la preorden ya está
-        // "bloqueada" para el resto de edición -- el Cliente solo la ve,
-        // de solo lectura.
-        const puedeMarcarTela = currentUser?.role !== "Cliente";
         const buscarItem = buscarItemPorPreorden[p.id] || "";
         const bqItem = foldTexto(buscarItem);
         const itemsFiltrados = !bqItem ? (p.items || []) : (p.items || []).filter((it) =>
@@ -5184,32 +5257,48 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
         );
         const itemsPendientesTela = itemsFiltrados.filter((it) => !it.telaComprada);
         const itemsConTela = itemsFiltrados.filter((it) => it.telaComprada);
-        function marcarTelaComprada(it) {
-          if (window.confirm(`¿Marcar la referencia "${it.referencia}" como tela ya comprada?`)) {
+        // (2026-09-23, a pedido de Fredy) Confirmar recepción es lo que antes
+        // hacía "Ya se compró" -- lo hace Diseño, después de que Bodega o
+        // Contabilidad ya ingresaron los datos de la tela (ver
+        // IngresarTelaModal). "telaComprada" sigue siendo el campo que marca
+        // que la referencia ya quedó lista para "Vincular" a un pedido -- solo
+        // cambió QUIÉN y CUÁNDO lo marca.
+        function confirmarRecepcionTela(it) {
+          if (window.confirm(`¿Confirmar que Diseño recibió la tela de la referencia "${it.referencia}"?`)) {
             onActualizarItemPreorden(p.id, it.itemId, { telaComprada: true, telaCompradaEn: nowISO(), telaCompradaPor: currentUser?.name || "" });
           }
         }
         // (2026-09-17, a pedido de Fredy) Solo el administrador puede
-        // deshacer una compra de tela ya marcada -- vuelve la referencia
-        // al bloque de "pendientes de tela".
+        // deshacer una confirmación ya hecha -- vuelve la referencia al
+        // bloque de "pendientes de tela".
         function devolverTelaPendiente(it) {
-          if (window.confirm(`¿Devolver la referencia "${it.referencia}" a pendiente de tela?`)) {
+          if (window.confirm(`¿Devolver la referencia "${it.referencia}" a pendiente de confirmación?`)) {
             onActualizarItemPreorden(p.id, it.itemId, { telaComprada: false, telaCompradaEn: null, telaCompradaPor: null });
           }
         }
         function celdaTela(it) {
           if (estadoActual !== "aprobada") return <span style={{ color: T.slate }}>—</span>;
+          const infoTela = it.telaInfo ? [it.telaInfo.proveedor, it.telaInfo.lote ? `Lote ${it.telaInfo.lote}` : "", it.telaInfo.composicion].filter(Boolean).join(" · ") : "";
           if (it.telaComprada) {
             return (
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                <span style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.jadeBg, color: T.jade, whiteSpace: "nowrap" }}>🧵 Comprada</span>
+                <span title={infoTela} style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.jadeBg, color: T.jade, whiteSpace: "nowrap" }}>✅ Confirmada por Diseño</span>
                 {currentUser?.isAdmin && (
-                  <button onClick={() => devolverTelaPendiente(it)} title="Devolver a pendiente de tela" style={{ padding: "2px 6px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.coral, fontWeight: 700, fontSize: 10, cursor: "pointer", whiteSpace: "nowrap" }}>↩️ Devolver</button>
+                  <button onClick={() => devolverTelaPendiente(it)} title="Devolver a pendiente de confirmación" style={{ padding: "2px 6px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.coral, fontWeight: 700, fontSize: 10, cursor: "pointer", whiteSpace: "nowrap" }}>↩️ Devolver</button>
                 )}
               </div>
             );
           }
-          if (puedeMarcarTela) return <button onClick={() => marcarTelaComprada(it)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>🧵 Ya se compró</button>;
+          if (it.telaIngresada) {
+            return (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <span title={infoTela} style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.amberBg, color: T.amber, whiteSpace: "nowrap" }}>⏳ Cargada — falta confirmar</span>
+                {puedeConfirmarTela && <button onClick={() => confirmarRecepcionTela(it)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.jade}`, background: T.jadeBg, color: T.jade, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>✅ Confirmar recepción</button>}
+                {puedeIngresarTela && <button onClick={() => setIngresandoTela({ preordenId: p.id, itemId: it.itemId })} title="Editar los datos de la tela" style={{ padding: "2px 6px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.ink, fontWeight: 700, fontSize: 10, cursor: "pointer" }}>✏️</button>}
+              </div>
+            );
+          }
+          if (puedeIngresarTela) return <button onClick={() => setIngresandoTela({ preordenId: p.id, itemId: it.itemId })} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>🧵 Ingresar tela</button>;
           return <span style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.amberBg, color: T.amber, whiteSpace: "nowrap" }}>⏳ Pendiente</span>;
         }
         return (
@@ -5225,8 +5314,8 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                     ) : (
                       <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.amberBg, color: T.amber }}>🟡 Montada</span>
                     )}
-                    {estadoActual === "aprobada" && (p.items || []).length > 0 && (
-                      <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim }}>🧵 {itemsConTela.length}/{(p.items || []).length} con tela comprada</span>
+                    {estadoActual === "aprobada" && (p.items || []).length > 0 && !esCliente && (
+                      <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim }}>🧵 {itemsConTela.length}/{(p.items || []).length} con tela confirmada</span>
                     )}
                   </div>
                   <div style={{ fontSize: 12, color: T.slate }}>{(p.items || []).length} ref · {fmtNum(totalUnidades)} unid. · Creada {p.fechaCreado}</div>
@@ -5316,7 +5405,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                     <thead>
                       <tr style={{ background: T.ink }}>
-                        {["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", "Compra Tela", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Carta Colores", "Pedido", "Acciones"].map((h) => (
+                        {columnasPreorden.map((h) => (
                           <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
                         ))}
                       </tr>
@@ -5339,7 +5428,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                               <td style={{ padding: "6px 10px" }}>{it.silueta || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.rango || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.tela || "—"}</td>
-                              <td style={{ padding: "6px 10px" }}>{celdaTela(it)}</td>
+                              {!esCliente && <td style={{ padding: "6px 10px" }}>{celdaTela(it)}</td>}
                               <td style={{ padding: "6px 10px" }}>{it.colombiaCurva || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.colombiaCantidad || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.venezuelaCurva || "—"}</td>
@@ -5394,25 +5483,25 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                             </tr>
                           );
                         }
-                        if (estadoActual !== "aprobada") {
+                        if (estadoActual !== "aprobada" || esCliente) {
                           if (bqItem && !itemsFiltrados.length) {
-                            return <tr><td colSpan={19} style={{ padding: "12px 10px", color: T.slate, fontStyle: "italic" }}>Ninguna referencia de esta orden coincide con esa búsqueda.</td></tr>;
+                            return <tr><td colSpan={columnasPreorden.length} style={{ padding: "12px 10px", color: T.slate, fontStyle: "italic" }}>Ninguna referencia de esta orden coincide con esa búsqueda.</td></tr>;
                           }
                           return itemsFiltrados.map((it, i) => filaItem(it, i));
                         }
                         return (
                           <>
                             <tr>
-                              <td colSpan={19} style={{ padding: "10px 10px 6px", fontWeight: 800, fontSize: 12, color: T.ink, background: T.white }}>✅ Aprobadas — pendientes de tela ({itemsPendientesTela.length})</td>
+                              <td colSpan={columnasPreorden.length} style={{ padding: "10px 10px 6px", fontWeight: 800, fontSize: 12, color: T.ink, background: T.white }}>✅ Aprobadas — pendientes de confirmación de tela ({itemsPendientesTela.length})</td>
                             </tr>
                             {itemsPendientesTela.length ? itemsPendientesTela.map((it, i) => filaItem(it, i)) : (
-                              <tr><td colSpan={19} style={{ padding: "6px 10px", color: T.slate, fontStyle: "italic" }}>Ninguna referencia pendiente de tela.</td></tr>
+                              <tr><td colSpan={columnasPreorden.length} style={{ padding: "6px 10px", color: T.slate, fontStyle: "italic" }}>Ninguna referencia pendiente de confirmación.</td></tr>
                             )}
                             <tr>
-                              <td colSpan={19} style={{ padding: "16px 10px 6px", fontWeight: 800, fontSize: 12, color: T.jade, background: T.white, borderTop: `2px solid ${T.border}` }}>🧵 Aprobadas con compra de tela ({itemsConTela.length})</td>
+                              <td colSpan={columnasPreorden.length} style={{ padding: "16px 10px 6px", fontWeight: 800, fontSize: 12, color: T.jade, background: T.white, borderTop: `2px solid ${T.border}` }}>🧵 Aprobadas con tela confirmada ({itemsConTela.length})</td>
                             </tr>
                             {itemsConTela.length ? itemsConTela.map((it, i) => filaItem(it, i)) : (
-                              <tr><td colSpan={19} style={{ padding: "6px 10px", color: T.slate, fontStyle: "italic" }}>Todavía no hay referencias con tela comprada.</td></tr>
+                              <tr><td colSpan={columnasPreorden.length} style={{ padding: "6px 10px", color: T.slate, fontStyle: "italic" }}>Todavía no hay referencias con tela confirmada.</td></tr>
                             )}
                           </>
                         );
@@ -5922,6 +6011,156 @@ function BitacoraAprobadosSinPedidoView({ capsulas, pedidos, onSelectRef, onVinc
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+// (2026-09-23, a pedido de Fredy) Modal para crear/editar UNA fila de la
+// Bitácora de Telas a mano. "usadoEn" no se edita acá -- lo maneja solo
+// sincronizarBitacoraTela (más arriba en este archivo) cuando se crea un
+// Prototipo o una Cápsula con esa tela.
+function BitacoraTelaModal({ inicial, onClose, onGuardar, guardando }) {
+  const [form, setForm] = useState({
+    tela: inicial?.tela || "", proveedor: inicial?.proveedor || "", lote: inicial?.lote || "",
+    ancho: inicial?.ancho || "", rendimiento: inicial?.rendimiento || "",
+    composicion: inicial?.composicion || "", observaciones: inicial?.observaciones || "",
+  });
+  function campo(k) {
+    return { value: form[k], onChange: (v) => setForm((f) => ({ ...f, [k]: v })) };
+  }
+  const puedeGuardar = form.tela.trim();
+  return (
+    <Modal title={inicial ? `🧵 Editar — ${inicial.tela}` : "🧵 Nueva tela en la Bitácora"} onClose={onClose} width={620}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+        <Field label="Tela / Referencia"><FInput {...campo("tela")} placeholder="Ej. Jersey Algodón 24/1" /></Field>
+        <Field label="Proveedor"><FInput {...campo("proveedor")} placeholder="Nombre del proveedor" /></Field>
+        <Field label="Lote / Rollo"><FInput {...campo("lote")} placeholder="Ej. R-4521" /></Field>
+        <Field label="Ancho de tela"><FInput {...campo("ancho")} placeholder="Ej. 1.80 m" /></Field>
+        <Field label="Rendimiento"><FInput {...campo("rendimiento")} placeholder="Ej. 3.2 m/kg" /></Field>
+      </div>
+      <Field label="Composición"><FInput {...campo("composicion")} placeholder="Ej. 95% Algodón · 5% Elastano" /></Field>
+      <Field label="Observaciones">
+        <textarea
+          value={form.observaciones}
+          onChange={(e) => setForm((f) => ({ ...f, observaciones: e.target.value }))}
+          rows={3}
+          style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit", resize: "vertical" }}
+        />
+      </Field>
+      {inicial?.usadoEn?.nombre && (
+        <div style={{ padding: "10px 14px", background: T.jadeBg, borderRadius: 8, color: T.jade, fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>
+          Usada en {inicial.usadoEn.tipo === "Cápsula" ? "📦" : "🧪"} {inicial.usadoEn.tipo} "{inicial.usadoEn.nombre}" — esto lo actualiza solo el sistema cuando se crea un Prototipo/Cápsula con esta tela.
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 6 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={() => onGuardar(form)} disabled={!puedeGuardar || guardando}>{guardando ? "Guardando..." : "Guardar"}</Btn>
+      </div>
+    </Modal>
+  );
+}
+// (2026-09-23, a pedido de Fredy) Bitácora de Telas -- catálogo maestro:
+// una fila por cada tela distinta (no una por cada llegada/uso -- eso se ve
+// referencia por referencia dentro de cada Preorden), con si ya se usó en
+// un Prototipo/Cápsula o no. Se llena a mano acá o automáticamente desde
+// sincronizarBitacoraTela cuando Diseño crea un Prototipo/Cápsula con una
+// tela nueva. Vive como tercera pestaña de BitacorasView, junto a Envíos y
+// Aprobados sin Pedido -- antes vivía en el módulo aparte "Fichas de Tela".
+function BitacoraTelasView() {
+  const [telas, setTelas] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busqueda, setBusqueda] = useState("");
+  const [modalTela, setModalTela] = useState(null); // null=cerrado, {}=nueva, {...}=editar
+  const [guardando, setGuardando] = useState(false);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "bodega_bitacora_telas"), (snap) => {
+      setTelas(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+  const bq = foldTexto(busqueda);
+  const telasFiltradas = [...telas]
+    .filter((t) => !bq || foldTexto(t.tela).includes(bq) || foldTexto(t.proveedor).includes(bq) || foldTexto(t.lote).includes(bq))
+    .sort((a, b) => foldTexto(a.tela).localeCompare(foldTexto(b.tela)));
+  const usadas = telas.filter((t) => t.usadoEn && t.usadoEn.nombre).length;
+  async function guardarTela(form) {
+    setGuardando(true);
+    try {
+      const telaId = modalTela?.id ? modalTela.id : foldTexto(form.tela).replace(/\//g, "-").replace(/\s+/g, " ").trim();
+      if (!telaId) return;
+      await fsSave("bodega_bitacora_telas", telaId, {
+        tela: form.tela.trim(), proveedor: form.proveedor.trim(), lote: form.lote.trim(),
+        ancho: form.ancho.trim(), rendimiento: form.rendimiento.trim(),
+        composicion: form.composicion.trim(), observaciones: form.observaciones.trim(),
+      });
+      setModalTela(null);
+    } finally {
+      setGuardando(false);
+    }
+  }
+  if (loading) {
+    return <div style={{ padding: 40, textAlign: "center", color: T.slate, fontSize: 13 }}>Cargando Bitácora de Telas...</div>;
+  }
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18, gap: 16, flexWrap: "wrap" }}>
+        <p style={{ margin: 0, fontSize: 13, color: T.slate, maxWidth: 640 }}>
+          Catálogo maestro: una fila por cada tela distinta. Se llena a mano o automáticamente cuando Diseño crea un Prototipo o una Cápsula con esa tela.
+        </p>
+        <Btn onClick={() => setModalTela({})}>+ Nueva tela</Btn>
+      </div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
+        <div style={{ padding: "10px 16px", borderRadius: 10, border: `1px solid ${T.border}`, background: T.white, minWidth: 150 }}>
+          <div style={{ fontSize: 11, color: T.slate, fontWeight: 700 }}>🧵 Telas en catálogo</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: T.ink }}>{telas.length}</div>
+        </div>
+        <div style={{ padding: "10px 16px", borderRadius: 10, border: `1.5px solid ${T.jade}`, background: T.jadeBg, minWidth: 150 }}>
+          <div style={{ fontSize: 11, color: T.jade, fontWeight: 700 }}>✅ Ya usadas en una muestra</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: T.jade }}>{usadas}</div>
+        </div>
+        <div style={{ padding: "10px 16px", borderRadius: 10, border: `1.5px solid ${T.amber}`, background: T.amberBg, minWidth: 150 }}>
+          <div style={{ fontSize: 11, color: T.amber, fontWeight: 700 }}>⏳ Sin usar todavía</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: T.amber }}>{telas.length - usadas}</div>
+        </div>
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <input
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="🔍 Buscar tela, proveedor o lote..."
+          style={{ padding: "7px 12px", border: `1.5px solid ${busqueda ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 280, outline: "none", fontFamily: "inherit" }}
+        />
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: T.ink }}>
+              {["Tela", "Proveedor", "Lote", "Ancho", "Composición", "Usado en"].map((h) => (
+                <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {!telasFiltradas.length ? (
+              <tr><td colSpan={6} style={{ padding: "16px 10px", color: T.slate, fontStyle: "italic" }}>{busqueda ? "Ninguna tela coincide con esa búsqueda." : "Todavía no hay ninguna tela registrada en la Bitácora."}</td></tr>
+            ) : telasFiltradas.map((t, i) => (
+              <tr key={t.id} onClick={() => setModalTela(t)} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}`, cursor: "pointer" }}>
+                <td style={{ padding: "8px 10px", fontWeight: 700 }}>{t.tela}</td>
+                <td style={{ padding: "8px 10px" }}>{t.proveedor || "—"}</td>
+                <td style={{ padding: "8px 10px" }}>{t.lote || "—"}</td>
+                <td style={{ padding: "8px 10px" }}>{t.ancho || "—"}</td>
+                <td style={{ padding: "8px 10px" }}>{t.composicion || "—"}</td>
+                <td style={{ padding: "8px 10px", color: t.usadoEn?.nombre ? T.jade : T.slate, fontWeight: t.usadoEn?.nombre ? 700 : 400 }}>
+                  {t.usadoEn?.nombre ? `${t.usadoEn.tipo === "Cápsula" ? "📦" : "🧪"} ${t.usadoEn.tipo} "${t.usadoEn.nombre}"` : "— Sin usar aún"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {modalTela !== null && (
+        <BitacoraTelaModal inicial={modalTela.id ? modalTela : null} onClose={() => setModalTela(null)} onGuardar={guardarTela} guardando={guardando} />
+      )}
     </div>
   );
 }
@@ -9302,11 +9541,6 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     { area: "📋 Informes", items: [["informes", "Informes"]] },
     { area: "🗂️ Áreas", items: [["areas_centro_costo", "Centro de Costo"], ["areas_estadisticas", "Estadísticas"], ["areas_reclamos", "Reclamos"], ["areas_programador", "Programador"]] },
     { area: "💰 Financiera", items: [["financiera", "Financiera"]] },
-    // (2026-09-22, a pedido de Fredy) "Editar Bitácora" es un permiso
-    // aparte de "Ver" -- Diseño ya podía VER las Fichas de Recepción, pero
-    // la Bitácora de Telas (catálogo maestro, ver Bitácora de Telas más
-    // abajo en modulo-bodega.jsx) además la puede EDITAR directamente.
-    { area: "🧵 Fichas de Tela", items: [["fichas_tela_crear", "Crear (Bodega)"], ["fichas_tela_ver", "Ver (Diseño)"], ["bitacora_telas_editar", "Editar Bitácora (Diseño)"]] },
   ];
   const adminTabs = [["etapas", "⏱ Etapas"], ["categorias", "🏷 Categorías"], ["siluetas", "🔷 Siluetas"], ["lineas", "📐 Línea"], ["rangos", "📏 Rangos"], ["codigos_referencia", "🔢 Códigos de Referencia"], ["disenadores", "🎨 Diseñadores"], ["kpi_areas", "🏢 Áreas (KPI)"], ["talleres", "🧵 Talleres de Muestra"], ["prioridades", "🚩 Prioridades de Muestra"], ["roles", "👥 Roles"], ["usuarios", "👤 Usuarios"], ["clientes", "🏢 Clientes"], ["contenido", "📁 Contenido"], ["notificaciones", "🔔 Notificaciones"], ["papelera", "🗑 Papelera"], ["busint_test", "🔌 Busint (prueba)"]];
   const [nuevoCodigo, setNuevoCodigo] = useState({ categoria: "", linea: "", grupo: "", cliente: "", prefijo: "", rangoInicio: "", rangoFin: "", desbordeInicio: "", desbordeFin: "" });
@@ -13514,15 +13748,6 @@ function AppInner() {
   // liquidaciones YA CONFIRMADAS de las 4 nóminas. Ver FinancieraStandalone
   // en modulo-financiera.jsx.
   const canAccessFinanciera = moduloVisible(userRoleData, "financiera", currentUser?.isAdmin);
-  // "Fichas de Tela" -- módulo nuevo de nivel superior (2026-09-22, pedido
-  // explícito de Fredy): Bodega registra la ficha de recepción de cada tela
-  // comprada (sin cantidad recibida, a pedido explícito de Fredy), Diseño la
-  // puede ver, y Colecciones da el visto bueno. Ver FichaTelaStandalone en
-  // modulo-bodega.jsx.
-  const canAccessFichasTelaCrear = moduloVisible(userRoleData, "fichas_tela_crear", currentUser?.isAdmin);
-  const canAccessFichasTelaVer = moduloVisible(userRoleData, "fichas_tela_ver", currentUser?.isAdmin);
-  const canAccessBitacoraTelasEditar = moduloVisible(userRoleData, "bitacora_telas_editar", currentUser?.isAdmin);
-  const canAccessFichasTela = canAccessFichasTelaCrear || canAccessFichasTelaVer || canAccessBitacoraTelasEditar;
   // "admin_diseno" es un permiso aparte del admin general: da entrada al panel
   // de Administración de Diseño (etapas, categorías, roles, usuarios...) sin
   // necesidad de marcar al usuario como Admin general del sistema.
@@ -13559,9 +13784,6 @@ function AppInner() {
             ...(canAccessAdminDiseno ? [{ id: "admin", icon: "⚙", label: "Administrador General" }] : []),
           ],
         }]
-      : []),
-    ...(canAccessFichasTela
-      ? [{ id: "fichas_tela_area", icon: "🧵", label: "Fichas de Tela", items: [{ id: "fichas_tela_area", icon: "🧵", label: "Ficha de Recepción de Tela" }] }]
       : []),
     ...(canAccessPedidosArea
       ? [{
@@ -13631,7 +13853,6 @@ function AppInner() {
     if (itemId === "informes_area") return moduloActivo === "informes";
     if (itemId === "areas_internas_area") return moduloActivo === "areas_internas";
     if (itemId === "financiera_area") return moduloActivo === "financiera";
-    if (itemId === "fichas_tela_area") return moduloActivo === "fichas_tela";
     return view === itemId;
   }
   function navClick(itemId) {
@@ -13644,7 +13865,6 @@ function AppInner() {
     if (itemId === "informes_area") { setModuloActivo("informes"); return; }
     if (itemId === "areas_internas_area") { setModuloActivo("areas_internas"); return; }
     if (itemId === "financiera_area") { setModuloActivo("financiera"); return; }
-    if (itemId === "fichas_tela_area") { setModuloActivo("fichas_tela"); return; }
     setView(itemId);
   }
   // "Planeador puro": solo tiene Corte y NINGUNA otra sección de Diseño (ni
@@ -13728,9 +13948,6 @@ function AppInner() {
   }
   if (moduloActivo === "financiera") {
     return <FinancieraStandalone currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
-  }
-  if (moduloActivo === "fichas_tela") {
-    return <FichaTelaStandalone currentUser={currentUser} puedeCrear={canAccessFichasTelaCrear} puedeVer={canAccessFichasTelaVer} puedeEditarBitacora={canAccessBitacoraTelasEditar} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   return (
     <div style={{ minHeight: "100vh", background: T.canvas, fontFamily: "'Inter',-apple-system,BlinkMacSystemFont,sans-serif" }}>
@@ -13955,6 +14172,9 @@ function AppInner() {
                 capsulas={capsulas}
                 config={config}
                 currentUser={currentUser}
+                canAccessBodega={canAccessBodega}
+                canAccessContabilidad={canAccessContabilidad}
+                canAccessDiseno={canAccessDiseno}
                 onAddCapsula={addCapsula}
                 onAddRef={addRef}
                 onCrearPreorden={crearPreorden}
