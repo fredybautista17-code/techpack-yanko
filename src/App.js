@@ -12466,7 +12466,15 @@ function AppInner() {
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
   const [bitacoraEnvios, setBitacoraEnvios] = useState([]);
   const [bitacoraPreordenes, setBitacoraPreordenes] = useState([]);
-  const preordenesVisibles = clientesUsuario.length ? bitacoraPreordenes.filter((p) => clientesUsuario.includes(p.cliente)) : bitacoraPreordenes;
+  // (2026-09-23, a pedido de Fredy) Antes esta comparacion era exacta
+  // (sensible a mayusculas/espacios) -- si el cliente de la preorden
+  // quedaba escrito distinto al que tiene asignado el usuario Cliente en
+  // su cuenta, la preorden le desaparecia de la lista aunque se hubiera
+  // guardado bien. foldTexto normaliza ambos lados (mismo helper que ya
+  // usa el buscador de esta pantalla) para que "KAMILA COLOMBIA" y
+  // "Kamila Colombia" cuenten como el mismo cliente.
+  const clientesUsuarioNorm = clientesUsuario.map(foldTexto);
+  const preordenesVisibles = clientesUsuarioNorm.length ? bitacoraPreordenes.filter((p) => clientesUsuarioNorm.includes(foldTexto(p.cliente))) : bitacoraPreordenes;
   // Al entrar a Historial desde el enlace "❌ N declinadas" de Bitácora, se
   // usa esto para que abra ya filtrado en Declinados (HistorialDisenoView lo
   // lee una sola vez, al montar, vía initialResultado/initialTipoFiltro).
