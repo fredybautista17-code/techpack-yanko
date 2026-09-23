@@ -4757,37 +4757,107 @@ function AgregarReferenciaPreordenModal({ capsulas, pedidos, config, onClose, on
     </Modal>
   );
 }
-// (2026-09-23, a pedido de Fredy) Reemplaza al módulo aparte "Fichas de
-// Tela": Bodega o Contabilidad ingresan acá los datos de la tela apenas
-// llega, referencia por referencia, directo dentro de la Preorden. Diseño
-// ve estos mismos datos y confirma la recepción (ver confirmarRecepcionTela
-// en PreordenesView) -- recién ahí queda lista para "Vincular" a un pedido.
-function IngresarTelaModal({ item, onClose, onGuardar }) {
+// (2026-09-23, a pedido de Fredy) Sube UN archivo (la factura de una
+// entrega de tela, en PDF) a Firebase Storage y devuelve el link -- mismo
+// mecanismo que ImageListUploader (uploadString con "data_url"), que
+// funciona igual sin importar el tipo de archivo.
+function FacturaUploader({ url, nombre, onChange, readonly }) {
+  const fileRef = useRef();
+  const [subiendo, setSubiendo] = useState(false);
+  async function handleFile(e) {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    setSubiendo(true);
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(f);
+      });
+      const ref = storageRef(storage, `facturas_tela/${uid()}_${f.name}`);
+      await uploadString(ref, dataUrl, "data_url");
+      const downloadUrl = await getDownloadURL(ref);
+      onChange({ facturaUrl: downloadUrl, facturaNombre: f.name });
+    } catch (err) {
+      console.error("No se pudo subir la factura:", err);
+      alert("La factura no se pudo subir. Revisa tu conexión e intentalo de nuevo.");
+    } finally {
+      setSubiendo(false);
+    }
+  }
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      <input ref={fileRef} type="file" accept="application/pdf" style={{ display: "none" }} onChange={handleFile} />
+      {url ? (
+        <a href={url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: T.denim, fontWeight: 700, textDecoration: "underline" }}>📄 {nombre || "Ver factura"}</a>
+      ) : (
+        <span style={{ fontSize: 12, color: T.slate, fontStyle: "italic" }}>Sin factura</span>
+      )}
+      {!readonly && (
+        <button type="button" onClick={() => !subiendo && fileRef.current.click()} disabled={subiendo} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.ink, fontWeight: 700, fontSize: 11, cursor: subiendo ? "not-allowed" : "pointer" }}>{subiendo ? "Subiendo..." : url ? "Cambiar PDF" : "📎 Subir PDF"}</button>
+      )}
+    </div>
+  );
+}
+// (2026-09-23, a pedido de Fredy) Registra UNA entrega de tela -- una
+// factura puede cubrir varias referencias a la vez, para no tener que
+// meterlas una por una. Si `referenciasDisponibles` es null, es una
+// "compra sin orden" (todavía no existe la preorden que la va a usar) y no
+// se elige ninguna referencia todavía -- eso se hace después, ver
+// AsignarEntregaModal.
+function RegistrarEntregaTelaModal({ referenciasDisponibles, onClose, onGuardar }) {
+  const [seleccion, setSeleccion] = useState([]);
   const [form, setForm] = useState({
-    proveedor: item?.telaInfo?.proveedor || "", lote: item?.telaInfo?.lote || "",
-    ancho: item?.telaInfo?.ancho || "", rendimiento: item?.telaInfo?.rendimiento || "",
-    composicion: item?.telaInfo?.composicion || "", fechaRecepcion: item?.telaInfo?.fechaRecepcion || today(),
-    observaciones: item?.telaInfo?.observaciones || "",
+    proveedor: "", lote: "", ancho: "", rendimiento: "", composicion: "",
+    fechaRecepcion: today(), observaciones: "", facturaUrl: "", facturaNombre: "",
   });
   const [guardando, setGuardando] = useState(false);
   function campo(k) {
     return { value: form[k], onChange: (v) => setForm((f) => ({ ...f, [k]: v })) };
   }
-  const puedeGuardar = form.proveedor.trim() && form.lote.trim();
+  function toggleRef(itemId) {
+    setSeleccion((s) => (s.includes(itemId) ? s.filter((x) => x !== itemId) : [...s, itemId]));
+  }
+  const requiereReferencias = referenciasDisponibles !== null;
+  const puedeGuardar = form.proveedor.trim() && form.lote.trim() && (!requiereReferencias || seleccion.length > 0);
   async function guardar() {
     setGuardando(true);
     try {
+      const items = requiereReferencias
+        ? referenciasDisponibles.filter((r) => seleccion.includes(r.itemId)).map((r) => ({ itemId: r.itemId, referencia: r.referencia }))
+        : [];
       await onGuardar({
         proveedor: form.proveedor.trim(), lote: form.lote.trim(), ancho: form.ancho.trim(),
         rendimiento: form.rendimiento.trim(), composicion: form.composicion.trim(),
         fechaRecepcion: form.fechaRecepcion, observaciones: form.observaciones.trim(),
+        facturaUrl: form.facturaUrl, facturaNombre: form.facturaNombre, items,
       });
     } finally {
       setGuardando(false);
     }
   }
   return (
-    <Modal title={`🧵 Ingresar tela — Ref. ${item?.referencia || ""}`} onClose={onClose} width={620}>
+    <Modal title="🧵 Registrar entrega de tela" onClose={onClose} width={680}>
+      {requiereReferencias && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>¿Qué referencias llegaron en esta entrega?</div>
+          {!referenciasDisponibles.length ? (
+            <div style={{ fontSize: 12, color: T.slate, fontStyle: "italic" }}>No hay referencias pendientes de tela en esta preorden.</div>
+          ) : (
+            <div style={{ maxHeight: 220, overflowY: "auto", border: `1px solid ${T.border}`, borderRadius: 8, padding: 10 }}>
+              {referenciasDisponibles.map((r) => (
+                <label key={r.itemId} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 13, cursor: "pointer" }}>
+                  <input type="checkbox" checked={seleccion.includes(r.itemId)} onChange={() => toggleRef(r.itemId)} />
+                  <span style={{ fontWeight: 700 }}>{r.referencia}</span>
+                  <span style={{ color: T.slate }}>{r.nombre}{r.tela ? ` · ${r.tela}` : ""}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
         <Field label="Proveedor"><FInput {...campo("proveedor")} placeholder="Nombre del proveedor" /></Field>
         <Field label="Lote / Rollo"><FInput {...campo("lote")} placeholder="Ej. R-4521" /></Field>
@@ -4796,6 +4866,9 @@ function IngresarTelaModal({ item, onClose, onGuardar }) {
       </div>
       <Field label="Composición"><FInput {...campo("composicion")} placeholder="Ej. 95% Algodón · 5% Elastano" /></Field>
       <Field label="Fecha de recepción"><FInput type="date" {...campo("fechaRecepcion")} /></Field>
+      <Field label="Factura (PDF)">
+        <FacturaUploader url={form.facturaUrl} nombre={form.facturaNombre} onChange={(v) => setForm((f) => ({ ...f, ...v }))} />
+      </Field>
       <Field label="Observaciones">
         <textarea
           value={form.observaciones}
@@ -4811,7 +4884,181 @@ function IngresarTelaModal({ item, onClose, onGuardar }) {
     </Modal>
   );
 }
-function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden }) {
+// (2026-09-23, a pedido de Fredy) Panel de "Ingreso de Telas" de UNA
+// preorden puntual -- reemplaza al viejo botón "Ingresar tela" fila por
+// fila. Muestra las entregas (facturas) ya registradas para esta preorden
+// y deja registrar una nueva (con selección de referencias); Diseño
+// confirma acá mismo, referencia por referencia dentro de cada entrega. El
+// estado real de cada referencia sigue viviendo en el item de la preorden
+// (telaIngresada/telaComprada) -- este panel solo lee/escribe sobre eso a
+// través de onActualizarItemPreorden, la entrega es la "envoltura" con la
+// factura y los datos compartidos.
+function IngresoTelasPreordenModal({ preorden, entregas, currentUser, puedeIngresarTela, puedeConfirmarTela, onClose, onCrearEntrega, onActualizarItemPreorden }) {
+  const [registrando, setRegistrando] = useState(false);
+  const entregasDeEsta = entregas.filter((e) => e.preordenId === preorden.id).sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || ""));
+  const referenciasParaSeleccionar = (preorden.items || []).filter((it) => !it.telaComprada).map((it) => ({ itemId: it.itemId, referencia: it.referencia, nombre: it.nombre, tela: it.tela }));
+  function itemDe(itemId) {
+    return (preorden.items || []).find((it) => it.itemId === itemId);
+  }
+  function confirmar(itemId, referencia) {
+    if (window.confirm(`¿Confirmar que Diseño recibió la tela de la referencia "${referencia}"?`)) {
+      onActualizarItemPreorden(preorden.id, itemId, { telaComprada: true, telaCompradaEn: nowISO(), telaCompradaPor: currentUser?.name || "" });
+    }
+  }
+  return (
+    <Modal title={`🧵 Ingreso de Telas — ${preorden.cliente || "(Sin cliente)"}${preorden.numPedido ? ` · Pedido ${preorden.numPedido}` : ""}`} onClose={onClose} width={760}>
+      {puedeIngresarTela && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+          <Btn small onClick={() => setRegistrando(true)}>+ Registrar entrega</Btn>
+        </div>
+      )}
+      {!entregasDeEsta.length ? (
+        <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>Todavía no se ha registrado ninguna entrega de tela en esta preorden.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {entregasDeEsta.map((e) => (
+            <div key={e.id} style={{ border: `1px solid ${T.border}`, borderRadius: 10, padding: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: 13, color: T.ink }}>{e.proveedor || "(Sin proveedor)"} {e.lote ? `· Lote ${e.lote}` : ""}</div>
+                  <div style={{ fontSize: 11, color: T.slate }}>{[e.ancho, e.composicion].filter(Boolean).join(" · ")}{e.fechaRecepcion ? ` · Recibida ${e.fechaRecepcion}` : ""}</div>
+                </div>
+                <FacturaUploader url={e.facturaUrl} nombre={e.facturaNombre} readonly />
+              </div>
+              {e.observaciones && <div style={{ fontSize: 12, color: T.slate, marginBottom: 8, fontStyle: "italic" }}>{e.observaciones}</div>}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {(e.items || []).map((it) => {
+                  const live = itemDe(it.itemId);
+                  const confirmada = !!live?.telaComprada;
+                  return (
+                    <div key={it.itemId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "5px 10px", borderRadius: 6, background: T.canvas, fontSize: 12 }}>
+                      <span><b>{it.referencia}</b>{live?.nombre ? ` · ${live.nombre}` : ""}</span>
+                      {confirmada ? (
+                        <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✅ Confirmada</span>
+                      ) : puedeConfirmarTela ? (
+                        <button onClick={() => confirmar(it.itemId, it.referencia)} style={{ padding: "3px 8px", borderRadius: 6, border: `1px solid ${T.jade}`, background: T.jadeBg, color: T.jade, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>✅ Confirmar</button>
+                      ) : (
+                        <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.amberBg, color: T.amber }}>⏳ Falta confirmar</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {registrando && (
+        <RegistrarEntregaTelaModal
+          referenciasDisponibles={referenciasParaSeleccionar}
+          onClose={() => setRegistrando(false)}
+          onGuardar={async (datos) => { await onCrearEntrega({ preordenId: preorden.id, ...datos }); setRegistrando(false); }}
+        />
+      )}
+    </Modal>
+  );
+}
+// (2026-09-23, a pedido de Fredy) Cuando la tela se compra ANTES de que
+// exista la orden que la va a usar (o en cantidad grande para varias
+// órdenes futuras) -- se elige la preorden y las referencias cuando por
+// fin aparecen, sin volver a escribir los datos de la entrega ni resubir
+// la factura.
+function AsignarEntregaModal({ entrega, preordenes, onClose, onAsignar }) {
+  const aprobadas = preordenes.filter((p) => (p.estado || "montada") === "aprobada");
+  const [preordenId, setPreordenId] = useState("");
+  const [seleccion, setSeleccion] = useState([]);
+  const preorden = aprobadas.find((p) => p.id === preordenId);
+  const referencias = preorden ? (preorden.items || []).filter((it) => !it.telaComprada) : [];
+  function toggle(itemId) {
+    setSeleccion((s) => (s.includes(itemId) ? s.filter((x) => x !== itemId) : [...s, itemId]));
+  }
+  const puedeAsignar = preordenId && seleccion.length > 0;
+  return (
+    <Modal title={`Asignar — ${entrega.proveedor || ""}${entrega.lote ? ` · Lote ${entrega.lote}` : ""}`} onClose={onClose} width={620}>
+      <Field label="Preorden">
+        <select value={preordenId} onChange={(e) => { setPreordenId(e.target.value); setSeleccion([]); }} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
+          <option value="">— Elegir preorden —</option>
+          {aprobadas.map((p) => (
+            <option key={p.id} value={p.id}>{p.cliente || "(Sin cliente)"}{p.numPedido ? ` · Pedido ${p.numPedido}` : ""}</option>
+          ))}
+        </select>
+      </Field>
+      {preorden && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>¿Qué referencias son de esta tela?</div>
+          {!referencias.length ? (
+            <div style={{ fontSize: 12, color: T.slate, fontStyle: "italic" }}>Esta preorden no tiene referencias pendientes de tela.</div>
+          ) : (
+            <div style={{ maxHeight: 220, overflowY: "auto", border: `1px solid ${T.border}`, borderRadius: 8, padding: 10 }}>
+              {referencias.map((it) => (
+                <label key={it.itemId} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 13, cursor: "pointer" }}>
+                  <input type="checkbox" checked={seleccion.includes(it.itemId)} onChange={() => toggle(it.itemId)} />
+                  <span style={{ fontWeight: 700 }}>{it.referencia}</span>
+                  <span style={{ color: T.slate }}>{it.nombre}{it.tela ? ` · ${it.tela}` : ""}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn disabled={!puedeAsignar} onClick={() => onAsignar(preordenId, referencias.filter((it) => seleccion.includes(it.itemId)).map((it) => ({ itemId: it.itemId, referencia: it.referencia })))}>Asignar</Btn>
+      </div>
+    </Modal>
+  );
+}
+// (2026-09-23, a pedido de Fredy) Compras de tela que todavía no tienen
+// una orden asignada -- ver AsignarEntregaModal arriba.
+function ComprasSinOrdenModal({ entregas, preordenes, puedeIngresarTela, onClose, onRegistrar, onAsignar }) {
+  const [registrando, setRegistrando] = useState(false);
+  const [asignando, setAsignando] = useState(null);
+  const sinOrden = entregas.filter((e) => !e.preordenId).sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || ""));
+  return (
+    <Modal title="🧵 Compras de Tela sin Orden" onClose={onClose} width={700}>
+      <p style={{ margin: "0 0 14px", fontSize: 13, color: T.slate }}>Telas ya compradas antes de que exista la orden que las va a usar. Cuando aparezca esa orden, asígnala aquí a la preorden y a las referencias correspondientes.</p>
+      {puedeIngresarTela && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+          <Btn small onClick={() => setRegistrando(true)}>+ Registrar compra</Btn>
+        </div>
+      )}
+      {!sinOrden.length ? (
+        <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>No hay compras de tela sin asignar.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {sinOrden.map((e) => (
+            <div key={e.id} style={{ border: `1px solid ${T.border}`, borderRadius: 10, padding: 14, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 13, color: T.ink }}>{e.proveedor || "(Sin proveedor)"} {e.lote ? `· Lote ${e.lote}` : ""}</div>
+                <div style={{ fontSize: 11, color: T.slate }}>{[e.ancho, e.composicion].filter(Boolean).join(" · ")}{e.fechaRecepcion ? ` · Recibida ${e.fechaRecepcion}` : ""}</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <FacturaUploader url={e.facturaUrl} nombre={e.facturaNombre} readonly />
+                {puedeIngresarTela && <Btn variant="secondary" small onClick={() => setAsignando(e)}>Asignar a una preorden</Btn>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {registrando && (
+        <RegistrarEntregaTelaModal
+          referenciasDisponibles={null}
+          onClose={() => setRegistrando(false)}
+          onGuardar={async (datos) => { await onRegistrar(datos); setRegistrando(false); }}
+        />
+      )}
+      {asignando && (
+        <AsignarEntregaModal
+          entrega={asignando}
+          preordenes={preordenes}
+          onClose={() => setAsignando(null)}
+          onAsignar={async (preordenId, items) => { await onAsignar(asignando.id, preordenId, items); setAsignando(null); }}
+        />
+      )}
+    </Modal>
+  );
+}
+function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onCrearEntregaTela, onAsignarEntregaTela }) {
   const [modo, setModo] = useState("lista");
   const [subTab, setSubTab] = useState("pendientes");
   const [estadoFiltro, setEstadoFiltro] = useState("todas");
@@ -4836,9 +5083,11 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   // (2026-09-23, a pedido de Fredy) Id de la preorden a la que se le está
   // agregando una referencia nueva (o null si el modal está cerrado).
   const [agregandoRefA, setAgregandoRefA] = useState(null);
-  // (2026-09-23, a pedido de Fredy) { preordenId, itemId } de la referencia a
-  // la que se le está ingresando/editando la tela (o null si está cerrado).
-  const [ingresandoTela, setIngresandoTela] = useState(null);
+  // (2026-09-23, a pedido de Fredy) Id de la preorden cuyo panel de "Ingreso
+  // de Telas" está abierto (o null si está cerrado) -- y si está abierto el
+  // panel global de compras de tela sin orden asignada todavía.
+  const [viendoIngresoTelas, setViendoIngresoTelas] = useState(null);
+  const [viendoComprasSinOrden, setViendoComprasSinOrden] = useState(false);
   // (2026-09-23, a pedido de Fredy) La columna de tela (ingreso + confirmación
   // de recepción) es de uso interno -- Bodega/Contabilidad la ingresan y
   // Diseño la confirma -- el Cliente no debe ver nada de esto, ni la columna
@@ -5138,21 +5387,32 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
           </div>
         </Modal>
       )}
-      {ingresandoTela && (() => {
-        const preordenIngresando = preordenesConEstado.find((pp) => pp.id === ingresandoTela.preordenId);
-        const itemIngresando = preordenIngresando?.items?.find((it) => it.itemId === ingresandoTela.itemId);
-        if (!itemIngresando) return null;
+      {viendoIngresoTelas && (() => {
+        const preordenVista = preordenesConEstado.find((pp) => pp.id === viendoIngresoTelas);
+        if (!preordenVista) return null;
         return (
-          <IngresarTelaModal
-            item={itemIngresando}
-            onClose={() => setIngresandoTela(null)}
-            onGuardar={async (telaInfo) => {
-              await onActualizarItemPreorden(ingresandoTela.preordenId, ingresandoTela.itemId, { telaInfo, telaIngresada: true, telaIngresadaEn: nowISO(), telaIngresadaPor: currentUser?.name || "" });
-              setIngresandoTela(null);
-            }}
+          <IngresoTelasPreordenModal
+            preorden={preordenVista}
+            entregas={entregasTela || []}
+            currentUser={currentUser}
+            puedeIngresarTela={puedeIngresarTela}
+            puedeConfirmarTela={puedeConfirmarTela}
+            onClose={() => setViendoIngresoTelas(null)}
+            onCrearEntrega={onCrearEntregaTela}
+            onActualizarItemPreorden={onActualizarItemPreorden}
           />
         );
       })()}
+      {viendoComprasSinOrden && (
+        <ComprasSinOrdenModal
+          entregas={entregasTela || []}
+          preordenes={preordenesConEstado}
+          puedeIngresarTela={puedeIngresarTela}
+          onClose={() => setViendoComprasSinOrden(false)}
+          onRegistrar={onCrearEntregaTela}
+          onAsignar={onAsignarEntregaTela}
+        />
+      )}
       {agregandoRefA && (
         <AgregarReferenciaPreordenModal
           capsulas={capsulas}
@@ -5212,6 +5472,9 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
               <Btn variant="secondary" disabled={escaneando} onClick={escanearFotosDanadas}>{escaneando ? "🔍 Revisando..." : "🧹 Limpiar fotos dañadas"}</Btn>
             </>
           )}
+          {(puedeIngresarTela || puedeConfirmarTela) && (
+            <Btn variant="secondary" onClick={() => setViendoComprasSinOrden(true)}>🧵 Compras de Tela sin Orden</Btn>
+          )}
           <Btn onClick={() => setModo("reprogramacion")}>🔁 Nueva Reprogramación</Btn>
           <Btn variant="secondary" onClick={() => setModo("orden_nueva")}>🆕 Nueva Orden</Btn>
         </div>
@@ -5257,17 +5520,6 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         );
         const itemsPendientesTela = itemsFiltrados.filter((it) => !it.telaComprada);
         const itemsConTela = itemsFiltrados.filter((it) => it.telaComprada);
-        // (2026-09-23, a pedido de Fredy) Confirmar recepción es lo que antes
-        // hacía "Ya se compró" -- lo hace Diseño, después de que Bodega o
-        // Contabilidad ya ingresaron los datos de la tela (ver
-        // IngresarTelaModal). "telaComprada" sigue siendo el campo que marca
-        // que la referencia ya quedó lista para "Vincular" a un pedido -- solo
-        // cambió QUIÉN y CUÁNDO lo marca.
-        function confirmarRecepcionTela(it) {
-          if (window.confirm(`¿Confirmar que Diseño recibió la tela de la referencia "${it.referencia}"?`)) {
-            onActualizarItemPreorden(p.id, it.itemId, { telaComprada: true, telaCompradaEn: nowISO(), telaCompradaPor: currentUser?.name || "" });
-          }
-        }
         // (2026-09-17, a pedido de Fredy) Solo el administrador puede
         // deshacer una confirmación ya hecha -- vuelve la referencia al
         // bloque de "pendientes de tela".
@@ -5276,6 +5528,11 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
             onActualizarItemPreorden(p.id, it.itemId, { telaComprada: false, telaCompradaEn: null, telaCompradaPor: null });
           }
         }
+        // (2026-09-23, a pedido de Fredy) Esta celda ya no tiene botones de
+        // ingresar/confirmar -- eso ahora se hace desde el panel "🧵 Ingreso
+        // de Telas" (una entrega/factura puede cubrir varias referencias a
+        // la vez, ver IngresoTelasPreordenModal). Acá solo se ve el estado, y
+        // el botón abre ese panel.
         function celdaTela(it) {
           if (estadoActual !== "aprobada") return <span style={{ color: T.slate }}>—</span>;
           const infoTela = it.telaInfo ? [it.telaInfo.proveedor, it.telaInfo.lote ? `Lote ${it.telaInfo.lote}` : "", it.telaInfo.composicion].filter(Boolean).join(" · ") : "";
@@ -5290,15 +5547,9 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
             );
           }
           if (it.telaIngresada) {
-            return (
-              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                <span title={infoTela} style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.amberBg, color: T.amber, whiteSpace: "nowrap" }}>⏳ Cargada — falta confirmar</span>
-                {puedeConfirmarTela && <button onClick={() => confirmarRecepcionTela(it)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.jade}`, background: T.jadeBg, color: T.jade, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>✅ Confirmar recepción</button>}
-                {puedeIngresarTela && <button onClick={() => setIngresandoTela({ preordenId: p.id, itemId: it.itemId })} title="Editar los datos de la tela" style={{ padding: "2px 6px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.ink, fontWeight: 700, fontSize: 10, cursor: "pointer" }}>✏️</button>}
-              </div>
-            );
+            return <button onClick={() => setViendoIngresoTelas(p.id)} title={infoTela} style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.amberBg, color: T.amber, border: "none", cursor: "pointer", whiteSpace: "nowrap" }}>⏳ Cargada — falta confirmar</button>;
           }
-          if (puedeIngresarTela) return <button onClick={() => setIngresandoTela({ preordenId: p.id, itemId: it.itemId })} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>🧵 Ingresar tela</button>;
+          if (puedeIngresarTela || puedeConfirmarTela) return <button onClick={() => setViendoIngresoTelas(p.id)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>🧵 Ingreso de Telas</button>;
           return <span style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.amberBg, color: T.amber, whiteSpace: "nowrap" }}>⏳ Pendiente</span>;
         }
         return (
@@ -5372,6 +5623,9 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                           if (window.confirm("¿Devolver esta preorden a \"Montada\"? Se desbloqueará para edición y el Cliente ya no la verá como aprobada (podrá volver a aprobarla después).")) onDesaprobarPreorden(p.id);
                         }}
                       >🔓 Desaprobar</Btn>
+                    )}
+                    {estadoActual === "aprobada" && (puedeIngresarTela || puedeConfirmarTela) && (
+                      <Btn variant="secondary" small onClick={() => setViendoIngresoTelas(p.id)}>🧵 Ingreso de Telas</Btn>
                     )}
                     {!bloqueada && (
                       <>
@@ -12854,6 +13108,11 @@ function AppInner() {
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
   const [bitacoraEnvios, setBitacoraEnvios] = useState([]);
   const [bitacoraPreordenes, setBitacoraPreordenes] = useState([]);
+  // (2026-09-23, a pedido de Fredy) Cada "entrega" es una factura de tela --
+  // puede cubrir varias referencias de una preorden a la vez, o ninguna
+  // todavía si la tela se compró antes de que exista la orden que la usa
+  // (preordenId null, ver asignarEntregaTela más abajo).
+  const [entregasTela, setEntregasTela] = useState([]);
   // (2026-09-23, a pedido de Fredy) Antes esta comparacion era exacta
   // (sensible a mayusculas/espacios) -- si el cliente de la preorden
   // quedaba escrito distinto al que tiene asignado el usuario Cliente en
@@ -13049,6 +13308,8 @@ function AppInner() {
         unsubsDatos.push(unsubBitacora);
         const unsubPreordenes = onSnapshot(collection(db, "bitacora_preordenes"), (snap) => { setBitacoraPreordenes(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubsDatos.push(unsubPreordenes);
+        const unsubEntregasTela = onSnapshot(collection(db, "preorden_entregas_tela"), (snap) => { setEntregasTela(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubsDatos.push(unsubEntregasTela);
         const unsubKpiPuestos = onSnapshot(collection(db, "kpi_puestos"), (snap) => { setKpiPuestos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubsDatos.push(unsubKpiPuestos);
         const unsubKpiPersonas = onSnapshot(collection(db, "kpi_personas"), (snap) => { setKpiPersonas(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
@@ -13289,6 +13550,63 @@ function AppInner() {
     };
     await addBitacoraPreorden(preorden);
     notify({ id: uid(), icon: "🧾", title: "Preorden registrada", msg: `${items.length} referencia${items.length !== 1 ? "s" : ""}${header.cliente ? ` — ${header.cliente}` : ""}` });
+  }
+  // (2026-09-23, a pedido de Fredy) Registra una entrega de tela nueva --
+  // si ya trae preordenId + referencias (items), de una vez les aplica los
+  // datos de la tela (telaInfo/telaIngresada) a cada referencia elegida, sin
+  // tocar el resto de la lógica (agrupamiento pendientes/con tela, "Vincular
+  // a pedido", etc. siguen dependiendo de esos mismos campos del item). Si
+  // NO trae preordenId (compra sin orden todavía), solo queda guardada la
+  // entrega, ver asignarEntregaTela más abajo para cuando sí aparezca la
+  // orden.
+  async function crearEntregaTela({ preordenId, items, ...datos }) {
+    const entrega = {
+      id: uid(),
+      preordenId: preordenId || null,
+      items: items || [],
+      ...datos,
+      creadoPor: currentUser?.name || "",
+      creadoEn: nowISO(),
+    };
+    setEntregasTela((es) => [...es, entrega]);
+    await fsSave("preorden_entregas_tela", entrega.id, entrega);
+    if (preordenId && items?.length) {
+      const telaInfo = {
+        proveedor: datos.proveedor || "", lote: datos.lote || "", ancho: datos.ancho || "",
+        rendimiento: datos.rendimiento || "", composicion: datos.composicion || "",
+        fechaRecepcion: datos.fechaRecepcion || "", observaciones: datos.observaciones || "",
+      };
+      await Promise.all(items.map((it) => actualizarItemPreorden(preordenId, it.itemId, {
+        telaInfo, telaIngresada: true, telaIngresadaEn: nowISO(), telaIngresadaPor: currentUser?.name || "", entregaTelaId: entrega.id,
+      })));
+    }
+    notify({
+      id: uid(), icon: "🧵",
+      title: preordenId ? "Entrega de tela registrada" : "Compra de tela sin orden registrada",
+      msg: items?.length ? `${items.length} referencia${items.length !== 1 ? "s" : ""}` : (datos.proveedor || ""),
+    });
+    return entrega;
+  }
+  // (2026-09-23, a pedido de Fredy) Completa una entrega que se había
+  // registrado sin orden (preordenId/items vacíos) en cuanto aparece la
+  // preorden que la necesita -- reusa el proveedor/lote/factura ya
+  // guardados, sin pedirlos otra vez, y aplica los mismos datos a cada
+  // referencia elegida.
+  async function asignarEntregaTela(entregaId, preordenId, items) {
+    const entrega = entregasTela.find((e) => e.id === entregaId);
+    if (!entrega) return;
+    const patch = { preordenId, items };
+    setEntregasTela((es) => es.map((e) => (e.id === entregaId ? { ...e, ...patch } : e)));
+    await fsSave("preorden_entregas_tela", entregaId, { ...entrega, ...patch });
+    const telaInfo = {
+      proveedor: entrega.proveedor || "", lote: entrega.lote || "", ancho: entrega.ancho || "",
+      rendimiento: entrega.rendimiento || "", composicion: entrega.composicion || "",
+      fechaRecepcion: entrega.fechaRecepcion || "", observaciones: entrega.observaciones || "",
+    };
+    await Promise.all(items.map((it) => actualizarItemPreorden(preordenId, it.itemId, {
+      telaInfo, telaIngresada: true, telaIngresadaEn: nowISO(), telaIngresadaPor: currentUser?.name || "", entregaTelaId: entregaId,
+    })));
+    notify({ id: uid(), icon: "🧵", title: "Compra de tela asignada a una preorden", msg: `${items.length} referencia${items.length !== 1 ? "s" : ""}` });
   }
   async function vincularPreordenAPedido(preordenId, itemId, pedido) {
     await actualizarItemPreorden(preordenId, itemId, {
@@ -14175,6 +14493,9 @@ function AppInner() {
                 canAccessBodega={canAccessBodega}
                 canAccessContabilidad={canAccessContabilidad}
                 canAccessDiseno={canAccessDiseno}
+                entregasTela={entregasTela}
+                onCrearEntregaTela={crearEntregaTela}
+                onAsignarEntregaTela={asignarEntregaTela}
                 onAddCapsula={addCapsula}
                 onAddRef={addRef}
                 onCrearPreorden={crearPreorden}
