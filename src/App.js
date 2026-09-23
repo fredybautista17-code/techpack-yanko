@@ -1327,16 +1327,11 @@ function Modal({ title, onClose, children, width = 560 }) {
         <div style={{ padding: 24, overflowY: "auto", flex: 1, minHeight: 0 }}>{children}</div>
         <div
           onMouseDown={onResizeMouseDown}
-          title="Arrastrar para ampliar"
-          style={{ position: "absolute", right: 2, bottom: 2, width: 18, height: 18, cursor: "nwse-resize", display: "flex", alignItems: "flex-end", justifyContent: "flex-end", padding: 2 }}
+          title="Arrastrar para cambiar el tamaño (más grande o más chico)"
+          style={{ position: "absolute", right: 0, bottom: 0, width: 30, height: 30, cursor: "nwse-resize", display: "flex", alignItems: "flex-end", justifyContent: "flex-end", padding: 5, borderBottomRightRadius: 14 }}
         >
-          <svg width="10" height="10" viewBox="0 0 10 10">
-            <circle cx="8" cy="2" r="1" fill={T.border} />
-            <circle cx="8" cy="5" r="1" fill={T.border} />
-            <circle cx="8" cy="8" r="1" fill={T.border} />
-            <circle cx="5" cy="5" r="1" fill={T.border} />
-            <circle cx="5" cy="8" r="1" fill={T.border} />
-            <circle cx="2" cy="8" r="1" fill={T.border} />
+          <svg width="16" height="16" viewBox="0 0 16 16">
+            <path d="M14 1.5 L1.5 14 M14 6.5 L6.5 14 M14 11.5 L11.5 14" stroke={T.slate} strokeWidth="1.8" strokeLinecap="round" />
           </svg>
         </div>
       </div>
