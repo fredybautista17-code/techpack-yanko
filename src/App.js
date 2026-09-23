@@ -4620,6 +4620,143 @@ function EstadoProduccionRef({ numeroPedido, referencia }) {
     </div>
   );
 }
+// (2026-09-23, a pedido de Fredy) Agregar UNA referencia a una preorden
+// que YA se creo -- antes la unica forma de tocar las referencias de una
+// preorden existente era editar una que ya estuviera ahi, o subir un
+// Excel (que solo actualiza referencias que ya existen, ignora las que
+// no). Mismo buscador que "Nueva Reprogramacion" (Busint primero,
+// Capsulas como respaldo) pero nunca bloquea si no se encuentra en
+// ningun lado -- a diferencia de esa pantalla, aca siempre se puede
+// terminar agregando completamente a mano, porque la preorden ya existe
+// sin importar si se creo como "Nueva Orden" o "Nueva Reprogramacion".
+function AgregarReferenciaPreordenModal({ capsulas, pedidos, config, onClose, onAgregar }) {
+  const [referencia, setReferencia] = useState("");
+  const [buscando, setBuscando] = useState(false);
+  const [resultado, setResultado] = useState(null);
+  const [manual, setManual] = useState({ tipo: "", colombiaCurva: "", colombiaCantidad: "", venezuelaCurva: "", venezuelaCantidad: "", precio: "", observacionesCliente: "" });
+  function datosDesdeCapsula(capsulaExistente) {
+    return capsulaExistente
+      ? { nombre: capsulaExistente.ref.name || "", categoria: capsulaExistente.ref.categoria || "", silueta: capsulaExistente.ref.silueta || "", rango: capsulaExistente.ref.rango || (capsulaExistente.ref.tallas?.[0] || ""), tipo: "", tela: capsulaExistente.ref.tipoTela || "", consumo: "" }
+      : { nombre: "", categoria: "", silueta: "", rango: "", tipo: "", tela: "", consumo: "" };
+  }
+  async function buscar() {
+    const ref = referencia.trim();
+    if (!ref) return;
+    setBuscando(true);
+    setResultado(null);
+    const refNorm = normalizarRefComparacion(ref);
+    const pedidoExistente = pedidoQueContieneRef(ref, pedidos);
+    const capsulaExistente = buscarRefEnCapsulasPreorden(refNorm, capsulas);
+    try {
+      const llamarRef = httpsCallable(functionsClient, "probarReferenciaBusint");
+      const respRef = await llamarRef({ ref });
+      if (respRef.data?.encontrada) {
+        const b = respRef.data.referencia || {};
+        const grupo = (config?.lineaGrupoMap || {})[b.linea] || "";
+        let tela = "", consumo = "";
+        try {
+          const llamarTela = httpsCallable(functionsClient, "getComposicionTelasBusintBD");
+          const respTela = await llamarTela();
+          const filaTela = (respTela.data?.porReferencia || []).find((r) => normalizarRefComparacion(r.ref) === refNorm);
+          const slot0 = filaTela?.slots?.[0];
+          tela = slot0?.nombre || "";
+          consumo = slot0?.consumo != null && slot0?.consumo !== "" ? `${slot0.consumo}${slot0.unidad ? ` ${slot0.unidad}` : ""}` : "";
+        } catch {
+          // Tela/Consumo son "best effort", igual que en NuevaReprogramacionView.
+        }
+        setResultado({
+          ok: true,
+          datosBusint: { nombre: b.descripcionLarga || "", categoria: b.categoria || "", silueta: b.tipoConfeccion || "", rango: b.tallas ? String(b.tallas) : "", tipo: grupo, tela, consumo },
+          capsulaExistente, pedidoExistente,
+        });
+      } else {
+        // No esta en Busint -- se cae al mismo respaldo que "Nueva Orden"
+        // (buscar en Capsulas) y de ahi a agregarla completamente a mano,
+        // nunca se bloquea (la preorden ya existe, a diferencia de
+        // "Nueva Reprogramacion" que exige que Busint la conozca).
+        setResultado({ ok: true, datosBusint: datosDesdeCapsula(capsulaExistente), capsulaExistente, pedidoExistente });
+      }
+    } catch (err) {
+      // Si falla la consulta a Busint (ej. sin conexion), igual se deja
+      // agregar a mano en vez de bloquear -- solo se pierde el autollenado.
+      setResultado({ ok: true, datosBusint: datosDesdeCapsula(capsulaExistente), capsulaExistente, pedidoExistente });
+    } finally {
+      setBuscando(false);
+    }
+  }
+  function agregar() {
+    if (!resultado?.ok) return;
+    const ref = referencia.trim();
+    let capId = null, refId = null, refObj = null;
+    if (resultado.capsulaExistente) {
+      capId = resultado.capsulaExistente.cap.id;
+      refObj = resultado.capsulaExistente.ref;
+      refId = refObj.id;
+    }
+    onAgregar({
+      itemId: refId || uid(),
+      capsulaId: capId,
+      referencia: ref,
+      nombre: refObj?.name || resultado.datosBusint.nombre || ref,
+      foto: refObj?.image || null,
+      categoria: resultado.datosBusint.categoria,
+      silueta: resultado.datosBusint.silueta,
+      rango: resultado.datosBusint.rango,
+      tela: resultado.datosBusint.tela,
+      tipo: manual.tipo || resultado.datosBusint.tipo,
+      consumo: resultado.datosBusint.consumo,
+      colombiaCurva: manual.colombiaCurva,
+      colombiaCantidad: manual.colombiaCantidad,
+      venezuelaCurva: manual.venezuelaCurva,
+      venezuelaCantidad: manual.venezuelaCantidad,
+      precio: manual.precio,
+      observacionesCliente: manual.observacionesCliente,
+      pedidoVinculado: null,
+      cartaColores: [],
+    });
+  }
+  return (
+    <Modal title="+ Agregar referencia a la preorden" onClose={onClose} width={620}>
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 12 }}>
+        <div style={{ flex: 1 }}>
+          <Field label="Referencia"><FInput value={referencia} onChange={setReferencia} placeholder="Ej: C-5008" onEnter={buscar} /></Field>
+        </div>
+        <Btn onClick={buscar} disabled={buscando || !referencia.trim()}>{buscando ? "Buscando..." : "🔍 Buscar"}</Btn>
+      </div>
+      {resultado?.pedidoExistente && (
+        <div style={{ padding: "10px 14px", background: T.amberBg, color: T.amber, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 12 }}>⚠ Esta referencia ya está en el Pedido #{resultado.pedidoExistente.numero || "?"} ({resultado.pedidoExistente.cliente || "sin cliente"}).</div>
+      )}
+      {resultado?.ok && (
+        <div style={{ padding: 16, background: T.canvas, borderRadius: 10, marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginBottom: 10 }}>{resultado.capsulaExistente || resultado.datosBusint.nombre ? "Datos encontrados" : "No se encontró en Busint ni en Cápsulas — se agrega completamente a mano"}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: 14, fontSize: 12 }}>
+            <div><div style={{ color: T.slate, fontWeight: 700 }}>Nombre</div><div style={{ color: T.ink }}>{resultado.datosBusint.nombre || "—"}</div></div>
+            <div><div style={{ color: T.slate, fontWeight: 700 }}>Categoría</div><div style={{ color: T.ink }}>{resultado.datosBusint.categoria || "—"}</div></div>
+            <div><div style={{ color: T.slate, fontWeight: 700 }}>Silueta</div><div style={{ color: T.ink }}>{resultado.datosBusint.silueta || "—"}</div></div>
+            <div><div style={{ color: T.slate, fontWeight: 700 }}>Rango</div><div style={{ color: T.ink }}>{resultado.datosBusint.rango || "—"}</div></div>
+            <div><div style={{ color: T.slate, fontWeight: 700 }}>Tela</div><div style={{ color: T.ink }}>{resultado.datosBusint.tela || "— (llenar a mano)"}</div></div>
+            <div><div style={{ color: T.slate, fontWeight: 700 }}>Consumo</div><div style={{ color: T.ink }}>{resultado.datosBusint.consumo || "— (llenar a mano)"}</div></div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+            <Field label="Tipo (Dama/Caballero/Niño)"><FInput value={manual.tipo || resultado.datosBusint.tipo} onChange={(v) => setManual((m) => ({ ...m, tipo: v }))} placeholder="Si no se clasificó" /></Field>
+            <Field label="Curva Colombia"><FInput value={manual.colombiaCurva} onChange={(v) => setManual((m) => ({ ...m, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+            <Field label="Cantidad Colombia"><FInput value={manual.colombiaCantidad} onChange={(v) => setManual((m) => ({ ...m, colombiaCantidad: v }))} placeholder="0" /></Field>
+            <Field label="Precio"><FInput value={manual.precio} onChange={(v) => setManual((m) => ({ ...m, precio: v }))} placeholder="0" /></Field>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr", gap: 10, marginBottom: 6 }}>
+            <Field label="Curva Venezuela"><FInput value={manual.venezuelaCurva} onChange={(v) => setManual((m) => ({ ...m, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+            <Field label="Cantidad Venezuela"><FInput value={manual.venezuelaCantidad} onChange={(v) => setManual((m) => ({ ...m, venezuelaCantidad: v }))} placeholder="0" /></Field>
+            <Field label="Obs. Cliente"><FInput value={manual.observacionesCliente} onChange={(v) => setManual((m) => ({ ...m, observacionesCliente: v }))} placeholder="Opcional" /></Field>
+          </div>
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={agregar} disabled={!resultado?.ok}>+ Agregar a la preorden</Btn>
+      </div>
+    </Modal>
+  );
+}
 function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden }) {
   const [modo, setModo] = useState("lista");
   const [subTab, setSubTab] = useState("pendientes");
@@ -4642,6 +4779,9 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
   // toda la tabla (algunas tienen 40+ referencias). Un objeto {preordenId:
   // texto} porque son varias tarjetas en la misma pantalla.
   const [buscarItemPorPreorden, setBuscarItemPorPreorden] = useState({});
+  // (2026-09-23, a pedido de Fredy) Id de la preorden a la que se le está
+  // agregando una referencia nueva (o null si el modal está cerrado).
+  const [agregandoRefA, setAgregandoRefA] = useState(null);
   function itemGraduado(it) {
     return !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidos);
   }
@@ -4933,6 +5073,19 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
           </div>
         </Modal>
       )}
+      {agregandoRefA && (
+        <AgregarReferenciaPreordenModal
+          capsulas={capsulas}
+          pedidos={pedidos}
+          config={config}
+          onClose={() => setAgregandoRefA(null)}
+          onAgregar={(nuevoItem) => {
+            const preordenActual = preordenesConEstado.find((pp) => pp.id === agregandoRefA);
+            onActualizarPreorden(agregandoRefA, { items: [...(preordenActual?.items || []), nuevoItem] });
+            setAgregandoRefA(null);
+          }}
+        />
+      )}
       {resultadoLimpieza && (
         <Modal title="Limpiar fotos dañadas" onClose={() => !aplicandoLimpieza && setResultadoLimpieza(null)} width={520}>
           {resultadoLimpieza.length === 0 ? (
@@ -5145,6 +5298,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, on
                           }}
                         />
                         <Btn variant="secondary" small onClick={() => document.getElementById(`preorden-excel-${p.id}`).click()}>📤 Subir Excel</Btn>
+                        <Btn variant="secondary" small onClick={() => setAgregandoRefA(p.id)}>+ Agregar referencia</Btn>
                       </>
                     )}
                   </div>
