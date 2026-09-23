@@ -4322,8 +4322,8 @@ exports.getEsquemaConsultaBusintGen = onCall(
 exports.getReferenciasBusint = onCall(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
-    timeoutSeconds: 60,
-    memory: "256MiB",
+    timeoutSeconds: 540,
+    memory: "1GiB",
   },
   async () => {
     let filas;
@@ -4342,7 +4342,56 @@ exports.getReferenciasBusint = onCall(
       }))
       .filter((r) => r.ref);
 
-    return { generadoEn: new Date().toISOString(), total: referencias.length, referencias };
+    // (2026-09-23, a pedido de Fredy) Antes esta función solo CONSULTABA a
+    // Busint y mostraba un mensaje de "X referencias sincronizadas" sin
+    // guardar nada en ATLAS -- por eso "Sincronizar ahora" llevaba desde el
+    // 19-08-2026 sin actualizar de verdad la bitácora ni la fecha de
+    // última sincronización, aunque parecía funcionar. Ahora sí persiste el
+    // resultado (ver guardarReferenciasBusintEnFirestore más abajo), igual
+    // que hace la sincronización programada de las 5 a.m.
+    // (syncReferenciasBusint, justo debajo de esta función).
+    let total = referencias.length;
+    try {
+      total = await guardarReferenciasBusintEnFirestore(filas);
+    } catch (err) {
+      logger.error("Error guardando la bitácora de Busint en Firestore (getReferenciasBusint)", { error: String(err) });
+      throw new HttpsError("internal", "Se consultó Busint pero no se pudo guardar en ATLAS. Intenta de nuevo.");
+    }
+
+    return { generadoEn: new Date().toISOString(), total, referencias };
+  }
+);
+
+// (2026-09-23, a pedido de Fredy) Sincronización automática diaria de la
+// bitácora de referencias de Busint. Esta función (y el guardado real
+// dentro de getReferenciasBusint de arriba) se habían perdido del código en
+// algún momento -- igual que le pasó a probarReferenciaBusint el
+// 19-08-2026, que sí se restauró entonces -- y por eso Administración →
+// Códigos de Referencia llevaba desde esa fecha sin actualizarse sola,
+// aunque el texto de esa pantalla seguía prometiendo "se actualiza sola
+// todos los días a las 5:00 a.m.". Queda restaurada acá.
+exports.syncReferenciasBusint = onSchedule(
+  {
+    schedule: "every day 05:00",
+    timeZone: "America/Bogota",
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async () => {
+    let filas;
+    try {
+      filas = await consultarCatalogoBusint("ApiGen_Referencias");
+    } catch (err) {
+      logger.error("Error consultando Busint (syncReferenciasBusint)", { error: String(err) });
+      return;
+    }
+    try {
+      const total = await guardarReferenciasBusintEnFirestore(filas);
+      logger.info("syncReferenciasBusint completado", { total });
+    } catch (err) {
+      logger.error("Error guardando la bitácora de Busint en Firestore (syncReferenciasBusint)", { error: String(err) });
+    }
   }
 );
 
@@ -4362,6 +4411,62 @@ function normalizarInsumoBD(s) {
 }
 function normalizarRefComparacion(v) {
   return String(v || "").trim().toUpperCase().replace(/-/g, "");
+}
+// (2026-09-23, a pedido de Fredy) Guarda el maestro de referencias de
+// Busint en Firestore (busint_referencias) y deja constancia de cuándo fue
+// la última sincronización real (busint_referencias_meta/main) -- usada
+// tanto por getReferenciasBusint (botón "Sincronizar ahora") como por
+// syncReferenciasBusint (programada, 5 a.m.), ver ambas más arriba. Busint
+// es la fuente de la verdad para ref/categoria/descripcion, así que esos 3
+// campos SIEMPRE se pisan con lo que traiga Busint; el resto de campos que
+// solo vienen de un import manual de Excel (tela, base, subcategoria,
+// tipoConfeccion, linea, foto, nivel -- ver importarBitacoraExcel en
+// src/App.js) nunca se tocan acá (merge:true + no se incluyen en el
+// write). Usa el mismo criterio de "ya existe" que ese import manual
+// (normalizarRefComparacion, ignora guiones) para no crear un doc
+// duplicado cuando el mismo REF ya estaba guardado con o sin guion.
+async function guardarReferenciasBusintEnFirestore(filasBusint) {
+  const referencias = (filasBusint || [])
+    .map((f) => ({
+      ref: String(f.ref || "").trim(),
+      categoria: (f.categoria || "").trim(),
+      descripcion: (f.descripcionLarga || f.descripcion || "").trim(),
+    }))
+    .filter((r) => r.ref);
+
+  const existentesSnap = await db.collection("busint_referencias").get();
+  const idPorNormal = {};
+  existentesSnap.docs.forEach((d) => {
+    const norm = normalizarRefComparacion(d.data().ref || d.id);
+    if (norm) idPorNormal[norm] = d.id;
+  });
+
+  const ahora = admin.firestore.FieldValue.serverTimestamp();
+  const items = referencias.map((r) => ({
+    id: idPorNormal[normalizarRefComparacion(r.ref)] || r.ref.replace(/\//g, "_"),
+    ref: r.ref,
+    categoria: r.categoria,
+    descripcion: r.descripcion,
+    actualizadoEn: ahora,
+  }));
+
+  // Firestore permite máx. 500 escrituras por batch -- se parte en bloques
+  // de 400 por margen, igual que el import manual de Excel en el cliente.
+  for (let i = 0; i < items.length; i += 400) {
+    const batch = db.batch();
+    items.slice(i, i + 400).forEach((it) => {
+      const { id, ...datos } = it;
+      batch.set(db.collection("busint_referencias").doc(id), datos, { merge: true });
+    });
+    await batch.commit();
+  }
+
+  await db.collection("busint_referencias_meta").doc("main").set(
+    { ultimaSync: new Date().toISOString(), total: referencias.length },
+    { merge: true }
+  );
+
+  return referencias.length;
 }
 // (2026-09-14) Para agrupar/deduplicar por nombre de Insumo al unir varias
 // pasadas de "insumos dig" en getCostosProcesoDesdeBusintPorReferencia --
