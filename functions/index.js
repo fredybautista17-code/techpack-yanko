@@ -1051,57 +1051,98 @@ async function sincronizarDadoPorCumplidoPendientes() {
   }
   let creadosPorTraslado = 0;
   let actualizadosPorTraslado = 0;
+  let corregidosSinTraslado = 0;
+  // (2026-09-24, a pedido de Fredy, tras el bug real: CK3003 y un lote de
+  // Conbot quedaron marcados "Traslado en consignación/externo" sin serlo)
+  // El TCO/TEX de Busint no trae numero de lote -- solo pedido+referencia --
+  // asi que antes se le pegaba el mismo traslado a TODOS los lotes que
+  // compartieran esa combinacion, aunque solo uno hubiera salido de verdad.
+  // Ahora, antes de repartir: 1) un lote que todavia no llego a BPT (Bodega
+  // de Producto Terminado -- mismo campo invBpt que ya usa
+  // getLoteBusintPorNumero) no puede tener ni Traslado ni Factura, asi que ni
+  // siquiera entra a competir por uno -- si sigue en Corte/BMP/Planta/
+  // Semiterminado, es imposible que ya haya salido; 2) entre los que si estan
+  // en BPT, el traslado solo se aplica cuando es EL UNICO candidato para esa
+  // combinacion pedido+referencia -- si hay varios lotes compitiendo por el
+  // mismo traslado, se dejan sin marcar para que Contabilidad decida a mano
+  // cual fue. Un lote que haya quedado con la etiqueta de una sincronizacion
+  // anterior y ya no califique se la quitamos, salvo que ya se haya marcado
+  // "con factura a mano" (tieneFacturaManual) -- eso manda siempre.
+  const candidatosPorClave = new Map(); // `${numPedido}__${ref}` -> [lote,...]
+  for (const [lote, datosPanel] of panelPorLote) {
+    if (facturasPorLote.has(lote)) continue;
+    if ((Number(datosPanel?.invBpt) || 0) <= 0) continue;
+    const numPedidoPanel = Number(datosPanel?.numPedido) || null;
+    const referenciaPanel = String(datosPanel?.referencia || "").trim();
+    if (!numPedidoPanel || !referenciaPanel) continue;
+    const clave = `${numPedidoPanel}__${referenciaPanel}`;
+    if (!candidatosPorClave.has(clave)) candidatosPorClave.set(clave, []);
+    candidatosPorClave.get(clave).push(lote);
+  }
+
   for (const [lote, datosPanel] of panelPorLote) {
     if (facturasPorLote.has(lote)) continue; // ya se proceso arriba con FAC real -- esa manda siempre
     const numPedidoPanel = Number(datosPanel?.numPedido) || null;
     const referenciaPanel = String(datosPanel?.referencia || "").trim();
-    if (!numPedidoPanel || !referenciaPanel) continue;
-    const traslado = trasladosPorPedidoRef.get(`${numPedidoPanel}__${referenciaPanel}`);
-    if (!traslado || traslado.unidades <= 0) continue;
+    const invBptLote = Number(datosPanel?.invBpt) || 0;
+    const clave = numPedidoPanel && referenciaPanel ? `${numPedidoPanel}__${referenciaPanel}` : null;
+    const candidatos = clave ? candidatosPorClave.get(clave) || [] : [];
+    const traslado = clave ? trasladosPorPedidoRef.get(clave) : null;
+    const esCandidatoUnico = invBptLote > 0 && candidatos.length === 1 && candidatos[0] === lote;
+    const aplicaTraslado = esCandidatoUnico && traslado && traslado.unidades > 0;
 
     const id = `lote_${lote}`;
     const ref = coleccion.doc(id);
     const snap = await ref.get();
     if (snap.exists && snap.data().estado === "aprobado") continue; // ya aprobado -- no se vuelve a tocar
 
-    const datosPrevios = snap.exists ? snap.data() : null;
-    const cantCortadaPrevia = Number(datosPrevios?.cantCortada) || 0;
-    const cantCortadaPanel = Number(datosPanel?.cantCortada) || 0;
-    const cantCortadaFinal = datosPrevios?.cantCortadaManual
-      ? cantCortadaPrevia
-      : (cantCortadaPanel > 0 ? cantCortadaPanel : cantCortadaPrevia);
-    // (2026-09-10, a pedido de Fredy) Mismo criterio que en la rama de
-    // facturas (FAC) reales, unas lineas arriba.
-    const cantDespachadaFinal = datosPrevios?.cantDespachadaManual
-      ? Number(datosPrevios?.cantDespachada) || 0
-      : traslado.unidades;
-    const precioVentaUnitario = Math.round((traslado.monto / traslado.unidades) * 100) / 100;
+    if (aplicaTraslado) {
+      const datosPrevios = snap.exists ? snap.data() : null;
+      const cantCortadaPrevia = Number(datosPrevios?.cantCortada) || 0;
+      const cantCortadaPanel = Number(datosPanel?.cantCortada) || 0;
+      const cantCortadaFinal = datosPrevios?.cantCortadaManual
+        ? cantCortadaPrevia
+        : (cantCortadaPanel > 0 ? cantCortadaPanel : cantCortadaPrevia);
+      // (2026-09-10, a pedido de Fredy) Mismo criterio que en la rama de
+      // facturas (FAC) reales, unas lineas arriba.
+      const cantDespachadaFinal = datosPrevios?.cantDespachadaManual
+        ? Number(datosPrevios?.cantDespachada) || 0
+        : traslado.unidades;
+      const precioVentaUnitario = Math.round((traslado.monto / traslado.unidades) * 100) / 100;
 
-    const camposTraslado = {
-      numLote: lote,
-      numPedido: numPedidoPanel,
-      referencia: referenciaPanel,
-      cliente: datosPanel?.nombreCliente || "",
-      fecha: traslado.fecha,
-      cantCortada: cantCortadaFinal,
-      cantDespachada: cantDespachadaFinal,
-      precioVentaUnitario,
-      tieneFactura: true,
-      observacionesFactura: "Traslado en consignación/externo -- todavía no hay factura real de Busint.",
-      actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
-    };
-    if (snap.exists) {
-      await ref.set(camposTraslado, { merge: true });
-      actualizadosPorTraslado++;
-    } else {
+      const camposTraslado = {
+        numLote: lote,
+        numPedido: numPedidoPanel,
+        referencia: referenciaPanel,
+        cliente: datosPanel?.nombreCliente || "",
+        fecha: traslado.fecha,
+        cantCortada: cantCortadaFinal,
+        cantDespachada: cantDespachadaFinal,
+        precioVentaUnitario,
+        tieneFactura: true,
+        observacionesFactura: "Traslado en consignación/externo -- todavía no hay factura real de Busint.",
+        actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      if (snap.exists) {
+        await ref.set(camposTraslado, { merge: true });
+        actualizadosPorTraslado++;
+      } else {
+        await ref.set({
+          ...camposTraslado,
+          costoRealTotal: null,
+          categoriaBaseId: "",
+          estado: "pendiente",
+          creadoEn: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        creadosPorTraslado++;
+      }
+    } else if (snap.exists && !snap.data().tieneFacturaManual && String(snap.data().observacionesFactura || "").startsWith("Traslado")) {
       await ref.set({
-        ...camposTraslado,
-        costoRealTotal: null,
-        categoriaBaseId: "",
-        estado: "pendiente",
-        creadoEn: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      creadosPorTraslado++;
+        tieneFactura: false,
+        observacionesFactura: "",
+        actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      corregidosSinTraslado++;
     }
   }
 
@@ -1133,8 +1174,8 @@ async function sincronizarDadoPorCumplidoPendientes() {
     creadosPorBpt++;
   }
 
-  logger.info("sincronizarDadoPorCumplidoPendientes completado", { creados, actualizados, creadosPorBpt, creadosPorTraslado, actualizadosPorTraslado, totalLotesDetectados: facturasPorLote.size });
-  return { creados, actualizados, creadosPorBpt, creadosPorTraslado, actualizadosPorTraslado, totalLotesDetectados: facturasPorLote.size };
+  logger.info("sincronizarDadoPorCumplidoPendientes completado", { creados, actualizados, creadosPorBpt, creadosPorTraslado, actualizadosPorTraslado, corregidosSinTraslado, totalLotesDetectados: facturasPorLote.size });
+  return { creados, actualizados, creadosPorBpt, creadosPorTraslado, actualizadosPorTraslado, corregidosSinTraslado, totalLotesDetectados: facturasPorLote.size };
 }
 
 // Botón "Buscar lotes nuevos" en Contabilidad -> Dado por Cumplido (solo
