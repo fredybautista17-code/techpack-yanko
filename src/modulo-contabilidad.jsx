@@ -3870,7 +3870,12 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases }) {
     await fsDelete("dado_por_cumplido_bases", id);
   }
 
-  const pendientes = lotes.filter((l) => l.estado !== "aprobado").sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+  // (2026-09-24, a pedido de Fredy) Si Busint ya reporto que el lote regreso a
+  // una etapa anterior a BPT (Bodega de Producto Terminado), no debe seguir
+  // apareciendo aqui como pendiente -- salvo que ya tenga factura real o
+  // traslado confirmado, esos siempre quedan con enBpt=true. Los lotes viejos
+  // sin este campo (de antes de este cambio) se siguen mostrando igual.
+  const pendientes = lotes.filter((l) => l.estado !== "aprobado" && l.enBpt !== false).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
   const aprobados = lotes.filter((l) => l.estado === "aprobado" && !l.eliminado).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
   const filtroDadoPorCumplido = busquedaDadoPorCumplido.trim().toLowerCase();
   const coincideBusquedaDadoPorCumplido = (l) =>

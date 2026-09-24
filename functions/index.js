@@ -1033,6 +1033,7 @@ async function sincronizarDadoPorCumplidoPendientes() {
       precioVentaUnitario,
       tieneFactura: true,
       observacionesFactura,
+      enBpt: true, // ya tiene factura real -- quedo cumplido sin importar la etapa actual en Busint
       actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
     };
     if (snap.exists) {
@@ -1121,6 +1122,7 @@ async function sincronizarDadoPorCumplidoPendientes() {
         precioVentaUnitario,
         tieneFactura: true,
         observacionesFactura: "Traslado en consignación/externo -- todavía no hay factura real de Busint.",
+        enBpt: true, // traslado confirmado -- quedo cumplido sin importar la etapa actual en Busint
         actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
       };
       if (snap.exists) {
@@ -1136,13 +1138,24 @@ async function sincronizarDadoPorCumplidoPendientes() {
         });
         creadosPorTraslado++;
       }
-    } else if (snap.exists && !snap.data().tieneFacturaManual && String(snap.data().observacionesFactura || "").startsWith("Traslado")) {
-      await ref.set({
-        tieneFactura: false,
-        observacionesFactura: "",
+    } else if (snap.exists) {
+      // (2026-09-24, a pedido de Fredy) Ni factura real ni traslado confirmado
+      // para este lote en esta sincronizacion -- se refleja su etapa actual
+      // (enBpt) para que la pantalla de Contabilidad pueda ocultarlo si ya no
+      // esta en Bodega de Producto Terminado (p.ej. regreso a BMP/Planta).
+      // Si ya se le habia pegado antes una etiqueta de Traslado que ya no
+      // aplica, se le quita -- salvo que Contabilidad ya haya marcado la
+      // factura a mano (tieneFacturaManual), eso manda siempre.
+      const actualizacion = {
+        enBpt: invBptLote > 0,
         actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-      corregidosSinTraslado++;
+      };
+      if (!snap.data().tieneFacturaManual && String(snap.data().observacionesFactura || "").startsWith("Traslado")) {
+        actualizacion.tieneFactura = false;
+        actualizacion.observacionesFactura = "";
+        corregidosSinTraslado++;
+      }
+      await ref.set(actualizacion, { merge: true });
     }
   }
 
@@ -1166,6 +1179,7 @@ async function sincronizarDadoPorCumplidoPendientes() {
       cantDespachada: 0,
       precioVentaUnitario: 0,
       tieneFactura: false,
+      enBpt: true,
       costoRealTotal: null,
       categoriaBaseId: "",
       estado: "pendiente",
