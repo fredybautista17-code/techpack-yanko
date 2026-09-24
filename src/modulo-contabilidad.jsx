@@ -3548,7 +3548,7 @@ const FORMATO_PORCENTAJE_DPC = "0.00%";
 const COLUMNAS_MONEDA_DPC = new Set(["VR. TEORICO ", "VR. REAL ", "COSTO DEFINITIVO", "COSTO T", "PRECIO VENTA U.", "VENTA T.", "Venta T. - Costo T.", "Costo T. Ref.", "BASE", "TRANSPORTE", "TOTAL"]);
 const COLUMNAS_PORCENTAJE_DPC = new Set(["% Ganancia/Lote", "% Ganancia/Ref."]);
 
-function DadoPorCumplidoView({ currentUser, puedeAdministrarBases }) {
+function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincronizar }) {
   const isAdmin = currentUser?.isAdmin;
   // (2026-09-17, a pedido de Fredy) "puedeAdministrarBases": permiso puntual
   // (rol, ver App.js) para que alguien SIN admin total pueda crear y
@@ -3556,6 +3556,10 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases }) {
   // más. Las acciones destructivas (vaciar historial completo, eliminar
   // lote histórico) siguen siendo exclusivas de isAdmin, sin cambios.
   const puedeConfigurarBases = isAdmin || !!puedeAdministrarBases;
+  // (2026-09-24, a pedido de Fredy) "puedeSincronizar": mismo patrón --
+  // permiso puntual (rol, ver App.js) para que alguien SIN admin total pueda
+  // usar el botón "🔄 Buscar lotes nuevos".
+  const puedeUsarSincronizar = isAdmin || !!puedeSincronizar;
   const [lotes, setLotes] = useState([]);
   const [bases, setBases] = useState([]);
   const [config, setConfig] = useState(DADO_POR_CUMPLIDO_PORCENTAJES_SEMILLA);
@@ -3902,12 +3906,12 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases }) {
             Cada vez que se factura un lote en Busint, aparece aquí solo (revisa las facturas cada 2 horas). Escribe el Costo Real Total (el mismo número que ya buscas en Busint) y elige la categoría BASE — el resto se calcula solo.
           </div>
         </div>
-        {(puedeConfigurarBases || isAdmin) && (
+        {(puedeConfigurarBases || isAdmin || puedeUsarSincronizar) && (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {puedeConfigurarBases && (
               <Btn variant="ghost" small onClick={() => setMostrarConfig((v) => !v)}>⚙️ Configuración</Btn>
             )}
-            {isAdmin && (
+            {puedeUsarSincronizar && (
               <Btn variant="secondary" small onClick={sincronizarAhora} disabled={sincronizando}>
                 {sincronizando ? "Buscando..." : "🔄 Buscar lotes nuevos"}
               </Btn>
@@ -5548,7 +5552,7 @@ function HomeContabilidad({ onGoModulo }) {
   );
 }
 // ─── ROOT MÓDULO CONTABILIDAD ─────────────────────────────────────────────────
-export default function ModuloContabilidad({ currentUser, onVolver, onLogout, puedeAdministrarBasesDadoPorCumplido }) {
+export default function ModuloContabilidad({ currentUser, onVolver, onLogout, puedeAdministrarBasesDadoPorCumplido, puedeSincronizarDadoPorCumplido }) {
   const [subView, setSubView] = useState("home");
   const [movimientos, setMovimientos] = useState([]);
   const [compras, setCompras] = useState([]);
@@ -6018,7 +6022,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
             />
           )}
           {subView === "facturacion_clientes" && <FacturacionClientesView />}
-          {subView === "dado_por_cumplido" && <DadoPorCumplidoView currentUser={currentUser} puedeAdministrarBases={puedeAdministrarBasesDadoPorCumplido} />}
+          {subView === "dado_por_cumplido" && <DadoPorCumplidoView currentUser={currentUser} puedeAdministrarBases={puedeAdministrarBasesDadoPorCumplido} puedeSincronizar={puedeSincronizarDadoPorCumplido} />}
           {subView === "cxp" && (
             <CuentasPorPagarView
               cortes={cortesCxp}

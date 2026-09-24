@@ -9898,7 +9898,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
   // control. Agregar una llave nueva a un área existente (o un área nueva)
   // es solo agregarla a este array; el render de abajo es genérico.
   const GRUPOS_MODULOS_DEF = [
-    { area: "💰 Contabilidad", items: [["contabilidad", "Contabilidad"], ["contabilidad_bases_dado_por_cumplido", "Puede crear y configurar Bases (Dado por Cumplido)"]] },
+    { area: "💰 Contabilidad", items: [["contabilidad", "Contabilidad"], ["contabilidad_bases_dado_por_cumplido", "Puede crear y configurar Bases (Dado por Cumplido)"], ["contabilidad_sincronizar_dado_por_cumplido", "Puede sincronizar con Busint (Buscar lotes nuevos)"]] },
     { area: "📋 Planeación", items: [["planeacion", "Planeación"]] },
     { area: "🏭 Planta", items: [["planta", "Planta"]] },
     { area: "📦 Bodega", items: [["bodega", "Bodega"]] },
@@ -14197,6 +14197,10 @@ function AppInner() {
   // en Contabilidad -- las acciones destructivas (vaciar historial,
   // eliminar lote histórico) siguen siendo solo para admin total.
   const puedeAdministrarBasesDadoPorCumplido = moduloVisible(userRoleData, "contabilidad_bases_dado_por_cumplido", currentUser?.isAdmin);
+  // (2026-09-24, a pedido de Fredy) "contabilidad_sincronizar_dado_por_cumplido":
+  // permiso puntual para que alguien sin admin total pueda usar el botón
+  // "🔄 Buscar lotes nuevos" (sincronizar con Busint) en Dado por Cumplido.
+  const puedeSincronizarDadoPorCumplido = moduloVisible(userRoleData, "contabilidad_sincronizar_dado_por_cumplido", currentUser?.isAdmin);
   // Informes: vista consolidada de "lo que está vencido" en toda la
   // compañía (hoy solo Diseño, se va ampliando a Bodega/Corte/Contabilidad).
   // Es la contraparte en pantalla del aviso automático por correo.
@@ -14362,13 +14366,13 @@ function AppInner() {
     return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} puedeAprobarCorte={perms.aprobarCorte} />;
   }
   if (isContabilidadPura) {
-    return <ModuloContabilidad currentUser={currentUser} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloContabilidad currentUser={currentUser} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (canAccessCorte && moduloActivo === "corte") {
     return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} onVolver={() => setModuloActivo("diseno")} puedeAprobarCorte={perms.aprobarCorte} />;
   }
   if (moduloActivo === "contabilidad") {
-    return <ModuloContabilidad currentUser={currentUser} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloContabilidad currentUser={currentUser} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "planeacion") {
     return <ModuloPlaneacion currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;

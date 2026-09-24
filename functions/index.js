@@ -1209,8 +1209,10 @@ async function sincronizarDadoPorCumplidoPendientes() {
   return { creados, actualizados, creadosPorBpt, creadosPorTraslado, actualizadosPorTraslado, corregidosSinTraslado, totalLotesDetectados: facturasPorLote.size };
 }
 
-// Botón "Buscar lotes nuevos" en Contabilidad -> Dado por Cumplido (solo
-// admin) -- para no tener que esperar la corrida programada.
+// Botón "Buscar lotes nuevos" en Contabilidad -> Dado por Cumplido -- admin
+// total, o quien tenga el permiso puntual "contabilidad_sincronizar_dado_por_
+// cumplido" en su rol (2026-09-24, a pedido de Fredy) -- para no tener que
+// esperar la corrida programada.
 exports.sincronizarDadoPorCumplidoPendientesAhora = onCall(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
@@ -1218,7 +1220,7 @@ exports.sincronizarDadoPorCumplidoPendientesAhora = onCall(
     memory: "1GiB",
   },
   async (request) => {
-    await verificarLlamadorEsAdmin(request);
+    await verificarLlamadorPuedeSincronizarDadoPorCumplido(request);
     return await sincronizarDadoPorCumplidoPendientes();
   }
 );
@@ -5071,6 +5073,33 @@ async function verificarLlamadorEsAdmin(request) {
   const snap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
   if (snap.empty || !snap.docs[0].data().isAdmin) {
     throw new HttpsError("permission-denied", "Solo un administrador puede hacer esto.");
+  }
+  return snap.docs[0];
+}
+
+// (2026-09-24, a pedido de Fredy) Para el botón "🔄 Buscar lotes nuevos" en
+// Contabilidad -> Dado por Cumplido: no requiere admin total, solo requiere
+// que el rol del usuario tenga activado el permiso puntual
+// "contabilidad_sincronizar_dado_por_cumplido" (Admin -> Roles), igual que
+// ya se hace en el frontend con moduloVisible(). No reemplaza
+// verificarLlamadorEsAdmin -- ese sigue siendo exclusivo de operaciones que
+// sí requieren admin total (crear usuarios, resetear claves, etc).
+async function verificarLlamadorPuedeSincronizarDadoPorCumplido(request) {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+  }
+  const snap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+  if (snap.empty) {
+    throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+  }
+  const userData = snap.docs[0].data();
+  if (userData.isAdmin) return snap.docs[0];
+  const configSnap = await db.collection("config").doc("main").get();
+  const roles = configSnap.exists ? configSnap.data().roles || [] : [];
+  const roleData = roles.find((r) => r.name === userData.role);
+  const modulos = Array.isArray(roleData?.modulos) ? roleData.modulos : [];
+  if (!modulos.includes("contabilidad_sincronizar_dado_por_cumplido")) {
+    throw new HttpsError("permission-denied", "No tienes permiso para sincronizar con Busint.");
   }
   return snap.docs[0];
 }
