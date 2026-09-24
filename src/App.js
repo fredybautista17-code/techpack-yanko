@@ -5121,13 +5121,13 @@ function ComprasSinOrdenModal({ entregas, preordenes, config, puedeIngresarTela,
   );
 }
 // (2026-09-24, a pedido de Fredy) "Producción" -- pantalla pensada para que
-// la vea directamente un cliente (ej. Kamila): agrupa por categoría cuánto
-// tiene "sin cortar" (pedido activo menos lo que Busint ya reporta como
-// cortado), en Planta, en Semiterminado y en BPT, con el detalle explícito
-// por referencia debajo de cada categoría. Los datos de Busint llegan ya
-// filtrados por cliente desde el propio servidor (getProduccionClienteDesde
-// BusintGen) -- este componente nunca decide qué cliente puede ver, eso lo
-// hace el backend.
+// la vea directamente un cliente (ej. Kamila): agrupa (por categoría o por
+// línea, a elegir -- ver "campo" abajo) cuánto tiene "sin cortar" (pedido
+// activo menos lo que Busint ya reporta como cortado), en Planta, en
+// Semiterminado y en BPT, con el detalle explícito por referencia debajo de
+// cada grupo. Los datos de Busint llegan ya filtrados por cliente desde el
+// propio servidor (getProduccionClienteDesdeBusintGen) -- este componente
+// nunca decide qué cliente puede ver, eso lo hace el backend.
 //
 // "Sin cortar" solo se puede calcular cuando se conocen los pedidos propios
 // del cliente (pedidosCliente !== null) -- eso pasa para el usuario Cliente
@@ -5135,7 +5135,14 @@ function ComprasSinOrdenModal({ entregas, preordenes, config, puedeIngresarTela,
 // ModuloApp), pero NO para la previsualización de admin (ahí no hay un
 // cliente "dueño" de la sesión con el que cruzar pedidos), así que en ese
 // caso la columna se muestra en blanco ("—") en vez de un cero engañoso.
-function agruparProduccionPorCategoria(lotesCliente, pedidosCliente) {
+//
+// campo: "categoria" o "linea" -- cuál de los dos campos de Busint se usa
+// para agrupar. Los pedidos (referencias) no traen ninguno de los dos, así
+// que una referencia que solo existe en pedido (todavía sin cortar del
+// todo) queda en "(Sin categoría)"/"(Sin línea)" hasta que Busint reporte
+// algo de esa referencia.
+function agruparProduccionPorCampo(lotesCliente, pedidosCliente, campo) {
+  const sinEtiqueta = campo === "linea" ? "(Sin línea)" : "(Sin categoría)";
   const porReferencia = new Map();
   const tieneDatosPedido = Array.isArray(pedidosCliente);
   if (tieneDatosPedido) {
@@ -5145,7 +5152,7 @@ function agruparProduccionPorCategoria(lotesCliente, pedidosCliente) {
         (p.referencias || []).forEach((r) => {
           const ref = String(r.ref || "").trim();
           if (!ref) return;
-          if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0 });
+          if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, grupo: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0 });
           porReferencia.get(ref).pedidoTotal += Number(r.total) || 0;
         });
       });
@@ -5153,9 +5160,10 @@ function agruparProduccionPorCategoria(lotesCliente, pedidosCliente) {
   (lotesCliente || []).forEach((l) => {
     const ref = String(l.referencia || "").trim();
     if (!ref) return;
-    if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0 });
+    if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, grupo: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0 });
     const fila = porReferencia.get(ref);
-    if (!fila.categoria && l.categoria) fila.categoria = l.categoria;
+    const valorCampo = campo === "linea" ? l.linea : l.categoria;
+    if (!fila.grupo && valorCampo) fila.grupo = valorCampo;
     fila.cortado += Number(l.cantCortada) || 0;
     fila.planta += Number(l.invPlanta) || 0;
     fila.semiterminado += Number(l.invSemiterminado) || 0;
@@ -5163,20 +5171,20 @@ function agruparProduccionPorCategoria(lotesCliente, pedidosCliente) {
   });
   const filas = [...porReferencia.values()].map((f) => ({
     ...f,
-    categoria: f.categoria || "(Sin categoría)",
+    grupo: f.grupo || sinEtiqueta,
     sinCortar: tieneDatosPedido ? Math.max(0, f.pedidoTotal - f.cortado) : null,
   }));
-  const porCategoria = new Map();
+  const porGrupo = new Map();
   filas.forEach((f) => {
-    if (!porCategoria.has(f.categoria)) porCategoria.set(f.categoria, { categoria: f.categoria, filas: [], sinCortar: tieneDatosPedido ? 0 : null, planta: 0, semiterminado: 0, bpt: 0 });
-    const c = porCategoria.get(f.categoria);
+    if (!porGrupo.has(f.grupo)) porGrupo.set(f.grupo, { grupo: f.grupo, filas: [], sinCortar: tieneDatosPedido ? 0 : null, planta: 0, semiterminado: 0, bpt: 0 });
+    const c = porGrupo.get(f.grupo);
     c.filas.push(f);
     if (tieneDatosPedido) c.sinCortar += f.sinCortar;
     c.planta += f.planta;
     c.semiterminado += f.semiterminado;
     c.bpt += f.bpt;
   });
-  return [...porCategoria.values()]
+  return [...porGrupo.values()]
     .map((c) => ({ ...c, filas: c.filas.sort((a, b) => b.planta + b.semiterminado + b.bpt + (b.sinCortar || 0) - (a.planta + a.semiterminado + a.bpt + (a.sinCortar || 0))) }))
     .sort((a, b) => (b.planta + b.semiterminado + b.bpt + (b.sinCortar || 0)) - (a.planta + a.semiterminado + a.bpt + (a.sinCortar || 0)));
 }
@@ -5189,6 +5197,7 @@ function ProduccionView({ currentUser, pedidosCliente }) {
   const [error, setError] = useState("");
   const [actualizadoEn, setActualizadoEn] = useState(null);
   const [categoriaAbierta, setCategoriaAbierta] = useState(null);
+  const [agruparPor, setAgruparPor] = useState("categoria");
 
   const clienteIdEfectivo = esAdmin ? clienteIdAdmin : String(currentUser?.clienteProduccion || "");
   const grupoEfectivo = GRUPOS_CLIENTE_PRODUCCION.find((g) => g.id === clienteIdEfectivo) || null;
@@ -5209,12 +5218,13 @@ function ProduccionView({ currentUser, pedidosCliente }) {
     }
   }
   useEffect(() => { cargar(); setCategoriaAbierta(null); }, [clienteIdEfectivo]);
+  useEffect(() => { setCategoriaAbierta(null); }, [agruparPor]);
 
   // Para el usuario Cliente real, pedidosCliente ya llega filtrado a su
   // propio cliente (pedidosVisibles en ModuloApp) -- para la
   // previsualización de admin no hay con qué cruzar, así que "Sin cortar"
   // se deja en blanco en vez de mostrar un cero que no significa nada.
-  const categorias = useMemo(() => agruparProduccionPorCategoria(lotes, esAdmin ? null : pedidosCliente), [lotes, pedidosCliente, esAdmin]);
+  const categorias = useMemo(() => agruparProduccionPorCampo(lotes, esAdmin ? null : pedidosCliente, agruparPor), [lotes, pedidosCliente, esAdmin, agruparPor]);
 
   if (!clienteIdEfectivo) {
     return (
@@ -5248,6 +5258,10 @@ function ProduccionView({ currentUser, pedidosCliente }) {
           🔒 {grupoEfectivo.label}
         </div>
       )}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <Btn small variant={agruparPor === "categoria" ? "primary" : "secondary"} onClick={() => setAgruparPor("categoria")}>Por categoría</Btn>
+        <Btn small variant={agruparPor === "linea" ? "primary" : "secondary"} onClick={() => setAgruparPor("linea")}>Por línea</Btn>
+      </div>
       {error && (
         <div style={{ padding: 12, borderRadius: 8, background: T.coralBg, color: T.coral, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>⚠ {error}</div>
       )}
@@ -5258,11 +5272,11 @@ function ProduccionView({ currentUser, pedidosCliente }) {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {categorias.map((c) => {
-            const abierta = categoriaAbierta === c.categoria;
+            const abierta = categoriaAbierta === c.grupo;
             return (
-              <div key={c.categoria} style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, overflow: "hidden" }}>
-                <div onClick={() => setCategoriaAbierta(abierta ? null : c.categoria)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, padding: "12px 16px", cursor: "pointer", background: T.canvas }}>
-                  <div style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>{c.categoria}</div>
+              <div key={c.grupo} style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, overflow: "hidden" }}>
+                <div onClick={() => setCategoriaAbierta(abierta ? null : c.grupo)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, padding: "12px 16px", cursor: "pointer", background: T.canvas }}>
+                  <div style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>{c.grupo}</div>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <div style={{ background: T.amberBg, color: T.amber, borderRadius: 9, padding: "6px 12px", minWidth: 100 }}>
                       <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>Sin cortar</div>
