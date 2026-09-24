@@ -1121,6 +1121,15 @@ const MODULOS_CLIENTE_OPCIONES = [
   { id: "cronograma_muestras", label: "Cronograma de Muestras" },
   { id: "bodega", label: "Bodega" },
   { id: "preordenes", label: "Preórdenes" },
+  { id: "produccion", label: "Producción" },
+];
+// (2026-09-24, a pedido de Fredy) Para la pantalla "Producción" -- a qué
+// grupo de cliente de Busint queda amarrado un usuario Cliente (ver
+// GRUPOS_CLIENTE_BUSINT en functions/index.js, getProduccionClienteDesdeBusintGen
+// -- agregar un cliente nuevo a futuro es solo agregar la llave en AMBOS
+// lugares, este arreglo y ese mapeo del backend).
+const GRUPOS_CLIENTE_PRODUCCION = [
+  { id: "kamila", label: "Kamila (Colombia + Venezuela)" },
 ];
 
 function LoadingScreen({ message }) {
@@ -5111,6 +5120,203 @@ function ComprasSinOrdenModal({ entregas, preordenes, config, puedeIngresarTela,
     </Modal>
   );
 }
+// (2026-09-24, a pedido de Fredy) "Producción" -- pantalla pensada para que
+// la vea directamente un cliente (ej. Kamila): agrupa por categoría cuánto
+// tiene "sin cortar" (pedido activo menos lo que Busint ya reporta como
+// cortado), en Planta, en Semiterminado y en BPT, con el detalle explícito
+// por referencia debajo de cada categoría. Los datos de Busint llegan ya
+// filtrados por cliente desde el propio servidor (getProduccionClienteDesde
+// BusintGen) -- este componente nunca decide qué cliente puede ver, eso lo
+// hace el backend.
+//
+// "Sin cortar" solo se puede calcular cuando se conocen los pedidos propios
+// del cliente (pedidosCliente !== null) -- eso pasa para el usuario Cliente
+// real (ya llega filtrado a su propio cliente desde pedidosVisibles en
+// ModuloApp), pero NO para la previsualización de admin (ahí no hay un
+// cliente "dueño" de la sesión con el que cruzar pedidos), así que en ese
+// caso la columna se muestra en blanco ("—") en vez de un cero engañoso.
+function agruparProduccionPorCategoria(lotesCliente, pedidosCliente) {
+  const porReferencia = new Map();
+  const tieneDatosPedido = Array.isArray(pedidosCliente);
+  if (tieneDatosPedido) {
+    pedidosCliente
+      .filter((p) => p.estado !== "cerrado")
+      .forEach((p) => {
+        (p.referencias || []).forEach((r) => {
+          const ref = String(r.ref || "").trim();
+          if (!ref) return;
+          if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0 });
+          porReferencia.get(ref).pedidoTotal += Number(r.total) || 0;
+        });
+      });
+  }
+  (lotesCliente || []).forEach((l) => {
+    const ref = String(l.referencia || "").trim();
+    if (!ref) return;
+    if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0 });
+    const fila = porReferencia.get(ref);
+    if (!fila.categoria && l.categoria) fila.categoria = l.categoria;
+    fila.cortado += Number(l.cantCortada) || 0;
+    fila.planta += Number(l.invPlanta) || 0;
+    fila.semiterminado += Number(l.invSemiterminado) || 0;
+    fila.bpt += Number(l.invBPT) || 0;
+  });
+  const filas = [...porReferencia.values()].map((f) => ({
+    ...f,
+    categoria: f.categoria || "(Sin categoría)",
+    sinCortar: tieneDatosPedido ? Math.max(0, f.pedidoTotal - f.cortado) : null,
+  }));
+  const porCategoria = new Map();
+  filas.forEach((f) => {
+    if (!porCategoria.has(f.categoria)) porCategoria.set(f.categoria, { categoria: f.categoria, filas: [], sinCortar: tieneDatosPedido ? 0 : null, planta: 0, semiterminado: 0, bpt: 0 });
+    const c = porCategoria.get(f.categoria);
+    c.filas.push(f);
+    if (tieneDatosPedido) c.sinCortar += f.sinCortar;
+    c.planta += f.planta;
+    c.semiterminado += f.semiterminado;
+    c.bpt += f.bpt;
+  });
+  return [...porCategoria.values()]
+    .map((c) => ({ ...c, filas: c.filas.sort((a, b) => b.planta + b.semiterminado + b.bpt + (b.sinCortar || 0) - (a.planta + a.semiterminado + a.bpt + (a.sinCortar || 0))) }))
+    .sort((a, b) => (b.planta + b.semiterminado + b.bpt + (b.sinCortar || 0)) - (a.planta + a.semiterminado + a.bpt + (a.sinCortar || 0)));
+}
+
+function ProduccionView({ currentUser, pedidosCliente }) {
+  const esAdmin = !!currentUser?.isAdmin;
+  const [clienteIdAdmin, setClienteIdAdmin] = useState(GRUPOS_CLIENTE_PRODUCCION[0]?.id || "");
+  const [lotes, setLotes] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
+  const [actualizadoEn, setActualizadoEn] = useState(null);
+  const [categoriaAbierta, setCategoriaAbierta] = useState(null);
+
+  const clienteIdEfectivo = esAdmin ? clienteIdAdmin : String(currentUser?.clienteProduccion || "");
+  const grupoEfectivo = GRUPOS_CLIENTE_PRODUCCION.find((g) => g.id === clienteIdEfectivo) || null;
+
+  async function cargar() {
+    if (!clienteIdEfectivo) { setCargando(false); return; }
+    setCargando(true);
+    setError("");
+    try {
+      const llamar = httpsCallable(functionsClient, "getProduccionClienteDesdeBusintGen");
+      const resp = await llamar(esAdmin ? { clienteId: clienteIdEfectivo } : {});
+      setLotes(resp.data?.lotes || []);
+      setActualizadoEn(new Date());
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar Busint.");
+    } finally {
+      setCargando(false);
+    }
+  }
+  useEffect(() => { cargar(); setCategoriaAbierta(null); }, [clienteIdEfectivo]);
+
+  // Para el usuario Cliente real, pedidosCliente ya llega filtrado a su
+  // propio cliente (pedidosVisibles en ModuloApp) -- para la
+  // previsualización de admin no hay con qué cruzar, así que "Sin cortar"
+  // se deja en blanco en vez de mostrar un cero que no significa nada.
+  const categorias = useMemo(() => agruparProduccionPorCategoria(lotes, esAdmin ? null : pedidosCliente), [lotes, pedidosCliente, esAdmin]);
+
+  if (!clienteIdEfectivo) {
+    return (
+      <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>
+        Tu usuario todavía no tiene un cliente de Producción configurado. Pide que te lo activen en Admin → Usuarios.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
+        <div style={{ fontSize: 22, fontWeight: 800, color: T.ink }}>🏭 Producción</div>
+        <Btn small variant="secondary" onClick={cargar} disabled={cargando}>{cargando ? "Actualizando..." : "🔄 Actualizar"}</Btn>
+      </div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        En vivo desde Busint. "Sin cortar" es lo que sigue pendiente de tu pedido activo, sin contar lo que ya se cortó.
+        {actualizadoEn && <span> · Actualizado {actualizadoEn.toLocaleTimeString()}</span>}
+      </div>
+      {esAdmin && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 4, textTransform: "uppercase" }}>Cliente (previsualización de admin)</div>
+          <select value={clienteIdAdmin} onChange={(e) => setClienteIdAdmin(e.target.value)} style={{ fontSize: 13, padding: "8px 10px", borderRadius: 8, border: `1px solid ${T.border}`, background: T.white, color: T.ink, minWidth: 260 }}>
+            {GRUPOS_CLIENTE_PRODUCCION.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}
+          </select>
+          <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>"Sin cortar" no se calcula en esta previsualización (no hay pedidos propios con qué cruzar) -- el cliente real sí lo ve.</div>
+        </div>
+      )}
+      {!esAdmin && grupoEfectivo && (
+        <div style={{ display: "inline-block", background: T.denimBg, color: T.denim, fontWeight: 700, fontSize: 12, padding: "6px 12px", borderRadius: 8, marginBottom: 16 }}>
+          🔒 {grupoEfectivo.label}
+        </div>
+      )}
+      {error && (
+        <div style={{ padding: 12, borderRadius: 8, background: T.coralBg, color: T.coral, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>⚠ {error}</div>
+      )}
+      {cargando ? (
+        <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>Consultando Busint...</div>
+      ) : categorias.length === 0 ? (
+        <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>No hay nada en producción en este momento.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {categorias.map((c) => {
+            const abierta = categoriaAbierta === c.categoria;
+            return (
+              <div key={c.categoria} style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, overflow: "hidden" }}>
+                <div onClick={() => setCategoriaAbierta(abierta ? null : c.categoria)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, padding: "12px 16px", cursor: "pointer", background: T.canvas }}>
+                  <div style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>{c.categoria}</div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <div style={{ background: T.amberBg, color: T.amber, borderRadius: 9, padding: "6px 12px", minWidth: 100 }}>
+                      <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>Sin cortar</div>
+                      <div style={{ fontSize: 15, fontWeight: 800 }}>{c.sinCortar === null ? "—" : fmtNum(c.sinCortar)}</div>
+                    </div>
+                    <div style={{ background: T.denimBg, color: T.denim, borderRadius: 9, padding: "6px 12px", minWidth: 100 }}>
+                      <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>En planta</div>
+                      <div style={{ fontSize: 15, fontWeight: 800 }}>{fmtNum(c.planta)}</div>
+                    </div>
+                    <div style={{ background: T.violetBg, color: T.violet, borderRadius: 9, padding: "6px 12px", minWidth: 100 }}>
+                      <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>Semiterminado</div>
+                      <div style={{ fontSize: 15, fontWeight: 800 }}>{fmtNum(c.semiterminado)}</div>
+                    </div>
+                    <div style={{ background: T.jadeBg, color: T.jade, borderRadius: 9, padding: "6px 12px", minWidth: 100 }}>
+                      <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>En BPT</div>
+                      <div style={{ fontSize: 15, fontWeight: 800 }}>{fmtNum(c.bpt)}</div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", color: T.slate }}>{abierta ? "▲" : "▼"}</div>
+                  </div>
+                </div>
+                {abierta && (
+                  <div style={{ padding: "0 16px 16px" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, marginTop: 10 }}>
+                      <thead>
+                        <tr style={{ background: T.ink }}>
+                          <th style={{ padding: "8px 12px", color: T.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Referencia</th>
+                          <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Sin cortar</th>
+                          <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Planta</th>
+                          <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Semiterminado</th>
+                          <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>BPT</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {c.filas.map((f, i) => (
+                          <tr key={f.referencia} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
+                            <td style={{ padding: "7px 12px", fontWeight: 700, color: T.ink }}>{f.referencia}</td>
+                            <td style={{ padding: "7px 12px", textAlign: "right", color: T.amber, fontWeight: 700 }}>{f.sinCortar === null ? "—" : fmtNum(f.sinCortar)}</td>
+                            <td style={{ padding: "7px 12px", textAlign: "right", color: T.denim, fontWeight: 700 }}>{fmtNum(f.planta)}</td>
+                            <td style={{ padding: "7px 12px", textAlign: "right", color: T.violet, fontWeight: 700 }}>{fmtNum(f.semiterminado)}</td>
+                            <td style={{ padding: "7px 12px", textAlign: "right", color: T.jade, fontWeight: 700 }}>{fmtNum(f.bpt)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onCrearEntregaTela, onAsignarEntregaTela }) {
   const [modo, setModo] = useState("lista");
   const [subTab, setSubTab] = useState("pendientes");
@@ -8035,7 +8241,7 @@ function EditNombreModal({ item, tipo, config, onSave, onClose }) {
 function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesosNomina }) {
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState(null);
-  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false });
+  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, clienteProduccion: "", email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false });
   const [changePwdId, setChangePwdId] = useState(null);
   const [newPwd, setNewPwd] = useState("");
   const [showPwd, setShowPwd] = useState(false);
@@ -8070,8 +8276,8 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
     }
     setMigrando(false);
   }
-  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false }); setEditUser(null); setShowForm(true); setError(""); }
-  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", clientesAsociados: u.clientesAsociados || [], modulosCliente: u.modulosCliente || [], soloLecturaCliente: u.soloLecturaCliente || false, email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false }); setEditUser(u); setShowForm(true); setError(""); }
+  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, clienteProduccion: "", email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false }); setEditUser(null); setShowForm(true); setError(""); }
+  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", clientesAsociados: u.clientesAsociados || [], modulosCliente: u.modulosCliente || [], soloLecturaCliente: u.soloLecturaCliente || false, clienteProduccion: u.clienteProduccion || "", email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false }); setEditUser(u); setShowForm(true); setError(""); }
   // Crear usuario nuevo pasa por la Cloud Function `adminCrearUsuario` (Fase
   // B): a diferencia de editar, crear SÍ necesita generar una cuenta real de
   // Firebase Auth para que esa persona pueda entrar — eso no lo puede hacer
@@ -8088,7 +8294,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
       if (!form.name) { setError("El nombre es obligatorio."); return; }
       if (form.email && form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) { setError("El correo no parece válido."); return; }
       const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, avatar } : u)));
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, clienteProduccion: form.clienteProduccion || "", email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, avatar } : u)));
       setShowForm(false);
       return;
     }
@@ -8100,7 +8306,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
     setCreando(true);
     try {
       const llamar = httpsCallable(functionsClient, "adminCrearUsuario");
-      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado, clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas });
+      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado, clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, clienteProduccion: form.clienteProduccion || "", email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas });
       setShowForm(false);
     } catch (err) {
       setError(err?.message || "No se pudo crear el usuario.");
@@ -8283,6 +8489,16 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
                   🔒 Solo lectura (no puede aprobar, declinar, vincular a pedido ni editar nada)
                 </label>
                 <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Marca esto para un cliente que solo debe poder ver el avance en los módulos de arriba, sin tocar nada. No afecta a otros usuarios del rol Cliente.</div>
+              </div>
+            )}
+            {form.role === "Cliente" && (form.modulosCliente || []).includes("produccion") && (
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Cliente de Producción (obligatorio para ver ese módulo)</label>
+                <select value={form.clienteProduccion} onChange={(e) => setForm((f) => ({ ...f, clienteProduccion: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
+                  <option value="">— Selecciona —</option>
+                  {GRUPOS_CLIENTE_PRODUCCION.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}
+                </select>
+                <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Define de qué cliente de Busint ve los datos en "Producción" — sin esto seleccionado, no podrá ver ese módulo aunque esté marcado arriba. Si no ves el cliente que necesitas, pide que lo agreguen a la lista.</div>
               </div>
             )}
             <div>
@@ -14140,6 +14356,14 @@ function AppInner() {
   const canAccessHistorial = moduloVisible(userRoleData, "historial", currentUser?.isAdmin);
   const canAccessCronograma = moduloVisible(userRoleData, "cronograma_muestras", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "cronograma_muestras");
   const canAccessBitacora = moduloVisible(userRoleData, "bitacora", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "bitacora");
+  // (2026-09-24, a pedido de Fredy) "Producción": pantalla pensada para
+  // exponerse directamente a un usuario Cliente puntual (agrupado por
+  // categoría: sin cortar/planta/semiterminado/BPT) -- por eso, a
+  // diferencia de los demás módulos de arriba, NO se activa por rol interno
+  // todavía, solo para el rol Cliente (con su "clienteProduccion"
+  // configurado en la ficha del usuario) o para admin (para previsualizar
+  // lo que vería cada cliente).
+  const canAccessProduccion = !!currentUser?.isAdmin || (role === "Cliente" && moduloVisibleParaCliente(currentUser, "produccion") && !!currentUser?.clienteProduccion);
   const canAccessKpis = moduloVisible(userRoleData, "kpis", currentUser?.isAdmin);
   const canAccessCorte = moduloVisible(userRoleData, "corte", currentUser?.isAdmin);
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
@@ -14239,7 +14463,7 @@ function AppInner() {
   // acá: trabaja directo sobre los mismos pedidos (pedidos_activos es la
   // misma colección que usa "Pedidos"), tiene más que ver con esto que con
   // el flujo de diseño/aprobación.
-  const canAccessPedidosArea = canAccessPedidos || canAccessPedidosClientes || canAccessPreordenes || canAccessCorte || !!currentUser?.isAdmin;
+  const canAccessPedidosArea = canAccessPedidos || canAccessPedidosClientes || canAccessPreordenes || canAccessCorte || canAccessProduccion || !!currentUser?.isAdmin;
   const [moduloActivo, setModuloActivo] = useState("diseno");
   const AREAS = [
     ...(canAccessDiseno
@@ -14265,6 +14489,7 @@ function AppInner() {
             ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
             ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
             ...(canAccessPreordenes ? [{ id: "preordenes", icon: "🧾", label: "Preórdenes" }] : []),
+            ...(canAccessProduccion ? [{ id: "produccion", icon: "🏭", label: "Producción" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
             ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
           ],
@@ -14317,6 +14542,7 @@ function AppInner() {
     if (itemId === "pedidos_admin") return view === "pedidos_admin";
     if (itemId === "pedidos_clientes") return view === "pedidos_clientes";
     if (itemId === "preordenes") return view === "preordenes";
+    if (itemId === "produccion") return view === "produccion";
     if (itemId === "__corte__") return moduloActivo === "corte";
     if (itemId === "contabilidad_area") return moduloActivo === "contabilidad";
     if (itemId === "planeacion_area") return moduloActivo === "planeacion";
@@ -14525,6 +14751,7 @@ function AppInner() {
                     if (canAccessPedidos) setView("pedidos");
                     else if (canAccessPedidosClientes) setView("pedidos_clientes");
                     else if (canAccessPreordenes) setView("preordenes");
+                    else if (canAccessProduccion) setView("produccion");
                     else if (currentUser?.isAdmin) setView("pedidos_admin");
                     else if (canAccessCorte) setModuloActivo("corte");
                   }
@@ -14663,6 +14890,9 @@ function AppInner() {
                 onEliminarPreorden={deleteBitacoraPreorden}
                 onActualizarItemPreorden={actualizarItemPreorden}
               />
+            )}
+            {view === "produccion" && (
+              <ProduccionView currentUser={currentUser} pedidosCliente={role === "Cliente" ? pedidosVisibles : null} />
             )}
             {view === "stats" && <EstadisticasView protos={protosVisibles} capsulas={capsulasVisibles} stages={config.stages} config={config} />}
             {view === "historial" && (

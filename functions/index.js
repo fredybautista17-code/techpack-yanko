@@ -4225,6 +4225,58 @@ exports.getValidacionPanelFlujoBusintGen = onCall(
 // clienteAgrupado (igual que agruparLotes) se hace en el frontend, para
 // reusar exactamente la misma lógica que ya usa la subida manual de Hoja1
 // en vez de duplicarla acá.
+// (2026-09-24, a pedido de Fredy) Extraído a función aparte (antes vivía
+// directo dentro del onCall de abajo) para poder reutilizar exactamente la
+// misma consulta/normalización desde getProduccionClienteDesdeBusintGen
+// (el nuevo endpoint restringido por cliente, ver más abajo) sin duplicar
+// la lógica ni arriesgar que las dos versiones se desincronicen.
+async function obtenerLotesPlaneacionDesdeBusint() {
+  let filas;
+  try {
+    filas = await consultarCatalogoBusint("ApiGen_PanelControlFlujoOperacional");
+  } catch (err) {
+    logger.error("Error consultando Busint (getCargaPlaneacionDesdeBusintGen)", { error: String(err) });
+    throw new HttpsError("unavailable", `No se pudo consultar ApiGen_PanelControlFlujoOperacional: ${err?.message || String(err)}`);
+  }
+  const normFecha = (v) => (v ? soloFecha(v) || null : null);
+  const lotes = filas
+    .filter((f) => Number(f.numLote) > 0)
+    .map((f) => {
+      const procesos = [];
+      for (let i = 1; i <= 15; i++) {
+        procesos.push({
+          nombre: f[`proceso${i}`] || "",
+          planta: f[`plantaProceso${i}`] || "",
+          fechaSalida: normFecha(f[`fechaSalProceso${i}`]),
+          fechaEntrada: normFecha(f[`fechaEntProceso${i}`]),
+          inventario: Number(f[`inventarioProc${i}`]) || 0,
+        });
+      }
+      return {
+        numLote: Number(f.numLote),
+        numPedido: Number(f.numPedido) || 0,
+        referencia: String(f.referencia || ""),
+        categoria: String(f.categoria || ""),
+        linea: String(f.linea || ""),
+        nombreCliente: String(f.nombreCliente || "(Sin cliente)"),
+        nombrePlanta: String(f.nombrePlanta || ""),
+        fechaCorteISO: normFecha(f.fechaCorte),
+        cantCortada: Number(f.cantCortada) || 0,
+        invCorte: Number(f.invCorte) || 0,
+        invBMP: Number(f.invBmp) || 0,
+        invPlanta: Number(f.invPlanta) || 0,
+        invBPT: Number(f.invBpt) || 0,
+        invSemiterminado: Number(f.invSemiterminado) || 0,
+        invProceso: Number(f.invProceso) || 0,
+        fechaEntregaConfISO: normFecha(f.fechaEntregaConf),
+        fechaEntBPTISO: normFecha(f.fechaEntBpt),
+        fechaEntregaPedidoISO: normFecha(f.fechaEntregaPedido),
+        procesos,
+      };
+    });
+  return { total: lotes.length, lotes };
+}
+
 exports.getCargaPlaneacionDesdeBusintGen = onCall(
   {
     secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
@@ -4232,50 +4284,71 @@ exports.getCargaPlaneacionDesdeBusintGen = onCall(
     memory: "1GiB",
   },
   async () => {
-    let filas;
-    try {
-      filas = await consultarCatalogoBusint("ApiGen_PanelControlFlujoOperacional");
-    } catch (err) {
-      logger.error("Error consultando Busint (getCargaPlaneacionDesdeBusintGen)", { error: String(err) });
-      throw new HttpsError("unavailable", `No se pudo consultar ApiGen_PanelControlFlujoOperacional: ${err?.message || String(err)}`);
+    return await obtenerLotesPlaneacionDesdeBusint();
+  }
+);
+
+// (2026-09-24, a pedido de Fredy) Pantalla "Producción" -- pensada para que
+// la vea directamente un usuario Cliente (ej. Kamila), así que a diferencia
+// de getCargaPlaneacionDesdeBusintGen (uso interno, sin filtrar, para
+// "Buscar por Línea"/"Tubo Productivo") ACÁ SÍ se filtra del lado del
+// servidor: un usuario Cliente jamás debe recibir en la respuesta los lotes
+// de OTROS clientes, ni siquiera "escondidos" y sin mostrar en pantalla --
+// eso sería filtrar producción/referencias de un cliente a otro. Solo un
+// admin puede pedir explícitamente un grupo de cliente distinto (para
+// poder previsualizar lo que ve cada cliente); un usuario Cliente siempre
+// recibe SOLO lo de su propio "clienteProduccion" guardado en su usuario,
+// sin importar qué le manden en la petición.
+//
+// GRUPOS_CLIENTE_BUSINT: mapeo id corto -> nombre(s) EXACTOS de Busint
+// (nombreCliente, ver Bodega/Estado de Despacho para confirmar el texto
+// tal cual lo trae Busint). Agregar un cliente nuevo a futuro es solo
+// agregar una llave acá (y su par en App.js, en el selector de "Producción"
+// de la ficha de usuario).
+const GRUPOS_CLIENTE_BUSINT = {
+  kamila: ["KAMILA GROUP SAS-KAMILA COLOMBIA", "KAMILA VENEZUELA-KAMILA VENEZUELA"],
+};
+
+exports.getProduccionClienteDesdeBusintGen = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
     }
-    const normFecha = (v) => (v ? soloFecha(v) || null : null);
-    const lotes = filas
-      .filter((f) => Number(f.numLote) > 0)
-      .map((f) => {
-        const procesos = [];
-        for (let i = 1; i <= 15; i++) {
-          procesos.push({
-            nombre: f[`proceso${i}`] || "",
-            planta: f[`plantaProceso${i}`] || "",
-            fechaSalida: normFecha(f[`fechaSalProceso${i}`]),
-            fechaEntrada: normFecha(f[`fechaEntProceso${i}`]),
-            inventario: Number(f[`inventarioProc${i}`]) || 0,
-          });
-        }
-        return {
-          numLote: Number(f.numLote),
-          numPedido: Number(f.numPedido) || 0,
-          referencia: String(f.referencia || ""),
-          categoria: String(f.categoria || ""),
-          linea: String(f.linea || ""),
-          nombreCliente: String(f.nombreCliente || "(Sin cliente)"),
-          nombrePlanta: String(f.nombrePlanta || ""),
-          fechaCorteISO: normFecha(f.fechaCorte),
-          cantCortada: Number(f.cantCortada) || 0,
-          invCorte: Number(f.invCorte) || 0,
-          invBMP: Number(f.invBmp) || 0,
-          invPlanta: Number(f.invPlanta) || 0,
-          invBPT: Number(f.invBpt) || 0,
-          invSemiterminado: Number(f.invSemiterminado) || 0,
-          invProceso: Number(f.invProceso) || 0,
-          fechaEntregaConfISO: normFecha(f.fechaEntregaConf),
-          fechaEntBPTISO: normFecha(f.fechaEntBpt),
-          fechaEntregaPedidoISO: normFecha(f.fechaEntregaPedido),
-          procesos,
-        };
-      });
-    return { total: lotes.length, lotes };
+    const snap = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+    if (snap.empty) {
+      throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+    }
+    const userData = snap.docs[0].data();
+
+    let idGrupo;
+    if (userData.isAdmin) {
+      // Admin: puede pedir cualquier grupo conocido, para previsualizar lo
+      // que vería ese cliente. Sin "clienteId" en la petición, no filtra
+      // (ve todo) -- igual que getCargaPlaneacionDesdeBusintGen.
+      idGrupo = String(request.data?.clienteId || "").trim() || null;
+      if (idGrupo && !GRUPOS_CLIENTE_BUSINT[idGrupo]) {
+        throw new HttpsError("invalid-argument", `Grupo de cliente desconocido: ${idGrupo}`);
+      }
+    } else {
+      // No-admin (usuario Cliente): SIEMPRE su propio grupo guardado en el
+      // usuario -- se ignora cualquier "clienteId" que venga en la
+      // petición, para que no pueda pedir el de otro cliente.
+      idGrupo = String(userData.clienteProduccion || "").trim();
+      if (!idGrupo || !GRUPOS_CLIENTE_BUSINT[idGrupo]) {
+        throw new HttpsError("permission-denied", "Tu usuario no tiene un cliente de Producción configurado. Pide que te lo activen en Admin -> Usuarios.");
+      }
+    }
+
+    const { lotes } = await obtenerLotesPlaneacionDesdeBusint();
+    if (!idGrupo) return { total: lotes.length, lotes };
+    const nombresPermitidos = new Set(GRUPOS_CLIENTE_BUSINT[idGrupo]);
+    const lotesFiltrados = lotes.filter((l) => nombresPermitidos.has(l.nombreCliente));
+    return { total: lotesFiltrados.length, lotes: lotesFiltrados };
   }
 );
 
@@ -5108,7 +5181,7 @@ exports.adminCrearUsuario = onCall(
   { timeoutSeconds: 60, memory: "256MiB" },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
-    const { name, username, password, role, isAdmin, clienteAsociado, clientesAsociados, modulosCliente, soloLecturaCliente, areaNomina, procesosPlaneacion, landingAreas } = request.data || {};
+    const { name, username, password, role, isAdmin, clienteAsociado, clientesAsociados, modulosCliente, soloLecturaCliente, clienteProduccion, areaNomina, procesosPlaneacion, landingAreas } = request.data || {};
     const nombreLimpio = String(name || "").trim();
     const usernameNorm = String(username || "").trim().toLowerCase();
     if (!nombreLimpio || !usernameNorm || !password) {
@@ -5160,6 +5233,11 @@ exports.adminCrearUsuario = onCall(
       // por usuario, no por rol -- otros usuarios del rol Cliente siguen
       // aprobando sus diseños como siempre.
       soloLecturaCliente: !!soloLecturaCliente,
+      // (2026-09-24, a pedido de Fredy) Para la pantalla "Producción": a qué
+      // grupo de cliente de Busint queda amarrado este usuario (ver
+      // GRUPOS_CLIENTE_BUSINT en getProduccionClienteDesdeBusintGen más
+      // abajo) -- vacío significa que no tiene Producción configurado.
+      clienteProduccion: clienteProduccion ? String(clienteProduccion).trim() : "",
       // Área de Nómina (opcional): solo se usa para los líderes de área
       // (Anny Beltrán → Terminación, Sarai Méndez → Termofijación) — con
       // esto puesto, el módulo de Nómina les muestra una pantalla simple
