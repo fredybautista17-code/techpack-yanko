@@ -1059,20 +1059,37 @@ async function sincronizarDadoPorCumplidoPendientes() {
   // asi que antes se le pegaba el mismo traslado a TODOS los lotes que
   // compartieran esa combinacion, aunque solo uno hubiera salido de verdad.
   // Ahora, antes de repartir: 1) un lote que todavia no llego a BPT (Bodega
-  // de Producto Terminado -- mismo campo invBpt que ya usa
-  // getLoteBusintPorNumero) no puede tener ni Traslado ni Factura, asi que ni
-  // siquiera entra a competir por uno -- si sigue en Corte/BMP/Planta/
-  // Semiterminado, es imposible que ya haya salido; 2) entre los que si estan
-  // en BPT, el traslado solo se aplica cuando es EL UNICO candidato para esa
-  // combinacion pedido+referencia -- si hay varios lotes compitiendo por el
-  // mismo traslado, se dejan sin marcar para que Contabilidad decida a mano
-  // cual fue. Un lote que haya quedado con la etiqueta de una sincronizacion
-  // anterior y ya no califique se la quitamos, salvo que ya se haya marcado
-  // "con factura a mano" (tieneFacturaManual) -- eso manda siempre.
+  // de Producto Terminado -- ver loteEnBpt() abajo) no puede tener ni
+  // Traslado ni Factura, asi que ni siquiera entra a competir por uno -- si
+  // sigue en Corte/BMP/Planta/Semiterminado, es imposible que ya haya
+  // salido; 2) entre los que si estan en BPT, el traslado solo se aplica
+  // cuando es EL UNICO candidato para esa combinacion pedido+referencia --
+  // si hay varios lotes compitiendo por el mismo traslado, se dejan sin
+  // marcar para que Contabilidad decida a mano cual fue. Un lote que haya
+  // quedado con la etiqueta de una sincronizacion anterior y ya no califique
+  // se la quitamos, salvo que ya se haya marcado "con factura a mano"
+  // (tieneFacturaManual) -- eso manda siempre.
+  //
+  // (2026-09-24, a pedido de Fredy) "invBpt > 0" por si solo no basta: cuando
+  // un lote entra con unidades dañadas, Busint las deja registradas en BPT
+  // como punto de paso mientras se resuelve el dado por cumplido, aunque el
+  // grueso del lote siga en Terminación sin haber llegado todavia. Por eso
+  // se exige que al menos UMBRAL_BPT (90%) de lo cortado este en BPT, no
+  // solo que haya "algo" -- asi un puñado de unidades dañadas no dispara un
+  // "cumplido" prematuro para todo el lote.
+  const UMBRAL_BPT = 0.9;
+  const loteEnBpt = (datosPanel) => {
+    const invBpt = Number(datosPanel?.invBpt) || 0;
+    if (invBpt <= 0) return false;
+    const cantCortada = Number(datosPanel?.cantCortada) || 0;
+    if (cantCortada <= 0) return true; // sin dato de cantidad cortada para comparar -- se deja el criterio simple
+    return invBpt / cantCortada >= UMBRAL_BPT;
+  };
+
   const candidatosPorClave = new Map(); // `${numPedido}__${ref}` -> [lote,...]
   for (const [lote, datosPanel] of panelPorLote) {
     if (facturasPorLote.has(lote)) continue;
-    if ((Number(datosPanel?.invBpt) || 0) <= 0) continue;
+    if (!loteEnBpt(datosPanel)) continue;
     const numPedidoPanel = Number(datosPanel?.numPedido) || null;
     const referenciaPanel = String(datosPanel?.referencia || "").trim();
     if (!numPedidoPanel || !referenciaPanel) continue;
@@ -1085,11 +1102,11 @@ async function sincronizarDadoPorCumplidoPendientes() {
     if (facturasPorLote.has(lote)) continue; // ya se proceso arriba con FAC real -- esa manda siempre
     const numPedidoPanel = Number(datosPanel?.numPedido) || null;
     const referenciaPanel = String(datosPanel?.referencia || "").trim();
-    const invBptLote = Number(datosPanel?.invBpt) || 0;
+    const loteBptLote = loteEnBpt(datosPanel);
     const clave = numPedidoPanel && referenciaPanel ? `${numPedidoPanel}__${referenciaPanel}` : null;
     const candidatos = clave ? candidatosPorClave.get(clave) || [] : [];
     const traslado = clave ? trasladosPorPedidoRef.get(clave) : null;
-    const esCandidatoUnico = invBptLote > 0 && candidatos.length === 1 && candidatos[0] === lote;
+    const esCandidatoUnico = loteBptLote && candidatos.length === 1 && candidatos[0] === lote;
     const aplicaTraslado = esCandidatoUnico && traslado && traslado.unidades > 0;
 
     const id = `lote_${lote}`;
@@ -1147,7 +1164,7 @@ async function sincronizarDadoPorCumplidoPendientes() {
       // aplica, se le quita -- salvo que Contabilidad ya haya marcado la
       // factura a mano (tieneFacturaManual), eso manda siempre.
       const actualizacion = {
-        enBpt: invBptLote > 0,
+        enBpt: loteBptLote,
         actualizadoEn: admin.firestore.FieldValue.serverTimestamp(),
       };
       if (!snap.data().tieneFacturaManual && String(snap.data().observacionesFactura || "").startsWith("Traslado")) {
@@ -1164,7 +1181,7 @@ async function sincronizarDadoPorCumplidoPendientes() {
     const lote = Number(p?.numLote);
     if (!Number.isFinite(lote) || lote <= 0) continue;
     const invBpt = Number(p?.invBpt) || 0;
-    if (invBpt <= 0) continue; // solo lotes que ya llegaron a Bodega de Producto Terminado
+    if (!loteEnBpt(p)) continue; // solo lotes donde YA CASI TODO (>=90%) llego a Bodega de Producto Terminado -- no unas pocas unidades dañadas
     const id = `lote_${lote}`;
     const ref = coleccion.doc(id);
     const snap = await ref.get();
