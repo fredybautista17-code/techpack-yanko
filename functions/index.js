@@ -2434,11 +2434,61 @@ exports.getCuentasPorPagarBusintGen = onCall(
       .map((p) => ({ ...p, facturas: p.facturas.sort((a, b) => a.diasVencido - b.diasVencido) }))
       .sort((a, b) => b.total - a.total);
     const hoyISO = hoy.toISOString().slice(0, 10);
+
+    // (2026-09-25) Diagnóstico temporal -- Fredy reportó que Cheviotto Textil
+    // SAS (código interno 2043) sigue dando $121.083.266 en vez de los
+    // $72.933.137 validados, y que hay proveedores (ej. código 16) sin
+    // nombre, AUN DESPUÉS de normalizar código/nfact a texto+mayúsculas. No
+    // cambia ningún cálculo -- solo junta info cruda para ver exactamente
+    // qué factura no está cruzando bien contra los pagos, y por qué un
+    // código no encuentra nombre. Se puede borrar una vez resuelto.
+    const CODIGO_DEBUG_CHEVIOTTO = "2043";
+    const debugCheviotto = facturas
+      .filter((f) => normalizarCodigoCxp(f?.CODIGO) === CODIGO_DEBUG_CHEVIOTTO)
+      .map((f) => {
+        const codigo = normalizarCodigoCxp(f?.CODIGO);
+        const nfactOriginal = String(f?.NFACT ?? "").trim();
+        const nfact = normalizarCodigoCxp(f?.NFACT);
+        const llave = `${codigo}|${nfact}`;
+        const facTotal = Number(f?.FACTOTAL) || 0;
+        const pagado = pagadoPorFactura.get(llave) || 0;
+        return {
+          nfact: nfactOriginal,
+          codigoRaw: f?.CODIGO,
+          codigoRawTipo: typeof f?.CODIGO,
+          nfactRaw: f?.NFACT,
+          nfactRawTipo: typeof f?.NFACT,
+          llave,
+          facTotal,
+          pagado,
+          saldo: facTotal - pagado,
+          tieneMatchEnPagos: pagadoPorFactura.has(llave),
+        };
+      });
+    const codigosSinNombreVistos = new Set();
+    const debugSinNombre = [];
+    facturas.forEach((f) => {
+      const codigo = normalizarCodigoCxp(f?.CODIGO);
+      if (!codigo || nombrePorCodigo.has(codigo) || codigosSinNombreVistos.has(codigo)) return;
+      codigosSinNombreVistos.add(codigo);
+      if (debugSinNombre.length < 15) {
+        debugSinNombre.push({ codigo, codigoRaw: f?.CODIGO, codigoRawTipo: typeof f?.CODIGO });
+      }
+    });
+    logger.info("CXP DEBUG (temporal, borrar cuando se resuelva)", {
+      debugCheviotto,
+      debugSinNombre,
+      totalCodigosProveedoresCatalogo: nombrePorCodigo.size,
+      totalCodigosSinNombreDistintos: codigosSinNombreVistos.size,
+    });
+
     return {
       fechaCorte: hoyISO,
       proveedores: proveedoresResultado,
       totalProveedores: proveedoresResultado.length,
       totalGeneral: proveedoresResultado.reduce((s, p) => s + p.total, 0),
+      _debugCheviotto: debugCheviotto,
+      _debugSinNombre: debugSinNombre,
     };
   }
 );
