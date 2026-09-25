@@ -2428,6 +2428,69 @@ exports.getCuentasPorPagarBusintGen = onCall(
   }
 );
 
+// (2026-09-25, a pedido de Fredy) Verificador de Precio -> versión EN VIVO
+// contra Busint, para no depender solo del Excel "Entradas de Planta" que
+// hoy alimenta VerificadorPrecioTalleresView (src/modulo-planeacion.jsx).
+// Trae "lotes cumplidos teorico vs real valor" (Busint ya calcula Teorico/
+// Real/Diferencia por lote+referencia+concepto) y se queda solo con los dos
+// conceptos de mano de obra que interesan: "MDEO - CONFECCION" y
+// "MDEO - CORTE" -- este último de una vez, porque Fredy también quiere el
+// mismo comparativo para Corte (promedio de desviación, siguiente paso).
+//
+// Validado a mano contra un caso real que dio Fredy: ref 76-101, lote 7225,
+// Concepto "MDEO - CONFECCION" -> Teorico $1.652.000 / Real $1.486.800 /
+// Difer -$165.200 (140 unidades enviadas al taller, pero solo 126 pagadas,
+// al mismo precio unitario de $11.800 -- confirmado por Fredy "SI ASI
+// FUE", no es un precio distinto, es una diferencia de cantidad).
+//
+// La API de Busint BD no deja filtrar por Concepto, así que se trae la
+// tabla COMPLETA (51 mil+ filas) UNA vez y se filtra acá, devolviendo solo
+// las filas de mano de obra (unas pocas miles) -- el frontend guarda el
+// resultado en memoria con el botón "🔄 Traer desde Busint" y busca por
+// referencia igual que ya hace hoy con las Entradas de Planta subidas a
+// mano, sin volver a golpear Busint en cada tecla.
+exports.getVerificadorPrecioBusintGen = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async () => {
+    let todas;
+    try {
+      todas = await consultarTablaBusintBDCompleta("lotes cumplidos teorico vs real valor");
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getVerificadorPrecioBusintGen)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint BD: ${err?.message || String(err)}`);
+    }
+    const CONCEPTOS_MDEO = { "MDEO - CONFECCION": "CONFECCION", "MDEO - CORTE": "CORTE" };
+    const filas = todas
+      .map((f) => {
+        const proceso = CONCEPTOS_MDEO[String(f?.Concepto || "").trim().toUpperCase()];
+        if (!proceso) return null;
+        const ref = String(f?.Ref ?? "").trim();
+        if (!ref) return null;
+        const fecha = fechaBusintBDaDateSoloDia(f?.fecha);
+        return {
+          ref,
+          numLote: f?.Numlote ?? null,
+          proceso,
+          teorico: Number(f?.Teorico) || 0,
+          real: Number(f?.Real) || 0,
+          difer: Number(f?.Difer) || 0,
+          fechaISO: fecha ? fecha.toISOString().slice(0, 10) : null,
+          nfact: f?.Nfact ?? null,
+        };
+      })
+      .filter(Boolean);
+    return {
+      filas,
+      total: filas.length,
+      generadoEn: new Date().toISOString(),
+    };
+  }
+);
+
 // (2026-08-29) Fredy pidió ver, por lote, cuánto entró REALMENTE a cada
 // proceso (no lo que quedó pendiente, sino lo que Busint registró como
 // entrada) — validado a mano contra el lote 7250: "BAJADA DE VINILO" tenía
