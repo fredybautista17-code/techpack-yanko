@@ -5128,6 +5128,32 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   const [orden, setOrden] = useState("total");
   const [corteSeleccionado, setCorteSeleccionado] = useState(null);
   const [vista, setVista] = useState("tabla");
+  const [cargandoBusint, setCargandoBusint] = useState(false);
+  const [errorBusint, setErrorBusint] = useState("");
+  // (2026-09-25) Trae el corte de cuentas por pagar EN VIVO desde Busint
+  // (cruzando facturas + pagos + maestro de proveedores en el backend) en
+  // vez de tener que exportar y subir el Excel a mano -- ver
+  // getCuentasPorPagarBusintGen en functions/index.js para la lógica del
+  // cruce. El resultado tiene la misma forma que ya espera onImportarCorte,
+  // así que el resto de esta pantalla (ordenar, programar pagos, ver en
+  // Proyección) no necesita ningún cambio.
+  async function traerCorteDesdeBusint() {
+    setCargandoBusint(true);
+    setErrorBusint("");
+    try {
+      const llamar = httpsCallable(functionsClient, "getCuentasPorPagarBusintGen");
+      const resp = await llamar();
+      await onImportarCorte({
+        id: uid(),
+        fechaCorte: resp.data.fechaCorte,
+        proveedores: resp.data.proveedores,
+      });
+    } catch (err) {
+      setErrorBusint(err?.message || "No se pudo traer el corte desde Busint.");
+    } finally {
+      setCargandoBusint(false);
+    }
+  }
   const cortesOrdenados = [...cortes].sort((a, b) => b.fechaCorte.localeCompare(a.fechaCorte));
   const corteActivo = corteSeleccionado
     ? cortesOrdenados.find((c) => c.id === corteSeleccionado) || cortesOrdenados[0]
@@ -5246,10 +5272,18 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
               <Btn variant="danger" onClick={() => setShowImport(true)}>
                 📥 Importar TNS
               </Btn>
+              <Btn onClick={traerCorteDesdeBusint} disabled={cargandoBusint} title="Trae el corte actual cruzando facturas y pagos de Busint, en vivo -- sin exportar ni subir Excel">
+                {cargandoBusint ? "Consultando Busint..." : "🔄 Traer desde Busint"}
+              </Btn>
             </>
           )}
         </div>
       </div>
+      {errorBusint && (
+        <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
+          ⚠ {errorBusint}
+        </div>
+      )}
       {vista === "estadistica" ? (
         <EstadisticaCxpView totalAdeudado={totalAdeudado} calendario={calendario} />
       ) : !filas.length ? (
