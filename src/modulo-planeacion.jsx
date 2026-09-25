@@ -1617,6 +1617,12 @@ function VerificadorPrecioTalleresView({ entradas }) {
                     { key: "fechaISO", label: "Fecha", render: (f) => fmtFechaISO(f.fechaISO) },
                     { key: "numLote", label: "Lote" },
                     { key: "proceso", label: "Proceso" },
+                    {
+                      key: "precioUnidad",
+                      label: "Precio Unidad",
+                      align: "right",
+                      render: (f) => (f.precioUnidad == null ? "—" : `$${fmtNum(f.precioUnidad)}`),
+                    },
                     { key: "teorico", label: "Teórico", align: "right", render: (f) => `$${fmtNum(f.teorico)}` },
                     { key: "real", label: "Real", align: "right", render: (f) => `$${fmtNum(f.real)}` },
                     {

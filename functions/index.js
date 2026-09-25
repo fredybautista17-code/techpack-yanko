@@ -2449,6 +2449,21 @@ exports.getCuentasPorPagarBusintGen = onCall(
 // resultado en memoria con el botón "🔄 Traer desde Busint" y busca por
 // referencia igual que ya hace hoy con las Entradas de Planta subidas a
 // mano, sin volver a golpear Busint en cada tecla.
+//
+// (2026-09-25, mismo día, a pedido de Fredy) Se agrega "precioUnidad" por
+// fila: viene de "insumos dig" (misma tabla que ya usa getPreciosCorteBusint
+// para Corte y getCostosProcesoDesdeBusintPorReferencia para el tope de pago
+// de Nómina), donde el campo "Cant" YA ES el precio en pesos por unidad de
+// ese proceso para esa referencia. Se reutiliza la misma protección que
+// getCostosProcesoDesdeBusintPorReferencia: si Busint tiene la referencia
+// guardada más de una vez con distinta escritura literal (ej. "C5008" vs
+// "C-5008"), se usa completo solo el grupo (misma escritura) cuyo ID más
+// alto sea el mayor de todos, para no mezclar precios de una ficha técnica
+// vieja con los de una nueva. Ya se confirmó que "MDEO - CORTE" existe como
+// Insumo en "insumos dig" (se usa hoy en getPreciosCorteBusint); no se pudo
+// confirmar de antemano que "MDEO - CONFECCION" también exista ahí -- si no
+// existe, precioUnidad sale null para esas filas (el frontend lo muestra
+// como "—", nunca como $0).
 exports.getVerificadorPrecioBusintGen = onCall(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
@@ -2456,13 +2471,50 @@ exports.getVerificadorPrecioBusintGen = onCall(
     memory: "1GiB",
   },
   async () => {
-    let todas;
+    let todas, insumos;
     try {
-      todas = await consultarTablaBusintBDCompleta("lotes cumplidos teorico vs real valor");
+      [todas, insumos] = await Promise.all([
+        consultarTablaBusintBDCompleta("lotes cumplidos teorico vs real valor"),
+        consultarTablaBusintBDCompleta("insumos dig"),
+      ]);
     } catch (err) {
       logger.error("Error consultando Busint BD (getVerificadorPrecioBusintGen)", { error: String(err) });
       throw new HttpsError("unavailable", `No se pudo consultar Busint BD: ${err?.message || String(err)}`);
     }
+
+    const INSUMOS_MDEO = { "MDEO CONFECCION": "CONFECCION", "MDEO CORTE": "CORTE" };
+    // normRef -> refLiteral -> { maxId, filas }
+    const porRefLiteral = new Map();
+    insumos.forEach((f) => {
+      if (!f?.Ref || !f?.Insumo) return;
+      if (!INSUMOS_MDEO[normalizarInsumoBD(f.Insumo)]) return;
+      const normRef = normalizarRefComparacion(f.Ref);
+      const refLit = String(f.Ref ?? "");
+      const id = Number(f.ID) || 0;
+      if (!porRefLiteral.has(normRef)) porRefLiteral.set(normRef, new Map());
+      const grupos = porRefLiteral.get(normRef);
+      if (!grupos.has(refLit)) grupos.set(refLit, { maxId: id, filas: [] });
+      const grupo = grupos.get(refLit);
+      if (id > grupo.maxId) grupo.maxId = id;
+      grupo.filas.push(f);
+    });
+    const precioPorRefProceso = new Map(); // `${normRef}|${proceso}` -> precio
+    for (const grupos of porRefLiteral.values()) {
+      let mejorGrupo = null;
+      for (const grupo of grupos.values()) {
+        if (!mejorGrupo || grupo.maxId > mejorGrupo.maxId) mejorGrupo = grupo;
+      }
+      if (!mejorGrupo) continue;
+      mejorGrupo.filas.forEach((f) => {
+        const proceso = INSUMOS_MDEO[normalizarInsumoBD(f.Insumo)];
+        const normRef = normalizarRefComparacion(f.Ref);
+        const clave = `${normRef}|${proceso}`;
+        if (!precioPorRefProceso.has(clave)) {
+          precioPorRefProceso.set(clave, Number(f.Cant) || 0);
+        }
+      });
+    }
+
     const CONCEPTOS_MDEO = { "MDEO - CONFECCION": "CONFECCION", "MDEO - CORTE": "CORTE" };
     const filas = todas
       .map((f) => {
@@ -2471,6 +2523,10 @@ exports.getVerificadorPrecioBusintGen = onCall(
         const ref = String(f?.Ref ?? "").trim();
         if (!ref) return null;
         const fecha = fechaBusintBDaDateSoloDia(f?.fecha);
+        const normRef = normalizarRefComparacion(ref);
+        const precioUnidad = precioPorRefProceso.has(`${normRef}|${proceso}`)
+          ? precioPorRefProceso.get(`${normRef}|${proceso}`)
+          : null;
         return {
           ref,
           numLote: f?.Numlote ?? null,
@@ -2480,6 +2536,7 @@ exports.getVerificadorPrecioBusintGen = onCall(
           difer: Number(f?.Difer) || 0,
           fechaISO: fecha ? fecha.toISOString().slice(0, 10) : null,
           nfact: f?.Nfact ?? null,
+          precioUnidad,
         };
       })
       .filter(Boolean);
