@@ -5362,10 +5362,16 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente }) {
       {agruparPor === "categoria" && lineasDisponibles.length > 0 && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Línea:</div>
-          <Btn small variant={!filtroLinea ? "primary" : "secondary"} onClick={() => setFiltroLinea(null)}>Todas</Btn>
-          {lineasDisponibles.map((l) => (
-            <Btn key={l} small variant={filtroLinea === l ? "primary" : "secondary"} onClick={() => setFiltroLinea(filtroLinea === l ? null : l)}>{l}</Btn>
-          ))}
+          <select
+            value={filtroLinea || ""}
+            onChange={(e) => setFiltroLinea(e.target.value || null)}
+            style={{ padding: "7px 12px", border: `1.5px solid ${filtroLinea ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: filtroLinea ? T.denim : T.ink, background: filtroLinea ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer", minWidth: 200 }}
+          >
+            <option value="">Todas</option>
+            {lineasDisponibles.map((l) => (
+              <option key={l} value={l}>{l}</option>
+            ))}
+          </select>
         </div>
       )}
       {error && (
