@@ -5179,10 +5179,20 @@ function ComprasSinOrdenModal({ entregas, preordenes, config, puedeIngresarTela,
 // ningún lote de Busint todavía) no tienen cómo saber su línea, así que se
 // dejan siempre visibles en "(Sin categoría)" sin importar el filtro --
 // desaparecerlas sería esconder pedido pendiente real.
-function agruparProduccionPorCampo(lotesCliente, pedidosCliente, campo, filtroLinea) {
+function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesCliente, campo, filtroLinea) {
   const sinEtiqueta = campo === "linea" ? "(Sin línea)" : "(Sin categoría)";
   const porReferencia = new Map();
   const tieneDatosPedido = Array.isArray(pedidosCliente);
+  // (2026-09-25, a pedido de Fredy) "En Preórdenes": etapa ANTES de "Sin
+  // cortar" -- unidades que ya están montadas en una Preorden pero esa
+  // referencia todavía no se convirtió a Pedido (mismo criterio que usa
+  // Preórdenes para "⏳ sin convertir a pedido": !it.pedidoVinculado &&
+  // !usedInPedidoPreorden). Se suma por REFERENCIA (no por categoría/línea
+  // directo) porque el texto de categoría/línea de Busint no siempre calza
+  // con el de la Preorden -- así cada referencia arrastra su valor a la
+  // tarjeta que le corresponda sin importar el agrupamiento. Igual que
+  // "Sin cortar", en blanco ("—") cuando no hay con qué cruzar (admin).
+  const tieneDatosPreorden = Array.isArray(preordenesCliente);
   if (tieneDatosPedido) {
     pedidosCliente
       .filter((p) => p.estado !== "cerrado")
@@ -5190,7 +5200,7 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, campo, filtroLi
         (p.referencias || []).forEach((r) => {
           const ref = String(r.ref || "").trim();
           if (!ref) return;
-          if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0 });
+          if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0 });
           porReferencia.get(ref).pedidoTotal += Number(r.total) || 0;
         });
       });
@@ -5198,7 +5208,7 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, campo, filtroLi
   (lotesCliente || []).forEach((l) => {
     const ref = String(l.referencia || "").trim();
     if (!ref) return;
-    if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0 });
+    if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0 });
     const fila = porReferencia.get(ref);
     if (!fila.categoria && l.categoria) fila.categoria = l.categoria;
     if (!fila.linea && l.linea) fila.linea = l.linea;
@@ -5207,6 +5217,21 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, campo, filtroLi
     fila.semiterminado += Number(l.invSemiterminado) || 0;
     fila.bpt += Number(l.invBPT) || 0;
   });
+  if (tieneDatosPreorden) {
+    preordenesCliente.forEach((p) => {
+      (p.items || []).forEach((it) => {
+        const ref = String(it.referencia || "").trim();
+        if (!ref) return;
+        const graduado = !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidosCliente);
+        if (graduado) return;
+        if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0 });
+        const fila = porReferencia.get(ref);
+        if (!fila.categoria && it.categoria) fila.categoria = it.categoria;
+        if (!fila.linea && it.tipo) fila.linea = it.tipo;
+        fila.enPreorden += (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0);
+      });
+    });
+  }
   let filasBase = [...porReferencia.values()];
   if (campo === "categoria" && filtroLinea) {
     filasBase = filasBase.filter((f) => !f.categoria || f.linea === filtroLinea);
@@ -5215,23 +5240,25 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, campo, filtroLi
     ...f,
     grupo: (campo === "linea" ? f.linea : f.categoria) || sinEtiqueta,
     sinCortar: tieneDatosPedido ? Math.max(0, f.pedidoTotal - f.cortado) : null,
+    enPreorden: tieneDatosPreorden ? f.enPreorden : null,
   }));
   const porGrupo = new Map();
   filas.forEach((f) => {
-    if (!porGrupo.has(f.grupo)) porGrupo.set(f.grupo, { grupo: f.grupo, filas: [], sinCortar: tieneDatosPedido ? 0 : null, planta: 0, semiterminado: 0, bpt: 0 });
+    if (!porGrupo.has(f.grupo)) porGrupo.set(f.grupo, { grupo: f.grupo, filas: [], sinCortar: tieneDatosPedido ? 0 : null, planta: 0, semiterminado: 0, bpt: 0, enPreorden: tieneDatosPreorden ? 0 : null });
     const c = porGrupo.get(f.grupo);
     c.filas.push(f);
     if (tieneDatosPedido) c.sinCortar += f.sinCortar;
+    if (tieneDatosPreorden) c.enPreorden += f.enPreorden;
     c.planta += f.planta;
     c.semiterminado += f.semiterminado;
     c.bpt += f.bpt;
   });
   return [...porGrupo.values()]
-    .map((c) => ({ ...c, filas: c.filas.sort((a, b) => b.planta + b.semiterminado + b.bpt + (b.sinCortar || 0) - (a.planta + a.semiterminado + a.bpt + (a.sinCortar || 0))) }))
-    .sort((a, b) => (b.planta + b.semiterminado + b.bpt + (b.sinCortar || 0)) - (a.planta + a.semiterminado + a.bpt + (a.sinCortar || 0)));
+    .map((c) => ({ ...c, filas: c.filas.sort((a, b) => b.planta + b.semiterminado + b.bpt + (b.sinCortar || 0) + (b.enPreorden || 0) - (a.planta + a.semiterminado + a.bpt + (a.sinCortar || 0) + (a.enPreorden || 0))) }))
+    .sort((a, b) => (b.planta + b.semiterminado + b.bpt + (b.sinCortar || 0) + (b.enPreorden || 0)) - (a.planta + a.semiterminado + a.bpt + (a.sinCortar || 0) + (a.enPreorden || 0)));
 }
 
-function ProduccionView({ currentUser, pedidosCliente }) {
+function ProduccionView({ currentUser, pedidosCliente, preordenesCliente }) {
   const esAdmin = !!currentUser?.isAdmin;
   // (2026-09-25, a pedido de Fredy) Un usuario Cliente puede tener más de un
   // grupo de Producción (ej. Kamila Colombia + Kamila Venezuela) -- con más
@@ -5280,7 +5307,7 @@ function ProduccionView({ currentUser, pedidosCliente }) {
   // (modulo-planeacion.jsx), para no inventar una lista fija de líneas que
   // luego no calce con lo que Busint reporte.
   const lineasDisponibles = useMemo(() => [...new Set(lotes.map((l) => l.linea).filter(Boolean))].sort(), [lotes]);
-  const categorias = useMemo(() => agruparProduccionPorCampo(lotes, esAdmin ? null : pedidosCliente, agruparPor, agruparPor === "categoria" ? filtroLinea : null), [lotes, pedidosCliente, esAdmin, agruparPor, filtroLinea]);
+  const categorias = useMemo(() => agruparProduccionPorCampo(lotes, esAdmin ? null : pedidosCliente, esAdmin ? null : preordenesCliente, agruparPor, agruparPor === "categoria" ? filtroLinea : null), [lotes, pedidosCliente, preordenesCliente, esAdmin, agruparPor, filtroLinea]);
 
   if (!clienteIdEfectivo) {
     return (
@@ -5297,7 +5324,7 @@ function ProduccionView({ currentUser, pedidosCliente }) {
         <Btn small variant="secondary" onClick={cargar} disabled={cargando}>{cargando ? "Actualizando..." : "🔄 Actualizar"}</Btn>
       </div>
       <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
-        En vivo desde Busint. "Sin cortar" es lo que sigue pendiente de tu pedido activo, sin contar lo que ya se cortó.
+        En vivo desde Busint. "En Preórdenes" es lo que ya está montado en una Preorden pero aún no se convierte a Pedido. "Sin cortar" es lo que sigue pendiente de tu pedido activo, sin contar lo que ya se cortó.
         {actualizadoEn && <span> · Actualizado {actualizadoEn.toLocaleTimeString()}</span>}
       </div>
       {esAdmin && (
@@ -5306,7 +5333,7 @@ function ProduccionView({ currentUser, pedidosCliente }) {
           <select value={clienteIdAdmin} onChange={(e) => setClienteIdAdmin(e.target.value)} style={{ fontSize: 13, padding: "8px 10px", borderRadius: 8, border: `1px solid ${T.border}`, background: T.white, color: T.ink, minWidth: 260 }}>
             {GRUPOS_CLIENTE_PRODUCCION.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}
           </select>
-          <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>"Sin cortar" no se calcula en esta previsualización (no hay pedidos propios con qué cruzar) -- el cliente real sí lo ve.</div>
+          <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>"En Preórdenes" y "Sin cortar" no se calculan en esta previsualización (no hay pedidos/preórdenes propios con qué cruzar) -- el cliente real sí los ve.</div>
         </div>
       )}
       {!esAdmin && gruposUsuario.length > 1 && (
@@ -5357,6 +5384,10 @@ function ProduccionView({ currentUser, pedidosCliente }) {
                 <div onClick={() => setCategoriaAbierta(abierta ? null : c.grupo)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, padding: "12px 16px", cursor: "pointer", background: T.canvas }}>
                   <div style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>{c.grupo}</div>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <div style={{ background: T.border, color: T.seamDark, borderRadius: 9, padding: "6px 12px", minWidth: 100 }}>
+                      <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>En preórdenes</div>
+                      <div style={{ fontSize: 15, fontWeight: 800 }}>{c.enPreorden === null ? "—" : fmtNum(c.enPreorden)}</div>
+                    </div>
                     <div style={{ background: T.amberBg, color: T.amber, borderRadius: 9, padding: "6px 12px", minWidth: 100 }}>
                       <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>Sin cortar</div>
                       <div style={{ fontSize: 15, fontWeight: 800 }}>{c.sinCortar === null ? "—" : fmtNum(c.sinCortar)}</div>
@@ -5382,6 +5413,7 @@ function ProduccionView({ currentUser, pedidosCliente }) {
                       <thead>
                         <tr style={{ background: T.ink }}>
                           <th style={{ padding: "8px 12px", color: T.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Referencia</th>
+                          <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>En preórdenes</th>
                           <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Sin cortar</th>
                           <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Planta</th>
                           <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Semiterminado</th>
@@ -5392,6 +5424,7 @@ function ProduccionView({ currentUser, pedidosCliente }) {
                         {c.filas.map((f, i) => (
                           <tr key={f.referencia} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
                             <td style={{ padding: "7px 12px", fontWeight: 700, color: T.ink }}>{f.referencia}</td>
+                            <td style={{ padding: "7px 12px", textAlign: "right", color: T.seamDark, fontWeight: 700 }}>{f.enPreorden === null ? "—" : fmtNum(f.enPreorden)}</td>
                             <td style={{ padding: "7px 12px", textAlign: "right", color: T.amber, fontWeight: 700 }}>{f.sinCortar === null ? "—" : fmtNum(f.sinCortar)}</td>
                             <td style={{ padding: "7px 12px", textAlign: "right", color: T.denim, fontWeight: 700 }}>{fmtNum(f.planta)}</td>
                             <td style={{ padding: "7px 12px", textAlign: "right", color: T.violet, fontWeight: 700 }}>{fmtNum(f.semiterminado)}</td>
@@ -15054,7 +15087,7 @@ function AppInner() {
               />
             )}
             {view === "produccion" && (
-              <ProduccionView currentUser={currentUser} pedidosCliente={role === "Cliente" ? pedidosVisibles : null} />
+              <ProduccionView currentUser={currentUser} pedidosCliente={role === "Cliente" ? pedidosVisibles : null} preordenesCliente={role === "Cliente" ? preordenesVisibles : null} />
             )}
             {view === "stats" && <EstadisticasView protos={protosVisibles} capsulas={capsulasVisibles} stages={config.stages} config={config} />}
             {view === "historial" && (
