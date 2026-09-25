@@ -5877,9 +5877,19 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         const faltaCartaColores = !(p.items || []).length || (p.items || []).some((it) => !cartaColoresLista(it).length);
         const buscarItem = buscarItemPorPreorden[p.id] || "";
         const bqItem = foldTexto(buscarItem);
-        const itemsFiltrados = !bqItem ? (p.items || []) : (p.items || []).filter((it) =>
-          foldTexto(it.referencia).includes(bqItem) || foldTexto(it.nombre).includes(bqItem) || foldTexto(it.tela).includes(bqItem)
-        );
+        // (2026-09-25, a pedido de Fredy) El selector de Línea/País de arriba
+        // ahora también filtra esta tabla (igual que el buscador de texto),
+        // no solo el "Resumen por categoría" de más abajo.
+        const itemsFiltrados = (p.items || []).filter((it) => {
+          if (bqItem) {
+            const coincide = foldTexto(it.referencia).includes(bqItem) || foldTexto(it.nombre).includes(bqItem) || foldTexto(it.tela).includes(bqItem);
+            if (!coincide) return false;
+          }
+          if (filtroGrupo && it.tipo !== filtroGrupo) return false;
+          if (filtroPais === "colombia" && !(Number(it.colombiaCantidad) || 0)) return false;
+          if (filtroPais === "venezuela" && !(Number(it.venezuelaCantidad) || 0)) return false;
+          return true;
+        });
         const itemsPendientesTela = itemsFiltrados.filter((it) => !it.telaComprada);
         const itemsConTela = itemsFiltrados.filter((it) => it.telaComprada);
         // (2026-09-17, a pedido de Fredy) Solo el administrador puede
@@ -6008,6 +6018,27 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                     )}
                   </div>
                 </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 12 }}>
+                    {gruposDisponibles.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: 10.5, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Línea</div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          <Btn small variant={!filtroGrupo ? "primary" : "secondary"} onClick={() => setFiltroGrupoPorPreorden((s) => ({ ...s, [p.id]: "" }))}>Todas</Btn>
+                          {gruposDisponibles.map((g) => (
+                            <Btn key={g} small variant={filtroGrupo === g ? "primary" : "secondary"} onClick={() => setFiltroGrupoPorPreorden((s) => ({ ...s, [p.id]: filtroGrupo === g ? "" : g }))}>{g}</Btn>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div>
+                      <div style={{ fontSize: 10.5, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>País</div>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        <Btn small variant={!filtroPais ? "primary" : "secondary"} onClick={() => setFiltroPaisPorPreorden((s) => ({ ...s, [p.id]: "" }))}>Ambos</Btn>
+                        <Btn small variant={filtroPais === "colombia" ? "primary" : "secondary"} onClick={() => setFiltroPaisPorPreorden((s) => ({ ...s, [p.id]: filtroPais === "colombia" ? "" : "colombia" }))}>Colombia</Btn>
+                        <Btn small variant={filtroPais === "venezuela" ? "primary" : "secondary"} onClick={() => setFiltroPaisPorPreorden((s) => ({ ...s, [p.id]: filtroPais === "venezuela" ? "" : "venezuela" }))}>Venezuela</Btn>
+                      </div>
+                    </div>
+                  </div>
                 <div style={{ marginBottom: 12 }}>
                   <input
                     value={buscarItem}
@@ -6015,7 +6046,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                     placeholder="🔍 Buscar referencia, nombre o tela dentro de esta orden..."
                     style={{ padding: "7px 12px", border: `1.5px solid ${buscarItem ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 300, outline: "none", fontFamily: "inherit" }}
                   />
-                  {bqItem && <span style={{ marginLeft: 10, fontSize: 12, color: T.slate }}>{itemsFiltrados.length} de {(p.items || []).length} referencia{(p.items || []).length !== 1 ? "s" : ""}</span>}
+                  {(bqItem || filtroGrupo || filtroPais) && <span style={{ marginLeft: 10, fontSize: 12, color: T.slate }}>{itemsFiltrados.length} de {(p.items || []).length} referencia{(p.items || []).length !== 1 ? "s" : ""}</span>}
                 </div>
                 <div style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -6127,27 +6158,6 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                 </div>
                 <div style={{ marginTop: 20 }}>
                   <div style={{ fontWeight: 700, fontSize: 13, color: T.ink, marginBottom: 8 }}>Resumen por categoría</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 10 }}>
-                    {gruposDisponibles.length > 0 && (
-                      <div>
-                        <div style={{ fontSize: 10.5, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Línea</div>
-                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                          <Btn small variant={!filtroGrupo ? "primary" : "secondary"} onClick={() => setFiltroGrupoPorPreorden((s) => ({ ...s, [p.id]: "" }))}>Todas</Btn>
-                          {gruposDisponibles.map((g) => (
-                            <Btn key={g} small variant={filtroGrupo === g ? "primary" : "secondary"} onClick={() => setFiltroGrupoPorPreorden((s) => ({ ...s, [p.id]: filtroGrupo === g ? "" : g }))}>{g}</Btn>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    <div>
-                      <div style={{ fontSize: 10.5, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>País</div>
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        <Btn small variant={!filtroPais ? "primary" : "secondary"} onClick={() => setFiltroPaisPorPreorden((s) => ({ ...s, [p.id]: "" }))}>Ambos</Btn>
-                        <Btn small variant={filtroPais === "colombia" ? "primary" : "secondary"} onClick={() => setFiltroPaisPorPreorden((s) => ({ ...s, [p.id]: filtroPais === "colombia" ? "" : "colombia" }))}>Colombia</Btn>
-                        <Btn small variant={filtroPais === "venezuela" ? "primary" : "secondary"} onClick={() => setFiltroPaisPorPreorden((s) => ({ ...s, [p.id]: filtroPais === "venezuela" ? "" : "venezuela" }))}>Venezuela</Btn>
-                      </div>
-                    </div>
-                  </div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
                     {resumen.map((r) => (
                       <div key={r.categoria} style={{ padding: "10px 12px", borderRadius: 10, border: `1px solid ${T.border}`, background: T.canvas }}>
