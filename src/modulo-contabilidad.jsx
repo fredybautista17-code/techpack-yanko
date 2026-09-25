@@ -5143,10 +5143,20 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
     try {
       const llamar = httpsCallable(functionsClient, "getCuentasPorPagarBusintGen");
       const resp = await llamar();
+      // (2026-09-25) NO guardar el detalle de `facturas` por proveedor en
+      // Firestore -- esta pantalla todavía no lo usa (solo lee nombre +
+      // totales por franja), y guardar el corte completo con ese detalle
+      // superaba el límite de 1MB por documento de Firestore apenas se le
+      // agregó el campo `descuento` (ver getCuentasPorPagarBusintGen). El
+      // detalle sigue viniendo en `resp.data` para quien lo necesite en la
+      // misma sesión; cuando se construya la vista de "próximos
+      // vencimientos" que sí necesita ese detalle, se debe guardar aparte
+      // (ej. una subcolección), no en este mismo documento.
+      const proveedoresSinDetalle = (resp.data.proveedores || []).map(({ facturas, ...resto }) => resto);
       await onImportarCorte({
         id: uid(),
         fechaCorte: resp.data.fechaCorte,
-        proveedores: resp.data.proveedores,
+        proveedores: proveedoresSinDetalle,
       });
     } catch (err) {
       setErrorBusint(err?.message || "No se pudo traer el corte desde Busint.");
