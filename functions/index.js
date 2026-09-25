@@ -4646,8 +4646,16 @@ exports.getCargaPlaneacionDesdeBusintGen = onCall(
 // tal cual lo trae Busint). Agregar un cliente nuevo a futuro es solo
 // agregar una llave acá (y su par en App.js, en el selector de "Producción"
 // de la ficha de usuario).
+//
+// (2026-09-25, a pedido de Fredy) Se agregaron "kamila_co"/"kamila_ve" para
+// poder ver Colombia o Venezuela por separado (antes solo existía la
+// combinada "kamila"). Se dejó "kamila" tal cual, sin tocar, por si algún
+// usuario Cliente real ya quedó configurado con esa opción -- así no se le
+// rompe el acceso.
 const GRUPOS_CLIENTE_BUSINT = {
   kamila: ["KAMILA GROUP SAS-KAMILA COLOMBIA", "KAMILA VENEZUELA-KAMILA VENEZUELA"],
+  kamila_co: ["KAMILA GROUP SAS-KAMILA COLOMBIA"],
+  kamila_ve: ["KAMILA VENEZUELA-KAMILA VENEZUELA"],
 };
 
 exports.getProduccionClienteDesdeBusintGen = onCall(

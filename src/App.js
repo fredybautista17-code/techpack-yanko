@@ -1128,8 +1128,15 @@ const MODULOS_CLIENTE_OPCIONES = [
 // GRUPOS_CLIENTE_BUSINT en functions/index.js, getProduccionClienteDesdeBusintGen
 // -- agregar un cliente nuevo a futuro es solo agregar la llave en AMBOS
 // lugares, este arreglo y ese mapeo del backend).
+//
+// (2026-09-25, a pedido de Fredy) "kamila_co"/"kamila_ve" para ver Colombia
+// o Venezuela por separado -- se dejó "kamila" (combinada) sin tocar por
+// compatibilidad con cualquier usuario Cliente ya configurado con esa
+// opción.
 const GRUPOS_CLIENTE_PRODUCCION = [
   { id: "kamila", label: "Kamila (Colombia + Venezuela)" },
+  { id: "kamila_co", label: "Kamila Colombia" },
+  { id: "kamila_ve", label: "Kamila Venezuela" },
 ];
 
 function LoadingScreen({ message }) {
