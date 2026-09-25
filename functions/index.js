@@ -2391,18 +2391,44 @@ exports.getCuentasPorPagarBusintGen = onCall(
     const UMBRAL_SALDO_CXP = 1; // ignora diferencias de centavos de redondeo
     const hoy = new Date();
     hoy.setHours(0, 0, 0, 0);
-    const porProveedor = new Map();
+
+    // (2026-09-25) Agrupa las filas de "cartera cxp-fact" por proveedor+
+    // numero de factura ANTES de calcular saldo -- confirmado con el reporte
+    // oficial de Busint (Fredy) que una factura real (ej. FVCH-110 de
+    // Cheviotto) puede venir repartida en MÁS DE UNA fila dentro de esta
+    // tabla (una con FACTOTAL=0 y otra con el valor real), pero Busint la
+    // trata como una sola factura. Calcular el saldo fila por fila (como se
+    // hacía antes) le aplicaba el MISMO total pagado a cada fila repartida,
+    // restándolo de más y dejando saldos falsos (de más o de menos) en vez
+    // del saldo real -- esto explicaba el total inflado de Cheviotto.
+    const facturasPorLlave = new Map(); // llave -> { llave, codigo, nfactOriginal, facTotal, fechaVcto, facTotalMax }
     facturas.forEach((f) => {
       const codigo = normalizarCodigoCxp(f?.CODIGO);
       const nfactOriginal = String(f?.NFACT ?? "").trim();
       const nfact = normalizarCodigoCxp(f?.NFACT);
       if (!codigo || !nfact) return;
       const llave = `${codigo}|${nfact}`;
-      const facTotal = Number(f?.FACTOTAL) || 0;
+      const facTotalFila = Number(f?.FACTOTAL) || 0;
+      const fechaVctoFila = fechaBusintBDaDateSoloDia(f?.Fechafin);
+      if (!facturasPorLlave.has(llave)) {
+        facturasPorLlave.set(llave, { llave, codigo, nfactOriginal, facTotal: 0, fechaVcto: null, facTotalMax: -Infinity });
+      }
+      const grupo = facturasPorLlave.get(llave);
+      grupo.facTotal += facTotalFila;
+      // usa la fecha de vencimiento de la fila con mayor FACTOTAL del grupo
+      // (la fila "real"), para no quedarnos con la fecha de una fila $0.
+      if (facTotalFila > grupo.facTotalMax) {
+        grupo.facTotalMax = facTotalFila;
+        grupo.fechaVcto = fechaVctoFila;
+      }
+      if (!grupo.nfactOriginal && nfactOriginal) grupo.nfactOriginal = nfactOriginal;
+    });
+
+    const porProveedor = new Map();
+    facturasPorLlave.forEach(({ llave, codigo, nfactOriginal, facTotal, fechaVcto }) => {
       const pagado = pagadoPorFactura.get(llave) || 0;
       const saldo = facTotal - pagado;
       if (saldo <= UMBRAL_SALDO_CXP) return; // ya pagada (o a favor)
-      const fechaVcto = fechaBusintBDaDateSoloDia(f?.Fechafin);
       const diasVencido = fechaVcto ? Math.round((hoy - fechaVcto) / (1000 * 60 * 60 * 24)) : 0;
       const bucket = calcularBucketAntiguedadCxp(diasVencido);
       const nombre = nombrePorCodigo.get(codigo) || `Proveedor ${codigo}`;
