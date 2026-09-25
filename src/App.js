@@ -6018,27 +6018,35 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                     )}
                   </div>
                 </div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 12 }}>
-                    {gruposDisponibles.length > 0 && (
-                      <div>
-                        <div style={{ fontSize: 10.5, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Línea</div>
-                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                          <Btn small variant={!filtroGrupo ? "primary" : "secondary"} onClick={() => setFiltroGrupoPorPreorden((s) => ({ ...s, [p.id]: "" }))}>Todas</Btn>
-                          {gruposDisponibles.map((g) => (
-                            <Btn key={g} small variant={filtroGrupo === g ? "primary" : "secondary"} onClick={() => setFiltroGrupoPorPreorden((s) => ({ ...s, [p.id]: filtroGrupo === g ? "" : g }))}>{g}</Btn>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 12, alignItems: "flex-end" }}>
+                  {gruposDisponibles.length > 0 && (
                     <div>
-                      <div style={{ fontSize: 10.5, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>País</div>
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        <Btn small variant={!filtroPais ? "primary" : "secondary"} onClick={() => setFiltroPaisPorPreorden((s) => ({ ...s, [p.id]: "" }))}>Ambos</Btn>
-                        <Btn small variant={filtroPais === "colombia" ? "primary" : "secondary"} onClick={() => setFiltroPaisPorPreorden((s) => ({ ...s, [p.id]: filtroPais === "colombia" ? "" : "colombia" }))}>Colombia</Btn>
-                        <Btn small variant={filtroPais === "venezuela" ? "primary" : "secondary"} onClick={() => setFiltroPaisPorPreorden((s) => ({ ...s, [p.id]: filtroPais === "venezuela" ? "" : "venezuela" }))}>Venezuela</Btn>
-                      </div>
+                      <div style={{ fontSize: 10.5, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Línea</div>
+                      <select
+                        value={filtroGrupo}
+                        onChange={(e) => setFiltroGrupoPorPreorden((s) => ({ ...s, [p.id]: e.target.value }))}
+                        style={{ padding: "7px 12px", border: `1.5px solid ${filtroGrupo ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: filtroGrupo ? T.denim : T.ink, background: filtroGrupo ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer", minWidth: 150 }}
+                      >
+                        <option value="">Todas</option>
+                        {gruposDisponibles.map((g) => (
+                          <option key={g} value={g}>{g}</option>
+                        ))}
+                      </select>
                     </div>
+                  )}
+                  <div>
+                    <div style={{ fontSize: 10.5, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>País</div>
+                    <select
+                      value={filtroPais}
+                      onChange={(e) => setFiltroPaisPorPreorden((s) => ({ ...s, [p.id]: e.target.value }))}
+                      style={{ padding: "7px 12px", border: `1.5px solid ${filtroPais ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, color: filtroPais ? T.denim : T.ink, background: filtroPais ? T.denimBg : T.white, outline: "none", fontFamily: "inherit", fontWeight: 700, cursor: "pointer", minWidth: 150 }}
+                    >
+                      <option value="">Ambos</option>
+                      <option value="colombia">Colombia</option>
+                      <option value="venezuela">Venezuela</option>
+                    </select>
                   </div>
+                </div>
                 <div style={{ marginBottom: 12 }}>
                   <input
                     value={buscarItem}
