@@ -2360,12 +2360,13 @@ exports.getCuentasPorPagarBusintGen = onCall(
   },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
-    let facturas, pagos, proveedores;
+    let facturas, pagos, proveedores, notasDescuento;
     try {
-      [facturas, pagos, proveedores] = await Promise.all([
+      [facturas, pagos, proveedores, notasDescuento] = await Promise.all([
         consultarTablaBusintBDCompleta("cartera cxp-fact"),
         consultarTablaBusintBDCompleta("cxp-pagos detalles"),
         consultarTablaBusintBDCompleta("maestro de proveedores"),
+        consultarTablaBusintBDCompleta("notas detalles-d"),
       ]);
     } catch (err) {
       logger.error("Error consultando Busint BD (getCuentasPorPagarBusintGen)", { error: String(err) });
@@ -2381,6 +2382,26 @@ exports.getCuentasPorPagarBusintGen = onCall(
       if (!codigo || !nfact) return;
       const llave = `${codigo}|${nfact}`;
       pagadoPorFactura.set(llave, (pagadoPorFactura.get(llave) || 0) + (Number(p?.Totalp) || 0));
+    });
+    // (2026-09-25) Descuentos por pronto pago (nota crédito, 30/60 días según
+    // el plazo pactado con el proveedor) -- confirmado a mano con Fredy y con
+    // el reporte oficial de Busint (factura FVC2-6357 de Cheviotto: $7.723.314
+    // − $7.333.903,20 pagado − $389.410,80 de esta tabla = $0 exacto). Busint
+    // NO resta este descuento en "cxp-pagos detalles" (el pago ahí solo
+    // refleja el efectivo/cheque real) -- lo registra aparte como nota
+    // contable en "notas detalles-d" (Cod=código proveedor, Nfactcxp=número
+    // de factura, Precio=valor del descuento). Sin esto, cualquier factura
+    // vieja cerrada con descuento de pronto pago quedaba con un saldo
+    // fantasma igual al descuento no restado (esto era la causa completa del
+    // total inflado de Cheviotto: $121.083.266 en vez de $72.933.137).
+    const descuentoPorFactura = new Map();
+    notasDescuento.forEach((n) => {
+      const codigo = normalizarCodigoCxp(n?.Cod);
+      const nfact = normalizarCodigoCxp(n?.Nfactcxp);
+      if (!codigo || !nfact) return;
+      const llave = `${codigo}|${nfact}`;
+      const valor = (Number(n?.Precio) || 0) + (Number(n?.credito) || 0);
+      descuentoPorFactura.set(llave, (descuentoPorFactura.get(llave) || 0) + valor);
     });
     const nombrePorCodigo = new Map();
     proveedores.forEach((p) => {
@@ -2427,8 +2448,9 @@ exports.getCuentasPorPagarBusintGen = onCall(
     const porProveedor = new Map();
     facturasPorLlave.forEach(({ llave, codigo, nfactOriginal, facTotal, fechaVcto }) => {
       const pagado = pagadoPorFactura.get(llave) || 0;
-      const saldo = facTotal - pagado;
-      if (saldo <= UMBRAL_SALDO_CXP) return; // ya pagada (o a favor)
+      const descuento = descuentoPorFactura.get(llave) || 0;
+      const saldo = facTotal - pagado - descuento;
+      if (saldo <= UMBRAL_SALDO_CXP) return; // ya pagada (o a favor, incluyendo descuento de pronto pago)
       const diasVencido = fechaVcto ? Math.round((hoy - fechaVcto) / (1000 * 60 * 60 * 24)) : 0;
       const bucket = calcularBucketAntiguedadCxp(diasVencido);
       const nombre = nombrePorCodigo.get(codigo) || `Proveedor ${codigo}`;
@@ -2451,6 +2473,7 @@ exports.getCuentasPorPagarBusintGen = onCall(
         nfact: nfactOriginal,
         facTotal,
         pagado,
+        descuento,
         saldo,
         fechaVctoISO: fechaVcto ? fechaVcto.toISOString().slice(0, 10) : null,
         diasVencido,
@@ -2461,66 +2484,22 @@ exports.getCuentasPorPagarBusintGen = onCall(
       .sort((a, b) => b.total - a.total);
     const hoyISO = hoy.toISOString().slice(0, 10);
 
-    // (2026-09-25) Diagnóstico temporal -- Fredy reportó que Cheviotto Textil
-    // SAS (código interno 2043) sigue dando $121.083.266 en vez de los
-    // $72.933.137 validados, y que hay proveedores (ej. código 16) sin
-    // nombre, AUN DESPUÉS de normalizar código/nfact a texto+mayúsculas. No
-    // cambia ningún cálculo -- solo junta info cruda para ver exactamente
-    // qué factura no está cruzando bien contra los pagos, y por qué un
-    // código no encuentra nombre. Se puede borrar una vez resuelto.
-    const CODIGO_DEBUG_CHEVIOTTO = "2043";
-    const debugCheviotto = facturas
-      .filter((f) => normalizarCodigoCxp(f?.CODIGO) === CODIGO_DEBUG_CHEVIOTTO)
-      .map((f) => {
-        const codigo = normalizarCodigoCxp(f?.CODIGO);
-        const nfactOriginal = String(f?.NFACT ?? "").trim();
-        const nfact = normalizarCodigoCxp(f?.NFACT);
-        const llave = `${codigo}|${nfact}`;
-        const facTotal = Number(f?.FACTOTAL) || 0;
-        const pagado = pagadoPorFactura.get(llave) || 0;
-        return {
-          nfact: nfactOriginal,
-          codigoRaw: f?.CODIGO,
-          codigoRawTipo: typeof f?.CODIGO,
-          nfactRaw: f?.NFACT,
-          nfactRawTipo: typeof f?.NFACT,
-          llave,
-          facTotal,
-          pagado,
-          saldo: facTotal - pagado,
-          tieneMatchEnPagos: pagadoPorFactura.has(llave),
-        };
-      });
-    const codigosSinNombreVistos = new Set();
-    const debugSinNombre = [];
-    facturas.forEach((f) => {
-      const codigo = normalizarCodigoCxp(f?.CODIGO);
-      if (!codigo || nombrePorCodigo.has(codigo) || codigosSinNombreVistos.has(codigo)) return;
-      codigosSinNombreVistos.add(codigo);
-      if (debugSinNombre.length < 15) {
-        debugSinNombre.push({ codigo, codigoRaw: f?.CODIGO, codigoRawTipo: typeof f?.CODIGO });
-      }
-    });
-    // (2026-09-25, siguiente paso) Muestra cruda de las 3 tablas tal cual las
-    // devuelve Busint -- para confirmar si los nombres de campo que usa el
-    // código (CodigoP/Nfact/Totalp en pagos; CODIGO/NFACT/FACTOTAL en
-    // facturas; Codigo/Nombre en proveedores) son realmente los que Busint
-    // trae, o si el cruce falla porque el nombre real es distinto.
-    const debugMuestraPagos = pagos.slice(0, 3);
-    const debugMuestraFacturas = facturas.slice(0, 3);
-    const debugMuestraProveedores = proveedores.slice(0, 3);
-
-    logger.info("CXP DEBUG (temporal, borrar cuando se resuelva)", {
-      debugCheviotto,
-      debugSinNombre,
-      totalCodigosProveedoresCatalogo: nombrePorCodigo.size,
-      totalCodigosSinNombreDistintos: codigosSinNombreVistos.size,
-      totalPagos: pagos.length,
+    // (2026-09-25) Resuelto: el residuo fantasma de facturas viejas ya
+    // cerradas en Busint era el descuento de pronto pago (ver
+    // `descuentoPorFactura` arriba, tabla "notas detalles-d") que no se
+    // estaba restando -- validado con Cheviotto (código 2043): el total pasó
+    // de $121.083.266 (con el bug) a los $72.933.137 ya confirmados a mano
+    // contra el reporte oficial de Busint. Los proveedores sin nombre (ej.
+    // código 16) no son un bug de cruce -- ese código de verdad no existe en
+    // "maestro de proveedores" (confirmado revisando la tabla completa), es
+    // un dato faltante en Busint mismo. Bloques de diagnóstico temporal ya
+    // borrados (cumplieron su propósito).
+    logger.info("CXP: corte generado", {
+      totalProveedores: proveedoresResultado.length,
       totalFacturas: facturas.length,
+      totalPagos: pagos.length,
+      totalNotasDescuento: notasDescuento.length,
       totalProveedoresCatalogo: proveedores.length,
-      debugMuestraPagos,
-      debugMuestraFacturas,
-      debugMuestraProveedores,
     });
 
     return {
@@ -2528,12 +2507,6 @@ exports.getCuentasPorPagarBusintGen = onCall(
       proveedores: proveedoresResultado,
       totalProveedores: proveedoresResultado.length,
       totalGeneral: proveedoresResultado.reduce((s, p) => s + p.total, 0),
-      _debugMuestraPagos: debugMuestraPagos,
-      _debugMuestraFacturas: debugMuestraFacturas,
-      _debugMuestraProveedores: debugMuestraProveedores,
-      _debugTotales: { totalPagos: pagos.length, totalFacturas: facturas.length, totalProveedoresCatalogo: proveedores.length },
-      _debugCheviotto: debugCheviotto,
-      _debugSinNombre: debugSinNombre,
     };
   }
 );
