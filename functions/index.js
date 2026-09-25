@@ -2475,11 +2475,26 @@ exports.getCuentasPorPagarBusintGen = onCall(
         debugSinNombre.push({ codigo, codigoRaw: f?.CODIGO, codigoRawTipo: typeof f?.CODIGO });
       }
     });
+    // (2026-09-25, siguiente paso) Muestra cruda de las 3 tablas tal cual las
+    // devuelve Busint -- para confirmar si los nombres de campo que usa el
+    // código (CodigoP/Nfact/Totalp en pagos; CODIGO/NFACT/FACTOTAL en
+    // facturas; Codigo/Nombre en proveedores) son realmente los que Busint
+    // trae, o si el cruce falla porque el nombre real es distinto.
+    const debugMuestraPagos = pagos.slice(0, 3);
+    const debugMuestraFacturas = facturas.slice(0, 3);
+    const debugMuestraProveedores = proveedores.slice(0, 3);
+
     logger.info("CXP DEBUG (temporal, borrar cuando se resuelva)", {
       debugCheviotto,
       debugSinNombre,
       totalCodigosProveedoresCatalogo: nombrePorCodigo.size,
       totalCodigosSinNombreDistintos: codigosSinNombreVistos.size,
+      totalPagos: pagos.length,
+      totalFacturas: facturas.length,
+      totalProveedoresCatalogo: proveedores.length,
+      debugMuestraPagos,
+      debugMuestraFacturas,
+      debugMuestraProveedores,
     });
 
     return {
@@ -2487,6 +2502,10 @@ exports.getCuentasPorPagarBusintGen = onCall(
       proveedores: proveedoresResultado,
       totalProveedores: proveedoresResultado.length,
       totalGeneral: proveedoresResultado.reduce((s, p) => s + p.total, 0),
+      _debugMuestraPagos: debugMuestraPagos,
+      _debugMuestraFacturas: debugMuestraFacturas,
+      _debugMuestraProveedores: debugMuestraProveedores,
+      _debugTotales: { totalPagos: pagos.length, totalFacturas: facturas.length, totalProveedoresCatalogo: proveedores.length },
       _debugCheviotto: debugCheviotto,
       _debugSinNombre: debugSinNombre,
     };
