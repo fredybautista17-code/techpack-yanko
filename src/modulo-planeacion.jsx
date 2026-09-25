@@ -1617,6 +1617,7 @@ function VerificadorPrecioTalleresView({ entradas }) {
                     { key: "fechaISO", label: "Fecha", render: (f) => fmtFechaISO(f.fechaISO) },
                     { key: "numLote", label: "Lote" },
                     { key: "proceso", label: "Proceso" },
+                    { key: "emp", label: "Planta", render: (f) => (f.emp == null || f.emp === "" ? "—" : String(f.emp)) },
                     {
                       key: "precioUnidad",
                       label: "Precio Unidad",

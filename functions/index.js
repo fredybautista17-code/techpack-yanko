@@ -2340,6 +2340,18 @@ function fechaBusintBDaDateSoloDia(campo) {
   if (!campo || typeof campo !== "object" || !campo.isValidDateTime) return null;
   return new Date(campo.year, (campo.month || 1) - 1, campo.day || 1);
 }
+// (2026-09-25) Normaliza código de proveedor y número de factura antes de
+// cualquier cruce entre tablas de Busint BD: se detectaron dos bugs reales
+// (proveedor código 16 sin nombre; total de CHEVIOTTO TEXTIL SAS inflado de
+// $72.933.137 a $121.083.266) que apuntan a lo mismo -- un lado trae el
+// código como número y el otro como texto, o el número de factura viene con
+// distinta may/min entre "cartera cxp-fact" y "cxp-pagos detalles" (factible
+// en datos de 2022 en adelante). Se normaliza a texto + mayúsculas + sin
+// espacios en AMBOS lados de cada cruce (mismo patrón que normalizarRefComparacion
+// / normalizarInsumoBD ya usan para otros cruces de Busint).
+function normalizarCodigoCxp(v) {
+  return String(v ?? "").trim().toUpperCase();
+}
 exports.getCuentasPorPagarBusintGen = onCall(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
@@ -2359,29 +2371,32 @@ exports.getCuentasPorPagarBusintGen = onCall(
       logger.error("Error consultando Busint BD (getCuentasPorPagarBusintGen)", { error: String(err) });
       throw new HttpsError("unavailable", `No se pudo consultar Busint BD: ${err?.message || String(err)}`);
     }
-    // Suma de pagos aplicados, agrupada por "CODIGO|NFACT" exacto (misma
-    // pareja de llaves que usa Busint para cruzar factura <-> pago).
+    // Suma de pagos aplicados, agrupada por "CODIGO|NFACT" normalizado (ver
+    // normalizarCodigoCxp arriba -- antes se cruzaba con el valor crudo de
+    // Busint, sin normalizar tipo/mayúsculas).
     const pagadoPorFactura = new Map();
     pagos.forEach((p) => {
-      const codigo = p?.CodigoP;
-      const nfact = String(p?.Nfact ?? "").trim();
-      if (codigo === undefined || codigo === null || !nfact) return;
+      const codigo = normalizarCodigoCxp(p?.CodigoP);
+      const nfact = normalizarCodigoCxp(p?.Nfact);
+      if (!codigo || !nfact) return;
       const llave = `${codigo}|${nfact}`;
       pagadoPorFactura.set(llave, (pagadoPorFactura.get(llave) || 0) + (Number(p?.Totalp) || 0));
     });
     const nombrePorCodigo = new Map();
     proveedores.forEach((p) => {
-      if (p?.Codigo === undefined || p?.Codigo === null) return;
-      nombrePorCodigo.set(p.Codigo, String(p.Nombre || "").trim() || `Proveedor ${p.Codigo}`);
+      const codigo = normalizarCodigoCxp(p?.Codigo);
+      if (!codigo) return;
+      nombrePorCodigo.set(codigo, String(p.Nombre || "").trim() || `Proveedor ${codigo}`);
     });
     const UMBRAL_SALDO_CXP = 1; // ignora diferencias de centavos de redondeo
     const hoy = new Date();
     hoy.setHours(0, 0, 0, 0);
     const porProveedor = new Map();
     facturas.forEach((f) => {
-      const codigo = f?.CODIGO;
-      const nfact = String(f?.NFACT ?? "").trim();
-      if (codigo === undefined || codigo === null || !nfact) return;
+      const codigo = normalizarCodigoCxp(f?.CODIGO);
+      const nfactOriginal = String(f?.NFACT ?? "").trim();
+      const nfact = normalizarCodigoCxp(f?.NFACT);
+      if (!codigo || !nfact) return;
       const llave = `${codigo}|${nfact}`;
       const facTotal = Number(f?.FACTOTAL) || 0;
       const pagado = pagadoPorFactura.get(llave) || 0;
@@ -2407,7 +2422,7 @@ exports.getCuentasPorPagarBusintGen = onCall(
       prov[bucket] += saldo;
       prov.total += saldo;
       prov.facturas.push({
-        nfact,
+        nfact: nfactOriginal,
         facTotal,
         pagado,
         saldo,
@@ -2537,6 +2552,11 @@ exports.getVerificadorPrecioBusintGen = onCall(
           fechaISO: fecha ? fecha.toISOString().slice(0, 10) : null,
           nfact: f?.Nfact ?? null,
           precioUnidad,
+          // (2026-09-25, a pedido de Fredy) Campo "emp" de la misma tabla,
+          // sin usar hasta ahora -- posible planta/taller que hizo el
+          // proceso, sin confirmar todavía. Se devuelve tal cual para que
+          // Fredy lo vea en pantalla y confirme si es lo que busca.
+          emp: f?.emp ?? null,
         };
       })
       .filter(Boolean);
