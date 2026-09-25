@@ -1524,6 +1524,30 @@ function normalizarRef(v) {
 }
 function VerificadorPrecioTalleresView({ entradas }) {
   const [busqueda, setBusqueda] = useState("");
+  // (2026-09-25, a pedido de Fredy) Fuente EN VIVO desde Busint, además de
+  // las Entradas de Planta subidas a mano (que siguen igual, abajo). Se
+  // trae una sola vez por clic ("🔄 Traer desde Busint") y se guarda en
+  // memoria -- la búsqueda por referencia filtra sobre lo ya traído, sin
+  // volver a golpear Busint en cada tecla. Ver getVerificadorPrecioBusintGen
+  // (functions/index.js) para el detalle de dónde sale cada número.
+  const [datosBusint, setDatosBusint] = useState(null); // null = no se ha traído todavía en esta sesión
+  const [cargandoBusint, setCargandoBusint] = useState(false);
+  const [errorBusint, setErrorBusint] = useState(null);
+  const [generadoEnBusint, setGeneradoEnBusint] = useState(null);
+  async function traerVerificadorPrecioDesdeBusint() {
+    setCargandoBusint(true);
+    setErrorBusint(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getVerificadorPrecioBusintGen");
+      const resp = await llamar();
+      setDatosBusint(resp.data?.filas || []);
+      setGeneradoEnBusint(resp.data?.generadoEn || new Date().toISOString());
+    } catch (err) {
+      setErrorBusint(err?.message || String(err));
+    } finally {
+      setCargandoBusint(false);
+    }
+  }
   const resultado = useMemo(() => {
     const q = normalizarRef(busqueda);
     if (!q) return [];
@@ -1532,24 +1556,40 @@ function VerificadorPrecioTalleresView({ entradas }) {
       .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
       .slice(0, 5);
   }, [entradas, busqueda]);
+  const resultadoBusint = useMemo(() => {
+    const q = normalizarRef(busqueda);
+    if (!q || !datosBusint) return [];
+    return datosBusint
+      .filter((f) => normalizarRef(f.ref) === q)
+      .sort((a, b) => (b.fechaISO || "").localeCompare(a.fechaISO || ""))
+      .slice(0, 10);
+  }, [datosBusint, busqueda]);
   const taller = resultado[0]?.nombrePlanta || null;
-  // Distingue "no hay ningún dato cargado todavía" (nadie ha subido Entradas
-  // de Planta en el módulo Planta) de "sí hay datos, pero no para esta
-  // referencia puntual" — sin esto, ambos casos se veían igual y no había
-  // forma de saber si el problema era la búsqueda o que faltaba subir el
-  // Excel de Entradas de Planta.
-  if (!entradas.length) {
-    return (
-      <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13, background: C.canvas, borderRadius: 12, border: `1px dashed ${C.border}` }}>
-        Aún no hay ninguna carga de "Entradas de Planta" subida (se sube desde el módulo Planta, botón "Subir Entradas"). En cuanto haya una, se puede buscar por referencia acá mismo.
-      </div>
-    );
-  }
   return (
     <div>
-      <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 16, maxWidth: 640 }}>
-        Busca una referencia para ver sus últimas entradas a talleres externos y comparar el precio teórico (CostoFT) contra el precio con el que realmente entró (VaEnt). Las que no coinciden salen en rojo.
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 12.5, color: C.slate, maxWidth: 640 }}>
+          Busca una referencia para ver sus últimas entradas a talleres externos y comparar el precio teórico (CostoFT) contra el precio con el que realmente entró (VaEnt). Las que no coinciden salen en rojo.
+        </div>
+        <button
+          onClick={traerVerificadorPrecioDesdeBusint}
+          disabled={cargandoBusint}
+          title="Trae en vivo de Busint el Teórico/Real de mano de obra de Confección y Corte por lote, para comparar junto a las Entradas de Planta"
+          style={{ padding: "9px 16px", borderRadius: 8, border: `1.5px solid ${C.border}`, background: C.white, color: C.ink, fontSize: 12.5, fontWeight: 700, cursor: cargandoBusint ? "default" : "pointer", whiteSpace: "nowrap" }}
+        >
+          {cargandoBusint ? "Consultando Busint…" : "🔄 Traer desde Busint"}
+        </button>
       </div>
+      {errorBusint && (
+        <div style={{ marginBottom: 14, padding: "10px 14px", borderRadius: 8, background: C.redBg, border: `1px solid ${C.red}`, fontSize: 12.5, color: C.red }}>
+          ⚠ No se pudo traer de Busint: {errorBusint}
+        </div>
+      )}
+      {datosBusint && !errorBusint && (
+        <div style={{ marginBottom: 14, fontSize: 11.5, color: C.slate }}>
+          ✓ {fmtNum(datosBusint.length)} filas de Confección/Corte traídas de Busint{generadoEnBusint ? ` (${fmtFechaISO(generadoEnBusint.slice(0, 10))})` : ""}.
+        </div>
+      )}
       <div style={{ marginBottom: 18, maxWidth: 360 }}>
         <input
           type="text"
@@ -1561,31 +1601,69 @@ function VerificadorPrecioTalleresView({ entradas }) {
       </div>
       {!busqueda.trim() ? (
         <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>Escribe una referencia para ver sus últimas entradas.</div>
-      ) : !resultado.length ? (
-        <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>No se encontraron entradas de taller con esa referencia.</div>
       ) : (
         <>
-          {taller && (
-            <div style={{ marginBottom: 14, fontSize: 13, color: C.slate }}>
-              Taller: <span style={{ fontWeight: 800, color: C.ink }}>{taller}</span>
+          {datosBusint && (
+            <div style={{ marginBottom: 28 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 800, color: C.ink, marginBottom: 8 }}>En vivo desde Busint (Confección y Corte)</div>
+              {!resultadoBusint.length ? (
+                <div style={{ textAlign: "center", padding: 24, color: C.slate, fontSize: 13, background: C.canvas, borderRadius: 12, border: `1px dashed ${C.border}` }}>
+                  Busint no tiene mano de obra de Confección/Corte registrada para esta referencia.
+                </div>
+              ) : (
+                <Tabla
+                  vacio="Sin filas para esa referencia."
+                  columnas={[
+                    { key: "fechaISO", label: "Fecha", render: (f) => fmtFechaISO(f.fechaISO) },
+                    { key: "numLote", label: "Lote" },
+                    { key: "proceso", label: "Proceso" },
+                    { key: "teorico", label: "Teórico", align: "right", render: (f) => `$${fmtNum(f.teorico)}` },
+                    { key: "real", label: "Real", align: "right", render: (f) => `$${fmtNum(f.real)}` },
+                    {
+                      key: "difer",
+                      label: "Diferencia",
+                      align: "right",
+                      render: (f) => `$${fmtNum(f.difer)}`,
+                      color: (f) => (f.difer !== 0 ? C.red : C.green),
+                    },
+                  ]}
+                  filas={resultadoBusint}
+                />
+              )}
             </div>
           )}
-          <Tabla
-            vacio="Sin entradas para esa referencia."
-            columnas={[
-              { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
-              { key: "nombrePlanta", label: "Taller" },
-              { key: "precioTeorico", label: "Precio teórico", align: "right", render: (f) => `$${fmtNum(f.precioTeorico)}` },
-              {
-                key: "precioEntrada",
-                label: "Precio de entrada",
-                align: "right",
-                render: (f) => `$${fmtNum(f.precioEntrada)}`,
-                color: (f) => (f.precioEntrada !== f.precioTeorico ? C.red : C.green),
-              },
-            ]}
-            filas={resultado}
-          />
+          <div style={{ fontSize: 12.5, fontWeight: 800, color: C.ink, marginBottom: 8 }}>Entradas de Planta (subidas a mano)</div>
+          {!entradas.length ? (
+            <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13, background: C.canvas, borderRadius: 12, border: `1px dashed ${C.border}` }}>
+              Aún no hay ninguna carga de "Entradas de Planta" subida (se sube desde el módulo Planta, botón "Subir Entradas"). En cuanto haya una, se puede buscar por referencia acá mismo.
+            </div>
+          ) : !resultado.length ? (
+            <div style={{ textAlign: "center", padding: 40, color: C.slate, fontSize: 13 }}>No se encontraron entradas de taller con esa referencia.</div>
+          ) : (
+            <>
+              {taller && (
+                <div style={{ marginBottom: 14, fontSize: 13, color: C.slate }}>
+                  Taller: <span style={{ fontWeight: 800, color: C.ink }}>{taller}</span>
+                </div>
+              )}
+              <Tabla
+                vacio="Sin entradas para esa referencia."
+                columnas={[
+                  { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+                  { key: "nombrePlanta", label: "Taller" },
+                  { key: "precioTeorico", label: "Precio teórico", align: "right", render: (f) => `$${fmtNum(f.precioTeorico)}` },
+                  {
+                    key: "precioEntrada",
+                    label: "Precio de entrada",
+                    align: "right",
+                    render: (f) => `$${fmtNum(f.precioEntrada)}`,
+                    color: (f) => (f.precioEntrada !== f.precioTeorico ? C.red : C.green),
+                  },
+                ]}
+                filas={resultado}
+              />
+            </>
+          )}
         </>
       )}
     </div>
