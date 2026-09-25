@@ -4684,12 +4684,30 @@ exports.getProduccionClienteDesdeBusintGen = onCall(
         throw new HttpsError("invalid-argument", `Grupo de cliente desconocido: ${idGrupo}`);
       }
     } else {
-      // No-admin (usuario Cliente): SIEMPRE su propio grupo guardado en el
-      // usuario -- se ignora cualquier "clienteId" que venga en la
-      // petición, para que no pueda pedir el de otro cliente.
-      idGrupo = String(userData.clienteProduccion || "").trim();
-      if (!idGrupo || !GRUPOS_CLIENTE_BUSINT[idGrupo]) {
+      // No-admin (usuario Cliente): solo puede pedir un grupo que esté
+      // DENTRO de su propia lista permitida -- nunca el de otro cliente.
+      // (2026-09-25, a pedido de Fredy) clientesProduccion (arreglo) es el
+      // campo nuevo -- permite que un usuario con más de un grupo (ej.
+      // Kamila Colombia + Kamila Venezuela) elija cuál está viendo, en vez
+      // de quedar amarrado a uno solo. clienteProduccion (singular) se deja
+      // intacto para los usuarios configurados antes de este cambio.
+      const gruposPermitidos = Array.isArray(userData.clientesProduccion) && userData.clientesProduccion.length
+        ? userData.clientesProduccion
+        : (userData.clienteProduccion ? [String(userData.clienteProduccion).trim()] : []);
+      if (!gruposPermitidos.length) {
         throw new HttpsError("permission-denied", "Tu usuario no tiene un cliente de Producción configurado. Pide que te lo activen en Admin -> Usuarios.");
+      }
+      const idPedido = String(request.data?.clienteId || "").trim();
+      if (idPedido) {
+        if (!gruposPermitidos.includes(idPedido)) {
+          throw new HttpsError("permission-denied", "No tienes permiso para ver ese cliente.");
+        }
+        idGrupo = idPedido;
+      } else {
+        idGrupo = gruposPermitidos[0];
+      }
+      if (!GRUPOS_CLIENTE_BUSINT[idGrupo]) {
+        throw new HttpsError("invalid-argument", `Grupo de cliente desconocido: ${idGrupo}`);
       }
     }
 
@@ -5530,7 +5548,7 @@ exports.adminCrearUsuario = onCall(
   { timeoutSeconds: 60, memory: "256MiB" },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
-    const { name, username, password, role, isAdmin, clienteAsociado, clientesAsociados, modulosCliente, soloLecturaCliente, clienteProduccion, areaNomina, procesosPlaneacion, landingAreas } = request.data || {};
+    const { name, username, password, role, isAdmin, clienteAsociado, clientesAsociados, modulosCliente, soloLecturaCliente, clienteProduccion, clientesProduccion, areaNomina, procesosPlaneacion, landingAreas } = request.data || {};
     const nombreLimpio = String(name || "").trim();
     const usernameNorm = String(username || "").trim().toLowerCase();
     if (!nombreLimpio || !usernameNorm || !password) {
@@ -5587,6 +5605,11 @@ exports.adminCrearUsuario = onCall(
       // GRUPOS_CLIENTE_BUSINT en getProduccionClienteDesdeBusintGen más
       // abajo) -- vacío significa que no tiene Producción configurado.
       clienteProduccion: clienteProduccion ? String(clienteProduccion).trim() : "",
+      // (2026-09-25, a pedido de Fredy) Lista de clientes de Producción --
+      // reemplaza a clienteProduccion (singular) para los usuarios nuevos;
+      // con más de uno, el usuario puede elegir cuál está viendo dentro de
+      // "Producción" (ver clientesProduccionDeUsuario() en App.js).
+      clientesProduccion: Array.isArray(clientesProduccion) ? clientesProduccion.map((c) => String(c)) : [],
       // Área de Nómina (opcional): solo se usa para los líderes de área
       // (Anny Beltrán → Terminación, Sarai Méndez → Termofijación) — con
       // esto puesto, el módulo de Nómina les muestra una pantalla simple

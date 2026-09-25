@@ -1097,6 +1097,17 @@ function clientesDeUsuario(u) {
   if (u?.clienteAsociado) return [u.clienteAsociado];
   return [];
 }
+// (2026-09-25, a pedido de Fredy) Mismo patrón que clientesDeUsuario() pero
+// para la pantalla "Producción" -- clientesProduccion (arreglo) es el campo
+// nuevo, clienteProduccion (singular) se deja intacto para los usuarios
+// configurados antes de este cambio. Con más de un grupo, el usuario puede
+// elegir cuál está viendo (ver ProduccionView); con uno solo, se queda fijo
+// como antes (candado, sin selector).
+function clientesProduccionDeUsuario(u) {
+  if (Array.isArray(u?.clientesProduccion) && u.clientesProduccion.length) return u.clientesProduccion;
+  if (u?.clienteProduccion) return [u.clienteProduccion];
+  return [];
+}
 // (2026-09-16, a pedido de Fredy) Además de restringir POR CLIENTE, ahora se
 // puede restringir por MÓDULO qué ve cada usuario Cliente puntual (ej. un
 // cliente ve Cápsulas+Prototipos+Pedidos, otro ve solo Bodega+Preórdenes).
@@ -5213,7 +5224,13 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, campo, filtroLi
 
 function ProduccionView({ currentUser, pedidosCliente }) {
   const esAdmin = !!currentUser?.isAdmin;
+  // (2026-09-25, a pedido de Fredy) Un usuario Cliente puede tener más de un
+  // grupo de Producción (ej. Kamila Colombia + Kamila Venezuela) -- con más
+  // de uno puede elegir cuál está viendo (clienteIdCliente); con uno solo,
+  // se queda fijo como antes (candado, sin selector).
+  const gruposUsuario = useMemo(() => clientesProduccionDeUsuario(currentUser), [currentUser]);
   const [clienteIdAdmin, setClienteIdAdmin] = useState(GRUPOS_CLIENTE_PRODUCCION[0]?.id || "");
+  const [clienteIdCliente, setClienteIdCliente] = useState(gruposUsuario[0] || "");
   const [lotes, setLotes] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
@@ -5222,7 +5239,9 @@ function ProduccionView({ currentUser, pedidosCliente }) {
   const [agruparPor, setAgruparPor] = useState("categoria");
   const [filtroLinea, setFiltroLinea] = useState(null);
 
-  const clienteIdEfectivo = esAdmin ? clienteIdAdmin : String(currentUser?.clienteProduccion || "");
+  useEffect(() => { setClienteIdCliente(gruposUsuario[0] || ""); }, [currentUser?.id]);
+
+  const clienteIdEfectivo = esAdmin ? clienteIdAdmin : clienteIdCliente;
   const grupoEfectivo = GRUPOS_CLIENTE_PRODUCCION.find((g) => g.id === clienteIdEfectivo) || null;
 
   async function cargar() {
@@ -5231,7 +5250,7 @@ function ProduccionView({ currentUser, pedidosCliente }) {
     setError("");
     try {
       const llamar = httpsCallable(functionsClient, "getProduccionClienteDesdeBusintGen");
-      const resp = await llamar(esAdmin ? { clienteId: clienteIdEfectivo } : {});
+      const resp = await llamar(clienteIdEfectivo ? { clienteId: clienteIdEfectivo } : {});
       setLotes(resp.data?.lotes || []);
       setActualizadoEn(new Date());
     } catch (err) {
@@ -5281,7 +5300,21 @@ function ProduccionView({ currentUser, pedidosCliente }) {
           <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>"Sin cortar" no se calcula en esta previsualización (no hay pedidos propios con qué cruzar) -- el cliente real sí lo ve.</div>
         </div>
       )}
-      {!esAdmin && grupoEfectivo && (
+      {!esAdmin && gruposUsuario.length > 1 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, marginBottom: 6, textTransform: "uppercase" }}>Estás viendo</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {gruposUsuario.map((id) => {
+              const g = GRUPOS_CLIENTE_PRODUCCION.find((x) => x.id === id);
+              if (!g) return null;
+              return (
+                <Btn key={id} small variant={clienteIdCliente === id ? "primary" : "secondary"} onClick={() => setClienteIdCliente(id)}>{g.label}</Btn>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {!esAdmin && gruposUsuario.length <= 1 && grupoEfectivo && (
         <div style={{ display: "inline-block", background: T.denimBg, color: T.denim, fontWeight: 700, fontSize: 12, padding: "6px 12px", borderRadius: 8, marginBottom: 16 }}>
           🔒 {grupoEfectivo.label}
         </div>
@@ -8292,7 +8325,7 @@ function EditNombreModal({ item, tipo, config, onSave, onClose }) {
 function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesosNomina }) {
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState(null);
-  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, clienteProduccion: "", email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false });
+  const [form, setForm] = useState({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, clienteProduccion: "", clientesProduccion: [], email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false });
   const [changePwdId, setChangePwdId] = useState(null);
   const [newPwd, setNewPwd] = useState("");
   const [showPwd, setShowPwd] = useState(false);
@@ -8327,8 +8360,8 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
     }
     setMigrando(false);
   }
-  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, clienteProduccion: "", email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false }); setEditUser(null); setShowForm(true); setError(""); }
-  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", clientesAsociados: u.clientesAsociados || [], modulosCliente: u.modulosCliente || [], soloLecturaCliente: u.soloLecturaCliente || false, clienteProduccion: u.clienteProduccion || "", email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false }); setEditUser(u); setShowForm(true); setError(""); }
+  function openNew() { setForm({ name: "", username: "", password: "", role: "Equipo Interno", isAdmin: false, clienteAsociado: "", clientesAsociados: [], modulosCliente: [], soloLecturaCliente: false, clienteProduccion: "", clientesProduccion: [], email: "", areaNomina: "", procesosPlaneacion: [], landingAreas: false }); setEditUser(null); setShowForm(true); setError(""); }
+  function openEdit(u) { setForm({ name: u.name, username: u.username, password: "", role: u.role, isAdmin: u.isAdmin, clienteAsociado: u.clienteAsociado || "", clientesAsociados: u.clientesAsociados || [], modulosCliente: u.modulosCliente || [], soloLecturaCliente: u.soloLecturaCliente || false, clienteProduccion: u.clienteProduccion || "", clientesProduccion: u.clientesProduccion || [], email: u.email || "", areaNomina: u.areaNomina || "", procesosPlaneacion: u.procesosPlaneacion || [], landingAreas: u.landingAreas || false }); setEditUser(u); setShowForm(true); setError(""); }
   // Crear usuario nuevo pasa por la Cloud Function `adminCrearUsuario` (Fase
   // B): a diferencia de editar, crear SÍ necesita generar una cuenta real de
   // Firebase Auth para que esa persona pueda entrar — eso no lo puede hacer
@@ -8345,7 +8378,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
       if (!form.name) { setError("El nombre es obligatorio."); return; }
       if (form.email && form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) { setError("El correo no parece válido."); return; }
       const avatar = form.name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, clienteProduccion: form.clienteProduccion || "", email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, avatar } : u)));
+      onUpdateUsers(users.map((u) => (u.id === editUser.id ? { ...u, name: form.name, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado || "", clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, clienteProduccion: form.clienteProduccion || "", clientesProduccion: form.clientesProduccion || [], email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas, avatar } : u)));
       setShowForm(false);
       return;
     }
@@ -8357,7 +8390,7 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
     setCreando(true);
     try {
       const llamar = httpsCallable(functionsClient, "adminCrearUsuario");
-      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado, clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, clienteProduccion: form.clienteProduccion || "", email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas });
+      await llamar({ name: form.name, username: form.username, password: form.password, role: form.role, isAdmin: form.isAdmin, clienteAsociado: form.clienteAsociado, clientesAsociados: form.clientesAsociados || [], modulosCliente: form.modulosCliente || [], soloLecturaCliente: !!form.soloLecturaCliente, clienteProduccion: form.clienteProduccion || "", clientesProduccion: form.clientesProduccion || [], email: form.email ? form.email.trim() : "", areaNomina: form.areaNomina || "", procesosPlaneacion: form.procesosPlaneacion || [], landingAreas: !!form.landingAreas });
       setShowForm(false);
     } catch (err) {
       setError(err?.message || "No se pudo crear el usuario.");
@@ -8544,12 +8577,27 @@ function UsersTab({ users, onUpdateUsers, config, isAdmin, areasNomina, procesos
             )}
             {form.role === "Cliente" && (form.modulosCliente || []).includes("produccion") && (
               <div>
-                <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Cliente de Producción (obligatorio para ver ese módulo)</label>
-                <select value={form.clienteProduccion} onChange={(e) => setForm((f) => ({ ...f, clienteProduccion: e.target.value }))} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
-                  <option value="">— Selecciona —</option>
-                  {GRUPOS_CLIENTE_PRODUCCION.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}
-                </select>
-                <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Define de qué cliente de Busint ve los datos en "Producción" — sin esto seleccionado, no podrá ver ese módulo aunque esté marcado arriba. Si no ves el cliente que necesitas, pide que lo agreguen a la lista.</div>
+                <label style={{ fontSize: 11, fontWeight: 700, color: T.slate, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Clientes de Producción (obligatorio para ver ese módulo)</label>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "10px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8 }}>
+                  {GRUPOS_CLIENTE_PRODUCCION.map((g) => {
+                    const marcado = (form.clientesProduccion || []).includes(g.id);
+                    return (
+                      <label key={g.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: T.ink }}>
+                        <input
+                          type="checkbox"
+                          checked={marcado}
+                          onChange={(e) => setForm((f) => {
+                            const actuales = f.clientesProduccion || [];
+                            const siguientes = e.target.checked ? [...actuales, g.id] : actuales.filter((x) => x !== g.id);
+                            return { ...f, clientesProduccion: siguientes };
+                          })}
+                        />
+                        {g.label}
+                      </label>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Define de qué cliente(s) de Busint ve los datos en "Producción" -- sin ninguno marcado, no podrá ver ese módulo aunque esté marcado arriba. Si marcas más de uno, el usuario podrá elegir entre ellos dentro de la pantalla. Si no ves el cliente que necesitas, pide que lo agreguen a la lista.</div>
               </div>
             )}
             <div>
@@ -14414,7 +14462,7 @@ function AppInner() {
   // todavía, solo para el rol Cliente (con su "clienteProduccion"
   // configurado en la ficha del usuario) o para admin (para previsualizar
   // lo que vería cada cliente).
-  const canAccessProduccion = !!currentUser?.isAdmin || (role === "Cliente" && moduloVisibleParaCliente(currentUser, "produccion") && !!currentUser?.clienteProduccion);
+  const canAccessProduccion = !!currentUser?.isAdmin || (role === "Cliente" && moduloVisibleParaCliente(currentUser, "produccion") && clientesProduccionDeUsuario(currentUser).length > 0);
   const canAccessKpis = moduloVisible(userRoleData, "kpis", currentUser?.isAdmin);
   const canAccessCorte = moduloVisible(userRoleData, "corte", currentUser?.isAdmin);
   const canAccessContabilidad = moduloVisible(userRoleData, "contabilidad", currentUser?.isAdmin);
