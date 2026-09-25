@@ -3874,16 +3874,25 @@ function buscarRefEnCapsulasPreorden(refNorm, capsulas) {
   }
   return null;
 }
-function resumenPreordenPorCategoria(items) {
+// (2026-09-25, a pedido de Fredy) filtroGrupo (Dama/Caballero/Niño/Niña --
+// el campo "tipo" del ítem, ver config.gruposLinea/lineaGrupoMap) y
+// filtroPais ("colombia"/"venezuela"/vacío=ambos) son opcionales -- sin
+// ellos, se comporta exactamente igual que antes (así sigue funcionando la
+// llamada de NuevaReprogramacionView, que no filtra nada).
+function resumenPreordenPorCategoria(items, filtroGrupo, filtroPais) {
   const mapa = new Map();
-  (items || []).forEach((it) => {
-    const cat = it.categoria || "Sin categoría";
-    const cantidad = (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0);
-    const actual = mapa.get(cat) || { categoria: cat, referencias: 0, unidades: 0 };
-    actual.referencias += 1;
-    actual.unidades += cantidad;
-    mapa.set(cat, actual);
-  });
+  (items || [])
+    .filter((it) => !filtroGrupo || it.tipo === filtroGrupo)
+    .forEach((it) => {
+      const cat = it.categoria || "Sin categoría";
+      const cantidad = filtroPais === "colombia" ? (Number(it.colombiaCantidad) || 0)
+        : filtroPais === "venezuela" ? (Number(it.venezuelaCantidad) || 0)
+        : (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0);
+      const actual = mapa.get(cat) || { categoria: cat, referencias: 0, unidades: 0 };
+      actual.referencias += 1;
+      actual.unidades += cantidad;
+      mapa.set(cat, actual);
+    });
   return [...mapa.values()].sort((a, b) => b.unidades - a.unidades);
 }
 function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, currentUser, esOrdenNueva, onAddCapsula, onAddRef, onGuardar, onCancelar }) {
@@ -5423,6 +5432,13 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   // toda la tabla (algunas tienen 40+ referencias). Un objeto {preordenId:
   // texto} porque son varias tarjetas en la misma pantalla.
   const [buscarItemPorPreorden, setBuscarItemPorPreorden] = useState({});
+  // (2026-09-25, a pedido de Fredy) Filtros del "Resumen por categoría" de
+  // cada preorden -- por Línea (campo "tipo" del ítem: Dama/Caballero/
+  // Niño/Niña) y por País (Colombia/Venezuela, vacío = ambos sumados como
+  // antes). Objetos {preordenId: valor}, mismo patrón que
+  // buscarItemPorPreorden, porque son varias tarjetas a la vez.
+  const [filtroGrupoPorPreorden, setFiltroGrupoPorPreorden] = useState({});
+  const [filtroPaisPorPreorden, setFiltroPaisPorPreorden] = useState({});
   // (2026-09-23, a pedido de Fredy) Id de la preorden a la que se le está
   // agregando una referencia nueva (o null si el modal está cerrado).
   const [agregandoRefA, setAgregandoRefA] = useState(null);
@@ -5847,7 +5863,10 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
       )}
       {visiblesBuscadas.map((p) => {
         const abierto = expandido === p.id;
-        const resumen = resumenPreordenPorCategoria(p.items);
+        const filtroGrupo = filtroGrupoPorPreorden[p.id] || "";
+        const filtroPais = filtroPaisPorPreorden[p.id] || "";
+        const gruposDisponibles = [...new Set((p.items || []).map((it) => it.tipo).filter(Boolean))].sort();
+        const resumen = resumenPreordenPorCategoria(p.items, filtroGrupo, filtroPais);
         const totalUnidades = resumen.reduce((s, r) => s + r.unidades, 0);
         const estadoActual = p.estado || "montada";
         // (2026-09-16, a pedido de Fredy) Aprobada = bloqueada para todo el
@@ -6108,6 +6127,27 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                 </div>
                 <div style={{ marginTop: 20 }}>
                   <div style={{ fontWeight: 700, fontSize: 13, color: T.ink, marginBottom: 8 }}>Resumen por categoría</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 10 }}>
+                    {gruposDisponibles.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: 10.5, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>Línea</div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          <Btn small variant={!filtroGrupo ? "primary" : "secondary"} onClick={() => setFiltroGrupoPorPreorden((s) => ({ ...s, [p.id]: "" }))}>Todas</Btn>
+                          {gruposDisponibles.map((g) => (
+                            <Btn key={g} small variant={filtroGrupo === g ? "primary" : "secondary"} onClick={() => setFiltroGrupoPorPreorden((s) => ({ ...s, [p.id]: filtroGrupo === g ? "" : g }))}>{g}</Btn>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div>
+                      <div style={{ fontSize: 10.5, fontWeight: 700, color: T.slate, textTransform: "uppercase", marginBottom: 4 }}>País</div>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        <Btn small variant={!filtroPais ? "primary" : "secondary"} onClick={() => setFiltroPaisPorPreorden((s) => ({ ...s, [p.id]: "" }))}>Ambos</Btn>
+                        <Btn small variant={filtroPais === "colombia" ? "primary" : "secondary"} onClick={() => setFiltroPaisPorPreorden((s) => ({ ...s, [p.id]: filtroPais === "colombia" ? "" : "colombia" }))}>Colombia</Btn>
+                        <Btn small variant={filtroPais === "venezuela" ? "primary" : "secondary"} onClick={() => setFiltroPaisPorPreorden((s) => ({ ...s, [p.id]: filtroPais === "venezuela" ? "" : "venezuela" }))}>Venezuela</Btn>
+                      </div>
+                    </div>
+                  </div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
                     {resumen.map((r) => (
                       <div key={r.categoria} style={{ padding: "10px 12px", borderRadius: 10, border: `1px solid ${T.border}`, background: T.canvas }}>
