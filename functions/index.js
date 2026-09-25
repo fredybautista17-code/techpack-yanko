@@ -2295,6 +2295,139 @@ exports.getResumenFacturacionPorPedidoBusintBD = onCall(
   }
 );
 
+// (2026-09-25) Contabilidad -> Cuentas por Pagar, a pedido de Fredy:
+// automatiza el "corte" que hasta ahora se subía a mano (exportando el
+// reporte de Busint a Excel y subiéndolo con ImportarCXPModal) para que se
+// pueda traer con un botón, en vivo.
+//
+// Cruza 3 tablas de Busint BD:
+//   - "cartera cxp-fact": TODAS las facturas de compra alguna vez emitidas
+//     (CODIGO=proveedor, NFACT=número de factura, FACTOTAL=valor total,
+//     Fechafin=fecha de vencimiento). Incluye facturas ya pagadas hace años
+//     -- por sí sola NO sirve para saber el saldo real.
+//   - "cxp-pagos detalles": pagos ya aplicados a cada factura (CodigoP,
+//     Nfact, Totalp=valor pagado). Saldo pendiente de una factura =
+//     FACTOTAL - suma(Totalp) agrupado por CODIGO+NFACT.
+//   - "maestro de proveedores": catálogo Codigo->Nombre, para agrupar por
+//     nombre de proveedor igual que hace hoy el Excel importado a mano.
+//
+// Validado a mano contra el reporte oficial de Busint del 25/09/2026 para
+// CHEVIOTTO TEXTIL SAS (código interno 2043): dio saldo pendiente exacto de
+// $72.933.137 en las 2 únicas facturas abiertas (FVC2-6811/FVC2-6873) --
+// igual al reporte real, con todas las facturas anteriores (2022-2026) ya
+// pagadas 1:1 excluidas correctamente.
+//
+// La forma del resultado ({fechaCorte, proveedores:[{nombre, porVencer,
+// dias0a30, dias31a60, dias61a90, dias91mas, total}]}) es la MISMA que ya
+// espera `addCorteCxp`/`CuentasPorPagarView` -- así que el frontend solo
+// necesita llamar esto y pasar el resultado directo a `onImportarCorte`,
+// sin tocar el resto de la pantalla (ordenar, programar pagos, proyección
+// siguen funcionando igual). Cada proveedor también trae `facturas` (una
+// por factura abierta, con su saldo y fecha exacta de vencimiento) -- no lo
+// usa la pantalla actual, pero deja lista la data para la vista semanal de
+// "próximos vencimientos" que Fredy pidió como siguiente paso.
+function calcularBucketAntiguedadCxp(diasVencido) {
+  // diasVencido > 0 = ya venció hace esos días; <= 0 = todavía no vence.
+  if (diasVencido <= 0) return "porVencer";
+  if (diasVencido <= 30) return "dias0a30";
+  if (diasVencido <= 60) return "dias31a60";
+  if (diasVencido <= 90) return "dias61a90";
+  return "dias91mas";
+}
+function fechaBusintBDaDateSoloDia(campo) {
+  // Los campos de fecha de la API "BD" de Busint vienen como objeto
+  // {isValidDateTime, year, month, day, ...} en vez de un string ISO.
+  if (!campo || typeof campo !== "object" || !campo.isValidDateTime) return null;
+  return new Date(campo.year, (campo.month || 1) - 1, campo.day || 1);
+}
+exports.getCuentasPorPagarBusintGen = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    let facturas, pagos, proveedores;
+    try {
+      [facturas, pagos, proveedores] = await Promise.all([
+        consultarTablaBusintBDCompleta("cartera cxp-fact"),
+        consultarTablaBusintBDCompleta("cxp-pagos detalles"),
+        consultarTablaBusintBDCompleta("maestro de proveedores"),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getCuentasPorPagarBusintGen)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint BD: ${err?.message || String(err)}`);
+    }
+    // Suma de pagos aplicados, agrupada por "CODIGO|NFACT" exacto (misma
+    // pareja de llaves que usa Busint para cruzar factura <-> pago).
+    const pagadoPorFactura = new Map();
+    pagos.forEach((p) => {
+      const codigo = p?.CodigoP;
+      const nfact = String(p?.Nfact ?? "").trim();
+      if (codigo === undefined || codigo === null || !nfact) return;
+      const llave = `${codigo}|${nfact}`;
+      pagadoPorFactura.set(llave, (pagadoPorFactura.get(llave) || 0) + (Number(p?.Totalp) || 0));
+    });
+    const nombrePorCodigo = new Map();
+    proveedores.forEach((p) => {
+      if (p?.Codigo === undefined || p?.Codigo === null) return;
+      nombrePorCodigo.set(p.Codigo, String(p.Nombre || "").trim() || `Proveedor ${p.Codigo}`);
+    });
+    const UMBRAL_SALDO_CXP = 1; // ignora diferencias de centavos de redondeo
+    const hoy = new Date();
+    hoy.setHours(0, 0, 0, 0);
+    const porProveedor = new Map();
+    facturas.forEach((f) => {
+      const codigo = f?.CODIGO;
+      const nfact = String(f?.NFACT ?? "").trim();
+      if (codigo === undefined || codigo === null || !nfact) return;
+      const llave = `${codigo}|${nfact}`;
+      const facTotal = Number(f?.FACTOTAL) || 0;
+      const pagado = pagadoPorFactura.get(llave) || 0;
+      const saldo = facTotal - pagado;
+      if (saldo <= UMBRAL_SALDO_CXP) return; // ya pagada (o a favor)
+      const fechaVcto = fechaBusintBDaDateSoloDia(f?.Fechafin);
+      const diasVencido = fechaVcto ? Math.round((hoy - fechaVcto) / (1000 * 60 * 60 * 24)) : 0;
+      const bucket = calcularBucketAntiguedadCxp(diasVencido);
+      const nombre = nombrePorCodigo.get(codigo) || `Proveedor ${codigo}`;
+      if (!porProveedor.has(nombre)) {
+        porProveedor.set(nombre, {
+          nombre,
+          porVencer: 0,
+          dias0a30: 0,
+          dias31a60: 0,
+          dias61a90: 0,
+          dias91mas: 0,
+          total: 0,
+          facturas: [],
+        });
+      }
+      const prov = porProveedor.get(nombre);
+      prov[bucket] += saldo;
+      prov.total += saldo;
+      prov.facturas.push({
+        nfact,
+        facTotal,
+        pagado,
+        saldo,
+        fechaVctoISO: fechaVcto ? fechaVcto.toISOString().slice(0, 10) : null,
+        diasVencido,
+      });
+    });
+    const proveedoresResultado = [...porProveedor.values()]
+      .map((p) => ({ ...p, facturas: p.facturas.sort((a, b) => a.diasVencido - b.diasVencido) }))
+      .sort((a, b) => b.total - a.total);
+    const hoyISO = hoy.toISOString().slice(0, 10);
+    return {
+      fechaCorte: hoyISO,
+      proveedores: proveedoresResultado,
+      totalProveedores: proveedoresResultado.length,
+      totalGeneral: proveedoresResultado.reduce((s, p) => s + p.total, 0),
+    };
+  }
+);
+
 // (2026-08-29) Fredy pidió ver, por lote, cuánto entró REALMENTE a cada
 // proceso (no lo que quedó pendiente, sino lo que Busint registró como
 // entrada) — validado a mano contra el lote 7250: "BAJADA DE VINILO" tenía
