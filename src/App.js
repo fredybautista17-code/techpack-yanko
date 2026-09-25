@@ -5141,7 +5141,18 @@ function ComprasSinOrdenModal({ entregas, preordenes, config, puedeIngresarTela,
 // que una referencia que solo existe en pedido (todavía sin cortar del
 // todo) queda en "(Sin categoría)"/"(Sin línea)" hasta que Busint reporte
 // algo de esa referencia.
-function agruparProduccionPorCampo(lotesCliente, pedidosCliente, campo) {
+//
+// (2026-09-25, a pedido de Fredy) filtroLinea: acota el resultado a una sola
+// línea (Dama/Caballero/Niño/Niña) cuando campo === "categoria" -- pensado
+// para ver, ej., solo lo de "Dama" desglosado por tipo de prenda. No aplica
+// cuando campo === "linea" (agrupar por línea YA es ese mismo filtro, como
+// grupo). Cada referencia guarda su categoria y su linea por separado
+// (antes se guardaba solo "grupo", el campo activo) para poder filtrar por
+// una sin perder la otra. Las referencias que SOLO vienen del pedido (sin
+// ningún lote de Busint todavía) no tienen cómo saber su línea, así que se
+// dejan siempre visibles en "(Sin categoría)" sin importar el filtro --
+// desaparecerlas sería esconder pedido pendiente real.
+function agruparProduccionPorCampo(lotesCliente, pedidosCliente, campo, filtroLinea) {
   const sinEtiqueta = campo === "linea" ? "(Sin línea)" : "(Sin categoría)";
   const porReferencia = new Map();
   const tieneDatosPedido = Array.isArray(pedidosCliente);
@@ -5152,7 +5163,7 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, campo) {
         (p.referencias || []).forEach((r) => {
           const ref = String(r.ref || "").trim();
           if (!ref) return;
-          if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, grupo: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0 });
+          if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0 });
           porReferencia.get(ref).pedidoTotal += Number(r.total) || 0;
         });
       });
@@ -5160,18 +5171,22 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, campo) {
   (lotesCliente || []).forEach((l) => {
     const ref = String(l.referencia || "").trim();
     if (!ref) return;
-    if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, grupo: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0 });
+    if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0 });
     const fila = porReferencia.get(ref);
-    const valorCampo = campo === "linea" ? l.linea : l.categoria;
-    if (!fila.grupo && valorCampo) fila.grupo = valorCampo;
+    if (!fila.categoria && l.categoria) fila.categoria = l.categoria;
+    if (!fila.linea && l.linea) fila.linea = l.linea;
     fila.cortado += Number(l.cantCortada) || 0;
     fila.planta += Number(l.invPlanta) || 0;
     fila.semiterminado += Number(l.invSemiterminado) || 0;
     fila.bpt += Number(l.invBPT) || 0;
   });
-  const filas = [...porReferencia.values()].map((f) => ({
+  let filasBase = [...porReferencia.values()];
+  if (campo === "categoria" && filtroLinea) {
+    filasBase = filasBase.filter((f) => !f.categoria || f.linea === filtroLinea);
+  }
+  const filas = filasBase.map((f) => ({
     ...f,
-    grupo: f.grupo || sinEtiqueta,
+    grupo: (campo === "linea" ? f.linea : f.categoria) || sinEtiqueta,
     sinCortar: tieneDatosPedido ? Math.max(0, f.pedidoTotal - f.cortado) : null,
   }));
   const porGrupo = new Map();
@@ -5198,6 +5213,7 @@ function ProduccionView({ currentUser, pedidosCliente }) {
   const [actualizadoEn, setActualizadoEn] = useState(null);
   const [categoriaAbierta, setCategoriaAbierta] = useState(null);
   const [agruparPor, setAgruparPor] = useState("categoria");
+  const [filtroLinea, setFiltroLinea] = useState(null);
 
   const clienteIdEfectivo = esAdmin ? clienteIdAdmin : String(currentUser?.clienteProduccion || "");
   const grupoEfectivo = GRUPOS_CLIENTE_PRODUCCION.find((g) => g.id === clienteIdEfectivo) || null;
@@ -5217,14 +5233,19 @@ function ProduccionView({ currentUser, pedidosCliente }) {
       setCargando(false);
     }
   }
-  useEffect(() => { cargar(); setCategoriaAbierta(null); }, [clienteIdEfectivo]);
+  useEffect(() => { cargar(); setCategoriaAbierta(null); setFiltroLinea(null); }, [clienteIdEfectivo]);
   useEffect(() => { setCategoriaAbierta(null); }, [agruparPor]);
 
   // Para el usuario Cliente real, pedidosCliente ya llega filtrado a su
   // propio cliente (pedidosVisibles en ModuloApp) -- para la
   // previsualización de admin no hay con qué cruzar, así que "Sin cortar"
   // se deja en blanco en vez de mostrar un cero que no significa nada.
-  const categorias = useMemo(() => agruparProduccionPorCampo(lotes, esAdmin ? null : pedidosCliente, agruparPor), [lotes, pedidosCliente, esAdmin, agruparPor]);
+  // (2026-09-25) valores de "linea" realmente presentes en lo que trajo
+  // Busint en este momento -- igual que en BuscarPorLineaView
+  // (modulo-planeacion.jsx), para no inventar una lista fija de líneas que
+  // luego no calce con lo que Busint reporte.
+  const lineasDisponibles = useMemo(() => [...new Set(lotes.map((l) => l.linea).filter(Boolean))].sort(), [lotes]);
+  const categorias = useMemo(() => agruparProduccionPorCampo(lotes, esAdmin ? null : pedidosCliente, agruparPor, agruparPor === "categoria" ? filtroLinea : null), [lotes, pedidosCliente, esAdmin, agruparPor, filtroLinea]);
 
   if (!clienteIdEfectivo) {
     return (
@@ -5262,6 +5283,15 @@ function ProduccionView({ currentUser, pedidosCliente }) {
         <Btn small variant={agruparPor === "categoria" ? "primary" : "secondary"} onClick={() => setAgruparPor("categoria")}>Por categoría</Btn>
         <Btn small variant={agruparPor === "linea" ? "primary" : "secondary"} onClick={() => setAgruparPor("linea")}>Por línea</Btn>
       </div>
+      {agruparPor === "categoria" && lineasDisponibles.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase" }}>Línea:</div>
+          <Btn small variant={!filtroLinea ? "primary" : "secondary"} onClick={() => setFiltroLinea(null)}>Todas</Btn>
+          {lineasDisponibles.map((l) => (
+            <Btn key={l} small variant={filtroLinea === l ? "primary" : "secondary"} onClick={() => setFiltroLinea(filtroLinea === l ? null : l)}>{l}</Btn>
+          ))}
+        </div>
+      )}
       {error && (
         <div style={{ padding: 12, borderRadius: 8, background: T.coralBg, color: T.coral, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>⚠ {error}</div>
       )}
