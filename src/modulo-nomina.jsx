@@ -10,6 +10,7 @@ import {
   writeBatch,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { getStorage, ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -21,6 +22,7 @@ const firebaseConfig = {
 const fbApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
 const functionsClient = getFunctions(fbApp);
+const storage = getStorage(fbApp);
 async function fsSave(col, id, data) {
   await setDoc(doc(db, col, id), data, { merge: true });
 }
@@ -1793,35 +1795,74 @@ async function aplicarCambiosExcelTrabajadores(filasConCambios, onSave) {
   }
   return actualizados;
 }
-function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, zonasNomina, tiposContrato, turnos, gruposTrabajo }) {
+function TrabajadorModal({ trabajador, valoresIniciales, onSave, onClose, areasNomina, areasTNS, zonasNomina, tiposContrato, turnos, gruposTrabajo }) {
+  // (2026-09-26, a pedido de Fredy) Al "Contratar" un candidato desde
+  // Ingreso de Personal, este modal se abre igual que "Nuevo Trabajador"
+  // (trabajador=null, mantiene el titulo "Nuevo Trabajador") pero
+  // precargado con lo que ya se sabia del candidato -- ver `valoresIniciales`.
+  const base = trabajador || valoresIniciales || null;
   const [form, setForm] = useState({
-    nombre: trabajador?.nombre || "",
-    cedula: trabajador?.cedula || "",
-    correo: trabajador?.correo || "",
-    tarifaHora: trabajador?.tarifaHora ?? "",
-    activo: trabajador?.activo ?? true,
-    area: trabajador?.area || "Sin asignar",
-    zona: trabajador?.zona || "",
-    areaTNS: trabajador?.areaTNS || "",
-    tnsCodigo: trabajador?.tnsCodigo || "",
-    empleador: trabajador?.empleador || "",
-    claseRiesgoARL: trabajador?.claseRiesgoARL || "",
-    idHuellero: trabajador?.idHuellero || "",
-    exentoHuellero: trabajador?.exentoHuellero ?? false,
-    turnoId: trabajador?.turnoId || "",
-    tipoNomina: trabajador?.tipoNomina || "",
+    nombre: base?.nombre || "",
+    cedula: base?.cedula || "",
+    correo: base?.correo || "",
+    tarifaHora: base?.tarifaHora ?? "",
+    activo: base?.activo ?? true,
+    area: base?.area || "Sin asignar",
+    zona: base?.zona || "",
+    areaTNS: base?.areaTNS || "",
+    tnsCodigo: base?.tnsCodigo || "",
+    empleador: base?.empleador || "",
+    claseRiesgoARL: base?.claseRiesgoARL || "",
+    idHuellero: base?.idHuellero || "",
+    exentoHuellero: base?.exentoHuellero ?? false,
+    turnoId: base?.turnoId || "",
+    tipoNomina: base?.tipoNomina || "",
     tipoContrato: trabajador ? (trabajador.tipoContrato || "") : "Término Fijo",
-    sueldo: trabajador?.sueldo ?? "",
-    auxilioTransporte: trabajador?.auxilioTransporte ?? "",
-    fechaIngreso: trabajador?.fechaIngreso || "",
-    fechaRetiro: trabajador?.fechaRetiro || "",
-    medirComoBaseAdministrativa: trabajador?.medirComoBaseAdministrativa ?? false,
-    salarioMinimoGarantizado: trabajador?.salarioMinimoGarantizado ?? false,
-    pagoPorDia: trabajador?.pagoPorDia ?? false,
-    valorDia: trabajador?.valorDia ?? "",
-    minimoGarantizadoCausacion: trabajador?.minimoGarantizadoCausacion ?? false,
+    sueldo: base?.sueldo ?? "",
+    auxilioTransporte: base?.auxilioTransporte ?? "",
+    fechaIngreso: base?.fechaIngreso || "",
+    fechaRetiro: base?.fechaRetiro || "",
+    medirComoBaseAdministrativa: base?.medirComoBaseAdministrativa ?? false,
+    salarioMinimoGarantizado: base?.salarioMinimoGarantizado ?? false,
+    pagoPorDia: base?.pagoPorDia ?? false,
+    valorDia: base?.valorDia ?? "",
+    minimoGarantizadoCausacion: base?.minimoGarantizadoCausacion ?? false,
+    // (2026-09-26, a pedido de Fredy) Ingreso de Personal -- pruebas que se
+    // le hacen a todo el mundo antes de contratar (conocimiento y
+    // psicologica) y la hoja de vida. "pendiente" es el estado por defecto
+    // para alguien nuevo; ver migrarPruebasIngresoExistentes() en
+    // IngresoPersonalView para el llenado masivo de los que ya trabajan.
+    pruebaConocimiento: base?.pruebaConocimiento || "pendiente",
+    pruebaPsicologica: base?.pruebaPsicologica || "pendiente",
+    observacionesIngreso: base?.observacionesIngreso || "",
+    hojaDeVidaUrl: base?.hojaDeVidaUrl || "",
+    hojaDeVidaNombre: base?.hojaDeVidaNombre || "",
   });
+  const [subiendoHV, setSubiendoHV] = useState(false);
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  async function handleSubirHojaDeVida(e) {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    setSubiendoHV(true);
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(f);
+      });
+      const ref = storageRef(storage, `hojas_de_vida/${uid()}_${f.name}`);
+      await uploadString(ref, dataUrl, "data_url");
+      const url = await getDownloadURL(ref);
+      setForm((prev) => ({ ...prev, hojaDeVidaUrl: url, hojaDeVidaNombre: f.name }));
+    } catch (err) {
+      console.error("No se pudo subir la hoja de vida:", err);
+      alert("La hoja de vida no se pudo subir. Revisa tu conexión e inténtalo de nuevo.");
+    } finally {
+      setSubiendoHV(false);
+    }
+  }
   // (2026-09-18, a pedido de Fredy) "Salario mínimo garantizado" y "Pagar
   // por día" son excluyentes -- marcar uno desactiva el otro, para que no
   // quede una ficha con los dos activos a la vez (el cálculo de Destajo
@@ -1880,6 +1921,11 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       pagoPorDia: !!form.pagoPorDia,
       valorDia: Number(form.valorDia) || 0,
       minimoGarantizadoCausacion: !!form.minimoGarantizadoCausacion,
+      pruebaConocimiento: form.pruebaConocimiento || "pendiente",
+      pruebaPsicologica: form.pruebaPsicologica || "pendiente",
+      observacionesIngreso: form.observacionesIngreso.trim(),
+      hojaDeVidaUrl: form.hojaDeVidaUrl || "",
+      hojaDeVidaNombre: form.hojaDeVidaNombre || "",
     });
     onClose();
   }
@@ -2015,6 +2061,32 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
       </Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
         Es el código/código de tercero con el que esta persona ya existe en TNS — se necesita para poder registrarle Novedades desde Atlas.
+      </div>
+      <div style={{ borderTop: `1px solid ${C.border}`, marginTop: 14, paddingTop: 14 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 10 }}>🪪 Ingreso de Personal</div>
+        {[["pruebaConocimiento", "Prueba de Conocimiento"], ["pruebaPsicologica", "Prueba Psicológica"]].map(([campo, etiqueta]) => (
+          <Field key={campo} label={etiqueta}>
+            <div style={{ display: "flex", gap: 6 }}>
+              {[["paso", "Pasó"], ["no_paso", "No pasó"], ["pendiente", "Pendiente"]].map(([v, label]) => (
+                <button key={v} type="button" onClick={() => set(campo)(v)} style={{ padding: "6px 12px", borderRadius: 6, border: `1.5px solid ${form[campo] === v ? C.green : C.border}`, background: form[campo] === v ? C.greenBg : C.white, color: form[campo] === v ? C.green : C.ink, fontWeight: 700, fontSize: 11.5, cursor: "pointer" }}>{label}</button>
+              ))}
+            </div>
+          </Field>
+        ))}
+        <Field label="Observaciones">
+          <textarea value={form.observacionesIngreso} onChange={(e) => set("observacionesIngreso")(e.target.value)} rows={2} placeholder="Notas del proceso de selección..." style={{ width: "100%", padding: 8, borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 12.5, fontFamily: "inherit", resize: "vertical" }} />
+        </Field>
+        <Field label="Hoja de vida">
+          {form.hojaDeVidaUrl ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
+              <a href={form.hojaDeVidaUrl} target="_blank" rel="noopener noreferrer" style={{ color: C.blue, fontWeight: 700 }}>📄 {form.hojaDeVidaNombre || "Ver archivo"}</a>
+              <span onClick={() => setForm((f) => ({ ...f, hojaDeVidaUrl: "", hojaDeVidaNombre: "" }))} style={{ cursor: "pointer", color: C.red }}>Quitar</span>
+            </div>
+          ) : (
+            <input type="file" accept="application/pdf,image/*" onChange={handleSubirHojaDeVida} disabled={subiendoHV} style={{ fontSize: 12 }} />
+          )}
+          {subiendoHV && <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Subiendo...</div>}
+        </Field>
       </div>
       {trabajador && (
         <Field label="Estado">
@@ -2626,6 +2698,290 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
         filas={ordenadosFiltrados}
       />
     </div>
+  );
+}
+// ─── INGRESO DE PERSONAL ─────────────────────────────────────────────────
+// (2026-09-26, a pedido de Fredy) Vista unificada para buscar a cualquiera
+// -- ya haya trabajado, este trabajando, o solo haya traido su hoja de vida
+// como candidato -- y ver de una vez sus pruebas de ingreso (Conocimiento/
+// Psicologica), su hoja de vida, y el o los periodos que trabajo. Los
+// periodos se arman con el historial de Liquidacion de Retiro (cada retiro
+// ahora queda con un id unico, ver TrabajadoresView/guardar() mas arriba) +
+// el periodo abierto actual si sigue Activo.
+function periodosDeTrabajador(trabajador, liquidacionesRetiro) {
+  const cerrados = (liquidacionesRetiro || [])
+    .filter((l) => l.trabajadorId === trabajador.id)
+    .map((l) => ({ desde: l.fechaIngreso, hasta: l.fechaCorte, estado: "Retirado" }))
+    .sort((a, b) => (a.desde || "").localeCompare(b.desde || ""));
+  if (trabajador.activo && trabajador.fechaIngreso) {
+    cerrados.push({ desde: trabajador.fechaIngreso, hasta: null, estado: "Activo" });
+  }
+  return cerrados;
+}
+function BadgePrueba({ valor }) {
+  const mapa = {
+    paso: { label: "Pasó", bg: C.greenBg, color: C.green },
+    no_paso: { label: "No pasó", bg: C.redBg, color: C.red },
+    pendiente: { label: "Pendiente", bg: C.amberBg, color: C.amber },
+  };
+  const v = mapa[valor] || mapa.pendiente;
+  return <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 10.5, fontWeight: 700, background: v.bg, color: v.color }}>{v.label}</span>;
+}
+function IngresoPersonalView({ trabajadores, candidatos, liquidacionesRetiro, isAdmin, areasNomina, areasTNS, zonasNomina, tiposContrato, turnos, gruposTrabajo, onGuardarTrabajador, onGuardarCandidato, onBorrarCandidato, onContratarCandidato }) {
+  const [busqueda, setBusqueda] = useState("");
+  const [modalCandidato, setModalCandidato] = useState(null); // null | "nuevo" | candidato
+  const [confirmDel, setConfirmDel] = useState(null);
+  const [contratando, setContratando] = useState(null); // candidato que se esta contratando
+  const [editarTrabajador, setEditarTrabajador] = useState(null);
+  const [migrando, setMigrando] = useState(false);
+  const [migrados, setMigrados] = useState(null);
+
+  const filas = useMemo(() => {
+    const deTrabajadores = trabajadores.map((t) => ({
+      id: t.id, _tipo: "trabajador", _obj: t,
+      nombre: t.nombre, cedula: t.cedula,
+      estado: t.activo ? "Activo" : "Retirado",
+      pruebaConocimiento: t.pruebaConocimiento || "pendiente",
+      pruebaPsicologica: t.pruebaPsicologica || "pendiente",
+      hojaDeVidaUrl: t.hojaDeVidaUrl || "",
+      periodos: periodosDeTrabajador(t, liquidacionesRetiro),
+    }));
+    const deCandidatos = (candidatos || []).map((c) => ({
+      id: c.id, _tipo: "candidato", _obj: c,
+      nombre: c.nombre, cedula: c.cedula,
+      estado: "Candidato",
+      pruebaConocimiento: c.pruebaConocimiento || "pendiente",
+      pruebaPsicologica: c.pruebaPsicologica || "pendiente",
+      hojaDeVidaUrl: c.hojaDeVidaUrl || "",
+      periodos: [],
+    }));
+    return [...deCandidatos, ...deTrabajadores];
+  }, [trabajadores, candidatos, liquidacionesRetiro]);
+
+  const filtradas = useMemo(() => {
+    const q = normalizarNombreParaComparar(busqueda);
+    const qCed = normalizarCedula(busqueda);
+    if (!q) return filas;
+    return filas.filter((f) => normalizarNombreParaComparar(f.nombre).includes(q) || (qCed && normalizarCedula(f.cedula).includes(qCed)));
+  }, [filas, busqueda]);
+
+  const ordenadas = useMemo(() => [...filtradas].sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es")), [filtradas]);
+
+  const pendientesMigrar = trabajadores.filter((t) => !t.pruebaConocimiento || !t.pruebaPsicologica).length;
+
+  async function migrarPruebasIngresoExistentes() {
+    setMigrando(true);
+    try {
+      const batch = writeBatch(db);
+      let n = 0;
+      trabajadores.forEach((t) => {
+        if (!t.pruebaConocimiento || !t.pruebaPsicologica) {
+          batch.set(doc(db, "nomina_trabajadores", t.id), {
+            pruebaConocimiento: t.pruebaConocimiento || "paso",
+            pruebaPsicologica: t.pruebaPsicologica || "paso",
+          }, { merge: true });
+          n++;
+        }
+      });
+      if (n) await batch.commit();
+      setMigrados(n);
+    } finally {
+      setMigrando(false);
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 720 }}>
+        Busca a cualquier persona -- candidato, trabajador activo o retirado -- por nombre o cédula. Los candidatos son personas que trajeron hoja de vida y/o se les hizo alguna prueba, pero todavía no están contratadas.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+        <div style={{ width: 280 }}>
+          <FInput value={busqueda} onChange={setBusqueda} placeholder="Buscar por nombre o cédula..." />
+        </div>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 10 }}>
+          {isAdmin && pendientesMigrar > 0 && (
+            <Btn variant="secondary" onClick={migrarPruebasIngresoExistentes} disabled={migrando}>
+              {migrando ? "Migrando..." : `Marcar "Pasó" en ${pendientesMigrar} trabajador(es) existentes`}
+            </Btn>
+          )}
+          {isAdmin && <Btn onClick={() => setModalCandidato("nuevo")}>+ Nuevo candidato</Btn>}
+        </div>
+      </div>
+      {migrados !== null && (
+        <div style={{ fontSize: 12, color: C.green, fontWeight: 700, marginBottom: 12 }}>✅ Se marcaron {migrados} trabajador(es) con las pruebas en "Pasó". Cualquier caso distinto lo puedes corregir a mano abriendo a esa persona.</div>
+      )}
+      <Tabla
+        vacio="No hay candidatos ni trabajadores que coincidan con la búsqueda."
+        onRowClick={(f) => (f._tipo === "candidato" ? setModalCandidato(f._obj) : setEditarTrabajador(f._obj))}
+        columnas={[
+          { key: "nombre", label: "Nombre" },
+          { key: "cedula", label: "Cédula" },
+          { key: "estado", label: "Estado", render: (f) => (
+            <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 10.5, fontWeight: 700, background: f.estado === "Activo" ? C.greenBg : f.estado === "Candidato" ? C.blueBg : C.redBg, color: f.estado === "Activo" ? C.green : f.estado === "Candidato" ? C.blue : C.red }}>
+              {f.estado.toUpperCase()}
+            </span>
+          ) },
+          { key: "pruebaConocimiento", label: "P. Conocimiento", render: (f) => <BadgePrueba valor={f.pruebaConocimiento} /> },
+          { key: "pruebaPsicologica", label: "P. Psicológica", render: (f) => <BadgePrueba valor={f.pruebaPsicologica} /> },
+          { key: "hojaDeVidaUrl", label: "Hoja de Vida", render: (f) => f.hojaDeVidaUrl ? (
+            <a href={f.hojaDeVidaUrl} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ color: C.blue, fontWeight: 700 }}>📄 Ver</a>
+          ) : <span style={{ color: C.slate }}>—</span> },
+          { key: "periodos", label: "Períodos trabajados", render: (f) => f.periodos.length ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              {f.periodos.map((p, i) => (
+                <span key={i} style={{ fontSize: 11, whiteSpace: "nowrap" }}>
+                  {fmtFechaISO(p.desde)} → {p.hasta ? fmtFechaISO(p.hasta) : "hoy"}{" "}
+                  <span style={{ color: p.estado === "Activo" ? C.green : C.slate, fontWeight: 700 }}>({p.estado})</span>
+                </span>
+              ))}
+            </div>
+          ) : <span style={{ color: C.slate }}>—</span> },
+          ...(isAdmin ? [{
+            key: "acciones", label: "", align: "right",
+            render: (f) => (
+              <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                {f._tipo === "candidato" && <span onClick={(e) => { e.stopPropagation(); setContratando(f._obj); }} style={{ cursor: "pointer", color: C.green, fontWeight: 700 }}>Contratar</span>}
+                <span onClick={(e) => { e.stopPropagation(); f._tipo === "candidato" ? setModalCandidato(f._obj) : setEditarTrabajador(f._obj); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>Editar</span>
+                {f._tipo === "candidato" && <span onClick={(e) => { e.stopPropagation(); setConfirmDel(f._obj); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>}
+              </span>
+            ),
+          }] : []),
+        ]}
+        filas={ordenadas}
+      />
+      {modalCandidato && (
+        <CandidatoModal
+          candidato={modalCandidato === "nuevo" ? null : modalCandidato}
+          onSave={(data) => { onGuardarCandidato(modalCandidato === "nuevo" ? { id: uid(), ...data } : { id: modalCandidato.id, ...data }); setModalCandidato(null); }}
+          onClose={() => setModalCandidato(null)}
+        />
+      )}
+      {confirmDel && (
+        <Modal title="Confirmar eliminación" onClose={() => setConfirmDel(null)} width={420}>
+          <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>¿Eliminar al candidato <strong>{confirmDel.nombre}</strong>? Esto no afecta a ningún trabajador, solo borra su ficha de candidato.</div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => setConfirmDel(null)}>Cancelar</Btn>
+            <Btn variant="danger" onClick={() => { onBorrarCandidato(confirmDel.id); setConfirmDel(null); }}>Sí, eliminar</Btn>
+          </div>
+        </Modal>
+      )}
+      {editarTrabajador && (
+        <TrabajadorModal
+          trabajador={editarTrabajador}
+          areasNomina={areasNomina}
+          areasTNS={areasTNS}
+          zonasNomina={zonasNomina}
+          tiposContrato={tiposContrato}
+          turnos={turnos}
+          gruposTrabajo={gruposTrabajo}
+          onSave={(data) => { onGuardarTrabajador({ id: editarTrabajador.id, ...data }); setEditarTrabajador(null); }}
+          onClose={() => setEditarTrabajador(null)}
+        />
+      )}
+      {contratando && (
+        <TrabajadorModal
+          trabajador={null}
+          valoresIniciales={contratando}
+          areasNomina={areasNomina}
+          areasTNS={areasTNS}
+          zonasNomina={zonasNomina}
+          tiposContrato={tiposContrato}
+          turnos={turnos}
+          gruposTrabajo={gruposTrabajo}
+          onSave={(data) => { onContratarCandidato(contratando.id, data); setContratando(null); }}
+          onClose={() => setContratando(null)}
+        />
+      )}
+    </div>
+  );
+}
+function CandidatoModal({ candidato, onSave, onClose }) {
+  const [form, setForm] = useState({
+    nombre: candidato?.nombre || "",
+    cedula: candidato?.cedula || "",
+    correo: candidato?.correo || "",
+    telefono: candidato?.telefono || "",
+    pruebaConocimiento: candidato?.pruebaConocimiento || "pendiente",
+    pruebaPsicologica: candidato?.pruebaPsicologica || "pendiente",
+    observacionesIngreso: candidato?.observacionesIngreso || "",
+    hojaDeVidaUrl: candidato?.hojaDeVidaUrl || "",
+    hojaDeVidaNombre: candidato?.hojaDeVidaNombre || "",
+  });
+  const [subiendoHV, setSubiendoHV] = useState(false);
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
+  async function handleSubirHojaDeVida(e) {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    setSubiendoHV(true);
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(f);
+      });
+      const ref = storageRef(storage, `hojas_de_vida/${uid()}_${f.name}`);
+      await uploadString(ref, dataUrl, "data_url");
+      const url = await getDownloadURL(ref);
+      setForm((prev) => ({ ...prev, hojaDeVidaUrl: url, hojaDeVidaNombre: f.name }));
+    } catch (err) {
+      console.error("No se pudo subir la hoja de vida:", err);
+      alert("La hoja de vida no se pudo subir. Revisa tu conexión e inténtalo de nuevo.");
+    } finally {
+      setSubiendoHV(false);
+    }
+  }
+  function guardar() {
+    if (!form.nombre.trim()) return;
+    onSave({
+      nombre: form.nombre.trim(),
+      cedula: form.cedula.trim(),
+      correo: form.correo.trim(),
+      telefono: form.telefono.trim(),
+      pruebaConocimiento: form.pruebaConocimiento,
+      pruebaPsicologica: form.pruebaPsicologica,
+      observacionesIngreso: form.observacionesIngreso.trim(),
+      hojaDeVidaUrl: form.hojaDeVidaUrl || "",
+      hojaDeVidaNombre: form.hojaDeVidaNombre || "",
+    });
+    onClose();
+  }
+  return (
+    <Modal title={candidato ? "Editar Candidato" : "Nuevo Candidato"} onClose={onClose} width={440}>
+      <Field label="Nombre"><FInput value={form.nombre} onChange={set("nombre")} placeholder="Ej: Carlos Javier González" /></Field>
+      <Field label="Cédula"><FInput value={form.cedula} onChange={set("cedula")} placeholder="Ej: 1004802413" /></Field>
+      <Field label="Correo"><FInput type="email" value={form.correo} onChange={set("correo")} /></Field>
+      <Field label="Teléfono"><FInput value={form.telefono} onChange={set("telefono")} /></Field>
+      {[["pruebaConocimiento", "Prueba de Conocimiento"], ["pruebaPsicologica", "Prueba Psicológica"]].map(([campo, etiqueta]) => (
+        <Field key={campo} label={etiqueta}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {[["paso", "Pasó"], ["no_paso", "No pasó"], ["pendiente", "Pendiente"]].map(([v, label]) => (
+              <button key={v} type="button" onClick={() => set(campo)(v)} style={{ padding: "6px 12px", borderRadius: 6, border: `1.5px solid ${form[campo] === v ? C.green : C.border}`, background: form[campo] === v ? C.greenBg : C.white, color: form[campo] === v ? C.green : C.ink, fontWeight: 700, fontSize: 11.5, cursor: "pointer" }}>{label}</button>
+            ))}
+          </div>
+        </Field>
+      ))}
+      <Field label="Observaciones">
+        <textarea value={form.observacionesIngreso} onChange={(e) => set("observacionesIngreso")(e.target.value)} rows={2} placeholder="Notas del proceso de selección..." style={{ width: "100%", padding: 8, borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 12.5, fontFamily: "inherit", resize: "vertical" }} />
+      </Field>
+      <Field label="Hoja de vida">
+        {form.hojaDeVidaUrl ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
+            <a href={form.hojaDeVidaUrl} target="_blank" rel="noopener noreferrer" style={{ color: C.blue, fontWeight: 700 }}>📄 {form.hojaDeVidaNombre || "Ver archivo"}</a>
+            <span onClick={() => setForm((f) => ({ ...f, hojaDeVidaUrl: "", hojaDeVidaNombre: "" }))} style={{ cursor: "pointer", color: C.red }}>Quitar</span>
+          </div>
+        ) : (
+          <input type="file" accept="application/pdf,image/*" onChange={handleSubirHojaDeVida} disabled={subiendoHV} style={{ fontSize: 12 }} />
+        )}
+        {subiendoHV && <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Subiendo...</div>}
+      </Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar} disabled={!form.nombre.trim()}>Guardar</Btn>
+      </div>
+    </Modal>
   );
 }
 // ─── PROCESOS (maestro de nombres, sin precio) ─────────────────────────────
@@ -11511,6 +11867,12 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // Destajo/Destajo al hacerles clic -- ver NAV, propiedad `historial`.
   const [historialesAbiertos, setHistorialesAbiertos] = useState({});
   const [trabajadores, setTrabajadores] = useState([]);
+  // (2026-09-26, a pedido de Fredy) "Ingreso de Personal" -- candidatos que
+  // aun no son trabajadores (trajeron hoja de vida, se les hicieron las
+  // pruebas, pero no estan contratados). Una vez contratados pasan a la
+  // coleccion nomina_trabajadores via "Contratar" y se borran de aqui --
+  // ver IngresoPersonalView.
+  const [candidatos, setCandidatos] = useState([]);
   const [precios, setPrecios] = useState([]);
   const [areasNomina, setAreasNomina] = useState([]);
   const [areasTNS, setAreasTNS] = useState([]);
@@ -11588,6 +11950,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   useEffect(() => {
     const unsubs = [
       onSnapshot(collection(db, "nomina_trabajadores"), (snap) => { setTrabajadores(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setLoading(false); }),
+      onSnapshot(collection(db, "nomina_candidatos"), (snap) => setCandidatos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_precios_proceso"), (snap) => setPrecios(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_areas"), (snap) => setAreasNomina(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
       onSnapshot(collection(db, "nomina_areas_tns"), (snap) => setAreasTNS(snap.docs.map((d) => ({ ...d.data(), id: d.id })))),
@@ -11738,6 +12101,9 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "trabajadores", icon: "👷", label: "Trabajadores" },
             ...(isAdmin || puedeVerDuplicadosHuellero ? [{ id: "diagnostico_duplicados", icon: "🧹", label: "Diagnóstico de Duplicados (Huellero)" }] : []),
           ] },
+        { group: "Personal", icon: "🪪", items: [
+            { id: "ingreso_personal", icon: "🪪", label: "Ingreso de Personal" },
+          ] },
         { group: "Novedades", icon: "📣", items: [
             { id: "ausencias", icon: "📅", label: "Motivos de Ausencia" },
             { id: "permisos", icon: "🗓️", label: "Permisos (Calendario)" },
@@ -11794,6 +12160,15 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
     await fsSave("nomina_trabajadores", t.id, t);
   }
   async function borrarTrabajador(id) { await fsDelete("nomina_trabajadores", id); }
+  async function guardarCandidato(c) { await fsSave("nomina_candidatos", c.id, c); }
+  async function borrarCandidato(id) { await fsDelete("nomina_candidatos", id); }
+  // Al contratar: crea el trabajador con los datos del candidato + lo que
+  // se completo en el modal (sueldo, area, etc.) y borra el candidato --
+  // no se guardan los dos a la vez para la misma persona.
+  async function contratarCandidato(candidatoId, datosTrabajador) {
+    await guardarTrabajador({ id: uid(), ...datosTrabajador });
+    await borrarCandidato(candidatoId);
+  }
   async function guardarProceso(p) { await fsSave("nomina_precios_proceso", p.id, p); }
   async function borrarProceso(id) { await fsDelete("nomina_precios_proceso", id); }
   async function guardarAreaNomina(a) { await fsSave("nomina_areas", a.id, a); }
@@ -12276,6 +12651,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "historial_quincenas" && !areaLider && !soloNovedades && <HistorialQuincenasView liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} trabajadores={trabajadores} />}
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} causacionManual={causacionManual} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
+          {subView === "ingreso_personal" && !areaLider && !soloNovedades && <IngresoPersonalView trabajadores={trabajadores} candidatos={candidatos} liquidacionesRetiro={liquidacionesRetiro} isAdmin={isAdminCatalogos} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} turnos={turnos} gruposTrabajo={gruposTrabajo} onGuardarTrabajador={guardarTrabajador} onGuardarCandidato={guardarCandidato} onBorrarCandidato={borrarCandidato} onContratarCandidato={contratarCandidato} />}
           {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
           {subView === "areas_nomina" && !areaLider && !soloNovedades && <AreasNominaView areas={areasNomina} trabajadores={trabajadores} procesos={precios} grupos={gruposTrabajo} turnos={turnos} isAdmin={isAdminCatalogos} onSave={guardarAreaNomina} onAplicarTurno={aplicarTurnoATrabajadores} onDelete={borrarAreaNomina} />}
           {subView === "zonas_nomina" && !areaLider && !soloNovedades && <ZonasNominaView zonas={zonasNomina} areasNomina={areasNomina} gruposTrabajo={gruposTrabajo} trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarZonaNomina} onDelete={borrarZonaNomina} />}
