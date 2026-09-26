@@ -11327,13 +11327,16 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
     .filter((f) => !anioFiltroHistorial || (f.fechaCorte || "").slice(0, 4) === anioFiltroHistorial)
     .filter((f) => !areaFiltro || (f.area || "Sin asignar") === areaFiltro);
   // (2026-09-26, a pedido de Fredy) Los totales de Pagado/Por Pagar se
-  // calculan sobre Año+Área (sin el filtro de Estado) para que siempre se
-  // vean los dos juntos, sin importar cuál esté seleccionado en el filtro.
-  const totalPagadoHistorial = historialPorAnioYArea.filter((f) => f.estadoPago === "pagada").reduce((s, f) => s + (Number(f.totalAPagar) || 0), 0);
-  const totalPorPagarHistorial = historialPorAnioYArea.filter((f) => f.estadoPago !== "pagada").reduce((s, f) => s + (Number(f.totalAPagar) || 0), 0);
-  const historialFiltrado = historialPorAnioYArea
+  // calculan sobre Año+Área+Empresa (sin el filtro de Estado ni el
+  // buscador) para que siempre se vean pagado y por pagar juntos, pero
+  // ahora sí cambian según el botón Todas/Yanko/Indutex: en "Todas" suman
+  // las dos empresas, en "Yanko" o "Indutex" solo esa.
+  const historialPorAnioAreaYEmpresa = historialPorAnioYArea
+    .filter((f) => !empresaHistorialFiltro || f.empleador === empresaHistorialFiltro);
+  const totalPagadoHistorial = historialPorAnioAreaYEmpresa.filter((f) => f.estadoPago === "pagada").reduce((s, f) => s + (Number(f.totalAPagar) || 0), 0);
+  const totalPorPagarHistorial = historialPorAnioAreaYEmpresa.filter((f) => f.estadoPago !== "pagada").reduce((s, f) => s + (Number(f.totalAPagar) || 0), 0);
+  const historialFiltrado = historialPorAnioAreaYEmpresa
     .filter((f) => !estadoPagoFiltro || (estadoPagoFiltro === "pagada" ? f.estadoPago === "pagada" : f.estadoPago !== "pagada"))
-    .filter((f) => !empresaHistorialFiltro || f.empleador === empresaHistorialFiltro)
     .filter((f) => {
       if (!busquedaHistorial) return true;
       const q = normalizarNombreParaComparar(busquedaHistorial);
