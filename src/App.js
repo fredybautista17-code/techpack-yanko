@@ -11095,6 +11095,33 @@ function BusintCatalogoTestView() {
       setCargandoTablaNombre(false);
     }
   }
+  // (2026-09-26) EXPLORATORIO / TEMPORAL -- buscar un VALOR exacto (ej. el
+  // monto de una Devolucion de Cuentas por Pagar) dentro de todas las
+  // tablas cuyo NOMBRE contenga alguna palabra clave de compras/cartera,
+  // en vez de adivinar tabla y campo a mano uno por uno. Ver comentario en
+  // functions/index.js (buscarValorEnTablasBusintBD) -- quitar cuando ya
+  // no haga falta.
+  const [valoresBuscarExacto, setValoresBuscarExacto] = useState("");
+  const [keywordsBuscarExacto, setKeywordsBuscarExacto] = useState("");
+  const [cargandoBuscarExacto, setCargandoBuscarExacto] = useState(false);
+  const [buscarExactoResultado, setBuscarExactoResultado] = useState(null);
+  async function buscarValorExacto() {
+    const valores = valoresBuscarExacto.split(",").map((v) => v.trim()).filter(Boolean);
+    if (!valores.length) return;
+    setCargandoBuscarExacto(true);
+    setError("");
+    setBuscarExactoResultado(null);
+    try {
+      const keywords = keywordsBuscarExacto.split(",").map((k) => k.trim()).filter(Boolean);
+      const llamar = httpsCallable(functionsClient, "buscarValorEnTablasBusintBD");
+      const resp = await llamar({ valores, ...(keywords.length ? { keywords } : {}) });
+      setBuscarExactoResultado(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo buscar el valor exacto.");
+    } finally {
+      setCargandoBuscarExacto(false);
+    }
+  }
   // (2026-09-04) EXPLORATORIO — dado un numero de pedido, cruza la cabecera
   // "facturas" (por Numped) con "facturas detalles" (por Nfact) y suma
   // unidades por Referencia, todo del lado del servidor -- para comparar
@@ -11630,6 +11657,50 @@ function BusintCatalogoTestView() {
                 {t}
               </span>
             ))}
+          </div>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Buscar un VALOR exacto en varias tablas (temporal, para Cheviotto/Devolucion)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Trae COMPLETAS todas las tablas cuyo nombre contenga alguna palabra clave (por defecto: compra, ajuste, cxp, cartera, provee, nota, devoluc, credito, debito, movimiento) y busca ese valor numérico exacto (con tolerancia de $1 de redondeo) en CUALQUIER columna numérica de cada una — para encontrar en qué tabla/columna vive un monto puntual sin adivinar. Puede tardar varios minutos si hay tablas grandes entre las candidatas.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Valores a buscar (separados por coma)">
+          <FInput value={valoresBuscarExacto} onChange={setValoresBuscarExacto} placeholder="Ej: 14784905, 15345766" />
+        </Field>
+        <Field label="Palabras clave de tabla (opcional, coma-separadas)">
+          <FInput value={keywordsBuscarExacto} onChange={setKeywordsBuscarExacto} placeholder="Ej: compra, ajuste, cxp" />
+        </Field>
+        <div style={{ marginBottom: 14 }}>
+          <Btn onClick={buscarValorExacto} disabled={cargandoBuscarExacto || !valoresBuscarExacto.trim()}>{cargandoBuscarExacto ? "Buscando (puede tardar minutos)..." : "🔎 Buscar valor exacto"}</Btn>
+        </div>
+      </div>
+      {buscarExactoResultado && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ fontSize: 13, color: T.slate, marginBottom: 10 }}>
+            {buscarExactoResultado.totalTablasRevisadas} tabla(s) revisada(s) buscando: {(buscarExactoResultado.valoresBuscados || []).join(", ")}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {(buscarExactoResultado.resultados || [])
+              .filter((r) => !r.ok || r.totalCoincidencias > 0)
+              .map((r) => (
+                <div key={r.tabla} style={{ padding: 14, background: r.ok ? T.canvas : T.coralBg, borderRadius: 10, border: `1px solid ${r.ok ? T.border : T.coral}` }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: T.ink, marginBottom: 6 }}>
+                    {r.tabla} {r.ok ? `— ${r.totalCoincidencias} coincidencia(s) de ${r.totalFilas} filas` : ""}
+                  </div>
+                  {r.ok ? (
+                    <pre style={{ background: T.white, borderRadius: 8, padding: 10, fontSize: 11, overflowX: "auto", maxHeight: 220, border: `1px solid ${T.border}` }}>
+                      {JSON.stringify(r.coincidencias, null, 2)}
+                    </pre>
+                  ) : (
+                    <div style={{ fontSize: 12, color: T.coral, fontWeight: 600 }}>⚠ {r.error}</div>
+                  )}
+                </div>
+              ))}
+            {(buscarExactoResultado.resultados || []).every((r) => r.ok && r.totalCoincidencias === 0) && (
+              <div style={{ fontSize: 13, color: T.slate, fontStyle: "italic" }}>Ninguna tabla revisada tiene ese valor. Prueba con otras palabras clave de tabla.</div>
+            )}
           </div>
         </div>
       )}

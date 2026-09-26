@@ -2153,6 +2153,89 @@ exports.buscarTablasBusintBDPorNombre = onCall(
   }
 );
 
+// (2026-09-26) EXPLORATORIO / TEMPORAL -- a pedido de Fredy, para encontrar en
+// que tabla de Busint BD vive el valor de "Devolucion" de Cuentas por Pagar
+// (columna "Devoluci" en el reporte oficial de Busint, ej. factura FH-4533
+// de Cheviotto: $14.784.905 y $15.345.766). Ya se descarto que viva en
+// "notas detalles-d" (0 filas para Nfactcxp=FH-4533) ni en "cxp-pagos
+// detalles" (solo trae los 2 movimientos de "Pagos", no los de
+// "Devoluci"). En vez de seguir adivinando nombres de tabla y campo a mano,
+// esto busca un VALOR exacto (con tolerancia de centavos) en TODOS los
+// campos numericos de un grupo de tablas candidatas (por defecto, las que
+// contengan alguna palabra clave tipica de compras/cartera en su nombre) y
+// dice en que tabla + columna aparece. Quitar esta funcion una vez
+// encontrada la tabla correcta -- es solo para esta investigacion puntual.
+exports.buscarValorEnTablasBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    const valores = (
+      Array.isArray(request.data?.valores) && request.data.valores.length
+        ? request.data.valores
+        : String(request.data?.valores || "").split(",")
+    )
+      .map((v) => Number(v))
+      .filter((v) => Number.isFinite(v) && v !== 0);
+    if (!valores.length) {
+      throw new HttpsError("invalid-argument", "Debes indicar al menos un valor numerico a buscar (ej. 14784905).");
+    }
+    const KEYWORDS_DEFAULT = ["compra", "ajuste", "cxp", "cartera", "provee", "nota", "devoluc", "credito", "debito", "movimiento"];
+    let tablas = Array.isArray(request.data?.tablas) && request.data.tablas.length
+      ? request.data.tablas.map((t) => String(t))
+      : null;
+    if (!tablas) {
+      let enumList;
+      try {
+        const swaggerResp = await fetch("https://api-yanko-bd.busint.info/swagger/v1/swagger.json");
+        const swagger = await swaggerResp.json();
+        enumList = swagger.paths["/api/Query"].post.parameters.find((p) => p.name === "tableName").schema.enum;
+      } catch (err) {
+        logger.error("Error trayendo la lista de tablas del swagger de Busint BD", { error: String(err) });
+        throw new HttpsError("unavailable", `No se pudo traer la lista de tablas del swagger: ${err?.message || String(err)}`);
+      }
+      const keywords = (
+        Array.isArray(request.data?.keywords) && request.data.keywords.length
+          ? request.data.keywords
+          : KEYWORDS_DEFAULT
+      ).map((k) => String(k).toLowerCase());
+      tablas = enumList.filter((t) => keywords.some((k) => t.toLowerCase().includes(k)));
+    }
+    const TOLERANCIA = 1; // pesos, por redondeo
+    const resultados = [];
+    for (const tabla of tablas) {
+      let filas;
+      try {
+        filas = await consultarTablaBusintBDCompleta(tabla);
+      } catch (err) {
+        resultados.push({ tabla, ok: false, error: err?.message || String(err) });
+        continue;
+      }
+      const coincidencias = [];
+      filas.forEach((fila) => {
+        if (!fila || typeof fila !== "object") return;
+        Object.keys(fila).forEach((campo) => {
+          const val = fila[campo];
+          if (typeof val !== "number") return;
+          if (valores.some((objetivo) => Math.abs(val - objetivo) < TOLERANCIA)) {
+            coincidencias.push({ campo, valor: val, fila });
+          }
+        });
+      });
+      resultados.push({
+        tabla,
+        ok: true,
+        totalFilas: filas.length,
+        totalCoincidencias: coincidencias.length,
+        coincidencias: coincidencias.slice(0, 25),
+      });
+    }
+    return { valoresBuscados: valores, totalTablasRevisadas: tablas.length, tablas, resultados };
+  }
+);
+
 // Trae TODAS las filas de una tabla de Busint BD, paginando sola (la API
 // entrega de a `pageSize` filas por página) hasta que una página llega
 // vacía/incompleta o se alcanza `maxPaginas` — tope de seguridad para no
