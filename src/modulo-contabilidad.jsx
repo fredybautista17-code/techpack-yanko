@@ -5130,6 +5130,15 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   const [vista, setVista] = useState("tabla");
   const [cargandoBusint, setCargandoBusint] = useState(false);
   const [errorBusint, setErrorBusint] = useState("");
+  // (2026-09-26, a pedido de Fredy) Detalle de facturas por proveedor de la
+  // última llamada en vivo a getCuentasPorPagarBusintGen -- SOLO en memoria
+  // (nunca se guarda en Firestore, para no volver a pegar contra el límite
+  // de 1MB por documento que ya rompió el corte una vez, ver commit
+  // 8f53690). Se pierde al recargar la página; hay que volver a traer el
+  // corte desde Busint para verlo de nuevo. Sirve para investigar residuos
+  // de saldo (ej. Cheviotto) sin tener que exportar nada a mano.
+  const [detalleFacturasPorProveedor, setDetalleFacturasPorProveedor] = useState({});
+  const [verFacturasDe, setVerFacturasDe] = useState(null);
   // (2026-09-25) Trae el corte de cuentas por pagar EN VIVO desde Busint
   // (cruzando facturas + pagos + maestro de proveedores en el backend) en
   // vez de tener que exportar y subir el Excel a mano -- ver
@@ -5153,6 +5162,10 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
       // vencimientos" que sí necesita ese detalle, se debe guardar aparte
       // (ej. una subcolección), no en este mismo documento.
       const proveedoresSinDetalle = (resp.data.proveedores || []).map(({ facturas, ...resto }) => resto);
+      const detalle = {};
+      (resp.data.proveedores || []).forEach((p) => { detalle[p.nombre] = p.facturas || []; });
+      setDetalleFacturasPorProveedor(detalle);
+      setVerFacturasDe(null);
       await onImportarCorte({
         id: uid(),
         fechaCorte: resp.data.fechaCorte,
@@ -5368,9 +5381,11 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
               <tbody>
                 {filas.map((f, i) => {
                   const progTotal = calendarioDe(f.nombre).reduce((s, c) => s + c.monto, 0);
+                  const facturasDetalle = detalleFacturasPorProveedor[f.nombre];
+                  const expandido = verFacturasDe === f.nombre;
                   return (
+                    <React.Fragment key={`${f.origen}-${f.id || i}`}>
                     <tr
-                      key={`${f.origen}-${f.id || i}`}
                       style={{
                         background: f.dias91mas > 0 ? C.redBg : i % 2 === 0 ? C.canvas : C.white,
                         borderBottom: `1px solid ${C.border}`,
@@ -5391,6 +5406,25 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                         {progTotal > 0 ? fmtCOP(progTotal) : "—"}
                       </td>
                       <td style={{ padding: "8px 8px", textAlign: "center", whiteSpace: "nowrap" }}>
+                        {facturasDetalle && (
+                          <button
+                            onClick={() => setVerFacturasDe(expandido ? null : f.nombre)}
+                            title="Ver el detalle de facturas de este proveedor (de la última consulta en vivo a Busint)"
+                            style={{
+                              background: C.violetBg || C.canvas,
+                              border: "none",
+                              borderRadius: 6,
+                              padding: "4px 8px",
+                              color: C.violet || C.ink,
+                              fontWeight: 700,
+                              fontSize: 10,
+                              cursor: "pointer",
+                              marginRight: 6,
+                            }}
+                          >
+                            {expandido ? "▲ Ocultar facturas" : "🔍 Ver facturas"}
+                          </button>
+                        )}
                         <button
                           onClick={() => setProgramando(f.nombre)}
                           style={{
@@ -5431,6 +5465,40 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                         )}
                       </td>
                     </tr>
+                    {expandido && facturasDetalle && (
+                      <tr>
+                        <td colSpan={9} style={{ padding: "0 12px 14px", background: i % 2 === 0 ? C.canvas : C.white }}>
+                          <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+                              <thead>
+                                <tr style={{ background: C.canvas }}>
+                                  {["N° Factura", "Vence", "Días vencido", "Fac. Total", "Pagado", "Descuento", "Saldo"].map((h) => (
+                                    <th key={h} style={{ padding: "6px 10px", color: C.slate, textAlign: h === "N° Factura" ? "left" : "right", fontWeight: 700, fontSize: 9.5, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {[...facturasDetalle].sort((a, b) => b.saldo - a.saldo).map((fac, j) => (
+                                  <tr key={fac.nfact || j} style={{ borderTop: `1px solid ${C.border}` }}>
+                                    <td style={{ padding: "6px 10px", fontWeight: 700, color: C.ink }}>{fac.nfact}</td>
+                                    <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate }}>{fac.fechaVctoISO || "—"}</td>
+                                    <td style={{ padding: "6px 10px", textAlign: "right", color: fac.diasVencido > 90 ? C.red : C.slate }}>{fac.diasVencido}</td>
+                                    <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate }}>{fmtCOP(fac.facTotal)}</td>
+                                    <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate }}>{fmtCOP(fac.pagado)}</td>
+                                    <td style={{ padding: "6px 10px", textAlign: "right", color: fac.descuento > 0 ? (C.green || C.slate) : C.slate }}>{fac.descuento > 0 ? fmtCOP(fac.descuento) : "—"}</td>
+                                    <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 800, color: C.ink }}>{fmtCOP(fac.saldo)}</td>
+                                  </tr>
+                                ))}
+                                {!facturasDetalle.length && (
+                                  <tr><td colSpan={7} style={{ padding: "8px 10px", color: C.slate, fontStyle: "italic" }}>Sin facturas con saldo pendiente para este proveedor.</td></tr>
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
