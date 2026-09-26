@@ -5472,7 +5472,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
                               <thead>
                                 <tr style={{ background: C.canvas }}>
-                                  {["N° Factura", "Vence", "Días vencido", "Fac. Total", "Pagado", "Descuento", "Saldo"].map((h) => (
+                                  {["N° Factura", "Vence", "Días vencido", "Fac. Total", "Pagado", "Descuento", "Devolución", "Saldo"].map((h) => (
                                     <th key={h} style={{ padding: "6px 10px", color: C.slate, textAlign: h === "N° Factura" ? "left" : "right", fontWeight: 700, fontSize: 9.5, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                                   ))}
                                 </tr>
@@ -5486,11 +5486,12 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                                     <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate }}>{fmtCOP(fac.facTotal)}</td>
                                     <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate }}>{fmtCOP(fac.pagado)}</td>
                                     <td style={{ padding: "6px 10px", textAlign: "right", color: fac.descuento > 0 ? (C.green || C.slate) : C.slate }}>{fac.descuento > 0 ? fmtCOP(fac.descuento) : "—"}</td>
+                                    <td style={{ padding: "6px 10px", textAlign: "right", color: fac.devolucion > 0 ? (C.green || C.slate) : C.slate }}>{fac.devolucion > 0 ? fmtCOP(fac.devolucion) : "—"}</td>
                                     <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 800, color: C.ink }}>{fmtCOP(fac.saldo)}</td>
                                   </tr>
                                 ))}
                                 {!facturasDetalle.length && (
-                                  <tr><td colSpan={7} style={{ padding: "8px 10px", color: C.slate, fontStyle: "italic" }}>Sin facturas con saldo pendiente para este proveedor.</td></tr>
+                                  <tr><td colSpan={8} style={{ padding: "8px 10px", color: C.slate, fontStyle: "italic" }}>Sin facturas con saldo pendiente para este proveedor.</td></tr>
                                 )}
                               </tbody>
                             </table>

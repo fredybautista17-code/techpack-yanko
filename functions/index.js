@@ -2456,13 +2456,14 @@ exports.getCuentasPorPagarBusintGen = onCall(
   },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
-    let facturas, pagos, proveedores, notasDescuento;
+    let facturas, pagos, proveedores, notasDescuento, devoluciones;
     try {
-      [facturas, pagos, proveedores, notasDescuento] = await Promise.all([
+      [facturas, pagos, proveedores, notasDescuento, devoluciones] = await Promise.all([
         consultarTablaBusintBDCompleta("cartera cxp-fact"),
         consultarTablaBusintBDCompleta("cxp-pagos detalles"),
         consultarTablaBusintBDCompleta("maestro de proveedores"),
         consultarTablaBusintBDCompleta("notas detalles-d"),
+        consultarTablaBusintBDCompleta("cartera cxp-dev"),
       ]);
     } catch (err) {
       logger.error("Error consultando Busint BD (getCuentasPorPagarBusintGen)", { error: String(err) });
@@ -2498,6 +2499,26 @@ exports.getCuentasPorPagarBusintGen = onCall(
       const llave = `${codigo}|${nfact}`;
       const valor = (Number(n?.Precio) || 0) + (Number(n?.credito) || 0);
       descuentoPorFactura.set(llave, (descuentoPorFactura.get(llave) || 0) + valor);
+    });
+    // (2026-09-26) Devoluciones de mercancía al proveedor -- confirmado con
+    // Fredy y el reporte oficial de Busint (factura FH-4533 de Cheviotto:
+    // $139.350.386 − $109.219.715 pagado − $30.130.671 de esta tabla =
+    // $0 exacto, igual que "Por Pagar en esta Entrada" del reporte de
+    // Busint). Encontrada con el buscador de valor exacto
+    // (buscarValorEnTablasBusintBD) -- tabla "cartera cxp-dev", campos
+    // codigo/nfact/Devtotal (ndev = número de la entrada de devolución).
+    // Sin esto, una factura vieja con devolución de mercancía quedaba con
+    // un saldo fantasma igual a esa devolución no restada -- la causa del
+    // segundo residuo de Cheviotto ($35.801.966 en la franja 91+, entre
+    // FH-4533 y FVC1-4365) después del fix de descuentos de pronto pago.
+    const devolucionPorFactura = new Map();
+    devoluciones.forEach((d) => {
+      const codigo = normalizarCodigoCxp(d?.codigo);
+      const nfact = normalizarCodigoCxp(d?.nfact);
+      if (!codigo || !nfact) return;
+      const llave = `${codigo}|${nfact}`;
+      const valor = Number(d?.Devtotal) || 0;
+      devolucionPorFactura.set(llave, (devolucionPorFactura.get(llave) || 0) + valor);
     });
     const nombrePorCodigo = new Map();
     proveedores.forEach((p) => {
@@ -2545,8 +2566,9 @@ exports.getCuentasPorPagarBusintGen = onCall(
     facturasPorLlave.forEach(({ llave, codigo, nfactOriginal, facTotal, fechaVcto }) => {
       const pagado = pagadoPorFactura.get(llave) || 0;
       const descuento = descuentoPorFactura.get(llave) || 0;
-      const saldo = facTotal - pagado - descuento;
-      if (saldo <= UMBRAL_SALDO_CXP) return; // ya pagada (o a favor, incluyendo descuento de pronto pago)
+      const devolucion = devolucionPorFactura.get(llave) || 0;
+      const saldo = facTotal - pagado - descuento - devolucion;
+      if (saldo <= UMBRAL_SALDO_CXP) return; // ya pagada (o a favor, incluyendo descuento/devolución)
       const diasVencido = fechaVcto ? Math.round((hoy - fechaVcto) / (1000 * 60 * 60 * 24)) : 0;
       const bucket = calcularBucketAntiguedadCxp(diasVencido);
       const nombre = nombrePorCodigo.get(codigo) || `Proveedor ${codigo}`;
@@ -2570,6 +2592,7 @@ exports.getCuentasPorPagarBusintGen = onCall(
         facTotal,
         pagado,
         descuento,
+        devolucion,
         saldo,
         fechaVctoISO: fechaVcto ? fechaVcto.toISOString().slice(0, 10) : null,
         diasVencido,
