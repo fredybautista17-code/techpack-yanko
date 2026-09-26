@@ -11376,7 +11376,12 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
       const ahora = new Date().toISOString();
       let creados = 0;
       for (const v of previewRetiros.validas) {
-        await onGuardarTrabajador({ ...v.trabajador, fechaRetiro: v.fechaRetiro, activo: false, origen: "carga_historica_retiro" });
+        // (2026-09-26, a pedido de Fredy) Esta carga es para gente que YA
+        // trabajo con nosotros -- se asume que en su momento paso las
+        // pruebas de ingreso, asi que quedan marcadas "Paso" de una vez
+        // (si algun caso puntual fue distinto, se corrige a mano despues
+        // desde Ingreso de Personal).
+        await onGuardarTrabajador({ ...v.trabajador, fechaRetiro: v.fechaRetiro, activo: false, pruebaConocimiento: "paso", pruebaPsicologica: "paso", origen: "carga_historica_retiro" });
         for (const a of v.ausenciasTmp) {
           await onGuardarAusencia({ id: uid(), ...a, nombre: v.trabajador.nombre, registradoPor: quien, registradoEn: ahora, origen: "carga_historica_retiro" });
         }
