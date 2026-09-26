@@ -5384,7 +5384,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                   const facturasDetalle = detalleFacturasPorProveedor[f.nombre];
                   const expandido = verFacturasDe === f.nombre;
                   return (
-                    <React.Fragment key={`${f.origen}-${f.id || i}`}>
+                    <Fragment key={`${f.origen}-${f.id || i}`}>
                     <tr
                       style={{
                         background: f.dias91mas > 0 ? C.redBg : i % 2 === 0 ? C.canvas : C.white,
@@ -5498,7 +5498,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                         </td>
                       </tr>
                     )}
-                    </React.Fragment>
+                    </Fragment>
                   );
                 })}
               </tbody>
