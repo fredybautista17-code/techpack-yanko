@@ -166,8 +166,8 @@ function Field({ label, children }) {
     </div>
   );
 }
-function FInput({ value, onChange, placeholder, type = "text" }) {
-  return (
+function FInput({ value, onChange, placeholder, type = "text", icon }) {
+  const input = (
     <input
       type={type}
       value={value}
@@ -175,7 +175,7 @@ function FInput({ value, onChange, placeholder, type = "text" }) {
       placeholder={placeholder}
       style={{
         width: "100%",
-        padding: "9px 12px",
+        padding: icon ? "9px 12px 9px 32px" : "9px 12px",
         border: `1.5px solid ${C.border}`,
         borderRadius: 8,
         fontSize: 14,
@@ -185,6 +185,16 @@ function FInput({ value, onChange, placeholder, type = "text" }) {
         fontFamily: "inherit",
       }}
     />
+  );
+  // (2026-09-26, a pedido de Fredy) `icon` opcional -- para el buscador de
+  // Cuentas por Pagar se pasa "🔍" y se pinta a la izquierda, dentro del
+  // cuadro. Sin `icon` queda igual que antes.
+  if (!icon) return input;
+  return (
+    <div style={{ position: "relative" }}>
+      <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, opacity: 0.55, pointerEvents: "none" }}>{icon}</span>
+      {input}
+    </div>
   );
 }
 function FSel({ value, onChange, options }) {
@@ -5121,11 +5131,22 @@ function ProgramacionPagosView({ presupuestosCliente, presupuestos, calendarioCx
     </div>
   );
 }
+// (2026-09-26, a pedido de Fredy) Usado por el buscador de Cuentas por
+// Pagar -- quita acentos y pasa a minusculas para que "tintatex" encuentre
+// "TINTATEX S.A." sin importar como se escriba.
+function normalizarTexto(s) {
+  return (s || "").toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+}
 function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente, presupuestos, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, isAdmin }) {
   const [showImport, setShowImport] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const [programando, setProgramando] = useState(null);
   const [orden, setOrden] = useState("total");
+  // (2026-09-26, a pedido de Fredy) Buscador por nombre de proveedor, para
+  // encontrar mas rapido uno puntual (ej. Tintatex) en vez de tener que
+  // recorrer toda la tabla -- sin distinguir mayusculas/minusculas ni
+  // acentos.
+  const [busquedaProveedor, setBusquedaProveedor] = useState("");
   const [corteSeleccionado, setCorteSeleccionado] = useState(null);
   const [vista, setVista] = useState("tabla");
   const [cargandoBusint, setCargandoBusint] = useState(false);
@@ -5184,6 +5205,10 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   const filasCorte = (corteActivo?.proveedores || []).map((p) => ({ ...p, origen: "corte" }));
   const filasManual = manuales.map((p) => ({ ...p, origen: "manual" }));
   let filas = [...filasCorte, ...filasManual];
+  if (busquedaProveedor.trim()) {
+    const q = normalizarTexto(busquedaProveedor);
+    filas = filas.filter((f) => normalizarTexto(f.nombre).includes(q));
+  }
   filas = [...filas].sort((a, b) => {
     if (orden === "total") return b.total - a.total;
     if (orden === "0-30") return b.dias0a30 - a.dias0a30;
@@ -5327,7 +5352,10 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
             <KPI icon="⚠" label="Total vencido" value={fmtCOP(totalVencido)} color={C.amber} bg={C.amberBg} />
             <KPI icon="🔴" label="91+ días (más urgente)" value={fmtCOP(total91)} color={C.red} bg={C.redBg} />
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
+            <div style={{ width: 240 }}>
+              <FInput value={busquedaProveedor} onChange={setBusquedaProveedor} placeholder="Buscar proveedor..." icon="🔍" />
+            </div>
             <span style={{ fontSize: 12, color: C.slate, fontWeight: 600 }}>Ordenar por:</span>
             <select
               value={orden}
