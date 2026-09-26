@@ -204,15 +204,26 @@ function Field({ label, children }) {
     </div>
   );
 }
-function FInput({ value, onChange, placeholder, type = "text" }) {
-  return (
+function FInput({ value, onChange, placeholder, type = "text", icon }) {
+  const input = (
     <input
       type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
+      style={{ width: "100%", padding: icon ? "9px 12px 9px 32px" : "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
     />
+  );
+  // (2026-09-26, a pedido de Fredy) `icon` es opcional -- para los buscadores
+  // (Ingreso de Personal, Historial de liquidaciones) se les pasa "🔍" y acá
+  // se pinta a la izquierda, dentro del cuadro. Sin `icon` queda exactamente
+  // igual que antes, así que no afecta ningún otro FInput del archivo.
+  if (!icon) return input;
+  return (
+    <div style={{ position: "relative" }}>
+      <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, opacity: 0.55, pointerEvents: "none" }}>{icon}</span>
+      {input}
+    </div>
   );
 }
 function FSel({ value, onChange, options, groups, placeholder = "Seleccionar..." }) {
@@ -2797,7 +2808,7 @@ function IngresoPersonalView({ trabajadores, candidatos, liquidacionesRetiro, is
       </div>
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
         <div style={{ width: 280 }}>
-          <FInput value={busqueda} onChange={setBusqueda} placeholder="Buscar por nombre o cédula..." />
+          <FInput value={busqueda} onChange={setBusqueda} placeholder="Buscar por nombre o cédula..." icon="🔍" />
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 10 }}>
           {isAdmin && pendientesMigrar > 0 && (
@@ -11298,6 +11309,9 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
   // una etapa por cada empresa. Aparte del areaFiltro de arriba (ese es
   // para elegir A QUIEN liquidar, no para el historial).
   const [empresaHistorialFiltro, setEmpresaHistorialFiltro] = useState("");
+  // (2026-09-26, a pedido de Fredy) Búsqueda por nombre/cédula del Historial
+  // de más abajo -- igual a la de Ingreso de Personal, con su lupa.
+  const [busquedaHistorial, setBusquedaHistorial] = useState("");
   // Carga masiva de retiros historicos (ver mas abajo) -- helpers arriba,
   // justo despues de TIPOS_NOMINA_LIQUIDABLES.
   const fileRetirosRef = useRef(null);
@@ -11319,7 +11333,14 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
   const totalPorPagarHistorial = historialPorAnioYArea.filter((f) => f.estadoPago !== "pagada").reduce((s, f) => s + (Number(f.totalAPagar) || 0), 0);
   const historialFiltrado = historialPorAnioYArea
     .filter((f) => !estadoPagoFiltro || (estadoPagoFiltro === "pagada" ? f.estadoPago === "pagada" : f.estadoPago !== "pagada"))
-    .filter((f) => !empresaHistorialFiltro || f.empleador === empresaHistorialFiltro);
+    .filter((f) => !empresaHistorialFiltro || f.empleador === empresaHistorialFiltro)
+    .filter((f) => {
+      if (!busquedaHistorial) return true;
+      const q = normalizarNombreParaComparar(busquedaHistorial);
+      const qCed = normalizarCedula(busquedaHistorial);
+      const cedula = trabajadores.find((t) => t.id === f.trabajadorId)?.cedula || "";
+      return normalizarNombreParaComparar(f.nombre).includes(q) || (qCed && normalizarCedula(cedula).includes(qCed));
+    });
 
   function elegirTrabajador(id) {
     setTrabajadorId(id);
@@ -11524,6 +11545,9 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 10 }}>
             <div style={{ fontWeight: 700, fontSize: 13 }}>Historial de liquidaciones</div>
             <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+              <div style={{ maxWidth: 220 }}>
+                <FInput value={busquedaHistorial} onChange={setBusquedaHistorial} placeholder="Buscar por nombre o cédula..." icon="🔍" />
+              </div>
               <div style={{ maxWidth: 200 }}>
                 <FSel value={anioFiltroHistorial} onChange={setAnioFiltroHistorial} options={aniosHistorial} placeholder="Todos los años" />
               </div>
@@ -11582,7 +11606,7 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
                 <span onClick={() => descargarRecibo(f)} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }} title="Descargar recibo de liquidación">🖨</span>
               ) },
             ]}
-            filas={[...historialFiltrado].sort((a, b) => (b.generadaEn || "").localeCompare(a.generadaEn || ""))}
+            filas={[...historialFiltrado].sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es"))}
           />
         </div>
       )}
