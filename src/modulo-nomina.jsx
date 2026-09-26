@@ -11174,6 +11174,12 @@ function analizarRetirosHistoricos(filasHoja, trabajadoresExistentes, areasNomin
     const vacFin = String(fila[9] ?? "").trim();
     const licIni = String(fila[10] ?? "").trim();
     const licFin = String(fila[11] ?? "").trim();
+    // (2026-09-26, a pedido de Fredy) Columna opcional 13 ("Liquidacion",
+    // Pagada/No Pagada) que Fredy ya trae en su propio Excel -- si dice
+    // "Pagada" exacto, la liquidacion nace con ese estado; cualquier otra
+    // cosa (vacio, "No Pagada", etc.) nace "no_pagada", igual que una
+    // liquidacion nueva hecha desde este formulario.
+    const estadoPago = String(fila[12] ?? "").trim().toLowerCase() === "pagada" ? "pagada" : "no_pagada";
     const cedNorm = normalizarCedula(cedula);
     const etiqueta = nombre || cedula;
     if (!nombre) { errores.push({ fila: r + 1, error: `Falta el Nombre (cédula ${cedula})` }); continue; }
@@ -11199,7 +11205,7 @@ function analizarRetirosHistoricos(filasHoja, trabajadoresExistentes, areasNomin
     if (rVac.inicio) ausenciasTmp.push({ trabajadorId: trabajadorTmp.id, motivo: "Vacaciones", fechaInicio: rVac.inicio, fechaFin: rVac.fin });
     if (rLic.inicio) ausenciasTmp.push({ trabajadorId: trabajadorTmp.id, motivo: "Licencia No Remunerada", fechaInicio: rLic.inicio, fechaFin: rLic.fin });
     const calculo = calcularLiquidacionRetiro(trabajadorTmp, fechaRetiro, ausenciasTmp, [], areasNomina, turnos);
-    validas.push({ trabajador: trabajadorTmp, fechaRetiro, ausenciasTmp, calculo });
+    validas.push({ trabajador: trabajadorTmp, fechaRetiro, ausenciasTmp, calculo, estadoPago });
   }
   return { validas, errores };
 }
@@ -11272,7 +11278,7 @@ async function exportarHistorialLiquidacionesRetiroExcel(historial, trabajadores
   XLSX.utils.book_append_sheet(wb, ws, "Liquidaciones de Retiro");
   XLSX.writeFile(wb, `Historial_Liquidaciones_Retiro_${today()}.xlsx`);
 }
-function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesRetiro, prestamos, areasNomina, turnos, onGuardarLiquidacionRetiro, onGuardarTrabajador, onGuardarAusencia, currentUser }) {
+function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesRetiro, prestamos, areasNomina, turnos, onGuardarLiquidacionRetiro, onGuardarTrabajador, onGuardarAusencia, onCambiarEstadoPagoLiquidacion, currentUser }) {
   const [areaFiltro, setAreaFiltro] = useState("");
   const [trabajadorId, setTrabajadorId] = useState("");
   const [fechaRetiro, setFechaRetiro] = useState("");
@@ -11284,6 +11290,9 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
   // liquidaciones de mas abajo -- por defecto el año actual, para que al
   // entrar vea de una lo pagado este año; "Todos los años" para ver todo.
   const [anioFiltroHistorial, setAnioFiltroHistorial] = useState(String(new Date().getFullYear()));
+  // (2026-09-26, a pedido de Fredy) Filtro de Estado de pago (Pagada/No
+  // pagada) del Historial de mas abajo, junto a Año/Área.
+  const [estadoPagoFiltro, setEstadoPagoFiltro] = useState("");
   // Carga masiva de retiros historicos (ver mas abajo) -- helpers arriba,
   // justo despues de TIPOS_NOMINA_LIQUIDABLES.
   const fileRetirosRef = useRef(null);
@@ -11295,9 +11304,17 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
   const personas = trabajadores.filter((t) => TIPOS_NOMINA_LIQUIDABLES.includes(t.tipoNomina) && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro));
   const trabajador = trabajadores.find((t) => t.id === trabajadorId);
   const aniosHistorial = [...new Set((liquidacionesRetiro || []).map((f) => (f.fechaCorte || "").slice(0, 4)).filter(Boolean))].sort().reverse();
-  const historialFiltrado = (liquidacionesRetiro || [])
+  const historialPorAnioYArea = (liquidacionesRetiro || [])
     .filter((f) => !anioFiltroHistorial || (f.fechaCorte || "").slice(0, 4) === anioFiltroHistorial)
     .filter((f) => !areaFiltro || (f.area || "Sin asignar") === areaFiltro);
+  // (2026-09-26, a pedido de Fredy) Los totales de Pagado/Por Pagar se
+  // calculan sobre Año+Área (sin el filtro de Estado) para que siempre se
+  // vean los dos juntos, sin importar cuál esté seleccionado en el filtro.
+  const totalPagadoHistorial = historialPorAnioYArea.filter((f) => f.estadoPago === "pagada").reduce((s, f) => s + (Number(f.totalAPagar) || 0), 0);
+  const totalPorPagarHistorial = historialPorAnioYArea.filter((f) => f.estadoPago !== "pagada").reduce((s, f) => s + (Number(f.totalAPagar) || 0), 0);
+  const historialFiltrado = historialPorAnioYArea.filter((f) =>
+    !estadoPagoFiltro || (estadoPagoFiltro === "pagada" ? f.estadoPago === "pagada" : f.estadoPago !== "pagada")
+  );
 
   function elegirTrabajador(id) {
     setTrabajadorId(id);
@@ -11340,6 +11357,7 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
         tipoNomina: trabajador.tipoNomina,
         area: trabajador.area || "Sin asignar",
         ...resultado,
+        estadoPago: "no_pagada",
         generadaEn: new Date().toISOString(),
       });
       await onGuardarTrabajador({ ...trabajador, fechaRetiro, activo: false });
@@ -11392,6 +11410,7 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
           tipoNomina: v.trabajador.tipoNomina,
           area: v.trabajador.area,
           ...v.calculo,
+          estadoPago: v.estadoPago || "no_pagada",
           generadaEn: ahora,
           origen: "carga_historica_retiro",
         });
@@ -11502,8 +11521,15 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
               <div style={{ maxWidth: 200 }}>
                 <FSel value={anioFiltroHistorial} onChange={setAnioFiltroHistorial} options={aniosHistorial} placeholder="Todos los años" />
               </div>
+              <div style={{ maxWidth: 180 }}>
+                <FSel value={estadoPagoFiltro} onChange={setEstadoPagoFiltro} options={[{ value: "pagada", label: "Pagadas" }, { value: "no_pagada", label: "No pagadas" }]} placeholder="Todos los estados" />
+              </div>
               <Btn variant="secondary" small onClick={descargarExcelHistorial} disabled={historialFiltrado.length === 0}>📊 Descargar Excel</Btn>
             </div>
+          </div>
+          <div style={{ display: "flex", gap: 14, marginBottom: 14, flexWrap: "wrap" }}>
+            <KPI icon="✅" label="Total pagado" value={fmtMoney(totalPagadoHistorial)} color={C.green} bg={C.greenBg} />
+            <KPI icon="⏳" label="Total por pagar" value={fmtMoney(totalPorPagarHistorial)} color={C.red} bg={C.redBg} />
           </div>
           <Tabla
             vacio="Sin liquidaciones guardadas con estos filtros."
@@ -11517,6 +11543,15 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
                 <span style={{ fontWeight: (f.diasNoRemunerados || 0) > 0 ? 700 : 400, color: (f.diasNoRemunerados || 0) > 0 ? C.red : C.slate }}>{fmtNum(f.diasNoRemunerados || 0)}</span>
               ) },
               { key: "totalAPagar", label: "Total", align: "right", render: (f) => <strong>{fmtMoney(f.totalAPagar)}</strong> },
+              { key: "estadoPago", label: "Estado", render: (f) => (
+                <span
+                  onClick={() => onCambiarEstadoPagoLiquidacion && onCambiarEstadoPagoLiquidacion(f.id, f.estadoPago === "pagada" ? "no_pagada" : "pagada")}
+                  title="Clic para cambiar el estado"
+                  style={{ cursor: onCambiarEstadoPagoLiquidacion ? "pointer" : "default", padding: "2px 8px", borderRadius: 20, fontSize: 10.5, fontWeight: 700, background: f.estadoPago === "pagada" ? C.greenBg : C.redBg, color: f.estadoPago === "pagada" ? C.green : C.red }}
+                >
+                  {f.estadoPago === "pagada" ? "PAGADA" : "NO PAGADA"}
+                </span>
+              ) },
               { key: "generadaEn", label: "Generada", render: (f) => (f.generadaEn ? new Date(f.generadaEn).toLocaleString("es-CO") : "—") },
               { key: "acciones", label: "", align: "right", render: (f) => (
                 <span onClick={() => descargarRecibo(f)} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }} title="Descargar recibo de liquidación">🖨</span>
@@ -12314,6 +12349,10 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function eliminarLiquidacionD(id) { await fsDelete("nomina_destajo_liquidaciones", id); }
   async function eliminarLiquidacionPS(id) { await fsDelete("nomina_prestacion_servicios_liquidaciones", id); }
   async function guardarLiquidacionRetiro(l) { await fsSave("nomina_liquidaciones_retiro", l.id, l); }
+  // (2026-09-26, a pedido de Fredy) Cambiar una liquidacion de retiro de
+  // "No pagada" a "Pagada" (o viceversa, por si se equivoca) desde el
+  // Historial -- ver LiquidacionRetiroView.
+  async function cambiarEstadoPagoLiquidacion(id, estadoPago) { await fsSave("nomina_liquidaciones_retiro", id, { estadoPago }); }
   async function guardarPrestamo(p) { await fsSave("nomina_prestamos", p.id, p); }
   async function borrarPrestamo(id) { await fsDelete("nomina_prestamos", id); }
   async function guardarConceptoDeduccion(c) { await fsSave("nomina_conceptos_deduccion", c.id, c); }
@@ -12671,7 +12710,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "tns" && !areaLider && !soloNovedades && <TNSConexionView />}
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
           {subView === "novedades_quincena" && !areaLider && !soloNovedades && <NovedadesQuincenaView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} motivosDisponibles={nombresMotivosDisponibles} currentUser={currentUser} onGuardarAusencia={guardarAusencia} onGuardarPrestamo={guardarPrestamo} />}
-          {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} turnos={turnos} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} onGuardarAusencia={guardarAusencia} currentUser={currentUser} />}
+          {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} turnos={turnos} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} onGuardarAusencia={guardarAusencia} onCambiarEstadoPagoLiquidacion={cambiarEstadoPagoLiquidacion} currentUser={currentUser} />}
           {subView === "dias_no_justificados" && !areaLider && !soloNovedades && <DiasNoJustificadosView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} areasNomina={areasNomina} />}
           {subView === "provision_liquidaciones" && !areaLider && !soloNovedades && <ProvisionLiquidacionesView trabajadores={trabajadores} ausencias={ausencias} areasNomina={areasNomina} turnos={turnos} />}
           {subView === "prestamos" && !areaLider && !soloNovedades && <PrestamosView trabajadores={trabajadores} prestamos={prestamos} onGuardar={guardarPrestamo} onBorrar={borrarPrestamo} currentUser={currentUser} />}
