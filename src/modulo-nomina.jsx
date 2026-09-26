@@ -11289,7 +11289,7 @@ async function exportarHistorialLiquidacionesRetiroExcel(historial, trabajadores
   XLSX.utils.book_append_sheet(wb, ws, "Liquidaciones de Retiro");
   XLSX.writeFile(wb, `Historial_Liquidaciones_Retiro_${today()}.xlsx`);
 }
-function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesRetiro, prestamos, areasNomina, turnos, onGuardarLiquidacionRetiro, onGuardarTrabajador, onGuardarAusencia, onCambiarEstadoPagoLiquidacion, onCambiarEmpleadorLiquidacion, currentUser }) {
+function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesRetiro, prestamos, areasNomina, turnos, onGuardarLiquidacionRetiro, onGuardarTrabajador, onGuardarAusencia, onCambiarEstadoPagoLiquidacion, onCambiarEmpleadorLiquidacion, onBorrarLiquidacionRetiro, currentUser }) {
   const [areaFiltro, setAreaFiltro] = useState("");
   const [trabajadorId, setTrabajadorId] = useState("");
   const [fechaRetiro, setFechaRetiro] = useState("");
@@ -11297,6 +11297,13 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
   const [resultado, setResultado] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
+  // (2026-09-26, a pedido de Fredy) Si al guardar se detecta que ya existe
+  // una liquidacion de este trabajador con un rango de fechas que se cruza,
+  // se bloquea el guardado y se muestra este mensaje.
+  const [errorGuardar, setErrorGuardar] = useState("");
+  // (2026-09-26, a pedido de Fredy) Confirmar antes de borrar una
+  // liquidacion del Historial (por ejemplo una duplicada).
+  const [confirmDelLiquidacion, setConfirmDelLiquidacion] = useState(null);
   // (2026-09-14, a pedido de Fredy) Filtro por año del historial de
   // liquidaciones de mas abajo -- por defecto el año actual, para que al
   // entrar vea de una lo pagado este año; "Todos los años" para ver todo.
@@ -11368,10 +11375,21 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
     if (!trabajador || !fechaRetiro || !trabajador.fechaIngreso) return;
     setResultado(calcularLiquidacionRetiro(trabajador, fechaRetiro, ausencias, faltas, areasNomina, turnos));
     setGuardadoOk(false);
+    setErrorGuardar("");
   }
 
   async function guardar() {
     if (!resultado || !trabajador) return;
+    // (2026-09-26, a pedido de Fredy) No permitir dos liquidaciones del
+    // mismo trabajador que se crucen en el rango de fechas -- asi se evita
+    // guardar la misma liquidacion por duplicado (como paso con Andreina
+    // Vargas: se guardo dos veces el mismo periodo).
+    const conflicto = (liquidacionesRetiro || []).find((l) => l.trabajadorId === trabajador.id && l.fechaIngreso <= resultado.fechaCorte && resultado.fechaIngreso <= l.fechaCorte);
+    if (conflicto) {
+      setErrorGuardar(`Ya existe una liquidación de ${trabajador.nombre} entre ${fmtFechaISO(conflicto.fechaIngreso)} y ${fmtFechaISO(conflicto.fechaCorte)} que se cruza con este rango. Bórrala primero desde el Historial si es un error, o revisa las fechas si es un periodo distinto.`);
+      return;
+    }
+    setErrorGuardar("");
     setGuardando(true);
     try {
       await onGuardarLiquidacionRetiro({
@@ -11541,6 +11559,9 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
               <div style={{ fontSize: 12, color: C.green, fontWeight: 700 }}>✅ Liquidación guardada. {trabajador.nombre} quedó marcado como Inactivo con fecha de retiro {fmtFechaISO(fechaRetiro)}.</div>
             )}
           </div>
+          {errorGuardar && (
+            <div style={{ fontSize: 12, color: C.red, background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 8, padding: "8px 12px", marginTop: 10, maxWidth: 700 }}>⚠️ {errorGuardar}</div>
+          )}
         </>
       )}
       {liquidacionesRetiro && liquidacionesRetiro.length > 0 && (
@@ -11606,11 +11627,25 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
               ) },
               { key: "generadaEn", label: "Generada", render: (f) => (f.generadaEn ? new Date(f.generadaEn).toLocaleString("es-CO") : "—") },
               { key: "acciones", label: "", align: "right", render: (f) => (
-                <span onClick={() => descargarRecibo(f)} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }} title="Descargar recibo de liquidación">🖨</span>
+                <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                  <span onClick={() => descargarRecibo(f)} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }} title="Descargar recibo de liquidación">🖨</span>
+                  {onBorrarLiquidacionRetiro && <span onClick={() => setConfirmDelLiquidacion(f)} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }} title="Borrar esta liquidación">🗑</span>}
+                </span>
               ) },
             ]}
             filas={[...historialFiltrado].sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es"))}
           />
+          {confirmDelLiquidacion && (
+            <Modal title="Confirmar eliminación" onClose={() => setConfirmDelLiquidacion(null)} width={460}>
+              <div style={{ fontSize: 14, color: C.ink, marginBottom: 20 }}>
+                ¿Eliminar la liquidación de <strong>{confirmDelLiquidacion.nombre}</strong> ({fmtFechaISO(confirmDelLiquidacion.fechaIngreso)} → {fmtFechaISO(confirmDelLiquidacion.fechaCorte)}) por {fmtMoney(confirmDelLiquidacion.totalAPagar)}? Esta acción no se puede deshacer.
+              </div>
+              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <Btn variant="secondary" onClick={() => setConfirmDelLiquidacion(null)}>Cancelar</Btn>
+                <Btn variant="danger" onClick={() => { onBorrarLiquidacionRetiro(confirmDelLiquidacion.id); setConfirmDelLiquidacion(null); }}>Sí, eliminar</Btn>
+              </div>
+            </Modal>
+          )}
         </div>
       )}
       <div style={{ marginTop: 36, paddingTop: 24, borderTop: `1px solid ${C.border}` }}>
@@ -12401,6 +12436,10 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   async function eliminarLiquidacionD(id) { await fsDelete("nomina_destajo_liquidaciones", id); }
   async function eliminarLiquidacionPS(id) { await fsDelete("nomina_prestacion_servicios_liquidaciones", id); }
   async function guardarLiquidacionRetiro(l) { await fsSave("nomina_liquidaciones_retiro", l.id, l); }
+  // (2026-09-26, a pedido de Fredy) Borrar una liquidacion de retiro del
+  // Historial -- pensado para corregir duplicados (por ejemplo si se guardo
+  // la misma liquidacion dos veces por error).
+  async function borrarLiquidacionRetiro(id) { await fsDelete("nomina_liquidaciones_retiro", id); }
   // (2026-09-26, a pedido de Fredy) Cambiar una liquidacion de retiro de
   // "No pagada" a "Pagada" (o viceversa, por si se equivoca) desde el
   // Historial -- ver LiquidacionRetiroView.
@@ -12767,7 +12806,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "tns" && !areaLider && !soloNovedades && <TNSConexionView />}
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
           {subView === "novedades_quincena" && !areaLider && !soloNovedades && <NovedadesQuincenaView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} motivosDisponibles={nombresMotivosDisponibles} currentUser={currentUser} onGuardarAusencia={guardarAusencia} onGuardarPrestamo={guardarPrestamo} />}
-          {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} turnos={turnos} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} onGuardarAusencia={guardarAusencia} onCambiarEstadoPagoLiquidacion={cambiarEstadoPagoLiquidacion} onCambiarEmpleadorLiquidacion={cambiarEmpleadorLiquidacion} currentUser={currentUser} />}
+          {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} turnos={turnos} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} onGuardarAusencia={guardarAusencia} onCambiarEstadoPagoLiquidacion={cambiarEstadoPagoLiquidacion} onCambiarEmpleadorLiquidacion={cambiarEmpleadorLiquidacion} onBorrarLiquidacionRetiro={borrarLiquidacionRetiro} currentUser={currentUser} />}
           {subView === "dias_no_justificados" && !areaLider && !soloNovedades && <DiasNoJustificadosView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} areasNomina={areasNomina} />}
           {subView === "provision_liquidaciones" && !areaLider && !soloNovedades && <ProvisionLiquidacionesView trabajadores={trabajadores} ausencias={ausencias} areasNomina={areasNomina} turnos={turnos} />}
           {subView === "prestamos" && !areaLider && !soloNovedades && <PrestamosView trabajadores={trabajadores} prestamos={prestamos} onGuardar={guardarPrestamo} onBorrar={borrarPrestamo} currentUser={currentUser} />}
