@@ -2204,33 +2204,46 @@ exports.buscarValorEnTablasBusintBD = onCall(
       tablas = enumList.filter((t) => keywords.some((k) => t.toLowerCase().includes(k)));
     }
     const TOLERANCIA = 1; // pesos, por redondeo
+    // (2026-09-26) Se consultan las tablas EN PARALELO (por lotes de 6) en
+    // vez de una por una -- con varias decenas de tablas candidatas, cada
+    // una paginando sola, ir secuencial se pasaba largo del limite de 70s
+    // que el SDK cliente de Firebase le pone por defecto a httpsCallable
+    // (el "deadline-exceeded" que le salio a Fredy), aun con el backend
+    // configurado a 540s. En paralelo (y con el timeout del lado cliente
+    // ya subido en App.js) esto corre varias veces mas rapido.
+    const TAM_LOTE_TABLAS = 6;
     const resultados = [];
-    for (const tabla of tablas) {
-      let filas;
-      try {
-        filas = await consultarTablaBusintBDCompleta(tabla);
-      } catch (err) {
-        resultados.push({ tabla, ok: false, error: err?.message || String(err) });
-        continue;
-      }
-      const coincidencias = [];
-      filas.forEach((fila) => {
-        if (!fila || typeof fila !== "object") return;
-        Object.keys(fila).forEach((campo) => {
-          const val = fila[campo];
-          if (typeof val !== "number") return;
-          if (valores.some((objetivo) => Math.abs(val - objetivo) < TOLERANCIA)) {
-            coincidencias.push({ campo, valor: val, fila });
+    for (let i = 0; i < tablas.length; i += TAM_LOTE_TABLAS) {
+      const lote = tablas.slice(i, i + TAM_LOTE_TABLAS);
+      const resultadosLote = await Promise.all(
+        lote.map(async (tabla) => {
+          let filas;
+          try {
+            filas = await consultarTablaBusintBDCompleta(tabla);
+          } catch (err) {
+            return { tabla, ok: false, error: err?.message || String(err) };
           }
-        });
-      });
-      resultados.push({
-        tabla,
-        ok: true,
-        totalFilas: filas.length,
-        totalCoincidencias: coincidencias.length,
-        coincidencias: coincidencias.slice(0, 25),
-      });
+          const coincidencias = [];
+          filas.forEach((fila) => {
+            if (!fila || typeof fila !== "object") return;
+            Object.keys(fila).forEach((campo) => {
+              const val = fila[campo];
+              if (typeof val !== "number") return;
+              if (valores.some((objetivo) => Math.abs(val - objetivo) < TOLERANCIA)) {
+                coincidencias.push({ campo, valor: val, fila });
+              }
+            });
+          });
+          return {
+            tabla,
+            ok: true,
+            totalFilas: filas.length,
+            totalCoincidencias: coincidencias.length,
+            coincidencias: coincidencias.slice(0, 25),
+          };
+        })
+      );
+      resultados.push(...resultadosLote);
     }
     return { valoresBuscados: valores, totalTablasRevisadas: tablas.length, tablas, resultados };
   }

@@ -11113,7 +11113,9 @@ function BusintCatalogoTestView() {
     setBuscarExactoResultado(null);
     try {
       const keywords = keywordsBuscarExacto.split(",").map((k) => k.trim()).filter(Boolean);
-      const llamar = httpsCallable(functionsClient, "buscarValorEnTablasBusintBD");
+      // timeout explicito (9 min, igual al backend) -- el default del SDK
+      // cliente es ~70s, muy corto para esta busqueda de varias tablas.
+      const llamar = httpsCallable(functionsClient, "buscarValorEnTablasBusintBD", { timeout: 540000 });
       const resp = await llamar({ valores, ...(keywords.length ? { keywords } : {}) });
       setBuscarExactoResultado(resp.data);
     } catch (err) {
