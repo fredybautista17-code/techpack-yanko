@@ -11278,7 +11278,7 @@ async function exportarHistorialLiquidacionesRetiroExcel(historial, trabajadores
   XLSX.utils.book_append_sheet(wb, ws, "Liquidaciones de Retiro");
   XLSX.writeFile(wb, `Historial_Liquidaciones_Retiro_${today()}.xlsx`);
 }
-function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesRetiro, prestamos, areasNomina, turnos, onGuardarLiquidacionRetiro, onGuardarTrabajador, onGuardarAusencia, onCambiarEstadoPagoLiquidacion, currentUser }) {
+function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesRetiro, prestamos, areasNomina, turnos, onGuardarLiquidacionRetiro, onGuardarTrabajador, onGuardarAusencia, onCambiarEstadoPagoLiquidacion, onCambiarEmpleadorLiquidacion, currentUser }) {
   const [areaFiltro, setAreaFiltro] = useState("");
   const [trabajadorId, setTrabajadorId] = useState("");
   const [fechaRetiro, setFechaRetiro] = useState("");
@@ -11293,6 +11293,11 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
   // (2026-09-26, a pedido de Fredy) Filtro de Estado de pago (Pagada/No
   // pagada) del Historial de mas abajo, junto a Año/Área.
   const [estadoPagoFiltro, setEstadoPagoFiltro] = useState("");
+  // (2026-09-26, a pedido de Fredy) Filtro por Empleador (Yanko/Indutex)
+  // del Historial -- pensado para gente como Andreina Vargas, que trabajo
+  // una etapa por cada empresa. Aparte del areaFiltro de arriba (ese es
+  // para elegir A QUIEN liquidar, no para el historial).
+  const [empresaHistorialFiltro, setEmpresaHistorialFiltro] = useState("");
   // Carga masiva de retiros historicos (ver mas abajo) -- helpers arriba,
   // justo despues de TIPOS_NOMINA_LIQUIDABLES.
   const fileRetirosRef = useRef(null);
@@ -11312,9 +11317,9 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
   // vean los dos juntos, sin importar cuál esté seleccionado en el filtro.
   const totalPagadoHistorial = historialPorAnioYArea.filter((f) => f.estadoPago === "pagada").reduce((s, f) => s + (Number(f.totalAPagar) || 0), 0);
   const totalPorPagarHistorial = historialPorAnioYArea.filter((f) => f.estadoPago !== "pagada").reduce((s, f) => s + (Number(f.totalAPagar) || 0), 0);
-  const historialFiltrado = historialPorAnioYArea.filter((f) =>
-    !estadoPagoFiltro || (estadoPagoFiltro === "pagada" ? f.estadoPago === "pagada" : f.estadoPago !== "pagada")
-  );
+  const historialFiltrado = historialPorAnioYArea
+    .filter((f) => !estadoPagoFiltro || (estadoPagoFiltro === "pagada" ? f.estadoPago === "pagada" : f.estadoPago !== "pagada"))
+    .filter((f) => !empresaHistorialFiltro || f.empleador === empresaHistorialFiltro);
 
   function elegirTrabajador(id) {
     setTrabajadorId(id);
@@ -11356,6 +11361,7 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
         nombre: trabajador.nombre,
         tipoNomina: trabajador.tipoNomina,
         area: trabajador.area || "Sin asignar",
+        empleador: trabajador.empleador || "",
         ...resultado,
         estadoPago: "no_pagada",
         generadaEn: new Date().toISOString(),
@@ -11524,6 +11530,11 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
               <div style={{ maxWidth: 180 }}>
                 <FSel value={estadoPagoFiltro} onChange={setEstadoPagoFiltro} options={[{ value: "pagada", label: "Pagadas" }, { value: "no_pagada", label: "No pagadas" }]} placeholder="Todos los estados" />
               </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <Btn small variant={!empresaHistorialFiltro ? "primary" : "secondary"} onClick={() => setEmpresaHistorialFiltro("")}>Todas</Btn>
+                <Btn small variant={empresaHistorialFiltro === "YANKO" ? "primary" : "secondary"} onClick={() => setEmpresaHistorialFiltro("YANKO")}>Yanko</Btn>
+                <Btn small variant={empresaHistorialFiltro === "INDUTEX" ? "primary" : "secondary"} onClick={() => setEmpresaHistorialFiltro("INDUTEX")}>Indutex</Btn>
+              </div>
               <Btn variant="secondary" small onClick={descargarExcelHistorial} disabled={historialFiltrado.length === 0}>📊 Descargar Excel</Btn>
             </div>
           </div>
@@ -11543,6 +11554,20 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
                 <span style={{ fontWeight: (f.diasNoRemunerados || 0) > 0 ? 700 : 400, color: (f.diasNoRemunerados || 0) > 0 ? C.red : C.slate }}>{fmtNum(f.diasNoRemunerados || 0)}</span>
               ) },
               { key: "totalAPagar", label: "Total", align: "right", render: (f) => <strong>{fmtMoney(f.totalAPagar)}</strong> },
+              { key: "empleador", label: "Empleador", render: (f) => (
+                <span
+                  onClick={() => {
+                    if (!onCambiarEmpleadorLiquidacion) return;
+                    const ciclo = ["", "YANKO", "INDUTEX"];
+                    const siguiente = ciclo[(ciclo.indexOf(f.empleador || "") + 1) % ciclo.length];
+                    onCambiarEmpleadorLiquidacion(f.id, siguiente);
+                  }}
+                  title="Clic para asignar/cambiar el empleador"
+                  style={{ cursor: onCambiarEmpleadorLiquidacion ? "pointer" : "default", color: f.empleador ? C.ink : C.slate, fontWeight: f.empleador ? 700 : 400 }}
+                >
+                  {f.empleador || "— (clic para asignar)"}
+                </span>
+              ) },
               { key: "estadoPago", label: "Estado", render: (f) => (
                 <span
                   onClick={() => onCambiarEstadoPagoLiquidacion && onCambiarEstadoPagoLiquidacion(f.id, f.estadoPago === "pagada" ? "no_pagada" : "pagada")}
@@ -12353,6 +12378,11 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // "No pagada" a "Pagada" (o viceversa, por si se equivoca) desde el
   // Historial -- ver LiquidacionRetiroView.
   async function cambiarEstadoPagoLiquidacion(id, estadoPago) { await fsSave("nomina_liquidaciones_retiro", id, { estadoPago }); }
+  // (2026-09-26, a pedido de Fredy) Corregir/asignar el Empleador (Yanko/
+  // Indutex) de una liquidacion ya guardada -- pensado para gente como
+  // Andreina Vargas, que trabajo una etapa por cada empresa: la carga
+  // historica no trae Empleador, asi que esto deja corregirlo a mano.
+  async function cambiarEmpleadorLiquidacion(id, empleador) { await fsSave("nomina_liquidaciones_retiro", id, { empleador }); }
   async function guardarPrestamo(p) { await fsSave("nomina_prestamos", p.id, p); }
   async function borrarPrestamo(id) { await fsDelete("nomina_prestamos", id); }
   async function guardarConceptoDeduccion(c) { await fsSave("nomina_conceptos_deduccion", c.id, c); }
@@ -12710,7 +12740,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "tns" && !areaLider && !soloNovedades && <TNSConexionView />}
           {subView === "novedades_tns" && !areaLider && !soloNovedades && <NovedadesTNSView trabajadores={trabajadores} />}
           {subView === "novedades_quincena" && !areaLider && !soloNovedades && <NovedadesQuincenaView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} motivosDisponibles={nombresMotivosDisponibles} currentUser={currentUser} onGuardarAusencia={guardarAusencia} onGuardarPrestamo={guardarPrestamo} />}
-          {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} turnos={turnos} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} onGuardarAusencia={guardarAusencia} onCambiarEstadoPagoLiquidacion={cambiarEstadoPagoLiquidacion} currentUser={currentUser} />}
+          {subView === "liquidacion_retiro" && !areaLider && !soloNovedades && <LiquidacionRetiroView trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} liquidacionesRetiro={liquidacionesRetiro} prestamos={prestamos} areasNomina={areasNomina} turnos={turnos} onGuardarLiquidacionRetiro={guardarLiquidacionRetiro} onGuardarTrabajador={guardarTrabajador} onGuardarAusencia={guardarAusencia} onCambiarEstadoPagoLiquidacion={cambiarEstadoPagoLiquidacion} onCambiarEmpleadorLiquidacion={cambiarEmpleadorLiquidacion} currentUser={currentUser} />}
           {subView === "dias_no_justificados" && !areaLider && !soloNovedades && <DiasNoJustificadosView trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} areasNomina={areasNomina} />}
           {subView === "provision_liquidaciones" && !areaLider && !soloNovedades && <ProvisionLiquidacionesView trabajadores={trabajadores} ausencias={ausencias} areasNomina={areasNomina} turnos={turnos} />}
           {subView === "prestamos" && !areaLider && !soloNovedades && <PrestamosView trabajadores={trabajadores} prestamos={prestamos} onGuardar={guardarPrestamo} onBorrar={borrarPrestamo} currentUser={currentUser} />}
