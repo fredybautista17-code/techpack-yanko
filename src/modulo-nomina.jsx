@@ -2032,9 +2032,30 @@ function TrabajadorModal({ trabajador, onSave, onClose, areasNomina, areasTNS, z
     </Modal>
   );
 }
+// (2026-09-26, a pedido de Fredy) Reactivar a alguien que ya se habia
+// retirado y vuelve a trabajar -- pide la nueva fecha de ingreso para que
+// el proximo calculo de cesantias/prima/vacaciones parta de ahi, no de la
+// fecha de ingreso original (esa ya quedo liquidada en su periodo anterior,
+// que sigue guardada aparte en el historial de Liquidacion de Retiro).
+function ReactivarTrabajadorModal({ trabajador, onSave, onClose }) {
+  const [fechaIngreso, setFechaIngreso] = useState("");
+  return (
+    <Modal title={`Reactivar a ${trabajador.nombre}`} onClose={onClose} width={420}>
+      <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 14 }}>
+        Esta persona quedó retirada el {fmtFechaISO(trabajador.fechaRetiro)}. Su liquidación de ese período ya está guardada en el historial y no se toca. Indica la nueva fecha en que vuelve a trabajar -- desde ahí se van a contar sus cesantías, prima y vacaciones del nuevo período.
+      </div>
+      <Field label="Nueva fecha de ingreso"><FInput type="date" value={fechaIngreso} onChange={setFechaIngreso} /></Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={() => fechaIngreso && onSave(fechaIngreso)} disabled={!fechaIngreso}>Reactivar</Btn>
+      </div>
+    </Modal>
+  );
+}
 function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina, areasTNS, zonasNomina, tiposContrato, onSaveArea, onSaveZona, turnos, gruposTrabajo }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | trabajador
   const [confirmDel, setConfirmDel] = useState(null);
+  const [reactivar, setReactivar] = useState(null); // null | trabajador a reactivar
   const [busqueda, setBusqueda] = useState("");
   const [mostrarMasOpciones, setMostrarMasOpciones] = useState(false);
   const [autoResultado, setAutoResultado] = useState(null);
@@ -2387,6 +2408,13 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
           </div>
         </Modal>
       )}
+      {reactivar && (
+        <ReactivarTrabajadorModal
+          trabajador={reactivar}
+          onSave={(fechaIngreso) => { onSave({ ...reactivar, fechaIngreso, fechaRetiro: "", activo: true }); setReactivar(null); }}
+          onClose={() => setReactivar(null)}
+        />
+      )}
       {previewExcel && (
         <Modal title="Vista previa de cambios del Excel" onClose={() => setPreviewExcel(null)} width={640}>
           {previewExcel.error ? (
@@ -2588,6 +2616,7 @@ function TrabajadoresView({ trabajadores, isAdmin, onSave, onDelete, areasNomina
             key: "acciones", label: "", align: "right",
             render: (f) => (
               <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                {f.activo === false && <span onClick={(e) => { e.stopPropagation(); setReactivar(f); }} style={{ cursor: "pointer", color: C.green, fontWeight: 700 }}>Reactivar</span>}
                 <span onClick={(e) => { e.stopPropagation(); setModal(f); }} style={{ cursor: "pointer", color: C.blue, fontWeight: 700 }}>Editar</span>
                 <span onClick={(e) => { e.stopPropagation(); setConfirmDel(f); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>
               </span>
@@ -10944,7 +10973,12 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
     setGuardando(true);
     try {
       await onGuardarLiquidacionRetiro({
-        id: `${trabajador.id}__retiro`,
+        // (2026-09-26) antes este id era fijo por trabajador (`${id}__retiro`),
+        // asi que si alguien se reincorporaba y luego se volvia a retirar, la
+        // segunda liquidacion SOBRESCRIBIA la primera y se perdia el historial
+        // del primer periodo. Ahora cada liquidacion de retiro queda con un id
+        // unico -- se pueden acumular varios periodos por la misma persona.
+        id: uid(),
         trabajadorId: trabajador.id,
         nombre: trabajador.nombre,
         tipoNomina: trabajador.tipoNomina,
@@ -10991,7 +11025,7 @@ function LiquidacionRetiroView({ trabajadores, ausencias, faltas, liquidacionesR
           await onGuardarAusencia({ id: uid(), ...a, nombre: v.trabajador.nombre, registradoPor: quien, registradoEn: ahora, origen: "carga_historica_retiro" });
         }
         await onGuardarLiquidacionRetiro({
-          id: `${v.trabajador.id}__retiro`,
+          id: uid(),
           trabajadorId: v.trabajador.id,
           nombre: v.trabajador.nombre,
           tipoNomina: v.trabajador.tipoNomina,
