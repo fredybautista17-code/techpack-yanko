@@ -5147,6 +5147,13 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   // recorrer toda la tabla -- sin distinguir mayusculas/minusculas ni
   // acentos.
   const [busquedaProveedor, setBusquedaProveedor] = useState("");
+  // (2026-09-27, a pedido de Fredy) Filtro Todas/Busint/Manual -- para ver
+  // solo lo que el trajo del corte de Busint o solo lo que el agrego a
+  // mano. Se aplica ANTES de calcular los totales de mas abajo (Total
+  // adeudado, Total vencido, 0-30/31-60/61-90/91+ y el monto junto a
+  // "Ordenar por"), asi que esos totales tambien quedan sumando solo la
+  // seleccion elegida.
+  const [origenFiltro, setOrigenFiltro] = useState("");
   const [corteSeleccionado, setCorteSeleccionado] = useState(null);
   const [vista, setVista] = useState("tabla");
   const [cargandoBusint, setCargandoBusint] = useState(false);
@@ -5208,6 +5215,9 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   if (busquedaProveedor.trim()) {
     const q = normalizarTexto(busquedaProveedor);
     filas = filas.filter((f) => normalizarTexto(f.nombre).includes(q));
+  }
+  if (origenFiltro) {
+    filas = filas.filter((f) => f.origen === origenFiltro);
   }
   filas = [...filas].sort((a, b) => {
     if (orden === "total") return b.total - a.total;
@@ -5355,6 +5365,11 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
             <div style={{ width: 240 }}>
               <FInput value={busquedaProveedor} onChange={setBusquedaProveedor} placeholder="Buscar proveedor..." icon="🔍" />
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <Btn small variant={!origenFiltro ? "primary" : "secondary"} onClick={() => setOrigenFiltro("")}>Todas</Btn>
+              <Btn small variant={origenFiltro === "corte" ? "primary" : "secondary"} onClick={() => setOrigenFiltro("corte")}>Busint</Btn>
+              <Btn small variant={origenFiltro === "manual" ? "primary" : "secondary"} onClick={() => setOrigenFiltro("manual")}>Manual</Btn>
             </div>
             <span style={{ fontSize: 12, color: C.slate, fontWeight: 600 }}>Ordenar por:</span>
             <select
