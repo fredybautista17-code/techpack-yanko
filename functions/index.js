@@ -2560,7 +2560,7 @@ exports.getCuentasPorPagarBusintGen = onCall(
       const facTotalFila = Number(f?.FACTOTAL) || 0;
       const fechaVctoFila = fechaBusintBDaDateSoloDia(f?.Fechafin);
       if (!facturasPorLlave.has(llave)) {
-        facturasPorLlave.set(llave, { llave, codigo, nfactOriginal, facTotal: 0, fechaVcto: null, facTotalMax: -Infinity });
+        facturasPorLlave.set(llave, { llave, codigo, nfactOriginal, facTotal: 0, fechaVcto: null, facTotalMax: -Infinity, concepto: null });
       }
       const grupo = facturasPorLlave.get(llave);
       grupo.facTotal += facTotalFila;
@@ -2569,12 +2569,21 @@ exports.getCuentasPorPagarBusintGen = onCall(
       if (facTotalFila > grupo.facTotalMax) {
         grupo.facTotalMax = facTotalFila;
         grupo.fechaVcto = fechaVctoFila;
+        // (2026-09-27, a pedido de Fredy) Concepto de obligacion crudo de
+        // Busint (ej. "SCONF" = Servicio de Confeccion, visto en el reporte
+        // "Gestion de Obligaciones Financieras Nacionales") -- vive en el
+        // campo FCBI de "cartera cxp-fact", la MISMA tabla que ya usamos
+        // aqui (confirmado a mano con Fredy, factura 6978 del proveedor 16).
+        // Se trae el codigo crudo; el nombre legible se resuelve en el
+        // frontend con un mapeo manual (mismo mecanismo que los nombres de
+        // proveedor sin nombre en Busint).
+        grupo.concepto = String(f?.FCBI || "").trim() || null;
       }
       if (!grupo.nfactOriginal && nfactOriginal) grupo.nfactOriginal = nfactOriginal;
     });
 
     const porProveedor = new Map();
-    facturasPorLlave.forEach(({ llave, codigo, nfactOriginal, facTotal, fechaVcto }) => {
+    facturasPorLlave.forEach(({ llave, codigo, nfactOriginal, facTotal, fechaVcto, concepto }) => {
       const pagado = pagadoPorFactura.get(llave) || 0;
       const descuento = descuentoPorFactura.get(llave) || 0;
       const devolucion = devolucionPorFactura.get(llave) || 0;
@@ -2607,6 +2616,7 @@ exports.getCuentasPorPagarBusintGen = onCall(
         saldo,
         fechaVctoISO: fechaVcto ? fechaVcto.toISOString().slice(0, 10) : null,
         diasVencido,
+        concepto,
       });
     });
     const proveedoresResultado = [...porProveedor.values()]

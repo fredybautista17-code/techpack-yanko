@@ -5137,7 +5137,34 @@ function ProgramacionPagosView({ presupuestosCliente, presupuestos, calendarioCx
 function normalizarTexto(s) {
   return (s || "").toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
 }
-function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente, presupuestos, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, isAdmin }) {
+// (2026-09-27, a pedido de Fredy) Modal chiquito para ponerle nombre legible
+// a un codigo crudo de "Concepto de Obligacion" (campo FCBI de Busint, ej.
+// "SCONF"). Mismo mecanismo pensado para los codigos de proveedor sin
+// nombre (16, 26, 27, 33, 1004, etc.).
+function RenombrarConceptoCXPModal({ codigo, nombreActual, onSave, onClose }) {
+  const [nombre, setNombre] = useState(nombreActual || "");
+  function guardar() {
+    if (!nombre.trim()) return;
+    onSave(nombre.trim());
+    onClose();
+  }
+  return (
+    <Modal title={`Nombre para el concepto "${codigo}"`} onClose={onClose} width={420}>
+      <Field label="Nombre legible">
+        <FInput value={nombre} onChange={setNombre} placeholder="Ej. SERVICIO DE CONFECCION" />
+      </Field>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 4 }}>
+        <Btn variant="secondary" onClick={onClose}>
+          Cancelar
+        </Btn>
+        <Btn onClick={guardar} disabled={!nombre.trim()}>
+          Guardar
+        </Btn>
+      </div>
+    </Modal>
+  );
+}
+function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente, presupuestos, nombresConcepto, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, onGuardarNombreConcepto, isAdmin }) {
   const [showImport, setShowImport] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const [programando, setProgramando] = useState(null);
@@ -5167,6 +5194,9 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   // de saldo (ej. Cheviotto) sin tener que exportar nada a mano.
   const [detalleFacturasPorProveedor, setDetalleFacturasPorProveedor] = useState({});
   const [verFacturasDe, setVerFacturasDe] = useState(null);
+  // (2026-09-27, a pedido de Fredy) Modal para ponerle nombre legible a un
+  // codigo de "Concepto de Obligacion" crudo de Busint (ej. "SCONF").
+  const [renombrandoConcepto, setRenombrandoConcepto] = useState(null);
   // (2026-09-25) Trae el corte de cuentas por pagar EN VIVO desde Busint
   // (cruzando facturas + pagos + maestro de proveedores en el backend) en
   // vez de tener que exportar y subir el Excel a mano -- ver
@@ -5282,6 +5312,14 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
             />
           );
         })()}
+      {renombrandoConcepto && (
+        <RenombrarConceptoCXPModal
+          codigo={renombrandoConcepto}
+          nombreActual={nombresConcepto?.[renombrandoConcepto] || ""}
+          onSave={(nombre) => onGuardarNombreConcepto(renombrandoConcepto, nombre)}
+          onClose={() => setRenombrandoConcepto(null)}
+        />
+      )}
       <div
         style={{
           display: "flex",
@@ -5515,8 +5553,8 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
                               <thead>
                                 <tr style={{ background: C.canvas }}>
-                                  {["N° Factura", "Vence", "Días vencido", "Fac. Total", "Pagado", "Descuento", "Devolución", "Saldo"].map((h) => (
-                                    <th key={h} style={{ padding: "6px 10px", color: C.slate, textAlign: h === "N° Factura" ? "left" : "right", fontWeight: 700, fontSize: 9.5, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
+                                  {["N° Factura", "Concepto", "Vence", "Días vencido", "Fac. Total", "Pagado", "Descuento", "Devolución", "Saldo"].map((h) => (
+                                    <th key={h} style={{ padding: "6px 10px", color: C.slate, textAlign: h === "N° Factura" || h === "Concepto" ? "left" : "right", fontWeight: 700, fontSize: 9.5, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                                   ))}
                                 </tr>
                               </thead>
@@ -5524,6 +5562,22 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                                 {[...facturasDetalle].sort((a, b) => b.saldo - a.saldo).map((fac, j) => (
                                   <tr key={fac.nfact || j} style={{ borderTop: `1px solid ${C.border}` }}>
                                     <td style={{ padding: "6px 10px", fontWeight: 700, color: C.ink }}>{fac.nfact}</td>
+                                    <td style={{ padding: "6px 10px", color: C.slate }}>
+                                      {fac.concepto ? (
+                                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                          {nombresConcepto?.[fac.concepto] || fac.concepto}
+                                          <button
+                                            onClick={() => setRenombrandoConcepto(fac.concepto)}
+                                            title="Ponerle nombre a este código de concepto"
+                                            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, opacity: 0.55, padding: 0 }}
+                                          >
+                                            ✏️
+                                          </button>
+                                        </span>
+                                      ) : (
+                                        "—"
+                                      )}
+                                    </td>
                                     <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate }}>{fac.fechaVctoISO || "—"}</td>
                                     <td style={{ padding: "6px 10px", textAlign: "right", color: fac.diasVencido > 90 ? C.red : C.slate }}>{fac.diasVencido}</td>
                                     <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate }}>{fmtCOP(fac.facTotal)}</td>
@@ -5534,7 +5588,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                                   </tr>
                                 ))}
                                 {!facturasDetalle.length && (
-                                  <tr><td colSpan={8} style={{ padding: "8px 10px", color: C.slate, fontStyle: "italic" }}>Sin facturas con saldo pendiente para este proveedor.</td></tr>
+                                  <tr><td colSpan={9} style={{ padding: "8px 10px", color: C.slate, fontStyle: "italic" }}>Sin facturas con saldo pendiente para este proveedor.</td></tr>
                                 )}
                               </tbody>
                             </table>
@@ -5717,6 +5771,12 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
   const [cortesCxp, setCortesCxp] = useState([]);
   const [manualCxp, setManualCxp] = useState([]);
   const [calendarioCxp, setCalendarioCxp] = useState([]);
+  // (2026-09-27, a pedido de Fredy) Mapeo manual codigo->nombre del
+  // "Concepto de Obligacion" crudo que trae Busint (campo FCBI de "cartera
+  // cxp-fact", ej. "SCONF"), para mostrar un nombre legible sin depender de
+  // ninguna tabla catalogo de Busint (se buscaron varias y ninguna existe;
+  // la traduccion parece vivir solo dentro del programa de Busint).
+  const [nombresConceptoCxp, setNombresConceptoCxp] = useState({});
   const [clientesDiseno, setClientesDiseno] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -5768,6 +5828,16 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
         setCalendarioCxp(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
       }
     );
+    // Mapeo manual codigo de concepto -> nombre legible (doc id = codigo
+    // crudo, ej. "SCONF"; campo `nombre` = texto que escribe el usuario).
+    const unsubNombresConceptoCxp = onSnapshot(
+      collection(db, "contabilidad_cxp_nombres_concepto"),
+      (snap) => {
+        const mapa = {};
+        snap.docs.forEach((d) => { mapa[d.id] = d.data()?.nombre || ""; });
+        setNombresConceptoCxp(mapa);
+      }
+    );
     // Clientes: se leen en vivo del mismo documento de configuración que usa
     // Diseño (Admin → Clientes). Solo lectura desde Contabilidad — agregar o
     // borrar clientes se sigue haciendo únicamente desde Diseño.
@@ -5782,6 +5852,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
       unsubCortesCxp();
       unsubManualCxp();
       unsubCalendarioCxp();
+      unsubNombresConceptoCxp();
       unsubClientes();
     };
   }, []);
@@ -5920,6 +5991,15 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
     setCalendarioCxp((cs) => [...cs.filter((c) => c.proveedor !== proveedor), ...nuevos]);
     await Promise.all(existentes.map((e) => fsDelete("contabilidad_cxp_calendario", e.id)));
     await Promise.all(nuevos.map((n) => fsSave("contabilidad_cxp_calendario", n.id, n)));
+  }
+  // Guarda/renombra el nombre legible de un codigo de concepto crudo de
+  // Busint (ej. "SCONF" -> "SERVICIO DE CONFECCION"). El id del documento es
+  // el codigo mismo, asi que volver a guardar el mismo codigo simplemente
+  // actualiza el nombre.
+  async function guardarNombreConceptoCxp(codigo, nombre) {
+    if (!codigo) return;
+    setNombresConceptoCxp((m) => ({ ...m, [codigo]: nombre }));
+    await fsSave("contabilidad_cxp_nombres_concepto", codigo, { nombre, actualizadoEn: new Date().toISOString() });
   }
   // Lista única de rubros históricos (código + nombre), para el selector de
   // distribución de ingresos y para calcular el avance por rubro en Proyección.
@@ -6186,12 +6266,14 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
               calendario={calendarioCxp}
               presupuestosCliente={presupuestosCliente}
               presupuestos={presupuestos}
+              nombresConcepto={nombresConceptoCxp}
               onImportarCorte={addCorteCxp}
               onDeleteCorte={deleteCorteCxp}
               onAddManual={addManualCxp}
               onDeleteManual={deleteManualCxp}
               onDeleteProveedorCorte={eliminarProveedorDeCorte}
               onGuardarCalendario={guardarCalendarioProveedor}
+              onGuardarNombreConcepto={guardarNombreConceptoCxp}
               isAdmin={isAdmin}
             />
           )}
