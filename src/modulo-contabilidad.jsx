@@ -4285,7 +4285,51 @@ function RenombrarProveedorCXPModal({ codigo, nombreActual, onSave, onClose }) {
     </Modal>
   );
 }
-function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente, presupuestos, nombresConcepto, nombresProveedor, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, onGuardarNombreConcepto, onGuardarNombreProveedor, isAdmin }) {
+// (2026-09-27, a pedido de Fredy) Categorías fijas para agrupar Cuentas por
+// Pagar -- Contabilidad se queda con el registro, así que agrupar por tipo
+// de gasto ayuda a ver de un vistazo cuánto se debe en cada frente sin
+// sumarlo a mano proveedor por proveedor. "Sin categoría" no está en esta
+// lista -- se agrega aparte, al final, para lo que aún no se ha clasificado.
+const CATEGORIAS_CXP = [
+  { id: "telas_proveedores", label: "Telas y Proveedores" },
+  { id: "servicios", label: "Pagos de Servicios" },
+  { id: "insumos", label: "Pagos Insumos" },
+  { id: "plantas_confeccion", label: "Pago de Plantas de Confección" },
+  { id: "prestamos", label: "Préstamos" },
+];
+function CategorizarProveedorCXPModal({ nombre, categoriaActual, onSave, onClose }) {
+  const [categoria, setCategoria] = useState(categoriaActual || "");
+  return (
+    <Modal title={`Categoría de ${nombre}`} onClose={onClose} width={420}>
+      <Field label="Categoría">
+        <select
+          value={categoria}
+          onChange={(e) => setCategoria(e.target.value)}
+          style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
+        >
+          <option value="">Sin categoría</option>
+          {CATEGORIAS_CXP.map((c) => (
+            <option key={c.id} value={c.id}>{c.label}</option>
+          ))}
+        </select>
+      </Field>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 4 }}>
+        <Btn variant="secondary" onClick={onClose}>
+          Cancelar
+        </Btn>
+        <Btn
+          onClick={() => {
+            onSave(categoria || null);
+            onClose();
+          }}
+        >
+          Guardar
+        </Btn>
+      </div>
+    </Modal>
+  );
+}
+function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente, presupuestos, nombresConcepto, nombresProveedor, categoriasCxp, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, onGuardarNombreConcepto, onGuardarNombreProveedor, onGuardarCategoria, isAdmin }) {
   const [showImport, setShowImport] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const [programando, setProgramando] = useState(null);
@@ -4321,6 +4365,13 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   // (2026-09-27, a pedido de Fredy) Modal para ponerle nombre real a un
   // codigo de proveedor que Busint no tiene en su catalogo (ej. "16").
   const [renombrandoProveedor, setRenombrandoProveedor] = useState(null);
+  // (2026-09-27, a pedido de Fredy) Modal para asignarle categoría a un
+  // proveedor (Telas y Proveedores, Pagos de Servicios, etc.), para agrupar
+  // la tabla de abajo.
+  const [categorizando, setCategorizando] = useState(null);
+  function categoriaDeProveedor(nombre) {
+    return categoriasCxp.find((c) => c.proveedor === nombre)?.categoria || "";
+  }
   // (2026-09-25) Trae el corte de cuentas por pagar EN VIVO desde Busint
   // (cruzando facturas + pagos + maestro de proveedores en el backend) en
   // vez de tener que exportar y subir el Excel a mano -- ver
@@ -4394,6 +4445,18 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
     if (orden === "91") return b.dias91mas - a.dias91mas;
     return a.nombreMostrado.localeCompare(b.nombreMostrado);
   });
+  // Agrupa las filas (ya filtradas y ordenadas arriba) por categoría, en el
+  // orden fijo de CATEGORIAS_CXP y con "Sin categoría" al final -- como
+  // `filas` ya viene ordenada por `orden` y el filtro preserva el orden
+  // relativo, cada grupo queda ordenado igual que la tabla sin agrupar.
+  const grupos = [...CATEGORIAS_CXP.map((c) => c.id), ""]
+    .map((catId) => {
+      const filasGrupo = filas.filter((f) => (categoriaDeProveedor(f.nombre) || "") === catId);
+      const label = catId ? CATEGORIAS_CXP.find((c) => c.id === catId).label : "Sin categoría";
+      const subtotal = filasGrupo.reduce((s, f) => s + f.total, 0);
+      return { id: catId || "sin_categoria", label, filas: filasGrupo, subtotal };
+    })
+    .filter((g) => g.filas.length > 0);
   const totalAdeudado = filas.reduce((s, f) => s + f.total, 0);
   const totalVencido = filas.reduce((s, f) => s + f.dias0a30 + f.dias31a60 + f.dias61a90 + f.dias91mas, 0);
   const total0a30 = filas.reduce((s, f) => s + f.dias0a30, 0);
@@ -4463,6 +4526,14 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
           nombreActual={nombresProveedor?.[renombrandoProveedor] || ""}
           onSave={(nombre) => onGuardarNombreProveedor(renombrandoProveedor, nombre)}
           onClose={() => setRenombrandoProveedor(null)}
+        />
+      )}
+      {categorizando && (
+        <CategorizarProveedorCXPModal
+          nombre={filas.find((f) => f.nombre === categorizando)?.nombreMostrado || categorizando}
+          categoriaActual={categoriaDeProveedor(categorizando)}
+          onSave={(categoria) => onGuardarCategoria(categorizando, categoria)}
+          onClose={() => setCategorizando(null)}
         />
       )}
       <div
@@ -4605,157 +4676,179 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                 </tr>
               </thead>
               <tbody>
-                {filas.map((f, i) => {
-                  const progTotal = calendarioDe(f.nombre).reduce((s, c) => s + c.monto, 0);
-                  const facturasDetalle = detalleFacturasPorProveedor[f.nombre];
-                  const expandido = verFacturasDe === f.nombre;
-                  return (
-                    <Fragment key={`${f.origen}-${f.id || i}`}>
-                    <tr
-                      style={{
-                        background: f.dias91mas > 0 ? C.redBg : i % 2 === 0 ? C.canvas : C.white,
-                        borderBottom: `1px solid ${C.border}`,
-                      }}
-                    >
-                      <td style={{ padding: "8px 12px", fontWeight: 600, color: C.ink }}>
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                          {f.nombreMostrado}
-                          {f.codigoSinNombre && (
-                            <button
-                              onClick={() => setRenombrandoProveedor(f.codigoSinNombre)}
-                              title="Ponerle nombre real a este proveedor"
-                              style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, opacity: 0.55, padding: 0 }}
-                            >
-                              ✏️
-                            </button>
-                          )}
-                        </span>{" "}
-                        {f.origen === "manual" && <span style={{ fontSize: 10, color: C.slate, fontWeight: 400 }}>(manual)</span>}
-                      </td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.porVencer)}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.dias0a30)}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.dias31a60)}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.dias61a90)}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: f.dias91mas > 0 ? 800 : 500, color: f.dias91mas > 0 ? C.red : C.slate }}>
-                        {fmtCOP(f.dias91mas)}
-                      </td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800, color: C.ink }}>{fmtCOP(f.total)}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", color: progTotal > 0 ? C.green : C.slate, fontWeight: progTotal > 0 ? 700 : 400 }}>
-                        {progTotal > 0 ? fmtCOP(progTotal) : "—"}
-                      </td>
-                      <td style={{ padding: "8px 8px", textAlign: "center", whiteSpace: "nowrap" }}>
-                        {facturasDetalle && (
-                          <button
-                            onClick={() => setVerFacturasDe(expandido ? null : f.nombre)}
-                            title="Ver el detalle de facturas de este proveedor (de la última consulta en vivo a Busint)"
-                            style={{
-                              background: C.violetBg || C.canvas,
-                              border: "none",
-                              borderRadius: 6,
-                              padding: "4px 8px",
-                              color: C.violet || C.ink,
-                              fontWeight: 700,
-                              fontSize: 10,
-                              cursor: "pointer",
-                              marginRight: 6,
-                            }}
-                          >
-                            {expandido ? "▲ Ocultar facturas" : "🔍 Ver facturas"}
-                          </button>
-                        )}
-                        <button
-                          onClick={() => setProgramando(f.nombre)}
-                          style={{
-                            background: C.blueBg,
-                            border: "none",
-                            borderRadius: 6,
-                            padding: "4px 8px",
-                            color: C.blue,
-                            fontWeight: 700,
-                            fontSize: 10,
-                            cursor: "pointer",
-                            marginRight: 6,
-                          }}
-                        >
-                          📅 Programar pago
-                        </button>
-                        {isAdmin && (
-                          <button
-                            onClick={() =>
-                              f.origen === "manual"
-                                ? onDeleteManual(f.id)
-                                : onDeleteProveedorCorte(corteActivo.id, f.nombre)
-                            }
-                            title="Eliminar proveedor"
-                            style={{
-                              background: C.redBg,
-                              border: "none",
-                              borderRadius: 6,
-                              padding: "4px 8px",
-                              color: C.red,
-                              fontWeight: 700,
-                              fontSize: 11,
-                              cursor: "pointer",
-                            }}
-                          >
-                            ✕
-                          </button>
-                        )}
+                {grupos.map((g) => (
+                  <Fragment key={g.id}>
+                    <tr style={{ background: C.canvas }}>
+                      <td colSpan={9} style={{ padding: "8px 12px", borderTop: `2px solid ${C.border}`, borderBottom: `1px solid ${C.border}` }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                          <span style={{ fontWeight: 800, fontSize: 11, color: C.slate, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                            {g.label} <span style={{ fontWeight: 500, textTransform: "none" }}>({g.filas.length})</span>
+                          </span>
+                          <span style={{ fontWeight: 800, fontSize: 12, color: C.ink }}>{fmtCOP(g.subtotal)}</span>
+                        </div>
                       </td>
                     </tr>
-                    {expandido && facturasDetalle && (
-                      <tr>
-                        <td colSpan={9} style={{ padding: "0 12px 14px", background: i % 2 === 0 ? C.canvas : C.white }}>
-                          <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
-                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
-                              <thead>
-                                <tr style={{ background: C.canvas }}>
-                                  {["N° Factura", "Concepto", "Vence", "Días vencido", "Fac. Total", "Pagado", "Descuento", "Devolución", "Saldo"].map((h) => (
-                                    <th key={h} style={{ padding: "6px 10px", color: C.slate, textAlign: h === "N° Factura" || h === "Concepto" ? "left" : "right", fontWeight: 700, fontSize: 9.5, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
-                                  ))}
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {[...facturasDetalle].sort((a, b) => b.saldo - a.saldo).map((fac, j) => (
-                                  <tr key={fac.nfact || j} style={{ borderTop: `1px solid ${C.border}` }}>
-                                    <td style={{ padding: "6px 10px", fontWeight: 700, color: C.ink }}>{fac.nfact}</td>
-                                    <td style={{ padding: "6px 10px", color: C.slate }}>
-                                      {fac.concepto ? (
-                                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                                          {nombresConcepto?.[fac.concepto] || fac.concepto}
-                                          <button
-                                            onClick={() => setRenombrandoConcepto(fac.concepto)}
-                                            title="Ponerle nombre a este código de concepto"
-                                            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, opacity: 0.55, padding: 0 }}
-                                          >
-                                            ✏️
-                                          </button>
-                                        </span>
-                                      ) : (
-                                        "—"
-                                      )}
-                                    </td>
-                                    <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate }}>{fac.fechaVctoISO || "—"}</td>
-                                    <td style={{ padding: "6px 10px", textAlign: "right", color: fac.diasVencido > 90 ? C.red : C.slate }}>{fac.diasVencido}</td>
-                                    <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate }}>{fmtCOP(fac.facTotal)}</td>
-                                    <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate }}>{fmtCOP(fac.pagado)}</td>
-                                    <td style={{ padding: "6px 10px", textAlign: "right", color: fac.descuento > 0 ? (C.green || C.slate) : C.slate }}>{fac.descuento > 0 ? fmtCOP(fac.descuento) : "—"}</td>
-                                    <td style={{ padding: "6px 10px", textAlign: "right", color: fac.devolucion > 0 ? (C.green || C.slate) : C.slate }}>{fac.devolucion > 0 ? fmtCOP(fac.devolucion) : "—"}</td>
-                                    <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 800, color: C.ink }}>{fmtCOP(fac.saldo)}</td>
-                                  </tr>
-                                ))}
-                                {!facturasDetalle.length && (
-                                  <tr><td colSpan={9} style={{ padding: "8px 10px", color: C.slate, fontStyle: "italic" }}>Sin facturas con saldo pendiente para este proveedor.</td></tr>
-                                )}
-                              </tbody>
-                            </table>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                    </Fragment>
-                  );
-                })}
+                    {g.filas.map((f, i) => {
+                      const progTotal = calendarioDe(f.nombre).reduce((s, c) => s + c.monto, 0);
+                      const facturasDetalle = detalleFacturasPorProveedor[f.nombre];
+                      const expandido = verFacturasDe === f.nombre;
+                      const categoriaActual = categoriaDeProveedor(f.nombre);
+                      return (
+                        <Fragment key={`${f.origen}-${f.id || i}`}>
+                        <tr
+                          style={{
+                            background: f.dias91mas > 0 ? C.redBg : i % 2 === 0 ? C.canvas : C.white,
+                            borderBottom: `1px solid ${C.border}`,
+                          }}
+                        >
+                          <td style={{ padding: "8px 12px", fontWeight: 600, color: C.ink }}>
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                              {f.nombreMostrado}
+                              {f.codigoSinNombre && (
+                                <button
+                                  onClick={() => setRenombrandoProveedor(f.codigoSinNombre)}
+                                  title="Ponerle nombre real a este proveedor"
+                                  style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, opacity: 0.55, padding: 0 }}
+                                >
+                                  ✏️
+                                </button>
+                              )}
+                              <button
+                                onClick={() => setCategorizando(f.nombre)}
+                                title={categoriaActual ? `Categoría: ${CATEGORIAS_CXP.find((c) => c.id === categoriaActual)?.label || categoriaActual}` : "Asignar categoría"}
+                                style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, opacity: categoriaActual ? 0.85 : 0.35, padding: 0 }}
+                              >
+                                🏷️
+                              </button>
+                            </span>{" "}
+                            {f.origen === "manual" && <span style={{ fontSize: 10, color: C.slate, fontWeight: 400 }}>(manual)</span>}
+                          </td>
+                          <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.porVencer)}</td>
+                          <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.dias0a30)}</td>
+                          <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.dias31a60)}</td>
+                          <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.dias61a90)}</td>
+                          <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: f.dias91mas > 0 ? 800 : 500, color: f.dias91mas > 0 ? C.red : C.slate }}>
+                            {fmtCOP(f.dias91mas)}
+                          </td>
+                          <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800, color: C.ink }}>{fmtCOP(f.total)}</td>
+                          <td style={{ padding: "8px 12px", textAlign: "right", color: progTotal > 0 ? C.green : C.slate, fontWeight: progTotal > 0 ? 700 : 400 }}>
+                            {progTotal > 0 ? fmtCOP(progTotal) : "—"}
+                          </td>
+                          <td style={{ padding: "8px 8px", textAlign: "center", whiteSpace: "nowrap" }}>
+                            {facturasDetalle && (
+                              <button
+                                onClick={() => setVerFacturasDe(expandido ? null : f.nombre)}
+                                title="Ver el detalle de facturas de este proveedor (de la última consulta en vivo a Busint)"
+                                style={{
+                                  background: C.violetBg || C.canvas,
+                                  border: "none",
+                                  borderRadius: 6,
+                                  padding: "4px 8px",
+                                  color: C.violet || C.ink,
+                                  fontWeight: 700,
+                                  fontSize: 10,
+                                  cursor: "pointer",
+                                  marginRight: 6,
+                                }}
+                              >
+                                {expandido ? "▲ Ocultar facturas" : "🔍 Ver facturas"}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => setProgramando(f.nombre)}
+                              style={{
+                                background: C.blueBg,
+                                border: "none",
+                                borderRadius: 6,
+                                padding: "4px 8px",
+                                color: C.blue,
+                                fontWeight: 700,
+                                fontSize: 10,
+                                cursor: "pointer",
+                                marginRight: 6,
+                              }}
+                            >
+                              📅 Programar pago
+                            </button>
+                            {isAdmin && (
+                              <button
+                                onClick={() =>
+                                  f.origen === "manual"
+                                    ? onDeleteManual(f.id)
+                                    : onDeleteProveedorCorte(corteActivo.id, f.nombre)
+                                }
+                                title="Eliminar proveedor"
+                                style={{
+                                  background: C.redBg,
+                                  border: "none",
+                                  borderRadius: 6,
+                                  padding: "4px 8px",
+                                  color: C.red,
+                                  fontWeight: 700,
+                                  fontSize: 11,
+                                  cursor: "pointer",
+                                }}
+                              >
+                                ✕
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                        {expandido && facturasDetalle && (
+                          <tr>
+                            <td colSpan={9} style={{ padding: "0 12px 14px", background: i % 2 === 0 ? C.canvas : C.white }}>
+                              <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+                                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+                                  <thead>
+                                    <tr style={{ background: C.canvas }}>
+                                      {["N° Factura", "Concepto", "Vence", "Días vencido", "Fac. Total", "Pagado", "Descuento", "Devolución", "Saldo"].map((h) => (
+                                        <th key={h} style={{ padding: "6px 10px", color: C.slate, textAlign: h === "N° Factura" || h === "Concepto" ? "left" : "right", fontWeight: 700, fontSize: 9.5, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
+                                      ))}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {[...facturasDetalle].sort((a, b) => b.saldo - a.saldo).map((fac, j) => (
+                                      <tr key={fac.nfact || j} style={{ borderTop: `1px solid ${C.border}` }}>
+                                        <td style={{ padding: "6px 10px", fontWeight: 700, color: C.ink }}>{fac.nfact}</td>
+                                        <td style={{ padding: "6px 10px", color: C.slate }}>
+                                          {fac.concepto ? (
+                                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                              {nombresConcepto?.[fac.concepto] || fac.concepto}
+                                              <button
+                                                onClick={() => setRenombrandoConcepto(fac.concepto)}
+                                                title="Ponerle nombre a este código de concepto"
+                                                style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, opacity: 0.55, padding: 0 }}
+                                              >
+                                                ✏️
+                                              </button>
+                                            </span>
+                                          ) : (
+                                            "—"
+                                          )}
+                                        </td>
+                                        <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate }}>{fac.fechaVctoISO || "—"}</td>
+                                        <td style={{ padding: "6px 10px", textAlign: "right", color: fac.diasVencido > 90 ? C.red : C.slate }}>{fac.diasVencido}</td>
+                                        <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate }}>{fmtCOP(fac.facTotal)}</td>
+                                        <td style={{ padding: "6px 10px", textAlign: "right", color: C.slate }}>{fmtCOP(fac.pagado)}</td>
+                                        <td style={{ padding: "6px 10px", textAlign: "right", color: fac.descuento > 0 ? (C.green || C.slate) : C.slate }}>{fac.descuento > 0 ? fmtCOP(fac.descuento) : "—"}</td>
+                                        <td style={{ padding: "6px 10px", textAlign: "right", color: fac.devolucion > 0 ? (C.green || C.slate) : C.slate }}>{fac.devolucion > 0 ? fmtCOP(fac.devolucion) : "—"}</td>
+                                        <td style={{ padding: "6px 10px", textAlign: "right", fontWeight: 800, color: C.ink }}>{fmtCOP(fac.saldo)}</td>
+                                      </tr>
+                                    ))}
+                                    {!facturasDetalle.length && (
+                                      <tr><td colSpan={9} style={{ padding: "8px 10px", color: C.slate, fontStyle: "italic" }}>Sin facturas con saldo pendiente para este proveedor.</td></tr>
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                        </Fragment>
+                      );
+                    })}
+                  </Fragment>
+                ))}
               </tbody>
             </table>
           </div>
@@ -4940,6 +5033,13 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
   // 33, 1004, etc. -- ver getCuentasPorPagarBusintGen, que hoy los deja
   // como "Proveedor <codigo>").
   const [nombresProveedorCxp, setNombresProveedorCxp] = useState({});
+  // (2026-09-27, a pedido de Fredy) Categoria manual por proveedor (Telas y
+  // Proveedores, Pagos de Servicios, Pagos Insumos, Pago de Plantas de
+  // Confeccion, Prestamos), para agrupar Cuentas por Pagar. Se guarda como
+  // lista con proveedor + categoria (mismo patron que calendarioCxp) en vez
+  // de usar el nombre del proveedor como id de documento, porque un nombre
+  // real puede traer caracteres que Firestore no acepta como id.
+  const [categoriasCxp, setCategoriasCxp] = useState([]);
   const [clientesDiseno, setClientesDiseno] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -5011,6 +5111,12 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
         setNombresProveedorCxp(mapa);
       }
     );
+    const unsubCategoriasCxp = onSnapshot(
+      collection(db, "contabilidad_cxp_categorias"),
+      (snap) => {
+        setCategoriasCxp(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+      }
+    );
     // Clientes: se leen en vivo del mismo documento de configuración que usa
     // Diseño (Admin → Clientes). Solo lectura desde Contabilidad — agregar o
     // borrar clientes se sigue haciendo únicamente desde Diseño.
@@ -5027,6 +5133,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
       unsubCalendarioCxp();
       unsubNombresConceptoCxp();
       unsubNombresProveedorCxp();
+      unsubCategoriasCxp();
       unsubClientes();
     };
   }, []);
@@ -5138,6 +5245,21 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
     if (!codigo) return;
     setNombresProveedorCxp((m) => ({ ...m, [codigo]: nombre }));
     await fsSave("contabilidad_cxp_nombres_proveedor", codigo, { nombre, actualizadoEn: new Date().toISOString() });
+  }
+  // Reemplaza la categoría de un proveedor (borra la anterior si había y
+  // guarda la nueva) -- mismo patrón que guardarCalendarioProveedor, para
+  // no depender del nombre del proveedor como id de documento.
+  async function guardarCategoriaProveedorCxp(proveedor, categoria) {
+    const existentes = categoriasCxp.filter((c) => c.proveedor === proveedor);
+    setCategoriasCxp((cs) => {
+      const sinViejo = cs.filter((c) => c.proveedor !== proveedor);
+      return categoria ? [...sinViejo, { id: uid(), proveedor, categoria, actualizadoEn: new Date().toISOString() }] : sinViejo;
+    });
+    await Promise.all(existentes.map((e) => fsDelete("contabilidad_cxp_categorias", e.id)));
+    if (categoria) {
+      const nuevo = { id: uid(), proveedor, categoria, actualizadoEn: new Date().toISOString() };
+      await fsSave("contabilidad_cxp_categorias", nuevo.id, nuevo);
+    }
   }
   // Lista única de rubros históricos (código + nombre), para el selector de
   // distribución de ingresos y para calcular el avance por rubro en Proyección.
@@ -5380,6 +5502,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
               presupuestos={presupuestos}
               nombresConcepto={nombresConceptoCxp}
               nombresProveedor={nombresProveedorCxp}
+              categoriasCxp={categoriasCxp}
               onImportarCorte={addCorteCxp}
               onDeleteCorte={deleteCorteCxp}
               onAddManual={addManualCxp}
@@ -5388,6 +5511,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
               onGuardarCalendario={guardarCalendarioProveedor}
               onGuardarNombreConcepto={guardarNombreConceptoCxp}
               onGuardarNombreProveedor={guardarNombreProveedorCxp}
+              onGuardarCategoria={guardarCategoriaProveedorCxp}
               isAdmin={isAdmin}
             />
           )}
