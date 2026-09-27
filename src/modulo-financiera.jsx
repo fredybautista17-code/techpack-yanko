@@ -826,6 +826,14 @@ function normalizarEncabezado(k) {
     .replace(/[\u0300-\u036f]/g, "")
     .trim();
 }
+// Categoría de Proyección de un código de concepto -- función pura (no un
+// hook) para poder usarla tanto en Administración (asignar) como en
+// Proyección (agrupar el presupuesto), que ahora son dos componentes
+// separados. Si la categoría guardada ya no existe (se borró), cae a "".
+function categoriaDeConceptoProyeccion(codConcep, categoriasPorConceptoProyeccion, categoriasProyeccionLista) {
+  const cat = categoriasPorConceptoProyeccion.find((c) => c.codConcep === codConcep)?.categoria || "";
+  return categoriasProyeccionLista.some((c) => c.id === cat) ? cat : "";
+}
 // (2026-09-27, a pedido de Fredy) Importa desde Excel el mapeo código de
 // concepto -> categoría de Proyección, en vez de asignar cada uno a mano en
 // el desplegable (son ~37 códigos). Columnas esperadas: "Cod Concepto" y
@@ -919,34 +927,13 @@ function ImportarCategoriasProyeccionModal({ onImportar, onClose }) {
     </Modal>
   );
 }
-function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, categoriasProyeccionLista, categoriasPorConceptoProyeccion, onGuardar, onFinalizar, onDeletePresupuesto, onRecalcular, onAgregarCategoriaProyeccionLista, onEliminarCategoriaProyeccionLista, onGuardarCategoriaConceptoProyeccion, onImportarCategoriasProyeccion, isAdmin }) {
+function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, categoriasProyeccionLista, categoriasPorConceptoProyeccion, onGuardar, onFinalizar, onDeletePresupuesto, onRecalcular, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [editando, setEditando] = useState(null);
   // Cada mes arranca colapsado (como una fila de lista) — se despliega solo
   // al hacer clic, para no tener que desplazarse por todos los meses
   // acumulados con su detalle completo abierto de una vez.
   const [expandidos, setExpandidos] = useState(new Set());
-  // (2026-09-27, a pedido de Fredy) Categorías propias de Proyección --
-  // separadas de las de Cuentas por Pagar, porque agrupan otro tipo de
-  // gasto (rubros de Comparativo por Concepto, no proveedores). Se asignan
-  // una sola vez por código de concepto y aplican a todos los meses.
-  const [mostrarCategorias, setMostrarCategorias] = useState(false);
-  const [mostrarImportarCategorias, setMostrarImportarCategorias] = useState(false);
-  const [nuevaCategoriaProyeccion, setNuevaCategoriaProyeccion] = useState("");
-  function categoriaDeConcepto(codConcep) {
-    const cat = categoriasPorConceptoProyeccion.find((c) => c.codConcep === codConcep)?.categoria || "";
-    return categoriasProyeccionLista.some((c) => c.id === cat) ? cat : "";
-  }
-  // Todos los códigos de concepto vistos alguna vez en Comparativo por
-  // Concepto (no solo los de un presupuesto puntual), para poder
-  // categorizarlos desde acá aunque todavía no estén en ningún presupuesto.
-  const conceptosVistos = calcularBaseItemsPromedio(compras);
-  async function agregarCategoriaProyeccion() {
-    const label = nuevaCategoriaProyeccion.trim();
-    if (!label) return;
-    await onAgregarCategoriaProyeccionLista(label);
-    setNuevaCategoriaProyeccion("");
-  }
   function toggleExpand(id) {
     setExpandidos((s) => {
       const next = new Set(s);
@@ -967,12 +954,6 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, cat
             setShowForm(false);
             setEditando(null);
           }}
-        />
-      )}
-      {mostrarImportarCategorias && (
-        <ImportarCategoriasProyeccionModal
-          onImportar={onImportarCategoriasProyeccion}
-          onClose={() => setMostrarImportarCategorias(false)}
         />
       )}
       <div
@@ -999,88 +980,6 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, cat
           + Nueva Proyección
         </Btn>
       </div>
-      {isAdmin && (
-        <div style={{ marginBottom: 20 }}>
-          <button
-            onClick={() => setMostrarCategorias((v) => !v)}
-            style={{ background: "none", border: "none", cursor: "pointer", color: C.violet, fontWeight: 700, fontSize: 12, padding: 0, marginBottom: mostrarCategorias ? 12 : 0 }}
-          >
-            {mostrarCategorias ? "▲ Ocultar categorías de Proyección" : "⚙️ Categorías de Proyección"}
-          </button>
-          {mostrarCategorias && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
-              <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white, width: 320 }}>
-                <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 4 }}>🏷️ Categorías</div>
-                <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 10 }}>
-                  Propias de Proyección -- no son las mismas de Cuentas por Pagar.
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
-                  {categoriasProyeccionLista.map((c) => (
-                    <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 10px", background: C.canvas, borderRadius: 8 }}>
-                      <span style={{ fontSize: 12, color: C.ink, fontWeight: 600 }}>{c.label}</span>
-                      <button
-                        onClick={() => onEliminarCategoriaProyeccionLista(c.id)}
-                        title="Eliminar categoría"
-                        style={{ background: "none", border: "none", cursor: "pointer", color: C.red, fontWeight: 700, fontSize: 12 }}
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                  {!categoriasProyeccionLista.length && (
-                    <div style={{ fontSize: 11.5, color: C.slate }}>Aún no hay categorías creadas.</div>
-                  )}
-                </div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <div style={{ flex: 1 }}>
-                    <FInput value={nuevaCategoriaProyeccion} onChange={setNuevaCategoriaProyeccion} placeholder="Categoría nueva" />
-                  </div>
-                  <Btn small onClick={agregarCategoriaProyeccion} disabled={!nuevaCategoriaProyeccion.trim()}>+ Agregar</Btn>
-                </div>
-              </div>
-              <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white, flex: 1, minWidth: 320 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 4 }}>
-                  <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>🔗 Categoría por concepto</div>
-                  <Btn small variant="secondary" onClick={() => setMostrarImportarCategorias(true)}>📥 Importar desde Excel</Btn>
-                </div>
-                <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 10 }}>
-                  Se asigna una sola vez por código y aplica a todos los meses, pasados y futuros, que usen ese concepto.
-                </div>
-                {!conceptosVistos.length ? (
-                  <div style={{ fontSize: 11.5, color: C.slate }}>
-                    Aún no hay conceptos -- importa Comparativo por Concepto primero.
-                  </div>
-                ) : !categoriasProyeccionLista.length ? (
-                  <div style={{ fontSize: 11.5, color: C.slate }}>Crea primero al menos una categoría.</div>
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 260, overflowY: "auto", paddingRight: 4 }}>
-                    {conceptosVistos.map((b) => {
-                      const actual = categoriaDeConcepto(b.codConcep);
-                      return (
-                        <div key={b.codConcep} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "6px 10px", background: C.canvas, borderRadius: 8 }}>
-                          <span style={{ fontSize: 12, color: C.ink, fontWeight: 600 }}>
-                            {b.concepto} <span style={{ fontWeight: 400, color: C.slate, fontSize: 10.5 }}>({b.codConcep})</span>
-                          </span>
-                          <select
-                            value={actual}
-                            onChange={(e) => onGuardarCategoriaConceptoProyeccion(b.codConcep, e.target.value || null)}
-                            style={{ padding: "5px 8px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 11.5, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
-                          >
-                            <option value="">Sin categoría</option>
-                            {categoriasProyeccionLista.map((cat) => (
-                              <option key={cat.id} value={cat.id}>{cat.label}</option>
-                            ))}
-                          </select>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
       {!lista.length ? (
         <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
           Aún no has creado ninguna proyección. Usa "+ Nueva Proyección" para armar el presupuesto del próximo mes.
@@ -1161,7 +1060,7 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, cat
             const itemsIncluidos = (p.items || []).filter((i) => i.incluido);
             const gruposCategoria = [...categoriasProyeccionLista.map((c) => c.id), ""]
               .map((catId) => {
-                const itemsGrupo = itemsIncluidos.filter((i) => (categoriaDeConcepto(i.codConcep) || "") === catId);
+                const itemsGrupo = itemsIncluidos.filter((i) => (categoriaDeConceptoProyeccion(i.codConcep, categoriasPorConceptoProyeccion, categoriasProyeccionLista) || "") === catId);
                 const label = catId ? categoriasProyeccionLista.find((c) => c.id === catId)?.label || "" : "Sin categoría";
                 const subtotal = itemsGrupo.reduce((s, i) => s + i.valorFinal, 0);
                 return { id: catId || "sin_categoria", label, items: itemsGrupo, subtotal };
@@ -1353,6 +1252,118 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, cat
           })}
         </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// (2026-09-27, a pedido de Fredy) Administración propia de Financiera --
+// separada de la de Contabilidad. Por ahora solo vive acá la gestión de
+// categorías de Proyección (antes estaba metida dentro de la pantalla de
+// Proyección, en un panel "⚙️"); es el lugar natural para lo que se vaya
+// necesitando administrar en Financiera más adelante.
+function AdministracionFinancieraView({ compras, categoriasProyeccionLista, categoriasPorConceptoProyeccion, onAgregarCategoriaProyeccionLista, onEliminarCategoriaProyeccionLista, onGuardarCategoriaConceptoProyeccion, onImportarCategoriasProyeccion, isAdmin }) {
+  const [nuevaCategoriaProyeccion, setNuevaCategoriaProyeccion] = useState("");
+  const [mostrarImportarCategorias, setMostrarImportarCategorias] = useState(false);
+  // Todos los códigos de concepto vistos alguna vez en Comparativo por
+  // Concepto (no solo los de un presupuesto puntual), para poder
+  // categorizarlos desde acá aunque todavía no estén en ningún presupuesto.
+  const conceptosVistos = calcularBaseItemsPromedio(compras);
+  async function agregarCategoriaProyeccion() {
+    const label = nuevaCategoriaProyeccion.trim();
+    if (!label) return;
+    await onAgregarCategoriaProyeccionLista(label);
+    setNuevaCategoriaProyeccion("");
+  }
+  return (
+    <div>
+      {mostrarImportarCategorias && (
+        <ImportarCategoriasProyeccionModal
+          onImportar={onImportarCategoriasProyeccion}
+          onClose={() => setMostrarImportarCategorias(false)}
+        />
+      )}
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Administración</h2>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
+          Configuración propia de Financiera. Por ahora, las categorías que agrupan el presupuesto de Proyección.
+        </p>
+      </div>
+      {!isAdmin ? (
+        <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
+          Solo un administrador puede editar esta sección.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white, width: 320 }}>
+            <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 4 }}>🏷️ Categorías de Proyección</div>
+            <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 10 }}>
+              Propias de Proyección -- no son las mismas de Cuentas por Pagar.
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+              {categoriasProyeccionLista.map((c) => (
+                <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 10px", background: C.canvas, borderRadius: 8 }}>
+                  <span style={{ fontSize: 12, color: C.ink, fontWeight: 600 }}>{c.label}</span>
+                  <button
+                    onClick={() => onEliminarCategoriaProyeccionLista(c.id)}
+                    title="Eliminar categoría"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: C.red, fontWeight: 700, fontSize: 12 }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              {!categoriasProyeccionLista.length && (
+                <div style={{ fontSize: 11.5, color: C.slate }}>Aún no hay categorías creadas.</div>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <div style={{ flex: 1 }}>
+                <FInput value={nuevaCategoriaProyeccion} onChange={setNuevaCategoriaProyeccion} placeholder="Categoría nueva" />
+              </div>
+              <Btn small onClick={agregarCategoriaProyeccion} disabled={!nuevaCategoriaProyeccion.trim()}>+ Agregar</Btn>
+            </div>
+          </div>
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white, flex: 1, minWidth: 320 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 4 }}>
+              <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>🔗 Categoría por concepto</div>
+              <Btn small variant="secondary" onClick={() => setMostrarImportarCategorias(true)}>📥 Importar desde Excel</Btn>
+            </div>
+            <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 10 }}>
+              Se asigna una sola vez por código y aplica a todos los meses, pasados y futuros, que usen ese concepto.
+            </div>
+            {!conceptosVistos.length ? (
+              <div style={{ fontSize: 11.5, color: C.slate }}>
+                Aún no hay conceptos -- importa Comparativo por Concepto primero.
+              </div>
+            ) : !categoriasProyeccionLista.length ? (
+              <div style={{ fontSize: 11.5, color: C.slate }}>Crea primero al menos una categoría.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 380, overflowY: "auto", paddingRight: 4 }}>
+                {conceptosVistos.map((b) => {
+                  const actual = categoriaDeConceptoProyeccion(b.codConcep, categoriasPorConceptoProyeccion, categoriasProyeccionLista);
+                  return (
+                    <div key={b.codConcep} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "6px 10px", background: C.canvas, borderRadius: 8 }}>
+                      <span style={{ fontSize: 12, color: C.ink, fontWeight: 600 }}>
+                        {b.concepto} <span style={{ fontWeight: 400, color: C.slate, fontSize: 10.5 }}>({b.codConcep})</span>
+                      </span>
+                      <select
+                        value={actual}
+                        onChange={(e) => onGuardarCategoriaConceptoProyeccion(b.codConcep, e.target.value || null)}
+                        style={{ padding: "5px 8px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 11.5, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
+                      >
+                        <option value="">Sin categoría</option>
+                        {categoriasProyeccionLista.map((cat) => (
+                          <option key={cat.id} value={cat.id}>{cat.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -2203,6 +2214,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
     { id: "clientes", icon: "🤝", label: "Presupuesto Clientes" },
     { id: "programacion_pagos", icon: "🧭", label: "Programación de Pagos" },
     { id: "estrategia_pago", icon: "📌", label: "Estrategia de Pago" },
+    { id: "administracion", icon: "🗂️", label: "Administración" },
   ];
 
   if (loading)
@@ -2299,6 +2311,14 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
               onFinalizar={finalizarPresupuesto}
               onDeletePresupuesto={deletePresupuesto}
               onRecalcular={recalcularPresupuesto}
+              isAdmin={isAdmin}
+            />
+          )}
+          {subView === "administracion" && (
+            <AdministracionFinancieraView
+              compras={compras}
+              categoriasProyeccionLista={categoriasProyeccionLista}
+              categoriasPorConceptoProyeccion={categoriasPorConceptoProyeccion}
               onAgregarCategoriaProyeccionLista={agregarCategoriaProyeccionLista}
               onEliminarCategoriaProyeccionLista={eliminarCategoriaProyeccionLista}
               onGuardarCategoriaConceptoProyeccion={guardarCategoriaConceptoProyeccion}
