@@ -4469,6 +4469,18 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   // proveedor (Telas y Proveedores, Pagos de Servicios, etc.), para agrupar
   // la tabla de abajo.
   const [categorizando, setCategorizando] = useState(null);
+  // (2026-09-27, a pedido de Fredy) Cada bloque de categoría arranca
+  // cerrado (como las tarjetas de mes en Proyección) -- se abre con clic en
+  // el encabezado del bloque para ver los proveedores de esa categoría.
+  const [categoriasAbiertas, setCategoriasAbiertas] = useState(new Set());
+  function toggleCategoriaAbierta(id) {
+    setCategoriasAbiertas((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
   function categoriaManualDeProveedor(nombre) {
     const cat = categoriasCxp.find((c) => c.proveedor === nombre)?.categoria || "";
     return categoriasLista.some((c) => c.id === cat) ? cat : "";
@@ -4796,19 +4808,27 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                 </tr>
               </thead>
               <tbody>
-                {grupos.map((g) => (
+                {grupos.map((g) => {
+                  const abierta = categoriasAbiertas.has(g.id);
+                  return (
                   <Fragment key={g.id}>
-                    <tr style={{ background: C.canvas }}>
+                    <tr
+                      onClick={() => toggleCategoriaAbierta(g.id)}
+                      style={{ background: C.canvas, cursor: "pointer" }}
+                    >
                       <td colSpan={9} style={{ padding: "8px 12px", borderTop: `2px solid ${C.border}`, borderBottom: `1px solid ${C.border}` }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                          <span style={{ fontWeight: 800, fontSize: 11, color: C.slate, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                          <span style={{ fontWeight: 800, fontSize: 11, color: C.slate, textTransform: "uppercase", letterSpacing: "0.03em", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ display: "inline-block", transition: "transform 0.15s", transform: abierta ? "rotate(90deg)" : "none", fontSize: 10 }}>
+                              ›
+                            </span>
                             {g.label} <span style={{ fontWeight: 500, textTransform: "none" }}>({g.filas.length})</span>
                           </span>
                           <span style={{ fontWeight: 800, fontSize: 12, color: C.ink }}>{fmtCOP(g.subtotal)}</span>
                         </div>
                       </td>
                     </tr>
-                    {g.filas.map((f, i) => {
+                    {abierta && g.filas.map((f, i) => {
                       const progTotal = calendarioDe(f.nombre).reduce((s, c) => s + c.monto, 0);
                       const facturasDetalle = detalleFacturasPorProveedor[f.nombre];
                       const expandido = verFacturasDe === f.nombre;
@@ -4969,7 +4989,8 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                       );
                     })}
                   </Fragment>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
