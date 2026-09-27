@@ -2456,11 +2456,12 @@ exports.getCuentasPorPagarBusintGen = onCall(
   },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
-    let facturas, pagos, proveedores, notasDescuento, devoluciones;
+    let facturas, pagos, pagosOtros, proveedores, notasDescuento, devoluciones;
     try {
-      [facturas, pagos, proveedores, notasDescuento, devoluciones] = await Promise.all([
+      [facturas, pagos, pagosOtros, proveedores, notasDescuento, devoluciones] = await Promise.all([
         consultarTablaBusintBDCompleta("cartera cxp-fact"),
         consultarTablaBusintBDCompleta("cxp-pagos detalles"),
+        consultarTablaBusintBDCompleta("cxp-pagosotros detalles"),
         consultarTablaBusintBDCompleta("maestro de proveedores"),
         consultarTablaBusintBDCompleta("notas detalles-d"),
         consultarTablaBusintBDCompleta("cartera cxp-dev"),
@@ -2473,7 +2474,17 @@ exports.getCuentasPorPagarBusintGen = onCall(
     // normalizarCodigoCxp arriba -- antes se cruzaba con el valor crudo de
     // Busint, sin normalizar tipo/mayúsculas).
     const pagadoPorFactura = new Map();
-    pagos.forEach((p) => {
+    // (2026-09-27, a pedido de Fredy) "cxp-pagos detalles" y "cxp-pagosotros
+    // detalles" son dos tablas HERMANAS con exactamente los mismos campos
+    // (CodigoP, Nfact, Totalp) -- Busint las usa para distintas formas de
+    // pago. Investigando el saldo fantasma de TINTATEX S.A ($308.238.792,
+    // $207.966.579 en "91+", cuando el reporte oficial de Busint la muestra
+    // en $0) se encontro que sus 14 facturas mas recientes (FEM-XXXX) SI
+    // estaban pagadas, pero el pago vivia solo en "cxp-pagosotros detalles"
+    // (ej. factura FEM-3293: $32.044.566, pago Npago 2293 por el mismo
+    // valor exacto, encontrado con buscarValorEnTablasBusintBD) -- esta
+    // funcion nunca la consultaba, así que ese pago no se restaba.
+    [...pagos, ...pagosOtros].forEach((p) => {
       const codigo = normalizarCodigoCxp(p?.CodigoP);
       const nfact = normalizarCodigoCxp(p?.Nfact);
       if (!codigo || !nfact) return;
