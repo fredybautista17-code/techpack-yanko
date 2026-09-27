@@ -5164,7 +5164,32 @@ function RenombrarConceptoCXPModal({ codigo, nombreActual, onSave, onClose }) {
     </Modal>
   );
 }
-function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente, presupuestos, nombresConcepto, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, onGuardarNombreConcepto, isAdmin }) {
+// (2026-09-27, a pedido de Fredy) Igual a RenombrarConceptoCXPModal pero
+// para el nombre real de un codigo de proveedor sin nombre en Busint.
+function RenombrarProveedorCXPModal({ codigo, nombreActual, onSave, onClose }) {
+  const [nombre, setNombre] = useState(nombreActual || "");
+  function guardar() {
+    if (!nombre.trim()) return;
+    onSave(nombre.trim());
+    onClose();
+  }
+  return (
+    <Modal title={`Nombre real del proveedor ${codigo}`} onClose={onClose} width={420}>
+      <Field label="Nombre real">
+        <FInput value={nombre} onChange={setNombre} placeholder="Ej. INDUSTRIAS YANKO MODULO CENTRO" />
+      </Field>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 4 }}>
+        <Btn variant="secondary" onClick={onClose}>
+          Cancelar
+        </Btn>
+        <Btn onClick={guardar} disabled={!nombre.trim()}>
+          Guardar
+        </Btn>
+      </div>
+    </Modal>
+  );
+}
+function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente, presupuestos, nombresConcepto, nombresProveedor, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, onGuardarNombreConcepto, onGuardarNombreProveedor, isAdmin }) {
   const [showImport, setShowImport] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const [programando, setProgramando] = useState(null);
@@ -5197,6 +5222,9 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   // (2026-09-27, a pedido de Fredy) Modal para ponerle nombre legible a un
   // codigo de "Concepto de Obligacion" crudo de Busint (ej. "SCONF").
   const [renombrandoConcepto, setRenombrandoConcepto] = useState(null);
+  // (2026-09-27, a pedido de Fredy) Modal para ponerle nombre real a un
+  // codigo de proveedor que Busint no tiene en su catalogo (ej. "16").
+  const [renombrandoProveedor, setRenombrandoProveedor] = useState(null);
   // (2026-09-25) Trae el corte de cuentas por pagar EN VIVO desde Busint
   // (cruzando facturas + pagos + maestro de proveedores en el backend) en
   // vez de tener que exportar y subir el Excel a mano -- ver
@@ -5239,12 +5267,25 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   const corteActivo = corteSeleccionado
     ? cortesOrdenados.find((c) => c.id === corteSeleccionado) || cortesOrdenados[0]
     : cortesOrdenados[0];
-  const filasCorte = (corteActivo?.proveedores || []).map((p) => ({ ...p, origen: "corte" }));
-  const filasManual = manuales.map((p) => ({ ...p, origen: "manual" }));
+  // (2026-09-27, a pedido de Fredy) Codigos de proveedor que Busint no
+  // tiene en "maestro de proveedores" salen como "Proveedor <codigo>" (ver
+  // getCuentasPorPagarBusintGen) -- si hay un nombre manual guardado para
+  // ese codigo, se usa como `nombreMostrado` SOLO para lo que se ve en
+  // pantalla. `nombre` se deja intacto (el crudo de Busint) porque es la
+  // llave que usan `onDeleteProveedorCorte`, `calendarioDe` y "Programar
+  // pago" -- cambiarlo rompería el cruce con lo ya guardado en Firestore.
+  function conNombreMostrado(p) {
+    const m = /^Proveedor (\d+)$/.exec(p.nombre || "");
+    const codigoSinNombre = m ? m[1] : null;
+    const nombreMostrado = (codigoSinNombre && nombresProveedor?.[codigoSinNombre]) || p.nombre;
+    return { ...p, codigoSinNombre, nombreMostrado };
+  }
+  const filasCorte = (corteActivo?.proveedores || []).map((p) => conNombreMostrado({ ...p, origen: "corte" }));
+  const filasManual = manuales.map((p) => conNombreMostrado({ ...p, origen: "manual" }));
   let filas = [...filasCorte, ...filasManual];
   if (busquedaProveedor.trim()) {
     const q = normalizarTexto(busquedaProveedor);
-    filas = filas.filter((f) => normalizarTexto(f.nombre).includes(q));
+    filas = filas.filter((f) => normalizarTexto(f.nombre).includes(q) || normalizarTexto(f.nombreMostrado).includes(q));
   }
   if (origenFiltro) {
     filas = filas.filter((f) => f.origen === origenFiltro);
@@ -5255,7 +5296,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
     if (orden === "31-60") return b.dias31a60 - a.dias31a60;
     if (orden === "61-90") return b.dias61a90 - a.dias61a90;
     if (orden === "91") return b.dias91mas - a.dias91mas;
-    return a.nombre.localeCompare(b.nombre);
+    return a.nombreMostrado.localeCompare(b.nombreMostrado);
   });
   const totalAdeudado = filas.reduce((s, f) => s + f.total, 0);
   const totalVencido = filas.reduce((s, f) => s + f.dias0a30 + f.dias31a60 + f.dias61a90 + f.dias91mas, 0);
@@ -5318,6 +5359,14 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
           nombreActual={nombresConcepto?.[renombrandoConcepto] || ""}
           onSave={(nombre) => onGuardarNombreConcepto(renombrandoConcepto, nombre)}
           onClose={() => setRenombrandoConcepto(null)}
+        />
+      )}
+      {renombrandoProveedor && (
+        <RenombrarProveedorCXPModal
+          codigo={renombrandoProveedor}
+          nombreActual={nombresProveedor?.[renombrandoProveedor] || ""}
+          onSave={(nombre) => onGuardarNombreProveedor(renombrandoProveedor, nombre)}
+          onClose={() => setRenombrandoProveedor(null)}
         />
       )}
       <div
@@ -5473,7 +5522,19 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                       }}
                     >
                       <td style={{ padding: "8px 12px", fontWeight: 600, color: C.ink }}>
-                        {f.nombre} {f.origen === "manual" && <span style={{ fontSize: 10, color: C.slate, fontWeight: 400 }}>(manual)</span>}
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          {f.nombreMostrado}
+                          {f.codigoSinNombre && (
+                            <button
+                              onClick={() => setRenombrandoProveedor(f.codigoSinNombre)}
+                              title="Ponerle nombre real a este proveedor"
+                              style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, opacity: 0.55, padding: 0 }}
+                            >
+                              ✏️
+                            </button>
+                          )}
+                        </span>{" "}
+                        {f.origen === "manual" && <span style={{ fontSize: 10, color: C.slate, fontWeight: 400 }}>(manual)</span>}
                       </td>
                       <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.porVencer)}</td>
                       <td style={{ padding: "8px 12px", textAlign: "right", color: C.slate }}>{fmtCOP(f.dias0a30)}</td>
@@ -5777,6 +5838,12 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
   // ninguna tabla catalogo de Busint (se buscaron varias y ninguna existe;
   // la traduccion parece vivir solo dentro del programa de Busint).
   const [nombresConceptoCxp, setNombresConceptoCxp] = useState({});
+  // (2026-09-27, a pedido de Fredy) Mapeo manual codigo de proveedor ->
+  // nombre real, para los codigos que Busint no tiene en "maestro de
+  // proveedores" (confirmado que son plantas externas/talleres: 16, 26, 27,
+  // 33, 1004, etc. -- ver getCuentasPorPagarBusintGen, que hoy los deja
+  // como "Proveedor <codigo>").
+  const [nombresProveedorCxp, setNombresProveedorCxp] = useState({});
   const [clientesDiseno, setClientesDiseno] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -5838,6 +5905,16 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
         setNombresConceptoCxp(mapa);
       }
     );
+    // Mapeo manual codigo de proveedor -> nombre real (doc id = codigo,
+    // ej. "16"; campo `nombre` = texto que escribe el usuario).
+    const unsubNombresProveedorCxp = onSnapshot(
+      collection(db, "contabilidad_cxp_nombres_proveedor"),
+      (snap) => {
+        const mapa = {};
+        snap.docs.forEach((d) => { mapa[d.id] = d.data()?.nombre || ""; });
+        setNombresProveedorCxp(mapa);
+      }
+    );
     // Clientes: se leen en vivo del mismo documento de configuración que usa
     // Diseño (Admin → Clientes). Solo lectura desde Contabilidad — agregar o
     // borrar clientes se sigue haciendo únicamente desde Diseño.
@@ -5853,6 +5930,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
       unsubManualCxp();
       unsubCalendarioCxp();
       unsubNombresConceptoCxp();
+      unsubNombresProveedorCxp();
       unsubClientes();
     };
   }, []);
@@ -6000,6 +6078,13 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
     if (!codigo) return;
     setNombresConceptoCxp((m) => ({ ...m, [codigo]: nombre }));
     await fsSave("contabilidad_cxp_nombres_concepto", codigo, { nombre, actualizadoEn: new Date().toISOString() });
+  }
+  // Guarda/renombra el nombre real de un codigo de proveedor que Busint no
+  // tiene en su catalogo (ej. "16" -> "INDUSTRIAS YANKO MODULO CENTRO").
+  async function guardarNombreProveedorCxp(codigo, nombre) {
+    if (!codigo) return;
+    setNombresProveedorCxp((m) => ({ ...m, [codigo]: nombre }));
+    await fsSave("contabilidad_cxp_nombres_proveedor", codigo, { nombre, actualizadoEn: new Date().toISOString() });
   }
   // Lista única de rubros históricos (código + nombre), para el selector de
   // distribución de ingresos y para calcular el avance por rubro en Proyección.
@@ -6267,6 +6352,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
               presupuestosCliente={presupuestosCliente}
               presupuestos={presupuestos}
               nombresConcepto={nombresConceptoCxp}
+              nombresProveedor={nombresProveedorCxp}
               onImportarCorte={addCorteCxp}
               onDeleteCorte={deleteCorteCxp}
               onAddManual={addManualCxp}
@@ -6274,6 +6360,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
               onDeleteProveedorCorte={eliminarProveedorDeCorte}
               onGuardarCalendario={guardarCalendarioProveedor}
               onGuardarNombreConcepto={guardarNombreConceptoCxp}
+              onGuardarNombreProveedor={guardarNombreProveedorCxp}
               isAdmin={isAdmin}
             />
           )}
