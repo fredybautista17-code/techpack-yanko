@@ -2422,6 +2422,14 @@ exports.getResumenFacturacionPorPedidoBusintBD = onCall(
 // por factura abierta, con su saldo y fecha exacta de vencimiento) -- no lo
 // usa la pantalla actual, pero deja lista la data para la vista semanal de
 // "próximos vencimientos" que Fredy pidió como siguiente paso.
+//
+// (2026-09-27) Cada proveedor también trae `conceptoPrincipal` (el Concepto
+// de Obligación -- FCBI de Busint -- con más saldo acumulado para ese
+// proveedor). A diferencia de `facturas`, este campo SÍ lo guarda el
+// frontend en Firestore (es un solo string, no rompe el límite de 1MB que
+// obligó a descartar `facturas` -- ver `traerCorteDesdeBusint`), y es lo que
+// permite categorizar Cuentas por Pagar por concepto una sola vez y que
+// aplique automático a todo proveedor (nuevo o viejo) que use ese concepto.
 function calcularBucketAntiguedadCxp(diasVencido) {
   // diasVencido > 0 = ya venció hace esos días; <= 0 = todavía no vence.
   if (diasVencido <= 0) return "porVencer";
@@ -2602,11 +2610,17 @@ exports.getCuentasPorPagarBusintGen = onCall(
           dias91mas: 0,
           total: 0,
           facturas: [],
+          porConcepto: {},
         });
       }
       const prov = porProveedor.get(nombre);
       prov[bucket] += saldo;
       prov.total += saldo;
+      // (2026-09-27) Acumula saldo por concepto para poder categorizar
+      // Cuentas por Pagar automáticamente por Concepto de Obligación (ver
+      // categoriasPorConcepto en el frontend) sin depender de `facturas`,
+      // que se descarta antes de guardar en Firestore.
+      if (concepto) prov.porConcepto[concepto] = (prov.porConcepto[concepto] || 0) + saldo;
       prov.facturas.push({
         nfact: nfactOriginal,
         facTotal,
@@ -2620,7 +2634,15 @@ exports.getCuentasPorPagarBusintGen = onCall(
       });
     });
     const proveedoresResultado = [...porProveedor.values()]
-      .map((p) => ({ ...p, facturas: p.facturas.sort((a, b) => a.diasVencido - b.diasVencido) }))
+      .map((p) => {
+        // Concepto dominante: el que acumula más saldo para este proveedor.
+        // Se persiste (a diferencia de `facturas`, que el frontend descarta
+        // antes de guardar en Firestore) para poder categorizar por concepto
+        // sin depender de volver a traer el corte -- ver conceptoPrincipal.
+        const conceptoPrincipal = Object.entries(p.porConcepto).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+        const { porConcepto, ...resto } = p;
+        return { ...resto, conceptoPrincipal, facturas: resto.facturas.sort((a, b) => a.diasVencido - b.diasVencido) };
+      })
       .sort((a, b) => b.total - a.total);
     const hoyISO = hoy.toISOString().slice(0, 10);
 

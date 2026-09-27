@@ -3763,7 +3763,7 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
 // no hacen parte del flujo diario de Dado por Cumplido (por ahora solo la
 // importación del histórico; es el lugar natural para tareas parecidas
 // en el futuro).
-function AdministracionView({ currentUser, categoriasCxpLista, categoriasCxp, onAgregarCategoriaLista, onEliminarCategoriaLista }) {
+function AdministracionView({ currentUser, categoriasCxpLista, categoriasCxp, categoriasPorConcepto, conceptosCxpVistos, nombresConcepto, onAgregarCategoriaLista, onEliminarCategoriaLista, onGuardarCategoriaConcepto }) {
   const isAdmin = currentUser?.isAdmin;
   const [importandoHistorico, setImportandoHistorico] = useState(false);
   // (2026-09-27, a pedido de Fredy) Categorías de Cuentas por Pagar --
@@ -4128,6 +4128,42 @@ function AdministracionView({ currentUser, categoriasCxpLista, categoriasCxp, on
           <Btn small onClick={agregarCategoriaCxp} disabled={!nuevaCategoriaCxp.trim()}>+ Agregar</Btn>
         </div>
       </div>
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white, maxWidth: 460, marginTop: 14 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 4 }}>🔗 Categoría automática por Concepto de Obligación</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>
+          Asigna categoría una sola vez por Concepto de Obligación (el código que trae Busint, ej. "SCONF") y aplica automático a todo proveedor -- nuevo o viejo -- que lo tenga como concepto principal. Si un proveedor tiene categoría manual asignada (🏷️ en Cuentas por Pagar), esa manda sobre esto.
+        </div>
+        {!conceptosCxpVistos.length ? (
+          <div style={{ fontSize: 12, color: C.slate }}>
+            Todavía no hay conceptos disponibles -- trae un corte con "🔄 Traer desde Busint" en Cuentas por Pagar para verlos aquí.
+          </div>
+        ) : !categoriasCxpLista.length ? (
+          <div style={{ fontSize: 12, color: C.slate }}>Crea primero al menos una categoría arriba.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {conceptosCxpVistos.map((c) => {
+              const actual = categoriasPorConcepto.find((x) => x.concepto === c.codigo)?.categoria || "";
+              return (
+                <div key={c.codigo} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "8px 12px", background: C.canvas, borderRadius: 8 }}>
+                  <span style={{ fontSize: 13, color: C.ink, fontWeight: 600 }}>
+                    {nombresConcepto?.[c.codigo] || c.codigo} <span style={{ fontWeight: 400, color: C.slate, fontSize: 11 }}>({c.count} proveedor{c.count !== 1 ? "es" : ""})</span>
+                  </span>
+                  <select
+                    value={actual}
+                    onChange={(e) => onGuardarCategoriaConcepto(c.codigo, e.target.value || null)}
+                    style={{ padding: "6px 10px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 12, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
+                  >
+                    <option value="">Sin categoría</option>
+                    {categoriasCxpLista.map((cat) => (
+                      <option key={cat.id} value={cat.id}>{cat.label}</option>
+                    ))}
+                  </select>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
       {confirmPurgaLote && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ background: C.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
@@ -4349,22 +4385,34 @@ function RenombrarProveedorCXPModal({ codigo, nombreActual, onSave, onClose }) {
 // AdministracionView, categoriasCxpLista); `categoriasLista` llega por
 // prop desde ahí. "Sin categoría" no está en esa lista -- se agrega aparte,
 // al final, para lo que aún no se ha clasificado.
-function CategorizarProveedorCXPModal({ nombre, categoriaActual, categoriasLista, onSave, onClose }) {
+//
+// Este modal solo asigna la categoría MANUAL de un proveedor puntual. Desde
+// que existe la categoría automática por Concepto de Obligación (ver
+// categoriaPorConceptoDeProveedor / Administración), la mayoría de
+// proveedores nuevos ya salen categorizados solos y no necesitan pasar por
+// acá -- este modal queda para excepciones o para forzar una categoría
+// manual distinta a la automática.
+function CategorizarProveedorCXPModal({ nombre, categoriaActual, categoriaAutomaticaLabel, categoriasLista, onSave, onClose }) {
   const [categoria, setCategoria] = useState(categoriaActual || "");
   return (
     <Modal title={`Categoría de ${nombre}`} onClose={onClose} width={420}>
-      <Field label="Categoría">
+      <Field label="Categoría manual (opcional)">
         <select
           value={categoria}
           onChange={(e) => setCategoria(e.target.value)}
           style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
         >
-          <option value="">Sin categoría</option>
+          <option value="">{categoriaAutomaticaLabel ? `Sin manual (usa automática: ${categoriaAutomaticaLabel})` : "Sin categoría"}</option>
           {categoriasLista.map((c) => (
             <option key={c.id} value={c.id}>{c.label}</option>
           ))}
         </select>
       </Field>
+      {categoriaAutomaticaLabel && (
+        <div style={{ fontSize: 11.5, color: C.slate, marginTop: -8, marginBottom: 4 }}>
+          Este proveedor ya tiene categoría automática por su Concepto de Obligación: <strong>{categoriaAutomaticaLabel}</strong>. Solo elige una manual arriba si quieres que este proveedor puntual no la use.
+        </div>
+      )}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 4 }}>
         <Btn variant="secondary" onClick={onClose}>
           Cancelar
@@ -4381,7 +4429,7 @@ function CategorizarProveedorCXPModal({ nombre, categoriaActual, categoriasLista
     </Modal>
   );
 }
-function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente, presupuestos, nombresConcepto, nombresProveedor, categoriasCxp, categoriasLista, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, onGuardarNombreConcepto, onGuardarNombreProveedor, onGuardarCategoria, isAdmin }) {
+function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente, presupuestos, nombresConcepto, nombresProveedor, categoriasCxp, categoriasLista, categoriasPorConcepto, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, onGuardarNombreConcepto, onGuardarNombreProveedor, onGuardarCategoria, isAdmin }) {
   const [showImport, setShowImport] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const [programando, setProgramando] = useState(null);
@@ -4421,9 +4469,25 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   // proveedor (Telas y Proveedores, Pagos de Servicios, etc.), para agrupar
   // la tabla de abajo.
   const [categorizando, setCategorizando] = useState(null);
-  function categoriaDeProveedor(nombre) {
+  function categoriaManualDeProveedor(nombre) {
     const cat = categoriasCxp.find((c) => c.proveedor === nombre)?.categoria || "";
     return categoriasLista.some((c) => c.id === cat) ? cat : "";
+  }
+  // (2026-09-27, a pedido de Fredy) Si el proveedor no tiene categoría
+  // manual, se usa la categoría del Concepto de Obligación que más saldo le
+  // acumula (`conceptoPrincipal`, calculado en getCuentasPorPagarBusintGen)
+  // -- así se categoriza una sola vez por concepto (ver Administración) y
+  // aplica solo, incluso a proveedores nuevos. Los manuales (agregados a
+  // mano en esta pantalla, sin corte) no tienen `conceptoPrincipal`, así que
+  // siguen dependiendo 100% de la categoría manual, como antes.
+  function categoriaPorConceptoDeProveedor(nombre) {
+    const concepto = filas.find((f) => f.nombre === nombre)?.conceptoPrincipal;
+    if (!concepto) return "";
+    const cat = categoriasPorConcepto.find((c) => c.concepto === concepto)?.categoria || "";
+    return categoriasLista.some((c) => c.id === cat) ? cat : "";
+  }
+  function categoriaDeProveedor(nombre) {
+    return categoriaManualDeProveedor(nombre) || categoriaPorConceptoDeProveedor(nombre);
   }
   // (2026-09-25) Trae el corte de cuentas por pagar EN VIVO desde Busint
   // (cruzando facturas + pagos + maestro de proveedores en el backend) en
@@ -4585,7 +4649,8 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
       {categorizando && (
         <CategorizarProveedorCXPModal
           nombre={filas.find((f) => f.nombre === categorizando)?.nombreMostrado || categorizando}
-          categoriaActual={categoriaDeProveedor(categorizando)}
+          categoriaActual={categoriaManualDeProveedor(categorizando)}
+          categoriaAutomaticaLabel={categoriasLista.find((c) => c.id === categoriaPorConceptoDeProveedor(categorizando))?.label || ""}
           categoriasLista={categoriasLista}
           onSave={(categoria) => onGuardarCategoria(categorizando, categoria)}
           onClose={() => setCategorizando(null)}
@@ -4747,7 +4812,8 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                       const progTotal = calendarioDe(f.nombre).reduce((s, c) => s + c.monto, 0);
                       const facturasDetalle = detalleFacturasPorProveedor[f.nombre];
                       const expandido = verFacturasDe === f.nombre;
-                      const categoriaActual = categoriaDeProveedor(f.nombre);
+                      const categoriaManual = categoriaManualDeProveedor(f.nombre);
+                      const categoriaActual = categoriaManual || categoriaPorConceptoDeProveedor(f.nombre);
                       return (
                         <Fragment key={`${f.origen}-${f.id || i}`}>
                         <tr
@@ -4770,7 +4836,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                               )}
                               <button
                                 onClick={() => setCategorizando(f.nombre)}
-                                title={categoriaActual ? `Categoría: ${categoriasLista.find((c) => c.id === categoriaActual)?.label || categoriaActual}` : "Asignar categoría"}
+                                title={categoriaActual ? `Categoría${categoriaManual ? "" : " (automática por concepto)"}: ${categoriasLista.find((c) => c.id === categoriaActual)?.label || categoriaActual}` : "Asignar categoría"}
                                 style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, opacity: categoriaActual ? 0.85 : 0.35, padding: 0 }}
                               >
                                 🏷️
@@ -5099,6 +5165,14 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
   // Pagar administrables desde Administración -- ya no son fijas en el
   // código, Fredy agrega y borra las que necesite.
   const [categoriasCxpLista, setCategoriasCxpLista] = useState([]);
+  // (2026-09-27, a pedido de Fredy) Categoría automática por Concepto de
+  // Obligación (ej. "SCONF" -> Telas y Proveedores): se categoriza una sola
+  // vez por concepto y aplica a todo proveedor (nuevo o viejo) que use ese
+  // concepto como principal -- ver conceptoPrincipal en
+  // getCuentasPorPagarBusintGen y categoriaDeProveedor más abajo. La
+  // categoría manual por proveedor (categoriasCxp) sigue existiendo y
+  // siempre tiene prioridad sobre esta.
+  const [categoriasPorConcepto, setCategoriasPorConcepto] = useState([]);
   const [clientesDiseno, setClientesDiseno] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -5186,6 +5260,14 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
         );
       }
     );
+    // Categoría automática por Concepto de Obligación (doc id = concepto
+    // crudo, ej. "SCONF"; campo `categoria` = id de categoriasCxpLista).
+    const unsubCategoriasPorConcepto = onSnapshot(
+      collection(db, "contabilidad_cxp_categorias_concepto"),
+      (snap) => {
+        setCategoriasPorConcepto(snap.docs.map((d) => ({ ...d.data(), concepto: d.id })));
+      }
+    );
     // Clientes: se leen en vivo del mismo documento de configuración que usa
     // Diseño (Admin → Clientes). Solo lectura desde Contabilidad — agregar o
     // borrar clientes se sigue haciendo únicamente desde Diseño.
@@ -5204,6 +5286,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
       unsubNombresProveedorCxp();
       unsubCategoriasCxp();
       unsubCategoriasCxpLista();
+      unsubCategoriasPorConcepto();
       unsubClientes();
     };
   }, []);
@@ -5348,6 +5431,35 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
     setCategoriasCxpLista((cs) => cs.filter((c) => c.id !== id));
     await fsDelete("contabilidad_cxp_categorias_lista", id);
   }
+  // Asigna (o quita, si categoria es null) la categoría automática de un
+  // Concepto de Obligación. El id del documento es el concepto mismo (ej.
+  // "SCONF"), así que volver a guardar el mismo concepto simplemente
+  // actualiza la categoría -- no hay que borrar y recrear como con
+  // categoriasCxp (ahí el nombre del proveedor no era seguro como id).
+  async function guardarCategoriaConcepto(concepto, categoria) {
+    if (!concepto) return;
+    setCategoriasPorConcepto((cs) => {
+      const sinViejo = cs.filter((c) => c.concepto !== concepto);
+      return categoria ? [...sinViejo, { concepto, categoria, actualizadoEn: new Date().toISOString() }] : sinViejo;
+    });
+    if (categoria) {
+      await fsSave("contabilidad_cxp_categorias_concepto", concepto, { categoria, actualizadoEn: new Date().toISOString() });
+    } else {
+      await fsDelete("contabilidad_cxp_categorias_concepto", concepto);
+    }
+  }
+  // Conceptos de Obligación vistos en el corte de Cuentas por Pagar más
+  // reciente (con cuántos proveedores lo tienen como concepto principal),
+  // para poder asignarles categoría desde Administración sin depender de
+  // volver a traer el corte desde Busint.
+  const cortesCxpOrdenados = [...cortesCxp].sort((a, b) => b.fechaCorte.localeCompare(a.fechaCorte));
+  const conteoConceptosCxp = {};
+  (cortesCxpOrdenados[0]?.proveedores || []).forEach((p) => {
+    if (p.conceptoPrincipal) conteoConceptosCxp[p.conceptoPrincipal] = (conteoConceptosCxp[p.conceptoPrincipal] || 0) + 1;
+  });
+  const conceptosCxpVistos = Object.entries(conteoConceptosCxp)
+    .map(([codigo, count]) => ({ codigo, count }))
+    .sort((a, b) => b.count - a.count);
   // Lista única de rubros históricos (código + nombre), para el selector de
   // distribución de ingresos y para calcular el avance por rubro en Proyección.
   const rubros = (() => {
@@ -5591,6 +5703,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
               nombresProveedor={nombresProveedorCxp}
               categoriasCxp={categoriasCxp}
               categoriasLista={categoriasCxpLista}
+              categoriasPorConcepto={categoriasPorConcepto}
               onImportarCorte={addCorteCxp}
               onDeleteCorte={deleteCorteCxp}
               onAddManual={addManualCxp}
@@ -5608,8 +5721,12 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
               currentUser={currentUser}
               categoriasCxpLista={categoriasCxpLista}
               categoriasCxp={categoriasCxp}
+              categoriasPorConcepto={categoriasPorConcepto}
+              conceptosCxpVistos={conceptosCxpVistos}
+              nombresConcepto={nombresConceptoCxp}
               onAgregarCategoriaLista={agregarCategoriaCxpLista}
               onEliminarCategoriaLista={eliminarCategoriaCxpLista}
+              onGuardarCategoriaConcepto={guardarCategoriaConcepto}
             />
           )}
         </div>
