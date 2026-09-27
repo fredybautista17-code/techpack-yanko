@@ -819,7 +819,107 @@ function ProyeccionForm({ compras, presupuestoExistente, onGuardar, onClose }) {
     </Modal>
   );
 }
-function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, categoriasProyeccionLista, categoriasPorConceptoProyeccion, onGuardar, onFinalizar, onDeletePresupuesto, onRecalcular, onAgregarCategoriaProyeccionLista, onEliminarCategoriaProyeccionLista, onGuardarCategoriaConceptoProyeccion, isAdmin }) {
+function normalizarEncabezado(k) {
+  return String(k)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
+// (2026-09-27, a pedido de Fredy) Importa desde Excel el mapeo código de
+// concepto -> categoría de Proyección, en vez de asignar cada uno a mano en
+// el desplegable (son ~37 códigos). Columnas esperadas: "Cod Concepto" y
+// "Categoría" (nombres flexibles vía normalizarEncabezado) -- se puede
+// repetir el mismo nombre de categoría en varias filas para agruparlas. Las
+// categorías que no existan todavía se crean solas (ver
+// importarCategoriasProyeccion en FinancieraStandalone); volver a subir el
+// mismo archivo actualizado no borra nada de lo que no traiga la fila.
+function ImportarCategoriasProyeccionModal({ onImportar, onClose }) {
+  const [pares, setPares] = useState(null);
+  const [nombreArchivo, setNombreArchivo] = useState("");
+  const [error, setError] = useState("");
+  const [importando, setImportando] = useState(false);
+
+  async function manejarArchivo(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError("");
+    setNombreArchivo(file.name);
+    try {
+      const XLSX = await import("xlsx");
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: "", raw: true });
+      const vistos = new Map(); // codConcep -> categoria (última fila manda)
+      rows.forEach((row) => {
+        const map = {};
+        Object.keys(row).forEach((k) => { map[normalizarEncabezado(k)] = row[k]; });
+        const codConcep = String(
+          map["codconcepto"] ?? map["codconcep"] ?? map["cod concepto"] ?? map["codigo"] ?? ""
+        ).trim();
+        const categoria = String(map["categoria"] ?? "").trim();
+        if (!codConcep || !categoria) return;
+        vistos.set(codConcep, categoria);
+      });
+      if (!vistos.size) {
+        setError('No se encontraron filas válidas. Revisa que el Excel tenga las columnas "Cod Concepto" y "Categoría".');
+        setPares(null);
+        return;
+      }
+      setPares([...vistos.entries()].map(([codConcep, categoria]) => ({ codConcep, categoria })));
+    } catch (err) {
+      setError("No se pudo leer el archivo. ¿Es un Excel válido?");
+      setPares(null);
+    }
+  }
+
+  const categoriasDistintas = pares ? [...new Set(pares.map((p) => p.categoria))].sort() : [];
+
+  async function confirmar() {
+    if (!pares?.length) return;
+    setImportando(true);
+    try {
+      await onImportar(pares);
+      onClose();
+    } finally {
+      setImportando(false);
+    }
+  }
+
+  return (
+    <Modal title="Importar categorías de Proyección" onClose={onClose} width={480}>
+      <div style={{ fontSize: 12.5, color: C.slate, marginBottom: 14 }}>
+        Sube un Excel con las columnas <strong>Cod Concepto</strong> y <strong>Categoría</strong>. Repite el mismo nombre de categoría en varias filas para agruparlas -- las categorías que no existan se crean solas.
+      </div>
+      <input type="file" accept=".xlsx,.xls" onChange={manejarArchivo} style={{ marginBottom: 12, fontSize: 12.5 }} />
+      {error && <div style={{ fontSize: 12, color: C.red, marginBottom: 12 }}>{error}</div>}
+      {pares && !error && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 12.5, color: C.ink, marginBottom: 8 }}>
+            <strong>{nombreArchivo}</strong>: {pares.length} código{pares.length !== 1 ? "s" : ""} en {categoriasDistintas.length} categoría{categoriasDistintas.length !== 1 ? "s" : ""}.
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {categoriasDistintas.map((c) => (
+              <span key={c} style={{ padding: "3px 10px", borderRadius: 20, background: C.violetBg, color: C.violet, fontSize: 11.5, fontWeight: 700 }}>
+                {c}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <Btn variant="secondary" onClick={onClose}>
+          Cancelar
+        </Btn>
+        <Btn onClick={confirmar} disabled={!pares?.length || importando}>
+          {importando ? "Importando..." : "Confirmar importación"}
+        </Btn>
+      </div>
+    </Modal>
+  );
+}
+function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, categoriasProyeccionLista, categoriasPorConceptoProyeccion, onGuardar, onFinalizar, onDeletePresupuesto, onRecalcular, onAgregarCategoriaProyeccionLista, onEliminarCategoriaProyeccionLista, onGuardarCategoriaConceptoProyeccion, onImportarCategoriasProyeccion, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [editando, setEditando] = useState(null);
   // Cada mes arranca colapsado (como una fila de lista) — se despliega solo
@@ -831,6 +931,7 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, cat
   // gasto (rubros de Comparativo por Concepto, no proveedores). Se asignan
   // una sola vez por código de concepto y aplican a todos los meses.
   const [mostrarCategorias, setMostrarCategorias] = useState(false);
+  const [mostrarImportarCategorias, setMostrarImportarCategorias] = useState(false);
   const [nuevaCategoriaProyeccion, setNuevaCategoriaProyeccion] = useState("");
   function categoriaDeConcepto(codConcep) {
     const cat = categoriasPorConceptoProyeccion.find((c) => c.codConcep === codConcep)?.categoria || "";
@@ -866,6 +967,12 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, cat
             setShowForm(false);
             setEditando(null);
           }}
+        />
+      )}
+      {mostrarImportarCategorias && (
+        <ImportarCategoriasProyeccionModal
+          onImportar={onImportarCategoriasProyeccion}
+          onClose={() => setMostrarImportarCategorias(false)}
         />
       )}
       <div
@@ -932,7 +1039,10 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, cat
                 </div>
               </div>
               <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white, flex: 1, minWidth: 320 }}>
-                <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 4 }}>🔗 Categoría por concepto</div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 4 }}>
+                  <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>🔗 Categoría por concepto</div>
+                  <Btn small variant="secondary" onClick={() => setMostrarImportarCategorias(true)}>📥 Importar desde Excel</Btn>
+                </div>
                 <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 10 }}>
                   Se asigna una sola vez por código y aplica a todos los meses, pasados y futuros, que usen ese concepto.
                 </div>
@@ -2021,6 +2131,46 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
       await fsDelete("contabilidad_proyeccion_categorias_concepto", codConcep);
     }
   }
+  // Importa de una vez un listado código de concepto -> nombre de categoría
+  // (desde ImportarCategoriasProyeccionModal): crea las categorías que
+  // falten (comparando el nombre sin distinguir mayúsculas/acentos, para no
+  // duplicar "Telas" y "telas") y asigna cada código a la que le
+  // corresponde. Volver a importar el mismo archivo actualizado no borra
+  // categorías ni asignaciones que no vengan en el archivo -- solo agrega o
+  // actualiza lo que sí trae.
+  async function importarCategoriasProyeccion(pares) {
+    const claveNombre = (s) => String(s).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+    const porNombre = new Map(categoriasProyeccionLista.map((c) => [claveNombre(c.label), c]));
+    const categoriasNuevas = [];
+    [...new Set(pares.map((p) => p.categoria))].forEach((etiqueta) => {
+      const clave = claveNombre(etiqueta);
+      if (!porNombre.has(clave)) {
+        const nueva = { id: uid(), label: etiqueta, creadoEn: new Date().toISOString() };
+        porNombre.set(clave, nueva);
+        categoriasNuevas.push(nueva);
+      }
+    });
+    if (categoriasNuevas.length) {
+      setCategoriasProyeccionLista((cs) => [...cs, ...categoriasNuevas]);
+      await Promise.all(categoriasNuevas.map((c) => fsSave("contabilidad_proyeccion_categorias_lista", c.id, c)));
+    }
+    const asignaciones = pares
+      .map((p) => ({
+        codConcep: p.codConcep,
+        categoria: porNombre.get(claveNombre(p.categoria))?.id,
+        actualizadoEn: new Date().toISOString(),
+      }))
+      .filter((a) => a.categoria);
+    setCategoriasPorConceptoProyeccion((cs) => {
+      const sinViejos = cs.filter((c) => !asignaciones.some((a) => a.codConcep === c.codConcep));
+      return [...sinViejos, ...asignaciones];
+    });
+    await Promise.all(
+      asignaciones.map((a) =>
+        fsSave("contabilidad_proyeccion_categorias_concepto", a.codConcep, { categoria: a.categoria, actualizadoEn: a.actualizadoEn })
+      )
+    );
+  }
   // Reemplaza el calendario completo de un proveedor: borra las entradas
   // anteriores y guarda las nuevas (mismo comportamiento que en Contabilidad
   // → Cuentas por Pagar, que sigue usando esta misma operación para
@@ -2152,6 +2302,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
               onAgregarCategoriaProyeccionLista={agregarCategoriaProyeccionLista}
               onEliminarCategoriaProyeccionLista={eliminarCategoriaProyeccionLista}
               onGuardarCategoriaConceptoProyeccion={guardarCategoriaConceptoProyeccion}
+              onImportarCategoriasProyeccion={importarCategoriasProyeccion}
               isAdmin={isAdmin}
             />
           )}
