@@ -3763,9 +3763,28 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
 // no hacen parte del flujo diario de Dado por Cumplido (por ahora solo la
 // importación del histórico; es el lugar natural para tareas parecidas
 // en el futuro).
-function AdministracionView({ currentUser }) {
+function AdministracionView({ currentUser, categoriasCxpLista, categoriasCxp, onAgregarCategoriaLista, onEliminarCategoriaLista }) {
   const isAdmin = currentUser?.isAdmin;
   const [importandoHistorico, setImportandoHistorico] = useState(false);
+  // (2026-09-27, a pedido de Fredy) Categorías de Cuentas por Pagar --
+  // dejaron de estar fijas en el código, ahora se administran aquí.
+  const [nuevaCategoriaCxp, setNuevaCategoriaCxp] = useState("");
+  const [cargandoSugeridas, setCargandoSugeridas] = useState(false);
+  const CATEGORIAS_CXP_SUGERIDAS = ["Telas y Proveedores", "Pagos de Servicios", "Pagos Insumos", "Pago de Plantas de Confección", "Préstamos"];
+  async function agregarCategoriaCxp() {
+    const label = nuevaCategoriaCxp.trim();
+    if (!label) return;
+    await onAgregarCategoriaLista(label);
+    setNuevaCategoriaCxp("");
+  }
+  async function cargarCategoriasCxpSugeridas() {
+    setCargandoSugeridas(true);
+    try {
+      await Promise.all(CATEGORIAS_CXP_SUGERIDAS.map((label) => onAgregarCategoriaLista(label)));
+    } finally {
+      setCargandoSugeridas(false);
+    }
+  }
   const importInputRef = useRef(null);
   const [migrandoEnvios, setMigrandoEnvios] = useState(false);
   const [resultadoMigracionEnvios, setResultadoMigracionEnvios] = useState(null);
@@ -4069,6 +4088,46 @@ function AdministracionView({ currentUser }) {
           </div>
         )}
       </div>
+      <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white, maxWidth: 460, marginTop: 14 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 4 }}>🏷️ Categorías de Cuentas por Pagar</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>
+          Para agrupar la tabla de Cuentas por Pagar (ej. Telas y Proveedores, Pagos de Servicios). Agrega o borra las que necesites -- si borras una, los proveedores que la tenían asignada vuelven a "Sin categoría", nada se pierde.
+        </div>
+        {!categoriasCxpLista.length ? (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, color: C.slate, marginBottom: 8 }}>Aún no hay ninguna categoría creada.</div>
+            <Btn variant="secondary" small onClick={cargarCategoriasCxpSugeridas} disabled={cargandoSugeridas}>
+              {cargandoSugeridas ? "Creando..." : "+ Usar las 5 sugeridas"}
+            </Btn>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+            {categoriasCxpLista.map((c) => {
+              const enUso = categoriasCxp.filter((x) => x.categoria === c.id).length;
+              return (
+                <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: C.canvas, borderRadius: 8 }}>
+                  <span style={{ fontSize: 13, color: C.ink, fontWeight: 600 }}>
+                    {c.label} <span style={{ fontWeight: 400, color: C.slate, fontSize: 11 }}>({enUso} proveedor{enUso !== 1 ? "es" : ""})</span>
+                  </span>
+                  <button
+                    onClick={() => onEliminarCategoriaLista(c.id)}
+                    title="Eliminar categoría"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: C.red, fontWeight: 700, fontSize: 12 }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}>
+            <FInput value={nuevaCategoriaCxp} onChange={setNuevaCategoriaCxp} placeholder="Nombre de la categoría nueva" />
+          </div>
+          <Btn small onClick={agregarCategoriaCxp} disabled={!nuevaCategoriaCxp.trim()}>+ Agregar</Btn>
+        </div>
+      </div>
       {confirmPurgaLote && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ background: C.white, borderRadius: 14, padding: 32, maxWidth: 400, width: "100%", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}>
@@ -4285,19 +4344,12 @@ function RenombrarProveedorCXPModal({ codigo, nombreActual, onSave, onClose }) {
     </Modal>
   );
 }
-// (2026-09-27, a pedido de Fredy) Categorías fijas para agrupar Cuentas por
-// Pagar -- Contabilidad se queda con el registro, así que agrupar por tipo
-// de gasto ayuda a ver de un vistazo cuánto se debe en cada frente sin
-// sumarlo a mano proveedor por proveedor. "Sin categoría" no está en esta
-// lista -- se agrega aparte, al final, para lo que aún no se ha clasificado.
-const CATEGORIAS_CXP = [
-  { id: "telas_proveedores", label: "Telas y Proveedores" },
-  { id: "servicios", label: "Pagos de Servicios" },
-  { id: "insumos", label: "Pagos Insumos" },
-  { id: "plantas_confeccion", label: "Pago de Plantas de Confección" },
-  { id: "prestamos", label: "Préstamos" },
-];
-function CategorizarProveedorCXPModal({ nombre, categoriaActual, onSave, onClose }) {
+// (2026-09-27, a pedido de Fredy) Categorías para agrupar Cuentas por Pagar
+// -- ya no son fijas, se administran desde Administración (ver
+// AdministracionView, categoriasCxpLista); `categoriasLista` llega por
+// prop desde ahí. "Sin categoría" no está en esa lista -- se agrega aparte,
+// al final, para lo que aún no se ha clasificado.
+function CategorizarProveedorCXPModal({ nombre, categoriaActual, categoriasLista, onSave, onClose }) {
   const [categoria, setCategoria] = useState(categoriaActual || "");
   return (
     <Modal title={`Categoría de ${nombre}`} onClose={onClose} width={420}>
@@ -4308,7 +4360,7 @@ function CategorizarProveedorCXPModal({ nombre, categoriaActual, onSave, onClose
           style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
         >
           <option value="">Sin categoría</option>
-          {CATEGORIAS_CXP.map((c) => (
+          {categoriasLista.map((c) => (
             <option key={c.id} value={c.id}>{c.label}</option>
           ))}
         </select>
@@ -4329,7 +4381,7 @@ function CategorizarProveedorCXPModal({ nombre, categoriaActual, onSave, onClose
     </Modal>
   );
 }
-function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente, presupuestos, nombresConcepto, nombresProveedor, categoriasCxp, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, onGuardarNombreConcepto, onGuardarNombreProveedor, onGuardarCategoria, isAdmin }) {
+function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente, presupuestos, nombresConcepto, nombresProveedor, categoriasCxp, categoriasLista, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, onGuardarNombreConcepto, onGuardarNombreProveedor, onGuardarCategoria, isAdmin }) {
   const [showImport, setShowImport] = useState(false);
   const [showManual, setShowManual] = useState(false);
   const [programando, setProgramando] = useState(null);
@@ -4370,7 +4422,8 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   // la tabla de abajo.
   const [categorizando, setCategorizando] = useState(null);
   function categoriaDeProveedor(nombre) {
-    return categoriasCxp.find((c) => c.proveedor === nombre)?.categoria || "";
+    const cat = categoriasCxp.find((c) => c.proveedor === nombre)?.categoria || "";
+    return categoriasLista.some((c) => c.id === cat) ? cat : "";
   }
   // (2026-09-25) Trae el corte de cuentas por pagar EN VIVO desde Busint
   // (cruzando facturas + pagos + maestro de proveedores en el backend) en
@@ -4446,13 +4499,14 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
     return a.nombreMostrado.localeCompare(b.nombreMostrado);
   });
   // Agrupa las filas (ya filtradas y ordenadas arriba) por categoría, en el
-  // orden fijo de CATEGORIAS_CXP y con "Sin categoría" al final -- como
-  // `filas` ya viene ordenada por `orden` y el filtro preserva el orden
-  // relativo, cada grupo queda ordenado igual que la tabla sin agrupar.
-  const grupos = [...CATEGORIAS_CXP.map((c) => c.id), ""]
+  // orden en que se crearon en Administración y con "Sin categoría" al
+  // final -- como `filas` ya viene ordenada por `orden` y el filtro
+  // preserva el orden relativo, cada grupo queda ordenado igual que la
+  // tabla sin agrupar.
+  const grupos = [...categoriasLista.map((c) => c.id), ""]
     .map((catId) => {
       const filasGrupo = filas.filter((f) => (categoriaDeProveedor(f.nombre) || "") === catId);
-      const label = catId ? CATEGORIAS_CXP.find((c) => c.id === catId).label : "Sin categoría";
+      const label = catId ? categoriasLista.find((c) => c.id === catId)?.label || "" : "Sin categoría";
       const subtotal = filasGrupo.reduce((s, f) => s + f.total, 0);
       return { id: catId || "sin_categoria", label, filas: filasGrupo, subtotal };
     })
@@ -4532,6 +4586,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
         <CategorizarProveedorCXPModal
           nombre={filas.find((f) => f.nombre === categorizando)?.nombreMostrado || categorizando}
           categoriaActual={categoriaDeProveedor(categorizando)}
+          categoriasLista={categoriasLista}
           onSave={(categoria) => onGuardarCategoria(categorizando, categoria)}
           onClose={() => setCategorizando(null)}
         />
@@ -4715,7 +4770,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                               )}
                               <button
                                 onClick={() => setCategorizando(f.nombre)}
-                                title={categoriaActual ? `Categoría: ${CATEGORIAS_CXP.find((c) => c.id === categoriaActual)?.label || categoriaActual}` : "Asignar categoría"}
+                                title={categoriaActual ? `Categoría: ${categoriasLista.find((c) => c.id === categoriaActual)?.label || categoriaActual}` : "Asignar categoría"}
                                 style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, opacity: categoriaActual ? 0.85 : 0.35, padding: 0 }}
                               >
                                 🏷️
@@ -5040,6 +5095,10 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
   // de usar el nombre del proveedor como id de documento, porque un nombre
   // real puede traer caracteres que Firestore no acepta como id.
   const [categoriasCxp, setCategoriasCxp] = useState([]);
+  // (2026-09-27, a pedido de Fredy) Lista de categorías de Cuentas por
+  // Pagar administrables desde Administración -- ya no son fijas en el
+  // código, Fredy agrega y borra las que necesite.
+  const [categoriasCxpLista, setCategoriasCxpLista] = useState([]);
   const [clientesDiseno, setClientesDiseno] = useState([]);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -5117,6 +5176,16 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
         setCategoriasCxp(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
       }
     );
+    const unsubCategoriasCxpLista = onSnapshot(
+      collection(db, "contabilidad_cxp_categorias_lista"),
+      (snap) => {
+        setCategoriasCxpLista(
+          snap.docs
+            .map((d) => ({ ...d.data(), id: d.id }))
+            .sort((a, b) => (a.creadoEn || "").localeCompare(b.creadoEn || ""))
+        );
+      }
+    );
     // Clientes: se leen en vivo del mismo documento de configuración que usa
     // Diseño (Admin → Clientes). Solo lectura desde Contabilidad — agregar o
     // borrar clientes se sigue haciendo únicamente desde Diseño.
@@ -5134,6 +5203,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
       unsubNombresConceptoCxp();
       unsubNombresProveedorCxp();
       unsubCategoriasCxp();
+      unsubCategoriasCxpLista();
       unsubClientes();
     };
   }, []);
@@ -5260,6 +5330,23 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
       const nuevo = { id: uid(), proveedor, categoria, actualizadoEn: new Date().toISOString() };
       await fsSave("contabilidad_cxp_categorias", nuevo.id, nuevo);
     }
+  }
+  // Agrega una categoría nueva a la lista administrable de Cuentas por
+  // Pagar (ver Administración).
+  async function agregarCategoriaCxpLista(label) {
+    const limpio = (label || "").trim();
+    if (!limpio) return;
+    const nueva = { id: uid(), label: limpio, creadoEn: new Date().toISOString() };
+    setCategoriasCxpLista((cs) => [...cs, nueva]);
+    await fsSave("contabilidad_cxp_categorias_lista", nueva.id, nueva);
+  }
+  // Borra una categoría de la lista -- los proveedores que la tenían
+  // asignada no se tocan, simplemente dejan de encontrarla (ver
+  // categoriaDeProveedor en CuentasPorPagarView) y vuelven a aparecer en
+  // "Sin categoría".
+  async function eliminarCategoriaCxpLista(id) {
+    setCategoriasCxpLista((cs) => cs.filter((c) => c.id !== id));
+    await fsDelete("contabilidad_cxp_categorias_lista", id);
   }
   // Lista única de rubros históricos (código + nombre), para el selector de
   // distribución de ingresos y para calcular el avance por rubro en Proyección.
@@ -5503,6 +5590,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
               nombresConcepto={nombresConceptoCxp}
               nombresProveedor={nombresProveedorCxp}
               categoriasCxp={categoriasCxp}
+              categoriasLista={categoriasCxpLista}
               onImportarCorte={addCorteCxp}
               onDeleteCorte={deleteCorteCxp}
               onAddManual={addManualCxp}
@@ -5515,7 +5603,15 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
               isAdmin={isAdmin}
             />
           )}
-          {subView === "administracion" && <AdministracionView currentUser={currentUser} />}
+          {subView === "administracion" && (
+            <AdministracionView
+              currentUser={currentUser}
+              categoriasCxpLista={categoriasCxpLista}
+              categoriasCxp={categoriasCxp}
+              onAgregarCategoriaLista={agregarCategoriaCxpLista}
+              onEliminarCategoriaLista={eliminarCategoriaCxpLista}
+            />
+          )}
         </div>
       </div>
     </div>
