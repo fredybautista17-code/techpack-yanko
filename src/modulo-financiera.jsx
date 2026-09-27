@@ -819,13 +819,33 @@ function ProyeccionForm({ compras, presupuestoExistente, onGuardar, onClose }) {
     </Modal>
   );
 }
-function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onGuardar, onFinalizar, onDeletePresupuesto, onRecalcular, isAdmin }) {
+function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, categoriasProyeccionLista, categoriasPorConceptoProyeccion, onGuardar, onFinalizar, onDeletePresupuesto, onRecalcular, onAgregarCategoriaProyeccionLista, onEliminarCategoriaProyeccionLista, onGuardarCategoriaConceptoProyeccion, isAdmin }) {
   const [showForm, setShowForm] = useState(false);
   const [editando, setEditando] = useState(null);
   // Cada mes arranca colapsado (como una fila de lista) — se despliega solo
   // al hacer clic, para no tener que desplazarse por todos los meses
   // acumulados con su detalle completo abierto de una vez.
   const [expandidos, setExpandidos] = useState(new Set());
+  // (2026-09-27, a pedido de Fredy) Categorías propias de Proyección --
+  // separadas de las de Cuentas por Pagar, porque agrupan otro tipo de
+  // gasto (rubros de Comparativo por Concepto, no proveedores). Se asignan
+  // una sola vez por código de concepto y aplican a todos los meses.
+  const [mostrarCategorias, setMostrarCategorias] = useState(false);
+  const [nuevaCategoriaProyeccion, setNuevaCategoriaProyeccion] = useState("");
+  function categoriaDeConcepto(codConcep) {
+    const cat = categoriasPorConceptoProyeccion.find((c) => c.codConcep === codConcep)?.categoria || "";
+    return categoriasProyeccionLista.some((c) => c.id === cat) ? cat : "";
+  }
+  // Todos los códigos de concepto vistos alguna vez en Comparativo por
+  // Concepto (no solo los de un presupuesto puntual), para poder
+  // categorizarlos desde acá aunque todavía no estén en ningún presupuesto.
+  const conceptosVistos = calcularBaseItemsPromedio(compras);
+  async function agregarCategoriaProyeccion() {
+    const label = nuevaCategoriaProyeccion.trim();
+    if (!label) return;
+    await onAgregarCategoriaProyeccionLista(label);
+    setNuevaCategoriaProyeccion("");
+  }
   function toggleExpand(id) {
     setExpandidos((s) => {
       const next = new Set(s);
@@ -872,6 +892,85 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
           + Nueva Proyección
         </Btn>
       </div>
+      {isAdmin && (
+        <div style={{ marginBottom: 20 }}>
+          <button
+            onClick={() => setMostrarCategorias((v) => !v)}
+            style={{ background: "none", border: "none", cursor: "pointer", color: C.violet, fontWeight: 700, fontSize: 12, padding: 0, marginBottom: mostrarCategorias ? 12 : 0 }}
+          >
+            {mostrarCategorias ? "▲ Ocultar categorías de Proyección" : "⚙️ Categorías de Proyección"}
+          </button>
+          {mostrarCategorias && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
+              <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white, width: 320 }}>
+                <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 4 }}>🏷️ Categorías</div>
+                <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 10 }}>
+                  Propias de Proyección -- no son las mismas de Cuentas por Pagar.
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+                  {categoriasProyeccionLista.map((c) => (
+                    <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 10px", background: C.canvas, borderRadius: 8 }}>
+                      <span style={{ fontSize: 12, color: C.ink, fontWeight: 600 }}>{c.label}</span>
+                      <button
+                        onClick={() => onEliminarCategoriaProyeccionLista(c.id)}
+                        title="Eliminar categoría"
+                        style={{ background: "none", border: "none", cursor: "pointer", color: C.red, fontWeight: 700, fontSize: 12 }}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                  {!categoriasProyeccionLista.length && (
+                    <div style={{ fontSize: 11.5, color: C.slate }}>Aún no hay categorías creadas.</div>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <div style={{ flex: 1 }}>
+                    <FInput value={nuevaCategoriaProyeccion} onChange={setNuevaCategoriaProyeccion} placeholder="Categoría nueva" />
+                  </div>
+                  <Btn small onClick={agregarCategoriaProyeccion} disabled={!nuevaCategoriaProyeccion.trim()}>+ Agregar</Btn>
+                </div>
+              </div>
+              <div style={{ border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, background: C.white, flex: 1, minWidth: 320 }}>
+                <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 4 }}>🔗 Categoría por concepto</div>
+                <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 10 }}>
+                  Se asigna una sola vez por código y aplica a todos los meses, pasados y futuros, que usen ese concepto.
+                </div>
+                {!conceptosVistos.length ? (
+                  <div style={{ fontSize: 11.5, color: C.slate }}>
+                    Aún no hay conceptos -- importa Comparativo por Concepto primero.
+                  </div>
+                ) : !categoriasProyeccionLista.length ? (
+                  <div style={{ fontSize: 11.5, color: C.slate }}>Crea primero al menos una categoría.</div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 260, overflowY: "auto", paddingRight: 4 }}>
+                    {conceptosVistos.map((b) => {
+                      const actual = categoriaDeConcepto(b.codConcep);
+                      return (
+                        <div key={b.codConcep} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "6px 10px", background: C.canvas, borderRadius: 8 }}>
+                          <span style={{ fontSize: 12, color: C.ink, fontWeight: 600 }}>
+                            {b.concepto} <span style={{ fontWeight: 400, color: C.slate, fontSize: 10.5 }}>({b.codConcep})</span>
+                          </span>
+                          <select
+                            value={actual}
+                            onChange={(e) => onGuardarCategoriaConceptoProyeccion(b.codConcep, e.target.value || null)}
+                            style={{ padding: "5px 8px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 11.5, color: C.ink, background: C.white, outline: "none", fontFamily: "inherit" }}
+                          >
+                            <option value="">Sin categoría</option>
+                            {categoriasProyeccionLista.map((cat) => (
+                              <option key={cat.id} value={cat.id}>{cat.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {!lista.length ? (
         <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
           Aún no has creado ninguna proyección. Usa "+ Nueva Proyección" para armar el presupuesto del próximo mes.
@@ -944,6 +1043,20 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
               return s + (m.valor - asignado);
             }, 0);
             const expandido = expandidos.has(p.id);
+            // Agrupa los rubros incluidos de ESTE presupuesto por categoría
+            // de Proyección, con "Sin categoría" al final -- se ve siempre
+            // que se expande la tarjeta, esté en borrador o terminado
+            // (a diferencia de "Avance por rubro", que solo aplica una vez
+            // terminado).
+            const itemsIncluidos = (p.items || []).filter((i) => i.incluido);
+            const gruposCategoria = [...categoriasProyeccionLista.map((c) => c.id), ""]
+              .map((catId) => {
+                const itemsGrupo = itemsIncluidos.filter((i) => (categoriaDeConcepto(i.codConcep) || "") === catId);
+                const label = catId ? categoriasProyeccionLista.find((c) => c.id === catId)?.label || "" : "Sin categoría";
+                const subtotal = itemsGrupo.reduce((s, i) => s + i.valorFinal, 0);
+                return { id: catId || "sin_categoria", label, items: itemsGrupo, subtotal };
+              })
+              .filter((g) => g.items.length > 0);
             return (
               <div key={p.id} id={`proy-${p.id}`} style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", scrollMarginTop: 20 }}>
                 <div
@@ -978,6 +1091,41 @@ function ProyeccionView({ compras, movimientos, presupuestos, calendarioCxp, onG
                 </div>
                 {expandido && (
                   <div style={{ padding: "0 20px 20px" }}>
+                    {!!gruposCategoria.length && (
+                      <div style={{ marginBottom: 16 }}>
+                        <div style={{ fontSize: 12, fontWeight: 800, color: C.ink, marginBottom: 8 }}>Presupuesto por categoría</div>
+                        <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                            <tbody>
+                              {gruposCategoria.map((g) => (
+                                <Fragment key={g.id}>
+                                  <tr style={{ background: C.canvas }}>
+                                    <td colSpan={2} style={{ padding: "7px 12px", borderTop: `2px solid ${C.border}`, borderBottom: `1px solid ${C.border}` }}>
+                                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                                        <span style={{ fontWeight: 800, fontSize: 11, color: C.slate, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                                          {g.label} <span style={{ fontWeight: 500, textTransform: "none" }}>({g.items.length})</span>
+                                        </span>
+                                        <span style={{ fontWeight: 800, fontSize: 12, color: C.ink }}>{fmtCOP(g.subtotal)}</span>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                  {g.items.map((i) => (
+                                    <tr key={i.key || `${i.codConcep}__${i.concepto}`} style={{ borderBottom: `1px solid ${C.border}` }}>
+                                      <td style={{ padding: "6px 12px", color: C.ink }}>
+                                        {i.concepto} <span style={{ color: C.slate, fontSize: 11 }}>({i.codConcep})</span>
+                                      </td>
+                                      <td style={{ padding: "6px 12px", textAlign: "right", fontWeight: 600, color: C.ink, whiteSpace: "nowrap" }}>
+                                        {fmtCOP(i.valorFinal)}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </Fragment>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
                     {isAdmin && (
                       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
                         {!terminado && (
@@ -1737,6 +1885,13 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
   const [calendarioCxp, setCalendarioCxp] = useState([]);
   const [nombresProveedorCxp, setNombresProveedorCxp] = useState({});
   const [clientesDiseno, setClientesDiseno] = useState([]);
+  // (2026-09-27, a pedido de Fredy) Categorías propias de Proyección (ej.
+  // Vigilancia, Combustible, Seguros) para agrupar el presupuesto por
+  // categoría -- separadas de las de Cuentas por Pagar. categoriasPorConceptoProyeccion
+  // asigna cada código de concepto (codConcep de Comparativo por Concepto)
+  // a una categoría, una sola vez.
+  const [categoriasProyeccionLista, setCategoriasProyeccionLista] = useState([]);
+  const [categoriasPorConceptoProyeccion, setCategoriasPorConceptoProyeccion] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -1770,6 +1925,23 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
     const unsubClientes = onSnapshot(doc(db, "config", "main"), (snap) => {
       setClientesDiseno(snap.exists() ? snap.data()?.clientes || [] : []);
     });
+    const unsubCategoriasProyeccionLista = onSnapshot(
+      collection(db, "contabilidad_proyeccion_categorias_lista"),
+      (snap) => {
+        setCategoriasProyeccionLista(
+          snap.docs
+            .map((d) => ({ ...d.data(), id: d.id }))
+            .sort((a, b) => (a.creadoEn || "").localeCompare(b.creadoEn || ""))
+        );
+      }
+    );
+    // Categoría por código de concepto (doc id = codConcep, ej. "*COMB").
+    const unsubCategoriasPorConceptoProyeccion = onSnapshot(
+      collection(db, "contabilidad_proyeccion_categorias_concepto"),
+      (snap) => {
+        setCategoriasPorConceptoProyeccion(snap.docs.map((d) => ({ ...d.data(), codConcep: d.id })));
+      }
+    );
     return () => {
       unsubMovimientos();
       unsubCompras();
@@ -1780,6 +1952,8 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
       unsubCalendarioCxp();
       unsubNombresProveedorCxp();
       unsubClientes();
+      unsubCategoriasProyeccionLista();
+      unsubCategoriasPorConceptoProyeccion();
     };
   }, []);
 
@@ -1820,6 +1994,32 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
   async function deletePresupuestoCliente(id) {
     setPresupuestosCliente((ps) => ps.filter((p) => p.id !== id));
     await fsDelete("contabilidad_presupuestos_cliente", id);
+  }
+  async function agregarCategoriaProyeccionLista(label) {
+    const limpio = (label || "").trim();
+    if (!limpio) return;
+    const nueva = { id: uid(), label: limpio, creadoEn: new Date().toISOString() };
+    setCategoriasProyeccionLista((cs) => [...cs, nueva]);
+    await fsSave("contabilidad_proyeccion_categorias_lista", nueva.id, nueva);
+  }
+  async function eliminarCategoriaProyeccionLista(id) {
+    setCategoriasProyeccionLista((cs) => cs.filter((c) => c.id !== id));
+    await fsDelete("contabilidad_proyeccion_categorias_lista", id);
+  }
+  // El id del documento es el código de concepto mismo (ej. "*COMB"), así
+  // que volver a guardar el mismo código simplemente actualiza la
+  // categoría.
+  async function guardarCategoriaConceptoProyeccion(codConcep, categoria) {
+    if (!codConcep) return;
+    setCategoriasPorConceptoProyeccion((cs) => {
+      const sinViejo = cs.filter((c) => c.codConcep !== codConcep);
+      return categoria ? [...sinViejo, { codConcep, categoria, actualizadoEn: new Date().toISOString() }] : sinViejo;
+    });
+    if (categoria) {
+      await fsSave("contabilidad_proyeccion_categorias_concepto", codConcep, { categoria, actualizadoEn: new Date().toISOString() });
+    } else {
+      await fsDelete("contabilidad_proyeccion_categorias_concepto", codConcep);
+    }
   }
   // Reemplaza el calendario completo de un proveedor: borra las entradas
   // anteriores y guarda las nuevas (mismo comportamiento que en Contabilidad
@@ -1943,10 +2143,15 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
               movimientos={movimientos}
               presupuestos={presupuestos}
               calendarioCxp={calendarioCxp}
+              categoriasProyeccionLista={categoriasProyeccionLista}
+              categoriasPorConceptoProyeccion={categoriasPorConceptoProyeccion}
               onGuardar={guardarPresupuesto}
               onFinalizar={finalizarPresupuesto}
               onDeletePresupuesto={deletePresupuesto}
               onRecalcular={recalcularPresupuesto}
+              onAgregarCategoriaProyeccionLista={agregarCategoriaProyeccionLista}
+              onEliminarCategoriaProyeccionLista={eliminarCategoriaProyeccionLista}
+              onGuardarCategoriaConceptoProyeccion={guardarCategoriaConceptoProyeccion}
               isAdmin={isAdmin}
             />
           )}
