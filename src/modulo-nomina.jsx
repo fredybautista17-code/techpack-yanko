@@ -4274,6 +4274,30 @@ function TabuladorAsistenciaView({ areasNomina, trabajadores, areaLider, turnos,
     setFilas((fs) => ({ ...fs, [id]: { ...fs[id], [campo]: valor } }));
     setGuardadoOk(false);
   }
+  // (2026-09-28, a pedido de Fredy) Botón "Marcar todos" -- para el día a
+  // día donde casi todos llegan normal, en vez de marcar uno por uno. A
+  // cada quien (que no tenga ya un permiso) le pone su horario HABITUAL
+  // (el de su propio turno) como si hubiera llegado puntual, así queda
+  // registrada una hora real y no en blanco; el líder solo corrige a mano
+  // las excepciones (dándole "❌ Faltó" a quien sí faltó).
+  function marcarTodos() {
+    const diaCodigo = diaCodigoDeISO(fecha);
+    setFilas((fs) => {
+      const nuevas = { ...fs };
+      trabajadoresMostrados.forEach((t) => {
+        if (ausenciaDe(t)) return;
+        const turno = resolverTurnoDeTrabajador(t, areasNomina, turnos);
+        nuevas[t.id] = {
+          asistio: true,
+          tocado: true,
+          entrada: horaEntradaEsperada(turno, diaCodigo) || "",
+          salida: horaSalidaEsperada(turno, diaCodigo) || "",
+        };
+      });
+      return nuevas;
+    });
+    setGuardadoOk(false);
+  }
   function ausenciaDe(t) {
     return (ausencias || []).find((a) => a.trabajadorId === t.id && a.fechaInicio <= fecha && fecha <= a.fechaFin) || null;
   }
@@ -4339,6 +4363,14 @@ function TabuladorAsistenciaView({ areasNomina, trabajadores, areaLider, turnos,
             <KPI icon="❌" label="Faltas" value={faltaron} color={C.red} bg={C.redBg} />
             <KPI icon="🗓️" label="Con permiso" value={conPermiso} color={C.violet} bg={C.violetBg} />
             <KPI icon="⏳" label="Sin marcar aún" value={sinMarcar} color={C.slate} bg={C.canvas} />
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+            <button
+              onClick={marcarTodos}
+              style={{ padding: "7px 14px", borderRadius: 8, border: `1.5px solid ${C.green}`, background: C.greenBg, color: C.green, fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+            >
+              ✅ Marcar todos como asistieron (horario habitual)
+            </button>
           </div>
           <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
