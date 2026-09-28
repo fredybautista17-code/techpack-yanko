@@ -190,6 +190,23 @@ function EstadoBadge({ estado }) {
     </span>
   );
 }
+// (2026-09-28, a pedido de Fredy) Avatar con inicial + color por nombre --
+// para las tarjetas por trabajador del Programador de Procesos (ver
+// ProgramadorProcesosView más abajo). Mismo color siempre para el mismo
+// nombre, sin necesidad de guardar nada nuevo.
+const COLORES_AVATAR_PROGRAMADOR = [C.violet, C.blue, C.green, C.amber, C.teal, C.red];
+function AvatarIniciales({ nombre }) {
+  const texto = nombre || "?";
+  const inicial = texto.trim().charAt(0).toUpperCase() || "?";
+  let hash = 0;
+  for (let i = 0; i < texto.length; i++) hash = (hash * 31 + texto.charCodeAt(i)) % 997;
+  const color = COLORES_AVATAR_PROGRAMADOR[Math.abs(hash) % COLORES_AVATAR_PROGRAMADOR.length];
+  return (
+    <div style={{ width: 32, height: 32, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 800, fontSize: 13, flexShrink: 0, background: color }}>
+      {inicial}
+    </div>
+  );
+}
 function UbicacionBadge({ ubicacion }) {
   const map = {
     Corte: { bg: C.blueBg, color: C.blue },
@@ -3038,6 +3055,12 @@ function ProgramadorProcesosView({
   const misProcesos = procesos || currentUser?.procesosPlaneacion || [];
   const [modalProgramar, setModalProgramar] = useState(null);
   const [fechaForm, setFechaForm] = useState(today());
+  // (2026-09-28, a pedido de Fredy) Hora de inicio de ESTA tanda
+  // programada -- permite programar el mismo lote+proceso más de una vez
+  // en el mismo día (ej. una tanda en la mañana y otra en la tarde) y
+  // ordenar las tarjetas de "Lotes programados" por hora, no solo por
+  // fecha.
+  const [horaInicioForm, setHoraInicioForm] = useState("06:00");
   const [trabajadorForm, setTrabajadorForm] = useState("");
   // (2026-09-02, a pedido de Fredy) Cantidad a programarle a ESTE
   // trabajador -- para poder repartir un mismo lote+proceso entre 2 o
@@ -3193,6 +3216,7 @@ function ProgramadorProcesosView({
   function abrirProgramar(fila) {
     setModalProgramar(fila);
     setFechaForm(today());
+    setHoraInicioForm("06:00");
     setTrabajadorForm("");
     const clave = `${fila.numLote}||${fila.proceso}`;
     const asignado = asignadoPorLoteProceso.get(clave) || 0;
@@ -3200,7 +3224,7 @@ function ProgramadorProcesosView({
     setCantidadForm(restante > 0 ? String(restante) : "");
   }
   async function confirmarProgramar() {
-    if (!trabajadorForm || !(Number(cantidadForm) > 0) || excedeCantidadModal) return;
+    if (!trabajadorForm || !horaInicioForm || !(Number(cantidadForm) > 0) || excedeCantidadModal) return;
     const trabajador = trabajadoresEquipo.find((t) => t.id === trabajadorForm);
     setGuardando(true);
     try {
@@ -3209,6 +3233,7 @@ function ProgramadorProcesosView({
         referencia: modalProgramar.referencia,
         proceso: modalProgramar.proceso,
         fechaProgramada: fechaForm,
+        horaInicio: horaInicioForm,
         trabajadorId: trabajadorForm,
         trabajadorNombre: trabajador?.name || trabajador?.nombre || "",
         cantidad: Number(cantidadForm),
@@ -3246,25 +3271,22 @@ function ProgramadorProcesosView({
     } },
     { key: "_accion", label: "", render: (f) => <Btn small onClick={() => abrirProgramar(f)}>📅 Programar</Btn> },
   ];
-  const columnasProgramados = [
-    { key: "estado", label: "Estado", render: (f) => (
-      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-        <EstadoBadge estado={f.estado} />
-        {f.llegoVencido && <span style={{ fontSize: 10, fontWeight: 700, color: C.red }}>⚠️ Llegó vencido</span>}
-      </div>
-    ) },
-    { key: "fechaProgramada", label: "Fecha", render: (f) => fmtFechaISO(f.fechaProgramada) },
-    { key: "numLote", label: "Lote" },
-    { key: "referencia", label: "Referencia" },
-    { key: "proceso", label: "Proceso" },
-    { key: "trabajadorNombre", label: "Trabajador" },
-    { key: "cantidad", label: "Cantidad", align: "right", render: (f) => (f.cantidad != null ? fmtNum(f.cantidad) : "—") },
-    { key: "detalle", label: "Cumplimiento", render: (f) => {
-      const d = detalleCumplimiento(f);
-      return d ? <span style={{ fontSize: 12, color: C.green, fontWeight: 600 }}>{d}</span> : <span style={{ color: C.slate }}>—</span>;
-    } },
-    { key: "_accion", label: "", render: (f) => <Btn small variant="danger" onClick={() => onCancelarProgramacion(f.id)}>Cancelar</Btn> },
-  ];
+  // (2026-09-28, a pedido de Fredy) "Lotes programados" ahora se ve en
+  // tarjetas por trabajador (ordenadas por hora de inicio) en vez de una
+  // tabla larga -- más visual, se ve de un vistazo el orden del día de
+  // cada quien. Agrupa lo que ya viene filtrado por pestaña
+  // (Programados/Vencidos/Históricos, ver filasLotesTab).
+  const gruposLotesPorTrabajador = useMemo(() => {
+    const mapa = new Map();
+    filasLotesTab.forEach((p) => {
+      const clave = p.trabajadorId || p.trabajadorNombre || "sin-asignar";
+      if (!mapa.has(clave)) mapa.set(clave, { trabajadorNombre: p.trabajadorNombre || "Sin asignar", items: [] });
+      mapa.get(clave).items.push(p);
+    });
+    return Array.from(mapa.values())
+      .map((g) => ({ ...g, items: g.items.slice().sort((a, b) => (a.horaInicio || "").localeCompare(b.horaInicio || "")) }))
+      .sort((a, b) => a.trabajadorNombre.localeCompare(b.trabajadorNombre, "es"));
+  }, [filasLotesTab]);
   return (
     <div>
       {modalProgramar && (
@@ -3272,9 +3294,18 @@ function ProgramadorProcesosView({
           <div style={{ fontSize: 13, color: C.slate, marginBottom: 14 }}>
             Referencia {modalProgramar.referencia} — {fmtNum(modalProgramar.inventario)} unidades pendientes en {modalProgramar.proceso}.
           </div>
-          <div style={{ marginBottom: 14 }}>
-            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Fecha programada</label>
-            <input type="date" value={fechaForm} onChange={(e) => setFechaForm(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} />
+          <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Fecha programada</label>
+              <input type="date" value={fechaForm} onChange={(e) => setFechaForm(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Hora de inicio</label>
+              <input type="time" value={horaInicioForm} onChange={(e) => setHoraInicioForm(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} />
+            </div>
+          </div>
+          <div style={{ fontSize: 11.5, color: C.slate, marginTop: -8, marginBottom: 14 }}>
+            Puedes programar el mismo lote y proceso más de una vez en el día, cada uno con su propia hora de inicio.
           </div>
           <div style={{ marginBottom: 14 }}>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Trabajador de tu equipo</label>
@@ -3312,7 +3343,7 @@ function ProgramadorProcesosView({
           )}
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <Btn variant="secondary" onClick={() => setModalProgramar(null)}>Cancelar</Btn>
-            <Btn onClick={confirmarProgramar} disabled={!trabajadorForm || !(Number(cantidadForm) > 0) || excedeCantidadModal || guardando}>{guardando ? "Guardando..." : "Guardar programación"}</Btn>
+            <Btn onClick={confirmarProgramar} disabled={!trabajadorForm || !horaInicioForm || !(Number(cantidadForm) > 0) || excedeCantidadModal || guardando}>{guardando ? "Guardando..." : "Guardar programación"}</Btn>
           </div>
         </Modal>
       )}
@@ -3365,7 +3396,33 @@ function ProgramadorProcesosView({
             {tabLotesBtn("vencidos", "Vencidos", vencidos.length)}
             {tabLotesBtn("historicos", "Históricos", cumplidos.length)}
           </div>
-          <TablaSuave vacio={vacioLotesTab} columnas={columnasProgramados} filas={filasLotesTab} />
+          {!gruposLotesPorTrabajador.length && (
+            <div style={{ padding: 20, textAlign: "center", color: C.slate, fontSize: 13, background: C.white, border: `1px solid ${C.border}`, borderRadius: 14 }}>{vacioLotesTab}</div>
+          )}
+          {gruposLotesPorTrabajador.map((g) => (
+            <div key={g.trabajadorNombre} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, marginBottom: 14, overflow: "hidden" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", background: C.canvas, borderBottom: `1px solid ${C.border}` }}>
+                <AvatarIniciales nombre={g.trabajadorNombre} />
+                <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>{g.trabajadorNombre}</div>
+                <div style={{ fontSize: 11, color: C.slate, fontWeight: 700, background: C.white, border: `1px solid ${C.border}`, borderRadius: 20, padding: "3px 10px" }}>{g.items.length} {g.items.length === 1 ? "lote" : "lotes"}</div>
+              </div>
+              {g.items.map((f, i) => (
+                <div key={f.id} style={{ display: "grid", gridTemplateColumns: "64px 1fr auto auto", gap: 14, alignItems: "center", padding: "12px 16px", borderBottom: i === g.items.length - 1 ? "none" : `1px solid ${C.border}` }}>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, fontVariantNumeric: "tabular-nums" }}>{f.horaInicio || "—"}</div>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>Lote {f.numLote} — Ref. {f.referencia}</div>
+                    <div style={{ fontSize: 11.5, color: C.slate, marginTop: 2 }}>{f.proceso}{f.cantidad != null ? ` · ${fmtNum(f.cantidad)} und` : ""} · {fmtFechaISO(f.fechaProgramada)}</div>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
+                    <EstadoBadge estado={f.estado} />
+                    {f.llegoVencido && <span style={{ fontSize: 10, fontWeight: 700, color: C.red }}>⚠️ Llegó vencido</span>}
+                    {detalleCumplimiento(f) && <span style={{ fontSize: 10.5, color: C.green, fontWeight: 600, textAlign: "right" }}>{detalleCumplimiento(f)}</span>}
+                  </div>
+                  <span onClick={() => onCancelarProgramacion(f.id)} style={{ cursor: "pointer", color: C.red, fontSize: 16 }} title="Cancelar programación">✕</span>
+                </div>
+              ))}
+            </div>
+          ))}
         </div>
         </>
       )}
