@@ -2101,7 +2101,14 @@ function VencimientosChart({ filas }) {
   );
 }
 function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos }) {
-  const semanas = proximasSemanas(SEMANAS_VENCIMIENTOS);
+  // (2026-09-28, a pedido de Fredy) Botón "Ver todas las semanas" -- por
+  // defecto la ventana sigue siendo de 12 semanas (SEMANAS_VENCIMIENTOS);
+  // al activarlo se amplía a 104 (2 años) para que prácticamente toda la
+  // deuda con fecha quede visible en la tabla, en vez de escondida en el
+  // total de "más adelante".
+  const [verTodo, setVerTodo] = useState(false);
+  const numSemanas = verTodo ? 104 : SEMANAS_VENCIMIENTOS;
+  const semanas = proximasSemanas(numSemanas);
   const semanaSet = new Set(semanas);
   const inicioVentana = semanas[0];
   const finVentana = semanas[semanas.length - 1];
@@ -2167,8 +2174,14 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos 
   });
 
   const totalVenceVentana = filas.reduce((s, f) => s + f.vence, 0);
-  const saldoFinal = filas.length ? filas[filas.length - 1].saldoAcumulado : 0;
   const primerDeficit = filas.find((f) => f.saldoAcumulado < 0);
+  // (2026-09-28, a pedido de Fredy) Rediseño: en vez de 4 KPIs iguales más
+  // una gráfica, dos tarjetas grandes responden de un vistazo lo más
+  // urgente -- "Esta semana" (primera fila de filas[]) y cuándo empieza el
+  // déficit (si aplica). Se quita la gráfica a pedido de Fredy; el resto
+  // de los datos (vencido de antes, vence en la ventana, sin fecha exacta)
+  // bajan a chips más chicos.
+  const estaSemana = filas[0];
 
   return (
     <div>
@@ -2180,31 +2193,53 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos 
           repartido en partes iguales entre las semanas de cada mes.
         </p>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr", gap: 14, marginBottom: 20 }}>
+        <div style={{ borderRadius: 16, padding: "20px 22px", background: estaSemana.saldoAcumulado >= 0 ? C.greenBg : C.redBg, border: `1.5px solid ${estaSemana.saldoAcumulado >= 0 ? C.green : C.red}` }}>
+          <div style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.03em", color: C.slate, marginBottom: 6 }}>
+            ☀️ Esta semana · {fmtSemanaCorta(estaSemana.semana)}
+          </div>
+          <div style={{ fontSize: 30, fontWeight: 900, color: estaSemana.saldoAcumulado >= 0 ? C.green : C.red, marginBottom: 6 }}>
+            {fmtCOP(estaSemana.saldoAcumulado)}
+          </div>
+          <div style={{ fontSize: 12.5, color: C.ink }}>
+            {estaSemana.vence > 0 ? `Vencen ${fmtCOP(estaSemana.vence)} en Cuentas por Pagar esta semana. ` : "No vence nada esta semana en Cuentas por Pagar. "}
+            {estaSemana.saldoAcumulado >= 0 ? "Sin sobresaltos por ahora." : "Ya estarías en déficit esta misma semana."}
+          </div>
+        </div>
+        {primerDeficit ? (
+          <div style={{ borderRadius: 16, padding: "20px 22px", background: C.redBg, border: `1.5px solid ${C.red}` }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: C.red, marginBottom: 6 }}>
+              ⚠️ Ojo — el déficit empieza en {fmtSemanaCorta(primerDeficit.semana)}
+            </div>
+            <div style={{ fontSize: 24, fontWeight: 900, color: C.red, marginBottom: 6 }}>{fmtCOP(primerDeficit.saldoAcumulado)}</div>
+            <div style={{ fontSize: 12, color: C.ink }}>Desde esa semana, lo que vence supera lo que esperas tener disponible.</div>
+          </div>
+        ) : (
+          <div style={{ borderRadius: 16, padding: "20px 22px", background: C.greenBg, border: `1.5px solid ${C.green}` }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: C.green, marginBottom: 6 }}>✓ Sin déficit proyectado</div>
+            <div style={{ fontSize: 24, fontWeight: 900, color: C.green, marginBottom: 6 }}>{fmtCOP(filas.length ? filas[filas.length - 1].saldoAcumulado : 0)}</div>
+            <div style={{ fontSize: 12, color: C.ink }}>Saldo proyectado al final de la ventana mostrada.</div>
+          </div>
+        )}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14, marginBottom: 20 }}>
         <KPI icon="⚠️" label="Ya vencido" value={fmtCOP(vencidoYa)} color={C.red} bg={C.redBg} sub="Antes de esta semana" />
-        <KPI icon="📆" label={`Vence en ${SEMANAS_VENCIMIENTOS} semanas`} value={fmtCOP(totalVenceVentana)} color={C.amber} bg={C.amberBg} />
+        <KPI icon="📆" label={`Vence en ${verTodo ? "toda la ventana" : `${SEMANAS_VENCIMIENTOS} semanas`}`} value={fmtCOP(totalVenceVentana)} color={C.amber} bg={C.amberBg} />
         <KPI icon="📋" label="Sin fecha exacta" value={fmtCOP(sinFechaExacta)} color={C.slate} bg={C.canvas} sub="Proveedores manuales sin fecha" />
-        <KPI
-          icon={saldoFinal >= 0 ? "✓" : "⚠"}
-          label={`Saldo proyectado (semana ${SEMANAS_VENCIMIENTOS})`}
-          value={fmtCOP(saldoFinal)}
-          color={saldoFinal >= 0 ? C.green : C.red}
-          bg={saldoFinal >= 0 ? C.greenBg : C.redBg}
-          sub={primerDeficit ? `Déficit desde semana del ${fmtSemanaCorta(primerDeficit.semana).split(" - ")[0]}` : "Sin déficit proyectado"}
-        />
       </div>
       {vencidoYa > 0 && (
         <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 20 }}>
           ⚠ Ya tienes {fmtCOP(vencidoYa)} vencido de antes de esta semana.
         </div>
       )}
-      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20, marginBottom: 24 }}>
-        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 4 }}>Saldo proyectado semana a semana</div>
-        <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
-          Disponible proyectado de caja esa semana (ingresos y egresos mensuales repartidos entre las semanas del mes)
-          menos lo que vence esa semana en Cuentas por Pagar.
-        </div>
-        <VencimientosChart filas={filas} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>Detalle semana a semana</div>
+        <button
+          onClick={() => setVerTodo((v) => !v)}
+          style={{ padding: "7px 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+        >
+          {verTodo ? "Ver solo 12 semanas" : "Ver todas las semanas"}
+        </button>
       </div>
       <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -2219,8 +2254,8 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos 
           </thead>
           <tbody>
             {filas.map((f, i) => (
-              <tr key={f.semana} style={{ background: f.saldoAcumulado < 0 ? C.redBg : i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                <td style={{ padding: "8px 12px", fontWeight: 600, color: C.ink, whiteSpace: "nowrap" }}>{fmtSemanaCorta(f.semana)}</td>
+              <tr key={f.semana} style={{ background: i === 0 ? (f.saldoAcumulado < 0 ? C.redBg : C.greenBg) : f.saldoAcumulado < 0 ? C.redBg : i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                <td style={{ padding: "8px 12px", fontWeight: 600, color: C.ink, whiteSpace: "nowrap" }}>{i === 0 ? "☀️ Esta semana · " : ""}{fmtSemanaCorta(f.semana)}</td>
                 <td style={{ padding: "8px 12px", textAlign: "right", color: C.green }}>{fmtCOP(f.ingresosEsperados)}</td>
                 <td style={{ padding: "8px 12px", textAlign: "right", color: C.blue }}>{fmtCOP(f.egresosComprometidos)}</td>
                 <td style={{ padding: "8px 12px", textAlign: "right", color: f.vence > 0 ? C.amber : C.slate, fontWeight: f.vence > 0 ? 700 : 400 }}>{fmtCOP(f.vence)}</td>
@@ -2233,7 +2268,7 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos 
       </div>
       {masAdelante > 0 && (
         <div style={{ marginTop: 14, fontSize: 11.5, color: C.slate }}>
-          + {fmtCOP(masAdelante)} que vencen más adelante de las {SEMANAS_VENCIMIENTOS} semanas mostradas aquí.
+          + {fmtCOP(masAdelante)} que vencen más adelante de las {numSemanas} semanas mostradas aquí.
         </div>
       )}
     </div>
