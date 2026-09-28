@@ -4246,7 +4246,7 @@ function TabuladorAsistenciaView({ areasNomina, trabajadores, areaLider, turnos,
 
   const areaEfectiva = areaLider || areaSel;
   const trabajadoresMostrados = (areaEfectiva ? trabajadores.filter((t) => (t.area || "Sin asignar") === areaEfectiva) : [])
-    .filter((t) => t.estado === "Activo")
+    .filter((t) => t.activo !== false)
     .slice()
     .sort((a, b) => a.nombre.localeCompare(b.nombre));
 
