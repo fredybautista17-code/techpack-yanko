@@ -6715,7 +6715,7 @@ exports.enviarResumenDiarioNotificaciones = onSchedule(
 // despachos/auditoría/vencidos).
 exports.enviarAsistenciaDiaria = onSchedule(
   {
-    schedule: "every day 09:00",
+    schedule: "0 9 * * 1-6", // lunes a sábado (a pedido de Fredy, sin domingo)
     timeZone: "America/Bogota",
     secrets: [EMAIL_USER, EMAIL_APP_PASSWORD],
     timeoutSeconds: 300,
