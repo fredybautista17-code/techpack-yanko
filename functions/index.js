@@ -2481,15 +2481,16 @@ exports.getCuentasPorPagarBusintGen = onCall(
   },
   async (request) => {
     await verificarLlamadorEsAdmin(request);
-    let facturas, pagos, pagosOtros, proveedores, notasDescuento, devoluciones;
+    let facturas, pagos, pagosOtros, proveedores, notasDescuento, devoluciones, notasContables;
     try {
-      [facturas, pagos, pagosOtros, proveedores, notasDescuento, devoluciones] = await Promise.all([
+      [facturas, pagos, pagosOtros, proveedores, notasDescuento, devoluciones, notasContables] = await Promise.all([
         consultarTablaBusintBDCompleta("cartera cxp-fact"),
         consultarTablaBusintBDCompleta("cxp-pagos detalles"),
         consultarTablaBusintBDCompleta("cxp-pagosotros detalles"),
         consultarTablaBusintBDCompleta("maestro de proveedores"),
         consultarTablaBusintBDCompleta("notas detalles-d"),
         consultarTablaBusintBDCompleta("cartera cxp-dev"),
+        consultarTablaBusintBDCompleta("notascontable detalles"),
       ]);
     } catch (err) {
       logger.error("Error consultando Busint BD (getCuentasPorPagarBusintGen)", { error: String(err) });
@@ -2556,6 +2557,35 @@ exports.getCuentasPorPagarBusintGen = onCall(
       const valor = Number(d?.Devtotal) || 0;
       devolucionPorFactura.set(llave, (devolucionPorFactura.get(llave) || 0) + valor);
     });
+    // (2026-09-28) Cruces con anticipo (u otros ajustes contables directos a
+    // la cuenta de Proveedores Nacionales) -- confirmado con Fredy y el
+    // reporte oficial de Busint (proveedor 2094 "Jorge Alexander Mora
+    // Capacho", factura "FTT": $3.474.000 - $1.674.000 pagado - $1.800.000
+    // de aqui = $0 exacto, igual que "Por Pagar en esta Entrada" del reporte
+    // de Busint). Cuando se aplica un anticipo contra una factura, Busint no
+    // lo registra como un "pago" (tabla de arriba) sino como una nota
+    // contable de doble partida en "notascontable detalles": un Débito a la
+    // cuenta 22050101 (Proveedores Nacionales, el pasivo de Cuentas por
+    // Pagar) por el valor cruzado, con su Crédito contrapartida en otra
+    // cuenta (ej. 13300501, Anticipos a Proveedores). Se usa Nfactcxp (no
+    // Nfact, que en esta tabla es otro campo sin relación) para saber a cual
+    // factura de CxP se le aplicó -- se filtra por la cuenta 22050101
+    // especificamente porque esta MISMA tabla trae tambien notas de otras
+    // cuentas sin nada que ver con Cuentas por Pagar (ej. cartera de
+    // clientes, cuenta 130505, encontradas en la misma busqueda de valor).
+    // Un Débito reduce lo que se debe; un Crédito a esta cuenta lo
+    // aumentaria (ej. una reversion), por eso se netea Debito - Credito.
+    const PUC_PROVEEDORES_NACIONALES = "22050101";
+    const ajusteCxpPorFactura = new Map();
+    notasContables.forEach((n) => {
+      if (String(n?.Puc || "").trim() !== PUC_PROVEEDORES_NACIONALES) return;
+      const codigo = normalizarCodigoCxp(n?.Cod);
+      const nfact = normalizarCodigoCxp(n?.Nfactcxp);
+      if (!codigo || !nfact) return;
+      const llave = `${codigo}|${nfact}`;
+      const valor = (Number(n?.Debito) || 0) - (Number(n?.Credito) || 0);
+      ajusteCxpPorFactura.set(llave, (ajusteCxpPorFactura.get(llave) || 0) + valor);
+    });
     const nombrePorCodigo = new Map();
     proveedores.forEach((p) => {
       const codigo = normalizarCodigoCxp(p?.Codigo);
@@ -2613,8 +2643,9 @@ exports.getCuentasPorPagarBusintGen = onCall(
       const pagado = pagadoPorFactura.get(llave) || 0;
       const descuento = descuentoPorFactura.get(llave) || 0;
       const devolucion = devolucionPorFactura.get(llave) || 0;
-      const saldo = facTotal - pagado - descuento - devolucion;
-      if (saldo <= UMBRAL_SALDO_CXP) return; // ya pagada (o a favor, incluyendo descuento/devolución)
+      const ajusteCxp = ajusteCxpPorFactura.get(llave) || 0;
+      const saldo = facTotal - pagado - descuento - devolucion - ajusteCxp;
+      if (saldo <= UMBRAL_SALDO_CXP) return; // ya pagada (o a favor, incluyendo descuento/devolución/cruce con anticipo)
       const diasVencido = fechaVcto ? Math.round((hoy - fechaVcto) / (1000 * 60 * 60 * 24)) : 0;
       const bucket = calcularBucketAntiguedadCxp(diasVencido);
       const nombre = nombrePorCodigo.get(codigo) || `Proveedor ${codigo}`;
