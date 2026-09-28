@@ -3271,14 +3271,13 @@ function ProgramadorProcesosView({
     } },
     { key: "_accion", label: "", render: (f) => <Btn small onClick={() => abrirProgramar(f)}>📅 Programar</Btn> },
   ];
-  // (2026-09-28, a pedido de Fredy) "Lotes programados" ahora se ve en
-  // tarjetas por trabajador (ordenadas por hora de inicio) en vez de una
-  // tabla larga -- más visual, se ve de un vistazo el orden del día de
-  // cada quien. Agrupa lo que ya viene filtrado por pestaña
-  // (Programados/Vencidos/Históricos, ver filasLotesTab).
-  const gruposLotesPorTrabajador = useMemo(() => {
+  // (2026-09-28, a pedido de Fredy) Tarjetas por trabajador (ordenadas por
+  // hora de inicio) en vez de tabla larga -- se usa tanto en "Hoy" como en
+  // "Lotes programados" (ver renderTarjetasProgramacion más abajo), para
+  // que las dos secciones se vean exactamente igual.
+  function agruparPorTrabajador(lista) {
     const mapa = new Map();
-    filasLotesTab.forEach((p) => {
+    lista.forEach((p) => {
       const clave = p.trabajadorId || p.trabajadorNombre || "sin-asignar";
       if (!mapa.has(clave)) mapa.set(clave, { trabajadorNombre: p.trabajadorNombre || "Sin asignar", items: [] });
       mapa.get(clave).items.push(p);
@@ -3286,7 +3285,43 @@ function ProgramadorProcesosView({
     return Array.from(mapa.values())
       .map((g) => ({ ...g, items: g.items.slice().sort((a, b) => (a.horaInicio || "").localeCompare(b.horaInicio || "")) }))
       .sort((a, b) => a.trabajadorNombre.localeCompare(b.trabajadorNombre, "es"));
-  }, [filasLotesTab]);
+  }
+  const gruposLotesPorTrabajador = useMemo(() => agruparPorTrabajador(filasLotesTab), [filasLotesTab]);
+  // (2026-09-28, a pedido de Fredy) "Hoy" -- agenda del día, SOLO lo
+  // programado para la fecha de hoy (sin importar si ya venció una
+  // programación de otro día), para que "Mi Día" abra mostrando primero lo
+  // que toca hoy.
+  const misProgramacionesHoy = useMemo(() => misProgramaciones.filter((p) => p.fechaProgramada === today()), [misProgramaciones]);
+  const gruposHoyPorTrabajador = useMemo(() => agruparPorTrabajador(misProgramacionesHoy), [misProgramacionesHoy]);
+  function renderTarjetasProgramacion(grupos, textoVacio) {
+    if (!grupos.length) {
+      return <div style={{ padding: 20, textAlign: "center", color: C.slate, fontSize: 13, background: C.white, border: `1px solid ${C.border}`, borderRadius: 14 }}>{textoVacio}</div>;
+    }
+    return grupos.map((g) => (
+      <div key={g.trabajadorNombre} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, marginBottom: 14, overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", background: C.canvas, borderBottom: `1px solid ${C.border}` }}>
+          <AvatarIniciales nombre={g.trabajadorNombre} />
+          <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>{g.trabajadorNombre}</div>
+          <div style={{ fontSize: 11, color: C.slate, fontWeight: 700, background: C.white, border: `1px solid ${C.border}`, borderRadius: 20, padding: "3px 10px" }}>{g.items.length} {g.items.length === 1 ? "lote" : "lotes"}</div>
+        </div>
+        {g.items.map((f, i) => (
+          <div key={f.id} style={{ display: "grid", gridTemplateColumns: "64px 1fr auto auto", gap: 14, alignItems: "center", padding: "12px 16px", borderBottom: i === g.items.length - 1 ? "none" : `1px solid ${C.border}` }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, fontVariantNumeric: "tabular-nums" }}>{f.horaInicio || "—"}</div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>Lote {f.numLote} — Ref. {f.referencia}</div>
+              <div style={{ fontSize: 11.5, color: C.slate, marginTop: 2 }}>{f.proceso}{f.cantidad != null ? ` · ${fmtNum(f.cantidad)} und` : ""} · {fmtFechaISO(f.fechaProgramada)}</div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
+              <EstadoBadge estado={f.estado} />
+              {f.llegoVencido && <span style={{ fontSize: 10, fontWeight: 700, color: C.red }}>⚠️ Llegó vencido</span>}
+              {detalleCumplimiento(f) && <span style={{ fontSize: 10.5, color: C.green, fontWeight: 600, textAlign: "right" }}>{detalleCumplimiento(f)}</span>}
+            </div>
+            <span onClick={() => onCancelarProgramacion(f.id)} style={{ cursor: "pointer", color: C.red, fontSize: 16 }} title="Cancelar programación">✕</span>
+          </div>
+        ))}
+      </div>
+    ));
+  }
   return (
     <div>
       {modalProgramar && (
@@ -3381,6 +3416,10 @@ function ProgramadorProcesosView({
           <StatMini icon="⚠️" label="Vencidos" value={vencidos.length} color={C.red} bg={C.redBg} />
         </div>
         <div style={{ marginBottom: 28 }}>
+          <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 10 }}>☀️ Hoy — {fmtFechaISO(today())}</div>
+          {renderTarjetasProgramacion(gruposHoyPorTrabajador, "No tienes nada programado para hoy.")}
+        </div>
+        <div style={{ marginBottom: 28 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
             <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>Bodega de tu proceso — pendiente de programar</div>
             <select value={filtroProceso} onChange={(e) => setFiltroProceso(e.target.value)} style={{ padding: "5px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, fontFamily: "inherit" }}>
@@ -3396,33 +3435,7 @@ function ProgramadorProcesosView({
             {tabLotesBtn("vencidos", "Vencidos", vencidos.length)}
             {tabLotesBtn("historicos", "Históricos", cumplidos.length)}
           </div>
-          {!gruposLotesPorTrabajador.length && (
-            <div style={{ padding: 20, textAlign: "center", color: C.slate, fontSize: 13, background: C.white, border: `1px solid ${C.border}`, borderRadius: 14 }}>{vacioLotesTab}</div>
-          )}
-          {gruposLotesPorTrabajador.map((g) => (
-            <div key={g.trabajadorNombre} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, marginBottom: 14, overflow: "hidden" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", background: C.canvas, borderBottom: `1px solid ${C.border}` }}>
-                <AvatarIniciales nombre={g.trabajadorNombre} />
-                <div style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>{g.trabajadorNombre}</div>
-                <div style={{ fontSize: 11, color: C.slate, fontWeight: 700, background: C.white, border: `1px solid ${C.border}`, borderRadius: 20, padding: "3px 10px" }}>{g.items.length} {g.items.length === 1 ? "lote" : "lotes"}</div>
-              </div>
-              {g.items.map((f, i) => (
-                <div key={f.id} style={{ display: "grid", gridTemplateColumns: "64px 1fr auto auto", gap: 14, alignItems: "center", padding: "12px 16px", borderBottom: i === g.items.length - 1 ? "none" : `1px solid ${C.border}` }}>
-                  <div style={{ fontSize: 15, fontWeight: 800, color: C.ink, fontVariantNumeric: "tabular-nums" }}>{f.horaInicio || "—"}</div>
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: 13 }}>Lote {f.numLote} — Ref. {f.referencia}</div>
-                    <div style={{ fontSize: 11.5, color: C.slate, marginTop: 2 }}>{f.proceso}{f.cantidad != null ? ` · ${fmtNum(f.cantidad)} und` : ""} · {fmtFechaISO(f.fechaProgramada)}</div>
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
-                    <EstadoBadge estado={f.estado} />
-                    {f.llegoVencido && <span style={{ fontSize: 10, fontWeight: 700, color: C.red }}>⚠️ Llegó vencido</span>}
-                    {detalleCumplimiento(f) && <span style={{ fontSize: 10.5, color: C.green, fontWeight: 600, textAlign: "right" }}>{detalleCumplimiento(f)}</span>}
-                  </div>
-                  <span onClick={() => onCancelarProgramacion(f.id)} style={{ cursor: "pointer", color: C.red, fontSize: 16 }} title="Cancelar programación">✕</span>
-                </div>
-              ))}
-            </div>
-          ))}
+          {renderTarjetasProgramacion(gruposLotesPorTrabajador, vacioLotesTab)}
         </div>
         </>
       )}
