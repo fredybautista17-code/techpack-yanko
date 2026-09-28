@@ -1604,100 +1604,6 @@ function AgregarProveedorCXPModal({ onSave, onClose }) {
     </Modal>
   );
 }
-// El calendario reparte una deuda en montos por mes, hasta 24 meses adelante,
-// para poder negociar con el proveedor un plan de pago concreto.
-function ProgramarPagoModal({ proveedor, totalAdeudado, entradasExistentes, disponiblePorMes = {}, onGuardar, onClose }) {
-  const meses = proximosMeses(24);
-  const [montos, setMontos] = useState(() => {
-    const init = {};
-    meses.forEach((m) => {
-      init[m] = "";
-    });
-    (entradasExistentes || []).forEach((e) => {
-      if (init[e.mes] !== undefined) init[e.mes] = String(e.monto);
-    });
-    return init;
-  });
-  const programado = Object.values(montos).reduce((s, v) => s + (parseFloat(v) || 0), 0);
-  const sinProgramar = totalAdeudado - programado;
-  function guardar() {
-    const entradas = meses
-      .map((m) => ({ mes: m, monto: parseFloat(montos[m]) || 0 }))
-      .filter((e) => e.monto > 0);
-    onGuardar(proveedor, entradas);
-    onClose();
-  }
-  return (
-    <Modal title={`Programar pago — ${proveedor}`} onClose={onClose} width={560}>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(3,1fr)",
-          gap: 10,
-          padding: "12px 14px",
-          background: C.blueBg,
-          borderRadius: 8,
-          marginBottom: 18,
-          fontSize: 12,
-          color: C.blue,
-        }}
-      >
-        <div>
-          <div style={{ fontWeight: 700 }}>Total adeudado</div>
-          <div>{fmtCOP(totalAdeudado)}</div>
-        </div>
-        <div>
-          <div style={{ fontWeight: 700 }}>Programado</div>
-          <div>{fmtCOP(programado)}</div>
-        </div>
-        <div>
-          <div style={{ fontWeight: 700 }}>Sin programar</div>
-          <div style={{ color: sinProgramar < 0 ? C.red : C.blue }}>{fmtCOP(sinProgramar)}</div>
-        </div>
-      </div>
-      <div style={{ maxHeight: 360, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
-        {meses.map((m) => {
-          const disp = disponiblePorMes[m]?.saldoAcumulado ?? 0;
-          return (
-            <div key={m} style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, color: C.ink, textTransform: "capitalize" }}>{fmtMesLargo(m)}</div>
-                <div style={{ fontSize: 10, color: disp < 0 ? C.red : C.slate }}>
-                  Disponible proyectado: {fmtCOP(disp)}
-                </div>
-              </div>
-              <input
-                type="number"
-                value={montos[m]}
-                onChange={(e) => setMontos((mm) => ({ ...mm, [m]: e.target.value }))}
-                placeholder="$0"
-                style={{
-                  width: 160,
-                  padding: "6px 10px",
-                  border: `1.5px solid ${C.border}`,
-                  borderRadius: 8,
-                  fontSize: 13,
-                  color: C.ink,
-                  background: C.white,
-                  outline: "none",
-                  fontFamily: "inherit",
-                }}
-              />
-            </div>
-          );
-        })}
-      </div>
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-        <Btn variant="secondary" onClick={onClose}>
-          Cancelar
-        </Btn>
-        <Btn variant="danger" onClick={guardar}>
-          Guardar calendario
-        </Btn>
-      </div>
-    </Modal>
-  );
-}
 // ─── FLUJO DE CAJA VIEW ───────────────────────────────────────────────────────
 function FlujoCajaView({ movimientos, onAdd, onDelete, onDeleteFecha, isAdmin, clientesDiseno, rubros, onUpdateDistribucion }) {
   const [showModal, setShowModal] = useState(null); // "ingreso" | "egreso" | "importar"
@@ -4429,10 +4335,9 @@ function CategorizarProveedorCXPModal({ nombre, categoriaActual, categoriaAutoma
     </Modal>
   );
 }
-function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente, presupuestos, nombresConcepto, nombresProveedor, categoriasCxp, categoriasLista, categoriasPorConcepto, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarCalendario, onGuardarNombreConcepto, onGuardarNombreProveedor, onGuardarCategoria, isAdmin }) {
+function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, nombresProveedor, categoriasCxp, categoriasLista, categoriasPorConcepto, onImportarCorte, onDeleteCorte, onAddManual, onDeleteManual, onDeleteProveedorCorte, onGuardarNombreConcepto, onGuardarNombreProveedor, onGuardarCategoria, isAdmin }) {
   const [showImport, setShowImport] = useState(false);
   const [showManual, setShowManual] = useState(false);
-  const [programando, setProgramando] = useState(null);
   const [orden, setOrden] = useState("total");
   // (2026-09-26, a pedido de Fredy) Buscador por nombre de proveedor, para
   // encontrar mas rapido uno puntual (ej. Tintatex) en vez de tener que
@@ -4608,40 +4513,10 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
   function calendarioDe(nombre) {
     return calendario.filter((c) => c.proveedor === nombre);
   }
-  // Cruce mes a mes (Ingresos esperados de clientes − Egresos comprometidos
-  // de Proyección − Pagos a proveedores ya programados) usado como referencia
-  // dentro de "Programar pago", para que al asignar un monto a un proveedor
-  // se vea si ese mes realmente tiene holgura proyectada.
-  const mesesProgramacion = proximosMeses(24);
-  const disponiblePorMes = {};
-  let acumuladoProgramacion = 0;
-  mesesProgramacion.forEach((m) => {
-    const ingresosEsperados = (presupuestosCliente || []).filter((p) => p.mes === m).reduce((s, p) => s + (p.monto || 0), 0);
-    const egresosComprometidos = (presupuestos || []).filter((p) => p.mes === m).reduce((s, p) => s + (p.totalProyectado || 0), 0);
-    const pagosCxpMes = calendario.filter((c) => c.mes === m).reduce((s, c) => s + (c.monto || 0), 0);
-    const saldoNeto = ingresosEsperados - egresosComprometidos - pagosCxpMes;
-    acumuladoProgramacion += saldoNeto;
-    disponiblePorMes[m] = { saldoNeto, saldoAcumulado: acumuladoProgramacion };
-  });
   return (
     <div>
       {showImport && <ImportarCXPModal onConfirm={onImportarCorte} onClose={() => setShowImport(false)} />}
       {showManual && <AgregarProveedorCXPModal onSave={onAddManual} onClose={() => setShowManual(false)} />}
-      {programando &&
-        (() => {
-          const fila = filas.find((f) => f.nombre === programando);
-          if (!fila) return null;
-          return (
-            <ProgramarPagoModal
-              proveedor={programando}
-              totalAdeudado={fila.total}
-              entradasExistentes={calendarioDe(programando)}
-              disponiblePorMes={disponiblePorMes}
-              onGuardar={onGuardarCalendario}
-              onClose={() => setProgramando(null)}
-            />
-          );
-        })()}
       {renombrandoConcepto && (
         <RenombrarConceptoCXPModal
           codigo={renombrandoConcepto}
@@ -4895,22 +4770,6 @@ function CuentasPorPagarView({ cortes, manuales, calendario, presupuestosCliente
                                 {expandido ? "▲ Ocultar facturas" : "🔍 Ver facturas"}
                               </button>
                             )}
-                            <button
-                              onClick={() => setProgramando(f.nombre)}
-                              style={{
-                                background: C.blueBg,
-                                border: "none",
-                                borderRadius: 6,
-                                padding: "4px 8px",
-                                color: C.blue,
-                                fontWeight: 700,
-                                fontSize: 10,
-                                cursor: "pointer",
-                                marginRight: 6,
-                              }}
-                            >
-                              📅 Programar pago
-                            </button>
                             {isAdmin && (
                               <button
                                 onClick={() =>
@@ -5388,22 +5247,6 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
     setManualCxp((ms) => ms.filter((m) => m.id !== id));
     await fsDelete("contabilidad_cxp_manual", id);
   }
-  // Reemplaza el calendario completo de un proveedor: borra las entradas
-  // anteriores y guarda las nuevas, para que "Programar pago" siempre refleje
-  // exactamente lo que se dejó en el formulario.
-  async function guardarCalendarioProveedor(proveedor, entradas) {
-    const existentes = calendarioCxp.filter((c) => c.proveedor === proveedor);
-    const nuevos = entradas.map((e) => ({
-      id: uid(),
-      proveedor,
-      mes: e.mes,
-      monto: e.monto,
-      creadoEn: new Date().toISOString(),
-    }));
-    setCalendarioCxp((cs) => [...cs.filter((c) => c.proveedor !== proveedor), ...nuevos]);
-    await Promise.all(existentes.map((e) => fsDelete("contabilidad_cxp_calendario", e.id)));
-    await Promise.all(nuevos.map((n) => fsSave("contabilidad_cxp_calendario", n.id, n)));
-  }
   // Guarda/renombra el nombre legible de un codigo de concepto crudo de
   // Busint (ej. "SCONF" -> "SERVICIO DE CONFECCION"). El id del documento es
   // el codigo mismo, asi que volver a guardar el mismo codigo simplemente
@@ -5718,8 +5561,6 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
               cortes={cortesCxp}
               manuales={manualCxp}
               calendario={calendarioCxp}
-              presupuestosCliente={presupuestosCliente}
-              presupuestos={presupuestos}
               nombresConcepto={nombresConceptoCxp}
               nombresProveedor={nombresProveedorCxp}
               categoriasCxp={categoriasCxp}
@@ -5730,7 +5571,6 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
               onAddManual={addManualCxp}
               onDeleteManual={deleteManualCxp}
               onDeleteProveedorCorte={eliminarProveedorDeCorte}
-              onGuardarCalendario={guardarCalendarioProveedor}
               onGuardarNombreConcepto={guardarNombreConceptoCxp}
               onGuardarNombreProveedor={guardarNombreProveedorCxp}
               onGuardarCategoria={guardarCategoriaProveedorCxp}
