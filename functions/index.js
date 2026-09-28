@@ -2643,9 +2643,19 @@ exports.getCuentasPorPagarBusintGen = onCall(
       const pagado = pagadoPorFactura.get(llave) || 0;
       const descuento = descuentoPorFactura.get(llave) || 0;
       const devolucion = devolucionPorFactura.get(llave) || 0;
+      // (2026-09-28) REVERTIDO DE EMERGENCIA: restar ajusteCxpPorFactura aqui
+      // dejo el corte completo en CERO proveedores (en vez de solo corregir
+      // el caso de Jorge Alexander Mora Capacho) -- el filtro por
+      // Puc==="22050101" no alcanza a distinguir un cruce real de anticipo
+      // de otros movimientos rutinarios contra esa misma cuenta que
+      // aparentemente existen para MUCHAS facturas. Se deja de aplicar
+      // hasta investigar mejor el patron de esta tabla; el mapa
+      // ajusteCxpPorFactura se sigue calculando (variable sin usar, no hace
+      // daño) para no tener que rehacer esa parte cuando se retome.
       const ajusteCxp = ajusteCxpPorFactura.get(llave) || 0;
-      const saldo = facTotal - pagado - descuento - devolucion - ajusteCxp;
-      if (saldo <= UMBRAL_SALDO_CXP) return; // ya pagada (o a favor, incluyendo descuento/devolución/cruce con anticipo)
+      void ajusteCxp;
+      const saldo = facTotal - pagado - descuento - devolucion;
+      if (saldo <= UMBRAL_SALDO_CXP) return; // ya pagada (o a favor, incluyendo descuento/devolución)
       const diasVencido = fechaVcto ? Math.round((hoy - fechaVcto) / (1000 * 60 * 60 * 24)) : 0;
       const bucket = calcularBucketAntiguedadCxp(diasVencido);
       const nombre = nombrePorCodigo.get(codigo) || `Proveedor ${codigo}`;
