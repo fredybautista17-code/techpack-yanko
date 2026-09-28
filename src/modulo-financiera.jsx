@@ -1,6 +1,7 @@
 import { useState, useEffect, Fragment } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -12,6 +13,7 @@ const firebaseConfig = {
 };
 const fbApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
+const functionsClient = getFunctions(fbApp);
 async function fsSave(col, id, data) {
   await setDoc(doc(db, col, id), data, { merge: true });
 }
@@ -2100,7 +2102,69 @@ function VencimientosChart({ filas }) {
     </svg>
   );
 }
-function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos }) {
+function ColumnaSemana({ titulo, total, tono, tarjetas, detalleFacturasPorProveedor, tarjetaAbierta, onToggle, claveSemana }) {
+  const fondos = {
+    vencido: { bg: C.redBg, border: C.red },
+    "esta-semana": { bg: C.greenBg, border: C.green },
+    normal: { bg: C.white, border: C.border },
+  };
+  const estilo = fondos[tono] || fondos.normal;
+  return (
+    <div style={{ flex: "0 0 230px", background: estilo.bg, border: `1px solid ${estilo.border}`, borderRadius: 14, padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, paddingBottom: 8, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+        <span style={{ fontSize: 12, fontWeight: 800, color: C.ink }}>{titulo}</span>
+        <span style={{ fontSize: 12, fontWeight: 800, color: tono === "vencido" && total > 0 ? C.red : C.ink }}>{fmtCOP(total)}</span>
+      </div>
+      {tarjetas.length === 0 ? (
+        <div style={{ fontSize: 11, color: C.slate, textAlign: "center", padding: "14px 0" }}>
+          {tono === "vencido" ? "Nada vencido." : "Nada vence esta semana."}
+        </div>
+      ) : (
+        tarjetas.map((t) => {
+          const key = `${claveSemana}::${t.nombre}`;
+          const abierta = tarjetaAbierta === key;
+          const todas = detalleFacturasPorProveedor[t.nombre] || null;
+          const facturas = todas
+            ? todas.filter((f) =>
+                claveSemana === "vencido"
+                  ? (f.diasVencido || 0) > 0
+                  : f.fechaVctoISO && lunesDeSemanaISO(f.fechaVctoISO) === claveSemana
+              )
+            : null;
+          return (
+            <div key={t.nombre} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: "10px 11px", display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, lineHeight: 1.25 }}>{t.nombre}</div>
+              <div style={{ fontSize: 14, fontWeight: 800, color: tono === "vencido" ? C.red : C.amber }}>{fmtCOP(t.monto)}</div>
+              <button
+                onClick={() => onToggle(abierta ? null : key)}
+                style={{ alignSelf: "flex-start", fontSize: 11, fontWeight: 700, color: C.blue, background: "none", border: "none", padding: 0, cursor: "pointer", textDecoration: "underline" }}
+              >
+                {abierta ? "▲ Ocultar facturas" : todas ? `🔍 Ver facturas (${facturas.length})` : "🔍 Ver facturas"}
+              </button>
+              {abierta && (
+                <div style={{ marginTop: 2, paddingTop: 6, borderTop: `1px dashed ${C.border}`, display: "flex", flexDirection: "column", gap: 4 }}>
+                  {!todas ? (
+                    <div style={{ fontSize: 10.5, color: C.slate }}>Dale clic a "🔄 Actualizar facturas en vivo" arriba para traer el detalle.</div>
+                  ) : facturas.length === 0 ? (
+                    <div style={{ fontSize: 10.5, color: C.slate }}>No se encontró el detalle exacto (puede que el corte esté desactualizado).</div>
+                  ) : (
+                    facturas.map((f, i) => (
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: C.slate }}>
+                        <span>Fact. {f.nfact || "—"}</span>
+                        <b style={{ color: C.ink, fontWeight: 700 }}>{fmtCOP(f.saldo)}</b>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos, nombresProveedor }) {
   // (2026-09-28, a pedido de Fredy) Botón "Ver todas las semanas" -- por
   // defecto la ventana sigue siendo de 12 semanas (SEMANAS_VENCIMIENTOS);
   // al activarlo se amplía a 104 (2 años) para que prácticamente toda la
@@ -2112,6 +2176,39 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos 
   const semanaSet = new Set(semanas);
   const inicioVentana = semanas[0];
   const finVentana = semanas[semanas.length - 1];
+  // (2026-09-28, a pedido de Fredy) Tablero por semana (tipo Trello, una
+  // tarjeta por proveedor) además de la tabla de siempre -- se alterna con
+  // el botón de arriba, sin perder ninguna de las dos vistas.
+  const [vistaDetalle, setVistaDetalle] = useState("tablero");
+  // (2026-09-28, a pedido de Fredy) El detalle de facturas (número, fecha,
+  // valor) nunca se guarda en Firestore -- solo el total por proveedor por
+  // semana (ver vencimientosPorSemana en getCuentasPorPagarBusintGen), para
+  // no volver a pegar contra el límite de 1MB por documento que ya rompió
+  // el corte de Cheviotto una vez. Este botón trae el detalle EN VIVO desde
+  // Busint -- igual que "Ver facturas" en Cuentas por Pagar -- solo para
+  // verlo en esta sesión; no crea un corte nuevo ni guarda nada.
+  const [detalleFacturasPorProveedor, setDetalleFacturasPorProveedor] = useState({});
+  const [cargandoFacturas, setCargandoFacturas] = useState(false);
+  const [errorFacturas, setErrorFacturas] = useState("");
+  const [tarjetaAbierta, setTarjetaAbierta] = useState(null); // `${semana}::${nombre}`
+
+  async function actualizarFacturasEnVivo() {
+    setCargandoFacturas(true);
+    setErrorFacturas("");
+    try {
+      const llamar = httpsCallable(functionsClient, "getCuentasPorPagarBusintGen");
+      const resp = await llamar();
+      const detalle = {};
+      (resp.data.proveedores || []).forEach((p) => {
+        detalle[p.nombre] = p.facturas || [];
+      });
+      setDetalleFacturasPorProveedor(detalle);
+    } catch (err) {
+      setErrorFacturas(err?.message || "No se pudo traer las facturas desde Busint.");
+    } finally {
+      setCargandoFacturas(false);
+    }
+  }
 
   let vencidoYa = 0;
   let sinFechaExacta = 0;
@@ -2120,12 +2217,37 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos 
   semanas.forEach((s) => {
     porSemana[s] = 0;
   });
+  // (2026-09-28, a pedido de Fredy) Además del total por semana de arriba,
+  // se guarda quién lo compone -- una entrada por proveedor en "vencido" y
+  // en cada semana, para el tablero.
+  const provVencido = {};
+  const provPorSemana = {};
+  semanas.forEach((s) => {
+    provPorSemana[s] = {};
+  });
+  function sumarProveedor(mapa, nombre, monto) {
+    mapa[nombre] = (mapa[nombre] || 0) + monto;
+  }
 
-  (cortes || []).forEach((p) => {
+  // (2026-09-28) Corrección: esta vista sumaba `p.vencimientosPorSemana` de
+  // cada elemento de `cortes` directamente, pero un corte es
+  // `{ id, fechaCorte, proveedores: [...] }` -- `vencimientosPorSemana` vive
+  // dentro de cada proveedor, no en el corte. Esa suma siempre daba
+  // undefined (0), así que "Vence en CxP" y el déficit nunca reflejaban las
+  // facturas reales, solo Presupuesto/Proyección. Se corrige leyendo
+  // `corteActivo.proveedores` -- el corte más reciente, el mismo criterio
+  // que ya usan Cuentas por Pagar y Estrategia de Pago -- los cortes
+  // anteriores son historial y no se vuelven a sumar (si se sumaran todos,
+  // cada importación vieja se contaría de nuevo).
+  const corteActivo = [...(cortes || [])].sort((a, b) => b.fechaCorte.localeCompare(a.fechaCorte))[0];
+  (corteActivo?.proveedores || []).forEach((p) => {
     const vps = p.vencimientosPorSemana || {};
+    const codigoSinNombre = /^Proveedor (\d+)$/.exec(p.nombre || "")?.[1];
+    const nombre = (codigoSinNombre && nombresProveedor?.[codigoSinNombre]) || p.nombre;
     Object.entries(vps).forEach(([clave, monto]) => {
       if (clave === "vencido") {
         vencidoYa += monto;
+        sumarProveedor(provVencido, nombre, monto);
       } else if (clave === "sinFecha") {
         sinFechaExacta += monto;
       } else if (clave < inicioVentana) {
@@ -2133,8 +2255,10 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos 
         // momento todavía no había llegado, para hoy ya pasó -- cuenta como
         // vencida en vez de perderse.
         vencidoYa += monto;
+        sumarProveedor(provVencido, nombre, monto);
       } else if (semanaSet.has(clave)) {
         porSemana[clave] += monto;
+        sumarProveedor(provPorSemana[clave], nombre, monto);
       } else if (clave > finVentana) {
         masAdelante += monto;
       }
@@ -2143,15 +2267,29 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos 
 
   (manuales || []).forEach((m) => {
     const total = m.total || 0;
+    const nombre = m.proveedor || "Proveedor manual";
     if (!m.fechaVencimiento) {
       sinFechaExacta += total;
       return;
     }
     const semana = lunesDeSemanaISO(m.fechaVencimiento);
-    if (semana < inicioVentana) vencidoYa += total;
-    else if (semanaSet.has(semana)) porSemana[semana] += total;
-    else masAdelante += total;
+    if (semana < inicioVentana) {
+      vencidoYa += total;
+      sumarProveedor(provVencido, nombre, total);
+    } else if (semanaSet.has(semana)) {
+      porSemana[semana] += total;
+      sumarProveedor(provPorSemana[semana], nombre, total);
+    } else {
+      masAdelante += total;
+    }
   });
+
+  function aTarjetas(mapa) {
+    return Object.entries(mapa)
+      .map(([nombre, monto]) => ({ nombre, monto }))
+      .sort((a, b) => b.monto - a.monto);
+  }
+  const tarjetasVencido = aTarjetas(provVencido);
 
   const semanasPorMes = {};
   semanas.forEach((s) => {
@@ -2234,38 +2372,96 @@ function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos 
       )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 10 }}>
         <div style={{ fontWeight: 800, fontSize: 14, color: C.ink }}>Detalle semana a semana</div>
-        <button
-          onClick={() => setVerTodo((v) => !v)}
-          style={{ padding: "7px 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}
-        >
-          {verTodo ? "Ver solo 12 semanas" : "Ver todas las semanas"}
-        </button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ display: "inline-flex", background: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: 3 }}>
+            <button
+              onClick={() => setVistaDetalle("tablero")}
+              style={{ border: "none", background: vistaDetalle === "tablero" ? C.ink : "transparent", color: vistaDetalle === "tablero" ? "#fff" : C.slate, padding: "7px 14px", fontSize: 12, fontWeight: 700, borderRadius: 7, cursor: "pointer" }}
+            >
+              🗂️ Tablero
+            </button>
+            <button
+              onClick={() => setVistaDetalle("tabla")}
+              style={{ border: "none", background: vistaDetalle === "tabla" ? C.ink : "transparent", color: vistaDetalle === "tabla" ? "#fff" : C.slate, padding: "7px 14px", fontSize: 12, fontWeight: 700, borderRadius: 7, cursor: "pointer" }}
+            >
+              📋 Tabla
+            </button>
+          </div>
+          {vistaDetalle === "tablero" && (
+            <button
+              onClick={actualizarFacturasEnVivo}
+              disabled={cargandoFacturas}
+              style={{ padding: "7px 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontWeight: 700, fontSize: 12, cursor: cargandoFacturas ? "default" : "pointer" }}
+            >
+              {cargandoFacturas ? "Consultando Busint…" : "🔄 Actualizar facturas en vivo"}
+            </button>
+          )}
+          <button
+            onClick={() => setVerTodo((v) => !v)}
+            style={{ padding: "7px 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+          >
+            {verTodo ? "Ver solo 12 semanas" : "Ver todas las semanas"}
+          </button>
+        </div>
       </div>
-      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-          <thead>
-            <tr style={{ background: C.ink }}>
-              {["Semana", "Ingresos esperados", "Egresos comprometidos", "Vence en CxP", "Saldo neto semana", "Saldo acumulado"].map((h) => (
-                <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: h === "Semana" ? "left" : "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {filas.map((f, i) => (
-              <tr key={f.semana} style={{ background: i === 0 ? (f.saldoAcumulado < 0 ? C.redBg : C.greenBg) : f.saldoAcumulado < 0 ? C.redBg : i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
-                <td style={{ padding: "8px 12px", fontWeight: 600, color: C.ink, whiteSpace: "nowrap" }}>{i === 0 ? "☀️ Esta semana · " : ""}{fmtSemanaCorta(f.semana)}</td>
-                <td style={{ padding: "8px 12px", textAlign: "right", color: C.green }}>{fmtCOP(f.ingresosEsperados)}</td>
-                <td style={{ padding: "8px 12px", textAlign: "right", color: C.blue }}>{fmtCOP(f.egresosComprometidos)}</td>
-                <td style={{ padding: "8px 12px", textAlign: "right", color: f.vence > 0 ? C.amber : C.slate, fontWeight: f.vence > 0 ? 700 : 400 }}>{fmtCOP(f.vence)}</td>
-                <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700, color: f.saldoNeto < 0 ? C.red : C.ink }}>{fmtCOP(f.saldoNeto)}</td>
-                <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800, color: f.saldoAcumulado < 0 ? C.red : C.green }}>{fmtCOP(f.saldoAcumulado)}</td>
+      {errorFacturas && (
+        <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 14 }}>
+          ⚠ {errorFacturas}
+        </div>
+      )}
+      {vistaDetalle === "tablero" ? (
+        <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 10 }}>
+          <ColumnaSemana
+            titulo="⚠️ Vencido"
+            total={vencidoYa}
+            tono="vencido"
+            tarjetas={tarjetasVencido}
+            detalleFacturasPorProveedor={detalleFacturasPorProveedor}
+            tarjetaAbierta={tarjetaAbierta}
+            onToggle={setTarjetaAbierta}
+            claveSemana="vencido"
+          />
+          {filas.map((f, i) => (
+            <ColumnaSemana
+              key={f.semana}
+              titulo={(i === 0 ? "☀️ Esta semana · " : "") + fmtSemanaCorta(f.semana)}
+              total={f.vence}
+              tono={i === 0 ? "esta-semana" : "normal"}
+              tarjetas={aTarjetas(provPorSemana[f.semana])}
+              detalleFacturasPorProveedor={detalleFacturasPorProveedor}
+              tarjetaAbierta={tarjetaAbierta}
+              onToggle={setTarjetaAbierta}
+              claveSemana={f.semana}
+            />
+          ))}
+        </div>
+      ) : (
+        <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: C.ink }}>
+                {["Semana", "Ingresos esperados", "Egresos comprometidos", "Vence en CxP", "Saldo neto semana", "Saldo acumulado"].map((h) => (
+                  <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: h === "Semana" ? "left" : "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
+                    {h}
+                  </th>
+                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {filas.map((f, i) => (
+                <tr key={f.semana} style={{ background: i === 0 ? (f.saldoAcumulado < 0 ? C.redBg : C.greenBg) : f.saldoAcumulado < 0 ? C.redBg : i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                  <td style={{ padding: "8px 12px", fontWeight: 600, color: C.ink, whiteSpace: "nowrap" }}>{i === 0 ? "☀️ Esta semana · " : ""}{fmtSemanaCorta(f.semana)}</td>
+                  <td style={{ padding: "8px 12px", textAlign: "right", color: C.green }}>{fmtCOP(f.ingresosEsperados)}</td>
+                  <td style={{ padding: "8px 12px", textAlign: "right", color: C.blue }}>{fmtCOP(f.egresosComprometidos)}</td>
+                  <td style={{ padding: "8px 12px", textAlign: "right", color: f.vence > 0 ? C.amber : C.slate, fontWeight: f.vence > 0 ? 700 : 400 }}>{fmtCOP(f.vence)}</td>
+                  <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700, color: f.saldoNeto < 0 ? C.red : C.ink }}>{fmtCOP(f.saldoNeto)}</td>
+                  <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800, color: f.saldoAcumulado < 0 ? C.red : C.green }}>{fmtCOP(f.saldoAcumulado)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       {masAdelante > 0 && (
         <div style={{ marginTop: 14, fontSize: 11.5, color: C.slate }}>
           + {fmtCOP(masAdelante)} que vencen más adelante de las {numSemanas} semanas mostradas aquí.
@@ -2635,6 +2831,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
               manuales={manualCxp}
               presupuestosCliente={presupuestosCliente}
               presupuestos={presupuestos}
+              nombresProveedor={nombresProveedorCxp}
             />
           )}
           {subView === "estrategia_pago" && (
