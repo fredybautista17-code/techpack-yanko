@@ -10802,6 +10802,10 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
     ? {
         produccion: prodQuincena.filter((p) => p.trabajadorId === trabajadorAbierto.trabajadorId),
         horas: horasQuincena.filter((h) => h.trabajadorId === trabajadorAbierto.trabajadorId),
+        // (2026-09-28, a pedido de Fredy) Detalle de Horas Extra -- para
+        // que al hacer clic en un trabajador se vea de dónde sale el
+        // total que ahora aparece en la columna "Horas Extra".
+        horasExtra: (horasExtras || []).filter((h) => h.trabajadorId === trabajadorAbierto.trabajadorId && h.fecha >= desde && h.fecha <= hasta),
       }
     : null;
   async function exportarExcel() {
@@ -10877,6 +10881,17 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
               { key: "total", label: "Total", align: "right", render: (f) => fmtMoney(f.total) },
             ]}
             filas={detalleAbierto.horas}
+          />
+          <div style={{ fontWeight: 800, fontSize: 12, color: C.ink, margin: "18px 0 8px" }}>HORAS EXTRA</div>
+          <Tabla
+            vacio="Sin horas extra esta quincena."
+            columnas={[
+              { key: "fecha", label: "Fecha", render: (f) => fmtFechaISO(f.fecha) },
+              { key: "tipo", label: "Tipo", render: (f) => f.tipo || "—" },
+              { key: "horas", label: "Horas", align: "right", render: (f) => fmtNum(f.horas) },
+              { key: "total", label: "Total", align: "right", render: (f) => <span style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(f.total)}</span> },
+            ]}
+            filas={detalleAbierto.horasExtra}
           />
         </Modal>
       )}
@@ -11002,6 +11017,8 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
               ) : <span style={{ color: C.slate }}>—</span>;
             } },
           ]),
+          { key: "totalHorasExtra", label: "Horas Extra", align: "right", render: (f) => (f.totalHorasExtra || 0) > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(f.totalHorasExtra)}</span> : <span style={{ color: C.slate }}>—</span> },
+          { key: "bonificacionPuntual", label: "Bonificación", align: "right", render: (f) => (f.bonificacionPuntual || 0) > 0 ? <span style={{ color: C.green, fontWeight: 700 }}>{fmtMoney(f.bonificacionPuntual)}</span> : <span style={{ color: C.slate }}>—</span> },
           { key: "totalGeneral", label: "Total a Pagar", align: "right", render: (f) => <strong>{fmtMoney(f.totalGeneral)}</strong> },
           {
             key: "acciones", label: "", align: "right",
