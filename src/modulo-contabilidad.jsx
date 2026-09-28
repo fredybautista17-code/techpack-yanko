@@ -4478,6 +4478,16 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
   }
   const filasCorte = (corteActivo?.proveedores || []).map((p) => conNombreMostrado({ ...p, origen: "corte" }));
   const filasManual = manuales.map((p) => conNombreMostrado({ ...p, origen: "manual" }));
+  // (2026-09-28, a pedido de Fredy) Antes se usaba `!filas.length` para decidir
+  // si mostrar el mensaje de "no has importado ningun corte" -- pero `filas`
+  // ya viene filtrada por busqueda/origen, asi que en cuanto el texto buscado
+  // no coincidia con nada (o el filtro Busint/Manual dejaba todo afuera),
+  // desaparecia TODA la pantalla -- incluido el cuadro de busqueda donde el
+  // usuario seguia escribiendo -- y se mostraba ese mensaje aunque si hubiera
+  // datos importados ("me saca" reportado por Fredy). `hayProveedores` mira
+  // los datos SIN filtrar para separar "no hay nada importado" de "el filtro
+  // no encontro nada".
+  const hayProveedores = filasCorte.length + filasManual.length > 0;
   let filas = [...filasCorte, ...filasManual];
   if (busquedaProveedor.trim()) {
     const q = normalizarTexto(busquedaProveedor);
@@ -4620,7 +4630,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
       )}
       {vista === "estadistica" ? (
         <EstadisticaCxpView totalAdeudado={totalAdeudado} calendario={calendario} />
-      ) : !filas.length ? (
+      ) : !hayProveedores ? (
         <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
           Aún no has importado ningún corte de Cuentas por Pagar. Usa "Importar TNS" para subir el primero.
         </div>
@@ -4676,6 +4686,13 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
               {ORDEN_INFO[orden]?.label}
             </span>
           </div>
+          {filas.length === 0 ? (
+            <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
+              {busquedaProveedor.trim()
+                ? `No se encontraron proveedores que coincidan con "${busquedaProveedor.trim()}".`
+                : "No hay proveedores para el filtro seleccionado."}
+            </div>
+          ) : (
           <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
@@ -4864,6 +4881,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
               </tbody>
             </table>
           </div>
+          )}
           {isAdmin && corteActivo && (
             <div style={{ marginTop: 14, textAlign: "right" }}>
               <button
