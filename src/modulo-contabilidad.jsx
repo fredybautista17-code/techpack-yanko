@@ -4680,7 +4680,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
               <thead>
                 <tr style={{ background: C.ink }}>
-                  {["Proveedor", "Por vencer", "0-30", "31-60", "61-90", "91+", "Total", "Programado", ""].map((h) => (
+                  {["Proveedor", "Por vencer", "0-30", "31-60", "61-90", "91+", "Total", ""].map((h) => (
                     <th
                       key={h}
                       style={{
@@ -4706,7 +4706,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
                       onClick={() => toggleCategoriaAbierta(g.id)}
                       style={{ background: C.canvas, cursor: "pointer" }}
                     >
-                      <td colSpan={9} style={{ padding: "8px 12px", borderTop: `2px solid ${C.border}`, borderBottom: `1px solid ${C.border}` }}>
+                      <td colSpan={8} style={{ padding: "8px 12px", borderTop: `2px solid ${C.border}`, borderBottom: `1px solid ${C.border}` }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                           <span style={{ fontWeight: 800, fontSize: 11, color: C.slate, textTransform: "uppercase", letterSpacing: "0.03em", display: "inline-flex", alignItems: "center", gap: 6 }}>
                             <span style={{ display: "inline-block", transition: "transform 0.15s", transform: abierta ? "rotate(90deg)" : "none", fontSize: 10 }}>
@@ -4719,7 +4719,6 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
                       </td>
                     </tr>
                     {abierta && g.filas.map((f, i) => {
-                      const progTotal = calendarioDe(f.nombre).reduce((s, c) => s + c.monto, 0);
                       const facturasDetalle = detalleFacturasPorProveedor[f.nombre];
                       const expandido = verFacturasDe === f.nombre;
                       const categoriaManual = categoriaManualDeProveedor(f.nombre);
@@ -4762,9 +4761,6 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
                             {fmtCOP(f.dias91mas)}
                           </td>
                           <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800, color: C.ink }}>{fmtCOP(f.total)}</td>
-                          <td style={{ padding: "8px 12px", textAlign: "right", color: progTotal > 0 ? C.green : C.slate, fontWeight: progTotal > 0 ? 700 : 400 }}>
-                            {progTotal > 0 ? fmtCOP(progTotal) : "—"}
-                          </td>
                           <td style={{ padding: "8px 8px", textAlign: "center", whiteSpace: "nowrap" }}>
                             {facturasDetalle && (
                               <button
@@ -4811,7 +4807,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
                         </tr>
                         {expandido && facturasDetalle && (
                           <tr>
-                            <td colSpan={9} style={{ padding: "0 12px 14px", background: i % 2 === 0 ? C.canvas : C.white }}>
+                            <td colSpan={8} style={{ padding: "0 12px 14px", background: i % 2 === 0 ? C.canvas : C.white }}>
                               <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
                                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
                                   <thead>
