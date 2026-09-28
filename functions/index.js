@@ -2417,19 +2417,24 @@ exports.getResumenFacturacionPorPedidoBusintBD = onCall(
 // dias0a30, dias31a60, dias61a90, dias91mas, total}]}) es la MISMA que ya
 // espera `addCorteCxp`/`CuentasPorPagarView` -- así que el frontend solo
 // necesita llamar esto y pasar el resultado directo a `onImportarCorte`,
-// sin tocar el resto de la pantalla (ordenar, programar pagos, proyección
+// sin tocar el resto de la pantalla (ordenar, calendario de pagos, proyección
 // siguen funcionando igual). Cada proveedor también trae `facturas` (una
 // por factura abierta, con su saldo y fecha exacta de vencimiento) -- no lo
-// usa la pantalla actual, pero deja lista la data para la vista semanal de
-// "próximos vencimientos" que Fredy pidió como siguiente paso.
+// usa la pantalla actual (se descarta antes de guardar en Firestore, ver
+// `traerCorteDesdeBusint`), pero de ahí SÍ se derivan dos resúmenes chicos
+// que sí se persisten:
 //
-// (2026-09-27) Cada proveedor también trae `conceptoPrincipal` (el Concepto
-// de Obligación -- FCBI de Busint -- con más saldo acumulado para ese
-// proveedor). A diferencia de `facturas`, este campo SÍ lo guarda el
-// frontend en Firestore (es un solo string, no rompe el límite de 1MB que
-// obligó a descartar `facturas` -- ver `traerCorteDesdeBusint`), y es lo que
-// permite categorizar Cuentas por Pagar por concepto una sola vez y que
-// aplique automático a todo proveedor (nuevo o viejo) que use ese concepto.
+// (2026-09-27) `conceptoPrincipal` (el Concepto de Obligación -- FCBI de
+// Busint -- con más saldo acumulado para ese proveedor), que permite
+// categorizar Cuentas por Pagar por concepto una sola vez y que aplique
+// automático a todo proveedor (nuevo o viejo) que use ese concepto.
+//
+// (2026-09-28, a pedido de Fredy) `vencimientosPorSemana` ({lunes de la
+// semana en formato YYYY-MM-DD -> saldo que vence esa semana}, más las
+// llaves especiales "vencido" para todo lo que ya venció antes de esta
+// semana y "sinFecha" si Busint no trae fecha de vencimiento), que alimenta
+// la vista semanal de "Vencimientos" en Financiera sin necesitar el detalle
+// factura por factura.
 function calcularBucketAntiguedadCxp(diasVencido) {
   // diasVencido > 0 = ya venció hace esos días; <= 0 = todavía no vence.
   if (diasVencido <= 0) return "porVencer";
@@ -2437,6 +2442,18 @@ function calcularBucketAntiguedadCxp(diasVencido) {
   if (diasVencido <= 60) return "dias31a60";
   if (diasVencido <= 90) return "dias61a90";
   return "dias91mas";
+}
+// (2026-09-28, a pedido de Fredy) Convierte cualquier fecha al lunes de esa
+// semana (YYYY-MM-DD), para agrupar `vencimientosPorSemana` por semana en
+// vez de por mes o por rango de antigüedad -- alimenta la vista semanal de
+// "Vencimientos" en Financiera.
+function lunesDeSemanaISO(fecha) {
+  const d = new Date(fecha);
+  d.setHours(0, 0, 0, 0);
+  const dia = d.getDay(); // 0 = domingo, 1 = lunes, ...
+  const diff = dia === 0 ? -6 : 1 - dia;
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().slice(0, 10);
 }
 function fechaBusintBDaDateSoloDia(campo) {
   // Los campos de fecha de la API "BD" de Busint vienen como objeto
@@ -2590,6 +2607,7 @@ exports.getCuentasPorPagarBusintGen = onCall(
       if (!grupo.nfactOriginal && nfactOriginal) grupo.nfactOriginal = nfactOriginal;
     });
 
+    const inicioSemanaActualISO = lunesDeSemanaISO(hoy);
     const porProveedor = new Map();
     facturasPorLlave.forEach(({ llave, codigo, nfactOriginal, facTotal, fechaVcto, concepto }) => {
       const pagado = pagadoPorFactura.get(llave) || 0;
@@ -2611,6 +2629,7 @@ exports.getCuentasPorPagarBusintGen = onCall(
           total: 0,
           facturas: [],
           porConcepto: {},
+          vencimientosPorSemana: {},
         });
       }
       const prov = porProveedor.get(nombre);
@@ -2621,6 +2640,18 @@ exports.getCuentasPorPagarBusintGen = onCall(
       // categoriasPorConcepto en el frontend) sin depender de `facturas`,
       // que se descarta antes de guardar en Firestore.
       if (concepto) prov.porConcepto[concepto] = (prov.porConcepto[concepto] || 0) + saldo;
+      // (2026-09-28, a pedido de Fredy) Acumula saldo por semana real de
+      // vencimiento (lunes de la semana en que vence cada factura), para la
+      // vista semanal de "Vencimientos" en Financiera. "vencido" agrupa todo
+      // lo que ya venció antes de esta semana (el detalle más fino ya se ve
+      // en los totales de antigüedad de arriba); "sinFecha" es el respaldo
+      // si Busint no trae fecha de vencimiento para esa factura.
+      const claveSemana = !fechaVcto
+        ? "sinFecha"
+        : lunesDeSemanaISO(fechaVcto) < inicioSemanaActualISO
+        ? "vencido"
+        : lunesDeSemanaISO(fechaVcto);
+      prov.vencimientosPorSemana[claveSemana] = (prov.vencimientosPorSemana[claveSemana] || 0) + saldo;
       prov.facturas.push({
         nfact: nfactOriginal,
         facTotal,

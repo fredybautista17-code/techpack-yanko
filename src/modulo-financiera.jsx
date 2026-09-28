@@ -1836,7 +1836,7 @@ function ProgramacionPagosView({ presupuestosCliente, presupuestos, calendarioCx
 // Es una SUGERENCIA de lectura — no toca el calendario de Cuentas por Pagar
 // hasta que se pulse "Aplicar esta sugerencia", que reemplaza el calendario
 // de cada proveedor incluido en el plan (mismo guardarCalendarioProveedor
-// que usa "Programar pago" en Cuentas por Pagar, uno por uno).
+// que se usa más abajo en aplicarPlanEstrategia, uno por uno).
 function EstrategiaPagoView({ cortes, manuales, calendario, presupuestosCliente, presupuestos, nombresProveedor, onAplicarPlan, isAdmin }) {
   const [aplicando, setAplicando] = useState(false);
   const [aplicado, setAplicado] = useState(false);
@@ -1983,6 +1983,258 @@ function EstrategiaPagoView({ cortes, manuales, calendario, presupuestosCliente,
             </div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+// ─── VENCIMIENTOS ───────────────────────────────────────────────────────────
+// (2026-09-28, a pedido de Fredy) Semana a semana, cuánto vence en Cuentas
+// por Pagar -- usando la fecha real de vencimiento que ya trae Busint
+// (`vencimientosPorSemana` de cada proveedor, ver getCuentasPorPagarBusintGen
+// en functions/index.js) más los proveedores manuales que tengan puesta su
+// propia fecha de vencimiento -- cruzado contra el mismo disponible
+// proyectado de caja que ya calcula Programación de Pagos (ingresos
+// esperados de clientes menos egresos comprometidos de Proyección), pero
+// repartido en partes iguales entre las semanas de cada mes, ya que esos dos
+// presupuestos son mensuales, no semanales -- es un estimado, no una cifra
+// exacta por semana.
+const SEMANAS_VENCIMIENTOS = 12;
+function lunesDeSemanaISO(fecha) {
+  const d = new Date(fecha);
+  d.setHours(0, 0, 0, 0);
+  const dia = d.getDay(); // 0 = domingo, 1 = lunes, ...
+  const diff = dia === 0 ? -6 : 1 - dia;
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+function proximasSemanas(n) {
+  const inicio = lunesDeSemanaISO(new Date());
+  const [y, m, d] = inicio.split("-").map(Number);
+  const base = new Date(y, m - 1, d);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const dt = new Date(base);
+    dt.setDate(dt.getDate() + i * 7);
+    out.push(dt.toISOString().slice(0, 10));
+  }
+  return out;
+}
+function fmtSemanaCorta(semanaISO) {
+  if (!semanaISO) return "";
+  const inicio = new Date(semanaISO + "T00:00:00");
+  const fin = new Date(inicio);
+  fin.setDate(fin.getDate() + 6);
+  const opts = { day: "numeric", month: "short" };
+  return `${inicio.toLocaleDateString("es-CO", opts)} - ${fin.toLocaleDateString("es-CO", opts)}`;
+}
+function VencimientosChart({ filas }) {
+  const W = 900, H = 300, padL = 90, padR = 24, padT = 20, padB = 40;
+  const chartW = W - padL - padR, chartH = H - padT - padB;
+  const n = filas.length;
+  const vals = filas.map((f) => f.saldoAcumulado);
+  const maxV = Math.max(0, ...vals, 1);
+  const minV = Math.min(0, ...vals);
+  const rango = maxV - minV || 1;
+  const xAt = (i) => padL + (n > 1 ? (i * chartW) / (n - 1) : 0);
+  const yAt = (v) => padT + chartH - ((v - minV) / rango) * chartH;
+  const yZero = yAt(0);
+  const puntos = filas.map((f, i) => ({ x: xAt(i), y: yAt(f.saldoAcumulado), ...f }));
+  const linePath = puntos.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`).join(" ");
+  const areaPath = `${linePath} L ${puntos[puntos.length - 1].x},${yZero} L ${puntos[0].x},${yZero} Z`;
+  const gridFracs = [0, 0.25, 0.5, 0.75, 1];
+  const idxDeficit = filas.findIndex((f) => f.saldoAcumulado < 0);
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }}>
+      <defs>
+        <linearGradient id="vczAreaGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={C.amber} stopOpacity="0.3" />
+          <stop offset="100%" stopColor={C.amber} stopOpacity="0.03" />
+        </linearGradient>
+      </defs>
+      {gridFracs.map((fr) => {
+        const v = minV + fr * rango;
+        const y = padT + chartH - fr * chartH;
+        return (
+          <g key={fr}>
+            <line x1={padL} y1={y} x2={W - padR} y2={y} stroke={C.border} strokeWidth="1" />
+            <text x={padL - 8} y={y + 4} textAnchor="end" fontSize="10" fill={C.slate}>
+              {fmtCOP(v)}
+            </text>
+          </g>
+        );
+      })}
+      <line x1={padL} y1={yZero} x2={W - padR} y2={yZero} stroke={C.ink} strokeWidth="1.2" strokeDasharray="3 3" />
+      {idxDeficit >= 0 && (
+        <g>
+          <line
+            x1={puntos[idxDeficit].x}
+            y1={padT}
+            x2={puntos[idxDeficit].x}
+            y2={padT + chartH}
+            stroke={C.red}
+            strokeWidth="1.5"
+            strokeDasharray="4 3"
+          />
+          <text x={puntos[idxDeficit].x} y={padT - 6} textAnchor="middle" fontSize="10" fontWeight="700" fill={C.red}>
+            Déficit desde: {fmtSemanaCorta(filas[idxDeficit].semana).split(" - ")[0]}
+          </text>
+        </g>
+      )}
+      <path d={areaPath} fill="url(#vczAreaGrad)" stroke="none" />
+      <path d={linePath} fill="none" stroke={C.amber} strokeWidth="2.5" />
+      {puntos.map((p, i) => (
+        <circle key={i} cx={p.x} cy={p.y} r={i === 0 || i === n - 1 ? 3.5 : 2.5} fill={p.saldoAcumulado < 0 ? C.red : C.green}>
+          <title>
+            {fmtSemanaCorta(p.semana)} — Saldo acumulado: {fmtCOP(p.saldoAcumulado)} (neto de la semana: {fmtCOP(p.saldoNeto)}, vence: {fmtCOP(p.vence)})
+          </title>
+        </circle>
+      ))}
+      {puntos.map((p, i) =>
+        i === 0 || i === n - 1 || i % 3 === 0 ? (
+          <text key={i} x={p.x} y={H - padB + 18} textAnchor="middle" fontSize="9" fill={C.slate}>
+            {fmtSemanaCorta(p.semana).split(" - ")[0]}
+          </text>
+        ) : null
+      )}
+    </svg>
+  );
+}
+function VencimientosView({ cortes, manuales, presupuestosCliente, presupuestos }) {
+  const semanas = proximasSemanas(SEMANAS_VENCIMIENTOS);
+  const semanaSet = new Set(semanas);
+  const inicioVentana = semanas[0];
+  const finVentana = semanas[semanas.length - 1];
+
+  let vencidoYa = 0;
+  let sinFechaExacta = 0;
+  let masAdelante = 0;
+  const porSemana = {};
+  semanas.forEach((s) => {
+    porSemana[s] = 0;
+  });
+
+  (cortes || []).forEach((p) => {
+    const vps = p.vencimientosPorSemana || {};
+    Object.entries(vps).forEach(([clave, monto]) => {
+      if (clave === "vencido") {
+        vencidoYa += monto;
+      } else if (clave === "sinFecha") {
+        sinFechaExacta += monto;
+      } else if (clave < inicioVentana) {
+        // El corte se trajo de Busint hace unos días: una semana que en ese
+        // momento todavía no había llegado, para hoy ya pasó -- cuenta como
+        // vencida en vez de perderse.
+        vencidoYa += monto;
+      } else if (semanaSet.has(clave)) {
+        porSemana[clave] += monto;
+      } else if (clave > finVentana) {
+        masAdelante += monto;
+      }
+    });
+  });
+
+  (manuales || []).forEach((m) => {
+    const total = m.total || 0;
+    if (!m.fechaVencimiento) {
+      sinFechaExacta += total;
+      return;
+    }
+    const semana = lunesDeSemanaISO(m.fechaVencimiento);
+    if (semana < inicioVentana) vencidoYa += total;
+    else if (semanaSet.has(semana)) porSemana[semana] += total;
+    else masAdelante += total;
+  });
+
+  const semanasPorMes = {};
+  semanas.forEach((s) => {
+    const mes = s.slice(0, 7);
+    semanasPorMes[mes] = (semanasPorMes[mes] || 0) + 1;
+  });
+
+  let acumulado = 0;
+  const filas = semanas.map((s) => {
+    const mes = s.slice(0, 7);
+    const ingresosMes = (presupuestosCliente || []).filter((p) => p.mes === mes).reduce((sum, p) => sum + (p.monto || 0), 0);
+    const egresosMes = (presupuestos || []).filter((p) => p.mes === mes).reduce((sum, p) => sum + (p.totalProyectado || 0), 0);
+    const nSemanas = semanasPorMes[mes] || 1;
+    const ingresosEsperados = ingresosMes / nSemanas;
+    const egresosComprometidos = egresosMes / nSemanas;
+    const vence = porSemana[s] || 0;
+    const saldoNeto = ingresosEsperados - egresosComprometidos - vence;
+    acumulado += saldoNeto;
+    return { semana: s, ingresosEsperados, egresosComprometidos, vence, saldoNeto, saldoAcumulado: acumulado };
+  });
+
+  const totalVenceVentana = filas.reduce((s, f) => s + f.vence, 0);
+  const saldoFinal = filas.length ? filas[filas.length - 1].saldoAcumulado : 0;
+  const primerDeficit = filas.find((f) => f.saldoAcumulado < 0);
+
+  return (
+    <div>
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Vencimientos</h2>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate, maxWidth: 640 }}>
+          Semana a semana, cuánto vence en Cuentas por Pagar (fecha real de Busint, más los proveedores manuales que
+          tengan fecha) cruzado contra el disponible proyectado de caja -- Presupuesto Clientes menos Proyección,
+          repartido en partes iguales entre las semanas de cada mes.
+        </p>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 20 }}>
+        <KPI icon="⚠️" label="Ya vencido" value={fmtCOP(vencidoYa)} color={C.red} bg={C.redBg} sub="Antes de esta semana" />
+        <KPI icon="📆" label={`Vence en ${SEMANAS_VENCIMIENTOS} semanas`} value={fmtCOP(totalVenceVentana)} color={C.amber} bg={C.amberBg} />
+        <KPI icon="📋" label="Sin fecha exacta" value={fmtCOP(sinFechaExacta)} color={C.slate} bg={C.canvas} sub="Proveedores manuales sin fecha" />
+        <KPI
+          icon={saldoFinal >= 0 ? "✓" : "⚠"}
+          label={`Saldo proyectado (semana ${SEMANAS_VENCIMIENTOS})`}
+          value={fmtCOP(saldoFinal)}
+          color={saldoFinal >= 0 ? C.green : C.red}
+          bg={saldoFinal >= 0 ? C.greenBg : C.redBg}
+          sub={primerDeficit ? `Déficit desde semana del ${fmtSemanaCorta(primerDeficit.semana).split(" - ")[0]}` : "Sin déficit proyectado"}
+        />
+      </div>
+      {vencidoYa > 0 && (
+        <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 20 }}>
+          ⚠ Ya tienes {fmtCOP(vencidoYa)} vencido de antes de esta semana.
+        </div>
+      )}
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20, marginBottom: 24 }}>
+        <div style={{ fontWeight: 800, fontSize: 14, color: C.ink, marginBottom: 4 }}>Saldo proyectado semana a semana</div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 16 }}>
+          Disponible proyectado de caja esa semana (ingresos y egresos mensuales repartidos entre las semanas del mes)
+          menos lo que vence esa semana en Cuentas por Pagar.
+        </div>
+        <VencimientosChart filas={filas} />
+      </div>
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: C.ink }}>
+              {["Semana", "Ingresos esperados", "Egresos comprometidos", "Vence en CxP", "Saldo neto semana", "Saldo acumulado"].map((h) => (
+                <th key={h} style={{ padding: "9px 12px", color: C.seam, textAlign: h === "Semana" ? "left" : "right", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filas.map((f, i) => (
+              <tr key={f.semana} style={{ background: f.saldoAcumulado < 0 ? C.redBg : i % 2 === 0 ? C.canvas : C.white, borderBottom: `1px solid ${C.border}` }}>
+                <td style={{ padding: "8px 12px", fontWeight: 600, color: C.ink, whiteSpace: "nowrap" }}>{fmtSemanaCorta(f.semana)}</td>
+                <td style={{ padding: "8px 12px", textAlign: "right", color: C.green }}>{fmtCOP(f.ingresosEsperados)}</td>
+                <td style={{ padding: "8px 12px", textAlign: "right", color: C.blue }}>{fmtCOP(f.egresosComprometidos)}</td>
+                <td style={{ padding: "8px 12px", textAlign: "right", color: f.vence > 0 ? C.amber : C.slate, fontWeight: f.vence > 0 ? 700 : 400 }}>{fmtCOP(f.vence)}</td>
+                <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700, color: f.saldoNeto < 0 ? C.red : C.ink }}>{fmtCOP(f.saldoNeto)}</td>
+                <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 800, color: f.saldoAcumulado < 0 ? C.red : C.green }}>{fmtCOP(f.saldoAcumulado)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {masAdelante > 0 && (
+        <div style={{ marginTop: 14, fontSize: 11.5, color: C.slate }}>
+          + {fmtCOP(masAdelante)} que vencen más adelante de las {SEMANAS_VENCIMIENTOS} semanas mostradas aquí.
+        </div>
       )}
     </div>
   );
@@ -2183,9 +2435,8 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
     );
   }
   // Reemplaza el calendario completo de un proveedor: borra las entradas
-  // anteriores y guarda las nuevas (mismo comportamiento que en Contabilidad
-  // → Cuentas por Pagar, que sigue usando esta misma operación para
-  // "Programar pago" uno por uno).
+  // anteriores y guarda las nuevas -- usada por "Aplicar esta sugerencia" en
+  // Estrategia de Pago (ver aplicarPlanEstrategia, abajo).
   async function guardarCalendarioProveedor(proveedor, entradas) {
     const existentes = calendarioCxp.filter((c) => c.proveedor === proveedor);
     const nuevos = entradas.map((e) => ({
@@ -2201,8 +2452,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
   }
   // Aplica de una vez el plan completo que sugiere Estrategia de Pago:
   // reemplaza el calendario de cada proveedor incluido, uno por uno, con
-  // guardarCalendarioProveedor -- mismo comportamiento que "Programar pago"
-  // en Cuentas por Pagar, solo que para todos los proveedores a la vez.
+  // guardarCalendarioProveedor.
   async function aplicarPlanEstrategia(plan) {
     await Promise.all(Object.entries(plan).map(([proveedor, entradas]) => guardarCalendarioProveedor(proveedor, entradas)));
   }
@@ -2213,6 +2463,7 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
     { id: "proyeccion", icon: "🎯", label: "Proyección" },
     { id: "clientes", icon: "🤝", label: "Presupuesto Clientes" },
     { id: "programacion_pagos", icon: "🧭", label: "Programación de Pagos" },
+    { id: "vencimientos", icon: "📆", label: "Vencimientos" },
     { id: "estrategia_pago", icon: "📌", label: "Estrategia de Pago" },
     { id: "administracion", icon: "🗂️", label: "Administración" },
   ];
@@ -2341,6 +2592,14 @@ export function FinancieraStandalone({ currentUser, onVolver, onLogout }) {
               presupuestosCliente={presupuestosCliente}
               presupuestos={presupuestos}
               calendarioCxp={calendarioCxp}
+            />
+          )}
+          {subView === "vencimientos" && (
+            <VencimientosView
+              cortes={cortesCxp}
+              manuales={manualCxp}
+              presupuestosCliente={presupuestosCliente}
+              presupuestos={presupuestos}
             />
           )}
           {subView === "estrategia_pago" && (

@@ -1539,6 +1539,14 @@ function AgregarProveedorCXPModal({ onSave, onClose }) {
   const [dias31a60, setDias31a60] = useState("");
   const [dias61a90, setDias61a90] = useState("");
   const [dias91mas, setDias91mas] = useState("");
+  // (2026-09-28, a pedido de Fredy) Fecha de vencimiento opcional -- a
+  // diferencia de las facturas de Busint (que traen su fecha exacta), un
+  // proveedor manual (ej. DIAN-IVA-2024, ICA) es un solo monto sin factura
+  // detras, asi que se le puede poner UNA fecha para que la vista semanal de
+  // "Vencimientos" en Financiera lo ubique en la semana correcta. Si se deja
+  // en blanco (como quedan los que ya existian antes de este campo), esa
+  // vista simplemente lo muestra aparte, en "sin fecha exacta".
+  const [fechaVencimiento, setFechaVencimiento] = useState("");
   const total = [porVencer, dias0a30, dias31a60, dias61a90, dias91mas].reduce((s, v) => s + (parseFloat(v) || 0), 0);
   function guardar() {
     if (!nombre || total <= 0) return;
@@ -1551,6 +1559,7 @@ function AgregarProveedorCXPModal({ onSave, onClose }) {
       dias61a90: parseFloat(dias61a90) || 0,
       dias91mas: parseFloat(dias91mas) || 0,
       total,
+      fechaVencimiento: fechaVencimiento || null,
       creadoEn: new Date().toISOString(),
     });
     onClose();
@@ -1576,6 +1585,12 @@ function AgregarProveedorCXPModal({ onSave, onClose }) {
         <Field label="91 o más días">
           <FInput type="number" value={dias91mas} onChange={setDias91mas} placeholder="0" />
         </Field>
+      </div>
+      <Field label="Fecha de vencimiento (opcional)">
+        <FInput type="date" value={fechaVencimiento} onChange={setFechaVencimiento} />
+      </Field>
+      <div style={{ fontSize: 11, color: C.slate, marginBottom: 16, marginTop: -4 }}>
+        Si la dejas en blanco, este proveedor va a aparecer en "Vencimientos" (Financiera) como sin fecha exacta.
       </div>
       <div
         style={{
