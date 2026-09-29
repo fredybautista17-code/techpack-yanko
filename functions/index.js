@@ -2677,18 +2677,23 @@ exports.getCuentasPorPagarBusintGen = onCall(
       const pagado = pagadoPorFactura.get(llave) || 0;
       const descuento = descuentoPorFactura.get(llave) || 0;
       const devolucion = devolucionPorFactura.get(llave) || 0;
-      // (2026-09-28) REVERTIDO DE EMERGENCIA: restar ajusteCxpPorFactura aqui
-      // dejo el corte completo en CERO proveedores (en vez de solo corregir
-      // el caso de Jorge Alexander Mora Capacho) -- el filtro por
-      // Puc==="22050101" no alcanza a distinguir un cruce real de anticipo
-      // de otros movimientos rutinarios contra esa misma cuenta que
-      // aparentemente existen para MUCHAS facturas. Se deja de aplicar
-      // hasta investigar mejor el patron de esta tabla; el mapa
-      // ajusteCxpPorFactura se sigue calculando (variable sin usar, no hace
-      // daño) para no tener que rehacer esa parte cuando se retome.
+      // (2026-09-28) Un primer intento de restar ajusteCxpPorFactura aqui
+      // dejo el corte completo en CERO proveedores, y se revirtio de
+      // emergencia sin quedar claro por que. (2026-09-29) Investigado con
+      // cuidado esta vez: se simulo el efecto de aplicarlo (sin arriesgar el
+      // corte real) y resulto que, con la tabla COMPLETA de "notascontable
+      // detalles", el filtro por Puc==="22050101" solo afecta a 3 facturas
+      // en las 24.217 de toda la empresa -- no "muchas facturas" como se
+      // penso la vez pasada. Las 3 se confirmaron una por una contra el
+      // reporte oficial de Busint (columna "Notas de Contabilidad", ej.
+      // "CRUCE CON ANTICIPO PRO[VEEDOR]"): Jorge Alexander Mora Capacho
+      // (factura FTT, $1.800.000) y Aldemar Rincon Camargo (facturas 1826 y
+      // 1825, $675.000 y $437.500) -- las 3 cierran exactamente en $0 con el
+      // ajuste, igual que el reporte de Busint (proveedor Aldemar Rincon
+      // Camargo con "Total proveedor" $0 en las 39 entradas de todo su
+      // historial). Se aplica ya con esta evidencia confirmada.
       const ajusteCxp = ajusteCxpPorFactura.get(llave) || 0;
-      void ajusteCxp;
-      const saldo = facTotal - pagado - descuento - devolucion;
+      const saldo = facTotal - pagado - descuento - devolucion - ajusteCxp;
       if (saldo <= UMBRAL_SALDO_CXP) return; // ya pagada (o a favor, incluyendo descuento/devolución)
       const diasVencido = fechaVcto ? Math.round((hoy - fechaVcto) / (1000 * 60 * 60 * 24)) : 0;
       const bucket = calcularBucketAntiguedadCxp(diasVencido);
@@ -2739,42 +2744,6 @@ exports.getCuentasPorPagarBusintGen = onCall(
         concepto,
       });
     });
-    // (2026-09-29) DEBUG TEMPORAL -- para retomar con cuidado el cruce con
-    // anticipo de Jorge Alexander Mora Capacho (ver PUC_PROVEEDORES_NACIONALES
-    // y "REVERTIDO DE EMERGENCIA" mas arriba -- la ultima vez que se resto
-    // ajusteCxpPorFactura del saldo, el corte completo se quedo en CERO
-    // proveedores, sin quedar claro por que). Esta vez, en vez de aplicarlo
-    // de una, se SIMULA que pasaria SI se aplicara -- sin tocar el saldo
-    // real que ya se muestra en pantalla -- para poder revisar con Fredy una
-    // muestra de casos reales contra el reporte oficial de Busint antes de
-    // arriesgarse otra vez. Es una segunda pasada, separada del loop de
-    // arriba, para no tocar nada de esa logica ya validada. Quitar este
-    // bloque (y el log que genera) cuando se resuelva -- aplicando el ajuste
-    // de verdad con la evidencia ya confirmada, o descartandolo del todo.
-    const muestraAjusteCxp = [];
-    facturasPorLlave.forEach(({ llave, codigo, nfactOriginal, facTotal }) => {
-      const ajusteCxpSim = ajusteCxpPorFactura.get(llave) || 0;
-      if (!ajusteCxpSim) return;
-      const pagadoSim = pagadoPorFactura.get(llave) || 0;
-      const descuentoSim = descuentoPorFactura.get(llave) || 0;
-      const devolucionSim = devolucionPorFactura.get(llave) || 0;
-      const saldoActualSim = facTotal - pagadoSim - descuentoSim - devolucionSim;
-      muestraAjusteCxp.push({
-        proveedor: nombrePorCodigo.get(codigo) || `Proveedor ${codigo}`,
-        nfact: nfactOriginal,
-        facTotal,
-        pagado: pagadoSim,
-        ajusteCxp: ajusteCxpSim,
-        saldoActual: saldoActualSim,
-        saldoHipoteticoConAjuste: saldoActualSim - ajusteCxpSim,
-      });
-    });
-    muestraAjusteCxp.sort((a, b) => Math.abs(b.ajusteCxp) - Math.abs(a.ajusteCxp));
-    logger.info("CXP: simulacion ajuste cruce anticipo (NO aplicado hoy)", {
-      totalFacturasConAjusteCxp: muestraAjusteCxp.length,
-      sumaTotalAjusteCxp: muestraAjusteCxp.reduce((s, m) => s + m.ajusteCxp, 0),
-      muestra: muestraAjusteCxp.slice(0, 40),
-    });
     const proveedoresResultado = [...porProveedor.values()]
       .map((p) => {
         // Concepto dominante: el que acumula más saldo para este proveedor.
@@ -2796,27 +2765,22 @@ exports.getCuentasPorPagarBusintGen = onCall(
     // contra el reporte oficial de Busint. Los proveedores sin nombre (ej.
     // código 16) no son un bug de cruce -- ese código de verdad no existe en
     // "maestro de proveedores" (confirmado revisando la tabla completa), es
-    // un dato faltante en Busint mismo. Bloques de diagnóstico temporal ya
-    // borrados (cumplieron su propósito).
-    // (2026-09-29) DEBUG TEMPORAL -- para encontrar en que paso exacto
-    // desaparece Comercializadora Idea Innova SAS (codigo 2298, factura
-    // 16954) del corte REAL (ya se descarto truncamiento de paginacion:
-    // totalFacturas/totalPagos abajo estan muy por debajo del tope de
-    // 100.000 filas, y depurarFacturaCxp ya confirmo que el calculo
-    // aislado da saldo $669.042,61). Quitar este bloque cuando se
-    // resuelva el caso.
-    const debugLlaveInnova = facturasPorLlave.get("2298|16954") || null;
-    const debugPagadoInnova = pagadoPorFactura.get("2298|16954") ?? null;
-    const debugProveedorInnova = proveedoresResultado.find((p) => /INNOVA/i.test(p.nombre)) || null;
+    // un dato faltante en Busint mismo.
+    //
+    // (2026-09-29) Resuelto tambien: Comercializadora Idea Innova SAS
+    // (codigo 2298, factura 16954) parecia no aparecer pese a que el calculo
+    // ya estaba bien -- la causa real era que los cortes se ordenaban solo
+    // por fecha (sin hora), asi que al traer varios cortes el mismo dia la
+    // pantalla podia mostrar por defecto uno viejo (ver claveOrdenCorte en
+    // src/modulo-contabilidad.jsx). Bloques de diagnóstico temporal ya
+    // borrados (cumplieron su propósito) -- ver depurarFacturaCxp para
+    // seguir investigando el proximo caso puntual.
     logger.info("CXP: corte generado", {
       totalProveedores: proveedoresResultado.length,
       totalFacturas: facturas.length,
       totalPagos: pagos.length,
       totalNotasDescuento: notasDescuento.length,
       totalProveedoresCatalogo: proveedores.length,
-      debugLlaveInnova,
-      debugPagadoInnova,
-      debugProveedorInnova,
     });
 
     return {
