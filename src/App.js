@@ -5216,13 +5216,22 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
   // "Sin cortar", en blanco ("—") cuando no hay con qué cruzar (admin).
   const tieneDatosPreorden = Array.isArray(preordenesCliente);
   // (2026-09-29, a pedido de Fredy) Un pedido cerrado (cumplido a mano o ya
-  // facturado en Busint) no cuenta para "Sin cortar" NI para decidir si una
-  // referencia de Preorden "ya se convirtió a pedido" -- los códigos de
-  // referencia se reutilizan de una temporada a otra, así que sin este
-  // filtro una referencia de una Preorden actual podía aparecer como ya
-  // convertida solo porque esa referencia se usó en un pedido viejo (mismo
-  // bug que en PreordenesView, ver pedidosVigentesDelCliente ahí).
+  // facturado en Busint) no cuenta para "Sin cortar" -- ya no queda nada
+  // pendiente de ese pedido. Esto es SOLO para "Sin cortar"; para decidir si
+  // una referencia de Preorden "ya se convirtió a pedido" se usa un criterio
+  // distinto más abajo (pedidosCandidatosConversionProduccion, por fecha en
+  // vez de por estado -- ver el porqué en PreordenesView).
   const pedidosVigentesCliente = tieneDatosPedido ? pedidosCliente.filter((p) => p.estado !== "cerrado") : [];
+  // (2026-09-29, a pedido de Fredy) Igual que en PreordenesView: un pedido
+  // solo puede ser LA conversión real de una preorden si se creó el mismo
+  // día o después de que se montó esa preorden -- así se excluye un pedido
+  // viejo de otra temporada (con referencia reutilizada) sin importar si
+  // sigue abierto, y uno que sí es la conversión real sigue contando como
+  // "convertido" aunque ya se haya cerrado/facturado.
+  function pedidosCandidatosConversionProduccion(fechaPreorden) {
+    const fechaRef = fechaPreorden || "";
+    return tieneDatosPedido ? pedidosCliente.filter((p) => (p.creadoEn || p.fechaPedido || "") >= fechaRef) : [];
+  }
   if (tieneDatosPedido) {
     pedidosVigentesCliente.forEach((p) => {
       (p.referencias || []).forEach((r) => {
@@ -5250,7 +5259,7 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
       (p.items || []).forEach((it) => {
         const ref = String(it.referencia || "").trim();
         if (!ref) return;
-        const graduado = !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidosVigentesCliente);
+        const graduado = !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidosCandidatosConversionProduccion(p.fechaCreado));
         if (graduado) return;
         if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0 });
         const fila = porReferencia.get(ref);
@@ -5560,21 +5569,35 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   // temporada a otra, una preorden de Kamila Colombia terminaba marcada
   // "Todo convertido a pedido" solo porque esa referencia ya se había usado
   // en un pedido VIEJO (ya cumplido/facturado) -- confirmado con Fredy.
-  // Ahora solo cuenta un pedido del MISMO cliente que siga vigente (estado
-  // !== "cerrado" -- un pedido queda cerrado tanto al marcarlo "✓ Cumplido"
-  // a mano como cuando Busint confirma que ya se facturó, ver marcarCumplido
-  // más abajo en PedidosView).
-  function pedidosVigentesDelCliente(cliente) {
+  //
+  // Primer intento: filtrar por "pedido vigente" (estado !== "cerrado").
+  // Se cambió por fecha porque un pedido que SÍ es la conversión real de
+  // esta preorden (mismo cliente, mismo código de referencia) igual se
+  // cierra tarde o temprano al terminarse/facturarse -- con el filtro por
+  // estado, la preorden volvía a aparecer como "sin convertir" justo cuando
+  // el pedido se completaba, que es al revés de lo que se quiere.
+  //
+  // Ahora se compara por FECHA: un pedido solo puede ser la conversión real
+  // de esta preorden si se creó el mismo día o después de que se montó la
+  // preorden (`fechaCreado`) -- un pedido de una temporada anterior (la
+  // causa del bug original) siempre es de una fecha ANTERIOR, así que queda
+  // excluido sin importar si sigue abierto o ya se cerró. Y un pedido que sí
+  // es la conversión real sigue contando como "convertido" para siempre,
+  // así se cierre después. Si algún día un pedido queda con fecha anterior
+  // a la preorden por error de digitación, el respaldo sigue siendo
+  // vincularlo a mano con "Vincular a Pedido".
+  function pedidosCandidatosConversion(cliente, fechaPreorden) {
     const clienteNorm = foldTexto(cliente || "");
-    return (pedidos || []).filter((pp) => pp.estado !== "cerrado" && foldTexto(pp.cliente || "") === clienteNorm);
+    const fechaRef = fechaPreorden || "";
+    return (pedidos || []).filter((pp) => foldTexto(pp.cliente || "") === clienteNorm && (pp.creadoEn || pp.fechaPedido || "") >= fechaRef);
   }
-  function itemGraduado(it, cliente) {
-    return !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidosVigentesDelCliente(cliente));
+  function itemGraduado(it, cliente, fechaPreorden) {
+    return !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidosCandidatosConversion(cliente, fechaPreorden));
   }
   const preordenesConEstado = (preordenes || []).map((p) => ({
     ...p,
-    pendientes: (p.items || []).filter((it) => !itemGraduado(it, p.cliente)).length,
-  })).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+    pendientes: (p.items || []).filter((it) => !itemGraduado(it, p.cliente, p.fechaCreado)).length,
+  })).sort((a, b) => (b.fechaCreado || "").localeCompare(a.fechaCreado || ""));
   const porSubTab = subTab === "pendientes" ? preordenesConEstado.filter((p) => p.pendientes > 0) : preordenesConEstado;
   const visibles = estadoFiltro === "todas" ? porSubTab : porSubTab.filter((p) => (p.estado || "montada") === estadoFiltro);
   // (2026-09-21, a pedido de Fredy) Buscador de la lista de preórdenes ya
@@ -6183,7 +6206,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                         function filaItem(it, i) {
                           const cap = (capsulas || []).find((c) => c.id === it.capsulaId);
                           const refReal = cap?.referencias?.find((r) => r.id === it.itemId);
-                          const graduada = itemGraduado(it, p.cliente);
+                          const graduada = itemGraduado(it, p.cliente, p.fechaCreado);
                           return (
                             <tr key={it.itemId} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}`, opacity: graduada ? 0.55 : 1 }}>
                               <td style={{ padding: "6px 10px" }}>{it.foto ? <img src={it.foto} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
@@ -6213,7 +6236,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                                 {graduada ? (() => {
                                   const pedidoDetalle = it.pedidoVinculado?.numero
                                     ? (pedidos || []).find((pp) => String(pp.numero) === String(it.pedidoVinculado.numero))
-                                    : pedidoQueContieneRef(it.referencia, pedidosVigentesDelCliente(p.cliente));
+                                    : pedidoQueContieneRef(it.referencia, pedidosCandidatosConversion(p.cliente, p.fechaCreado));
                                   return (
                                     <span
                                       onClick={() => pedidoDetalle && setDetallePedido({ pedido: pedidoDetalle, referencia: it.referencia })}
