@@ -2761,6 +2761,122 @@ exports.getCuentasPorPagarBusintGen = onCall(
   }
 );
 
+// (2026-09-29, a pedido de Fredy) Herramienta de diagnóstico PERMANENTE para
+// Cuentas por Pagar: dado el código de proveedor + número de factura, calcula
+// EXACTAMENTE los mismos valores intermedios que getCuentasPorPagarBusintGen
+// para esa factura puntual (facTotal, pagado -- con el detalle fila por fila
+// de cada pago, descuento, devolución, y el ajuste de cruce con anticipo --
+// calculado pero NO aplicado hoy, ver comentario arriba) y el saldo
+// resultante, mostrando además las filas CRUDAS de cada tabla que hicieron
+// match -- para encontrar de una vez el "saldo fantasma" de un caso puntual
+// (ej. un cruce de código/número de factura inesperado con OTRO movimiento)
+// en vez de tener que ir tabla por tabla a mano con buscarValorEnTablasBusintBD
+// cada vez. Van 5 casos resueltos así uno por uno: Tintatex, Cheviotto (x2),
+// Jorge Alexander Mora Capacho, y Comercializadora Idea Innova -- esta
+// herramienta queda para el próximo caso.
+exports.depurarFacturaCxp = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const codigoBuscado = normalizarCodigoCxp(request.data?.codigo);
+    const nfactBuscado = normalizarCodigoCxp(request.data?.nfact);
+    if (!codigoBuscado || !nfactBuscado) {
+      throw new HttpsError("invalid-argument", "Debes indicar el código de proveedor y el número de factura.");
+    }
+    const llaveBuscada = `${codigoBuscado}|${nfactBuscado}`;
+    let facturas, pagos, pagosOtros, proveedores, notasDescuento, devoluciones, notasContables;
+    try {
+      [facturas, pagos, pagosOtros, proveedores, notasDescuento, devoluciones, notasContables] = await Promise.all([
+        consultarTablaBusintBDCompleta("cartera cxp-fact"),
+        consultarTablaBusintBDCompleta("cxp-pagos detalles"),
+        consultarTablaBusintBDCompleta("cxp-pagosotros detalles"),
+        consultarTablaBusintBDCompleta("maestro de proveedores"),
+        consultarTablaBusintBDCompleta("notas detalles-d"),
+        consultarTablaBusintBDCompleta("cartera cxp-dev"),
+        consultarTablaBusintBDCompleta("notascontable detalles"),
+      ]);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (depurarFacturaCxp)", { error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar Busint BD: ${err?.message || String(err)}`);
+    }
+
+    const filasFactura = facturas.filter(
+      (f) => normalizarCodigoCxp(f?.CODIGO) === codigoBuscado && normalizarCodigoCxp(f?.NFACT) === nfactBuscado
+    );
+    const facTotal = filasFactura.reduce((s, f) => s + (Number(f?.FACTOTAL) || 0), 0);
+
+    const filasPago = [
+      ...pagos.map((p) => ({ ...p, __tabla: "cxp-pagos detalles" })),
+      ...pagosOtros.map((p) => ({ ...p, __tabla: "cxp-pagosotros detalles" })),
+    ].filter(
+      (p) => normalizarCodigoCxp(p?.CodigoP) === codigoBuscado && normalizarCodigoCxp(p?.Nfact) === nfactBuscado
+    );
+    const pagosDetalle = filasPago.map((p) => ({
+      ...p,
+      montoUsado: p?.Cheque != null ? (Number(p.Cheque) || 0) : (Number(p?.Totalp) || 0),
+    }));
+    const pagado = pagosDetalle.reduce((s, p) => s + p.montoUsado, 0);
+
+    const filasDescuento = notasDescuento.filter(
+      (n) => normalizarCodigoCxp(n?.Cod) === codigoBuscado && normalizarCodigoCxp(n?.Nfactcxp) === nfactBuscado
+    );
+    const descuento = filasDescuento.reduce((s, n) => s + (Number(n?.Precio) || 0) + (Number(n?.credito) || 0), 0);
+
+    const filasDevolucion = devoluciones.filter(
+      (d) => normalizarCodigoCxp(d?.codigo) === codigoBuscado && normalizarCodigoCxp(d?.nfact) === nfactBuscado
+    );
+    const devolucion = filasDevolucion.reduce((s, d) => s + (Number(d?.Devtotal) || 0), 0);
+
+    const filasAjusteCxpTodasLasCuentas = notasContables.filter(
+      (n) => normalizarCodigoCxp(n?.Cod) === codigoBuscado && normalizarCodigoCxp(n?.Nfactcxp) === nfactBuscado
+    );
+    const PUC_PROVEEDORES_NACIONALES_DEBUG = "22050101";
+    const filasAjusteCxpProveedoresNacionales = filasAjusteCxpTodasLasCuentas.filter(
+      (n) => String(n?.Puc || "").trim() === PUC_PROVEEDORES_NACIONALES_DEBUG
+    );
+    const ajusteCxp = filasAjusteCxpProveedoresNacionales.reduce(
+      (s, n) => s + (Number(n?.Debito) || 0) - (Number(n?.Credito) || 0),
+      0
+    );
+
+    const proveedor = proveedores.find((p) => normalizarCodigoCxp(p?.Codigo) === codigoBuscado);
+    const nombreProveedor = proveedor
+      ? String(proveedor.Nombre || "").trim() || `Proveedor ${codigoBuscado}`
+      : `Proveedor ${codigoBuscado} (no encontrado en "maestro de proveedores")`;
+
+    const UMBRAL_SALDO_CXP_DEBUG = 1;
+    const saldoSinAjuste = facTotal - pagado - descuento - devolucion;
+    // Hipotético: hoy NO se resta (ver comentario en getCuentasPorPagarBusintGen) --
+    // se muestra solo para referencia, por si se retoma esa investigación.
+    const saldoConAjusteHipotetico = saldoSinAjuste - ajusteCxp;
+
+    return {
+      llave: llaveBuscada,
+      codigoBuscado,
+      nfactBuscado,
+      nombreProveedor,
+      filasFactura,
+      facTotal,
+      pagosDetalle,
+      pagado,
+      filasDescuento,
+      descuento,
+      filasDevolucion,
+      devolucion,
+      filasAjusteCxpTodasLasCuentas,
+      filasAjusteCxpProveedoresNacionales,
+      ajusteCxp,
+      saldoSinAjuste,
+      saldoConAjusteHipotetico,
+      apareceHoyEnCuentasPorPagar: saldoSinAjuste > UMBRAL_SALDO_CXP_DEBUG,
+    };
+  }
+);
+
 // (2026-09-25, a pedido de Fredy) Verificador de Precio -> versión EN VIVO
 // contra Busint, para no depender solo del Excel "Entradas de Planta" que
 // hoy alimenta VerificadorPrecioTalleresView (src/modulo-planeacion.jsx).

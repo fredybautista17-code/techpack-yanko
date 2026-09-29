@@ -11124,6 +11124,36 @@ function BusintCatalogoTestView() {
       setCargandoBuscarExacto(false);
     }
   }
+  // (2026-09-29) PERMANENTE -- diagnostico de una factura puntual de Cuentas
+  // por Pagar (ver depurarFacturaCxp en functions/index.js): dado codigo de
+  // proveedor + numero de factura, muestra los mismos valores intermedios
+  // que calcula getCuentasPorPagarBusintGen (facTotal, pagado detallado pago
+  // por pago, descuento, devolucion, saldo) para resolver un "saldo fantasma"
+  // sin tener que buscar valor por valor a mano.
+  const [codigoDepurarCxp, setCodigoDepurarCxp] = useState("");
+  const [nfactDepurarCxp, setNfactDepurarCxp] = useState("");
+  const [cargandoDepurarCxp, setCargandoDepurarCxp] = useState(false);
+  const [depurarCxpResultado, setDepurarCxpResultado] = useState(null);
+  function fmtMoneyDebug(n) {
+    return "$ " + Number(n || 0).toLocaleString("es-CO", { maximumFractionDigits: 2 });
+  }
+  async function depurarFacturaCxp() {
+    const codigo = codigoDepurarCxp.trim();
+    const nfact = nfactDepurarCxp.trim();
+    if (!codigo || !nfact) return;
+    setCargandoDepurarCxp(true);
+    setError("");
+    setDepurarCxpResultado(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "depurarFacturaCxp", { timeout: 540000 });
+      const resp = await llamar({ codigo, nfact });
+      setDepurarCxpResultado(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo depurar la factura.");
+    } finally {
+      setCargandoDepurarCxp(false);
+    }
+  }
   // (2026-09-04) EXPLORATORIO — dado un numero de pedido, cruza la cabecera
   // "facturas" (por Numped) con "facturas detalles" (por Nfact) y suma
   // unidades por Referencia, todo del lado del servidor -- para comparar
@@ -11704,6 +11734,73 @@ function BusintCatalogoTestView() {
               <div style={{ fontSize: 13, color: T.slate, fontStyle: "italic" }}>Ninguna tabla revisada tiene ese valor. Prueba con otras palabras clave de tabla.</div>
             )}
           </div>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Depurar una factura de Cuentas por Pagar (permanente)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Da el código de proveedor y el número de factura: muestra los mismos valores que calcula el corte de Cuentas por Pagar para esa factura (total, pagos aplicados uno por uno con Totalp y Cheque, descuento, devolución) más el saldo resultante — para encontrar un "saldo fantasma" sin tener que buscar valor por valor a mano.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Código de proveedor">
+          <FInput value={codigoDepurarCxp} onChange={setCodigoDepurarCxp} placeholder="Ej: 2298" />
+        </Field>
+        <Field label="Número de factura">
+          <FInput value={nfactDepurarCxp} onChange={setNfactDepurarCxp} placeholder="Ej: 16954" />
+        </Field>
+        <div style={{ marginBottom: 14 }}>
+          <Btn onClick={depurarFacturaCxp} disabled={cargandoDepurarCxp || !codigoDepurarCxp.trim() || !nfactDepurarCxp.trim()}>{cargandoDepurarCxp ? "Consultando..." : "🩺 Depurar factura"}</Btn>
+        </div>
+      </div>
+      {depurarCxpResultado && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: T.ink, marginBottom: 10 }}>
+            {depurarCxpResultado.nombreProveedor} — factura {depurarCxpResultado.nfactBuscado} ({depurarCxpResultado.llave})
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginBottom: 14 }}>
+            <div style={{ background: T.white, borderRadius: 8, padding: "10px 12px", border: `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 11, color: T.slate }}>Total factura</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: T.ink }}>{fmtMoneyDebug(depurarCxpResultado.facTotal)}</div>
+            </div>
+            <div style={{ background: T.white, borderRadius: 8, padding: "10px 12px", border: `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 11, color: T.slate }}>Pagado</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: T.ink }}>{fmtMoneyDebug(depurarCxpResultado.pagado)}</div>
+            </div>
+            <div style={{ background: T.white, borderRadius: 8, padding: "10px 12px", border: `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 11, color: T.slate }}>Descuento</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: T.ink }}>{fmtMoneyDebug(depurarCxpResultado.descuento)}</div>
+            </div>
+            <div style={{ background: T.white, borderRadius: 8, padding: "10px 12px", border: `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 11, color: T.slate }}>Devolución</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: T.ink }}>{fmtMoneyDebug(depurarCxpResultado.devolucion)}</div>
+            </div>
+            <div style={{ background: depurarCxpResultado.apareceHoyEnCuentasPorPagar ? T.jadeBg : T.coralBg, borderRadius: 8, padding: "10px 12px", border: `1px solid ${depurarCxpResultado.apareceHoyEnCuentasPorPagar ? T.jade : T.coral}` }}>
+              <div style={{ fontSize: 11, color: T.slate }}>Saldo (sin ajuste anticipo)</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: T.ink }}>{fmtMoneyDebug(depurarCxpResultado.saldoSinAjuste)}</div>
+              <div style={{ fontSize: 10, color: T.slate, marginTop: 2 }}>{depurarCxpResultado.apareceHoyEnCuentasPorPagar ? "Debería aparecer hoy en Cuentas por Pagar" : "NO aparece hoy en Cuentas por Pagar (saldo ≤ $1)"}</div>
+            </div>
+            {depurarCxpResultado.ajusteCxp !== 0 && (
+              <div style={{ background: T.white, borderRadius: 8, padding: "10px 12px", border: `1px solid ${T.border}` }}>
+                <div style={{ fontSize: 11, color: T.slate }}>Ajuste cruce anticipo (hipotético, hoy no se aplica)</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: T.ink }}>{fmtMoneyDebug(depurarCxpResultado.ajusteCxp)}</div>
+                <div style={{ fontSize: 10, color: T.slate, marginTop: 2 }}>Saldo hipotético si se aplicara: {fmtMoneyDebug(depurarCxpResultado.saldoConAjusteHipotetico)}</div>
+              </div>
+            )}
+          </div>
+          {[
+            ["Filas en \"cartera cxp-fact\" (factura)", depurarCxpResultado.filasFactura],
+            ["Pagos aplicados (\"cxp-pagos\" + \"cxp-pagosotros\" detalles)", depurarCxpResultado.pagosDetalle],
+            ["Filas en \"notas detalles-d\" (descuento)", depurarCxpResultado.filasDescuento],
+            ["Filas en \"cartera cxp-dev\" (devolución)", depurarCxpResultado.filasDevolucion],
+            ["Filas en \"notascontable detalles\" con este código+factura (TODAS las cuentas)", depurarCxpResultado.filasAjusteCxpTodasLasCuentas],
+          ].map(([titulo, filas]) => (
+            <div key={titulo} style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: T.ink, marginBottom: 4 }}>{titulo} — {(filas || []).length} fila(s)</div>
+              <pre style={{ background: T.white, borderRadius: 8, padding: 10, fontSize: 11, overflowX: "auto", maxHeight: 220, border: `1px solid ${T.border}` }}>
+                {JSON.stringify(filas, null, 2)}
+              </pre>
+            </div>
+          ))}
         </div>
       )}
       <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
