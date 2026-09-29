@@ -9002,7 +9002,7 @@ function HistoricoBonificacionesView({ trabajadores, bonificaciones }) {
       const valor = Number(b.valor) || 0;
       if (b.tipo === "otra") { acc.otra += valor; t.otra += valor; }
       else { acc.meta += valor; t.meta += valor; } // "meta" y el documento legado sin sufijo de tipo
-      t.registros.push({ periodoId, tipo: b.tipo === "otra" ? "otra" : "meta", valor, motivo: b.motivo || "", fecha: b.registradoEn ? b.registradoEn.slice(0, 10) : null });
+      t.registros.push({ periodoId, tipo: b.tipo === "otra" ? "otra" : "meta", valor, motivo: b.motivo || "", fecha: b.fecha || (b.registradoEn ? b.registradoEn.slice(0, 10) : null) });
     });
     return [...mapa.values()]
       .map((f) => ({ ...f, porTrabajador: [...f.porTrabajador.values()].sort((a, b) => (b.meta + b.otra) - (a.meta + a.otra)) }))
@@ -10637,79 +10637,60 @@ function RegistrarHorasExtrasView({ trabajadores, horasExtras, currentUser, onGu
 // (por ejemplo por cumplir una meta) que se le agrega a UN trabajador en
 // UNA quincena puntual, aplica a los 4 tipos de nómina (Fiscal, Fiscal
 // Destajo, Destajo, Prestación de Servicios) y se paga SIEMPRE en efectivo
-// (ver modulo-financiera.jsx y valorBonificacion() más arriba). Id
-// determinístico (trabajador+período) -- volver a guardar para el mismo
-// trabajador y la misma quincena corrige el valor/motivo anterior en vez
-// de duplicarlo, igual que el Ajuste de Nómina de Destajo.
+// (ver modulo-financiera.jsx y valorBonificacion() más arriba).
+// (2026-09-29, a pedido de Fredy) Las metas son diarias -- un trabajador
+// puede cumplirla varios dias dentro de la misma quincena, y cada una debe
+// sumarse aparte, no reemplazar a la anterior. Por eso cada "Guardar" crea
+// un registro NUEVO e independiente (id uid(), con su propia fecha), igual
+// que Horas Extras -- antes el id era fijo por trabajador+quincena+tipo, asi
+// que la segunda meta de la quincena pisaba a la primera en vez de sumarse.
+// valorBonificacion() (mas arriba) ya sumaba TODOS los documentos que
+// empezaran con trabajador+quincena, asi que no hubo que tocar el calculo
+// de nomina, solo dejar de sobreescribir el documento anterior.
 function RegistrarBonificacionView({ trabajadores, bonificaciones, currentUser, onGuardar, onBorrar, isAdmin }) {
   const hoy = new Date();
   const [trabajadorId, setTrabajadorId] = useState("");
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
   const [quincena, setQuincena] = useState(hoy.getDate() <= 15 ? "1" : "2");
-  // (2026-09-22, a pedido de Fredy) Dos tipos de bonificación
-  // INDEPENDIENTES por trabajador+quincena -- una por Metas y otra de
-  // concepto libre -- para que registrar una no le borre el valor a la
-  // otra (antes era un solo valor que se reemplazaba). Se guardan en
-  // documentos separados ("__meta" / "__otra") y se suman las dos al
-  // pagar -- ver valorBonificacion más arriba.
   const [tipo, setTipo] = useState("meta"); // "meta" | "otra"
+  const [fecha, setFecha] = useState(today());
   const [valor, setValor] = useState("");
   const [motivo, setMotivo] = useState("");
   const [guardando, setGuardando] = useState(false);
   const trabajadoresActivos = trabajadores.filter((t) => t.activo !== false).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const trabajadorSel = trabajadores.find((t) => t.id === trabajadorId);
   const periodoId = `${anio}-${mes}-Q${quincena}`;
-  // (2026-09-22) Antes de este cambio "meta" era el único tipo y su
-  // documento no llevaba sufijo -- si todavía existe ese documento
-  // "viejo" para este trabajador+quincena, se muestra como la
-  // bonificación de Metas hasta que se vuelva a guardar (ahí migra sola
-  // al id nuevo, ver guardar() más abajo).
-  function buscarExistente(id, periodo, t) {
-    if (!id) return null;
-    const nuevo = (bonificaciones || []).find((b) => b.id === `${id}__${periodo}__${t}`);
-    if (nuevo) return nuevo;
-    if (t === "meta") return (bonificaciones || []).find((b) => b.id === `${id}__${periodo}`) || null;
-    return null;
+  function etiquetaTipo(f) {
+    return f.tipo === "otra" ? "📝 Otra" : "🎯 Metas";
   }
-  const existente = buscarExistente(trabajadorId, periodoId, tipo);
+  // Todo lo que ya se guardo para este trabajador, esta quincena y este
+  // tipo -- se muestra debajo del formulario para que quede claro que
+  // "Guardar" AGREGA una mas, no reemplaza lo que ya habia (incluye los
+  // documentos "viejos" sin el campo tipo, de antes del 2026-09-22, como
+  // Meta).
+  const registrosDeQuincena = trabajadorId
+    ? (bonificaciones || [])
+        .filter((b) => b.trabajadorId === trabajadorId && b.periodoId === periodoId && (b.tipo || "meta") === tipo)
+        .sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""))
+    : [];
   const puedeGuardar = trabajadorId && Number(valor) !== 0 && !guardando;
-  function cargarCampos(id, periodo, t) {
-    const doc = buscarExistente(id, periodo, t);
-    setValor(doc ? String(doc.valor) : "");
-    setMotivo(doc ? (doc.motivo || "") : "");
-  }
-  function seleccionarTrabajador(id) {
-    setTrabajadorId(id);
-    cargarCampos(id, periodoId, tipo);
-  }
-  function seleccionarTipo(t) {
-    setTipo(t);
-    cargarCampos(trabajadorId, periodoId, t);
-  }
   async function guardar() {
     if (!puedeGuardar) return;
     setGuardando(true);
     try {
       await onGuardar({
-        id: `${trabajadorId}__${periodoId}__${tipo}`,
+        id: uid(),
         trabajadorId,
         trabajadorNombre: trabajadorSel?.nombre || "",
         periodoId,
         tipo,
+        fecha,
         valor: Number(valor) || 0,
         motivo: motivo.trim(),
         registradoPor: currentUser?.name || currentUser?.username || "",
         registradoEn: new Date().toISOString(),
       });
-      // Migra el documento viejo sin sufijo de tipo (solo aplica a
-      // "meta", que era el único tipo que existía antes) para que no se
-      // sume dos veces en valorBonificacion.
-      if (tipo === "meta") {
-        const legado = (bonificaciones || []).find((b) => b.id === `${trabajadorId}__${periodoId}`);
-        if (legado) await onBorrar(legado.id);
-      }
-      setTrabajadorId("");
       setValor("");
       setMotivo("");
     } finally {
@@ -10717,17 +10698,14 @@ function RegistrarBonificacionView({ trabajadores, bonificaciones, currentUser, 
     }
   }
   const recientes = [...(bonificaciones || [])].sort((a, b) => (b.registradoEn || "").localeCompare(a.registradoEn || "")).slice(0, 15);
-  function etiquetaTipo(f) {
-    return f.tipo === "otra" ? "📝 Otra" : "🎯 Metas";
-  }
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
-        Valor manual que se le agrega a UN trabajador en UNA quincena puntual -- aplica a Fiscal, Fiscal Destajo, Destajo y Prestación de Servicios por igual, y se paga SIEMPRE en efectivo. Puedes registrar hasta DOS bonificaciones independientes por trabajador y quincena -- una por Metas y otra de concepto libre -- y las dos se suman al pagar. Si vuelves a guardar la MISMA (mismo tipo), se corrige esa, sin afectar la otra.
+        Valor manual que se le agrega a UN trabajador en UNA quincena puntual -- aplica a Fiscal, Fiscal Destajo, Destajo y Prestación de Servicios por igual, y se paga SIEMPRE en efectivo. Puedes registrar VARIAS bonificaciones de Metas en la misma quincena (una por cada día que se cumplió) -- cada "Agregar" crea una nueva y todas se suman al pagar, sin borrar las anteriores.
       </div>
       <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20, marginBottom: 24, maxWidth: 620 }}>
         <Field label="Trabajador">
-          <FSel value={trabajadorId} onChange={seleccionarTrabajador} options={trabajadoresActivos.map((t) => ({ value: t.id, label: `${t.nombre} (${t.tipoNomina || "Sin tipo"})` }))} />
+          <FSel value={trabajadorId} onChange={setTrabajadorId} options={trabajadoresActivos.map((t) => ({ value: t.id, label: `${t.nombre} (${t.tipoNomina || "Sin tipo"})` }))} />
         </Field>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
           <Field label="Año"><FInput type="number" value={anio} onChange={setAnio} /></Field>
@@ -10738,22 +10716,38 @@ function RegistrarBonificacionView({ trabajadores, bonificaciones, currentUser, 
             <FSel value={quincena} onChange={setQuincena} options={[{ value: "1", label: "1 (días 1-15)" }, { value: "2", label: "2 (16-fin de mes)" }]} />
           </Field>
         </div>
-        <Field label="Tipo de bonificación">
-          <div style={{ display: "flex", gap: 8 }}>
-            <button type="button" onClick={() => seleccionarTipo("meta")} style={{ flex: 1, padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${tipo === "meta" ? C.ink : C.border}`, background: tipo === "meta" ? C.ink : C.white, color: tipo === "meta" ? "#fff" : C.ink, fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>🎯 Bonificación por Metas</button>
-            <button type="button" onClick={() => seleccionarTipo("otra")} style={{ flex: 1, padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${tipo === "otra" ? C.ink : C.border}`, background: tipo === "otra" ? C.ink : C.white, color: tipo === "otra" ? "#fff" : C.ink, fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>📝 Otra bonificación</button>
-          </div>
-        </Field>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <Field label="Tipo de bonificación">
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="button" onClick={() => setTipo("meta")} style={{ flex: 1, padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${tipo === "meta" ? C.ink : C.border}`, background: tipo === "meta" ? C.ink : C.white, color: tipo === "meta" ? "#fff" : C.ink, fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>🎯 Metas</button>
+              <button type="button" onClick={() => setTipo("otra")} style={{ flex: 1, padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${tipo === "otra" ? C.ink : C.border}`, background: tipo === "otra" ? C.ink : C.white, color: tipo === "otra" ? "#fff" : C.ink, fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>📝 Otra</button>
+            </div>
+          </Field>
+          <Field label="Fecha"><FInput type="date" value={fecha} onChange={setFecha} /></Field>
+        </div>
         <Field label="Valor de la bonificación"><FInput type="number" value={valor} onChange={setValor} placeholder="Ej: 50000" /></Field>
-        <Field label={tipo === "otra" ? "Concepto" : "Motivo"}><FInput value={motivo} onChange={setMotivo} placeholder={tipo === "otra" ? "Escribe aquí el concepto (ej: Apoyo transporte extra)" : "Ej: Cumplió meta de calidad de la quincena"} /></Field>
-        {existente && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>⚠ Ya hay una bonificación de este tipo guardada para este trabajador en esta quincena ({fmtMoney(existente.valor)}) -- si guardas, la reemplaza (la otra bonificación, si tiene, no se toca).</div>}
-        <Btn onClick={guardar} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Guardar Bonificación"}</Btn>
+        <Field label={tipo === "otra" ? "Concepto" : "Motivo"}><FInput value={motivo} onChange={setMotivo} placeholder={tipo === "otra" ? "Escribe aquí el concepto (ej: Apoyo transporte extra)" : "Ej: Cumplió meta de calidad del día"} /></Field>
+        {!!registrosDeQuincena.length && (
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 12, background: C.canvas, borderRadius: 8, padding: "8px 12px" }}>
+            <div style={{ fontWeight: 700, color: C.ink, marginBottom: 4 }}>
+              Ya registradas en esta quincena ({etiquetaTipo({ tipo })}) — {registrosDeQuincena.length}
+            </div>
+            {registrosDeQuincena.map((r) => (
+              <div key={r.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "3px 0" }}>
+                <span>{r.fecha ? fmtFechaISO(r.fecha) : "—"} · {fmtMoney(r.valor)}{r.motivo ? ` · ${r.motivo}` : ""}</span>
+                {isAdmin && <span onClick={() => onBorrar(r.id)} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>}
+              </div>
+            ))}
+          </div>
+        )}
+        <Btn onClick={guardar} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "+ Agregar Bonificación"}</Btn>
       </div>
       <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>ÚLTIMOS REGISTROS</div>
       <Tabla
         vacio="Sin bonificaciones registradas todavía."
         columnas={[
           { key: "periodoId", label: "Quincena", render: (f) => f.periodoId },
+          { key: "fecha", label: "Fecha", render: (f) => (f.fecha ? fmtFechaISO(f.fecha) : "—") },
           { key: "trabajadorNombre", label: "Trabajador" },
           { key: "tipo", label: "Tipo", render: (f) => etiquetaTipo(f) },
           { key: "valor", label: "Valor", align: "right", render: (f) => <strong>{fmtMoney(f.valor)}</strong> },
