@@ -3745,7 +3745,13 @@ function AusenciaModal({ ausencia, trabajadores, motivosDisponibles = MOTIVOS_AU
 function AusenciasView({ ausencias, trabajadores, currentUser, motivosDisponibles, onSave, onDelete }) {
   const [modal, setModal] = useState(null); // null | "nuevo" | ausencia
   const [confirmDel, setConfirmDel] = useState(null);
-  const ordenadas = [...ausencias].sort((a, b) => (b.fechaInicio || "").localeCompare(a.fechaInicio || ""));
+  // (2026-09-29, a pedido de Fredy) Buscador por nombre -- la lista puede
+  // tener muchas ausencias de muchos trabajadores distintos, asi que se
+  // filtra antes de ordenar/mostrar.
+  const [busqueda, setBusqueda] = useState("");
+  const ordenadas = [...ausencias]
+    .filter((a) => !busqueda.trim() || (a.nombre || "").toLowerCase().includes(busqueda.trim().toLowerCase()))
+    .sort((a, b) => (b.fechaInicio || "").localeCompare(a.fechaInicio || ""));
   return (
     <div>
       {modal && (
@@ -3773,8 +3779,11 @@ function AusenciasView({ ausencias, trabajadores, currentUser, motivosDisponible
          cualquiera que llegue a esta pantalla ya tiene permiso legitimo
          (admin, o Nomina Completa/Solo Novedades no-lider -- los lideres de
          area nunca llegan aca, ver el guard "!areaLider" en ModuloNomina). */}
-      <div style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
         <Btn onClick={() => setModal("nuevo")}>+ Nueva Ausencia</Btn>
+        <div style={{ maxWidth: 260 }}>
+          <FInput value={busqueda} onChange={setBusqueda} placeholder="Buscar por nombre..." icon="🔍" />
+        </div>
       </div>
       <Tabla
         vacio="Sin ausencias registradas."
