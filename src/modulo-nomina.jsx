@@ -5562,14 +5562,23 @@ function diasLaboralesEnIntervalo(desde, hasta, turno) {
   }
   return dias;
 }
-function diasCalendarioSinSueldo(ausencias, trabajador, areasNomina, turnos, desde, hasta) {
+// (2026-09-29, a pedido de Fredy) Generaliza el conteo "en dias habiles
+// reales" (sin sabado/domingo/festivo, segun el turno del trabajador) para
+// poder usarlo tanto con Licencia No Remunerada (como ya se hacia) como con
+// Vacaciones -- caso real que lo disparo: Andreina Vargas tomo vacaciones
+// del 16 al 30 de agosto (15 dias de CALENDARIO), pero de esos solo 10 son
+// dias habiles (sin contar el sabado/domingo de por medio); Fredy confirmo
+// que las vacaciones tomadas tambien deben restarse solo por dias habiles,
+// igual que Licencia No Remunerada, y no por dias de calendario como se
+// hacia antes (ver diasCalendarioPorMotivos, que ya no se usa para esto).
+function diasHabilesPorMotivos(ausencias, trabajador, areasNomina, turnos, motivos, desde, hasta) {
   // Misma fusion de rangos traslapados/duplicados que diasCalendarioPorMotivos
   // (ver comentario de esa funcion) -- aca cada intervalo ya fusionado se
   // cuenta en dias laborales reales, no en dias de calendario.
   const intervalos = [];
   (ausencias || []).forEach((a) => {
     if (a.trabajadorId !== trabajador.id) return;
-    if (!MOTIVOS_SIN_SUELDO.includes(a.motivo)) return;
+    if (!motivos.includes(a.motivo)) return;
     const inicio = a.fechaInicio > desde ? a.fechaInicio : desde;
     const fin = a.fechaFin < hasta ? a.fechaFin : hasta;
     if (inicio > fin) return;
@@ -5587,6 +5596,9 @@ function diasCalendarioSinSueldo(ausencias, trabajador, areasNomina, turnos, des
   });
   const turno = resolverTurnoDeTrabajador(trabajador, areasNomina, turnos);
   return fusionados.reduce((s, [inicio, fin]) => s + diasLaboralesEnIntervalo(inicio, fin, turno), 0);
+}
+function diasCalendarioSinSueldo(ausencias, trabajador, areasNomina, turnos, desde, hasta) {
+  return diasHabilesPorMotivos(ausencias, trabajador, areasNomina, turnos, MOTIVOS_SIN_SUELDO, desde, hasta);
 }
 // (2026-09-16, a pedido de Fredy) Igual que la Licencia No Remunerada, los
 // dias que el trabajador no vino a laborar y no tenia permiso registrado
@@ -5714,7 +5726,7 @@ function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias, faltas = [
   const diasSinJustificar = diasSinJustificarEnRango(faltas, trabajador, nombreNorm, fechaIngreso, fechaCorte);
   const fechasSinJustificar = fechasSinJustificarEnRango(faltas, trabajador, nombreNorm, fechaIngreso, fechaCorte);
   const vacacionesAcumuladas = (sueldoMensual * diasBase) / 720;
-  const diasVacacionesTomados = diasCalendarioPorMotivos(ausencias, trabajador.id, ["Vacaciones"], fechaIngreso, fechaCorte);
+  const diasVacacionesTomados = diasHabilesPorMotivos(ausencias, trabajador, areasNomina, turnos, ["Vacaciones"], fechaIngreso, fechaCorte);
   const valorVacacionesTomadas = (sueldoMensual / 30) * diasVacacionesTomados;
   const vacaciones = Math.max(0, vacacionesAcumuladas - valorVacacionesTomadas);
   const totalAPagar = cesantias + intereses + prima + vacaciones;
