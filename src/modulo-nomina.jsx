@@ -253,20 +253,24 @@ function FSel({ value, onChange, options, groups, placeholder = "Seleccionar..."
   );
 }
 function Modal({ title, onClose, children, width = 560 }) {
+  // (2026-09-29, a pedido de Fredy) La ventana se puede agrandar/achicar
+  // arrastrando la esquina inferior derecha (CSS resize) -- util sobre todo
+  // en los modales de detalle con tablas largas (dias de hora extra,
+  // registros de bonificacion).
   return (
     <div
       style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
       onClick={onClose}
     >
       <div
-        style={{ background: C.white, borderRadius: 14, width: "100%", maxWidth: width, maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}
+        style={{ background: C.white, borderRadius: 14, width: "100%", maxWidth: width, minWidth: 300, maxHeight: "90vh", minHeight: 180, overflow: "auto", resize: "both", display: "flex", flexDirection: "column", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}
         onClick={(e) => e.stopPropagation()}
       >
         <div style={{ padding: "18px 24px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
           <span style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>{title}</span>
           <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: C.slate }}>×</button>
         </div>
-        <div style={{ padding: 24, overflowY: "auto" }}>{children}</div>
+        <div style={{ padding: 24, overflowY: "auto", flex: 1 }}>{children}</div>
       </div>
     </div>
   );
@@ -8942,7 +8946,7 @@ function HistoricoBonificacionesView({ trabajadores, bonificaciones }) {
       const valor = Number(b.valor) || 0;
       if (b.tipo === "otra") { acc.otra += valor; t.otra += valor; }
       else { acc.meta += valor; t.meta += valor; } // "meta" y el documento legado sin sufijo de tipo
-      t.registros.push({ periodoId, tipo: b.tipo === "otra" ? "otra" : "meta", valor, motivo: b.motivo || "" });
+      t.registros.push({ periodoId, tipo: b.tipo === "otra" ? "otra" : "meta", valor, motivo: b.motivo || "", fecha: b.registradoEn ? b.registradoEn.slice(0, 10) : null });
     });
     return [...mapa.values()]
       .map((f) => ({ ...f, porTrabajador: [...f.porTrabajador.values()].sort((a, b) => (b.meta + b.otra) - (a.meta + a.otra)) }))
@@ -9057,6 +9061,7 @@ function HistoricoBonificacionesView({ trabajadores, bonificaciones }) {
             vacio="Sin registros en este período."
             columnas={[
               { key: "periodoId", label: "Quincena" },
+              { key: "fecha", label: "Día aplicado", render: (r) => r.fecha ? fmtFechaISO(r.fecha) : <span style={{ color: C.slate }}>—</span> },
               { key: "tipo", label: "Tipo", render: (r) => r.tipo === "otra" ? "📝 Otra" : "🎯 Metas" },
               { key: "valor", label: "Valor", align: "right", render: (r) => <strong>{fmtMoney(r.valor)}</strong> },
               { key: "motivo", label: "Motivo", render: (r) => r.motivo || <span style={{ color: C.slate }}>—</span> },
