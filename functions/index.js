@@ -2744,12 +2744,25 @@ exports.getCuentasPorPagarBusintGen = onCall(
     // "maestro de proveedores" (confirmado revisando la tabla completa), es
     // un dato faltante en Busint mismo. Bloques de diagnóstico temporal ya
     // borrados (cumplieron su propósito).
+    // (2026-09-29) DEBUG TEMPORAL -- para encontrar en que paso exacto
+    // desaparece Comercializadora Idea Innova SAS (codigo 2298, factura
+    // 16954) del corte REAL (ya se descarto truncamiento de paginacion:
+    // totalFacturas/totalPagos abajo estan muy por debajo del tope de
+    // 100.000 filas, y depurarFacturaCxp ya confirmo que el calculo
+    // aislado da saldo $669.042,61). Quitar este bloque cuando se
+    // resuelva el caso.
+    const debugLlaveInnova = facturasPorLlave.get("2298|16954") || null;
+    const debugPagadoInnova = pagadoPorFactura.get("2298|16954") ?? null;
+    const debugProveedorInnova = proveedoresResultado.find((p) => /INNOVA/i.test(p.nombre)) || null;
     logger.info("CXP: corte generado", {
       totalProveedores: proveedoresResultado.length,
       totalFacturas: facturas.length,
       totalPagos: pagos.length,
       totalNotasDescuento: notasDescuento.length,
       totalProveedoresCatalogo: proveedores.length,
+      debugLlaveInnova,
+      debugPagadoInnova,
+      debugProveedorInnova,
     });
 
     return {
