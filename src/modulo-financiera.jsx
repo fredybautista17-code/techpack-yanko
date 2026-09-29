@@ -137,19 +137,31 @@ function KPI({ icon, label, value, color, bg, sub }) {
     </div>
   );
 }
+// (2026-09-29, a pedido de Fredy) Seguridad social y prestaciones sociales
+// partidas en 2 funciones separadas (antes iban juntas dentro de
+// costoTotalLiquidacion) -- las usa Pago de Nómina para mostrarlas en 2
+// tarjetas distintas, porque son 2 cuentas contables distintas al causar.
+// Seguridad social: EPS + pensión (trabajador y empresa) + ARL + Caja de
+// Compensación -- solo aplica a Fiscal, las demás nóminas no tienen estos
+// campos.
+function seguridadSocialLiquidacion(l) {
+  return (l.epsTrabajador || 0) + (l.pensionTrabajador || 0)
+    + (l.pensionEmpleador || 0) + (l.arlEmpleador || 0) + (l.cajaCompensacionEmpleador || 0) + (l.epsEmpleador || 0);
+}
+// Prestaciones sociales: cesantías + intereses + prima + vacaciones de la
+// quincena -- aplica a Fiscal/Fiscal Destajo/Destajo (en Destajo, $0 si el
+// trabajador tiene marcado "Pagar por día"). Prestación de Servicios nunca
+// aporta nada (son contratistas, no tienen prestaciones).
+function prestacionesSocialesLiquidacion(l) {
+  return (l.cesantiasPeriodo || 0) + (l.interesesPeriodo || 0) + (l.primaPeriodo || 0) + (l.vacacionesPeriodo || 0);
+}
 // (2026-09-19, a pedido de Fredy) "Costo total para la empresa" de una
 // liquidación -- misma fórmula que ya usa Nómina → Reporte por Área
 // (costoTotalLiquidacion en modulo-nomina.jsx): lo que se le paga al
-// trabajador + los aportes patronales de seguridad social (solo aplica a
-// Fiscal) + las provisiones de prestaciones sociales (cesantías, intereses,
-// prima, vacaciones -- aplica a Fiscal/Fiscal Destajo/Destajo). Prestación
-// de Servicios no tiene ninguno de estos campos, así que aporta $0 acá,
-// solo su Neto a Pagar.
+// trabajador + seguridad social + prestaciones sociales (ver las 2
+// funciones de arriba).
 function costoTotalLiquidacion(l) {
-  return (l.netoAPagar || 0)
-    + (l.epsTrabajador || 0) + (l.pensionTrabajador || 0)
-    + (l.pensionEmpleador || 0) + (l.arlEmpleador || 0) + (l.cajaCompensacionEmpleador || 0) + (l.epsEmpleador || 0)
-    + (l.cesantiasPeriodo || 0) + (l.interesesPeriodo || 0) + (l.primaPeriodo || 0) + (l.vacacionesPeriodo || 0);
+  return (l.netoAPagar || 0) + seguridadSocialLiquidacion(l) + prestacionesSocialesLiquidacion(l);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -270,6 +282,13 @@ function PagoNominaView({ currentUser }) {
   const isAdmin = currentUser?.isAdmin;
   const hoy = new Date();
   const [tipoPeriodo, setTipoPeriodo] = useState("mes"); // "quincena" | "mes"
+  // (2026-09-29, a pedido de Fredy) Checkbox "Excluir Maquila (para
+  // causación)" -- Fredy no causa la seguridad social ni las prestaciones
+  // sociales de Maquila en la contabilidad, así que necesita ver esas 4
+  // tarjetas sin ese personal. NO afecta el resto de la pantalla (cuántos
+  // trabajadores hay, la matriz "¿Cómo pagar?") -- a Maquila sí hay que
+  // pagarle igual, solo que no se causa aquí.
+  const [excluirMaquila, setExcluirMaquila] = useState(false);
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
   const [mes, setMes] = useState(String(hoy.getMonth() + 1).padStart(2, "0"));
   const [quincena, setQuincena] = useState(hoy.getDate() <= 15 ? "1" : "2");
@@ -321,8 +340,20 @@ function PagoNominaView({ currentUser }) {
   }));
   const totalTrabajadores = porTipo.reduce((s, g) => s + g.liquidaciones.length, 0);
   const totalAPagar = porTipo.reduce((s, g) => s + g.neto, 0);
-  const totalCostoEmpresa = porTipo.reduce((s, g) => s + g.costoTotal, 0);
-  const provision = totalCostoEmpresa - totalAPagar;
+  // (2026-09-29, a pedido de Fredy) Las 4 tarjetas de arriba tienen su
+  // propia version de los totales, separada de totalAPagar (que sigue
+  // siendo el real de toda la empresa, usado en la matriz "¿Cómo pagar?"
+  // mas abajo) -- para que el checkbox de Maquila solo afecte esas 4
+  // tarjetas.
+  const areaPorTrabajadorId = new Map(trabajadores.map((t) => [t.id, (t.area || "").trim().toUpperCase()]));
+  const todasLasLiquidaciones = porTipo.flatMap((g) => g.liquidaciones);
+  const liquidacionesKPI = excluirMaquila
+    ? todasLasLiquidaciones.filter((l) => areaPorTrabajadorId.get(l.trabajadorId) !== "MAQUILA")
+    : todasLasLiquidaciones;
+  const totalAPagarKPI = liquidacionesKPI.reduce((s, l) => s + (l.netoAPagar || 0), 0);
+  const totalSeguridadSocial = liquidacionesKPI.reduce((s, l) => s + seguridadSocialLiquidacion(l), 0);
+  const totalPrestacionesSociales = liquidacionesKPI.reduce((s, l) => s + prestacionesSocialesLiquidacion(l), 0);
+  const totalCostoEmpresaKPI = totalAPagarKPI + totalSeguridadSocial + totalPrestacionesSociales;
   // (2026-09-19, a pedido de Fredy) Matriz "¿Cómo pagar?" -- Forma de pago
   // (Efectivo/Banco, según FORMA_PAGO_POR_TIPO) x Empleador (Yanko/Indutex,
   // el que tiene HOY cada trabajador -- si ya no está en el sistema o no
@@ -457,10 +488,18 @@ function PagoNominaView({ currentUser }) {
           ) : (
             <>
               <div style={{ fontSize: 12, color: C.slate, fontWeight: 700, marginBottom: 10 }}>{rangoTexto} — {totalTrabajadores} trabajador{totalTrabajadores === 1 ? "" : "es"} con liquidación confirmada</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14, marginBottom: 24 }}>
-                <KPI icon="💵" label="Total a pagar" value={fmtMoney(totalAPagar)} color={C.green} bg={C.greenBg} sub="Neto a pagar de las 4 nóminas" />
-                <KPI icon="🏛️" label="Provisión (seg. social + prestaciones sociales)" value={fmtMoney(provision)} color={C.violet} bg={C.violetBg} sub="Aparte del Neto a Pagar" />
-                <KPI icon="📊" label="Costo total de nómina" value={fmtMoney(totalCostoEmpresa)} color={C.ink} bg={C.canvas} sub="Total a pagar + Provisión" />
+              <label style={{ display: "flex", alignItems: "center", gap: 10, background: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 16px", marginBottom: 16, maxWidth: 480, cursor: "pointer" }}>
+                <input type="checkbox" checked={excluirMaquila} onChange={(e) => setExcluirMaquila(e.target.checked)} style={{ width: 17, height: 17, accentColor: C.violet, cursor: "pointer" }} />
+                <span>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>Excluir Maquila (para causación)</div>
+                  <div style={{ fontSize: 11, color: C.slate, fontWeight: 500, marginTop: 1 }}>Recalcula las 4 tarjetas de abajo sin los trabajadores del área Maquila</div>
+                </span>
+              </label>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 14, marginBottom: 24 }}>
+                <KPI icon="💵" label="Total a pagar" value={fmtMoney(totalAPagarKPI)} color={C.green} bg={C.greenBg} sub="Neto a pagar de las 4 nóminas" />
+                <KPI icon="🏛️" label="Seguridad social" value={fmtMoney(totalSeguridadSocial)} color={C.violet} bg={C.violetBg} sub="EPS + Pensión + ARL + Caja" />
+                <KPI icon="🎁" label="Prestaciones sociales" value={fmtMoney(totalPrestacionesSociales)} color={C.violet} bg={C.violetBg} sub="Cesantías + intereses + prima + vacaciones" />
+                <KPI icon="📊" label="Costo total de nómina" value={fmtMoney(totalCostoEmpresaKPI)} color={C.ink} bg={C.canvas} sub="Total a pagar + las dos de arriba" />
               </div>
 
               <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>¿Cómo pagar?</div>
