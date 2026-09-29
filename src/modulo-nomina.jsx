@@ -8763,7 +8763,10 @@ function periodoIdDeFecha(fecha) {
 function HistoricoHorasExtrasView({ trabajadores, horasExtras }) {
   const [tipoPeriodo, setTipoPeriodo] = useState("quincena"); // "quincena" | "mes"
   const [periodosAbiertos, setPeriodosAbiertos] = useState({});
-  const [trabajadoresAbiertos, setTrabajadoresAbiertos] = useState({});
+  // (2026-09-29, a pedido de Fredy) El detalle día por día de un trabajador
+  // ya no se despliega debajo de la tabla (empujaba todo el contenido) --
+  // ahora abre en un Modal aparte, igual al de "Editar hora extra".
+  const [modalDias, setModalDias] = useState(null); // { periodo, nombre, dias }
 
   function nombreTrabajador(id, fallback) {
     return (trabajadores || []).find((t) => t.id === id)?.nombre || fallback || "(Sin nombre)";
@@ -8824,8 +8827,9 @@ function HistoricoHorasExtrasView({ trabajadores, horasExtras }) {
   function togglePeriodo(periodo) {
     setPeriodosAbiertos((prev) => ({ ...prev, [periodo]: !prev[periodo] }));
   }
-  function toggleTrabajador(clave) {
-    setTrabajadoresAbiertos((prev) => ({ ...prev, [clave]: !prev[clave] }));
+  function abrirDias(periodo, t) {
+    const dias = [...t.dias].sort((a, b) => a.fecha.localeCompare(b.fecha));
+    setModalDias({ periodo, nombre: t.nombre, dias });
   }
 
   // (2026-09-29, a pedido de Fredy) Vive DENTRO de "Registrar Horas Extra"
@@ -8874,7 +8878,7 @@ function HistoricoHorasExtrasView({ trabajadores, horasExtras }) {
                       columnas={[
                         { key: "nombre", label: "Trabajador", render: (t) => (
                           <span style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600 }}>
-                            <span style={{ fontSize: 10, color: C.slate }}>{trabajadoresAbiertos[`${f.periodo}__${t.trabajadorId}`] ? "▾" : "▸"}</span>
+                            <span style={{ fontSize: 10, color: C.slate }}>🔍</span>
                             {t.nombre}
                           </span>
                         ) },
@@ -8882,33 +8886,30 @@ function HistoricoHorasExtrasView({ trabajadores, horasExtras }) {
                         { key: "extra", label: "Total", align: "right", render: (t) => <strong style={{ color: C.amber }}>{fmtMoney(t.extra)}</strong> },
                       ]}
                       filas={f.porTrabajador}
-                      onRowClick={(t) => toggleTrabajador(`${f.periodo}__${t.trabajadorId}`)}
+                      onRowClick={(t) => abrirDias(f.periodo, t)}
                     />
-                    {f.porTrabajador.filter((t) => trabajadoresAbiertos[`${f.periodo}__${t.trabajadorId}`]).map((t) => {
-                      const dias = [...t.dias].sort((a, b) => a.fecha.localeCompare(b.fecha));
-                      return (
-                        <div key={t.trabajadorId} style={{ marginTop: 14 }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: C.amber, textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 6 }}>🕐 Días de Hora Extra — {t.nombre}</div>
-                          <Tabla
-                            vacio="Sin días en este período."
-                            columnas={[
-                              { key: "fecha", label: "Fecha", render: (d) => fmtFechaISO(d.fecha) },
-                              { key: "tipo", label: "Tipo" },
-                              { key: "horas", label: "Horas", align: "right", render: (d) => fmtNum(d.horas) },
-                              { key: "valor", label: "Valor", align: "right", render: (d) => fmtMoney(d.valor) },
-                              { key: "observacion", label: "Observación", render: (d) => d.observacion || <span style={{ color: C.slate }}>—</span> },
-                            ]}
-                            filas={dias}
-                          />
-                        </div>
-                      );
-                    })}
                   </div>
                 )}
               </div>
             );
           })}
         </>
+      )}
+      {modalDias && (
+        <Modal title={`Días de Hora Extra — ${modalDias.nombre}`} onClose={() => setModalDias(null)} width={640}>
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Período: {modalDias.periodo}</div>
+          <Tabla
+            vacio="Sin días en este período."
+            columnas={[
+              { key: "fecha", label: "Fecha", render: (d) => fmtFechaISO(d.fecha) },
+              { key: "tipo", label: "Tipo" },
+              { key: "horas", label: "Horas", align: "right", render: (d) => fmtNum(d.horas) },
+              { key: "valor", label: "Valor", align: "right", render: (d) => fmtMoney(d.valor) },
+              { key: "observacion", label: "Observación", render: (d) => d.observacion || <span style={{ color: C.slate }}>—</span> },
+            ]}
+            filas={modalDias.dias}
+          />
+        </Modal>
       )}
     </div>
   );
