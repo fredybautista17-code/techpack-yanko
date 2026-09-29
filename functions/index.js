@@ -2502,20 +2502,36 @@ exports.getCuentasPorPagarBusintGen = onCall(
     const pagadoPorFactura = new Map();
     // (2026-09-27, a pedido de Fredy) "cxp-pagos detalles" y "cxp-pagosotros
     // detalles" son dos tablas HERMANAS con exactamente los mismos campos
-    // (CodigoP, Nfact, Totalp) -- Busint las usa para distintas formas de
-    // pago. Investigando el saldo fantasma de TINTATEX S.A ($308.238.792,
-    // $207.966.579 en "91+", cuando el reporte oficial de Busint la muestra
-    // en $0) se encontro que sus 14 facturas mas recientes (FEM-XXXX) SI
-    // estaban pagadas, pero el pago vivia solo en "cxp-pagosotros detalles"
-    // (ej. factura FEM-3293: $32.044.566, pago Npago 2293 por el mismo
-    // valor exacto, encontrado con buscarValorEnTablasBusintBD) -- esta
-    // funcion nunca la consultaba, así que ese pago no se restaba.
+    // (CodigoP, Nfact, Totalp, Cheque) -- Busint las usa para distintas
+    // formas de pago. Investigando el saldo fantasma de TINTATEX S.A
+    // ($308.238.792, $207.966.579 en "91+", cuando el reporte oficial de
+    // Busint la muestra en $0) se encontro que sus 14 facturas mas
+    // recientes (FEM-XXXX) SI estaban pagadas, pero el pago vivia solo en
+    // "cxp-pagosotros detalles" (ej. factura FEM-3293: $32.044.566, pago
+    // Npago 2293 por el mismo valor exacto, encontrado con
+    // buscarValorEnTablasBusintBD) -- esta funcion nunca la consultaba, así
+    // que ese pago no se restaba.
+    //
+    // (2026-09-29, a pedido de Fredy) Se cambia que campo se suma como
+    // "pagado": ANTES sumaba `Totalp`, que resulto NO ser el monto
+    // desembolsado en ese pago puntual, sino el saldo de la factura EN EL
+    // MOMENTO de ese pago (por eso en una factura pagada en 2 abonos, el
+    // primer pago trae Totalp=saldo original y el segundo trae
+    // Totalp=saldo restante -- sumarlos da de mas). El monto real
+    // desembolsado esta en `Cheque` (confirmado contra el reporte oficial
+    // de Busint para COMERCIALIZADORA INTERNACIONAL IDEA INNOVA SAS,
+    // factura 16954: Totalp=$2.963.035 -- igual al FACTOTAL completo,
+    // Cheque=$2.293.992,39 -- el pago real, dejando $669.043 pendientes
+    // tal como lo muestra Busint). Se deja `Totalp` como respaldo solo si
+    // algun pago viejo no trajera `Cheque` (no visto en las pruebas, pero
+    // por si acaso, para no contar esos como $0 pagado).
     [...pagos, ...pagosOtros].forEach((p) => {
       const codigo = normalizarCodigoCxp(p?.CodigoP);
       const nfact = normalizarCodigoCxp(p?.Nfact);
       if (!codigo || !nfact) return;
       const llave = `${codigo}|${nfact}`;
-      pagadoPorFactura.set(llave, (pagadoPorFactura.get(llave) || 0) + (Number(p?.Totalp) || 0));
+      const montoPagado = p?.Cheque != null ? (Number(p.Cheque) || 0) : (Number(p?.Totalp) || 0);
+      pagadoPorFactura.set(llave, (pagadoPorFactura.get(llave) || 0) + montoPagado);
     });
     // (2026-09-25) Descuentos por pronto pago (nota crédito, 30/60 días según
     // el plazo pactado con el proveedor) -- confirmado a mano con Fredy y con
