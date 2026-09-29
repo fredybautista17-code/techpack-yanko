@@ -1149,6 +1149,28 @@ const GRUPOS_CLIENTE_PRODUCCION = [
   { id: "kamila_co", label: "Kamila Colombia" },
   { id: "kamila_ve", label: "Kamila Venezuela" },
 ];
+// (2026-09-29, a pedido de Fredy) Mapeo id de GRUPOS_CLIENTE_PRODUCCION ->
+// nombre(s) de cliente EXACTOS que usan los Pedidos/Preórdenes propios de
+// ATLAS (campo "cliente", comparado sin distinguir mayúsculas/tildes vía
+// foldTexto) -- para que la previsualización de admin en "Producción"
+// pueda cruzar con Pedidos/Preórdenes reales igual que ve un cliente real
+// (antes esos dos valores se dejaban en blanco "--" en ese modo).
+//
+// Los Pedidos de Kamila ya vienen separados por país (cliente distinto por
+// cada uno: "Kamila Colombia" / "Kamila Venezuela"), así que ahí se filtra
+// por el nombre exacto de cada país. Las Preórdenes a veces traen un solo
+// pedido combinado con columnas separadas "Cant. Col."/"Cant. Ven." por
+// ítem -- por eso ahí se busca bajo CUALQUIERA de los dos nombres (para no
+// perder datos si la preorden quedó etiquetada solo con uno) y luego
+// columnaPreorden le dice a agruparProduccionPorCampo cuál cantidad sumar.
+//
+// Agregar un cliente nuevo a futuro es solo agregar su llave acá (y en
+// GRUPOS_CLIENTE_PRODUCCION arriba y en GRUPOS_CLIENTE_BUSINT del backend).
+const GRUPOS_CLIENTE_PRODUCCION_ATLAS = {
+  kamila: { nombresPedido: ["Kamila Colombia", "Kamila Venezuela"], nombresPreorden: ["Kamila Colombia", "Kamila Venezuela"], columnaPreorden: "ambas" },
+  kamila_co: { nombresPedido: ["Kamila Colombia"], nombresPreorden: ["Kamila Colombia", "Kamila Venezuela"], columnaPreorden: "colombia" },
+  kamila_ve: { nombresPedido: ["Kamila Venezuela"], nombresPreorden: ["Kamila Colombia", "Kamila Venezuela"], columnaPreorden: "venezuela" },
+};
 
 function LoadingScreen({ message }) {
   return (
@@ -5179,7 +5201,7 @@ function ComprasSinOrdenModal({ entregas, preordenes, config, puedeIngresarTela,
 // ningún lote de Busint todavía) no tienen cómo saber su línea, así que se
 // dejan siempre visibles en "(Sin categoría)" sin importar el filtro --
 // desaparecerlas sería esconder pedido pendiente real.
-function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesCliente, campo, filtroLinea) {
+function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesCliente, campo, filtroLinea, columnaPreorden) {
   const sinEtiqueta = campo === "linea" ? "(Sin línea)" : "(Sin categoría)";
   const porReferencia = new Map();
   const tieneDatosPedido = Array.isArray(pedidosCliente);
@@ -5228,7 +5250,16 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
         const fila = porReferencia.get(ref);
         if (!fila.categoria && it.categoria) fila.categoria = it.categoria;
         if (!fila.linea && it.tipo) fila.linea = it.tipo;
-        fila.enPreorden += (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0);
+        // (2026-09-29, a pedido de Fredy) columnaPreorden lo manda la
+        // previsualización de admin cuando quiere un país puntual (ver
+        // GRUPOS_CLIENTE_PRODUCCION_ATLAS) -- un cliente real sigue sumando
+        // ambas columnas como siempre (columnaPreorden llega undefined/"ambas").
+        const cantidadPreorden = columnaPreorden === "colombia"
+          ? (Number(it.colombiaCantidad) || 0)
+          : columnaPreorden === "venezuela"
+          ? (Number(it.venezuelaCantidad) || 0)
+          : (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0);
+        fila.enPreorden += cantidadPreorden;
       });
     });
   }
@@ -5258,7 +5289,7 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
     .sort((a, b) => (b.planta + b.semiterminado + b.bpt + (b.sinCortar || 0) + (b.enPreorden || 0)) - (a.planta + a.semiterminado + a.bpt + (a.sinCortar || 0) + (a.enPreorden || 0)));
 }
 
-function ProduccionView({ currentUser, pedidosCliente, preordenesCliente }) {
+function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosPedidos, todasPreordenes }) {
   const esAdmin = !!currentUser?.isAdmin;
   // (2026-09-25, a pedido de Fredy) Un usuario Cliente puede tener más de un
   // grupo de Producción (ej. Kamila Colombia + Kamila Venezuela) -- con más
@@ -5279,6 +5310,28 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente }) {
 
   const clienteIdEfectivo = esAdmin ? clienteIdAdmin : clienteIdCliente;
   const grupoEfectivo = GRUPOS_CLIENTE_PRODUCCION.find((g) => g.id === clienteIdEfectivo) || null;
+
+  // (2026-09-29, a pedido de Fredy) Para la previsualización de admin, cruzar
+  // con los Pedidos/Preórdenes REALES de Kamila (todosPedidos/todasPreordenes
+  // llegan sin filtrar desde ModuloApp) usando GRUPOS_CLIENTE_PRODUCCION_ATLAS
+  // -- así "En Preórdenes"/"Sin cortar" dejan de mostrar "--" en ese modo y
+  // el admin ve exactamente lo que vería ese cliente. Para el usuario Cliente
+  // real no cambia nada: sigue usando pedidosCliente/preordenesCliente tal
+  // como llegan (ya filtrados en ModuloApp por sus clientesAsociados).
+  const grupoAtlasAdmin = esAdmin ? (GRUPOS_CLIENTE_PRODUCCION_ATLAS[clienteIdEfectivo] || null) : null;
+  const pedidosAdminPreview = useMemo(() => {
+    if (!grupoAtlasAdmin) return null;
+    const nombresNorm = grupoAtlasAdmin.nombresPedido.map(foldTexto);
+    return (todosPedidos || []).filter((p) => nombresNorm.includes(foldTexto(p.cliente)));
+  }, [grupoAtlasAdmin, todosPedidos]);
+  const preordenesAdminPreview = useMemo(() => {
+    if (!grupoAtlasAdmin) return null;
+    const nombresNorm = grupoAtlasAdmin.nombresPreorden.map(foldTexto);
+    return (todasPreordenes || []).filter((p) => nombresNorm.includes(foldTexto(p.cliente)));
+  }, [grupoAtlasAdmin, todasPreordenes]);
+  const pedidosParaCruce = esAdmin ? pedidosAdminPreview : pedidosCliente;
+  const preordenesParaCruce = esAdmin ? preordenesAdminPreview : preordenesCliente;
+  const columnaPreordenAdmin = grupoAtlasAdmin?.columnaPreorden || "ambas";
 
   async function cargar() {
     if (!clienteIdEfectivo) { setCargando(false); return; }
@@ -5307,7 +5360,7 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente }) {
   // (modulo-planeacion.jsx), para no inventar una lista fija de líneas que
   // luego no calce con lo que Busint reporte.
   const lineasDisponibles = useMemo(() => [...new Set(lotes.map((l) => l.linea).filter(Boolean))].sort(), [lotes]);
-  const categorias = useMemo(() => agruparProduccionPorCampo(lotes, esAdmin ? null : pedidosCliente, esAdmin ? null : preordenesCliente, agruparPor, agruparPor === "categoria" ? filtroLinea : null), [lotes, pedidosCliente, preordenesCliente, esAdmin, agruparPor, filtroLinea]);
+  const categorias = useMemo(() => agruparProduccionPorCampo(lotes, pedidosParaCruce, preordenesParaCruce, agruparPor, agruparPor === "categoria" ? filtroLinea : null, columnaPreordenAdmin), [lotes, pedidosParaCruce, preordenesParaCruce, agruparPor, filtroLinea, columnaPreordenAdmin]);
 
   if (!clienteIdEfectivo) {
     return (
@@ -5333,7 +5386,7 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente }) {
           <select value={clienteIdAdmin} onChange={(e) => setClienteIdAdmin(e.target.value)} style={{ fontSize: 13, padding: "8px 10px", borderRadius: 8, border: `1px solid ${T.border}`, background: T.white, color: T.ink, minWidth: 260 }}>
             {GRUPOS_CLIENTE_PRODUCCION.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}
           </select>
-          <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>"En Preórdenes" y "Sin cortar" no se calculan en esta previsualización (no hay pedidos/preórdenes propios con qué cruzar) -- el cliente real sí los ve.</div>
+          <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>{grupoAtlasAdmin ? "\"En Preórdenes\" y \"Sin cortar\" ya cruzan con los Pedidos/Preórdenes reales de este cliente -- lo mismo que vería si entrara con su propio usuario." : "\"En Preórdenes\" y \"Sin cortar\" no se calculan para este cliente (todavía no hay Pedidos/Preórdenes de ATLAS configurados con ese nombre)."}</div>
         </div>
       )}
       {!esAdmin && gruposUsuario.length > 1 && (
@@ -15263,7 +15316,7 @@ function AppInner() {
               />
             )}
             {view === "produccion" && (
-              <ProduccionView currentUser={currentUser} pedidosCliente={role === "Cliente" ? pedidosVisibles : null} preordenesCliente={role === "Cliente" ? preordenesVisibles : null} />
+              <ProduccionView currentUser={currentUser} pedidosCliente={role === "Cliente" ? pedidosVisibles : null} preordenesCliente={role === "Cliente" ? preordenesVisibles : null} todosPedidos={pedidos} todasPreordenes={bitacoraPreordenes} />
             )}
             {view === "stats" && <EstadisticasView protos={protosVisibles} capsulas={capsulasVisibles} stages={config.stages} config={config} />}
             {view === "historial" && (
