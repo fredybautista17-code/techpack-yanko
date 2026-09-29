@@ -257,20 +257,30 @@ function Modal({ title, onClose, children, width = 560 }) {
   // arrastrando la esquina inferior derecha (CSS resize) -- util sobre todo
   // en los modales de detalle con tablas largas (dias de hora extra,
   // registros de bonificacion).
+  //
+  // (2026-09-29) Version anterior centraba la ventana con flex
+  // (alignItems/justifyContent: center) -- al agrandarla con la flecha, el
+  // centrado empujaba la esquina superior (titulo + la X) fuera de la
+  // pantalla, sin forma de hacerle scroll para volver a verla ("se oculta").
+  // Ahora se ancla arriba (margin en vez de centrado flex) y se limita el
+  // tamano maximo al de la pantalla (min(ancho, 100vw) / calc(100vh)), asi
+  // nunca se puede agrandar mas de lo que cabe visible. El scroll queda
+  // SOLO en el contenido (no en toda la ventana, que antes cortaba el
+  // titulo junto con la tabla).
   return (
     <div
-      style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+      style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 200, overflow: "auto", padding: 20 }}
       onClick={onClose}
     >
       <div
-        style={{ background: C.white, borderRadius: 14, width: "100%", maxWidth: width, minWidth: 300, maxHeight: "90vh", minHeight: 180, overflow: "auto", resize: "both", display: "flex", flexDirection: "column", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}
+        style={{ background: C.white, borderRadius: 14, width: "100%", maxWidth: `min(${width}px, calc(100vw - 40px))`, minWidth: 300, margin: "0 auto", maxHeight: "calc(100vh - 40px)", minHeight: 180, overflow: "hidden", resize: "both", display: "flex", flexDirection: "column", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}
         onClick={(e) => e.stopPropagation()}
       >
         <div style={{ padding: "18px 24px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
           <span style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>{title}</span>
           <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: C.slate }}>×</button>
         </div>
-        <div style={{ padding: 24, overflowY: "auto", flex: 1 }}>{children}</div>
+        <div style={{ padding: 24, overflow: "auto", flex: 1 }}>{children}</div>
       </div>
     </div>
   );
