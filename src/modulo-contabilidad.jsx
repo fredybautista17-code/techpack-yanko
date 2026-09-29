@@ -4249,6 +4249,23 @@ function EstadisticaCxpView({ totalAdeudado, calendario }) {
 function normalizarTexto(s) {
   return (s || "").toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
 }
+// (2026-09-29, a pedido de Fredy) "Traer desde Busint" se puede usar varias
+// veces el mismo dia (cada corte queda guardado como historico, nunca se
+// reemplaza) -- como antes se ordenaban los cortes SOLO por `fechaCorte`
+// (dia, sin hora), varios cortes del mismo dia empataban y cual quedaba de
+// "mas reciente" (para mostrarlo por defecto) dependia del orden arbitrario
+// en que Firestore devuelve los documentos (esta colección no tiene
+// `orderBy`) -- pudiendo mostrar por defecto un corte VIEJO de hoy mismo en
+// vez del ultimo que se trajo. Causa real detrás de que la factura de
+// Comercializadora Idea Innova pareciera no aparecer, aun cuando el cálculo
+// del backend ya estaba corregido (confirmado con getCuentasPorPagarBusintGen
+// -- ver depurarFacturaCxp y el log "CXP: corte generado" en
+// functions/index.js). Se ordena por `creadoEn` (fecha+hora real de
+// creación, ya lo guardaba ImportarCXPModal pero "Traer desde Busint" no)
+// cuando existe; los cortes viejos sin ese campo siguen usando `fechaCorte`.
+function claveOrdenCorte(c) {
+  return c.creadoEn || c.fechaCorte;
+}
 // (2026-09-27, a pedido de Fredy) Modal chiquito para ponerle nombre legible
 // a un codigo crudo de "Concepto de Obligacion" (campo FCBI de Busint, ej.
 // "SCONF"). Mismo mecanismo pensado para los codigos de proveedor sin
@@ -4452,6 +4469,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
         id: uid(),
         fechaCorte: resp.data.fechaCorte,
         proveedores: proveedoresSinDetalle,
+        creadoEn: new Date().toISOString(),
       });
     } catch (err) {
       setErrorBusint(err?.message || "No se pudo traer el corte desde Busint.");
@@ -4459,7 +4477,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
       setCargandoBusint(false);
     }
   }
-  const cortesOrdenados = [...cortes].sort((a, b) => b.fechaCorte.localeCompare(a.fechaCorte));
+  const cortesOrdenados = [...cortes].sort((a, b) => claveOrdenCorte(b).localeCompare(claveOrdenCorte(a)));
   const corteActivo = corteSeleccionado
     ? cortesOrdenados.find((c) => c.id === corteSeleccionado) || cortesOrdenados[0]
     : cortesOrdenados[0];
@@ -4579,7 +4597,9 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Cuentas por Pagar</h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
-            {corteActivo ? `Corte al ${corteActivo.fechaCorte}` : "Sin cortes importados aún"}
+            {corteActivo
+              ? `Corte al ${corteActivo.fechaCorte}${corteActivo.creadoEn ? ` \u00b7 ${new Date(corteActivo.creadoEn).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}` : ""}`
+              : "Sin cortes importados aún"}
           </p>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -4601,6 +4621,7 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
               {cortesOrdenados.map((c) => (
                 <option key={c.id} value={c.id}>
                   Corte {c.fechaCorte}
+                  {c.creadoEn ? ` \u00b7 ${new Date(c.creadoEn).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}` : ""}
                 </option>
               ))}
             </select>
@@ -5345,7 +5366,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
   // reciente (con cuántos proveedores lo tienen como concepto principal),
   // para poder asignarles categoría desde Administración sin depender de
   // volver a traer el corte desde Busint.
-  const cortesCxpOrdenados = [...cortesCxp].sort((a, b) => b.fechaCorte.localeCompare(a.fechaCorte));
+  const cortesCxpOrdenados = [...cortesCxp].sort((a, b) => claveOrdenCorte(b).localeCompare(claveOrdenCorte(a)));
   const conteoConceptosCxp = {};
   (cortesCxpOrdenados[0]?.proveedores || []).forEach((p) => {
     if (p.conceptoPrincipal) conteoConceptosCxp[p.conceptoPrincipal] = (conteoConceptosCxp[p.conceptoPrincipal] || 0) + 1;
