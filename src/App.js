@@ -2799,6 +2799,9 @@ function Card({ item, kind, onClick, onPromote, role, perms, stages }) {
         <Badge status={item.status} />
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}><Avatar name={item.assignedTo || "?"} size={22} /><span style={{ fontSize: 11, color: T.slate }}>{item.assignedTo}</span></div>
       </div>
+      {item.precioCotizacion != null && (
+        <div style={{ marginTop: 8, fontSize: 12, fontWeight: 700, color: T.jade }}>💲 {fmtCOP(item.precioCotizacion)}</div>
+      )}
       {kind === "proto" && item.status === "aprobado" && !item.promotedTo && perms?.editar && (
         <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.border}` }}>
           <button onClick={(e) => { e.stopPropagation(); onPromote(item); }} style={{ width: "100%", padding: "7px", background: T.jadeBg, border: `1px dashed ${T.jade}`, borderRadius: 8, color: T.jade, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>⬆ Promover a Cápsula</button>
@@ -4001,6 +4004,9 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
           }
         : { nombre: "", categoria: "", silueta: "", rango: "", tipo: "", tela: "", consumo: "" };
       setResultado({ ok: true, datosBusint, capsulaExistente, pedidoExistente });
+      if (capsulaExistente?.ref?.precioCotizacion != null) {
+        setManual((m) => (m.precio ? m : { ...m, precio: String(capsulaExistente.ref.precioCotizacion) }));
+      }
       setBuscando(false);
       return;
     }
@@ -4038,6 +4044,9 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
       };
       const capsulaExistente = buscarRefEnCapsulasPreorden(refNorm, capsulas);
       setResultado({ ok: true, datosBusint, capsulaExistente, pedidoExistente });
+      if (capsulaExistente?.ref?.precioCotizacion != null) {
+        setManual((m) => (m.precio ? m : { ...m, precio: String(capsulaExistente.ref.precioCotizacion) }));
+      }
     } catch (err) {
       setResultado({ ok: false, error: err?.message || "No se pudo consultar Busint." });
     } finally {
@@ -4749,6 +4758,9 @@ function AgregarReferenciaPreordenModal({ capsulas, pedidos, config, onClose, on
     const refNorm = normalizarRefComparacion(ref);
     const pedidoExistente = pedidoQueContieneRef(ref, pedidos);
     const capsulaExistente = buscarRefEnCapsulasPreorden(refNorm, capsulas);
+    if (capsulaExistente?.ref?.precioCotizacion != null) {
+      setManual((m) => (m.precio ? m : { ...m, precio: String(capsulaExistente.ref.precioCotizacion) }));
+    }
     try {
       const llamarRef = httpsCallable(functionsClient, "probarReferenciaBusint");
       const respRef = await llamarRef({ ref });
@@ -5561,7 +5573,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   const esCliente = currentUser?.role === "Cliente";
   const puedeIngresarTela = canAccessBodega || canAccessContabilidad;
   const puedeConfirmarTela = canAccessDiseno;
-  const columnasPreorden = ["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", ...(esCliente ? [] : ["Recepción de Tela"]), "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Carta Colores", "Pedido", "Acciones"];
+  const columnasPreorden = ["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", ...(esCliente ? [] : ["Recepción de Tela"]), "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Total", "Carta Colores", "Pedido", "Acciones"];
   // (2026-09-29, a pedido de Fredy) Antes esto marcaba un ítem como "ya
   // convertido a pedido" con solo encontrar la referencia en CUALQUIER
   // pedido de la empresa -- sin importar el cliente ni si ese pedido ya
@@ -6004,6 +6016,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         const gruposDisponibles = [...new Set((p.items || []).map((it) => it.tipo).filter(Boolean))].sort();
         const resumen = resumenPreordenPorCategoria(p.items, filtroGrupo, filtroPais);
         const totalUnidades = resumen.reduce((s, r) => s + r.unidades, 0);
+        const valorTotalPreorden = (p.items || []).reduce((s, it) => s + (Number(it.precio) || 0) * ((Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0)), 0);
         const estadoActual = p.estado || "montada";
         // (2026-09-16, a pedido de Fredy) Aprobada = bloqueada para todo el
         // mundo menos el administrador, que siempre puede seguir editando.
@@ -6077,7 +6090,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                       <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim }}>🧵 {itemsConTela.length}/{(p.items || []).length} con tela confirmada</span>
                     )}
                   </div>
-                  <div style={{ fontSize: 12, color: T.slate }}>{(p.items || []).length} ref · {fmtNum(totalUnidades)} unid. · Creada {p.fechaCreado}</div>
+                  <div style={{ fontSize: 12, color: T.slate }}>{(p.items || []).length} ref · {fmtNum(totalUnidades)} unid.{valorTotalPreorden > 0 ? ` · ${fmtCOP(valorTotalPreorden)}` : ""} · Creada {p.fechaCreado}</div>
                 </div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -6225,6 +6238,9 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                               <td style={{ padding: "6px 10px" }}>{it.venezuelaCurva || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.venezuelaCantidad || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.precio || "—"}</td>
+                              <td style={{ padding: "6px 10px", fontWeight: 700 }}>
+                                {it.precio ? fmtCOP((Number(it.precio) || 0) * ((Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0))) : "—"}
+                              </td>
                               <td style={{ padding: "6px 10px" }}>
                                 <ImageListUploader
                                   images={cartaColoresLista(it)}
@@ -6315,6 +6331,13 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                       <div style={{ fontSize: 18, fontWeight: 800, color: T.denim }}>{fmtNum(totalUnidades)}</div>
                       <div style={{ fontSize: 11, color: T.denim }}>{(p.items || []).length} ref{(p.items || []).length !== 1 ? "s" : ""}</div>
                     </div>
+                    {valorTotalPreorden > 0 && (
+                      <div style={{ padding: "10px 12px", borderRadius: 10, border: `1.5px solid ${T.jade}`, background: T.jadeBg }}>
+                        <div style={{ fontSize: 11, color: T.jade, fontWeight: 700 }}>Valor total</div>
+                        <div style={{ fontSize: 18, fontWeight: 800, color: T.jade }}>{fmtCOP(valorTotalPreorden)}</div>
+                        <div style={{ fontSize: 11, color: T.jade }}>Precio × cantidad</div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
