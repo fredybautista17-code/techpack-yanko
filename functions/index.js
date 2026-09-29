@@ -2739,6 +2739,42 @@ exports.getCuentasPorPagarBusintGen = onCall(
         concepto,
       });
     });
+    // (2026-09-29) DEBUG TEMPORAL -- para retomar con cuidado el cruce con
+    // anticipo de Jorge Alexander Mora Capacho (ver PUC_PROVEEDORES_NACIONALES
+    // y "REVERTIDO DE EMERGENCIA" mas arriba -- la ultima vez que se resto
+    // ajusteCxpPorFactura del saldo, el corte completo se quedo en CERO
+    // proveedores, sin quedar claro por que). Esta vez, en vez de aplicarlo
+    // de una, se SIMULA que pasaria SI se aplicara -- sin tocar el saldo
+    // real que ya se muestra en pantalla -- para poder revisar con Fredy una
+    // muestra de casos reales contra el reporte oficial de Busint antes de
+    // arriesgarse otra vez. Es una segunda pasada, separada del loop de
+    // arriba, para no tocar nada de esa logica ya validada. Quitar este
+    // bloque (y el log que genera) cuando se resuelva -- aplicando el ajuste
+    // de verdad con la evidencia ya confirmada, o descartandolo del todo.
+    const muestraAjusteCxp = [];
+    facturasPorLlave.forEach(({ llave, codigo, nfactOriginal, facTotal }) => {
+      const ajusteCxpSim = ajusteCxpPorFactura.get(llave) || 0;
+      if (!ajusteCxpSim) return;
+      const pagadoSim = pagadoPorFactura.get(llave) || 0;
+      const descuentoSim = descuentoPorFactura.get(llave) || 0;
+      const devolucionSim = devolucionPorFactura.get(llave) || 0;
+      const saldoActualSim = facTotal - pagadoSim - descuentoSim - devolucionSim;
+      muestraAjusteCxp.push({
+        proveedor: nombrePorCodigo.get(codigo) || `Proveedor ${codigo}`,
+        nfact: nfactOriginal,
+        facTotal,
+        pagado: pagadoSim,
+        ajusteCxp: ajusteCxpSim,
+        saldoActual: saldoActualSim,
+        saldoHipoteticoConAjuste: saldoActualSim - ajusteCxpSim,
+      });
+    });
+    muestraAjusteCxp.sort((a, b) => Math.abs(b.ajusteCxp) - Math.abs(a.ajusteCxp));
+    logger.info("CXP: simulacion ajuste cruce anticipo (NO aplicado hoy)", {
+      totalFacturasConAjusteCxp: muestraAjusteCxp.length,
+      sumaTotalAjusteCxp: muestraAjusteCxp.reduce((s, m) => s + m.ajusteCxp, 0),
+      muestra: muestraAjusteCxp.slice(0, 40),
+    });
     const proveedoresResultado = [...porProveedor.values()]
       .map((p) => {
         // Concepto dominante: el que acumula más saldo para este proveedor.
