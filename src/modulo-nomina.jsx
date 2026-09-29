@@ -8917,6 +8917,9 @@ function HistoricoHorasExtrasView({ trabajadores, horasExtras }) {
 function HistoricoBonificacionesView({ trabajadores, bonificaciones }) {
   const [tipoPeriodo, setTipoPeriodo] = useState("quincena"); // "quincena" | "mes"
   const [periodosAbiertos, setPeriodosAbiertos] = useState({});
+  // (2026-09-29, a pedido de Fredy) Mismo patron que Horas Extras: clic en
+  // un trabajador abre un Modal aparte con el detalle de sus registros.
+  const [modalDetalle, setModalDetalle] = useState(null); // { periodo, nombre, registros }
 
   function nombreTrabajador(id, fallback) {
     return (trabajadores || []).find((t) => t.id === id)?.nombre || fallback || "(Sin nombre)";
@@ -8939,7 +8942,7 @@ function HistoricoBonificacionesView({ trabajadores, bonificaciones }) {
       const valor = Number(b.valor) || 0;
       if (b.tipo === "otra") { acc.otra += valor; t.otra += valor; }
       else { acc.meta += valor; t.meta += valor; } // "meta" y el documento legado sin sufijo de tipo
-      if (b.motivo) t.registros.push({ tipo: b.tipo === "otra" ? "otra" : "meta", motivo: b.motivo });
+      t.registros.push({ periodoId, tipo: b.tipo === "otra" ? "otra" : "meta", valor, motivo: b.motivo || "" });
     });
     return [...mapa.values()]
       .map((f) => ({ ...f, porTrabajador: [...f.porTrabajador.values()].sort((a, b) => (b.meta + b.otra) - (a.meta + a.otra)) }))
@@ -8973,6 +8976,10 @@ function HistoricoBonificacionesView({ trabajadores, bonificaciones }) {
 
   function togglePeriodo(periodo) {
     setPeriodosAbiertos((prev) => ({ ...prev, [periodo]: !prev[periodo] }));
+  }
+  function abrirDetalle(periodo, t) {
+    const registros = [...t.registros].sort((a, b) => a.periodoId.localeCompare(b.periodoId));
+    setModalDetalle({ periodo, nombre: t.nombre, registros });
   }
 
   // (2026-09-29, a pedido de Fredy) Vive DENTRO de "Registrar Bonificación"
@@ -9022,13 +9029,19 @@ function HistoricoBonificacionesView({ trabajadores, bonificaciones }) {
                     <Tabla
                       vacio="Sin bonificaciones en este período."
                       columnas={[
-                        { key: "nombre", label: "Trabajador" },
+                        { key: "nombre", label: "Trabajador", render: (t) => (
+                          <span style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600 }}>
+                            <span style={{ fontSize: 10, color: C.slate }}>🔍</span>
+                            {t.nombre}
+                          </span>
+                        ) },
                         { key: "meta", label: "🎯 Metas", align: "right", render: (t) => t.meta > 0 ? fmtMoney(t.meta) : <span style={{ color: C.slate }}>—</span> },
                         { key: "otra", label: "📝 Otra", align: "right", render: (t) => t.otra > 0 ? fmtMoney(t.otra) : <span style={{ color: C.slate }}>—</span> },
                         { key: "total", label: "Total", align: "right", render: (t) => <strong>{fmtMoney(t.meta + t.otra)}</strong> },
-                        { key: "motivo", label: "Motivo(s)", render: (t) => t.registros.length ? t.registros.map((r) => r.motivo).join(" · ") : <span style={{ color: C.slate }}>—</span> },
+                        { key: "motivo", label: "Motivo(s)", render: (t) => t.registros.filter((r) => r.motivo).length ? t.registros.filter((r) => r.motivo).map((r) => r.motivo).join(" · ") : <span style={{ color: C.slate }}>—</span> },
                       ]}
                       filas={f.porTrabajador}
+                      onRowClick={(t) => abrirDetalle(f.periodo, t)}
                     />
                   </div>
                 )}
@@ -9036,6 +9049,21 @@ function HistoricoBonificacionesView({ trabajadores, bonificaciones }) {
             );
           })}
         </>
+      )}
+      {modalDetalle && (
+        <Modal title={`Bonificaciones — ${modalDetalle.nombre}`} onClose={() => setModalDetalle(null)} width={640}>
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>Período: {modalDetalle.periodo}</div>
+          <Tabla
+            vacio="Sin registros en este período."
+            columnas={[
+              { key: "periodoId", label: "Quincena" },
+              { key: "tipo", label: "Tipo", render: (r) => r.tipo === "otra" ? "📝 Otra" : "🎯 Metas" },
+              { key: "valor", label: "Valor", align: "right", render: (r) => <strong>{fmtMoney(r.valor)}</strong> },
+              { key: "motivo", label: "Motivo", render: (r) => r.motivo || <span style={{ color: C.slate }}>—</span> },
+            ]}
+            filas={modalDetalle.registros}
+          />
+        </Modal>
       )}
     </div>
   );
