@@ -8760,7 +8760,7 @@ function periodoIdDeFecha(fecha) {
   if (!anio || !mes || !dia) return null;
   return `${anio}-${mes}-Q${Number(dia) <= 15 ? "1" : "2"}`;
 }
-function ReporteHorasBonificacionesView({ trabajadores, horasExtras, bonificaciones }) {
+function HistoricoHorasExtrasView({ trabajadores, horasExtras }) {
   const [tipoPeriodo, setTipoPeriodo] = useState("quincena"); // "quincena" | "mes"
   const [periodosAbiertos, setPeriodosAbiertos] = useState({});
   const [trabajadoresAbiertos, setTrabajadoresAbiertos] = useState({});
@@ -8769,16 +8769,13 @@ function ReporteHorasBonificacionesView({ trabajadores, horasExtras, bonificacio
     return (trabajadores || []).find((t) => t.id === id)?.nombre || fallback || "(Sin nombre)";
   }
   function filaPeriodo(mapa, periodoId) {
-    if (!mapa.has(periodoId)) mapa.set(periodoId, { periodo: periodoId, horas: 0, extra: 0, meta: 0, otra: 0, porTrabajador: new Map() });
+    if (!mapa.has(periodoId)) mapa.set(periodoId, { periodo: periodoId, horas: 0, extra: 0, porTrabajador: new Map() });
     return mapa.get(periodoId);
   }
   function filaTrabajador(acc, trabajadorId, nombre) {
-    if (!acc.porTrabajador.has(trabajadorId)) acc.porTrabajador.set(trabajadorId, { trabajadorId, nombre, horas: 0, extra: 0, meta: 0, otra: 0, dias: [] });
+    if (!acc.porTrabajador.has(trabajadorId)) acc.porTrabajador.set(trabajadorId, { trabajadorId, nombre, horas: 0, extra: 0, dias: [] });
     return acc.porTrabajador.get(trabajadorId);
   }
-  // Paso 1: siempre se arma primero por QUINCENA (las horas extra solo
-  // traen fecha exacta, no periodoId -- hay que derivarlo día por día antes
-  // de poder juntar dos quincenas en un mes).
   const porQuincena = useMemo(() => {
     const mapa = new Map();
     (horasExtras || []).forEach((h) => {
@@ -8794,49 +8791,35 @@ function ReporteHorasBonificacionesView({ trabajadores, horasExtras, bonificacio
       t.extra += total;
       t.dias.push({ fecha: h.fecha, tipo: RECARGOS_HORA_EXTRA[h.tipo]?.label || h.tipo || "—", horas: horasNum, valor: total, observacion: h.observacion || "" });
     });
-    (bonificaciones || []).forEach((b) => {
-      const periodoId = b.periodoId;
-      if (!periodoId) return;
-      const acc = filaPeriodo(mapa, periodoId);
-      const t = filaTrabajador(acc, b.trabajadorId, b.trabajadorNombre || nombreTrabajador(b.trabajadorId));
-      const valor = Number(b.valor) || 0;
-      if (b.tipo === "otra") { acc.otra += valor; t.otra += valor; }
-      else { acc.meta += valor; t.meta += valor; } // "meta" y el documento legado sin sufijo de tipo
-    });
     return [...mapa.values()]
-      .map((f) => ({ ...f, porTrabajador: [...f.porTrabajador.values()].sort((a, b) => (b.extra + b.meta + b.otra) - (a.extra + a.meta + a.otra)) }))
+      .map((f) => ({ ...f, porTrabajador: [...f.porTrabajador.values()].sort((a, b) => b.extra - a.extra) }))
       .sort((a, b) => b.periodo.localeCompare(a.periodo));
-  }, [horasExtras, bonificaciones, trabajadores]);
-  // Paso 2: si el modo es "mes", se funden las (hasta) dos quincenas del
-  // mismo mes en una sola fila -- incluyendo los días de cada trabajador,
-  // para que el detalle día por día siga completo también en este modo.
+  }, [horasExtras, trabajadores]);
+  // Igual que antes: en modo "mes" se funden las (hasta) dos quincenas del
+  // mismo mes, incluyendo los días de cada trabajador.
   const filas = useMemo(() => {
     if (tipoPeriodo === "quincena") return porQuincena;
     const mapa = new Map();
     porQuincena.forEach((q) => {
       const mesId = q.periodo.slice(0, 7);
-      if (!mapa.has(mesId)) mapa.set(mesId, { periodo: mesId, horas: 0, extra: 0, meta: 0, otra: 0, porTrabajadorMap: new Map() });
+      if (!mapa.has(mesId)) mapa.set(mesId, { periodo: mesId, horas: 0, extra: 0, porTrabajadorMap: new Map() });
       const acc = mapa.get(mesId);
       acc.horas += q.horas;
       acc.extra += q.extra;
-      acc.meta += q.meta;
-      acc.otra += q.otra;
       q.porTrabajador.forEach((t) => {
-        if (!acc.porTrabajadorMap.has(t.trabajadorId)) acc.porTrabajadorMap.set(t.trabajadorId, { trabajadorId: t.trabajadorId, nombre: t.nombre, horas: 0, extra: 0, meta: 0, otra: 0, dias: [] });
+        if (!acc.porTrabajadorMap.has(t.trabajadorId)) acc.porTrabajadorMap.set(t.trabajadorId, { trabajadorId: t.trabajadorId, nombre: t.nombre, horas: 0, extra: 0, dias: [] });
         const dest = acc.porTrabajadorMap.get(t.trabajadorId);
         dest.horas += t.horas;
         dest.extra += t.extra;
-        dest.meta += t.meta;
-        dest.otra += t.otra;
         dest.dias = dest.dias.concat(t.dias);
       });
     });
     return [...mapa.values()]
-      .map((f) => ({ ...f, porTrabajador: [...f.porTrabajadorMap.values()].sort((a, b) => (b.extra + b.meta + b.otra) - (a.extra + a.meta + a.otra)) }))
+      .map((f) => ({ ...f, porTrabajador: [...f.porTrabajadorMap.values()].sort((a, b) => b.extra - a.extra) }))
       .sort((a, b) => b.periodo.localeCompare(a.periodo));
   }, [porQuincena, tipoPeriodo]);
 
-  const totalGeneral = filas.reduce((s, f) => ({ horas: s.horas + f.horas, extra: s.extra + f.extra, meta: s.meta + f.meta, otra: s.otra + f.otra }), { horas: 0, extra: 0, meta: 0, otra: 0 });
+  const totalGeneral = filas.reduce((s, f) => ({ horas: s.horas + f.horas, extra: s.extra + f.extra }), { horas: 0, extra: 0 });
 
   function togglePeriodo(periodo) {
     setPeriodosAbiertos((prev) => ({ ...prev, [periodo]: !prev[periodo] }));
@@ -8845,32 +8828,31 @@ function ReporteHorasBonificacionesView({ trabajadores, horasExtras, bonificacio
     setTrabajadoresAbiertos((prev) => ({ ...prev, [clave]: !prev[clave] }));
   }
 
+  // (2026-09-29, a pedido de Fredy) Vive DENTRO de "Registrar Horas Extra"
+  // -- antes era una pantalla aparte combinada con Bonificaciones, pero
+  // Fredy pidió que cada histórico esté junto a su registro, para no tener
+  // que ir a dos lados.
   return (
-    <div>
-      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
-        Histórico completo de Horas Extras y Bonificaciones -- agrupado por Quincena o por Mes (dos quincenas juntas). Haz clic en un período para ver el detalle por trabajador, y en un trabajador para ver día por día qué horas extra devengó.
-      </div>
-      <div style={{ marginBottom: 18 }}>
-        <Field label="Agrupar por">
-          <FSel value={tipoPeriodo} onChange={setTipoPeriodo} options={[{ value: "quincena", label: "Quincena" }, { value: "mes", label: "Mes (2 quincenas)" }]} />
-        </Field>
-      </div>
-
-      {filas.length === 0 ? (
+    <div style={{ marginTop: 28 }}>
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>HISTÓRICO DE HORAS EXTRAS</div>
+      {!(horasExtras || []).length ? (
         <div style={{ padding: "12px 16px", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, color: C.slate, fontSize: 13, maxWidth: 560 }}>
-          No hay horas extras ni bonificaciones registradas todavía.
+          No hay horas extras registradas todavía.
         </div>
       ) : (
         <>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+            Agrupado por Quincena o por Mes (dos quincenas juntas). Haz clic en un período para ver el detalle por trabajador, y en un trabajador para ver día por día qué horas extra devengó.
+          </div>
+          <div style={{ marginBottom: 18 }}>
+            <Field label="Agrupar por">
+              <FSel value={tipoPeriodo} onChange={setTipoPeriodo} options={[{ value: "quincena", label: "Quincena" }, { value: "mes", label: "Mes (2 quincenas)" }]} />
+            </Field>
+          </div>
           <div style={{ display: "flex", gap: 14, marginBottom: 20, flexWrap: "wrap" }}>
             <KPI icon="🕐" label="Horas Extras (histórico)" value={fmtMoney(totalGeneral.extra)} color={C.amber} bg={C.amberBg} sub={`${fmtNum(totalGeneral.horas)} horas`} />
-            <KPI icon="🎯" label="Bonificación Metas" value={fmtMoney(totalGeneral.meta)} color={C.green} bg={C.greenBg} />
-            <KPI icon="📝" label="Bonificación Otra" value={fmtMoney(totalGeneral.otra)} color={C.blue} bg={C.blueBg} />
-            <KPI icon="Σ" label="Total general" value={fmtMoney(totalGeneral.extra + totalGeneral.meta + totalGeneral.otra)} color={C.violet} bg={C.violetBg} />
           </div>
-
           {filas.map((f) => {
-            const totalPeriodo = f.extra + f.meta + f.otra;
             const abierto = !!periodosAbiertos[f.periodo];
             return (
               <div key={f.periodo} style={{ marginBottom: 14, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
@@ -8882,19 +8864,11 @@ function ReporteHorasBonificacionesView({ trabajadores, horasExtras, bonificacio
                   </div>
                   <div style={{ display: "flex", gap: 18, fontSize: 12, flexWrap: "wrap", alignItems: "center" }}>
                     <span style={{ color: C.slate }}>Horas: <strong style={{ color: C.ink }}>{fmtNum(f.horas)}</strong></span>
-                    <span style={{ color: C.amber }}>Horas Extra: <strong>{fmtMoney(f.extra)}</strong></span>
-                    {f.meta > 0 && <span style={{ color: C.green }}>Bonif. Metas: <strong>{fmtMoney(f.meta)}</strong></span>}
-                    {f.otra > 0 && <span style={{ color: C.blue }}>Bonif. Otra: <strong>{fmtMoney(f.otra)}</strong></span>}
-                    <span style={{ color: C.violet, fontWeight: 800 }}>Total: {fmtMoney(totalPeriodo)}</span>
+                    <span style={{ color: C.amber, fontWeight: 800 }}>Total: {fmtMoney(f.extra)}</span>
                   </div>
                 </div>
                 {abierto && (
                   <div style={{ padding: "12px 16px 16px" }}>
-                    {/* (2026-09-29, a pedido de Fredy) Antes estos datos iban en una
-                    sola línea sin encabezado ("7 h $72.954 🎯 $228.098 ...") y no
-                    quedaba claro cuál era Horas Extra y cuál Bonificación -- ahora
-                    usa la misma Tabla con encabezado fijo que ya se usa para los
-                    días, con una columna por concepto. */}
                     <Tabla
                       vacio="Sin trabajadores en este período."
                       columnas={[
@@ -8905,14 +8879,7 @@ function ReporteHorasBonificacionesView({ trabajadores, horasExtras, bonificacio
                           </span>
                         ) },
                         { key: "horas", label: "Horas", align: "right", render: (t) => fmtNum(t.horas) },
-                        { key: "extra", label: "$ Horas Extra", align: "right", render: (t) => t.extra > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(t.extra)}</span> : <span style={{ color: C.slate }}>—</span> },
-                        { key: "bonificacion", label: "Bonificación", render: (t) => (t.meta > 0 || t.otra > 0) ? (
-                          <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                            {t.meta > 0 && <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10.5, fontWeight: 700, background: C.greenBg, color: C.green, whiteSpace: "nowrap" }}>🎯 {fmtMoney(t.meta)}</span>}
-                            {t.otra > 0 && <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10.5, fontWeight: 700, background: C.blueBg, color: C.blue, whiteSpace: "nowrap" }}>📝 {fmtMoney(t.otra)}</span>}
-                          </span>
-                        ) : <span style={{ color: C.slate }}>—</span> },
-                        { key: "total", label: "Total", align: "right", render: (t) => <strong>{fmtMoney(t.extra + t.meta + t.otra)}</strong> },
+                        { key: "extra", label: "Total", align: "right", render: (t) => <strong style={{ color: C.amber }}>{fmtMoney(t.extra)}</strong> },
                       ]}
                       filas={f.porTrabajador}
                       onRowClick={(t) => toggleTrabajador(`${f.periodo}__${t.trabajadorId}`)}
@@ -8923,7 +8890,7 @@ function ReporteHorasBonificacionesView({ trabajadores, horasExtras, bonificacio
                         <div key={t.trabajadorId} style={{ marginTop: 14 }}>
                           <div style={{ fontSize: 11, fontWeight: 700, color: C.amber, textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 6 }}>🕐 Días de Hora Extra — {t.nombre}</div>
                           <Tabla
-                            vacio="Sin horas extra individuales en este período (solo bonificación)."
+                            vacio="Sin días en este período."
                             columnas={[
                               { key: "fecha", label: "Fecha", render: (d) => fmtFechaISO(d.fecha) },
                               { key: "tipo", label: "Tipo" },
@@ -8936,6 +8903,132 @@ function ReporteHorasBonificacionesView({ trabajadores, horasExtras, bonificacio
                         </div>
                       );
                     })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </>
+      )}
+    </div>
+  );
+}
+function HistoricoBonificacionesView({ trabajadores, bonificaciones }) {
+  const [tipoPeriodo, setTipoPeriodo] = useState("quincena"); // "quincena" | "mes"
+  const [periodosAbiertos, setPeriodosAbiertos] = useState({});
+
+  function nombreTrabajador(id, fallback) {
+    return (trabajadores || []).find((t) => t.id === id)?.nombre || fallback || "(Sin nombre)";
+  }
+  function filaPeriodo(mapa, periodoId) {
+    if (!mapa.has(periodoId)) mapa.set(periodoId, { periodo: periodoId, meta: 0, otra: 0, porTrabajador: new Map() });
+    return mapa.get(periodoId);
+  }
+  function filaTrabajador(acc, trabajadorId, nombre) {
+    if (!acc.porTrabajador.has(trabajadorId)) acc.porTrabajador.set(trabajadorId, { trabajadorId, nombre, meta: 0, otra: 0, registros: [] });
+    return acc.porTrabajador.get(trabajadorId);
+  }
+  const porQuincena = useMemo(() => {
+    const mapa = new Map();
+    (bonificaciones || []).forEach((b) => {
+      const periodoId = b.periodoId;
+      if (!periodoId) return;
+      const acc = filaPeriodo(mapa, periodoId);
+      const t = filaTrabajador(acc, b.trabajadorId, b.trabajadorNombre || nombreTrabajador(b.trabajadorId));
+      const valor = Number(b.valor) || 0;
+      if (b.tipo === "otra") { acc.otra += valor; t.otra += valor; }
+      else { acc.meta += valor; t.meta += valor; } // "meta" y el documento legado sin sufijo de tipo
+      if (b.motivo) t.registros.push({ tipo: b.tipo === "otra" ? "otra" : "meta", motivo: b.motivo });
+    });
+    return [...mapa.values()]
+      .map((f) => ({ ...f, porTrabajador: [...f.porTrabajador.values()].sort((a, b) => (b.meta + b.otra) - (a.meta + a.otra)) }))
+      .sort((a, b) => b.periodo.localeCompare(a.periodo));
+  }, [bonificaciones, trabajadores]);
+  // Igual que en Horas Extras: en modo "mes" se funden las (hasta) dos
+  // quincenas del mismo mes en una sola fila.
+  const filas = useMemo(() => {
+    if (tipoPeriodo === "quincena") return porQuincena;
+    const mapa = new Map();
+    porQuincena.forEach((q) => {
+      const mesId = q.periodo.slice(0, 7);
+      if (!mapa.has(mesId)) mapa.set(mesId, { periodo: mesId, meta: 0, otra: 0, porTrabajadorMap: new Map() });
+      const acc = mapa.get(mesId);
+      acc.meta += q.meta;
+      acc.otra += q.otra;
+      q.porTrabajador.forEach((t) => {
+        if (!acc.porTrabajadorMap.has(t.trabajadorId)) acc.porTrabajadorMap.set(t.trabajadorId, { trabajadorId: t.trabajadorId, nombre: t.nombre, meta: 0, otra: 0, registros: [] });
+        const dest = acc.porTrabajadorMap.get(t.trabajadorId);
+        dest.meta += t.meta;
+        dest.otra += t.otra;
+        dest.registros = dest.registros.concat(t.registros);
+      });
+    });
+    return [...mapa.values()]
+      .map((f) => ({ ...f, porTrabajador: [...f.porTrabajadorMap.values()].sort((a, b) => (b.meta + b.otra) - (a.meta + a.otra)) }))
+      .sort((a, b) => b.periodo.localeCompare(a.periodo));
+  }, [porQuincena, tipoPeriodo]);
+
+  const totalGeneral = filas.reduce((s, f) => ({ meta: s.meta + f.meta, otra: s.otra + f.otra }), { meta: 0, otra: 0 });
+
+  function togglePeriodo(periodo) {
+    setPeriodosAbiertos((prev) => ({ ...prev, [periodo]: !prev[periodo] }));
+  }
+
+  // (2026-09-29, a pedido de Fredy) Vive DENTRO de "Registrar Bonificación"
+  // -- antes era parte de la pantalla combinada con Horas Extras, ahora
+  // queda junto a su propio registro, para no tener que ir a dos lados.
+  return (
+    <div style={{ marginTop: 28 }}>
+      <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 10 }}>HISTÓRICO DE BONIFICACIONES</div>
+      {!(bonificaciones || []).length ? (
+        <div style={{ padding: "12px 16px", background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 8, color: C.slate, fontSize: 13, maxWidth: 560 }}>
+          No hay bonificaciones registradas todavía.
+        </div>
+      ) : (
+        <>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+            Agrupado por Quincena o por Mes (dos quincenas juntas). Haz clic en un período para ver el detalle por trabajador -- Metas y Otra por separado.
+          </div>
+          <div style={{ marginBottom: 18 }}>
+            <Field label="Agrupar por">
+              <FSel value={tipoPeriodo} onChange={setTipoPeriodo} options={[{ value: "quincena", label: "Quincena" }, { value: "mes", label: "Mes (2 quincenas)" }]} />
+            </Field>
+          </div>
+          <div style={{ display: "flex", gap: 14, marginBottom: 20, flexWrap: "wrap" }}>
+            <KPI icon="🎯" label="Bonificación Metas" value={fmtMoney(totalGeneral.meta)} color={C.green} bg={C.greenBg} />
+            <KPI icon="📝" label="Bonificación Otra" value={fmtMoney(totalGeneral.otra)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="Σ" label="Total general" value={fmtMoney(totalGeneral.meta + totalGeneral.otra)} color={C.violet} bg={C.violetBg} />
+          </div>
+          {filas.map((f) => {
+            const totalPeriodo = f.meta + f.otra;
+            const abierto = !!periodosAbiertos[f.periodo];
+            return (
+              <div key={f.periodo} style={{ marginBottom: 14, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+                <div onClick={() => togglePeriodo(f.periodo)} style={{ cursor: "pointer", padding: "12px 16px", background: C.canvas, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 13 }}>{abierto ? "▾" : "▸"}</span>
+                    <strong style={{ fontSize: 14 }}>{f.periodo}</strong>
+                    <span style={{ fontSize: 12, color: C.slate }}>({f.porTrabajador.length} trabajador{f.porTrabajador.length === 1 ? "" : "es"})</span>
+                  </div>
+                  <div style={{ display: "flex", gap: 18, fontSize: 12, flexWrap: "wrap", alignItems: "center" }}>
+                    {f.meta > 0 && <span style={{ color: C.green }}>Bonif. Metas: <strong>{fmtMoney(f.meta)}</strong></span>}
+                    {f.otra > 0 && <span style={{ color: C.blue }}>Bonif. Otra: <strong>{fmtMoney(f.otra)}</strong></span>}
+                    <span style={{ color: C.violet, fontWeight: 800 }}>Total: {fmtMoney(totalPeriodo)}</span>
+                  </div>
+                </div>
+                {abierto && (
+                  <div style={{ padding: "12px 16px 16px" }}>
+                    <Tabla
+                      vacio="Sin bonificaciones en este período."
+                      columnas={[
+                        { key: "nombre", label: "Trabajador" },
+                        { key: "meta", label: "🎯 Metas", align: "right", render: (t) => t.meta > 0 ? fmtMoney(t.meta) : <span style={{ color: C.slate }}>—</span> },
+                        { key: "otra", label: "📝 Otra", align: "right", render: (t) => t.otra > 0 ? fmtMoney(t.otra) : <span style={{ color: C.slate }}>—</span> },
+                        { key: "total", label: "Total", align: "right", render: (t) => <strong>{fmtMoney(t.meta + t.otra)}</strong> },
+                        { key: "motivo", label: "Motivo(s)", render: (t) => t.registros.length ? t.registros.map((r) => r.motivo).join(" · ") : <span style={{ color: C.slate }}>—</span> },
+                      ]}
+                      filas={f.porTrabajador}
+                    />
                   </div>
                 )}
               </div>
@@ -10424,6 +10517,7 @@ function RegistrarHorasExtrasView({ trabajadores, horasExtras, currentUser, onGu
         ]}
         filas={recientes}
       />
+      <HistoricoHorasExtrasView trabajadores={trabajadores} horasExtras={horasExtras} />
       {modalEditar && formEditar && (
         <Modal title="Editar hora extra" onClose={() => { setModalEditar(null); setFormEditar(null); }} width={480}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -10578,6 +10672,7 @@ function RegistrarBonificacionView({ trabajadores, bonificaciones, currentUser, 
         ]}
         filas={recientes}
       />
+      <HistoricoBonificacionesView trabajadores={trabajadores} bonificaciones={bonificaciones} />
     </div>
   );
 }
@@ -12728,7 +12823,6 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "historial_trabajador", icon: "🧑‍🏭", label: "Historial de Trabajador" },
             { id: "historial_quincenas", icon: "🗂️", label: "Historial de Quincenas" },
             { id: "reporte_area", icon: "📊", label: "Dashboard de Quincenas" },
-            { id: "reporte_horas_bonificaciones", icon: "🕐", label: "Horas Extras y Bonificaciones" },
             { id: "fiscal", icon: "🏛️", label: "Nómina Fiscal" },
             { id: "fiscal_destajo", icon: "💼", label: "Nómina Fiscal Destajo" },
             { id: "destajo", icon: "💼", label: "Nómina Destajo" },
@@ -13332,7 +13426,6 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "historico_cierres" && !soloNovedades && <HistoricoCierresView cierres={cierres} isAdmin={isAdmin} onEliminar={reabrirCierre} />}
           {subView === "historial_quincenas" && !areaLider && !soloNovedades && <HistorialQuincenasView liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} trabajadores={trabajadores} />}
           {subView === "reporte_area" && !areaLider && !soloNovedades && <ReporteNominaPorAreaView trabajadores={trabajadores} liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} causacionManual={causacionManual} />}
-          {subView === "reporte_horas_bonificaciones" && !areaLider && !soloNovedades && <ReporteHorasBonificacionesView trabajadores={trabajadores} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
           {subView === "trabajadores" && !areaLider && !soloNovedades && <TrabajadoresView trabajadores={trabajadores} isAdmin={isAdminCatalogos} onSave={guardarTrabajador} onDelete={borrarTrabajador} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} onSaveArea={guardarAreaNomina} onSaveZona={guardarZonaNomina} turnos={turnos} gruposTrabajo={gruposTrabajo} />}
           {subView === "ingreso_personal" && !areaLider && !soloNovedades && <IngresoPersonalView trabajadores={trabajadores} candidatos={candidatos} liquidacionesRetiro={liquidacionesRetiro} isAdmin={isAdminCatalogos} areasNomina={areasNomina} areasTNS={areasTNS} zonasNomina={zonasNomina} tiposContrato={tiposContrato} turnos={turnos} gruposTrabajo={gruposTrabajo} onGuardarTrabajador={guardarTrabajador} onGuardarCandidato={guardarCandidato} onBorrarCandidato={borrarCandidato} onContratarCandidato={contratarCandidato} />}
           {subView === "grupos_trabajo" && !areaLider && !soloNovedades && <GruposTrabajoView grupos={gruposTrabajo} areasNomina={areasNomina} isAdmin={isAdminCatalogos} onSave={guardarGrupoTrabajo} onDelete={borrarGrupoTrabajo} />}
