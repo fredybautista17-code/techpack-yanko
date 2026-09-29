@@ -2525,12 +2525,30 @@ exports.getCuentasPorPagarBusintGen = onCall(
     // tal como lo muestra Busint). Se deja `Totalp` como respaldo solo si
     // algun pago viejo no trajera `Cheque` (no visto en las pruebas, pero
     // por si acaso, para no contar esos como $0 pagado).
+    //
+    // (2026-09-29, a pedido de Fredy) Se suma tambien `Desc` de la MISMA
+    // fila de pago junto con `Cheque` -- confirmado con CHEVIOTTO TEXTIL SAS
+    // (codigo 2043, factura FH-4728): 2 pagos, el segundo con Desc=$3.513.034
+    // y Cheque=$48.589.335; sin sumar ese Desc quedaba un saldo fantasma de
+    // exactamente $3.513.034 (FACTOTAL $76.598.098 - Cheque total
+    // $69.222.975 - descuento de "notas detalles-d" $3.862.089), pese a que
+    // el reporte oficial de Busint la muestra en $0. Es un descuento propio
+    // de ESE pago puntual, distinto del descuento general de pronto pago en
+    // "notas detalles-d" (que se sigue restando aparte, ver
+    // descuentoPorFactura mas abajo). No confundir con `Rtfe`/`RtfeIva`/
+    // `PDesc`, que tambien vienen en esta misma fila pero NO se han visto
+    // con valor distinto de cero en ningun caso probado -- no se suman
+    // todavia por falta de evidencia; si aparece un nuevo "saldo fantasma",
+    // revisar con depurarFacturaCxp si alguno de esos trae valor antes de
+    // asumir que es el mismo patron.
     [...pagos, ...pagosOtros].forEach((p) => {
       const codigo = normalizarCodigoCxp(p?.CodigoP);
       const nfact = normalizarCodigoCxp(p?.Nfact);
       if (!codigo || !nfact) return;
       const llave = `${codigo}|${nfact}`;
-      const montoPagado = p?.Cheque != null ? (Number(p.Cheque) || 0) : (Number(p?.Totalp) || 0);
+      const montoPagado = p?.Cheque != null
+        ? (Number(p.Cheque) || 0) + (Number(p?.Desc) || 0)
+        : (Number(p?.Totalp) || 0);
       pagadoPorFactura.set(llave, (pagadoPorFactura.get(llave) || 0) + montoPagado);
     });
     // (2026-09-25) Descuentos por pronto pago (nota crédito, 30/60 días según
@@ -2828,9 +2846,14 @@ exports.depurarFacturaCxp = onCall(
     ].filter(
       (p) => normalizarCodigoCxp(p?.CodigoP) === codigoBuscado && normalizarCodigoCxp(p?.Nfact) === nfactBuscado
     );
+    // Mismo criterio que pagadoPorFactura en getCuentasPorPagarBusintGen
+    // (Cheque + Desc de la misma fila cuando hay Cheque; Totalp de respaldo
+    // si no) -- ver el comentario extenso ahi sobre por que se suma Desc.
     const pagosDetalle = filasPago.map((p) => ({
       ...p,
-      montoUsado: p?.Cheque != null ? (Number(p.Cheque) || 0) : (Number(p?.Totalp) || 0),
+      montoUsado: p?.Cheque != null
+        ? (Number(p.Cheque) || 0) + (Number(p?.Desc) || 0)
+        : (Number(p?.Totalp) || 0),
     }));
     const pagado = pagosDetalle.reduce((s, p) => s + p.montoUsado, 0);
 
