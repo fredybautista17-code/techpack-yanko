@@ -5215,17 +5215,23 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
   // tarjeta que le corresponda sin importar el agrupamiento. Igual que
   // "Sin cortar", en blanco ("—") cuando no hay con qué cruzar (admin).
   const tieneDatosPreorden = Array.isArray(preordenesCliente);
+  // (2026-09-29, a pedido de Fredy) Un pedido cerrado (cumplido a mano o ya
+  // facturado en Busint) no cuenta para "Sin cortar" NI para decidir si una
+  // referencia de Preorden "ya se convirtió a pedido" -- los códigos de
+  // referencia se reutilizan de una temporada a otra, así que sin este
+  // filtro una referencia de una Preorden actual podía aparecer como ya
+  // convertida solo porque esa referencia se usó en un pedido viejo (mismo
+  // bug que en PreordenesView, ver pedidosVigentesDelCliente ahí).
+  const pedidosVigentesCliente = tieneDatosPedido ? pedidosCliente.filter((p) => p.estado !== "cerrado") : [];
   if (tieneDatosPedido) {
-    pedidosCliente
-      .filter((p) => p.estado !== "cerrado")
-      .forEach((p) => {
-        (p.referencias || []).forEach((r) => {
-          const ref = String(r.ref || "").trim();
-          if (!ref) return;
-          if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0 });
-          porReferencia.get(ref).pedidoTotal += Number(r.total) || 0;
-        });
+    pedidosVigentesCliente.forEach((p) => {
+      (p.referencias || []).forEach((r) => {
+        const ref = String(r.ref || "").trim();
+        if (!ref) return;
+        if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0 });
+        porReferencia.get(ref).pedidoTotal += Number(r.total) || 0;
       });
+    });
   }
   (lotesCliente || []).forEach((l) => {
     const ref = String(l.referencia || "").trim();
@@ -5244,7 +5250,7 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
       (p.items || []).forEach((it) => {
         const ref = String(it.referencia || "").trim();
         if (!ref) return;
-        const graduado = !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidosCliente);
+        const graduado = !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidosVigentesCliente);
         if (graduado) return;
         if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0 });
         const fila = porReferencia.get(ref);
@@ -5547,12 +5553,27 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   const puedeIngresarTela = canAccessBodega || canAccessContabilidad;
   const puedeConfirmarTela = canAccessDiseno;
   const columnasPreorden = ["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", ...(esCliente ? [] : ["Recepción de Tela"]), "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Carta Colores", "Pedido", "Acciones"];
-  function itemGraduado(it) {
-    return !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidos);
+  // (2026-09-29, a pedido de Fredy) Antes esto marcaba un ítem como "ya
+  // convertido a pedido" con solo encontrar la referencia en CUALQUIER
+  // pedido de la empresa -- sin importar el cliente ni si ese pedido ya
+  // estaba cerrado. Como los códigos de referencia se reutilizan de una
+  // temporada a otra, una preorden de Kamila Colombia terminaba marcada
+  // "Todo convertido a pedido" solo porque esa referencia ya se había usado
+  // en un pedido VIEJO (ya cumplido/facturado) -- confirmado con Fredy.
+  // Ahora solo cuenta un pedido del MISMO cliente que siga vigente (estado
+  // !== "cerrado" -- un pedido queda cerrado tanto al marcarlo "✓ Cumplido"
+  // a mano como cuando Busint confirma que ya se facturó, ver marcarCumplido
+  // más abajo en PedidosView).
+  function pedidosVigentesDelCliente(cliente) {
+    const clienteNorm = foldTexto(cliente || "");
+    return (pedidos || []).filter((pp) => pp.estado !== "cerrado" && foldTexto(pp.cliente || "") === clienteNorm);
+  }
+  function itemGraduado(it, cliente) {
+    return !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidosVigentesDelCliente(cliente));
   }
   const preordenesConEstado = (preordenes || []).map((p) => ({
     ...p,
-    pendientes: (p.items || []).filter((it) => !itemGraduado(it)).length,
+    pendientes: (p.items || []).filter((it) => !itemGraduado(it, p.cliente)).length,
   })).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
   const porSubTab = subTab === "pendientes" ? preordenesConEstado.filter((p) => p.pendientes > 0) : preordenesConEstado;
   const visibles = estadoFiltro === "todas" ? porSubTab : porSubTab.filter((p) => (p.estado || "montada") === estadoFiltro);
@@ -6162,7 +6183,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                         function filaItem(it, i) {
                           const cap = (capsulas || []).find((c) => c.id === it.capsulaId);
                           const refReal = cap?.referencias?.find((r) => r.id === it.itemId);
-                          const graduada = itemGraduado(it);
+                          const graduada = itemGraduado(it, p.cliente);
                           return (
                             <tr key={it.itemId} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}`, opacity: graduada ? 0.55 : 1 }}>
                               <td style={{ padding: "6px 10px" }}>{it.foto ? <img src={it.foto} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
@@ -6192,7 +6213,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                                 {graduada ? (() => {
                                   const pedidoDetalle = it.pedidoVinculado?.numero
                                     ? (pedidos || []).find((pp) => String(pp.numero) === String(it.pedidoVinculado.numero))
-                                    : pedidoQueContieneRef(it.referencia, pedidos);
+                                    : pedidoQueContieneRef(it.referencia, pedidosVigentesDelCliente(p.cliente));
                                   return (
                                     <span
                                       onClick={() => pedidoDetalle && setDetallePedido({ pedido: pedidoDetalle, referencia: it.referencia })}
