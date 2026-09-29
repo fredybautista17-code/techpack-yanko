@@ -267,18 +267,43 @@ function Modal({ title, onClose, children, width = 560 }) {
   // nunca se puede agrandar mas de lo que cabe visible. El scroll queda
   // SOLO en el contenido (no en toda la ventana, que antes cortaba el
   // titulo junto con la tabla).
+  //
+  // (2026-09-29) Boton "flecha arriba" para maximizar de un clic a pantalla
+  // completa (en vez de tener que arrastrar la esquina). Ademas se corrige
+  // que arrastrar la esquina para agrandar cerrara el modal: al soltar el
+  // mouse fuera de la caja (por el limite de tamano) el click quedaba
+  // "apuntando" al fondo oscuro y disparaba el cierre. Ahora solo se cierra
+  // si el clic (mousedown Y mouseup) empezo realmente en el fondo, no si
+  // vino de un arrastre que termino ahi por accidente.
+  const [maximizado, setMaximizado] = useState(false);
+  const cerroDesdeCaja = useRef(false);
   return (
     <div
       style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 200, overflow: "auto", padding: 20 }}
-      onClick={onClose}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) cerroDesdeCaja.current = false; }}
+      onClick={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (cerroDesdeCaja.current) { cerroDesdeCaja.current = false; return; }
+        onClose();
+      }}
     >
       <div
-        style={{ background: C.white, borderRadius: 14, width: "100%", maxWidth: `min(${width}px, calc(100vw - 40px))`, minWidth: 300, margin: "0 auto", maxHeight: "calc(100vh - 40px)", minHeight: 180, overflow: "hidden", resize: "both", display: "flex", flexDirection: "column", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}
+        style={{ background: C.white, borderRadius: 14, width: "100%", maxWidth: maximizado ? "calc(100vw - 40px)" : `min(${width}px, calc(100vw - 40px))`, minWidth: 300, margin: "0 auto", height: maximizado ? "calc(100vh - 40px)" : undefined, maxHeight: "calc(100vh - 40px)", minHeight: 180, overflow: "hidden", resize: maximizado ? "none" : "both", display: "flex", flexDirection: "column", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}
+        onMouseDown={() => { cerroDesdeCaja.current = true; }}
         onClick={(e) => e.stopPropagation()}
       >
         <div style={{ padding: "18px 24px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
           <span style={{ fontWeight: 800, fontSize: 16, color: C.ink }}>{title}</span>
-          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: C.slate }}>×</button>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <button
+              onClick={() => setMaximizado((m) => !m)}
+              title={maximizado ? "Restaurar tamaño" : "Ampliar a pantalla completa"}
+              style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", color: C.slate, padding: "2px 6px" }}
+            >
+              {maximizado ? "⬇" : "⬆"}
+            </button>
+            <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 22, cursor: "pointer", color: C.slate }}>×</button>
+          </div>
         </div>
         <div style={{ padding: 24, overflow: "auto", flex: 1 }}>{children}</div>
       </div>
