@@ -8889,42 +8889,50 @@ function ReporteHorasBonificacionesView({ trabajadores, horasExtras, bonificacio
                   </div>
                 </div>
                 {abierto && (
-                  <div>
-                    {f.porTrabajador.map((t) => {
-                      const clave = `${f.periodo}__${t.trabajadorId}`;
-                      const trabajadorAbierto = !!trabajadoresAbiertos[clave];
-                      const totalTrabajador = t.extra + t.meta + t.otra;
+                  <div style={{ padding: "12px 16px 16px" }}>
+                    {/* (2026-09-29, a pedido de Fredy) Antes estos datos iban en una
+                    sola línea sin encabezado ("7 h $72.954 🎯 $228.098 ...") y no
+                    quedaba claro cuál era Horas Extra y cuál Bonificación -- ahora
+                    usa la misma Tabla con encabezado fijo que ya se usa para los
+                    días, con una columna por concepto. */}
+                    <Tabla
+                      vacio="Sin trabajadores en este período."
+                      columnas={[
+                        { key: "nombre", label: "Trabajador", render: (t) => (
+                          <span style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600 }}>
+                            <span style={{ fontSize: 10, color: C.slate }}>{trabajadoresAbiertos[`${f.periodo}__${t.trabajadorId}`] ? "▾" : "▸"}</span>
+                            {t.nombre}
+                          </span>
+                        ) },
+                        { key: "horas", label: "Horas", align: "right", render: (t) => fmtNum(t.horas) },
+                        { key: "extra", label: "$ Horas Extra", align: "right", render: (t) => t.extra > 0 ? <span style={{ color: C.amber, fontWeight: 700 }}>{fmtMoney(t.extra)}</span> : <span style={{ color: C.slate }}>—</span> },
+                        { key: "bonificacion", label: "Bonificación", render: (t) => (t.meta > 0 || t.otra > 0) ? (
+                          <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {t.meta > 0 && <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10.5, fontWeight: 700, background: C.greenBg, color: C.green, whiteSpace: "nowrap" }}>🎯 {fmtMoney(t.meta)}</span>}
+                            {t.otra > 0 && <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10.5, fontWeight: 700, background: C.blueBg, color: C.blue, whiteSpace: "nowrap" }}>📝 {fmtMoney(t.otra)}</span>}
+                          </span>
+                        ) : <span style={{ color: C.slate }}>—</span> },
+                        { key: "total", label: "Total", align: "right", render: (t) => <strong>{fmtMoney(t.extra + t.meta + t.otra)}</strong> },
+                      ]}
+                      filas={f.porTrabajador}
+                      onRowClick={(t) => toggleTrabajador(`${f.periodo}__${t.trabajadorId}`)}
+                    />
+                    {f.porTrabajador.filter((t) => trabajadoresAbiertos[`${f.periodo}__${t.trabajadorId}`]).map((t) => {
                       const dias = [...t.dias].sort((a, b) => a.fecha.localeCompare(b.fecha));
                       return (
-                        <div key={clave} style={{ borderTop: `1px solid ${C.border}` }}>
-                          <div onClick={() => toggleTrabajador(clave)} style={{ cursor: "pointer", padding: "10px 16px 10px 32px", background: C.white, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                              <span style={{ fontSize: 11, color: C.slate }}>{trabajadorAbierto ? "▾" : "▸"}</span>
-                              <span style={{ fontWeight: 600, fontSize: 13 }}>{t.nombre}</span>
-                            </div>
-                            <div style={{ display: "flex", gap: 16, fontSize: 12, flexWrap: "wrap", alignItems: "center" }}>
-                              <span style={{ color: C.slate }}>{fmtNum(t.horas)} h</span>
-                              <span style={{ color: C.amber }}>{fmtMoney(t.extra)}</span>
-                              {t.meta > 0 && <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10.5, fontWeight: 700, background: C.greenBg, color: C.green }}>🎯 {fmtMoney(t.meta)}</span>}
-                              {t.otra > 0 && <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10.5, fontWeight: 700, background: C.blueBg, color: C.blue }}>📝 {fmtMoney(t.otra)}</span>}
-                              <strong style={{ color: C.ink }}>{fmtMoney(totalTrabajador)}</strong>
-                            </div>
-                          </div>
-                          {trabajadorAbierto && (
-                            <div style={{ padding: "0 16px 14px 32px" }}>
-                              <Tabla
-                                vacio="Sin horas extra individuales en este período (solo bonificación)."
-                                columnas={[
-                                  { key: "fecha", label: "Fecha", render: (d) => fmtFechaISO(d.fecha) },
-                                  { key: "tipo", label: "Tipo" },
-                                  { key: "horas", label: "Horas", align: "right", render: (d) => fmtNum(d.horas) },
-                                  { key: "valor", label: "Valor", align: "right", render: (d) => fmtMoney(d.valor) },
-                                  { key: "observacion", label: "Observación", render: (d) => d.observacion || <span style={{ color: C.slate }}>—</span> },
-                                ]}
-                                filas={dias}
-                              />
-                            </div>
-                          )}
+                        <div key={t.trabajadorId} style={{ marginTop: 14 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: C.amber, textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 6 }}>🕐 Días de Hora Extra — {t.nombre}</div>
+                          <Tabla
+                            vacio="Sin horas extra individuales en este período (solo bonificación)."
+                            columnas={[
+                              { key: "fecha", label: "Fecha", render: (d) => fmtFechaISO(d.fecha) },
+                              { key: "tipo", label: "Tipo" },
+                              { key: "horas", label: "Horas", align: "right", render: (d) => fmtNum(d.horas) },
+                              { key: "valor", label: "Valor", align: "right", render: (d) => fmtMoney(d.valor) },
+                              { key: "observacion", label: "Observación", render: (d) => d.observacion || <span style={{ color: C.slate }}>—</span> },
+                            ]}
+                            filas={dias}
+                          />
                         </div>
                       );
                     })}
