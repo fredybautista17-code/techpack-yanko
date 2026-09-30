@@ -6260,6 +6260,9 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   const [detallePedido, setDetallePedido] = useState(null);
   const [expandido, setExpandido] = useState(null);
   const [refrescando, setRefrescando] = useState(null);
+  // (2026-09-30, a pedido de Fredy) Progreso de "Actualizar líneas
+  // pendientes" (botón masivo, ver actualizarLineasPendientes) -- { preordenId, actual, total } mientras corre, null cuando no hay ninguno en curso.
+  const [actualizandoMasivo, setActualizandoMasivo] = useState(null);
   const [editando, setEditando] = useState(null);
   const [formEdit, setFormEdit] = useState(null);
   const [escaneando, setEscaneando] = useState(false);
@@ -6370,45 +6373,55 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   // misma consulta a Busint que usa NuevaReprogramacionView.buscar(), pero
   // acá solo se rellenan los campos que estén vacíos: nunca pisa un dato
   // que ya se haya llenado a mano o en una consulta anterior.
+  // (2026-09-30, a pedido de Fredy) Nucleo compartido de refrescarBusint --
+  // consulta Busint para UNA referencia y arma el patch de los campos que
+  // esten vacios (sin tocar el item ni mostrar ningun alert), para que lo
+  // puedan usar tanto el boton individual (refrescarBusint) como el masivo
+  // (actualizarLineasPendientes) sin duplicar la logica de consulta.
+  async function buscarPatchBusint(it) {
+    const llamarRef = httpsCallable(functionsClient, "probarReferenciaBusint");
+    const respRef = await llamarRef({ ref: it.referencia });
+    if (!respRef.data?.encontrada) return { encontrada: false, patch: {} };
+    const b = respRef.data.referencia || {};
+    const grupo = (config?.lineaGrupoMap || {})[b.linea] || "";
+    // (2026-09-30, a pedido de Fredy) "precioPM" es el precio matriculado
+    // de Busint para esa referencia (mismo campo crudo que ya usa
+    // buscarReferenciaBusint en Bodega -> Despachos -> Montar Despacho).
+    // Viene en el mismo registro crudo que ya trae probarReferenciaBusint,
+    // no hace falta tocar Firebase Functions para esto.
+    const precioBusint = Number(b.precioPM) || 0;
+    let tela = "", consumo = "";
+    try {
+      const llamarTela = httpsCallable(functionsClient, "getComposicionTelasBusintBD");
+      const respTela = await llamarTela();
+      const normBuscada = normalizarRefComparacion(it.referencia);
+      const filaTela = (respTela.data?.porReferencia || []).find((r) => normalizarRefComparacion(r.ref) === normBuscada);
+      const slot0 = filaTela?.slots?.[0];
+      tela = slot0?.nombre || "";
+      consumo = slot0?.consumo != null && slot0?.consumo !== "" ? `${slot0.consumo}${slot0.unidad ? ` ${slot0.unidad}` : ""}` : "";
+    } catch {
+      // Tela/Consumo son "best effort", igual que en NuevaReprogramacionView.buscar().
+    }
+    const patch = {};
+    if (!it.consumo && consumo) patch.consumo = consumo;
+    if (!it.tipo && grupo) patch.tipo = grupo;
+    if (!it.categoria && b.categoria) patch.categoria = b.categoria;
+    if (!it.silueta && b.tipoConfeccion) patch.silueta = b.tipoConfeccion;
+    if (!it.rango && b.tallas) patch.rango = String(b.tallas);
+    if (!it.tela && tela) patch.tela = tela;
+    if (!it.precio && precioBusint) patch.precio = precioBusint;
+    if (!it.lineaBusint && b.linea) patch.lineaBusint = b.linea;
+    return { encontrada: true, patch };
+  }
   async function refrescarBusint(preordenId, it) {
     const key = `${preordenId}::${it.itemId}`;
     setRefrescando(key);
     try {
-      const llamarRef = httpsCallable(functionsClient, "probarReferenciaBusint");
-      const respRef = await llamarRef({ ref: it.referencia });
-      if (!respRef.data?.encontrada) {
+      const { encontrada, patch } = await buscarPatchBusint(it);
+      if (!encontrada) {
         alert(`La referencia ${it.referencia} no se encontró en Busint.`);
         return;
       }
-      const b = respRef.data.referencia || {};
-      const grupo = (config?.lineaGrupoMap || {})[b.linea] || "";
-      // (2026-09-30, a pedido de Fredy) "precioPM" es el precio matriculado
-      // de Busint para esa referencia (mismo campo crudo que ya usa
-      // buscarReferenciaBusint en Bodega -> Despachos -> Montar Despacho).
-      // Viene en el mismo registro crudo que ya trae probarReferenciaBusint,
-      // no hace falta tocar Firebase Functions para esto.
-      const precioBusint = Number(b.precioPM) || 0;
-      let tela = "", consumo = "";
-      try {
-        const llamarTela = httpsCallable(functionsClient, "getComposicionTelasBusintBD");
-        const respTela = await llamarTela();
-        const normBuscada = normalizarRefComparacion(it.referencia);
-        const filaTela = (respTela.data?.porReferencia || []).find((r) => normalizarRefComparacion(r.ref) === normBuscada);
-        const slot0 = filaTela?.slots?.[0];
-        tela = slot0?.nombre || "";
-        consumo = slot0?.consumo != null && slot0?.consumo !== "" ? `${slot0.consumo}${slot0.unidad ? ` ${slot0.unidad}` : ""}` : "";
-      } catch {
-        // Tela/Consumo son "best effort", igual que en NuevaReprogramacionView.buscar().
-      }
-      const patch = {};
-      if (!it.consumo && consumo) patch.consumo = consumo;
-      if (!it.tipo && grupo) patch.tipo = grupo;
-      if (!it.categoria && b.categoria) patch.categoria = b.categoria;
-      if (!it.silueta && b.tipoConfeccion) patch.silueta = b.tipoConfeccion;
-      if (!it.rango && b.tallas) patch.rango = String(b.tallas);
-      if (!it.tela && tela) patch.tela = tela;
-      if (!it.precio && precioBusint) patch.precio = precioBusint;
-      if (!it.lineaBusint && b.linea) patch.lineaBusint = b.linea;
       if (!Object.keys(patch).length) {
         alert("No había campos vacíos para completar (o Busint no tiene datos nuevos para esta referencia).");
         return;
@@ -6419,6 +6432,39 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
     } finally {
       setRefrescando(null);
     }
+  }
+  // (2026-09-30, a pedido de Fredy) Botón "🔄 Actualizar líneas pendientes"
+  // -- recorre de una sola vez TODAS las referencias de la preorden que
+  // todavía no tengan lineaBusint guardada (llenadas antes de este campo
+  // existir), reutilizando buscarPatchBusint una por una con una pequeña
+  // pausa entre cada consulta para no saturar Busint. Al final muestra un
+  // único resumen (no un alert por cada referencia, que dejaría la pantalla
+  // bloqueada esperando que Fredy cierre uno por uno).
+  async function actualizarLineasPendientes(preordenId, items) {
+    const pendientes = (items || []).filter((it) => !it.lineaBusint && it.referencia);
+    if (!pendientes.length) return;
+    let actualizadas = 0, sinCambios = 0, noEncontradas = 0, conError = 0;
+    for (let i = 0; i < pendientes.length; i++) {
+      const it = pendientes[i];
+      setActualizandoMasivo({ preordenId, actual: i + 1, total: pendientes.length });
+      try {
+        const { encontrada, patch } = await buscarPatchBusint(it);
+        if (!encontrada) { noEncontradas++; continue; }
+        if (!Object.keys(patch).length) { sinCambios++; continue; }
+        await onActualizarItemPreorden(preordenId, it.itemId, patch);
+        actualizadas++;
+      } catch {
+        conError++;
+      }
+      await new Promise((res) => setTimeout(res, 400));
+    }
+    setActualizandoMasivo(null);
+    alert(
+      `Listo -- ${actualizadas} de ${pendientes.length} referencia${pendientes.length !== 1 ? "s" : ""} actualizada${actualizadas !== 1 ? "s" : ""}.` +
+      (noEncontradas ? `\n${noEncontradas} no se encontraron en Busint.` : "") +
+      (sinCambios ? `\n${sinCambios} no tenían línea nueva para traer.` : "") +
+      (conError ? `\n${conError} fallaron por un error de conexión -- puedes volver a darle al botón.` : "")
+    );
   }
   // (2026-09-17, a pedido de Fredy) Botón "✏️ Editar" -- formulario manual
   // para fijar/corregir cualquiera de estos campos a mano, sin depender de
@@ -6847,6 +6893,10 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         // guardada, igual que ya hace Producción -> "Por línea", y solo cae
         // de vuelta al grupo genérico si el ítem todavía no la tiene.
         const gruposDisponibles = [...new Set((p.items || []).map((it) => it.lineaBusint || it.tipo).filter(Boolean))].sort();
+        // (2026-09-30, a pedido de Fredy) Referencias que todavia no tienen
+        // la linea especifica de Busint guardada -- estas son las que el
+        // boton "Actualizar lineas pendientes" va a completar en lote.
+        const itemsSinLinea = (p.items || []).filter((it) => !it.lineaBusint && it.referencia);
         const resumen = resumenPreordenPorCategoria(p.items, filtroGrupo, filtroPais);
         const totalUnidades = resumen.reduce((s, r) => s + r.unidades, 0);
         const valorTotalPreorden = (p.items || []).reduce((s, it) => s + (Number(it.precio) || 0) * ((Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0)), 0);
@@ -7012,6 +7062,18 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                         />
                         <Btn variant="secondary" small onClick={() => document.getElementById(`preorden-excel-${p.id}`).click()}>📤 Subir Excel</Btn>
                         <Btn variant="secondary" small onClick={() => setAgregandoRefA(p.id)}>+ Agregar referencia</Btn>
+                        {itemsSinLinea.length > 0 && (
+                          <Btn
+                            variant="secondary"
+                            small
+                            disabled={actualizandoMasivo?.preordenId === p.id}
+                            onClick={() => actualizarLineasPendientes(p.id, p.items)}
+                          >
+                            {actualizandoMasivo?.preordenId === p.id
+                              ? `Actualizando ${actualizandoMasivo.actual} de ${actualizandoMasivo.total}...`
+                              : `🔄 Actualizar líneas pendientes (${itemsSinLinea.length})`}
+                          </Btn>
+                        )}
                       </>
                     )}
                   </div>
