@@ -1132,6 +1132,7 @@ const MODULOS_CLIENTE_OPCIONES = [
   { id: "cronograma_muestras", label: "Cronograma de Muestras" },
   { id: "bodega", label: "Bodega" },
   { id: "preordenes", label: "Preórdenes" },
+  { id: "ordenes", label: "Órdenes" },
   { id: "produccion", label: "Producción" },
 ];
 // (2026-09-24, a pedido de Fredy) Para la pantalla "Producción" -- a qué
@@ -5700,8 +5701,8 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
   const sinEtiqueta = campo === "linea" ? "(Sin línea)" : "(Sin categoría)";
   const porReferencia = new Map();
   const tieneDatosPedido = Array.isArray(pedidosCliente);
-  // (2026-09-25, a pedido de Fredy) "En Preórdenes": etapa ANTES de "Sin
-  // cortar" -- unidades que ya están montadas en una Preorden pero esa
+  // (2026-09-25, a pedido de Fredy) "En Preórdenes": etapa ANTES de "En
+  // Órdenes" -- unidades que ya están montadas en una Preorden pero esa
   // referencia todavía no se convirtió a Pedido (mismo criterio que usa
   // Preórdenes para "⏳ sin convertir a pedido": !it.pedidoVinculado &&
   // !usedInPedidoPreorden). Se suma por REFERENCIA (no por categoría/línea
@@ -5709,6 +5710,12 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
   // con el de la Preorden -- así cada referencia arrastra su valor a la
   // tarjeta que le corresponda sin importar el agrupamiento. Igual que
   // "Sin cortar", en blanco ("—") cuando no hay con qué cruzar (admin).
+  //
+  // (2026-09-30, a pedido de Fredy) "En Órdenes": mismo criterio de arriba,
+  // pero la referencia YA tiene tela confirmada (it.telaComprada) -- es un
+  // paso intermedio entre "En Preórdenes" y "Sin cortar" (ver OrdenesView).
+  // En cuanto se convierte a Pedido real, sale de acá igual que "En
+  // Preórdenes" (queda excluido por "graduado" más abajo).
   const tieneDatosPreorden = Array.isArray(preordenesCliente);
   // (2026-09-29, a pedido de Fredy) Un pedido cerrado (cumplido a mano o ya
   // facturado en Busint) no cuenta para "Sin cortar" -- ya no queda nada
@@ -5732,7 +5739,7 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
       (p.referencias || []).forEach((r) => {
         const ref = String(r.ref || "").trim();
         if (!ref) return;
-        if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0 });
+        if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0, enOrdenes: 0 });
         porReferencia.get(ref).pedidoTotal += Number(r.total) || 0;
       });
     });
@@ -5740,7 +5747,7 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
   (lotesCliente || []).forEach((l) => {
     const ref = String(l.referencia || "").trim();
     if (!ref) return;
-    if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0 });
+    if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0, enOrdenes: 0 });
     const fila = porReferencia.get(ref);
     if (!fila.categoria && l.categoria) fila.categoria = l.categoria;
     if (!fila.linea && l.linea) fila.linea = l.linea;
@@ -5756,7 +5763,7 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
         if (!ref) return;
         const graduado = !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidosCandidatosConversionProduccion(p.fechaCreado));
         if (graduado) return;
-        if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0 });
+        if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0, enOrdenes: 0 });
         const fila = porReferencia.get(ref);
         if (!fila.categoria && it.categoria) fila.categoria = it.categoria;
         if (!fila.linea && it.tipo) fila.linea = it.tipo;
@@ -5769,7 +5776,11 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
           : columnaPreorden === "venezuela"
           ? (Number(it.venezuelaCantidad) || 0)
           : (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0);
-        fila.enPreorden += cantidadPreorden;
+        if (it.telaComprada) {
+          fila.enOrdenes += cantidadPreorden;
+        } else {
+          fila.enPreorden += cantidadPreorden;
+        }
       });
     });
   }
@@ -5782,21 +5793,22 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
     grupo: (campo === "linea" ? f.linea : f.categoria) || sinEtiqueta,
     sinCortar: tieneDatosPedido ? Math.max(0, f.pedidoTotal - f.cortado) : null,
     enPreorden: tieneDatosPreorden ? f.enPreorden : null,
+    enOrdenes: tieneDatosPreorden ? f.enOrdenes : null,
   }));
   const porGrupo = new Map();
   filas.forEach((f) => {
-    if (!porGrupo.has(f.grupo)) porGrupo.set(f.grupo, { grupo: f.grupo, filas: [], sinCortar: tieneDatosPedido ? 0 : null, planta: 0, semiterminado: 0, bpt: 0, enPreorden: tieneDatosPreorden ? 0 : null });
+    if (!porGrupo.has(f.grupo)) porGrupo.set(f.grupo, { grupo: f.grupo, filas: [], sinCortar: tieneDatosPedido ? 0 : null, planta: 0, semiterminado: 0, bpt: 0, enPreorden: tieneDatosPreorden ? 0 : null, enOrdenes: tieneDatosPreorden ? 0 : null });
     const c = porGrupo.get(f.grupo);
     c.filas.push(f);
     if (tieneDatosPedido) c.sinCortar += f.sinCortar;
-    if (tieneDatosPreorden) c.enPreorden += f.enPreorden;
+    if (tieneDatosPreorden) { c.enPreorden += f.enPreorden; c.enOrdenes += f.enOrdenes; }
     c.planta += f.planta;
     c.semiterminado += f.semiterminado;
     c.bpt += f.bpt;
   });
   return [...porGrupo.values()]
-    .map((c) => ({ ...c, filas: c.filas.sort((a, b) => b.planta + b.semiterminado + b.bpt + (b.sinCortar || 0) + (b.enPreorden || 0) - (a.planta + a.semiterminado + a.bpt + (a.sinCortar || 0) + (a.enPreorden || 0))) }))
-    .sort((a, b) => (b.planta + b.semiterminado + b.bpt + (b.sinCortar || 0) + (b.enPreorden || 0)) - (a.planta + a.semiterminado + a.bpt + (a.sinCortar || 0) + (a.enPreorden || 0)));
+    .map((c) => ({ ...c, filas: c.filas.sort((a, b) => b.planta + b.semiterminado + b.bpt + (b.sinCortar || 0) + (b.enPreorden || 0) + (b.enOrdenes || 0) - (a.planta + a.semiterminado + a.bpt + (a.sinCortar || 0) + (a.enPreorden || 0) + (a.enOrdenes || 0))) }))
+    .sort((a, b) => (b.planta + b.semiterminado + b.bpt + (b.sinCortar || 0) + (b.enPreorden || 0) + (b.enOrdenes || 0)) - (a.planta + a.semiterminado + a.bpt + (a.sinCortar || 0) + (a.enPreorden || 0) + (a.enOrdenes || 0)));
 }
 
 function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosPedidos, todasPreordenes }) {
@@ -5887,7 +5899,7 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
         <Btn small variant="secondary" onClick={cargar} disabled={cargando}>{cargando ? "Actualizando..." : "🔄 Actualizar"}</Btn>
       </div>
       <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
-        En vivo desde Busint. "En Preórdenes" es lo que ya está montado en una Preorden pero aún no se convierte a Pedido. "Sin cortar" es lo que sigue pendiente de tu pedido activo, sin contar lo que ya se cortó.
+        En vivo desde Busint. "En Preórdenes" es lo que ya está montado en una Preorden pero aún sin tela confirmada. "En Órdenes" ya tiene tela confirmada pero todavía no es un Pedido real. "Sin cortar" es lo que sigue pendiente de tu pedido activo, sin contar lo que ya se cortó.
         {actualizadoEn && <span> · Actualizado {actualizadoEn.toLocaleTimeString()}</span>}
       </div>
       {esAdmin && (
@@ -5896,7 +5908,7 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
           <select value={clienteIdAdmin} onChange={(e) => setClienteIdAdmin(e.target.value)} style={{ fontSize: 13, padding: "8px 10px", borderRadius: 8, border: `1px solid ${T.border}`, background: T.white, color: T.ink, minWidth: 260 }}>
             {GRUPOS_CLIENTE_PRODUCCION.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}
           </select>
-          <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>{grupoAtlasAdmin ? "\"En Preórdenes\" y \"Sin cortar\" ya cruzan con los Pedidos/Preórdenes reales de este cliente -- lo mismo que vería si entrara con su propio usuario." : "\"En Preórdenes\" y \"Sin cortar\" no se calculan para este cliente (todavía no hay Pedidos/Preórdenes de ATLAS configurados con ese nombre)."}</div>
+          <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>{grupoAtlasAdmin ? "\"En Preórdenes\", \"En Órdenes\" y \"Sin cortar\" ya cruzan con los Pedidos/Preórdenes reales de este cliente -- lo mismo que vería si entrara con su propio usuario." : "\"En Preórdenes\", \"En Órdenes\" y \"Sin cortar\" no se calculan para este cliente (todavía no hay Pedidos/Preórdenes de ATLAS configurados con ese nombre)."}</div>
         </div>
       )}
       {!esAdmin && gruposUsuario.length > 1 && (
@@ -5957,6 +5969,10 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
                       <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>En preórdenes</div>
                       <div style={{ fontSize: 15, fontWeight: 800 }}>{c.enPreorden === null ? "—" : fmtNum(c.enPreorden)}</div>
                     </div>
+                    <div style={{ background: T.coralBg, color: T.coral, borderRadius: 9, padding: "6px 12px", minWidth: 100 }}>
+                      <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>En Órdenes</div>
+                      <div style={{ fontSize: 15, fontWeight: 800 }}>{c.enOrdenes === null ? "—" : fmtNum(c.enOrdenes)}</div>
+                    </div>
                     <div style={{ background: T.amberBg, color: T.amber, borderRadius: 9, padding: "6px 12px", minWidth: 100 }}>
                       <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>Sin cortar</div>
                       <div style={{ fontSize: 15, fontWeight: 800 }}>{c.sinCortar === null ? "—" : fmtNum(c.sinCortar)}</div>
@@ -5983,6 +5999,7 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
                         <tr style={{ background: T.ink }}>
                           <th style={{ padding: "8px 12px", color: T.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Referencia</th>
                           <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>En preórdenes</th>
+                          <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>En Órdenes</th>
                           <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Sin cortar</th>
                           <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Planta</th>
                           <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Semiterminado</th>
@@ -5994,6 +6011,7 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
                           <tr key={f.referencia} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
                             <td style={{ padding: "7px 12px", fontWeight: 700, color: T.ink }}>{f.referencia}</td>
                             <td style={{ padding: "7px 12px", textAlign: "right", color: T.seamDark, fontWeight: 700 }}>{f.enPreorden === null ? "—" : fmtNum(f.enPreorden)}</td>
+                            <td style={{ padding: "7px 12px", textAlign: "right", color: T.coral, fontWeight: 700 }}>{f.enOrdenes === null ? "—" : fmtNum(f.enOrdenes)}</td>
                             <td style={{ padding: "7px 12px", textAlign: "right", color: T.amber, fontWeight: 700 }}>{f.sinCortar === null ? "—" : fmtNum(f.sinCortar)}</td>
                             <td style={{ padding: "7px 12px", textAlign: "right", color: T.denim, fontWeight: 700 }}>{fmtNum(f.planta)}</td>
                             <td style={{ padding: "7px 12px", textAlign: "right", color: T.violet, fontWeight: 700 }}>{fmtNum(f.semiterminado)}</td>
@@ -6008,6 +6026,125 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
             );
           })}
         </div>
+      )}
+    </div>
+  );
+}
+// (2026-09-30, a pedido de Fredy) "Órdenes": lo que ya se aprobó para
+// comprar tela (telaComprada) en una preorden aprobada, pero que todavía no
+// tiene un Pedido real vinculado. No es un estado guardado aparte -- es la
+// misma "tela confirmada" que ya se ve en Preórdenes (ver itemsEnOrdenes ahí
+// mismo), solo que agrupada en su propia pantalla y sin las referencias que
+// aún no tienen tela. En cuanto se vincula a un Pedido real (a mano acá
+// mismo, con el mismo "Vincular" de siempre, o automático cuando llega el
+// pedido real de Busint con la misma referencia/cliente), esa referencia
+// deja de aparecer acá.
+function OrdenesView({ preordenes, pedidos, currentUser, onVincularPedido }) {
+  const [vinculando, setVinculando] = useState(null);
+  const [buscaPedido, setBuscaPedido] = useState("");
+  const [numeroPedidoManual, setNumeroPedidoManual] = useState("");
+  function pedidosCandidatosConversion(cliente, fechaPreorden) {
+    const clienteNorm = foldTexto(cliente || "");
+    const fechaRef = fechaPreorden || "";
+    return (pedidos || []).filter((pp) => foldTexto(pp.cliente || "") === clienteNorm && (pp.creadoEn || pp.fechaPedido || "") >= fechaRef);
+  }
+  function itemGraduado(it, cliente, fechaPreorden) {
+    return !!it.pedidoVinculado || usedInPedidoPreorden(it.referencia, pedidosCandidatosConversion(cliente, fechaPreorden));
+  }
+  const tarjetas = (preordenes || [])
+    .filter((p) => (p.estado || "montada") === "aprobada")
+    .map((p) => ({ preorden: p, items: (p.items || []).filter((it) => it.telaComprada && !itemGraduado(it, p.cliente, p.fechaCreado)) }))
+    .filter((t) => t.items.length > 0)
+    .sort((a, b) => (b.preorden.fechaCreado || "").localeCompare(a.preorden.fechaCreado || ""));
+  const bq = buscaPedido.trim().toLowerCase();
+  const pedidosEncontrados = bq
+    ? (pedidos || []).filter((p) => String(p.numero || "").toLowerCase().includes(bq) || (p.cliente || "").toLowerCase().includes(bq)).slice(0, 30)
+    : [];
+  function confirmarVinculo(pedido) {
+    if (!vinculando) return;
+    onVincularPedido(vinculando.preordenId, vinculando.itemId, pedido);
+    setVinculando(null);
+    setBuscaPedido("");
+    setNumeroPedidoManual("");
+  }
+  function confirmarVinculoManual() {
+    if (!vinculando || !numeroPedidoManual.trim()) return;
+    onVincularPedido(vinculando.preordenId, vinculando.itemId, { numero: numeroPedidoManual.trim() });
+    setVinculando(null);
+    setBuscaPedido("");
+    setNumeroPedidoManual("");
+  }
+  const totalRefs = tarjetas.reduce((s, t) => s + t.items.length, 0);
+  return (
+    <div>
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>🧵 Órdenes</h2>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Referencias ya aprobadas con tela confirmada, en lo que llega su Pedido real{tarjetas.length > 0 ? ` -- ${totalRefs} referencia${totalRefs !== 1 ? "s" : ""} en ${tarjetas.length} preorden${tarjetas.length !== 1 ? "es" : ""}` : ""}.</p>
+      </div>
+      {vinculando && (
+        <Modal title="Vincular a pedido" onClose={() => { setVinculando(null); setBuscaPedido(""); setNumeroPedidoManual(""); }} width={480}>
+          <p style={{ margin: "0 0 12px", fontSize: 13, color: T.slate }}>
+            Busca el pedido al que pertenece esta referencia. No se modifica el pedido — solo se marca como vinculada y sale de Órdenes.
+          </p>
+          <input
+            autoFocus
+            value={buscaPedido}
+            onChange={(e) => setBuscaPedido(e.target.value)}
+            placeholder="Buscar por número de pedido o cliente..."
+            style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, outline: "none", fontFamily: "inherit", marginBottom: 12, boxSizing: "border-box" }}
+          />
+          <div style={{ maxHeight: 320, overflowY: "auto" }}>
+            {bq && !pedidosEncontrados.length && (
+              <div style={{ textAlign: "center", padding: 20, color: T.slate, fontSize: 13 }}>No se encontró ningún pedido con eso.</div>
+            )}
+            {pedidosEncontrados.map((p) => (
+              <div key={p.id} onClick={() => confirmarVinculo(p)} style={{ padding: "10px 12px", borderRadius: 8, border: `1px solid ${T.border}`, marginBottom: 6, cursor: "pointer", background: T.canvas }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: T.ink }}>Pedido #{p.numero}</div>
+                <div style={{ fontSize: 12, color: T.slate }}>{p.cliente || "Sin cliente"}{p.fechaPedido ? ` · ${p.fechaPedido}` : ""}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
+            <div style={{ fontSize: 12, color: T.slate, marginBottom: 8 }}>¿No aparece en la búsqueda? Escribe el número de pedido a mano:</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                value={numeroPedidoManual}
+                onChange={(e) => setNumeroPedidoManual(e.target.value)}
+                placeholder="Número de pedido"
+                style={{ flex: 1, padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+              />
+              <Btn variant="secondary" small disabled={!numeroPedidoManual.trim()} onClick={confirmarVinculoManual}>Vincular</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {!tarjetas.length ? (
+        <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Todavía no hay ninguna referencia en Órdenes -- aparecen acá apenas se les confirme la tela en una preorden aprobada.</div>
+      ) : (
+        tarjetas.map(({ preorden: p, items }) => (
+          <div key={p.id} style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "16px 20px", marginBottom: 14 }}>
+            <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, marginBottom: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span>📁 {p.nombre ? `${p.nombre} — ${p.cliente || "(Sin cliente)"}` : (p.cliente || "(Sin cliente)")}{p.numPedido ? ` · Pedido ${p.numPedido}` : ""}</span>
+              {p.origenPantalla === "reprogramacion" && (
+                <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.violetBg, color: T.violet }}>🔁 Reprogramación</span>
+              )}
+              {p.origenPantalla === "orden" && (
+                <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim }}>🆕 Nueva Orden</span>
+              )}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {items.map((it) => (
+                <div key={it.itemId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 12px", borderRadius: 8, border: `1px solid ${T.border}`, background: T.coralBg, fontSize: 12.5 }}>
+                  <span><b>{it.referencia}</b>{it.nombre ? <span style={{ color: T.slate }}> · {it.nombre}</span> : null}{it.tela ? <span style={{ color: T.slate }}> · {it.tela}</span> : null}</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    {it.telaCompradaEn && <span style={{ fontSize: 11, color: T.slate }}>Confirmada {it.telaCompradaEn.slice(0, 10)}</span>}
+                    <button onClick={() => setVinculando({ preordenId: p.id, itemId: it.itemId })} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Vincular</button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))
       )}
     </div>
   );
@@ -6636,6 +6773,13 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         });
         const itemsPendientesTela = itemsFiltrados.filter((it) => !it.telaComprada);
         const itemsConTela = itemsFiltrados.filter((it) => it.telaComprada);
+        // (2026-09-30, a pedido de Fredy) "En Órdenes": referencia con tela ya
+        // confirmada (telaComprada) que TODAVÍA no tiene un Pedido real
+        // vinculado -- en cuanto se vincula (a mano o automático por Busint),
+        // itemGraduado ya la cuenta como Pedido y deja de aparecer acá. No es
+        // un estado guardado aparte, es la misma "tela confirmada" de siempre,
+        // solo que ahora también se muestra en la pestaña "🧵 Órdenes".
+        const itemsEnOrdenes = itemsConTela.filter((it) => !itemGraduado(it, p.cliente, p.fechaCreado));
         // (2026-09-17, a pedido de Fredy) Solo el administrador puede
         // deshacer una confirmación ya hecha -- vuelve la referencia al
         // bloque de "pendientes de tela".
@@ -6688,7 +6832,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                       <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim }}>🆕 Nueva Orden</span>
                     )}
                     {estadoActual === "aprobada" && (p.items || []).length > 0 && !esCliente && (
-                      <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim }}>🧵 {itemsConTela.length}/{(p.items || []).length} con tela confirmada</span>
+                      <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.coralBg, color: T.coral }}>🧵 {itemsEnOrdenes.length} en Órdenes</span>
                     )}
                   </div>
                   <div style={{ fontSize: 12, color: T.slate }}>{(p.items || []).length} ref · {fmtNum(totalUnidades)} unid.{valorTotalPreorden > 0 ? ` · ${fmtCOP(valorTotalPreorden)}` : ""} · Creada {p.fechaCreado}</div>
@@ -15473,6 +15617,7 @@ function AppInner() {
   const canAccessPedidos = moduloVisible(userRoleData, "pedidos", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "pedidos");
   const canAccessPedidosClientes = moduloVisible(userRoleData, "pedidos_clientes", currentUser?.isAdmin);
   const canAccessPreordenes = moduloVisible(userRoleData, "preordenes", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "preordenes");
+  const canAccessOrdenes = moduloVisible(userRoleData, "ordenes", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "ordenes");
   const canAccessStats = moduloVisible(userRoleData, "stats", currentUser?.isAdmin);
   const canAccessHistorial = moduloVisible(userRoleData, "historial", currentUser?.isAdmin);
   const canAccessCronograma = moduloVisible(userRoleData, "cronograma_muestras", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "cronograma_muestras");
@@ -15615,6 +15760,7 @@ function AppInner() {
             ...(canAccessPedidos ? [{ id: "pedidos", icon: "📦", label: "Pedidos" }] : []),
             ...(canAccessPedidosClientes ? [{ id: "pedidos_clientes", icon: "🏢", label: "Clientes" }] : []),
             ...(canAccessPreordenes ? [{ id: "preordenes", icon: "🧾", label: "Preórdenes" }] : []),
+            ...(canAccessOrdenes ? [{ id: "ordenes", icon: "🧵", label: "Órdenes" }] : []),
             ...(canAccessProduccion ? [{ id: "produccion", icon: "🏭", label: "Producción" }] : []),
             ...(canAccessCorte ? [{ id: "__corte__", icon: "✂", label: "Corte" }] : []),
             ...(currentUser?.isAdmin ? [{ id: "pedidos_admin", icon: "⚙", label: "Admin Pedidos" }] : []),
@@ -16025,6 +16171,14 @@ function AppInner() {
                 prefillDesdeCapsula={prefillPreordenDesde}
                 onConsumirPrefillDesdeCapsula={() => setPrefillPreordenDesde(null)}
                 onMarcarRefEnviadaAPreorden={(capId, refId) => updateRef(capId, refId, { enviadoAPreorden: { en: nowISO(), por: currentUser?.name || "" } })}
+              />
+            )}
+            {view === "ordenes" && (
+              <OrdenesView
+                preordenes={preordenesVisibles}
+                pedidos={pedidosVisibles}
+                currentUser={currentUser}
+                onVincularPedido={vincularPreordenAPedido}
               />
             )}
             {view === "produccion" && (
