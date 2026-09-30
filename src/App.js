@@ -4648,7 +4648,7 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 16 }}>
               <thead>
                 <tr style={{ background: T.ink }}>
-                  {["Ref", "Nombre", "Categoría", "Consumo", "Tipo", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Cant. Total", "Precio", ""].map((h) => (
+                  {["Foto", "Ref", "Nombre", "Categoría", "Silueta", "Rango", "Tela", "Consumo", "Tipo", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Cant. Total", "Precio", ""].map((h) => (
                     <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
@@ -4656,9 +4656,13 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
               <tbody>
                 {filas.map((f, i) => (
                   <tr key={`${f.reference}-${i}`} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
+                    <td style={{ padding: "6px 10px" }}>{f.image ? <img src={f.image} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
                     <td style={{ padding: "6px 10px", fontWeight: 700 }}>{f.reference}</td>
                     <td style={{ padding: "6px 10px" }}>{f.name}</td>
                     <td style={{ padding: "6px 10px" }}>{f.categoria || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{f.silueta || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{f.rango || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{f.tipoTela || "—"}</td>
                     <td style={{ padding: "6px 10px" }}>{f.consumo || "—"}</td>
                     <td style={{ padding: "6px 10px" }}>{f._tipo || "—"}</td>
                     <td style={{ padding: "6px 10px" }}>{f._colombiaCurva || "—"}</td>
