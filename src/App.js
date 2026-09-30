@@ -4327,7 +4327,7 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
     </div>
   );
 }
-function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, filasPrefill, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAExistente, onGuardado, onCancelar }) {
+function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, filasPrefill, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAExistente, historial, onRegistrarHistorial, onGuardado, onCancelar }) {
   const [header, setHeader] = useState({ cliente: "", numPedido: "" });
   const esCliente = currentUser?.role === "Cliente";
   // (2026-09-16) Un cliente puede tener más de una marca asociada -- si solo
@@ -4370,6 +4370,10 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
   const [resultado, setResultado] = useState(null);
   const [manual, setManual] = useState({ tipo: "", colombiaCurva: "", colombiaCantidad: "", venezuelaCurva: "", venezuelaCantidad: "", precio: "", observacionesCliente: "" });
   const [guardando, setGuardando] = useState(false);
+  // (2026-09-30, a pedido de Fredy) Historial de lo que se ha mandado a
+  // preorden desde esta pantalla -- panel aparte, no ocupa espacio si no se
+  // abre.
+  const [showHistorial, setShowHistorial] = useState(false);
   // (2026-09-21, a pedido de Fredy) Buscador de referencias por Tipo de Tela
   // y/o Referencia (parcial) contra lo que ya existe en Cápsulas -- para
   // cuando no se sabe la referencia exacta y se quiere ver qué hay de una
@@ -4499,10 +4503,20 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
     }
     setGuardando(true);
     try {
+      let preordenId, cliente, numPedido;
       if (destino === "existente") {
         await onAgregarAExistente(preordenExistenteId, filas);
+        const destinoElegido = preordenesDisponibles.find((p) => p.id === preordenExistenteId);
+        preordenId = preordenExistenteId;
+        cliente = destinoElegido?.cliente || "";
+        numPedido = destinoElegido?.numPedido || "";
       } else {
-        await onCrearPreorden(header, filas);
+        preordenId = await onCrearPreorden(header, filas);
+        cliente = header.cliente || "";
+        numPedido = header.numPedido || "";
+      }
+      if (onRegistrarHistorial) {
+        await onRegistrarHistorial({ tipo: destino, preordenId, cliente, numPedido, cantidadReferencias: filas.length });
       }
       onGuardado();
     } finally {
@@ -4515,7 +4529,10 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>🆕 Nueva Orden</h2>
-        <Btn variant="secondary" onClick={onCancelar}>← Volver a Preórdenes</Btn>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Btn variant="ghost" onClick={() => setShowHistorial(true)}>📜 Historial{historial?.length ? ` (${historial.length})` : ""}</Btn>
+          <Btn variant="secondary" onClick={onCancelar}>← Volver a Preórdenes</Btn>
+        </div>
       </div>
       <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 20, marginBottom: 20 }}>
         <div style={{ display: "flex", gap: 20, marginBottom: 16 }}>
@@ -4718,6 +4735,25 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
             <Btn variant="secondary" onClick={() => { setEditandoIdx(null); setEditForm(null); }}>Cancelar</Btn>
             <Btn onClick={guardarEdicionFila}>Guardar cambios</Btn>
           </div>
+        </Modal>
+      )}
+      {showHistorial && (
+        <Modal title="📜 Historial de Nueva Orden" onClose={() => setShowHistorial(false)} width={680}>
+          {!historial?.length ? (
+            <div style={{ fontSize: 13, color: T.slate, textAlign: "center", padding: "20px 0" }}>Todavía no se ha guardado nada desde esta pantalla.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: 420, overflowY: "auto" }}>
+              {[...historial].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")).map((h) => (
+                <div key={h.id} style={{ padding: "10px 14px", borderRadius: 10, border: `1px solid ${T.border}`, background: T.canvas }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                    <span style={{ fontSize: 13, fontWeight: 800, color: T.ink }}>{h.cliente || "Sin cliente"}{h.numPedido ? ` — #${h.numPedido}` : ""}</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: h.tipo === "existente" ? T.denim : T.jade, background: h.tipo === "existente" ? T.denimBg : T.jadeBg, padding: "2px 8px", borderRadius: 4, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h.tipo === "existente" ? "Agregada a existente" : "Preorden nueva"}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: T.slate }}>{h.cantidadReferencias} referencia{h.cantidadReferencias !== 1 ? "s" : ""} · {h.usuario || "—"} · {h.fecha ? new Date(h.fecha).toLocaleString("es-CO", { dateStyle: "short", timeStyle: "short" }) : "—"}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </Modal>
       )}
     </div>
@@ -5951,7 +5987,7 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
     </div>
   );
 }
-function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAPreordenExistente, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onCrearEntregaTela, onAsignarEntregaTela, prefillDesdeCapsula, onConsumirPrefillDesdeCapsula, onMarcarRefEnviadaAPreorden }) {
+function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAPreordenExistente, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onCrearEntregaTela, onAsignarEntregaTela, prefillDesdeCapsula, onConsumirPrefillDesdeCapsula, onMarcarRefEnviadaAPreorden, historialNuevaOrden, onRegistrarHistorialNuevaOrden }) {
   const [modo, setModo] = useState("lista");
   // (2026-09-30, a pedido de Fredy) "Pasar a Preorden"/"Pasar Cápsula a
   // Preorden" llegan acá con prefillDesdeCapsula (arreglo de {cap, ref}) ya
@@ -6258,6 +6294,8 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         onAddRef={onAddRef}
         onCrearPreorden={onCrearPreorden}
         onAgregarAExistente={onAgregarAPreordenExistente}
+        historial={historialNuevaOrden}
+        onRegistrarHistorial={onRegistrarHistorialNuevaOrden}
         onGuardado={() => {
           if (prefillDesdeCapsula) {
             prefillDesdeCapsula.forEach(({ cap, ref }) => onMarcarRefEnviadaAPreorden(cap.id, ref.id));
@@ -14378,6 +14416,10 @@ function AppInner() {
   const [pedidoConfig, setPedidoConfig] = useState({ clientes: [], vendedores: [] });
   const [bitacoraEnvios, setBitacoraEnvios] = useState([]);
   const [bitacoraPreordenes, setBitacoraPreordenes] = useState([]);
+  // (2026-09-30, a pedido de Fredy) Historial de lo que se manda a una
+  // preorden desde "Nueva Orden" -- una fila por cada vez que se usa
+  // "Guardar", sea creando una preorden nueva o agregando a una existente.
+  const [historialNuevaOrden, setHistorialNuevaOrden] = useState([]);
   // (2026-09-23, a pedido de Fredy) Cada "entrega" es una factura de tela --
   // puede cubrir varias referencias de una preorden a la vez, o ninguna
   // todavía si la tela se compró antes de que exista la orden que la usa
@@ -14601,6 +14643,8 @@ function AppInner() {
         unsubsDatos.push(unsubBitacora);
         const unsubPreordenes = onSnapshot(collection(db, "bitacora_preordenes"), (snap) => { setBitacoraPreordenes(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubsDatos.push(unsubPreordenes);
+        const unsubHistorialNuevaOrden = onSnapshot(collection(db, "historial_nueva_orden"), (snap) => { setHistorialNuevaOrden(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
+        unsubsDatos.push(unsubHistorialNuevaOrden);
         const unsubEntregasTela = onSnapshot(collection(db, "preorden_entregas_tela"), (snap) => { setEntregasTela(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
         unsubsDatos.push(unsubEntregasTela);
         const unsubKpiPuestos = onSnapshot(collection(db, "kpi_puestos"), (snap) => { setKpiPuestos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); });
@@ -14840,6 +14884,7 @@ function AppInner() {
     };
     await addBitacoraPreorden(preorden);
     notify({ id: uid(), icon: "🧾", title: "Preorden registrada", msg: `${items.length} referencia${items.length !== 1 ? "s" : ""}${header.cliente ? ` — ${header.cliente}` : ""}` });
+    return preorden.id;
   }
   // (2026-09-30, a pedido de Fredy) Agrega filas (armadas en Nueva Orden) a
   // una preorden que YA existe, en vez de crear una nueva -- para cuando
@@ -14850,6 +14895,16 @@ function AppInner() {
     const nuevosItems = filasAItemsPreorden(filas);
     await actualizarPreorden(preordenId, { items: [...(preordenActual.items || []), ...nuevosItems] });
     notify({ id: uid(), icon: "🧾", title: "Referencias agregadas a la preorden", msg: `${filas.length} referencia${filas.length !== 1 ? "s" : ""}${preordenActual.cliente ? ` — ${preordenActual.cliente}` : ""}` });
+  }
+  // (2026-09-30, a pedido de Fredy) Historial de Nueva Orden -- una fila por
+  // cada vez que se usa "Guardar" ahí, sea creando una preorden nueva o
+  // agregando referencias a una existente. Vive en su propia colección
+  // (independiente de bitacora_preordenes) para no mezclar el historial de
+  // acciones con el documento de la preorden en sí.
+  async function registrarHistorialNuevaOrden(entrada) {
+    const registro = { id: uid(), fecha: nowISO(), usuario: currentUser?.name || "", ...entrada };
+    setHistorialNuevaOrden((hs) => [...hs, registro]);
+    await fsSave("historial_nueva_orden", registro.id, registro);
   }
   // (2026-09-23, a pedido de Fredy) Registra una entrega de tela nueva --
   // si ya trae preordenId + referencias (items), de una vez les aplica los
@@ -15839,6 +15894,8 @@ function AppInner() {
                 onAddRef={addRef}
                 onCrearPreorden={crearPreorden}
                 onAgregarAPreordenExistente={agregarFilasAPreordenExistente}
+                historialNuevaOrden={historialNuevaOrden}
+                onRegistrarHistorialNuevaOrden={registrarHistorialNuevaOrden}
                 onVincularPedido={vincularPreordenAPedido}
                 onAprobarPreorden={aprobarPreorden}
                 onDesaprobarPreorden={desaprobarPreorden}
