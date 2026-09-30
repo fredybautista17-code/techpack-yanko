@@ -2613,7 +2613,12 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
             {!canAdmin && canEdit && kind === "proto" && item.status === "aprobado" && !item.promotedTo && capsulas.length > 0 && <Btn variant="success" onClick={() => onPromote(item)}>⬆ Promover</Btn>}
             {kind === "proto" && item.promotedTo && <span style={{ padding: "6px 12px", background: T.jadeBg, color: T.jade, borderRadius: 8, fontSize: 12, fontWeight: 700 }}>✓ Promovido</span>}
             {!canAdmin && canEdit && kind === "ref" && item.status === "aprobado" && !item.enviadoAPreorden && <Btn variant="success" onClick={() => onPasarAPreorden(item)}>🧾 Pasar a Preorden</Btn>}
-            {kind === "ref" && item.enviadoAPreorden && <span style={{ padding: "6px 12px", background: T.jadeBg, color: T.jade, borderRadius: 8, fontSize: 12, fontWeight: 700 }}>✓ Enviado a Preorden</span>}
+            {kind === "ref" && item.enviadoAPreorden && (
+              <>
+                <span style={{ padding: "6px 12px", background: T.jadeBg, color: T.jade, borderRadius: 8, fontSize: 12, fontWeight: 700 }}>✓ Enviado a Preorden</span>
+                {canEdit && <Btn variant="ghost" onClick={() => onUpdateItem({ enviadoAPreorden: null })}>↺ Deshacer</Btn>}
+              </>
+            )}
             {canEdit && <Btn variant="ghost" onClick={() => setShowTaller(true)}>🧵 {tallerMasReciente && tallerMasReciente.estado !== "enviado" ? "Actualizar Taller de Muestra" : "Enviar a Taller de Muestra"}</Btn>}
           </div>
           {tallerMasReciente && (
@@ -2771,7 +2776,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
   );
 }
 
-function Card({ item, kind, onClick, onPromote, onPasarAPreorden, role, perms, stages }) {
+function Card({ item, kind, onClick, onPromote, onPasarAPreorden, onDeshacerEnviadoAPreorden, role, perms, stages }) {
   const overdue = isOverdue(item, stages), pending = item.observations.filter((o) => !o.done).length;
   return (
     <div onClick={onClick} style={{ background: T.white, borderRadius: 12, padding: 18, cursor: "pointer", border: `1px solid ${overdue ? T.coral : T.border}`, transition: "box-shadow 0.15s" }}
@@ -2816,7 +2821,12 @@ function Card({ item, kind, onClick, onPromote, onPasarAPreorden, role, perms, s
           <button onClick={(e) => { e.stopPropagation(); onPasarAPreorden(item); }} style={{ width: "100%", padding: "7px", background: T.jadeBg, border: `1px dashed ${T.jade}`, borderRadius: 8, color: T.jade, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>🧾 Pasar a Preorden</button>
         </div>
       )}
-      {kind === "ref" && item.enviadoAPreorden && <div style={{ marginTop: 8, fontSize: 11, color: T.jade, fontWeight: 700 }}>✓ Enviado a Preorden</div>}
+      {kind === "ref" && item.enviadoAPreorden && (
+        <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 11, color: T.jade, fontWeight: 700 }}>✓ Enviado a Preorden</span>
+          {perms?.editar && <span onClick={(e) => { e.stopPropagation(); onDeshacerEnviadoAPreorden(item); }} style={{ fontSize: 11, color: T.slate, fontWeight: 700, textDecoration: "underline dashed", cursor: "pointer" }}>↺ Deshacer</span>}
+        </div>
+      )}
     </div>
   );
 }
@@ -2957,7 +2967,7 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
     </div>
   );
 }
-function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, onDeleteRef, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio, onPasarAPreorden }) {
+function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, onDeleteRef, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio, onPasarAPreorden, onPasarCapsulaCompleta, onDeshacerEnviadoAPreorden }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [mesFiltro, setMesFiltro] = useState("todos");
@@ -3159,6 +3169,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
         const aprobada = ilustracionAprobada(cap);
         const estadoIlustracion = ILUSTRACION_CAPSULA_ESTADO[cap.ilustracionEstado] || ILUSTRACION_CAPSULA_ESTADO.aprobado;
         const rondasIlustracion = (cap.observacionesIlustracion || []).filter((o) => o.type === "revision_ilustracion_capsula").length;
+        const aprobadasSinEnviarCount = cap.referencias.filter((r) => r.status === "aprobado" && !r.enviadoAPreorden).length;
         return (
           <div key={cap.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 20, overflow: "hidden" }}>
             <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, flexWrap: "wrap", gap: 10 }}>
@@ -3195,6 +3206,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
                 )}
                 {perms.editar && <Btn small variant="ghost" onClick={() => setEditCap(cap)}>✏ Editar</Btn>}
                 {perms.editar && (aprobada ? <Btn small onClick={() => onNewRef(cap)}>+ Referencia</Btn> : <span title="Requiere aprobación de Ilustración de la Dirección Creativa"><Btn small disabled>+ Referencia</Btn></span>)}
+                {perms.editar && aprobadasSinEnviarCount > 0 && <Btn small variant="success" onClick={() => onPasarCapsulaCompleta(cap)}>🧾 Pasar Cápsula a Preorden ({aprobadasSinEnviarCount})</Btn>}
                 {filter === "enviar_cliente" && (seleccionados[cap.id] || []).length > 0 && (
                   <button onClick={() => setEnvioCapsula(cap)} style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: "#0E7490", color: T.white, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
                     📜 Crear Envío ({(seleccionados[cap.id] || []).length})
@@ -3228,7 +3240,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
                         🗑
                       </button>
                     )}
-                    <Card item={r} kind="ref" onClick={() => onSelectRef(cap.id, r.id)} role={role} perms={perms} stages={stages} onPasarAPreorden={() => onPasarAPreorden(cap, r)} />
+                    <Card item={r} kind="ref" onClick={() => onSelectRef(cap.id, r.id)} role={role} perms={perms} stages={stages} onPasarAPreorden={() => onPasarAPreorden(cap, r)} onDeshacerEnviadoAPreorden={() => onDeshacerEnviadoAPreorden(cap, r)} />
                   </div>
                 ))}
               </div>
@@ -3913,6 +3925,34 @@ function buscarRefEnCapsulasPreorden(refNorm, capsulas) {
 // filtroPais ("colombia"/"venezuela"/vacío=ambos) son opcionales -- sin
 // ellos, se comporta exactamente igual que antes (así sigue funcionando la
 // llamada de NuevaReprogramacionView, que no filtra nada).
+// (2026-09-30, a pedido de Fredy) Convierte las filas armadas en Nueva
+// Reprogramación/Nueva Orden al formato de "item" que vive dentro de una
+// preorden -- compartido entre crearPreorden (preorden nueva) y
+// agregarFilasAPreordenExistente (agregar a una que ya existe), para que
+// las dos rutas queden idénticas.
+function filasAItemsPreorden(filas) {
+  return (filas || []).map((it) => ({
+    itemId: it.refId || uid(),
+    capsulaId: it.capsulaId,
+    referencia: it.reference || "",
+    nombre: it.name || "",
+    foto: it.image || null,
+    categoria: it.categoria || "",
+    silueta: it.silueta || "",
+    rango: it.rango || "",
+    tela: it.tipoTela || "",
+    tipo: it._tipo || "",
+    consumo: it.consumo || "",
+    colombiaCurva: it._colombiaCurva || "",
+    colombiaCantidad: it._colombiaCantidad || "",
+    venezuelaCurva: it._venezuelaCurva || "",
+    venezuelaCantidad: it._venezuelaCantidad || "",
+    precio: it._precio || "",
+    observacionesCliente: it._observacionesCliente || "",
+    pedidoVinculado: null,
+    cartaColores: [],
+  }));
+}
 function resumenPreordenPorCategoria(items, filtroGrupo, filtroPais) {
   const mapa = new Map();
   (items || [])
@@ -3929,7 +3969,7 @@ function resumenPreordenPorCategoria(items, filtroGrupo, filtroPais) {
     });
   return [...mapa.values()].sort((a, b) => b.unidades - a.unidades);
 }
-function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, currentUser, esOrdenNueva, filaPrefill, onAddCapsula, onAddRef, onGuardar, onCancelar }) {
+function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, currentUser, onAddCapsula, onAddRef, onGuardar, onCancelar }) {
   const [header, setHeader] = useState({ cliente: "", numPedido: "" });
   const esCliente = currentUser?.role === "Cliente";
   // (2026-09-16) Un cliente puede tener más de una marca asociada -- si solo
@@ -3941,24 +3981,6 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
       setHeader((h) => (h.cliente ? h : { ...h, cliente: clientesUsuario[0] }));
     }
   }, [esCliente, clientesUsuario.join("|")]);
-  // (2026-09-30, a pedido de Fredy) "Pasar a Preorden" desde una referencia
-  // ya Aprobada en Cápsulas -- llega acá con la cápsula/referencia de
-  // origen ya conocidas (filaPrefill), así que arranca con esa fila ya
-  // agregada (Curva/Cantidad/Tipo en blanco para completar) en vez de
-  // obligar a repetir la búsqueda que ya se hizo desde Cápsulas.
-  useEffect(() => {
-    if (!filaPrefill) return;
-    const { cap, ref } = filaPrefill;
-    setHeader((h) => (h.cliente ? h : { ...h, cliente: cap.cliente || h.cliente }));
-    setFilas((fs) => (fs.length ? fs : [{
-      capsulaId: cap.id, refId: ref.id, reference: ref.reference, name: ref.name || ref.reference, image: ref.image || null,
-      categoria: ref.categoria || "", silueta: ref.silueta || "", rango: ref.rango || "",
-      tipoTela: ref.tipoTela || "", consumo: "", _tipo: "",
-      _colombiaCurva: "", _colombiaCantidad: "",
-      _venezuelaCurva: "", _venezuelaCantidad: "",
-      _precio: ref.precioCotizacion != null ? String(ref.precioCotizacion) : "", _observacionesCliente: "",
-    }]));
-  }, []);
   const [filas, setFilas] = useState([]);
   const [referencia, setReferencia] = useState("");
   const [buscando, setBuscando] = useState(false);
@@ -4014,29 +4036,6 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
     setResultado(null);
     const refNorm = normalizarRefComparacion(ref);
     const pedidoExistente = pedidoQueContieneRef(ref, pedidos);
-    // (2026-09-16, a pedido de Fredy) "Nueva Orden" es para referencias que
-    // todavía no existen en Busint -- se busca solo en Cápsulas internas; si
-    // tampoco está ahí, se agrega igual, completamente a mano.
-    if (esOrdenNueva) {
-      const capsulaExistente = buscarRefEnCapsulasPreorden(refNorm, capsulas);
-      const datosBusint = capsulaExistente
-        ? {
-            nombre: capsulaExistente.ref.name || "",
-            categoria: capsulaExistente.ref.categoria || "",
-            silueta: capsulaExistente.ref.silueta || "",
-            rango: capsulaExistente.ref.rango || (capsulaExistente.ref.tallas?.[0] || ""),
-            tipo: "",
-            tela: capsulaExistente.ref.tipoTela || "",
-            consumo: "",
-          }
-        : { nombre: "", categoria: "", silueta: "", rango: "", tipo: "", tela: "", consumo: "" };
-      setResultado({ ok: true, datosBusint, capsulaExistente, pedidoExistente });
-      if (capsulaExistente?.ref?.precioCotizacion != null) {
-        setManual((m) => (m.precio ? m : { ...m, precio: String(capsulaExistente.ref.precioCotizacion) }));
-      }
-      setBuscando(false);
-      return;
-    }
     try {
       const llamarRef = httpsCallable(functionsClient, "probarReferenciaBusint");
       const respRef = await llamarRef({ ref });
@@ -4148,7 +4147,7 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>{esOrdenNueva ? "🆕 Nueva Orden" : "🔁 Nueva Reprogramación"}</h2>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>🔁 Nueva Reprogramación</h2>
         <Btn variant="secondary" onClick={onCancelar}>← Volver a Preórdenes</Btn>
       </div>
       <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 20, marginBottom: 20 }}>
@@ -4170,14 +4169,14 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
           <div style={{ flex: 1 }}>
             <Field label="Referencia"><FInput value={referencia} onChange={setReferencia} placeholder="Ej: C-5008" /></Field>
           </div>
-          <Btn onClick={buscar} disabled={buscando || !referencia.trim()}>{buscando ? "Buscando..." : (esOrdenNueva ? "🔍 Buscar en Cápsulas" : "🔍 Buscar en Busint")}</Btn>
+          <Btn onClick={buscar} disabled={buscando || !referencia.trim()}>{buscando ? "Buscando..." : "🔍 Buscar en Busint"}</Btn>
         </div>
         {resultado && !resultado.ok && (
           <div style={{ padding: "10px 14px", background: T.coralBg, color: T.coral, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 12 }}>⚠ {resultado.error}</div>
         )}
         {resultado?.ok && (
           <div style={{ padding: 16, background: T.canvas, borderRadius: 10, marginBottom: 12 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginBottom: 10 }}>{esOrdenNueva ? "Datos encontrados" : "Datos traídos de Busint"}</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginBottom: 10 }}>Datos traídos de Busint</div>
             {resultado.pedidoExistente && (
               <div style={{ fontSize: 13, color: T.amber, fontWeight: 700, marginBottom: 10 }}>⚠ Esta referencia ya está en el Pedido #{resultado.pedidoExistente.numero || "?"} ({resultado.pedidoExistente.cliente || "sin cliente"}).</div>
             )}
@@ -4303,6 +4302,398 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
             <Btn variant="secondary" onClick={onCancelar}>Cancelar</Btn>
             <Btn onClick={guardar} disabled={guardando}>{guardando ? "Guardando..." : "💾 Guardar Preorden"}</Btn>
+          </div>
+        </div>
+      )}
+      {editandoIdx !== null && editForm && (
+        <Modal title={`Editar — ${filas[editandoIdx]?.reference || ""}`} onClose={() => { setEditandoIdx(null); setEditForm(null); }} width={560}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+            <Field label="Tipo (Dama/Caballero/Niño)"><FInput value={editForm.tipo} onChange={(v) => setEditForm((f) => ({ ...f, tipo: v }))} placeholder="Si no se clasificó" /></Field>
+            <Field label="Curva Colombia"><FInput value={editForm.colombiaCurva} onChange={(v) => setEditForm((f) => ({ ...f, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+            <Field label="Cantidad Colombia"><FInput value={editForm.colombiaCantidad} onChange={(v) => setEditForm((f) => ({ ...f, colombiaCantidad: v }))} placeholder="0" /></Field>
+            <Field label="Precio"><FInput value={editForm.precio} onChange={(v) => setEditForm((f) => ({ ...f, precio: v }))} placeholder="0" /></Field>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr", gap: 10, marginBottom: 20 }}>
+            <Field label="Curva Venezuela"><FInput value={editForm.venezuelaCurva} onChange={(v) => setEditForm((f) => ({ ...f, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+            <Field label="Cantidad Venezuela"><FInput value={editForm.venezuelaCantidad} onChange={(v) => setEditForm((f) => ({ ...f, venezuelaCantidad: v }))} placeholder="0" /></Field>
+            <Field label="Obs. Cliente"><FInput value={editForm.observacionesCliente} onChange={(v) => setEditForm((f) => ({ ...f, observacionesCliente: v }))} placeholder="Opcional" /></Field>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Btn variant="secondary" onClick={() => { setEditandoIdx(null); setEditForm(null); }}>Cancelar</Btn>
+            <Btn onClick={guardarEdicionFila}>Guardar cambios</Btn>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, filasPrefill, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAExistente, onGuardado, onCancelar }) {
+  const [header, setHeader] = useState({ cliente: "", numPedido: "" });
+  const esCliente = currentUser?.role === "Cliente";
+  // (2026-09-16) Un cliente puede tener más de una marca asociada -- si solo
+  // tiene una, se sigue fijando sola como antes; si tiene varias, se deja
+  // elegir entre esas (nunca las de otro cliente).
+  const clientesUsuario = clientesDeUsuario(currentUser);
+  useEffect(() => {
+    if (esCliente && clientesUsuario.length === 1) {
+      setHeader((h) => (h.cliente ? h : { ...h, cliente: clientesUsuario[0] }));
+    }
+  }, [esCliente, clientesUsuario.join("|")]);
+  // (2026-09-30, a pedido de Fredy) "Pasar a Preorden" (una referencia) o
+  // "Pasar Cápsula a Preorden" (todas sus Aprobadas) llegan acá con
+  // filasPrefill ya armado -- arranca con esas filas ya agregadas (Curva/
+  // Cantidad/Tipo en blanco para completar) en vez de obligar a repetir la
+  // búsqueda que ya se hizo desde Cápsulas.
+  useEffect(() => {
+    if (!filasPrefill || !filasPrefill.length) return;
+    setHeader((h) => (h.cliente ? h : { ...h, cliente: filasPrefill[0].cap.cliente || h.cliente }));
+    setFilas((fs) => (fs.length ? fs : filasPrefill.map(({ cap, ref }) => ({
+      capsulaId: cap.id, refId: ref.id, reference: ref.reference, name: ref.name || ref.reference, image: ref.image || null,
+      categoria: ref.categoria || "", silueta: ref.silueta || "", rango: ref.rango || "",
+      tipoTela: ref.tipoTela || "", consumo: "", _tipo: "",
+      _colombiaCurva: "", _colombiaCantidad: "",
+      _venezuelaCurva: "", _venezuelaCantidad: "",
+      _precio: ref.precioCotizacion != null ? String(ref.precioCotizacion) : "", _observacionesCliente: "",
+    }))));
+  }, []);
+  const [filas, setFilas] = useState([]);
+  // (2026-09-30, a pedido de Fredy) Nueva Orden puede terminar creando una
+  // preorden desde cero, o agregando estas filas a una que ya tengas
+  // abierta (estado "montada", sin aprobar todavía) -- se elige antes de
+  // guardar, sin importar si se entró a mano o desde "Pasar a Preorden"/
+  // "Pasar Cápsula a Preorden".
+  const [destino, setDestino] = useState("nueva");
+  const [preordenExistenteId, setPreordenExistenteId] = useState("");
+  const preordenesDisponibles = (preordenes || []).filter((p) => p.estado !== "aprobada").sort((a, b) => (b.fechaCreado || "").localeCompare(a.fechaCreado || ""));
+  const [referencia, setReferencia] = useState("");
+  const [buscando, setBuscando] = useState(false);
+  const [resultado, setResultado] = useState(null);
+  const [manual, setManual] = useState({ tipo: "", colombiaCurva: "", colombiaCantidad: "", venezuelaCurva: "", venezuelaCantidad: "", precio: "", observacionesCliente: "" });
+  const [guardando, setGuardando] = useState(false);
+  // (2026-09-21, a pedido de Fredy) Buscador de referencias por Tipo de Tela
+  // y/o Referencia (parcial) contra lo que ya existe en Cápsulas -- para
+  // cuando no se sabe la referencia exacta y se quiere ver qué hay de una
+  // tela dada (ej. "Amorela").
+  const [busquedaTela, setBusquedaTela] = useState("");
+  const [busquedaRefLibre, setBusquedaRefLibre] = useState("");
+  // Índice (en filas) de la referencia que se está editando -- null cuando
+  // no hay ninguna en edición. Antes solo se podía "Quitar" y volver a
+  // agregarla para corregir algo.
+  const [editandoIdx, setEditandoIdx] = useState(null);
+  const [editForm, setEditForm] = useState(null);
+  const resultadosBusquedaTela = useMemo(() => {
+    const telaNorm = foldTexto(busquedaTela);
+    const refNorm = normalizarRefComparacion(busquedaRefLibre);
+    if (!telaNorm && !refNorm) return [];
+    const vistos = new Set();
+    const encontrados = [];
+    const agregarSiCoincide = (item) => {
+      const refN = normalizarRefComparacion(item.reference);
+      const key = refN || item.reference;
+      if (!key || vistos.has(key)) return;
+      if (telaNorm && !foldTexto(item.tipoTela).includes(telaNorm)) return;
+      if (refNorm && !refN.includes(refNorm)) return;
+      vistos.add(key);
+      encontrados.push(item);
+    };
+    // Cápsulas (catálogo de Diseño)
+    for (const cap of capsulas || []) {
+      for (const r of cap.referencias || []) {
+        agregarSiCoincide({ capsulaId: cap.id, refId: r.id, reference: r.reference, name: r.name, categoria: r.categoria, silueta: r.silueta, rango: r.rango || (r.tallas?.[0] || ""), tipoTela: r.tipoTela, image: r.image });
+      }
+    }
+    // (2026-09-21, a pedido de Fredy) Preórdenes ya creadas -- ahí es donde
+    // realmente queda guardada la tela de casi todas las referencias, no
+    // solo en Cápsulas.
+    for (const p of preordenes || []) {
+      for (const it of p.items || []) {
+        agregarSiCoincide({ capsulaId: it.capsulaId || null, refId: it.itemId || null, reference: it.referencia, name: it.nombre, categoria: it.categoria, silueta: it.silueta, rango: it.rango, tipoTela: it.tela, image: it.foto });
+      }
+    }
+    return encontrados.slice(0, 30);
+  }, [busquedaTela, busquedaRefLibre, capsulas, preordenes]);
+  async function buscar() {
+    const ref = referencia.trim();
+    if (!ref) return;
+    setBuscando(true);
+    setResultado(null);
+    const refNorm = normalizarRefComparacion(ref);
+    const pedidoExistente = pedidoQueContieneRef(ref, pedidos);
+    const capsulaExistente = buscarRefEnCapsulasPreorden(refNorm, capsulas);
+    const datosBusint = capsulaExistente
+      ? {
+          nombre: capsulaExistente.ref.name || "",
+          categoria: capsulaExistente.ref.categoria || "",
+          silueta: capsulaExistente.ref.silueta || "",
+          rango: capsulaExistente.ref.rango || (capsulaExistente.ref.tallas?.[0] || ""),
+          tipo: "",
+          tela: capsulaExistente.ref.tipoTela || "",
+          consumo: "",
+        }
+      : { nombre: "", categoria: "", silueta: "", rango: "", tipo: "", tela: "", consumo: "" };
+    setResultado({ ok: true, datosBusint, capsulaExistente, pedidoExistente });
+    if (capsulaExistente?.ref?.precioCotizacion != null) {
+      setManual((m) => (m.precio ? m : { ...m, precio: String(capsulaExistente.ref.precioCotizacion) }));
+    }
+    setBuscando(false);
+  }
+  async function agregarFila() {
+    if (!resultado?.ok) return;
+    const ref = referencia.trim();
+    let capId = null, refId = null, refObj = null;
+    if (resultado.capsulaExistente) {
+      capId = resultado.capsulaExistente.cap.id;
+      refObj = resultado.capsulaExistente.ref;
+      refId = refObj.id;
+    }
+    setFilas((fs) => [...fs, {
+      capsulaId: capId, refId, reference: ref, name: refObj?.name || resultado.datosBusint.nombre || ref, image: refObj?.image || null,
+      categoria: resultado.datosBusint.categoria, silueta: resultado.datosBusint.silueta, rango: resultado.datosBusint.rango,
+      tipoTela: resultado.datosBusint.tela, consumo: resultado.datosBusint.consumo, _tipo: manual.tipo || resultado.datosBusint.tipo,
+      _colombiaCurva: manual.colombiaCurva, _colombiaCantidad: manual.colombiaCantidad,
+      _venezuelaCurva: manual.venezuelaCurva, _venezuelaCantidad: manual.venezuelaCantidad,
+      _precio: manual.precio, _observacionesCliente: manual.observacionesCliente,
+    }]);
+    setReferencia(""); setResultado(null);
+    setManual({ tipo: "", colombiaCurva: "", colombiaCantidad: "", venezuelaCurva: "", venezuelaCantidad: "", precio: "", observacionesCliente: "" });
+  }
+  function quitarFila(i) { setFilas((fs) => fs.filter((_, idx) => idx !== i)); }
+  // Agrega directo desde el buscador de Tela/Referencia -- sin pasar por el
+  // paso de "Buscar en Busint", porque el dato ya viene de Cápsulas. Curva/
+  // Cantidad/Precio quedan en blanco para completarlos con "✏️ Editar".
+  function agregarDesdeBusqueda(item) {
+    setFilas((fs) => [...fs, {
+      capsulaId: item.capsulaId || null, refId: item.refId || null, reference: item.reference, name: item.name || item.reference, image: item.image || null,
+      categoria: item.categoria || "", silueta: item.silueta || "", rango: item.rango || "",
+      tipoTela: item.tipoTela || "", consumo: "", _tipo: "",
+      _colombiaCurva: "", _colombiaCantidad: "",
+      _venezuelaCurva: "", _venezuelaCantidad: "",
+      _precio: "", _observacionesCliente: "",
+    }]);
+  }
+  // "✏️ Editar" en una fila ya agregada -- antes tocaba Quitar y volver a
+  // agregar para corregir Curva/Cantidad/Precio/etc.
+  function abrirEdicionFila(i) {
+    const f = filas[i];
+    setEditandoIdx(i);
+    setEditForm({
+      tipo: f._tipo || "", colombiaCurva: f._colombiaCurva || "", colombiaCantidad: f._colombiaCantidad || "",
+      venezuelaCurva: f._venezuelaCurva || "", venezuelaCantidad: f._venezuelaCantidad || "",
+      precio: f._precio || "", observacionesCliente: f._observacionesCliente || "",
+    });
+  }
+  function guardarEdicionFila() {
+    setFilas((fs) => fs.map((f, idx) => idx !== editandoIdx ? f : {
+      ...f,
+      _tipo: editForm.tipo, _colombiaCurva: editForm.colombiaCurva, _colombiaCantidad: editForm.colombiaCantidad,
+      _venezuelaCurva: editForm.venezuelaCurva, _venezuelaCantidad: editForm.venezuelaCantidad,
+      _precio: editForm.precio, _observacionesCliente: editForm.observacionesCliente,
+    }));
+    setEditandoIdx(null); setEditForm(null);
+  }
+  async function guardar() {
+    if (!filas.length) return;
+    if (destino === "existente" && !preordenExistenteId) {
+      alert("Elige a qué preorden existente quieres agregar estas referencias.");
+      return;
+    }
+    setGuardando(true);
+    try {
+      if (destino === "existente") {
+        await onAgregarAExistente(preordenExistenteId, filas);
+      } else {
+        await onCrearPreorden(header, filas);
+      }
+      onGuardado();
+    } finally {
+      setGuardando(false);
+    }
+  }
+  const resumen = resumenPreordenPorCategoria(filas.map((f) => ({ categoria: f.categoria, colombiaCantidad: f._colombiaCantidad, venezuelaCantidad: f._venezuelaCantidad })));
+  const totalUnidades = resumen.reduce((s, r) => s + r.unidades, 0);
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>🆕 Nueva Orden</h2>
+        <Btn variant="secondary" onClick={onCancelar}>← Volver a Preórdenes</Btn>
+      </div>
+      <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 20, marginBottom: 20 }}>
+        <div style={{ display: "flex", gap: 20, marginBottom: 16 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 700, color: T.ink, cursor: "pointer" }}>
+            <input type="radio" checked={destino === "nueva"} onChange={() => setDestino("nueva")} /> Crear preorden nueva
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 700, color: T.ink, cursor: "pointer" }}>
+            <input type="radio" checked={destino === "existente"} onChange={() => setDestino("existente")} /> Agregar a una preorden existente
+          </label>
+        </div>
+        {destino === "nueva" ? (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+            <Field label="Cliente">
+              {esCliente ? (
+                clientesUsuario.length > 1 ? (
+                  <FSel value={header.cliente} onChange={(v) => setHeader((h) => ({ ...h, cliente: v }))} options={clientesUsuario} />
+                ) : (
+                  <div style={{ padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.canvas }}>{clientesUsuario[0] || "—"}</div>
+                )
+              ) : (
+                <FSel value={header.cliente} onChange={(v) => setHeader((h) => ({ ...h, cliente: v }))} options={(config?.clientes || []).map((c) => c.nombre)} />
+              )}
+            </Field>
+            <Field label="N° Pedido (opcional)"><FInput value={header.numPedido} onChange={(v) => setHeader((h) => ({ ...h, numPedido: v }))} placeholder="Si ya lo sabes" /></Field>
+          </div>
+        ) : (
+          <div style={{ marginBottom: 16 }}>
+            <Field label="Preorden destino">
+              {preordenesDisponibles.length ? (
+                <select value={preordenExistenteId} onChange={(e) => setPreordenExistenteId(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 14, color: T.ink, background: T.white, outline: "none", fontFamily: "inherit" }}>
+                  <option value="">Elige una preorden...</option>
+                  {preordenesDisponibles.map((p) => (
+                    <option key={p.id} value={p.id}>{p.cliente || "Sin cliente"}{p.numPedido ? ` — #${p.numPedido}` : ""} · {(p.items || []).length} ref · {p.fechaCreado}</option>
+                  ))}
+                </select>
+              ) : (
+                <div style={{ padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.slate, background: T.canvas }}>No hay ninguna preorden sin aprobar todavía — crea una nueva.</div>
+              )}
+            </Field>
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 12 }}>
+          <div style={{ flex: 1 }}>
+            <Field label="Referencia"><FInput value={referencia} onChange={setReferencia} placeholder="Ej: C-5008" /></Field>
+          </div>
+          <Btn onClick={buscar} disabled={buscando || !referencia.trim()}>{buscando ? "Buscando..." : "🔍 Buscar en Cápsulas"}</Btn>
+        </div>
+        {resultado && !resultado.ok && (
+          <div style={{ padding: "10px 14px", background: T.coralBg, color: T.coral, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 12 }}>⚠ {resultado.error}</div>
+        )}
+        {resultado?.ok && (
+          <div style={{ padding: 16, background: T.canvas, borderRadius: 10, marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: T.ink, marginBottom: 10 }}>Datos encontrados</div>
+            {resultado.pedidoExistente && (
+              <div style={{ fontSize: 13, color: T.amber, fontWeight: 700, marginBottom: 10 }}>⚠ Esta referencia ya está en el Pedido #{resultado.pedidoExistente.numero || "?"} ({resultado.pedidoExistente.cliente || "sin cliente"}).</div>
+            )}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10, marginBottom: 14, fontSize: 12 }}>
+              <div><div style={{ color: T.slate, fontWeight: 700 }}>Nombre</div><div style={{ color: T.ink }}>{resultado.datosBusint.nombre || "—"}</div></div>
+              <div><div style={{ color: T.slate, fontWeight: 700 }}>Categoría</div><div style={{ color: T.ink }}>{resultado.datosBusint.categoria || "—"}</div></div>
+              <div><div style={{ color: T.slate, fontWeight: 700 }}>Silueta</div><div style={{ color: T.ink }}>{resultado.datosBusint.silueta || "—"}</div></div>
+              <div><div style={{ color: T.slate, fontWeight: 700 }}>Rango</div><div style={{ color: T.ink }}>{resultado.datosBusint.rango || "—"}</div></div>
+              <div><div style={{ color: T.slate, fontWeight: 700 }}>Tela</div><div style={{ color: T.ink }}>{resultado.datosBusint.tela || "— (llenar a mano)"}</div></div>
+              <div><div style={{ color: T.slate, fontWeight: 700 }}>Consumo</div><div style={{ color: T.ink }}>{resultado.datosBusint.consumo || "— (llenar a mano)"}</div></div>
+              <div><div style={{ color: T.slate, fontWeight: 700 }}>Tipo (línea)</div><div style={{ color: resultado.datosBusint.tipo ? T.ink : T.amber }}>{resultado.datosBusint.tipo || "Sin clasificar — llenar a mano"}</div></div>
+            </div>
+            {resultado.capsulaExistente ? (
+              <div style={{ fontSize: 13, color: T.jade, fontWeight: 700, marginBottom: 10 }}>✓ Ya existe en la cápsula "{resultado.capsulaExistente.cap.name}" — se va a usar esa misma.</div>
+            ) : (
+              <div style={{ fontSize: 13, color: T.slate, fontWeight: 600, marginBottom: 10 }}>ℹ Esta referencia todavía no está en ninguna cápsula de Diseño — se agrega igual a la preorden, sin vincular a una cápsula.</div>
+            )}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+              <Field label="Tipo (Dama/Caballero/Niño)"><FInput value={manual.tipo || resultado.datosBusint.tipo} onChange={(v) => setManual((m) => ({ ...m, tipo: v }))} placeholder="Si no se clasificó" /></Field>
+              <Field label="Curva Colombia"><FInput value={manual.colombiaCurva} onChange={(v) => setManual((m) => ({ ...m, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+              <Field label="Cantidad Colombia"><FInput value={manual.colombiaCantidad} onChange={(v) => setManual((m) => ({ ...m, colombiaCantidad: v }))} placeholder="0" /></Field>
+              <Field label="Precio"><FInput value={manual.precio} onChange={(v) => setManual((m) => ({ ...m, precio: v }))} placeholder="0" /></Field>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr", gap: 10, marginBottom: 14 }}>
+              <Field label="Curva Venezuela"><FInput value={manual.venezuelaCurva} onChange={(v) => setManual((m) => ({ ...m, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+              <Field label="Cantidad Venezuela"><FInput value={manual.venezuelaCantidad} onChange={(v) => setManual((m) => ({ ...m, venezuelaCantidad: v }))} placeholder="0" /></Field>
+              <Field label="Obs. Cliente"><FInput value={manual.observacionesCliente} onChange={(v) => setManual((m) => ({ ...m, observacionesCliente: v }))} placeholder="Opcional" /></Field>
+            </div>
+            <Btn onClick={agregarFila}>+ Agregar a la preorden</Btn>
+          </div>
+        )}
+      </div>
+      <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 20, marginBottom: 20 }}>
+        <div style={{ fontWeight: 800, fontSize: 15, color: T.ink, marginBottom: 4 }}>Buscar por Tela o Referencia</div>
+        <div style={{ fontSize: 12, color: T.slate, marginBottom: 12 }}>Consulta qué referencias ya existen en Cápsulas — útil cuando no sabes el código exacto pero sí la tela.</div>
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 12, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 160 }}>
+            <Field label="Tipo de Tela"><FInput value={busquedaTela} onChange={setBusquedaTela} placeholder="Ej: Amorela" /></Field>
+          </div>
+          <div style={{ flex: 1, minWidth: 160 }}>
+            <Field label="Referencia"><FInput value={busquedaRefLibre} onChange={setBusquedaRefLibre} placeholder="Ej: C-5008" /></Field>
+          </div>
+        </div>
+        {(busquedaTela.trim() || busquedaRefLibre.trim()) && (
+          resultadosBusquedaTela.length ? (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: T.canvas }}>
+                    {["Ref", "Nombre", "Categoría", "Tela", ""].map((h) => (
+                      <th key={h} style={{ padding: "8px 10px", color: T.slate, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {resultadosBusquedaTela.map((item, idx) => (
+                    <tr key={`${item.reference}-${idx}`} style={{ borderBottom: `1px solid ${T.border}` }}>
+                      <td style={{ padding: "6px 10px", fontWeight: 700 }}>{item.reference || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{item.name || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{item.categoria || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>{item.tipoTela || "—"}</td>
+                      <td style={{ padding: "6px 10px" }}><Btn small onClick={() => agregarDesdeBusqueda(item)}>+ Agregar</Btn></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: T.slate }}>Ninguna referencia en Cápsulas coincide con esa búsqueda.</div>
+          )
+        )}
+      </div>
+      {filas.length > 0 && (
+        <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 20, marginBottom: 20 }}>
+          <div style={{ fontWeight: 800, fontSize: 15, color: T.ink, marginBottom: 12 }}>Referencias agregadas ({filas.length})</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 16 }}>
+              <thead>
+                <tr style={{ background: T.ink }}>
+                  {["Ref", "Nombre", "Categoría", "Consumo", "Tipo", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Cant. Total", "Precio", ""].map((h) => (
+                    <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filas.map((f, i) => (
+                  <tr key={`${f.reference}-${i}`} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
+                    <td style={{ padding: "6px 10px", fontWeight: 700 }}>{f.reference}</td>
+                    <td style={{ padding: "6px 10px" }}>{f.name}</td>
+                    <td style={{ padding: "6px 10px" }}>{f.categoria || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{f.consumo || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{f._tipo || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{f._colombiaCurva || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{f._colombiaCantidad || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{f._venezuelaCurva || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{f._venezuelaCantidad || "—"}</td>
+                    <td style={{ padding: "6px 10px", fontWeight: 700 }}>{(Number(f._colombiaCantidad) || 0) + (Number(f._venezuelaCantidad) || 0)}</td>
+                    <td style={{ padding: "6px 10px" }}>{f._precio || "—"}</td>
+                    <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
+                      <button onClick={() => abrirEdicionFila(i)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", marginRight: 6 }}>Editar</button>
+                      <button onClick={() => quitarFila(i)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.coral, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Quitar</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontWeight: 700, fontSize: 13, color: T.ink, marginBottom: 8 }}>Resumen por categoría</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10, marginBottom: 20 }}>
+            {resumen.map((r) => (
+              <div key={r.categoria} style={{ padding: "10px 12px", borderRadius: 10, border: `1px solid ${T.border}`, background: T.canvas }}>
+                <div style={{ fontSize: 11, color: T.slate, fontWeight: 700 }}>{r.categoria}</div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: T.ink }}>{fmtNum(r.unidades)}</div>
+                <div style={{ fontSize: 11, color: T.slate }}>{r.referencias} ref{r.referencias !== 1 ? "s" : ""}</div>
+              </div>
+            ))}
+            <div style={{ padding: "10px 12px", borderRadius: 10, border: `1.5px solid ${T.denim}`, background: T.denimBg }}>
+              <div style={{ fontSize: 11, color: T.denim, fontWeight: 700 }}>Total</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: T.denim }}>{fmtNum(totalUnidades)}</div>
+              <div style={{ fontSize: 11, color: T.denim }}>{filas.length} ref{filas.length !== 1 ? "s" : ""}</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <Btn variant="secondary" onClick={onCancelar}>Cancelar</Btn>
+            <Btn onClick={guardar} disabled={guardando}>{guardando ? "Guardando..." : destino === "existente" ? "💾 Agregar a la Preorden" : "💾 Guardar Preorden"}</Btn>
           </div>
         </div>
       )}
@@ -5556,12 +5947,12 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
     </div>
   );
 }
-function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onCrearEntregaTela, onAsignarEntregaTela, prefillDesdeCapsula, onConsumirPrefillDesdeCapsula, onMarcarRefEnviadaAPreorden }) {
+function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAPreordenExistente, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onCrearEntregaTela, onAsignarEntregaTela, prefillDesdeCapsula, onConsumirPrefillDesdeCapsula, onMarcarRefEnviadaAPreorden }) {
   const [modo, setModo] = useState("lista");
-  // (2026-09-30, a pedido de Fredy) "Pasar a Preorden" desde una referencia
-  // ya Aprobada en Cápsulas llega acá con prefillDesdeCapsula {cap, ref} ya
-  // listo -- basta con forzar el modo "Nueva Orden" (NuevaReprogramacionView
-  // arranca con esa fila ya agregada, ver filaPrefill).
+  // (2026-09-30, a pedido de Fredy) "Pasar a Preorden"/"Pasar Cápsula a
+  // Preorden" llegan acá con prefillDesdeCapsula (arreglo de {cap, ref}) ya
+  // listo -- basta con forzar el modo "Nueva Orden" (NuevaOrdenView arranca
+  // con esas filas ya agregadas, ver filasPrefill).
   useEffect(() => {
     if (prefillDesdeCapsula) setModo("orden_nueva");
   }, [prefillDesdeCapsula]);
@@ -5835,7 +6226,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         : "No se encontró ninguna referencia con identificador vacío -- no había nada que reparar."
     );
   }
-  if (modo === "reprogramacion" || modo === "orden_nueva") {
+  if (modo === "reprogramacion") {
     return (
       <NuevaReprogramacionView
         capsulas={capsulas}
@@ -5843,14 +6234,29 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         preordenes={preordenes}
         config={config}
         currentUser={currentUser}
-        esOrdenNueva={modo === "orden_nueva"}
-        filaPrefill={prefillDesdeCapsula}
         onAddCapsula={onAddCapsula}
         onAddRef={onAddRef}
-        onGuardar={async (header, items) => {
-          await onCrearPreorden(header, items);
+        onGuardar={async (header, items) => { await onCrearPreorden(header, items); setModo("lista"); }}
+        onCancelar={() => setModo("lista")}
+      />
+    );
+  }
+  if (modo === "orden_nueva") {
+    return (
+      <NuevaOrdenView
+        capsulas={capsulas}
+        pedidos={pedidos}
+        preordenes={preordenes}
+        config={config}
+        currentUser={currentUser}
+        filasPrefill={prefillDesdeCapsula}
+        onAddCapsula={onAddCapsula}
+        onAddRef={onAddRef}
+        onCrearPreorden={onCrearPreorden}
+        onAgregarAExistente={onAgregarAPreordenExistente}
+        onGuardado={() => {
           if (prefillDesdeCapsula) {
-            onMarcarRefEnviadaAPreorden(prefillDesdeCapsula.cap.id, prefillDesdeCapsula.ref.id);
+            prefillDesdeCapsula.forEach(({ cap, ref }) => onMarcarRefEnviadaAPreorden(cap.id, ref.id));
             onConsumirPrefillDesdeCapsula();
           }
           setModo("lista");
@@ -14010,12 +14416,22 @@ function AppInner() {
   const [showCambiarClave, setShowCambiarClave] = useState(false);
   const [promoteProto, setPromoteProto] = useState(null);
   const [newRefCap, setNewRefCap] = useState(null);
-  // (2026-09-30, a pedido de Fredy) "Pasar a Preorden" desde una referencia
-  // de Cápsula ya Aprobada -- guarda {cap, ref} de origen y salta directo a
-  // Preórdenes en modo "Nueva Orden" con esa fila ya agregada.
+  // (2026-09-30, a pedido de Fredy) "Pasar a Preorden" (una referencia) o
+  // "Pasar Cápsula a Preorden" (todas sus Aprobadas sin enviar) -- guarda un
+  // arreglo de {cap, ref} de origen y salta directo a Preórdenes en modo
+  // "Nueva Orden" con esas filas ya agregadas.
   const [prefillPreordenDesde, setPrefillPreordenDesde] = useState(null);
   function pasarAPreorden(cap, ref) {
-    setPrefillPreordenDesde({ cap, ref });
+    setPrefillPreordenDesde([{ cap, ref }]);
+    setView("preordenes");
+  }
+  function pasarCapsulaCompletaAPreorden(cap) {
+    const aprobadasSinEnviar = (cap.referencias || []).filter((r) => r.status === "aprobado" && !r.enviadoAPreorden);
+    if (!aprobadasSinEnviar.length) {
+      alert("Esta cápsula no tiene referencias Aprobadas pendientes de enviar a Preorden.");
+      return;
+    }
+    setPrefillPreordenDesde(aprobadasSinEnviar.map((ref) => ({ cap, ref })));
     setView("preordenes");
   }
   const [toasts, setToasts] = useState([]);
@@ -14414,32 +14830,22 @@ function AppInner() {
       // actualizacion a una de ellas (Actualizar, Editar, carta de
       // colores, Vincular) se aplicaba a todas por igual. Con uid() de
       // respaldo cada fila queda independiente sin importar su origen.
-      items: items.map((it) => ({
-        itemId: it.refId || uid(),
-        capsulaId: it.capsulaId,
-        referencia: it.reference || "",
-        nombre: it.name || "",
-        foto: it.image || null,
-        categoria: it.categoria || "",
-        silueta: it.silueta || "",
-        rango: it.rango || "",
-        tela: it.tipoTela || "",
-        tipo: it._tipo || "",
-        consumo: it.consumo || "",
-        colombiaCurva: it._colombiaCurva || "",
-        colombiaCantidad: it._colombiaCantidad || "",
-        venezuelaCurva: it._venezuelaCurva || "",
-        venezuelaCantidad: it._venezuelaCantidad || "",
-        precio: it._precio || "",
-        observacionesCliente: it._observacionesCliente || "",
-        pedidoVinculado: null,
-        cartaColores: [],
-      })),
+      items: filasAItemsPreorden(items),
       createdAt: nowISO(),
       createdBy: currentUser?.name || "",
     };
     await addBitacoraPreorden(preorden);
     notify({ id: uid(), icon: "🧾", title: "Preorden registrada", msg: `${items.length} referencia${items.length !== 1 ? "s" : ""}${header.cliente ? ` — ${header.cliente}` : ""}` });
+  }
+  // (2026-09-30, a pedido de Fredy) Agrega filas (armadas en Nueva Orden) a
+  // una preorden que YA existe, en vez de crear una nueva -- para cuando
+  // eliges "Agregar a una preorden existente".
+  async function agregarFilasAPreordenExistente(preordenId, filas) {
+    const preordenActual = bitacoraPreordenes.find((p) => p.id === preordenId);
+    if (!preordenActual) return;
+    const nuevosItems = filasAItemsPreorden(filas);
+    await actualizarPreorden(preordenId, { items: [...(preordenActual.items || []), ...nuevosItems] });
+    notify({ id: uid(), icon: "🧾", title: "Referencias agregadas a la preorden", msg: `${filas.length} referencia${filas.length !== 1 ? "s" : ""}${preordenActual.cliente ? ` — ${preordenActual.cliente}` : ""}` });
   }
   // (2026-09-23, a pedido de Fredy) Registra una entrega de tela nueva --
   // si ya trae preordenId + referencias (items), de una vez les aplica los
@@ -15336,6 +15742,8 @@ function AppInner() {
                 onMarkDoneObsCapsula={markDoneObservacionCapsula}
                 onCrearEnvio={crearEnvioBitacora}
                 onPasarAPreorden={pasarAPreorden}
+                onPasarCapsulaCompleta={pasarCapsulaCompletaAPreorden}
+                onDeshacerEnviadoAPreorden={(cap, ref) => updateRef(cap.id, ref.id, { enviadoAPreorden: null })}
               />
             )}
             {view === "bitacora" && (
@@ -15426,6 +15834,7 @@ function AppInner() {
                 onAddCapsula={addCapsula}
                 onAddRef={addRef}
                 onCrearPreorden={crearPreorden}
+                onAgregarAPreordenExistente={agregarFilasAPreordenExistente}
                 onVincularPedido={vincularPreordenAPedido}
                 onAprobarPreorden={aprobarPreorden}
                 onDesaprobarPreorden={desaprobarPreorden}
