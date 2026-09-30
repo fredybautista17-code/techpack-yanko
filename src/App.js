@@ -3943,6 +3943,7 @@ function filasAItemsPreorden(filas) {
     rango: it.rango || "",
     tela: it.tipoTela || "",
     tipo: it._tipo || "",
+    lineaBusint: it._lineaBusint || "",
     consumo: it.consumo || "",
     colombiaCurva: it._colombiaCurva || "",
     colombiaCantidad: it._colombiaCantidad || "",
@@ -4097,6 +4098,7 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
       capsulaId: capId, refId, reference: ref, name: refObj?.name || resultado.datosBusint.nombre || ref, image: refObj?.image || null,
       categoria: resultado.datosBusint.categoria, silueta: resultado.datosBusint.silueta, rango: resultado.datosBusint.rango,
       tipoTela: resultado.datosBusint.tela, consumo: resultado.datosBusint.consumo, _tipo: manual.tipo || resultado.datosBusint.tipo,
+      _lineaBusint: resultado.datosBusint.lineaCruda || "",
       _colombiaCurva: manual.colombiaCurva, _colombiaCantidad: manual.colombiaCantidad,
       _venezuelaCurva: manual.venezuelaCurva, _venezuelaCantidad: manual.venezuelaCantidad,
       _precio: manual.precio, _observacionesCliente: manual.observacionesCliente,
@@ -4197,6 +4199,7 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
               <div><div style={{ color: T.slate, fontWeight: 700 }}>Tela</div><div style={{ color: T.ink }}>{resultado.datosBusint.tela || "— (llenar a mano)"}</div></div>
               <div><div style={{ color: T.slate, fontWeight: 700 }}>Consumo</div><div style={{ color: T.ink }}>{resultado.datosBusint.consumo || "— (llenar a mano)"}</div></div>
               <div><div style={{ color: T.slate, fontWeight: 700 }}>Tipo (línea)</div><div style={{ color: resultado.datosBusint.tipo ? T.ink : T.amber }}>{resultado.datosBusint.tipo || "Sin clasificar — llenar a mano"}</div></div>
+              <div><div style={{ color: T.slate, fontWeight: 700 }}>Línea (Busint)</div><div style={{ color: T.ink }}>{resultado.datosBusint.lineaCruda || "—"}</div></div>
             </div>
             {resultado.capsulaExistente ? (
               <div style={{ fontSize: 13, color: T.jade, fontWeight: 700, marginBottom: 10 }}>✓ Ya existe en la cápsula "{resultado.capsulaExistente.cap.name}" — se va a usar esa misma.</div>
@@ -4479,6 +4482,7 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
       capsulaId: capId, refId, reference: ref, name: refObj?.name || resultado.datosBusint.nombre || ref, image: refObj?.image || null,
       categoria: resultado.datosBusint.categoria, silueta: resultado.datosBusint.silueta, rango: resultado.datosBusint.rango,
       tipoTela: resultado.datosBusint.tela, consumo: resultado.datosBusint.consumo, _tipo: manual.tipo || resultado.datosBusint.tipo,
+      _lineaBusint: resultado.datosBusint.lineaCruda || "",
       _colombiaCurva: manual.colombiaCurva, _colombiaCantidad: manual.colombiaCantidad,
       _venezuelaCurva: manual.venezuelaCurva, _venezuelaCantidad: manual.venezuelaCantidad,
       _precio: manual.precio, _observacionesCliente: manual.observacionesCliente,
@@ -4623,6 +4627,7 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
               <div><div style={{ color: T.slate, fontWeight: 700 }}>Tela</div><div style={{ color: T.ink }}>{resultado.datosBusint.tela || "— (llenar a mano)"}</div></div>
               <div><div style={{ color: T.slate, fontWeight: 700 }}>Consumo</div><div style={{ color: T.ink }}>{resultado.datosBusint.consumo || "— (llenar a mano)"}</div></div>
               <div><div style={{ color: T.slate, fontWeight: 700 }}>Tipo (línea)</div><div style={{ color: resultado.datosBusint.tipo ? T.ink : T.amber }}>{resultado.datosBusint.tipo || "Sin clasificar — llenar a mano"}</div></div>
+              <div><div style={{ color: T.slate, fontWeight: 700 }}>Línea (Busint)</div><div style={{ color: T.ink }}>{resultado.datosBusint.lineaCruda || "—"}</div></div>
             </div>
             {resultado.capsulaExistente ? (
               <div style={{ fontSize: 13, color: T.jade, fontWeight: 700, marginBottom: 10 }}>✓ Ya existe en la cápsula "{resultado.capsulaExistente.cap.name}" — se va a usar esa misma.</div>
@@ -5264,7 +5269,7 @@ function AgregarReferenciaPreordenModal({ capsulas, pedidos, config, onClose, on
         }
         setResultado({
           ok: true,
-          datosBusint: { nombre: b.descripcionLarga || "", categoria: b.categoria || "", silueta: b.tipoConfeccion || "", rango: b.tallas ? String(b.tallas) : "", tipo: grupo, tela, consumo },
+          datosBusint: { nombre: b.descripcionLarga || "", categoria: b.categoria || "", silueta: b.tipoConfeccion || "", rango: b.tallas ? String(b.tallas) : "", tipo: grupo, lineaCruda: b.linea || "", tela, consumo },
           capsulaExistente, pedidoExistente,
         });
       } else {
@@ -5302,6 +5307,7 @@ function AgregarReferenciaPreordenModal({ capsulas, pedidos, config, onClose, on
       rango: resultado.datosBusint.rango,
       tela: resultado.datosBusint.tela,
       tipo: manual.tipo || resultado.datosBusint.tipo,
+      lineaBusint: resultado.datosBusint.lineaCruda || "",
       consumo: resultado.datosBusint.consumo,
       colombiaCurva: manual.colombiaCurva,
       colombiaCantidad: manual.colombiaCantidad,
@@ -5334,6 +5340,7 @@ function AgregarReferenciaPreordenModal({ capsulas, pedidos, config, onClose, on
             <div><div style={{ color: T.slate, fontWeight: 700 }}>Rango</div><div style={{ color: T.ink }}>{resultado.datosBusint.rango || "—"}</div></div>
             <div><div style={{ color: T.slate, fontWeight: 700 }}>Tela</div><div style={{ color: T.ink }}>{resultado.datosBusint.tela || "— (llenar a mano)"}</div></div>
             <div><div style={{ color: T.slate, fontWeight: 700 }}>Consumo</div><div style={{ color: T.ink }}>{resultado.datosBusint.consumo || "— (llenar a mano)"}</div></div>
+            <div><div style={{ color: T.slate, fontWeight: 700 }}>Línea (Busint)</div><div style={{ color: T.ink }}>{resultado.datosBusint.lineaCruda || "—"}</div></div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
             <Field label="Tipo (Dama/Caballero/Niño)"><FInput value={manual.tipo || resultado.datosBusint.tipo} onChange={(v) => setManual((m) => ({ ...m, tipo: v }))} placeholder="Si no se clasificó" /></Field>
@@ -5766,7 +5773,15 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
         if (!porReferencia.has(ref)) porReferencia.set(ref, { referencia: ref, categoria: "", linea: "", pedidoTotal: 0, cortado: 0, planta: 0, semiterminado: 0, bpt: 0, enPreorden: 0, enOrdenes: 0 });
         const fila = porReferencia.get(ref);
         if (!fila.categoria && it.categoria) fila.categoria = it.categoria;
-        if (!fila.linea && it.tipo) fila.linea = it.tipo;
+        // (2026-09-30, a pedido de Fredy) Preferir la línea CRUDA de Busint
+        // (it.lineaBusint, ej. "DAMA DEPOR PREMIUM") sobre el grupo ya
+        // clasificado (it.tipo, ej. "Dama") -- así coincide con "linea" tal
+        // cual la traen los lotes reales (l.linea más arriba). Antes se
+        // usaba it.tipo, mucho más genérico que la línea real, y por eso
+        // una referencia en Preorden nunca caía en el mismo grupo que esa
+        // misma referencia una vez se corta. Si el ítem es viejo y todavía
+        // no tiene lineaBusint guardado, se cae al grupo clasificado.
+        if (!fila.linea && (it.lineaBusint || it.tipo)) fila.linea = it.lineaBusint || it.tipo;
         // (2026-09-29, a pedido de Fredy) columnaPreorden lo manda la
         // previsualización de admin cuando quiere un país puntual (ver
         // GRUPOS_CLIENTE_PRODUCCION_ATLAS) -- un cliente real sigue sumando
@@ -6358,6 +6373,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
       if (!it.rango && b.tallas) patch.rango = String(b.tallas);
       if (!it.tela && tela) patch.tela = tela;
       if (!it.precio && precioBusint) patch.precio = precioBusint;
+      if (!it.lineaBusint && b.linea) patch.lineaBusint = b.linea;
       if (!Object.keys(patch).length) {
         alert("No había campos vacíos para completar (o Busint no tiene datos nuevos para esta referencia).");
         return;
