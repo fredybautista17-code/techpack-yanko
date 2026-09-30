@@ -8975,21 +8975,29 @@ function ObservacionesView({ protos, capsulas, role, onSelectProto, onSelectRef,
   const [disenadorFiltro, setDisenadorFiltro] = useState("todos");
   const puedeMarcarHecha = role === "Diseñador";
 
+  // Normaliza un valor que "debería" ser texto plano (nombre de persona,
+  // rol, texto de la observación) a string real -- por si algún registro
+  // viejo lo guardó distinto (ej. un objeto en vez del nombre).
+  function textoPlano(v) {
+    if (typeof v === "string") return v;
+    if (v && typeof v === "object" && typeof v.name === "string") return v.name;
+    return v == null ? "" : String(v);
+  }
   const filas = useMemo(() => {
     const out = [];
     (protos || []).forEach((p) => {
       (p.observations || []).filter((o) => o.type !== "update" && o.user !== "Sistema").forEach((o) => {
-        out.push({ ...o, origen: "proto", protoId: p.id, ubicacion: `${p.name}${p.reference ? " · " + p.reference : ""}`, capsulaName: null });
+        out.push({ ...o, user: textoPlano(o.user), role: textoPlano(o.role), text: textoPlano(o.text), origen: "proto", protoId: p.id, ubicacion: `${p.name}${p.reference ? " · " + p.reference : ""}`, capsulaName: null });
       });
     });
     (capsulas || []).forEach((cap) => {
       (cap.referencias || []).forEach((r) => {
         (r.observations || []).filter((o) => o.type !== "update" && o.user !== "Sistema").forEach((o) => {
-          out.push({ ...o, origen: "ref", capId: cap.id, refId: r.id, ubicacion: `${cap.name} · ${r.name}${r.reference ? " · " + r.reference : ""}`, capsulaName: cap.name });
+          out.push({ ...o, user: textoPlano(o.user), role: textoPlano(o.role), text: textoPlano(o.text), origen: "ref", capId: cap.id, refId: r.id, ubicacion: `${cap.name} · ${r.name}${r.reference ? " · " + r.reference : ""}`, capsulaName: textoPlano(cap.name) });
         });
       });
       (cap.observacionesIlustracion || []).forEach((o) => {
-        out.push({ ...o, origen: "capsula", capId: cap.id, ubicacion: `${cap.name} (Ilustración)`, capsulaName: cap.name });
+        out.push({ ...o, user: textoPlano(o.user), role: textoPlano(o.role), text: textoPlano(o.text), origen: "capsula", capId: cap.id, ubicacion: `${cap.name} (Ilustración)`, capsulaName: textoPlano(cap.name) });
       });
     });
     return out.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
@@ -8998,8 +9006,8 @@ function ObservacionesView({ protos, capsulas, role, onSelectProto, onSelectRef,
   const totalCount = filas.length;
   const pendCount = filas.filter((f) => !f.done).length;
   const hechaCount = filas.length - pendCount;
-  const capsulasConObs = [...new Set(filas.map((f) => f.capsulaName).filter(Boolean))].sort((a, b) => a.localeCompare(b, "es"));
-  const disenadores = [...new Set(filas.map((f) => f.user).filter(Boolean))].sort((a, b) => a.localeCompare(b, "es"));
+  const capsulasConObs = [...new Set(filas.map((f) => f.capsulaName).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), "es"));
+  const disenadores = [...new Set(filas.map((f) => f.user).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), "es"));
 
   const busquedaNorm = busqueda.trim().toLowerCase();
   const filasFiltradas = filas.filter((f) => {
