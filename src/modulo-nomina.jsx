@@ -5516,6 +5516,27 @@ function diasHabilesDeAusencias(ausencias, motivos, trabajador, turno, inicio, f
   });
   return dias.size;
 }
+// (2026-09-30, a pedido de Fredy) Un día que ya tiene una ausencia
+// registrada (cualquier motivo, ej. Cita médica) para ese trabajador queda
+// "justificado" -- ya no debe contar como falta sin justificar para el
+// descuento de sueldo/auxilio (Nómina Fiscal/Fiscal Destajo) ni para la
+// antigüedad (Liquidación de Retiro). Antes hacía falta ADEMÁS darle
+// "Quitar" a mano en el detalle de días sin justificar -- con esto ya no,
+// basta con que exista la ausencia.
+function estaJustificada(ausencias, trabajadorId, fecha) {
+  return (ausencias || []).some((a) => a.trabajadorId === trabajadorId && a.fechaInicio <= fecha && fecha <= a.fechaFin);
+}
+// (2026-09-30, a pedido de Fredy) Cuántos días de calendario ANTES de la
+// Fecha de Ingreso caen dentro de [inicio, fin] -- para prorratear solo la
+// quincena de alguien que ingresó a mitad de periodo, sin tener que
+// registrarle una ausencia a mano por días en los que ni siquiera era
+// trabajador todavía (nadie hace eso, por eso antes se le pagaba la
+// quincena completa). Usa el mismo método de 30 días que ya usa el
+// descuento de sueldo/auxilio (sueldo/30), así los números cuadran entre sí.
+function diasAntesDeIngreso(fechaIngreso, inicio, fin) {
+  if (!fechaIngreso || fechaIngreso <= inicio || fechaIngreso > fin) return 0;
+  return diasEntre360(inicio, fechaIngreso) - 1;
+}
 // (2026-09-13, a pedido de Fredy) Liquidacion de prestaciones sociales al
 // retiro de un trabajador -- ver LiquidacionRetiroView mas abajo. Cuenta,
 // dentro de [desde, hasta], los dias de CALENDARIO (no solo habiles: un
@@ -5616,20 +5637,24 @@ function diasCalendarioSinSueldo(ausencias, trabajador, areasNomina, turnos, des
 // Nomina, con coincideHuellero(). Cada falta es un dia suelto (no un rango
 // como Licencia No Remunerada), asi que basta con contar cuantas fechas
 // unicas caen dentro de [desde, hasta].
-function diasSinJustificarEnRango(faltas, trabajador, nombreNorm, desde, hasta) {
+function diasSinJustificarEnRango(faltas, ausencias, trabajador, nombreNorm, desde, hasta) {
   const fechas = new Set();
   (faltas || []).forEach((f) => {
     if (!coincideHuellero(f, trabajador, nombreNorm)) return;
     if (f.fecha < desde || f.fecha > hasta) return;
+    // (2026-09-30, a pedido de Fredy) Ver estaJustificada -- un día ya
+    // justificado no resta antigüedad.
+    if (estaJustificada(ausencias, trabajador.id, f.fecha)) return;
     fechas.add(f.fecha);
   });
   return fechas.size;
 }
-function fechasSinJustificarEnRango(faltas, trabajador, nombreNorm, desde, hasta) {
+function fechasSinJustificarEnRango(faltas, ausencias, trabajador, nombreNorm, desde, hasta) {
   const fechas = new Set();
   (faltas || []).forEach((f) => {
     if (!coincideHuellero(f, trabajador, nombreNorm)) return;
     if (f.fecha < desde || f.fecha > hasta) return;
+    if (estaJustificada(ausencias, trabajador.id, f.fecha)) return;
     fechas.add(f.fecha);
   });
   return [...fechas].sort();
@@ -5708,7 +5733,7 @@ function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias, faltas = [
   function diasTrabajadosDelTramo(desde, hasta) {
     const calendario = diasEntre360(desde, hasta);
     const sinSueldo = diasCalendarioSinSueldo(ausencias, trabajador, areasNomina, turnos, desde, hasta);
-    const sinJustificar = diasSinJustificarEnRango(faltas, trabajador, nombreNorm, desde, hasta);
+    const sinJustificar = diasSinJustificarEnRango(faltas, ausencias, trabajador, nombreNorm, desde, hasta);
     return Math.max(0, calendario - sinSueldo - sinJustificar);
   }
   let cesantias = 0;
@@ -5731,8 +5756,8 @@ function calcularLiquidacionRetiro(trabajador, fechaCorte, ausencias, faltas = [
   // Justificados" -- diasNoRemunerados (arriba) sigue siendo el TOTAL de
   // los dos, para no romper nada de lo que ya lee ese campo.
   const diasLicenciaNoRemunerada = diasCalendarioSinSueldo(ausencias, trabajador, areasNomina, turnos, fechaIngreso, fechaCorte);
-  const diasSinJustificar = diasSinJustificarEnRango(faltas, trabajador, nombreNorm, fechaIngreso, fechaCorte);
-  const fechasSinJustificar = fechasSinJustificarEnRango(faltas, trabajador, nombreNorm, fechaIngreso, fechaCorte);
+  const diasSinJustificar = diasSinJustificarEnRango(faltas, ausencias, trabajador, nombreNorm, fechaIngreso, fechaCorte);
+  const fechasSinJustificar = fechasSinJustificarEnRango(faltas, ausencias, trabajador, nombreNorm, fechaIngreso, fechaCorte);
   const vacacionesAcumuladas = (sueldoMensual * diasBase) / 720;
   const diasVacacionesTomados = diasHabilesPorMotivos(ausencias, trabajador, areasNomina, turnos, ["Vacaciones"], fechaIngreso, fechaCorte);
   const valorVacacionesTomadas = (sueldoMensual / 30) * diasVacacionesTomados;
@@ -5948,11 +5973,15 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
     const filas = personas.map((t) => {
       const nombreNorm = normalizarNombreHuellero(t.nombre);
       const faltasDetalle = faltas.filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= inicio && f.fecha <= fin);
-      const dias = faltasDetalle.length;
+      // (2026-09-30, a pedido de Fredy) Un día ya justificado (ver
+      // estaJustificada) no cuenta como falta sin justificar -- antes hacía
+      // falta darle "Quitar" a mano ADEMÁS de justificarlo.
+      const dias = faltasDetalle.filter((f) => !estaJustificada(ausencias, t.id, f.fecha)).length;
       const diasTrabajadosCount = diasTrabajados.filter((d) => coincideHuellero(d, t, nombreNorm) && d.fecha >= inicio && d.fecha <= fin).length;
       const turno = (turnos || []).find((tu) => tu.id === t.turnoId);
-      const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, inicio, fin);
-      const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin);
+      const diasIngresoTardio = diasAntesDeIngreso(t.fechaIngreso, inicio, fin);
+      const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, inicio, fin) + diasIngresoTardio;
+      const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin) + diasIngresoTardio;
       const causacionDoc = (causacionManual || []).find((c) => c.id === `${t.id}__${periodoId}`);
       const base = calcularLiquidacionFiscal(t, dias, diasSinAuxilio, diasSinSueldo, causacionDoc ? causacionDoc.valor : null);
       // (2026-09-18, a pedido de Fredy) Horas Sueltas (Registrar
@@ -6879,14 +6908,18 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
     const filas = personas.map((t) => {
       const nombreNorm = normalizarNombreHuellero(t.nombre);
       const faltasDetalle = faltas.filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= inicio && f.fecha <= fin);
-      const dias = faltasDetalle.length;
+      // (2026-09-30, a pedido de Fredy) Un día ya justificado (ver
+      // estaJustificada) no cuenta como falta sin justificar -- antes hacía
+      // falta darle "Quitar" a mano ADEMÁS de justificarlo.
+      const dias = faltasDetalle.filter((f) => !estaJustificada(ausencias, t.id, f.fecha)).length;
       // (2026-08-31) Dias trabajados = dias CON marca en el huellero dentro
       // de la quincena -- solo informativo/verificacion (pedido de Fredy),
       // no reemplaza ni toca el descuento por inasistencia de arriba.
       const diasTrabajadosCount = diasTrabajados.filter((d) => coincideHuellero(d, t, nombreNorm) && d.fecha >= inicio && d.fecha <= fin).length;
       const turno = (turnos || []).find((tu) => tu.id === t.turnoId);
-      const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, inicio, fin);
-      const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin);
+      const diasIngresoTardio = diasAntesDeIngreso(t.fechaIngreso, inicio, fin);
+      const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, inicio, fin) + diasIngresoTardio;
+      const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin) + diasIngresoTardio;
       const causacionDoc = (causacionManual || []).find((c) => c.id === `${t.id}__${periodoId}`);
       const base = calcularLiquidacionFiscalDestajo(t, dias, diasSinAuxilio, diasSinSueldo, causacionDoc ? causacionDoc.valor : null);
       // (2026-09-18, a pedido de Fredy) Horas Sueltas de la quincena --
