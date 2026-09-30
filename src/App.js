@@ -6042,6 +6042,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   const [resultadoLimpieza, setResultadoLimpieza] = useState(null);
   const [aplicandoLimpieza, setAplicandoLimpieza] = useState(false);
   const [reparando, setReparando] = useState(false);
+  const [migrandoOtras, setMigrandoOtras] = useState(false);
   const [buscarLista, setBuscarLista] = useState("");
   // (2026-09-21, a pedido de Fredy) Buscador DENTRO de cada preorden ya
   // abierta -- para encontrar una referencia puntual sin desplazarse por
@@ -6302,6 +6303,25 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         : "No se encontró ninguna referencia con identificador vacío -- no había nada que reparar."
     );
   }
+  // (2026-09-30, a pedido de Fredy) Las preordenes creadas antes de tener
+  // origenPantalla se mostraban en el bucket aparte "Otras" -- Fredy pidio
+  // pasarlas de una vez a Nueva Reprogramacion. Es seguro correrla mas de
+  // una vez: si ya no queda ninguna sin origen, no hace nada.
+  async function migrarOtrasAReprogramacion() {
+    setMigrandoOtras(true);
+    let migradas = 0;
+    for (const p of preordenes || []) {
+      if (p.origenPantalla) continue;
+      await onActualizarPreorden(p.id, { origenPantalla: "reprogramacion" });
+      migradas++;
+    }
+    setMigrandoOtras(false);
+    alert(
+      migradas
+        ? `Listo: se movieron ${migradas} preorden(es) de "Otras" a "Nueva Reprogramación".`
+        : "No había ninguna preorden en \"Otras\" para mover."
+    );
+  }
   // (2026-09-30, a pedido de Fredy) Cada pantalla tiene su propio historial,
   // aunque comparten la misma colección de Firestore -- se distinguen por el
   // campo `pantalla` de cada registro (los registros viejos, de antes de
@@ -6525,6 +6545,15 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                         onClick={() => { setShowMasMenu(false); escanearFotosDanadas(); }}
                         style={{ padding: "10px 16px", fontSize: 12, fontWeight: 700, color: T.ink, borderBottom: `1px solid ${T.border}`, cursor: "pointer" }}
                       >{escaneando ? "🔍 Revisando..." : "🧹 Limpiar fotos dañadas"}</div>
+                      {hayOtras && (
+                        <div
+                          onClick={() => {
+                            setShowMasMenu(false);
+                            if (window.confirm("Esto mueve todas las preórdenes de \"Otras\" a \"Nueva Reprogramación\" (les guarda ese origen de forma permanente). ¿Continuar?")) migrarOtrasAReprogramacion();
+                          }}
+                          style={{ padding: "10px 16px", fontSize: 12, fontWeight: 700, color: T.ink, borderBottom: `1px solid ${T.border}`, cursor: "pointer" }}
+                        >{migrandoOtras ? "📦 Moviendo..." : "📦 Mover \"Otras\" a Reprogramación"}</div>
+                      )}
                     </>
                   )}
                   {(puedeIngresarTela || puedeConfirmarTela) && (
