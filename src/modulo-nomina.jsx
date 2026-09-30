@@ -10688,7 +10688,7 @@ function RegistrarHorasExtrasView({ trabajadores, horasExtras, currentUser, onGu
 // valorBonificacion() (mas arriba) ya sumaba TODOS los documentos que
 // empezaran con trabajador+quincena, asi que no hubo que tocar el calculo
 // de nomina, solo dejar de sobreescribir el documento anterior.
-function RegistrarBonificacionView({ trabajadores, bonificaciones, currentUser, onGuardar, onBorrar, isAdmin }) {
+function RegistrarBonificacionView({ trabajadores, bonificaciones, currentUser, onGuardar, onBorrar, isAdmin, puedeEditarBonificacion }) {
   const hoy = new Date();
   const [trabajadorId, setTrabajadorId] = useState("");
   const [anio, setAnio] = useState(String(hoy.getFullYear()));
@@ -10699,6 +10699,14 @@ function RegistrarBonificacionView({ trabajadores, bonificaciones, currentUser, 
   const [valor, setValor] = useState("");
   const [motivo, setMotivo] = useState("");
   const [guardando, setGuardando] = useState(false);
+  // (2026-09-30, a pedido de Fredy) Editar -- antes solo se podía Borrar
+  // (isAdmin); ahora también quien tenga el permiso puntual
+  // "nomina_editar_bonificacion" (pensado para Yuleisi Virginia y María
+  // Fernanda Páez), mismo patrón que puedeEditarHorasExtra.
+  const puedeGestionar = isAdmin || !!puedeEditarBonificacion;
+  const [modalEditar, setModalEditar] = useState(null);
+  const [formEditar, setFormEditar] = useState(null);
+  const [guardandoEdicion, setGuardandoEdicion] = useState(false);
   const trabajadoresActivos = trabajadores.filter((t) => t.activo !== false).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const trabajadorSel = trabajadores.find((t) => t.id === trabajadorId);
   const periodoId = `${anio}-${mes}-Q${quincena}`;
@@ -10736,6 +10744,41 @@ function RegistrarBonificacionView({ trabajadores, bonificaciones, currentUser, 
       setMotivo("");
     } finally {
       setGuardando(false);
+    }
+  }
+  function abrirEditar(b) {
+    setModalEditar(b);
+    setFormEditar({
+      trabajadorId: b.trabajadorId || "",
+      periodoId: b.periodoId || periodoId,
+      tipo: b.tipo || "meta",
+      fecha: b.fecha || today(),
+      valor: b.valor != null ? String(b.valor) : "",
+      motivo: b.motivo || "",
+    });
+  }
+  const trabajadorSelEdit = trabajadores.find((t) => t.id === formEditar?.trabajadorId);
+  const puedeGuardarEdicion = !!(formEditar && formEditar.trabajadorId && Number(formEditar.valor) !== 0 && !guardandoEdicion);
+  async function guardarEdicion() {
+    if (!puedeGuardarEdicion || !modalEditar) return;
+    setGuardandoEdicion(true);
+    try {
+      await onGuardar({
+        ...modalEditar,
+        trabajadorId: formEditar.trabajadorId,
+        trabajadorNombre: trabajadorSelEdit?.nombre || modalEditar.trabajadorNombre || "",
+        periodoId: formEditar.periodoId,
+        tipo: formEditar.tipo,
+        fecha: formEditar.fecha,
+        valor: Number(formEditar.valor) || 0,
+        motivo: formEditar.motivo.trim(),
+        editadoPor: currentUser?.name || currentUser?.username || "",
+        editadoEn: new Date().toISOString(),
+      });
+      setModalEditar(null);
+      setFormEditar(null);
+    } finally {
+      setGuardandoEdicion(false);
     }
   }
   const recientes = [...(bonificaciones || [])].sort((a, b) => (b.registradoEn || "").localeCompare(a.registradoEn || "")).slice(0, 15);
@@ -10776,7 +10819,12 @@ function RegistrarBonificacionView({ trabajadores, bonificaciones, currentUser, 
             {registrosDeQuincena.map((r) => (
               <div key={r.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "3px 0" }}>
                 <span>{r.fecha ? fmtFechaISO(r.fecha) : "—"} · {fmtMoney(r.valor)}{r.motivo ? ` · ${r.motivo}` : ""}</span>
-                {isAdmin && <span onClick={() => onBorrar(r.id)} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>}
+                {puedeGestionar && (
+                  <span style={{ display: "flex", gap: 10 }}>
+                    <span onClick={() => abrirEditar(r)} style={{ cursor: "pointer", color: C.denim, fontWeight: 700 }}>Editar</span>
+                    <span onClick={() => onBorrar(r.id)} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>
+                  </span>
+                )}
               </div>
             ))}
           </div>
@@ -10793,11 +10841,36 @@ function RegistrarBonificacionView({ trabajadores, bonificaciones, currentUser, 
           { key: "tipo", label: "Tipo", render: (f) => etiquetaTipo(f) },
           { key: "valor", label: "Valor", align: "right", render: (f) => <strong>{fmtMoney(f.valor)}</strong> },
           { key: "motivo", label: "Motivo", render: (f) => f.motivo || <span style={{ color: C.slate }}>—</span> },
-          ...(isAdmin ? [{ key: "acciones", label: "", align: "right", render: (f) => <span onClick={(e) => { e.stopPropagation(); onBorrar(f.id); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span> }] : []),
+          ...(puedeGestionar ? [{ key: "acciones", label: "", align: "right", render: (f) => (
+            <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <span onClick={(e) => { e.stopPropagation(); abrirEditar(f); }} style={{ cursor: "pointer", color: C.denim, fontWeight: 700 }}>Editar</span>
+              <span onClick={(e) => { e.stopPropagation(); onBorrar(f.id); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>
+            </span>
+          ) }] : []),
         ]}
         filas={recientes}
       />
       <HistoricoBonificacionesView trabajadores={trabajadores} bonificaciones={bonificaciones} />
+      {modalEditar && formEditar && (
+        <Modal title="Editar bonificación" onClose={() => { setModalEditar(null); setFormEditar(null); }} width={480}>
+          <Field label="Trabajador">
+            <FSel value={formEditar.trabajadorId} onChange={(v) => setFormEditar((s) => ({ ...s, trabajadorId: v }))} options={trabajadoresActivos.map((t) => ({ value: t.id, label: t.nombre }))} />
+          </Field>
+          <Field label="Quincena (AAAA-MM-Q1/Q2)"><FInput value={formEditar.periodoId} onChange={(v) => setFormEditar((s) => ({ ...s, periodoId: v }))} placeholder="Ej: 2026-09-Q2" /></Field>
+          <Field label="Tipo de bonificación">
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="button" onClick={() => setFormEditar((s) => ({ ...s, tipo: "meta" }))} style={{ flex: 1, padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${formEditar.tipo === "meta" ? C.ink : C.border}`, background: formEditar.tipo === "meta" ? C.ink : C.white, color: formEditar.tipo === "meta" ? "#fff" : C.ink, fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>🎯 Metas</button>
+              <button type="button" onClick={() => setFormEditar((s) => ({ ...s, tipo: "otra" }))} style={{ flex: 1, padding: "9px 12px", borderRadius: 8, border: `1.5px solid ${formEditar.tipo === "otra" ? C.ink : C.border}`, background: formEditar.tipo === "otra" ? C.ink : C.white, color: formEditar.tipo === "otra" ? "#fff" : C.ink, fontWeight: 700, fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" }}>📝 Otra</button>
+            </div>
+          </Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Fecha"><FInput type="date" value={formEditar.fecha} onChange={(v) => setFormEditar((s) => ({ ...s, fecha: v }))} /></Field>
+            <Field label="Valor"><FInput type="number" value={formEditar.valor} onChange={(v) => setFormEditar((s) => ({ ...s, valor: v }))} /></Field>
+          </div>
+          <Field label={formEditar.tipo === "otra" ? "Concepto" : "Motivo"}><FInput value={formEditar.motivo} onChange={(v) => setFormEditar((s) => ({ ...s, motivo: v }))} /></Field>
+          <Btn onClick={guardarEdicion} disabled={!puedeGuardarEdicion}>{guardandoEdicion ? "Guardando..." : "Guardar cambios"}</Btn>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -12668,7 +12741,7 @@ function DiagnosticoDuplicadosView({ diasTrabajados, faltas, anomalias, retardos
     </div>
   );
 }
-export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra }) {
+export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNovedades, puedeEditarCatalogos, puedeVerAnomaliasHuellero, puedeVerDuplicadosHuellero, puedeCerrarQuincena, puedeAgregarCobrosManual, puedeAjustarDestajo, puedeEditarHorasExtra, puedeEditarBonificacion }) {
   // Líder de área (hoy: Anny Beltrán y Sarai Méndez, cada una con su Área
   // Interna real -- ver Administrativo → Área Interna): entra con un panel
   // reducido, ya filtrado a su propia gente, en vez del panel completo de
@@ -13546,7 +13619,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "produccion" && !soloNovedades && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} costosTeoricoProceso={costosTeoricoProceso} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
           {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
           {subView === "horas_extras" && !soloNovedades && <RegistrarHorasExtrasView trabajadores={trabajadoresVisibles} horasExtras={horasExtras} currentUser={currentUser} onGuardar={guardarHorasExtras} onBorrar={borrarHorasExtras} isAdmin={isAdmin} puedeEditarHorasExtra={isAdmin || !!puedeEditarHorasExtra} />}
-          {subView === "bonificaciones" && !soloNovedades && <RegistrarBonificacionView trabajadores={trabajadoresVisibles} bonificaciones={bonificaciones} currentUser={currentUser} onGuardar={guardarBonificacion} onBorrar={borrarBonificacion} isAdmin={isAdmin} />}
+          {subView === "bonificaciones" && !soloNovedades && <RegistrarBonificacionView trabajadores={trabajadoresVisibles} bonificaciones={bonificaciones} currentUser={currentUser} onGuardar={guardarBonificacion} onBorrar={borrarBonificacion} isAdmin={isAdmin} puedeEditarBonificacion={isAdmin || !!puedeEditarBonificacion} />}
           {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} ajustesDestajo={ajustesDestajo} causacionManual={causacionManual} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} deduccionesTrabajador={deduccionesTrabajador} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
           {subView === "historico_cierres" && !soloNovedades && <HistoricoCierresView cierres={cierres} isAdmin={isAdmin} onEliminar={reabrirCierre} />}
           {subView === "historial_quincenas" && !areaLider && !soloNovedades && <HistorialQuincenasView liquidacionesF={liquidacionesF} liquidacionesFD={liquidacionesFD} liquidacionesD={liquidacionesD} liquidacionesPS={liquidacionesPS} trabajadores={trabajadores} />}
