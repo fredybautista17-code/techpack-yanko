@@ -3969,7 +3969,7 @@ function resumenPreordenPorCategoria(items, filtroGrupo, filtroPais) {
     });
   return [...mapa.values()].sort((a, b) => b.unidades - a.unidades);
 }
-function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, currentUser, onAddCapsula, onAddRef, onGuardar, onCancelar }) {
+function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, currentUser, onAddCapsula, onAddRef, onGuardar, onCancelar, historial }) {
   const [header, setHeader] = useState({ cliente: "", numPedido: "" });
   const esCliente = currentUser?.role === "Cliente";
   // (2026-09-16) Un cliente puede tener más de una marca asociada -- si solo
@@ -3987,6 +3987,10 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
   const [resultado, setResultado] = useState(null);
   const [manual, setManual] = useState({ tipo: "", colombiaCurva: "", colombiaCantidad: "", venezuelaCurva: "", venezuelaCantidad: "", precio: "", observacionesCliente: "" });
   const [guardando, setGuardando] = useState(false);
+  // (2026-09-30, a pedido de Fredy) Historial propio de esta pantalla --
+  // separado del de Nueva Orden aunque comparten la misma colección de
+  // Firestore (se distinguen por el campo `pantalla` de cada registro).
+  const [showHistorial, setShowHistorial] = useState(false);
   // (2026-09-21, a pedido de Fredy) Buscador de referencias por Tipo de Tela
   // y/o Referencia (parcial) contra lo que ya existe en Cápsulas -- para
   // cuando no se sabe la referencia exacta y se quiere ver qué hay de una
@@ -4148,7 +4152,10 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>🔁 Nueva Reprogramación</h2>
-        <Btn variant="secondary" onClick={onCancelar}>← Volver a Preórdenes</Btn>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Btn variant="ghost" onClick={() => setShowHistorial(true)}>📜 Historial{historial?.length ? ` (${historial.length})` : ""}</Btn>
+          <Btn variant="secondary" onClick={onCancelar}>← Volver a Preórdenes</Btn>
+        </div>
       </div>
       <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 20, marginBottom: 20 }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
@@ -4322,6 +4329,22 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
             <Btn variant="secondary" onClick={() => { setEditandoIdx(null); setEditForm(null); }}>Cancelar</Btn>
             <Btn onClick={guardarEdicionFila}>Guardar cambios</Btn>
           </div>
+        </Modal>
+      )}
+      {showHistorial && (
+        <Modal title="📜 Historial de Nueva Reprogramación" onClose={() => setShowHistorial(false)} width={680}>
+          {!historial?.length ? (
+            <div style={{ fontSize: 13, color: T.slate, textAlign: "center", padding: "20px 0" }}>Todavía no se ha guardado nada desde esta pantalla.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: 420, overflowY: "auto" }}>
+              {[...historial].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")).map((h) => (
+                <div key={h.id} style={{ padding: "10px 14px", borderRadius: 10, border: `1px solid ${T.border}`, background: T.canvas }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: T.ink, marginBottom: 4 }}>{h.cliente || "Sin cliente"}{h.numPedido ? ` — #${h.numPedido}` : ""}</div>
+                  <div style={{ fontSize: 11, color: T.slate }}>{h.cantidadReferencias} referencia{h.cantidadReferencias !== 1 ? "s" : ""} · {h.usuario || "—"} · {h.fecha ? new Date(h.fecha).toLocaleString("es-CO", { dateStyle: "short", timeStyle: "short" }) : "—"}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </Modal>
       )}
     </div>
@@ -4516,7 +4539,7 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
         numPedido = header.numPedido || "";
       }
       if (onRegistrarHistorial) {
-        await onRegistrarHistorial({ tipo: destino, preordenId, cliente, numPedido, cantidadReferencias: filas.length });
+        await onRegistrarHistorial({ pantalla: "orden", tipo: destino, preordenId, cliente, numPedido, cantidadReferencias: filas.length });
       }
       onGuardado();
     } finally {
@@ -6266,6 +6289,12 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         : "No se encontró ninguna referencia con identificador vacío -- no había nada que reparar."
     );
   }
+  // (2026-09-30, a pedido de Fredy) Cada pantalla tiene su propio historial,
+  // aunque comparten la misma colección de Firestore -- se distinguen por el
+  // campo `pantalla` de cada registro (los registros viejos, de antes de
+  // este cambio, no lo traen y se cuentan como de Nueva Orden).
+  const historialOrden = (historialNuevaOrden || []).filter((h) => h.pantalla !== "reprogramacion");
+  const historialReprogramacion = (historialNuevaOrden || []).filter((h) => h.pantalla === "reprogramacion");
   if (modo === "reprogramacion") {
     return (
       <NuevaReprogramacionView
@@ -6276,7 +6305,14 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         currentUser={currentUser}
         onAddCapsula={onAddCapsula}
         onAddRef={onAddRef}
-        onGuardar={async (header, items) => { await onCrearPreorden(header, items); setModo("lista"); }}
+        historial={historialReprogramacion}
+        onGuardar={async (header, items) => {
+          const preordenId = await onCrearPreorden(header, items);
+          if (onRegistrarHistorialNuevaOrden) {
+            await onRegistrarHistorialNuevaOrden({ pantalla: "reprogramacion", tipo: "nueva", preordenId, cliente: header.cliente || "", numPedido: header.numPedido || "", cantidadReferencias: items.length });
+          }
+          setModo("lista");
+        }}
         onCancelar={() => setModo("lista")}
       />
     );
@@ -6294,7 +6330,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         onAddRef={onAddRef}
         onCrearPreorden={onCrearPreorden}
         onAgregarAExistente={onAgregarAPreordenExistente}
-        historial={historialNuevaOrden}
+        historial={historialOrden}
         onRegistrarHistorial={onRegistrarHistorialNuevaOrden}
         onGuardado={() => {
           if (prefillDesdeCapsula) {
