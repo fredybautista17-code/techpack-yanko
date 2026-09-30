@@ -3067,6 +3067,11 @@ function ProgramadorProcesosView({
   // más operadores, cada uno con su propia parte.
   const [cantidadForm, setCantidadForm] = useState("");
   const [filtroProceso, setFiltroProceso] = useState("");
+  // (2026-09-30, a pedido de Fredy) Filtro para ver solo lo que esta
+  // programado o solo lo que esta sin programar en "Bodega de tu proceso"
+  // -- antes solo se podia filtrar por proceso y habia que ir fijandose
+  // fila por fila cual tenia el sello "Programado". "" = todos.
+  const [filtroEstadoProgramado, setFiltroEstadoProgramado] = useState("");
   const [guardando, setGuardando] = useState(false);
   // (2026-09-03, a pedido de Fredy) Pestaña activa de "Lotes
   // programados" -- "programados" | "vencidos" | "historicos".
@@ -3197,6 +3202,15 @@ function ProgramadorProcesosView({
   // ("Pendientes por programar") los lote+proceso que YA tienen una
   // programación activa -- así no parece que falta programarlos de nuevo.
   const clavesYaProgramadas = useMemo(() => new Set(misProgramaciones.map((p) => `${p.numLote}||${p.proceso}`)), [misProgramaciones]);
+  // (2026-09-30, a pedido de Fredy) Aplica el filtro de "Sin programar" /
+  // "Ya programados" encima del filtro por proceso que ya existia.
+  const pendientesMostrados = useMemo(() => {
+    if (!filtroEstadoProgramado) return pendientesFiltrados;
+    return pendientesFiltrados.filter((f) => {
+      const yaProgramado = clavesYaProgramadas.has(`${f.numLote}||${f.proceso}`);
+      return filtroEstadoProgramado === "programado" ? yaProgramado : !yaProgramado;
+    });
+  }, [pendientesFiltrados, clavesYaProgramadas, filtroEstadoProgramado]);
   // (2026-09-02, a pedido de Fredy) Para la tabla de "Lotes programados":
   // cuando un lote sale CUMPLIDO, mostrar qué entrada/salida real de Busint
   // fue la que lo cumplió (unidades y fecha), no solo la palabra "Cumplido".
@@ -3426,8 +3440,13 @@ function ProgramadorProcesosView({
               <option value="">Todos tus procesos</option>
               {misProcesos.map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
+            <select value={filtroEstadoProgramado} onChange={(e) => setFiltroEstadoProgramado(e.target.value)} style={{ padding: "5px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, fontFamily: "inherit" }}>
+              <option value="">Programados y sin programar</option>
+              <option value="sin_programar">Solo sin programar</option>
+              <option value="programado">Solo ya programados</option>
+            </select>
           </div>
-          <TablaSuave vacio="No hay lotes pendientes en tus procesos ahora mismo." columnas={columnasPendientes} filas={pendientesFiltrados} />
+          <TablaSuave vacio="No hay lotes pendientes en tus procesos ahora mismo." columnas={columnasPendientes} filas={pendientesMostrados} />
         </div>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
