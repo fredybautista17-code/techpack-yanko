@@ -3993,7 +3993,7 @@ function filasAItemsPreorden(filas) {
 function resumenPreordenPorCategoria(items, filtroGrupo, filtroPais) {
   const mapa = new Map();
   (items || [])
-    .filter((it) => !filtroGrupo || it.tipo === filtroGrupo)
+    .filter((it) => !filtroGrupo || (it.lineaBusint || it.tipo) === filtroGrupo)
     .forEach((it) => {
       const cat = it.categoria || "Sin categoría";
       const cantidad = filtroPais === "colombia" ? (Number(it.colombiaCantidad) || 0)
@@ -6840,7 +6840,13 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         const abierto = expandido === p.id;
         const filtroGrupo = filtroGrupoPorPreorden[p.id] || "";
         const filtroPais = filtroPaisPorPreorden[p.id] || "";
-        const gruposDisponibles = [...new Set((p.items || []).map((it) => it.tipo).filter(Boolean))].sort();
+        // (2026-09-30, a pedido de Fredy) El selector de arriba se llama
+        // "Línea" pero antes armaba sus opciones con it.tipo (el grupo
+        // genérico Dama/Caballero/Niño/Niña) -- ahora usa la línea
+        // específica de Busint (it.lineaBusint) cuando el ítem la tiene
+        // guardada, igual que ya hace Producción -> "Por línea", y solo cae
+        // de vuelta al grupo genérico si el ítem todavía no la tiene.
+        const gruposDisponibles = [...new Set((p.items || []).map((it) => it.lineaBusint || it.tipo).filter(Boolean))].sort();
         const resumen = resumenPreordenPorCategoria(p.items, filtroGrupo, filtroPais);
         const totalUnidades = resumen.reduce((s, r) => s + r.unidades, 0);
         const valorTotalPreorden = (p.items || []).reduce((s, it) => s + (Number(it.precio) || 0) * ((Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0)), 0);
@@ -6865,7 +6871,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
             const coincide = foldTexto(it.referencia).includes(bqItem) || foldTexto(it.nombre).includes(bqItem) || foldTexto(it.tela).includes(bqItem);
             if (!coincide) return false;
           }
-          if (filtroGrupo && it.tipo !== filtroGrupo) return false;
+          if (filtroGrupo && (it.lineaBusint || it.tipo) !== filtroGrupo) return false;
           if (filtroPais === "colombia" && !(Number(it.colombiaCantidad) || 0)) return false;
           if (filtroPais === "venezuela" && !(Number(it.venezuelaCantidad) || 0)) return false;
           return true;
@@ -7070,7 +7076,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                               <td style={{ padding: "6px 10px" }}>{it.nombre}</td>
                               <td style={{ padding: "6px 10px" }}>{refReal ? <Badge status={refReal.status} /> : <span style={{ color: T.slate, fontStyle: "italic" }}>—</span>}</td>
                               <td style={{ padding: "6px 10px" }}>{it.consumo || "—"}</td>
-                              <td style={{ padding: "6px 10px" }}>{it.tipo || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.lineaBusint || it.tipo || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.categoria || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.silueta || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.rango || "—"}</td>
