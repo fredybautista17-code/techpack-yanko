@@ -2600,7 +2600,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
                 {noFinalState && st !== "enviado_cotizacion" && st !== "enviar_cliente" && st !== "preparada_para_enviar" && st !== "enviado" && (
                   <Btn variant="ghost" onClick={handleMarcarCotizacion}>📤 Cotización</Btn>
                 )}
-                {noFinalState && st !== "enviado" && (
+                {st !== "enviado" && (
                   item.precioCotizacion != null ? (
                     <button
                       onClick={() => setShowPrecioCotizacion(true)}
