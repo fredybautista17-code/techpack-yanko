@@ -6393,6 +6393,16 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   // misma consulta a Busint que usa NuevaReprogramacionView.buscar(), pero
   // acá solo se rellenan los campos que estén vacíos: nunca pisa un dato
   // que ya se haya llenado a mano o en una consulta anterior.
+  // (2026-09-30, a pedido de Fredy) Referencias que se completaron ANTES
+  // del arreglo de metros lineales quedaron con el consumo en el formato
+  // crudo viejo (numero + codigo de unidad suelto, ej. "1.28 4") -- eso no
+  // es un consumo "ya lleno" de verdad, así que se detecta ese patrón para
+  // permitir que refrescarBusint/el botón masivo SÍ lo sobreescriban con el
+  // valor ya convertido, sin tocar ningún otro campo ni un consumo bueno o
+  // escrito a mano (que nunca va a calzar con este patrón tan específico).
+  function esConsumoCrudoSinConvertir(v) {
+    return /^\d+([.,]\d+)?\s+\d+$/.test(String(v || "").trim());
+  }
   // (2026-09-30, a pedido de Fredy) Nucleo compartido de refrescarBusint --
   // consulta Busint para UNA referencia y arma el patch de los campos que
   // esten vacios (sin tocar el item ni mostrar ningun alert), para que lo
@@ -6439,7 +6449,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
       // Tela/Consumo son "best effort", igual que en NuevaReprogramacionView.buscar().
     }
     const patch = {};
-    if (!it.consumo && consumo) patch.consumo = consumo;
+    if (consumo && (!it.consumo || esConsumoCrudoSinConvertir(it.consumo))) patch.consumo = consumo;
     if (!it.tipo && grupo) patch.tipo = grupo;
     if (!it.categoria && b.categoria) patch.categoria = b.categoria;
     if (!it.silueta && b.tipoConfeccion) patch.silueta = b.tipoConfeccion;
@@ -6477,7 +6487,8 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   function itemPendienteBusint(it) {
     return !!it.referencia && (
       !it.lineaBusint || !it.precio || !it.consumo || !it.tipo ||
-      !it.categoria || !it.silueta || !it.rango || !it.tela
+      !it.categoria || !it.silueta || !it.rango || !it.tela ||
+      esConsumoCrudoSinConvertir(it.consumo)
     );
   }
   // (2026-09-30, a pedido de Fredy) Botón "🔄 Actualizar pendientes de
