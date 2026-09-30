@@ -6260,8 +6260,8 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   const [detallePedido, setDetallePedido] = useState(null);
   const [expandido, setExpandido] = useState(null);
   const [refrescando, setRefrescando] = useState(null);
-  // (2026-09-30, a pedido de Fredy) Progreso de "Actualizar líneas
-  // pendientes" (botón masivo, ver actualizarLineasPendientes) -- { preordenId, actual, total } mientras corre, null cuando no hay ninguno en curso.
+  // (2026-09-30, a pedido de Fredy) Progreso de "Actualizar pendientes de
+  // Busint" (botón masivo, ver actualizarDatosPendientesBusint) -- { preordenId, actual, total } mientras corre, null cuando no hay ninguno en curso.
   const [actualizandoMasivo, setActualizandoMasivo] = useState(null);
   const [editando, setEditando] = useState(null);
   const [formEdit, setFormEdit] = useState(null);
@@ -6377,7 +6377,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   // consulta Busint para UNA referencia y arma el patch de los campos que
   // esten vacios (sin tocar el item ni mostrar ningun alert), para que lo
   // puedan usar tanto el boton individual (refrescarBusint) como el masivo
-  // (actualizarLineasPendientes) sin duplicar la logica de consulta.
+  // (actualizarDatosPendientesBusint) sin duplicar la logica de consulta.
   async function buscarPatchBusint(it) {
     const llamarRef = httpsCallable(functionsClient, "probarReferenciaBusint");
     const respRef = await llamarRef({ ref: it.referencia });
@@ -6433,15 +6433,27 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
       setRefrescando(null);
     }
   }
-  // (2026-09-30, a pedido de Fredy) Botón "🔄 Actualizar líneas pendientes"
-  // -- recorre de una sola vez TODAS las referencias de la preorden que
-  // todavía no tengan lineaBusint guardada (llenadas antes de este campo
-  // existir), reutilizando buscarPatchBusint una por una con una pequeña
-  // pausa entre cada consulta para no saturar Busint. Al final muestra un
-  // único resumen (no un alert por cada referencia, que dejaría la pantalla
-  // bloqueada esperando que Fredy cierre uno por uno).
-  async function actualizarLineasPendientes(preordenId, items) {
-    const pendientes = (items || []).filter((it) => !it.lineaBusint && it.referencia);
+  // (2026-09-30, a pedido de Fredy) Un ítem está "pendiente" de Busint si le
+  // falta CUALQUIERA de los campos que buscarPatchBusint es capaz de traer
+  // -- no solo lineaBusint, también el precio matriculado, tela, consumo,
+  // categoría, silueta o rango -- así el botón masivo trae todo lo que
+  // falte de una sola vez, no solo la línea.
+  function itemPendienteBusint(it) {
+    return !!it.referencia && (
+      !it.lineaBusint || !it.precio || !it.consumo || !it.tipo ||
+      !it.categoria || !it.silueta || !it.rango || !it.tela
+    );
+  }
+  // (2026-09-30, a pedido de Fredy) Botón "🔄 Actualizar pendientes de
+  // Busint" -- recorre de una sola vez TODAS las referencias de la
+  // preorden que tengan algún campo vacío que Busint pueda completar
+  // (línea, precio, tela, consumo, categoría, silueta o rango),
+  // reutilizando buscarPatchBusint una por una con una pequeña pausa
+  // entre cada consulta para no saturar Busint. Al final muestra un
+  // único resumen (no un alert por cada referencia, que dejaría la
+  // pantalla bloqueada esperando que Fredy cierre uno por uno).
+  async function actualizarDatosPendientesBusint(preordenId, items) {
+    const pendientes = (items || []).filter(itemPendienteBusint);
     if (!pendientes.length) return;
     let actualizadas = 0, sinCambios = 0, noEncontradas = 0, conError = 0;
     for (let i = 0; i < pendientes.length; i++) {
@@ -6462,7 +6474,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
     alert(
       `Listo -- ${actualizadas} de ${pendientes.length} referencia${pendientes.length !== 1 ? "s" : ""} actualizada${actualizadas !== 1 ? "s" : ""}.` +
       (noEncontradas ? `\n${noEncontradas} no se encontraron en Busint.` : "") +
-      (sinCambios ? `\n${sinCambios} no tenían línea nueva para traer.` : "") +
+      (sinCambios ? `\n${sinCambios} no tenían datos nuevos para traer.` : "") +
       (conError ? `\n${conError} fallaron por un error de conexión -- puedes volver a darle al botón.` : "")
     );
   }
@@ -6893,10 +6905,11 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         // guardada, igual que ya hace Producción -> "Por línea", y solo cae
         // de vuelta al grupo genérico si el ítem todavía no la tiene.
         const gruposDisponibles = [...new Set((p.items || []).map((it) => it.lineaBusint || it.tipo).filter(Boolean))].sort();
-        // (2026-09-30, a pedido de Fredy) Referencias que todavia no tienen
-        // la linea especifica de Busint guardada -- estas son las que el
-        // boton "Actualizar lineas pendientes" va a completar en lote.
-        const itemsSinLinea = (p.items || []).filter((it) => !it.lineaBusint && it.referencia);
+        // (2026-09-30, a pedido de Fredy) Referencias a las que Busint
+        // todavia les puede completar algun dato (linea, precio, tela,
+        // consumo, categoria, silueta o rango) -- estas son las que el
+        // boton "Actualizar pendientes de Busint" va a completar en lote.
+        const itemsPendientesBusint = (p.items || []).filter(itemPendienteBusint);
         const resumen = resumenPreordenPorCategoria(p.items, filtroGrupo, filtroPais);
         const totalUnidades = resumen.reduce((s, r) => s + r.unidades, 0);
         const valorTotalPreorden = (p.items || []).reduce((s, it) => s + (Number(it.precio) || 0) * ((Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0)), 0);
@@ -7062,16 +7075,16 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                         />
                         <Btn variant="secondary" small onClick={() => document.getElementById(`preorden-excel-${p.id}`).click()}>📤 Subir Excel</Btn>
                         <Btn variant="secondary" small onClick={() => setAgregandoRefA(p.id)}>+ Agregar referencia</Btn>
-                        {itemsSinLinea.length > 0 && (
+                        {itemsPendientesBusint.length > 0 && (
                           <Btn
                             variant="secondary"
                             small
                             disabled={actualizandoMasivo?.preordenId === p.id}
-                            onClick={() => actualizarLineasPendientes(p.id, p.items)}
+                            onClick={() => actualizarDatosPendientesBusint(p.id, p.items)}
                           >
                             {actualizandoMasivo?.preordenId === p.id
                               ? `Actualizando ${actualizandoMasivo.actual} de ${actualizandoMasivo.total}...`
-                              : `🔄 Actualizar líneas pendientes (${itemsSinLinea.length})`}
+                              : `🔄 Actualizar pendientes de Busint (${itemsPendientesBusint.length})`}
                           </Btn>
                         )}
                       </>
