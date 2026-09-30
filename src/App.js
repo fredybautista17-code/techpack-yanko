@@ -3970,7 +3970,7 @@ function resumenPreordenPorCategoria(items, filtroGrupo, filtroPais) {
   return [...mapa.values()].sort((a, b) => b.unidades - a.unidades);
 }
 function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, currentUser, onAddCapsula, onAddRef, onGuardar, onCancelar, historial }) {
-  const [header, setHeader] = useState({ cliente: "", numPedido: "" });
+  const [header, setHeader] = useState({ cliente: "", numPedido: "", nombre: "" });
   const esCliente = currentUser?.role === "Cliente";
   // (2026-09-16) Un cliente puede tener más de una marca asociada -- si solo
   // tiene una, se sigue fijando sola como antes; si tiene varias, se deja
@@ -4158,7 +4158,7 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
         </div>
       </div>
       <div style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, padding: 20, marginBottom: 20 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
           <Field label="Cliente">
             {esCliente ? (
               clientesUsuario.length > 1 ? (
@@ -4171,6 +4171,7 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
             )}
           </Field>
           <Field label="N° Pedido (opcional)"><FInput value={header.numPedido} onChange={(v) => setHeader((h) => ({ ...h, numPedido: v }))} placeholder="Si ya lo sabes" /></Field>
+          <Field label="Nombre (opcional)"><FInput value={header.nombre} onChange={(v) => setHeader((h) => ({ ...h, nombre: v }))} placeholder="Para diferenciarla, ej: Octubre" /></Field>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 12 }}>
           <div style={{ flex: 1 }}>
@@ -4351,7 +4352,7 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
   );
 }
 function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, filasPrefill, onAddCapsula, onAddRef, onCrearPreorden, onAgregarAExistente, historial, onRegistrarHistorial, onGuardado, onCancelar }) {
-  const [header, setHeader] = useState({ cliente: "", numPedido: "" });
+  const [header, setHeader] = useState({ cliente: "", numPedido: "", nombre: "" });
   const esCliente = currentUser?.role === "Cliente";
   // (2026-09-16) Un cliente puede tener más de una marca asociada -- si solo
   // tiene una, se sigue fijando sola como antes; si tiene varias, se deja
@@ -4567,7 +4568,7 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
           </label>
         </div>
         {destino === "nueva" ? (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
             <Field label="Cliente">
               {esCliente ? (
                 clientesUsuario.length > 1 ? (
@@ -4580,6 +4581,7 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
               )}
             </Field>
             <Field label="N° Pedido (opcional)"><FInput value={header.numPedido} onChange={(v) => setHeader((h) => ({ ...h, numPedido: v }))} placeholder="Si ya lo sabes" /></Field>
+            <Field label="Nombre (opcional)"><FInput value={header.nombre} onChange={(v) => setHeader((h) => ({ ...h, nombre: v }))} placeholder="Para diferenciarla, ej: Octubre" /></Field>
           </div>
         ) : (
           <div style={{ marginBottom: 16 }}>
@@ -6021,6 +6023,10 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   }, [prefillDesdeCapsula]);
   const [subTab, setSubTab] = useState("pendientes");
   const [estadoFiltro, setEstadoFiltro] = useState("todas");
+  // (2026-09-30, a pedido de Fredy) Filtro por de dónde salió la preorden
+  // -- las creadas antes de este cambio no traen origenPantalla y quedan
+  // dentro de "Todas" siempre, sin importar el filtro elegido.
+  const [origenFiltro, setOrigenFiltro] = useState("todas");
   const [vinculando, setVinculando] = useState(null);
   const [buscaPedido, setBuscaPedido] = useState("");
   const [numeroPedidoManual, setNumeroPedidoManual] = useState("");
@@ -6099,14 +6105,17 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
     pendientes: (p.items || []).filter((it) => !itemGraduado(it, p.cliente, p.fechaCreado)).length,
   })).sort((a, b) => (b.fechaCreado || "").localeCompare(a.fechaCreado || ""));
   const porSubTab = subTab === "pendientes" ? preordenesConEstado.filter((p) => p.pendientes > 0) : preordenesConEstado;
-  const visibles = estadoFiltro === "todas" ? porSubTab : porSubTab.filter((p) => (p.estado || "montada") === estadoFiltro);
+  const visiblesPorEstado = estadoFiltro === "todas" ? porSubTab : porSubTab.filter((p) => (p.estado || "montada") === estadoFiltro);
+  const visibles = origenFiltro === "todas" ? visiblesPorEstado : visiblesPorEstado.filter((p) => p.origenPantalla === origenFiltro);
   // (2026-09-21, a pedido de Fredy) Buscador de la lista de preórdenes ya
-  // montadas -- por cliente, N° de pedido, o cualquier referencia contenida
-  // en la preorden (útil cuando hay varias preórdenes del mismo cliente).
+  // montadas -- por cliente, N° de pedido, nombre de la preorden, o
+  // cualquier referencia contenida en la preorden (útil cuando hay varias
+  // preórdenes del mismo cliente).
   const bqLista = foldTexto(buscarLista);
   const visiblesBuscadas = !bqLista ? visibles : visibles.filter((p) =>
     foldTexto(p.cliente).includes(bqLista) ||
     foldTexto(p.numPedido).includes(bqLista) ||
+    foldTexto(p.nombre).includes(bqLista) ||
     (p.items || []).some((it) => foldTexto(it.referencia).includes(bqLista) || foldTexto(it.nombre).includes(bqLista))
   );
   const bq = buscaPedido.trim().toLowerCase();
@@ -6307,7 +6316,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         onAddRef={onAddRef}
         historial={historialReprogramacion}
         onGuardar={async (header, items) => {
-          const preordenId = await onCrearPreorden(header, items);
+          const preordenId = await onCrearPreorden(header, items, "reprogramacion");
           if (onRegistrarHistorialNuevaOrden) {
             await onRegistrarHistorialNuevaOrden({ pantalla: "reprogramacion", tipo: "nueva", preordenId, cliente: header.cliente || "", numPedido: header.numPedido || "", cantidadReferencias: items.length });
           }
@@ -6328,7 +6337,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         filasPrefill={prefillDesdeCapsula}
         onAddCapsula={onAddCapsula}
         onAddRef={onAddRef}
-        onCrearPreorden={onCrearPreorden}
+        onCrearPreorden={(header, items) => onCrearPreorden(header, items, "orden")}
         onAgregarAExistente={onAgregarAPreordenExistente}
         historial={historialOrden}
         onRegistrarHistorial={onRegistrarHistorialNuevaOrden}
@@ -6522,6 +6531,11 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
           <button key={v} onClick={() => setEstadoFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${estadoFiltro === v ? T.jade : T.border}`, background: estadoFiltro === v ? T.jadeBg : T.white, color: estadoFiltro === v ? T.jade : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+        {[["todas", "Todas"], ["reprogramacion", "🔁 Reprogramación"], ["orden", "🆕 Nueva Orden"]].map(([v, label]) => (
+          <button key={v} onClick={() => setOrigenFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${origenFiltro === v ? T.violet : T.border}`, background: origenFiltro === v ? T.violetBg : T.white, color: origenFiltro === v ? T.violet : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
+        ))}
+      </div>
       <div style={{ marginBottom: 16 }}>
         <input
           value={buscarLista}
@@ -6606,11 +6620,17 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                 <span style={{ fontSize: 20 }}>{abierto ? "📂" : "📁"}</span>
                 <div>
                   <div style={{ fontWeight: 800, fontSize: 15, color: T.ink, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <span>{p.cliente || "(Sin cliente)"}{p.numPedido ? ` · Pedido ${p.numPedido}` : ""}</span>
+                    <span>{p.nombre ? `${p.nombre} — ${p.cliente || "(Sin cliente)"}` : (p.cliente || "(Sin cliente)")}{p.numPedido ? ` · Pedido ${p.numPedido}` : ""}</span>
                     {estadoActual === "aprobada" ? (
                       <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✅ Aprobada</span>
                     ) : (
                       <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.amberBg, color: T.amber }}>🟡 Montada</span>
+                    )}
+                    {p.origenPantalla === "reprogramacion" && (
+                      <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.violetBg, color: T.violet }}>🔁 Reprogramación</span>
+                    )}
+                    {p.origenPantalla === "orden" && (
+                      <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim }}>🆕 Nueva Orden</span>
                     )}
                     {estadoActual === "aprobada" && (p.items || []).length > 0 && !esCliente && (
                       <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim }}>🧵 {itemsConTela.length}/{(p.items || []).length} con tela confirmada</span>
@@ -14892,11 +14912,20 @@ function AppInner() {
   // propios de este pedido puntual). No se marca nada como "enviado" (a
   // diferencia de crearEnvioBitacora) -- una preorden todavía no se
   // despachó a nadie.
-  async function crearPreorden(header, items) {
+  // origenPantalla ("reprogramacion" | "orden") identifica desde qué
+  // pantalla se creó -- a pedido de Fredy, para poder diferenciar/filtrar
+  // las preórdenes según de dónde salieron. Las preórdenes creadas antes de
+  // este cambio no traen este campo.
+  async function crearPreorden(header, items, origenPantalla) {
     const preorden = {
       id: uid(),
       cliente: header.cliente || "",
       numPedido: header.numPedido || "",
+      // (2026-09-30, a pedido de Fredy) Nombre libre y opcional para
+      // diferenciar preórdenes del mismo cliente (ej. "Octubre" en varias
+      // preórdenes de "Kamila Colombia").
+      nombre: header.nombre || "",
+      origenPantalla: origenPantalla || "orden",
       // (2026-09-16, a pedido de Fredy) Dos etapas: "montada" (recién creada,
       // la haya montado el cliente o alguien de Yanko) y "aprobada" (el
       // cliente decidió el colorido y la preorden queda bloqueada -- ver
