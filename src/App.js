@@ -6831,6 +6831,18 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                     {p.origenPantalla === "orden" && (
                       <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim }}>🆕 Nueva Orden</span>
                     )}
+                    {puedeAprobar && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (faltaCartaColores) return;
+                          if (window.confirm("¿Aprobar esta preorden y el colorido de cada referencia? Una vez aprobada queda bloqueada.")) onAprobarPreorden(p.id);
+                        }}
+                        disabled={faltaCartaColores}
+                        title={faltaCartaColores ? "Falta subir la carta de colores de cada referencia para poder aprobar." : ""}
+                        style={{ padding: "3px 10px", borderRadius: 20, border: "none", background: faltaCartaColores ? T.border : T.jade, color: faltaCartaColores ? T.slate : T.white, fontWeight: 700, fontSize: 10, cursor: faltaCartaColores ? "not-allowed" : "pointer" }}
+                      >✓ Aprobar</button>
+                    )}
                     {estadoActual === "aprobada" && (p.items || []).length > 0 && !esCliente && (
                       <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.coralBg, color: T.coral }}>🧵 {itemsEnOrdenes.length} en Órdenes</span>
                     )}
@@ -6860,19 +6872,6 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
               <div style={{ padding: 20 }}>
                 <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
                   <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                    {puedeAprobar && (
-                      <Btn
-                        variant="success"
-                        small
-                        disabled={faltaCartaColores}
-                        onClick={() => {
-                          if (window.confirm("¿Aprobar esta preorden y el colorido de cada referencia? Una vez aprobada queda bloqueada.")) onAprobarPreorden(p.id);
-                        }}
-                      >✓ Aprobar</Btn>
-                    )}
-                    {puedeAprobar && faltaCartaColores && (
-                      <div style={{ fontSize: 11, color: T.amber, maxWidth: 220 }}>Falta subir la carta de colores de cada referencia para poder aprobar.</div>
-                    )}
                     <Btn variant="secondary" small onClick={() => exportPreordenXLSX({
                       ...p,
                       items: (p.items || []).map((it) => {
