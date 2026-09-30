@@ -1058,7 +1058,7 @@ function ultimasReferenciasBusint(prefijo, inicio, fin, busintLista, n = 3) {
 // Corte, sin Prototipos ni Cápsulas).
 // Claves granulares de sección dentro de Diseño (Corte y Contabilidad siempre
 // se gestionan como llaves independientes, nunca implícitas en "diseno").
-const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial", "cronograma_muestras", "bitacora"];
+const DISENO_SUBMODULOS = ["protos", "capsulas", "pedidos", "pedidos_clientes", "stats", "historial", "cronograma_muestras", "bitacora", "observaciones"];
 // Claves granulares de pestaña dentro del módulo "Áreas" (2026-09-01, a
 // pedido de Fredy: poder darle a un rol solo alguna(s) de las 4 pestañas —
 // Centro de Costo/Estadísticas/Reclamos/Programador — en vez de todo o
@@ -1579,7 +1579,10 @@ function ChatPanel({ observations, currentUser, role, onSend, onMarkDone }) {
                 <div style={{ padding: "9px 13px", borderRadius: 10, background: mine ? T.ink : T.canvas, color: mine ? T.white : T.ink, fontSize: 13, lineHeight: 1.5, borderTopRightRadius: mine ? 2 : 10, borderTopLeftRadius: mine ? 10 : 2, textDecoration: o.done ? "line-through" : "none" }}>{o.text}</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4, flexDirection: mine ? "row-reverse" : "row" }}>
                   <span style={{ fontSize: 10, color: T.slate }}>{new Date(o.date).toLocaleString("es-CO", { dateStyle: "short", timeStyle: "short" })}</span>
-                  {!o.done && <button onClick={() => onMarkDone(o.id)} style={{ background: T.jadeBg, border: `1px solid ${T.jade}`, borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, color: T.jade, cursor: "pointer" }}>✓ Marcar hecha</button>}
+                  {/* (2026-09-30, a pedido de Fredy) Solo un usuario con rol
+                      Diseñador puede marcar una observación como hecha -- antes
+                      cualquiera que viera el chat (incluido un Cliente) podía. */}
+                  {!o.done && role === "Diseñador" && <button onClick={() => onMarkDone(o.id)} style={{ background: T.jadeBg, border: `1px solid ${T.jade}`, borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, color: T.jade, cursor: "pointer" }}>✓ Marcar hecha</button>}
                 </div>
               </div>
             </div>
@@ -8953,6 +8956,135 @@ function DashboardView({ protos, capsulas, pedidos, onGoProtos, onGoCapsulas, on
   );
 }
 
+// (2026-09-30, a pedido de Fredy) Listado consolidado de TODAS las
+// observaciones de Diseño (Prototipos, Referencias de Cápsula, e
+// Ilustración de Cápsula) en un solo lugar, con su propio botón en el menú
+// de Diseño -- antes solo se podían revisar abriendo cada ítem uno por uno,
+// lo que hacía muy lento auditar pendientes con muchas cápsulas/referencias.
+// "Marcar hecha" solo se ofrece a rol Diseñador, igual que en ChatPanel
+// dentro del detalle de cada ítem.
+function ObservacionesView({ protos, capsulas, role, onSelectProto, onSelectRef, onMarcarHechaProto, onMarcarHechaRef, onMarcarHechaCapsula }) {
+  const [tab, setTab] = useState("pendientes");
+  const [busqueda, setBusqueda] = useState("");
+  const [capsulaFiltro, setCapsulaFiltro] = useState("todas");
+  const [disenadorFiltro, setDisenadorFiltro] = useState("todos");
+  const puedeMarcarHecha = role === "Diseñador";
+
+  const filas = useMemo(() => {
+    const out = [];
+    (protos || []).forEach((p) => {
+      (p.observations || []).filter((o) => o.type !== "update" && o.user !== "Sistema").forEach((o) => {
+        out.push({ ...o, origen: "proto", protoId: p.id, ubicacion: `${p.name}${p.reference ? " · " + p.reference : ""}`, capsulaName: null });
+      });
+    });
+    (capsulas || []).forEach((cap) => {
+      (cap.referencias || []).forEach((r) => {
+        (r.observations || []).filter((o) => o.type !== "update" && o.user !== "Sistema").forEach((o) => {
+          out.push({ ...o, origen: "ref", capId: cap.id, refId: r.id, ubicacion: `${cap.name} · ${r.name}${r.reference ? " · " + r.reference : ""}`, capsulaName: cap.name });
+        });
+      });
+      (cap.observacionesIlustracion || []).forEach((o) => {
+        out.push({ ...o, origen: "capsula", capId: cap.id, ubicacion: `${cap.name} (Ilustración)`, capsulaName: cap.name });
+      });
+    });
+    return out.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  }, [protos, capsulas]);
+
+  const totalCount = filas.length;
+  const pendCount = filas.filter((f) => !f.done).length;
+  const hechaCount = filas.length - pendCount;
+  const capsulasConObs = [...new Set(filas.map((f) => f.capsulaName).filter(Boolean))].sort((a, b) => a.localeCompare(b, "es"));
+  const disenadores = [...new Set(filas.map((f) => f.user).filter(Boolean))].sort((a, b) => a.localeCompare(b, "es"));
+
+  const busquedaNorm = busqueda.trim().toLowerCase();
+  const filasFiltradas = filas.filter((f) => {
+    if (tab === "pendientes" && f.done) return false;
+    if (tab === "hechas" && !f.done) return false;
+    if (capsulaFiltro !== "todas" && f.capsulaName !== capsulaFiltro) return false;
+    if (disenadorFiltro !== "todos" && f.user !== disenadorFiltro) return false;
+    if (busquedaNorm && !`${f.text} ${f.ubicacion}`.toLowerCase().includes(busquedaNorm)) return false;
+    return true;
+  });
+
+  function verItem(f) {
+    if (f.origen === "proto") onSelectProto(f.protoId);
+    else if (f.origen === "ref") onSelectRef(f.capId, f.refId);
+  }
+  function marcarHecha(f) {
+    if (f.origen === "proto") onMarcarHechaProto(f.protoId, f.id);
+    else if (f.origen === "ref") onMarcarHechaRef(f.capId, f.refId, f.id);
+    else onMarcarHechaCapsula(f.capId, f.id);
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 20, fontWeight: 800, color: T.ink, marginBottom: 4 }}>💬 Observaciones</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 18 }}>Todas las observaciones de Prototipos, Referencias de Cápsula e Ilustración, en un solo lugar.</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 18 }}>
+        <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 12, padding: "14px 18px" }}>
+          <div style={{ fontSize: 24, fontWeight: 800, color: T.ink }}>{totalCount}</div>
+          <div style={{ fontSize: 12, color: T.slate, fontWeight: 600, marginTop: 4 }}>Observaciones totales</div>
+        </div>
+        <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 12, padding: "14px 18px" }}>
+          <div style={{ fontSize: 24, fontWeight: 800, color: T.amber }}>{pendCount}</div>
+          <div style={{ fontSize: 12, color: T.slate, fontWeight: 600, marginTop: 4 }}>Pendientes</div>
+        </div>
+        <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 12, padding: "14px 18px" }}>
+          <div style={{ fontSize: 24, fontWeight: 800, color: T.jade }}>{hechaCount}</div>
+          <div style={{ fontSize: 12, color: T.slate, fontWeight: 600, marginTop: 4 }}>Hechas</div>
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
+        <input
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="🔍 Buscar por texto, referencia o cápsula..."
+          style={{ flex: 1, minWidth: 220, padding: "9px 14px", border: `1.5px solid ${busqueda ? T.denim : T.border}`, borderRadius: 9, fontSize: 13.5, outline: "none", fontFamily: "inherit" }}
+        />
+        <select value={capsulaFiltro} onChange={(e) => setCapsulaFiltro(e.target.value)} style={{ padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 9, fontSize: 13, fontFamily: "inherit", background: T.white, color: T.ink, fontWeight: 600 }}>
+          <option value="todas">Todas las cápsulas</option>
+          {capsulasConObs.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select value={disenadorFiltro} onChange={(e) => setDisenadorFiltro(e.target.value)} style={{ padding: "9px 12px", border: `1.5px solid ${T.border}`, borderRadius: 9, fontSize: 13, fontFamily: "inherit", background: T.white, color: T.ink, fontWeight: 600 }}>
+          <option value="todos">Todas las personas</option>
+          {disenadores.map((d) => <option key={d} value={d}>{d}</option>)}
+        </select>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 18 }}>
+        {[["pendientes", "Pendientes", pendCount], ["hechas", "Hechas", hechaCount], ["todas", "Todas", totalCount]].map(([v, label, count]) => (
+          <button key={v} onClick={() => setTab(v)} style={{ padding: "8px 14px", borderRadius: 8, border: `1.5px solid ${tab === v ? T.ink : T.border}`, background: tab === v ? T.ink : T.white, color: tab === v ? T.white : T.slate, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>{label} ({count})</button>
+        ))}
+      </div>
+      {!filasFiltradas.length && <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>No hay observaciones con este filtro. 🎉</div>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {filasFiltradas.map((f) => (
+          <div key={f.id} style={{ display: "flex", gap: 12, alignItems: "flex-start", background: T.white, border: `1px solid ${T.border}`, borderRadius: 12, padding: "13px 16px", opacity: f.done ? 0.62 : 1 }}>
+            <Avatar name={f.user} size={32} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4, flexWrap: "wrap" }}>
+                <span style={{ fontWeight: 700, fontSize: 13 }}>{f.user}</span>
+                <span style={{ fontSize: 10, color: T.slate, background: T.canvas, padding: "1px 6px", borderRadius: 3, fontWeight: 700 }}>{f.role}</span>
+                {f.origen === "proto" || f.origen === "ref" ? (
+                  <span onClick={() => verItem(f)} style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: T.denim, background: T.denimBg, padding: "3px 9px", borderRadius: 20, cursor: "pointer", whiteSpace: "nowrap" }}>{f.ubicacion} →</span>
+                ) : (
+                  <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: T.violet, background: T.violetBg, padding: "3px 9px", borderRadius: 20, whiteSpace: "nowrap" }}>{f.ubicacion}</span>
+                )}
+              </div>
+              <div style={{ fontSize: 13.5, color: T.ink, lineHeight: 1.5, marginBottom: 8, textDecoration: f.done ? "line-through" : "none" }}>{f.text}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11, color: T.slate }}>{new Date(f.date).toLocaleString("es-CO", { dateStyle: "short", timeStyle: "short" })}</span>
+                <span style={{ fontSize: 10.5, fontWeight: 700, padding: "2px 8px", borderRadius: 4, background: f.done ? T.jadeBg : T.amberBg, color: f.done ? T.jade : T.amber }}>{f.done ? "✓ Hecha" : "⏳ Pendiente"}</span>
+                {!f.done && puedeMarcarHecha && (
+                  <button onClick={() => marcarHecha(f)} style={{ marginLeft: "auto", background: T.jadeBg, border: `1px solid ${T.jade}`, borderRadius: 6, padding: "3px 10px", fontSize: 11.5, fontWeight: 700, color: T.jade, cursor: "pointer" }}>✓ Marcar hecha</button>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 function EstadisticasView({ protos, capsulas, stages, config }) {
   const currentYear = new Date().getFullYear().toString();
   const [yearFilter, setYearFilter] = useState(currentYear);
@@ -11253,6 +11385,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     ["cronograma_muestras", "🧵 Cronograma de Muestras"],
     ["bitacora", "📜 Bitácoras"],
     ["stats", "📊 Estadísticas"],
+    ["observaciones", "💬 Observaciones"],
   ];
   // KPIs ahora es un módulo de compañía completo (no solo Diseño — cubre
   // Corte, Ventas, Contabilidad, Planeación, etc.), por eso su permiso vive
@@ -15523,6 +15656,21 @@ function AppInner() {
     const cap = updated.find((c) => c.id === capId);
     await fsSave("capsulas", capId, cap);
   }
+  // (2026-09-30, a pedido de Fredy) Marcar una observación como hecha desde
+  // el listado consolidado de "Observaciones" -- mismo resultado que
+  // markDone()/markDoneObservacionCapsula(), pero llamable sin tener ese
+  // prototipo/referencia abierto en pantalla.
+  async function marcarObservacionHechaProto(protoId, obsId) {
+    const p = protos.find((x) => x.id === protoId);
+    if (!p) return;
+    await updateProto(protoId, { observations: (p.observations || []).map((o) => (o.id === obsId ? { ...o, done: true } : o)) });
+  }
+  async function marcarObservacionHechaRef(capId, refId, obsId) {
+    const cap = capsulas.find((c) => c.id === capId);
+    const ref = cap?.referencias.find((r) => r.id === refId);
+    if (!ref) return;
+    await updateRef(capId, refId, { observations: (ref.observations || []).map((o) => (o.id === obsId ? { ...o, done: true } : o)) });
+  }
   async function logHistorial(entry) {
     const withId = { ...entry, id: uid() };
     setHistorial((h) => [...h, withId]);
@@ -15709,6 +15857,10 @@ function AppInner() {
   const canAccessPreordenes = moduloVisible(userRoleData, "preordenes", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "preordenes");
   const canAccessOrdenes = moduloVisible(userRoleData, "ordenes", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "ordenes");
   const canAccessStats = moduloVisible(userRoleData, "stats", currentUser?.isAdmin);
+  // (2026-09-30, a pedido de Fredy) "Observaciones": listado consolidado de
+  // TODAS las observaciones de Diseño (Prototipos, Referencias de Cápsula e
+  // Ilustración de Cápsula) en un solo lugar -- ver ObservacionesView.
+  const canAccessObservaciones = moduloVisible(userRoleData, "observaciones", currentUser?.isAdmin);
   const canAccessHistorial = moduloVisible(userRoleData, "historial", currentUser?.isAdmin);
   const canAccessCronograma = moduloVisible(userRoleData, "cronograma_muestras", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "cronograma_muestras");
   const canAccessBitacora = moduloVisible(userRoleData, "bitacora", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "bitacora");
@@ -15838,6 +15990,7 @@ function AppInner() {
             ...(canAccessProtos ? [{ id: "protos", icon: "⬡", label: "Prototipos" }] : []),
             ...(canAccessCapsulas ? [{ id: "capsulas", icon: "⬢", label: "Cápsulas" }] : []),
             ...(canAccessStats ? [{ id: "stats", icon: "📊", label: "Estadísticas Diseño" }] : []),
+            ...(canAccessObservaciones ? [{ id: "observaciones", icon: "💬", label: "Observaciones" }] : []),
             ...(canAccessHistorial ? [{ id: "historial", icon: "🕘", label: "Historial" }] : []),
             ...(canAccessBitacora ? [{ id: "bitacora", icon: "📜", label: "Bitácoras" }] : []),
             ...(canAccessCronograma ? [{ id: "cronograma_muestras", icon: "🧵", label: "Cronograma de Muestras" }] : []),
@@ -16128,6 +16281,7 @@ function AppInner() {
                     if (canAccessProtos) setView("protos");
                     else if (canAccessCapsulas) setView("capsulas");
                     else if (canAccessStats) setView("stats");
+                    else if (canAccessObservaciones) setView("observaciones");
                     else if (canAccessHistorial) setView("historial");
                     else if (canAccessBitacora) setView("bitacora");
                     else if (canAccessCronograma) setView("cronograma_muestras");
@@ -16279,6 +16433,15 @@ function AppInner() {
               <ProduccionView currentUser={currentUser} pedidosCliente={role === "Cliente" ? pedidosVisibles : null} preordenesCliente={role === "Cliente" ? preordenesVisibles : null} todosPedidos={pedidos} todasPreordenes={bitacoraPreordenes} />
             )}
             {view === "stats" && <EstadisticasView protos={protosVisibles} capsulas={capsulasVisibles} stages={config.stages} config={config} />}
+            {view === "observaciones" && (
+              <ObservacionesView protos={protosVisibles} capsulas={capsulasVisibles} role={role}
+                onSelectProto={(id) => { setSelProtoId(id); setView("proto-detail"); }}
+                onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
+                onMarcarHechaProto={marcarObservacionHechaProto}
+                onMarcarHechaRef={marcarObservacionHechaRef}
+                onMarcarHechaCapsula={markDoneObservacionCapsula}
+              />
+            )}
             {view === "historial" && (
               <HistorialDisenoView historial={historial} protos={protosVisibles} capsulas={capsulasVisibles} pedidos={pedidosVisibles} role={role} perms={perms} stages={config.stages}
                 isAdmin={currentUser?.isAdmin} onBackfill={backfillHistorial}
