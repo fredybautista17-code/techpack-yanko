@@ -11521,6 +11521,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     ["pedidos", "📦 Pedidos"],
     ["pedidos_clientes", "🏢 Clientes"],
     ["preordenes", "🧾 Preórdenes"],
+    ["ordenes", "🧵 Órdenes"],
     ["corte", "✂ Corte"],
     ["historial", "🕘 Historial"],
     ["cronograma_muestras", "🧵 Cronograma de Muestras"],
