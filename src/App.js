@@ -6401,7 +6401,8 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   // valor ya convertido, sin tocar ningún otro campo ni un consumo bueno o
   // escrito a mano (que nunca va a calzar con este patrón tan específico).
   function esConsumoCrudoSinConvertir(v) {
-    return /^\d+([.,]\d+)?\s+\d+$/.test(String(v || "").trim());
+    const txt = String(v || "").trim();
+    return txt !== "" && !/[a-zA-Z]/.test(txt);
   }
   // (2026-09-30, a pedido de Fredy) Nucleo compartido de refrescarBusint --
   // consulta Busint para UNA referencia y arma el patch de los campos que
@@ -6441,8 +6442,15 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         if (String(slot0.unidad) === "4") {
           const ancho = await obtenerAnchoTelaPorNombre(tela);
           consumo = ancho ? `${Math.round((slot0.consumo / ancho) * 100) / 100} Mt` : `${slot0.consumo} m2`;
+        } else if (!slot0.unidad) {
+          // (2026-09-30, a pedido de Fredy) Busint no tiene NINGUN codigo de
+          // unidad para esta tela -- no hay forma de saber en que unidad
+          // viene el numero, asi que se deja el valor crudo pero marcado
+          // para poder detectar facil cuales referencias hay que revisar a
+          // mano directamente en Busint.
+          consumo = `${slot0.consumo} (sin unidad)`;
         } else {
-          consumo = `${slot0.consumo}${slot0.unidad ? ` ${slot0.unidad}` : ""}`;
+          consumo = `${slot0.consumo} ${slot0.unidad}`;
         }
       }
     } catch {
