@@ -6023,10 +6023,13 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   }, [prefillDesdeCapsula]);
   const [subTab, setSubTab] = useState("pendientes");
   const [estadoFiltro, setEstadoFiltro] = useState("todas");
-  // (2026-09-30, a pedido de Fredy) Filtro por de dónde salió la preorden
-  // -- las creadas antes de este cambio no traen origenPantalla y quedan
-  // dentro de "Todas" siempre, sin importar el filtro elegido.
-  const [origenFiltro, setOrigenFiltro] = useState("todas");
+  // (2026-09-30, a pedido de Fredy) Reemplaza el filtro de origen anterior
+  // -- un selector fijo (no un menú) decide cuál de las dos pantallas está
+  // activa: cambia el botón de crear y filtra la lista sola a ese origen.
+  // Las preórdenes creadas antes de este cambio (sin origenPantalla) caen
+  // en la tercera opción "Otras", que solo aparece si hay alguna.
+  const [seccionOrigen, setSeccionOrigen] = useState("reprogramacion");
+  const [showMasMenu, setShowMasMenu] = useState(false);
   const [vinculando, setVinculando] = useState(null);
   const [buscaPedido, setBuscaPedido] = useState("");
   const [numeroPedidoManual, setNumeroPedidoManual] = useState("");
@@ -6106,7 +6109,8 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   })).sort((a, b) => (b.fechaCreado || "").localeCompare(a.fechaCreado || ""));
   const porSubTab = subTab === "pendientes" ? preordenesConEstado.filter((p) => p.pendientes > 0) : preordenesConEstado;
   const visiblesPorEstado = estadoFiltro === "todas" ? porSubTab : porSubTab.filter((p) => (p.estado || "montada") === estadoFiltro);
-  const visibles = origenFiltro === "todas" ? visiblesPorEstado : visiblesPorEstado.filter((p) => p.origenPantalla === origenFiltro);
+  const hayOtras = preordenesConEstado.some((p) => !p.origenPantalla);
+  const visibles = seccionOrigen === "otras" ? visiblesPorEstado.filter((p) => !p.origenPantalla) : visiblesPorEstado.filter((p) => p.origenPantalla === seccionOrigen);
   // (2026-09-21, a pedido de Fredy) Buscador de la lista de preórdenes ya
   // montadas -- por cliente, N° de pedido, nombre de la preorden, o
   // cualquier referencia contenida en la preorden (útil cuando hay varias
@@ -6501,26 +6505,53 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>Preórdenes</h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Borradores de pedido armados antes de que el pedido real exista</p>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          {currentUser?.isAdmin && (
-            <>
-              <Btn
-                variant="secondary"
-                disabled={reparando}
-                onClick={() => {
-                  if (window.confirm("Esto revisa todas las preórdenes y le da un identificador propio a cada referencia que no tenga uno (sin tocar ningún otro dato). ¿Continuar?")) repararIdentificadores();
-                }}
-              >{reparando ? "🔧 Reparando..." : "🔧 Reparar identificadores"}</Btn>
-              <Btn variant="secondary" disabled={escaneando} onClick={escanearFotosDanadas}>{escaneando ? "🔍 Revisando..." : "🧹 Limpiar fotos dañadas"}</Btn>
-            </>
-          )}
-          {(puedeIngresarTela || puedeConfirmarTela) && (
-            <Btn variant="secondary" onClick={() => setViendoComprasSinOrden(true)}>🧵 Ingreso de Telas</Btn>
-          )}
-          <Btn onClick={() => setModo("reprogramacion")}>🔁 Nueva Reprogramación</Btn>
-          <Btn variant="secondary" onClick={() => setModo("orden_nueva")}>🆕 Nueva Orden</Btn>
-        </div>
+        {(currentUser?.isAdmin || puedeIngresarTela || puedeConfirmarTela) && (
+          <div style={{ position: "relative" }}>
+            <Btn variant="secondary" onClick={() => setShowMasMenu((v) => !v)}>⋯ Más</Btn>
+            {showMasMenu && (
+              <>
+                <div onClick={() => setShowMasMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 4 }} />
+                <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, background: T.white, border: `1px solid ${T.border}`, borderRadius: 10, boxShadow: "0 8px 24px rgba(26,26,46,0.12)", minWidth: 220, overflow: "hidden", zIndex: 5 }}>
+                  {currentUser?.isAdmin && (
+                    <>
+                      <div
+                        onClick={() => {
+                          setShowMasMenu(false);
+                          if (window.confirm("Esto revisa todas las preórdenes y le da un identificador propio a cada referencia que no tenga uno (sin tocar ningún otro dato). ¿Continuar?")) repararIdentificadores();
+                        }}
+                        style={{ padding: "10px 16px", fontSize: 12, fontWeight: 700, color: T.ink, borderBottom: `1px solid ${T.border}`, cursor: "pointer" }}
+                      >{reparando ? "🔧 Reparando..." : "🔧 Reparar identificadores"}</div>
+                      <div
+                        onClick={() => { setShowMasMenu(false); escanearFotosDanadas(); }}
+                        style={{ padding: "10px 16px", fontSize: 12, fontWeight: 700, color: T.ink, borderBottom: `1px solid ${T.border}`, cursor: "pointer" }}
+                      >{escaneando ? "🔍 Revisando..." : "🧹 Limpiar fotos dañadas"}</div>
+                    </>
+                  )}
+                  {(puedeIngresarTela || puedeConfirmarTela) && (
+                    <div
+                      onClick={() => { setShowMasMenu(false); setViendoComprasSinOrden(true); }}
+                      style={{ padding: "10px 16px", fontSize: 12, fontWeight: 700, color: T.ink, cursor: "pointer" }}
+                    >🧵 Ingreso de Telas</div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
+      <div style={{ display: "flex", gap: 8, padding: 6, background: T.canvas, borderRadius: 12, marginBottom: 16, width: "fit-content" }}>
+        <button onClick={() => setSeccionOrigen("reprogramacion")} style={{ padding: "10px 20px", borderRadius: 9, fontSize: 13, fontWeight: 800, cursor: "pointer", border: "none", background: seccionOrigen === "reprogramacion" ? T.violet : "transparent", color: seccionOrigen === "reprogramacion" ? T.white : T.slate }}>🔁 Nueva Reprogramación</button>
+        <button onClick={() => setSeccionOrigen("orden")} style={{ padding: "10px 20px", borderRadius: 9, fontSize: 13, fontWeight: 800, cursor: "pointer", border: "none", background: seccionOrigen === "orden" ? T.denim : "transparent", color: seccionOrigen === "orden" ? T.white : T.slate }}>🆕 Nueva Orden</button>
+        {hayOtras && (
+          <button onClick={() => setSeccionOrigen("otras")} style={{ padding: "10px 20px", borderRadius: 9, fontSize: 13, fontWeight: 800, cursor: "pointer", border: "none", background: seccionOrigen === "otras" ? T.slate : "transparent", color: seccionOrigen === "otras" ? T.white : T.slate }}>📦 Otras</button>
+        )}
+      </div>
+      {seccionOrigen !== "otras" && (
+        <button
+          onClick={() => setModo(seccionOrigen === "reprogramacion" ? "reprogramacion" : "orden_nueva")}
+          style={{ padding: "10px 18px", borderRadius: 9, fontSize: 13, fontWeight: 800, color: T.white, border: "none", cursor: "pointer", background: seccionOrigen === "reprogramacion" ? T.violet : T.denim, marginBottom: 16, display: "inline-flex", alignItems: "center", gap: 8 }}
+        >＋ Crear {seccionOrigen === "reprogramacion" ? "Nueva Reprogramación" : "Nueva Orden"}</button>
+      )}
       <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
         {[["pendientes", "⏳ Pendientes"], ["todos", "Todos"]].map(([v, label]) => (
           <button key={v} onClick={() => setSubTab(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${subTab === v ? T.denim : T.border}`, background: subTab === v ? T.denimBg : T.white, color: subTab === v ? T.denim : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
@@ -6529,11 +6560,6 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
       <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
         {[["todas", "Todos los estados"], ["montada", "🟡 Montadas"], ["aprobada", "✅ Aprobadas"]].map(([v, label]) => (
           <button key={v} onClick={() => setEstadoFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${estadoFiltro === v ? T.jade : T.border}`, background: estadoFiltro === v ? T.jadeBg : T.white, color: estadoFiltro === v ? T.jade : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
-        ))}
-      </div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
-        {[["todas", "Todas"], ["reprogramacion", "🔁 Reprogramación"], ["orden", "🆕 Nueva Orden"]].map(([v, label]) => (
-          <button key={v} onClick={() => setOrigenFiltro(v)} style={{ padding: "6px 14px", borderRadius: 6, border: `1.5px solid ${origenFiltro === v ? T.violet : T.border}`, background: origenFiltro === v ? T.violetBg : T.white, color: origenFiltro === v ? T.violet : T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{label}</button>
         ))}
       </div>
       <div style={{ marginBottom: 16 }}>
