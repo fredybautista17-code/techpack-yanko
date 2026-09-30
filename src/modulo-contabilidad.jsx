@@ -3279,6 +3279,7 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
       "CANT. DESPACHADA BODEGA": l.cantidadDespachadaBodega ?? "",
       "SACRIFICIOS": l.sacrificios ?? "",
       "SEGUNDAS": l.segundas ?? "",
+      "COBRO PLANTA": l.cobroPlanta ?? "",
       "COBROS": (l.cobrosBodega || []).map((c) => `${c.trabajadorNombre} (${c.tipo}): ${c.valor}`).join(" / "),
       "OBSERVACIONES ENVÍO": l.observacionesEnvio || "",
     }));

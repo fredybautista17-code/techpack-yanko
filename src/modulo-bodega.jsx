@@ -3182,6 +3182,7 @@ function datosEnvioLote(l, formEnvio) {
     cantidadDespachadaBodega: local.cantidadDespachadaBodega !== undefined ? local.cantidadDespachadaBodega : (l.cantidadDespachadaBodega ?? ""),
     sacrificios: local.sacrificios !== undefined ? local.sacrificios : (l.sacrificios ?? ""),
     segundas: local.segundas !== undefined ? local.segundas : (l.segundas ?? ""),
+    cobroPlanta: local.cobroPlanta !== undefined ? local.cobroPlanta : (l.cobroPlanta ?? ""),
     cobros: local.cobros !== undefined ? local.cobros : (l.cobrosBodega || []).map((c) => ({ ...c })),
   };
 }
@@ -3493,14 +3494,15 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
       // explica unidades que faltan (ej. una prenda perdida que se le cobra
       // a un trabajador) -- cuenta igual que Sacrificios/Segundas para que
       // el lote cuadre contra Cant. Cortada.
+      const cobroPlanta = Number(datos.cobroPlanta) || 0;
       const sumaCobros = (datos.cobros || []).reduce((s, c) => s + (Number(c.cantidad) || 0), 0);
       const cantCortada = Number(l.cantCortada) || 0;
       if (!cantidadDespachadaBodega) {
         alert(`Falta la Cantidad Despachada del lote ${l.numLote}.`);
         return;
       }
-      if (cantCortada > 0 && cantidadDespachadaBodega + sacrificios + segundas + sumaCobros !== cantCortada) {
-        alert(`Lote ${l.numLote}: Despachada + Sacrificios + Segundas + Cobros debe dar ${cantCortada} (ahora suma ${cantidadDespachadaBodega + sacrificios + segundas + sumaCobros}).`);
+      if (cantCortada > 0 && cantidadDespachadaBodega + sacrificios + segundas + sumaCobros + cobroPlanta !== cantCortada) {
+        alert(`Lote ${l.numLote}: Despachada + Sacrificios + Segundas + Cobros + Cobro a Planta debe dar ${cantCortada} (ahora suma ${cantidadDespachadaBodega + sacrificios + segundas + sumaCobros + cobroPlanta}).`);
         return;
       }
     }
@@ -3529,6 +3531,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
             cantidadDespachadaBodega: Number(datos.cantidadDespachadaBodega) || 0,
             sacrificios: Number(datos.sacrificios) || 0,
             segundas: Number(datos.segundas) || 0,
+            cobroPlanta: Number(datos.cobroPlanta) || 0,
             cobrosBodega: cobros,
             estadoEnvio: "enviado",
             fechaEnvio: today(),
@@ -3647,7 +3650,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
 
   async function descargarBitacora() {
     const XLSX = await import("xlsx-js-style");
-    const encabezados = ["Lote", "Referencia", "Cliente", "Cant. Cortada", "Cant. Despachada", "Sacrificios", "Segundas", "Cobros", "Despacho", "Transportador", "Guía", "Fecha Envío", "Fecha Recibido", "Estado"];
+    const encabezados = ["Lote", "Referencia", "Cliente", "Cant. Cortada", "Cant. Despachada", "Sacrificios", "Segundas", "Cobro Planta", "Cobros", "Despacho", "Transportador", "Guía", "Fecha Envío", "Fecha Recibido", "Estado"];
     const grid = [encabezados.map((h) => celda(h, ESTILO_HEADER))];
     [...enviados, ...recibidos].forEach((l) => {
       const esRecibido = l.estadoEnvio === "recibido";
@@ -3660,6 +3663,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
         celda(Number(l.cantidadDespachadaBodega) || 0, ESTILO_DATO),
         celda(Number(l.sacrificios) || 0, ESTILO_DATO),
         celda(Number(l.segundas) || 0, ESTILO_DATO),
+        celda(Number(l.cobroPlanta) || 0, ESTILO_DATO),
         celda(cobrosTexto, ESTILO_DATO),
         celda(l.despachoCodigo || "", ESTILO_DATO),
         celda(l.transportador || "", ESTILO_DATO),
@@ -3670,7 +3674,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
       ]);
     });
     const ws = XLSX.utils.aoa_to_sheet(grid);
-    ws["!cols"] = [{ wch: 8 }, { wch: 14 }, { wch: 20 }, { wch: 12 }, { wch: 14 }, { wch: 11 }, { wch: 10 }, { wch: 34 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 13 }, { wch: 11 }];
+    ws["!cols"] = [{ wch: 8 }, { wch: 14 }, { wch: 20 }, { wch: 12 }, { wch: 14 }, { wch: 11 }, { wch: 10 }, { wch: 12 }, { wch: 34 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 13 }, { wch: 11 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Bitácora");
     XLSX.writeFile(wb, `Bitacora Despachos ${today()}.xlsx`);
@@ -3687,6 +3691,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
         l.cantidadDespachadaBodega ||
         l.sacrificios ||
         l.segundas ||
+        l.cobroPlanta ||
         (l.cobrosBodega && l.cobrosBodega.length) ||
         l.observacionesEnvio
     );
@@ -3712,6 +3717,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
         "Cant. Despachada Bodega": l.cantidadDespachadaBodega ?? "",
         "Sacrificios": l.sacrificios ?? "",
         "Segundas": l.segundas ?? "",
+        "Cobro Planta": l.cobroPlanta ?? "",
         "Cobros": (l.cobrosBodega || []).map((c) => `${c.trabajadorNombre} (${c.tipo}): ${(Number(c.valor) || 0) * (Number(c.cantidad) || 1)}`).join(" / "),
         "Despacho": l.despachoCodigo || "",
         "Transportador": l.transportador || "",
@@ -3749,6 +3755,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
               cantidadDespachadaBodega: deleteField(),
               sacrificios: deleteField(),
               segundas: deleteField(),
+              cobroPlanta: deleteField(),
               cobrosBodega: deleteField(),
               despachoId: deleteField(),
               despachoCodigo: deleteField(),
@@ -3924,7 +3931,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
                       const datos = datosEnvioLote(l, formEnvio);
                       const cantCortada = Number(l.cantCortada) || 0;
                       const sumaCobros = (datos.cobros || []).reduce((s, c) => s + (Number(c.cantidad) || 0), 0);
-                      const suma = (Number(datos.cantidadDespachadaBodega) || 0) + (Number(datos.sacrificios) || 0) + (Number(datos.segundas) || 0) + sumaCobros;
+                      const suma = (Number(datos.cantidadDespachadaBodega) || 0) + (Number(datos.sacrificios) || 0) + (Number(datos.segundas) || 0) + sumaCobros + (Number(datos.cobroPlanta) || 0);
                       const cuadra = !cantCortada || !suma || suma === cantCortada;
                       return (
                         <div key={l.id} style={{ padding: 12, border: `1px solid ${C.border}`, borderRadius: 10, background: C.canvas }}>
@@ -3946,10 +3953,15 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
                                 <FInput type="number" value={datos.segundas ?? ""} onChange={(v) => campoEnvio(l.id, "segundas", v)} placeholder="0" />
                               </Field>
                             </div>
+                            <div style={{ width: 150 }}>
+                              <Field label="Cobro a Planta">
+                                <FInput type="number" value={datos.cobroPlanta ?? ""} onChange={(v) => campoEnvio(l.id, "cobroPlanta", v)} placeholder="0" />
+                              </Field>
+                            </div>
                           </div>
                           {!cuadra && (
                             <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginBottom: 10 }}>
-                              Despachada + Sacrificios + Segundas + Cobros debe dar {cantCortada} (ahora suma {suma}).
+                              Despachada + Sacrificios + Segundas + Cobros + Cobro a Planta debe dar {cantCortada} (ahora suma {suma}).
                             </div>
                           )}
                           <div>
@@ -4037,6 +4049,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
                             <div key={l.id} style={{ fontSize: 12, color: C.ink, padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8, background: C.canvas }}>
                               <strong>Lote {l.numLote}</strong> — {l.referencia || "(sin referencia)"}{" "}
                               <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: C.blueBg, color: C.blue, whiteSpace: "nowrap" }}>⏳ Por recibir</span> · Despachada {l.cantidadDespachadaBodega || 0} · Sacrificios {l.sacrificios || 0} · Segundas {l.segundas || 0}
+                              {!!l.cobroPlanta && <> · Cobro Planta {l.cobroPlanta}</>}
                               {!!(l.cobrosBodega || []).length && <> · Cobros: {l.cobrosBodega.map((c) => `${c.trabajadorNombre} (${c.tipo}): ${fmtMoney((Number(c.valor) || 0) * (Number(c.cantidad) || 1))}`).join(" / ")}</>}
                             </div>
                           ))}
@@ -4128,6 +4141,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
                 { key: "cantidadDespachadaBodega", label: "Despachada", align: "right", render: (l) => <CeldaNum valor={l.cantidadDespachadaBodega} /> },
                 { key: "sacrificios", label: "Sacrificios", align: "right", render: (l) => <CeldaNum valor={l.sacrificios} resaltarSiHayValor /> },
                 { key: "segundas", label: "Segundas", align: "right", render: (l) => <CeldaNum valor={l.segundas} /> },
+                { key: "cobroPlanta", label: "Cobro Planta", align: "right", render: (l) => <CeldaNum valor={l.cobroPlanta} resaltarSiHayValor /> },
                 { key: "llego", label: "Llegó", render: (l) => (l.fechaRecibido || l.fechaEnvio ? fmtFechaISO(l.fechaRecibido || l.fechaEnvio) : "—") },
               ]}
             />
@@ -4151,6 +4165,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
                     <div><span style={{ color: C.slate, fontSize: 11 }}>Cant. Despachada</span><br /><strong>{loteDetalle.cantidadDespachadaBodega ?? loteDetalle.cantDespachada ?? 0}</strong></div>
                     <div><span style={{ color: C.slate, fontSize: 11 }}>Sacrificios</span><br /><strong style={{ color: (loteDetalle.sacrificios || 0) > 0 ? C.amber : C.ink }}>{loteDetalle.sacrificios || 0}</strong></div>
                     <div><span style={{ color: C.slate, fontSize: 11 }}>Segundas</span><br /><strong>{loteDetalle.segundas || 0}</strong></div>
+                    <div><span style={{ color: C.slate, fontSize: 11 }}>Cobro a Planta</span><br /><strong style={{ color: (loteDetalle.cobroPlanta || 0) > 0 ? C.amber : C.ink }}>{loteDetalle.cobroPlanta || 0}</strong></div>
                     <div><span style={{ color: C.slate, fontSize: 11 }}>Código de despacho</span><br /><strong>{loteDetalle.despachoCodigo || "—"}</strong></div>
                     <div><span style={{ color: C.slate, fontSize: 11 }}>Transportador</span><br /><strong>{loteDetalle.transportador || "— (aún no existía este dato en ATLAS)"}</strong></div>
                     <div><span style={{ color: C.slate, fontSize: 11 }}>N° Guía</span><br /><strong>{loteDetalle.numeroGuia || "—"}</strong></div>
@@ -4206,7 +4221,7 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
   const [mostrarNuevo, setMostrarNuevo] = useState(false);
   const [busquedaLote, setBusquedaLote] = useState("");
   const [loteEncontrado, setLoteEncontrado] = useState(null);
-  const [form, setForm] = useState({ cantidadDespachadaBodega: "", sacrificios: "", segundas: "", cobros: [] });
+  const [form, setForm] = useState({ cantidadDespachadaBodega: "", sacrificios: "", segundas: "", cobroPlanta: "", cobros: [] });
   const [guardando, setGuardando] = useState(false);
   const [guardadoOk, setGuardadoOk] = useState(false);
   // (2026-09-14, a pedido de Fredy) "Marcar como recibidos hasta una
@@ -4273,6 +4288,7 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
       cantidadDespachadaBodega: l.cantidadDespachadaBodega ?? "",
       sacrificios: l.sacrificios ?? "",
       segundas: l.segundas ?? "",
+      cobroPlanta: l.cobroPlanta ?? "",
       cobros: (l.cobrosBodega || []).map((c) => ({ ...c })),
     });
     setGuardadoOk(false);
@@ -4325,6 +4341,7 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
         cantidadDespachadaBodega: Number(form.cantidadDespachadaBodega) || 0,
         sacrificios: Number(form.sacrificios) || 0,
         segundas: Number(form.segundas) || 0,
+        cobroPlanta: Number(form.cobroPlanta) || 0,
         cobrosBodega: cobros,
       });
       setGuardadoOk(true);
@@ -4370,13 +4387,13 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
     setMostrarNuevo(true);
     setBusquedaLote("");
     setLoteEncontrado(null);
-    setForm({ cantidadDespachadaBodega: "", sacrificios: "", segundas: "", cobros: [] });
+    setForm({ cantidadDespachadaBodega: "", sacrificios: "", segundas: "", cobroPlanta: "", cobros: [] });
     setGuardadoOk(false);
   }
 
   const cantCortada = Number(loteEncontrado?.cantCortada) || 0;
   const sumaCobros = (form.cobros || []).reduce((s, c) => s + (Number(c.cantidad) || 0), 0);
-  const suma = (Number(form.cantidadDespachadaBodega) || 0) + (Number(form.sacrificios) || 0) + (Number(form.segundas) || 0) + sumaCobros;
+  const suma = (Number(form.cantidadDespachadaBodega) || 0) + (Number(form.sacrificios) || 0) + (Number(form.segundas) || 0) + sumaCobros + (Number(form.cobroPlanta) || 0);
   const cuadra = !cantCortada || !suma || suma === cantCortada;
 
   return (
@@ -4440,10 +4457,15 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
                         <FInput type="number" value={form.segundas} onChange={(v) => campoForm("segundas", v)} placeholder="0" />
                       </Field>
                     </div>
+                    <div style={{ width: 150 }}>
+                      <Field label="Cobro a Planta">
+                        <FInput type="number" value={form.cobroPlanta} onChange={(v) => campoForm("cobroPlanta", v)} placeholder="0" />
+                      </Field>
+                    </div>
                   </div>
                   {!cuadra && (
                     <div style={{ fontSize: 11, color: C.red, fontWeight: 700, marginBottom: 10 }}>
-                      Despachada + Sacrificios + Segundas + Cobros debe dar {cantCortada} (ahora suma {suma}).
+                      Despachada + Sacrificios + Segundas + Cobros + Cobro a Planta debe dar {cantCortada} (ahora suma {suma}).
                     </div>
                   )}
 
@@ -4568,6 +4590,7 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
                         <ChipStat label="Despachada" value={l.cantidadDespachadaBodega || 0} />
                         <ChipStat label="Sacrificios" value={l.sacrificios || 0} />
                         <ChipStat label="Segundas" value={l.segundas || 0} />
+                        {!!l.cobroPlanta && <ChipStat label="Cobro Planta" value={l.cobroPlanta} />}
                       </div>
                       {!!(l.cobrosBodega || []).length && (
                         <div style={{ fontSize: 11, color: C.slate, borderTop: `1px dashed ${C.border}`, paddingTop: 6 }}>
@@ -4620,6 +4643,7 @@ function DespachosGeneralesView({ onVolver, onLogout }) {
                         <ChipStat label="Despachada" value={l.cantidadDespachadaBodega || 0} />
                         <ChipStat label="Sacrificios" value={l.sacrificios || 0} />
                         <ChipStat label="Segundas" value={l.segundas || 0} />
+                        {!!l.cobroPlanta && <ChipStat label="Cobro Planta" value={l.cobroPlanta} />}
                       </div>
                       {!!(l.cobrosBodega || []).length && (
                         <div style={{ fontSize: 11, color: C.slate, borderTop: `1px dashed ${C.border}`, paddingTop: 6 }}>
