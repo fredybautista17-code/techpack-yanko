@@ -6263,6 +6263,26 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   // (2026-09-30, a pedido de Fredy) Progreso de "Actualizar pendientes de
   // Busint" (botón masivo, ver actualizarDatosPendientesBusint) -- { preordenId, actual, total } mientras corre, null cuando no hay ninguno en curso.
   const [actualizandoMasivo, setActualizandoMasivo] = useState(null);
+  // (2026-09-30, a pedido de Fredy) Cache del inventario de telas
+  // ("estandar componentes prod", ver getTelasStockBusintBD) solo para
+  // sacar el ANCHO de cada tela por nombre -- esa tabla no tiene consumo
+  // por referencia, pero sí el ancho que "telas" (composición por
+  // referencia) no trae. Se cachea en un ref porque el botón masivo puede
+  // llamar a buscarPatchBusint decenas de veces seguidas y no tiene
+  // sentido volver a traer las miles de filas de esa tabla cada vez.
+  const telasStockCacheRef = useRef(null);
+  async function obtenerAnchoTelaPorNombre(nombreTela) {
+    const nombreBuscado = String(nombreTela || "").trim().toUpperCase();
+    if (!nombreBuscado) return null;
+    if (!telasStockCacheRef.current) {
+      telasStockCacheRef.current = httpsCallable(functionsClient, "getTelasStockBusintBD")()
+        .then((resp) => resp.data?.telas || [])
+        .catch(() => []);
+    }
+    const stock = await telasStockCacheRef.current;
+    const fila = stock.find((t) => t.activo !== false && t.ancho > 0 && String(t.componente || "").trim().toUpperCase() === nombreBuscado);
+    return fila ? fila.ancho : null;
+  }
   const [editando, setEditando] = useState(null);
   const [formEdit, setFormEdit] = useState(null);
   const [escaneando, setEscaneando] = useState(false);
@@ -6398,7 +6418,23 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
       const filaTela = (respTela.data?.porReferencia || []).find((r) => normalizarRefComparacion(r.ref) === normBuscada);
       const slot0 = filaTela?.slots?.[0];
       tela = slot0?.nombre || "";
-      consumo = slot0?.consumo != null && slot0?.consumo !== "" ? `${slot0.consumo}${slot0.unidad ? ` ${slot0.unidad}` : ""}` : "";
+      if (slot0?.consumo != null && slot0?.consumo !== "") {
+        // (2026-09-30, a pedido de Fredy) La tabla "telas" de Busint trae el
+        // consumo en distintas unidades según el código crudo de "Unid" --
+        // el código "4" es metro cuadrado (confirmado por Fredy). Eso no
+        // sirve para planear corte, así que se convierte a metros lineales
+        // dividiendo por el ancho de esa misma tela (buscado en el
+        // inventario de Corte, que sí tiene el ancho). Si no se encuentra
+        // el ancho de esa tela ahí, se deja tal cual en m² en vez de
+        // inventar un número -- Fredy pidió solo el valor ya convertido,
+        // sin mostrar el m² original al lado.
+        if (String(slot0.unidad) === "4") {
+          const ancho = await obtenerAnchoTelaPorNombre(tela);
+          consumo = ancho ? `${Math.round((slot0.consumo / ancho) * 100) / 100} Mt` : `${slot0.consumo} m2`;
+        } else {
+          consumo = `${slot0.consumo}${slot0.unidad ? ` ${slot0.unidad}` : ""}`;
+        }
+      }
     } catch {
       // Tela/Consumo son "best effort", igual que en NuevaReprogramacionView.buscar().
     }
