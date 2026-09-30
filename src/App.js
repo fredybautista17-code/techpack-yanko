@@ -6043,6 +6043,11 @@ function OrdenesView({ preordenes, pedidos, currentUser, onVincularPedido }) {
   const [vinculando, setVinculando] = useState(null);
   const [buscaPedido, setBuscaPedido] = useState("");
   const [numeroPedidoManual, setNumeroPedidoManual] = useState("");
+  // (2026-09-30, a pedido de Fredy) Igual que en Preórdenes: la tarjeta
+  // arranca recogida y se expande con un clic, mostrando ahí mismo el
+  // "Resumen por categoría" (mismo componente/lógica que ya existe en
+  // Preórdenes, aplicado solo a las referencias que están en Órdenes).
+  const [expandido, setExpandido] = useState(null);
   function pedidosCandidatosConversion(cliente, fechaPreorden) {
     const clienteNorm = foldTexto(cliente || "");
     const fechaRef = fechaPreorden || "";
@@ -6121,30 +6126,62 @@ function OrdenesView({ preordenes, pedidos, currentUser, onVincularPedido }) {
       {!tarjetas.length ? (
         <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Todavía no hay ninguna referencia en Órdenes -- aparecen acá apenas se les confirme la tela en una preorden aprobada.</div>
       ) : (
-        tarjetas.map(({ preorden: p, items }) => (
-          <div key={p.id} style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, padding: "16px 20px", marginBottom: 14 }}>
-            <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, marginBottom: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span>📁 {p.nombre ? `${p.nombre} — ${p.cliente || "(Sin cliente)"}` : (p.cliente || "(Sin cliente)")}{p.numPedido ? ` · Pedido ${p.numPedido}` : ""}</span>
-              {p.origenPantalla === "reprogramacion" && (
-                <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.violetBg, color: T.violet }}>🔁 Reprogramación</span>
-              )}
-              {p.origenPantalla === "orden" && (
-                <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim }}>🆕 Nueva Orden</span>
-              )}
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {items.map((it) => (
-                <div key={it.itemId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 12px", borderRadius: 8, border: `1px solid ${T.border}`, background: T.coralBg, fontSize: 12.5 }}>
-                  <span><b>{it.referencia}</b>{it.nombre ? <span style={{ color: T.slate }}> · {it.nombre}</span> : null}{it.tela ? <span style={{ color: T.slate }}> · {it.tela}</span> : null}</span>
-                  <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    {it.telaCompradaEn && <span style={{ fontSize: 11, color: T.slate }}>Confirmada {it.telaCompradaEn.slice(0, 10)}</span>}
-                    <button onClick={() => setVinculando({ preordenId: p.id, itemId: it.itemId })} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Vincular</button>
-                  </span>
+        tarjetas.map(({ preorden: p, items }) => {
+          const abierto = expandido === p.id;
+          const resumen = resumenPreordenPorCategoria(items);
+          const totalUnidades = resumen.reduce((s, r) => s + r.unidades, 0);
+          return (
+            <div key={p.id} style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, marginBottom: 14, overflow: "hidden" }}>
+              <div onClick={() => setExpandido(abierto ? null : p.id)} style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, cursor: "pointer", flexWrap: "wrap", gap: 10 }}>
+                <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span>{abierto ? "📂" : "📁"} {p.nombre ? `${p.nombre} — ${p.cliente || "(Sin cliente)"}` : (p.cliente || "(Sin cliente)")}{p.numPedido ? ` · Pedido ${p.numPedido}` : ""}</span>
+                  {p.origenPantalla === "reprogramacion" && (
+                    <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.violetBg, color: T.violet }}>🔁 Reprogramación</span>
+                  )}
+                  {p.origenPantalla === "orden" && (
+                    <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim }}>🆕 Nueva Orden</span>
+                  )}
                 </div>
-              ))}
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.coralBg, color: T.coral }}>🧵 {items.length} referencia{items.length !== 1 ? "s" : ""} · {fmtNum(totalUnidades)} unid.</span>
+                  <span style={{ color: T.slate }}>{abierto ? "▲" : "▼"}</span>
+                </div>
+              </div>
+              {abierto && (
+                <div style={{ padding: 20 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {items.map((it) => (
+                      <div key={it.itemId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 12px", borderRadius: 8, border: `1px solid ${T.border}`, background: T.coralBg, fontSize: 12.5 }}>
+                        <span><b>{it.referencia}</b>{it.nombre ? <span style={{ color: T.slate }}> · {it.nombre}</span> : null}{it.tela ? <span style={{ color: T.slate }}> · {it.tela}</span> : null}</span>
+                        <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          {it.telaCompradaEn && <span style={{ fontSize: 11, color: T.slate }}>Confirmada {it.telaCompradaEn.slice(0, 10)}</span>}
+                          <button onClick={(e) => { e.stopPropagation(); setVinculando({ preordenId: p.id, itemId: it.itemId }); }} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Vincular</button>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: 20 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: T.ink, marginBottom: 8 }}>Resumen por categoría</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
+                      {resumen.map((r) => (
+                        <div key={r.categoria} style={{ padding: "10px 12px", borderRadius: 10, border: `1px solid ${T.border}`, background: T.canvas }}>
+                          <div style={{ fontSize: 11, color: T.slate, fontWeight: 700 }}>{r.categoria}</div>
+                          <div style={{ fontSize: 18, fontWeight: 800, color: T.ink }}>{fmtNum(r.unidades)}</div>
+                          <div style={{ fontSize: 11, color: T.slate }}>{r.referencias} ref{r.referencias !== 1 ? "s" : ""}</div>
+                        </div>
+                      ))}
+                      <div style={{ padding: "10px 12px", borderRadius: 10, border: `1.5px solid ${T.coral}`, background: T.coralBg }}>
+                        <div style={{ fontSize: 11, color: T.coral, fontWeight: 700 }}>Total</div>
+                        <div style={{ fontSize: 18, fontWeight: 800, color: T.coral }}>{fmtNum(totalUnidades)}</div>
+                        <div style={{ fontSize: 11, color: T.coral }}>{items.length} ref{items.length !== 1 ? "s" : ""}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
-        ))
+          );
+        })
       )}
     </div>
   );
