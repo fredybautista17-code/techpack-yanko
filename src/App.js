@@ -3121,9 +3121,14 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
   // Una cápsula recién creada empieza con referencias: [] — sin este OR
   // quedaba oculta en TODAS las pestañas de filtro (nunca cumple
   // filteredRefs(cap).length > 0) y el usuario no podía volver a encontrarla
-  // para agregarle referencias. Una cápsula vacía siempre se muestra, sin
-  // importar el filtro de estado/cliente activo.
-  const visibleCapsulas = capsulas.filter((cap) => cap.referencias.length === 0 || filteredRefs(cap).length > 0);
+  // para agregarle referencias. Una cápsula vacía siempre se muestra en
+  // "Todos" (para poder encontrarla y agregarle referencias), pero YA NO en
+  // una pestaña de estado puntual (Aprobadas, Declinadas, En proceso, etc.)
+  // -- (2026-09-30, a pedido de Fredy) antes aparecía igual en "Aprobadas"
+  // aunque no tuviera absolutamente nada aprobado (0 referencias), lo cual
+  // no tiene sentido: "Aprobadas" debe mostrar solo lo que de verdad está
+  // aprobado.
+  const visibleCapsulas = capsulas.filter((cap) => (filter === "todos" && cap.referencias.length === 0) || filteredRefs(cap).length > 0);
   return (
     <div>
       {editCap && (
