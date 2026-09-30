@@ -3395,7 +3395,7 @@ async function correrAuditoriaBusintVsNomina({ inmediato = false } = {}) {
   const hoy = fechaHoyBogota();
   const mesActualISO = hoy.slice(0, 7); // "2026-09" -- lo que lleva del mes en curso (Bogota)
 
-  const [areasSnap, trabajadoresSnap, produccionSnap, usersSnap, configSnap, entradasRef, cabeceraEntradas, dadoPorCumplidoSnap] = await Promise.all([
+  const [areasSnap, trabajadoresSnap, produccionSnap, usersSnap, configSnap, entradasRef, cabeceraEntradas] = await Promise.all([
     db.collection("nomina_areas").get(),
     db.collection("nomina_trabajadores").get(),
     db.collection("nomina_produccion").get(),
@@ -3403,17 +3403,7 @@ async function correrAuditoriaBusintVsNomina({ inmediato = false } = {}) {
     db.collection("config").doc("main").get(),
     consultarTablaBusintBDCompleta("bmp - entrada plantaproc ref"),
     consultarTablaBusintBDCompleta("bmp - entrada plantaproc"),
-    db.collection("dado_por_cumplido_lotes").where("estado", "==", "aprobado").get(),
   ]);
-  // (2026-09-30, a pedido de Fredy) Un lote que ya se dio por cumplido sale
-  // de Busint (deja de estar en las tablas de entradas activas que se
-  // consultan aqui), aunque su produccion se haya registrado bien en su
-  // momento -- caso real: lote 7297, Proceso Adicional Cordon, salio "Sin
-  // entrada en Busint" solo porque ya esta cerrado, no porque nunca se
-  // haya registrado. Una vez un lote esta cerrado ya no se puede auditar
-  // de forma confiable contra Busint, asi que se excluye por completo
-  // (ninguna discrepancia, de ningun tipo) en vez de dar falsas alarmas.
-  const lotesDadosPorCumplido = new Set(dadoPorCumplidoSnap.docs.map((d) => String(d.data().numLote || "").trim()).filter(Boolean));
 
   const areas = areasSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
   const trabajadores = trabajadoresSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
@@ -3494,7 +3484,6 @@ async function correrAuditoriaBusintVsNomina({ inmediato = false } = {}) {
     const discrepancias = [];
     todasLasClaves.forEach((clave) => {
       const [numLote, proceso] = clave.split("||");
-      if (lotesDadosPorCumplido.has(numLote)) return; // lote cerrado -- ver nota de arriba
       const busint = busintPorClave.get(clave);
       const registrado = registradoPorClave.get(clave) || { cantidad: 0, valor: 0, primera: null, ultima: null };
       const entradaBusint = busint?.total || 0;
