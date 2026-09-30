@@ -6332,6 +6332,12 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
       }
       const b = respRef.data.referencia || {};
       const grupo = (config?.lineaGrupoMap || {})[b.linea] || "";
+      // (2026-09-30, a pedido de Fredy) "precioPM" es el precio matriculado
+      // de Busint para esa referencia (mismo campo crudo que ya usa
+      // buscarReferenciaBusint en Bodega -> Despachos -> Montar Despacho).
+      // Viene en el mismo registro crudo que ya trae probarReferenciaBusint,
+      // no hace falta tocar Firebase Functions para esto.
+      const precioBusint = Number(b.precioPM) || 0;
       let tela = "", consumo = "";
       try {
         const llamarTela = httpsCallable(functionsClient, "getComposicionTelasBusintBD");
@@ -6351,6 +6357,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
       if (!it.silueta && b.tipoConfeccion) patch.silueta = b.tipoConfeccion;
       if (!it.rango && b.tallas) patch.rango = String(b.tallas);
       if (!it.tela && tela) patch.tela = tela;
+      if (!it.precio && precioBusint) patch.precio = precioBusint;
       if (!Object.keys(patch).length) {
         alert("No había campos vacíos para completar (o Busint no tiene datos nuevos para esta referencia).");
         return;
