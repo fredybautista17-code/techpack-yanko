@@ -2292,7 +2292,7 @@ function ObservacionesCapsulaModal({ capsula, currentUser, role, onSend, onMarkD
     </Modal>
   );
 }
-function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, onPromote, notify, onLogHistorial, capsula, stages, currentUser, config, cronogramaMuestras, onSendTaller, onUpdateTaller, onCrearEnvio, protos }) {
+function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, onPromote, onPasarAPreorden, notify, onLogHistorial, capsula, stages, currentUser, config, cronogramaMuestras, onSendTaller, onUpdateTaller, onCrearEnvio, protos }) {
   const [tab, setTab] = useState("overview");
   const [showEdit, setShowEdit] = useState(false);
   const [showEnviado, setShowEnviado] = useState(false);
@@ -2600,6 +2600,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
                   </>
                 )}
                 {kind === "proto" && item.status === "aprobado" && !item.promotedTo && capsulas.length > 0 && <Btn variant="success" onClick={() => onPromote(item)}>⬆ Promover</Btn>}
+                {kind === "ref" && item.status === "aprobado" && !item.enviadoAPreorden && <Btn variant="success" onClick={() => onPasarAPreorden(item)}>🧾 Pasar a Preorden</Btn>}
               </>
             )}
             {/* Botón "En revisión" para etapa Ilustración: independiente del
@@ -2611,6 +2612,8 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
             )}
             {!canAdmin && canEdit && kind === "proto" && item.status === "aprobado" && !item.promotedTo && capsulas.length > 0 && <Btn variant="success" onClick={() => onPromote(item)}>⬆ Promover</Btn>}
             {kind === "proto" && item.promotedTo && <span style={{ padding: "6px 12px", background: T.jadeBg, color: T.jade, borderRadius: 8, fontSize: 12, fontWeight: 700 }}>✓ Promovido</span>}
+            {!canAdmin && canEdit && kind === "ref" && item.status === "aprobado" && !item.enviadoAPreorden && <Btn variant="success" onClick={() => onPasarAPreorden(item)}>🧾 Pasar a Preorden</Btn>}
+            {kind === "ref" && item.enviadoAPreorden && <span style={{ padding: "6px 12px", background: T.jadeBg, color: T.jade, borderRadius: 8, fontSize: 12, fontWeight: 700 }}>✓ Enviado a Preorden</span>}
             {canEdit && <Btn variant="ghost" onClick={() => setShowTaller(true)}>🧵 {tallerMasReciente && tallerMasReciente.estado !== "enviado" ? "Actualizar Taller de Muestra" : "Enviar a Taller de Muestra"}</Btn>}
           </div>
           {tallerMasReciente && (
@@ -2768,7 +2771,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
   );
 }
 
-function Card({ item, kind, onClick, onPromote, role, perms, stages }) {
+function Card({ item, kind, onClick, onPromote, onPasarAPreorden, role, perms, stages }) {
   const overdue = isOverdue(item, stages), pending = item.observations.filter((o) => !o.done).length;
   return (
     <div onClick={onClick} style={{ background: T.white, borderRadius: 12, padding: 18, cursor: "pointer", border: `1px solid ${overdue ? T.coral : T.border}`, transition: "box-shadow 0.15s" }}
@@ -2808,6 +2811,12 @@ function Card({ item, kind, onClick, onPromote, role, perms, stages }) {
         </div>
       )}
       {kind === "proto" && item.promotedTo && <div style={{ marginTop: 8, fontSize: 11, color: T.jade, fontWeight: 700 }}>✓ Promovido</div>}
+      {kind === "ref" && item.status === "aprobado" && !item.enviadoAPreorden && perms?.editar && (
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.border}` }}>
+          <button onClick={(e) => { e.stopPropagation(); onPasarAPreorden(item); }} style={{ width: "100%", padding: "7px", background: T.jadeBg, border: `1px dashed ${T.jade}`, borderRadius: 8, color: T.jade, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>🧾 Pasar a Preorden</button>
+        </div>
+      )}
+      {kind === "ref" && item.enviadoAPreorden && <div style={{ marginTop: 8, fontSize: 11, color: T.jade, fontWeight: 700 }}>✓ Enviado a Preorden</div>}
     </div>
   );
 }
@@ -2948,7 +2957,7 @@ function ProtosView({ protos, role, perms, onSelect, onNew, onPromote, capsulas,
     </div>
   );
 }
-function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, onDeleteRef, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio }) {
+function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCapsula, onNewRef, onEditCapsula, stages, isAdmin, onDeleteCapsula, onDeleteRef, config, onSetIlustracion, onSendObsCapsula, onMarkDoneObsCapsula, onCrearEnvio, onPasarAPreorden }) {
   const [filter, setFilter] = useState("todos");
   const [clienteFiltro, setClienteFiltro] = useState("todos");
   const [mesFiltro, setMesFiltro] = useState("todos");
@@ -3219,7 +3228,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
                         🗑
                       </button>
                     )}
-                    <Card item={r} kind="ref" onClick={() => onSelectRef(cap.id, r.id)} role={role} perms={perms} stages={stages} />
+                    <Card item={r} kind="ref" onClick={() => onSelectRef(cap.id, r.id)} role={role} perms={perms} stages={stages} onPasarAPreorden={() => onPasarAPreorden(cap, r)} />
                   </div>
                 ))}
               </div>
@@ -3920,7 +3929,7 @@ function resumenPreordenPorCategoria(items, filtroGrupo, filtroPais) {
     });
   return [...mapa.values()].sort((a, b) => b.unidades - a.unidades);
 }
-function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, currentUser, esOrdenNueva, onAddCapsula, onAddRef, onGuardar, onCancelar }) {
+function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, currentUser, esOrdenNueva, filaPrefill, onAddCapsula, onAddRef, onGuardar, onCancelar }) {
   const [header, setHeader] = useState({ cliente: "", numPedido: "" });
   const esCliente = currentUser?.role === "Cliente";
   // (2026-09-16) Un cliente puede tener más de una marca asociada -- si solo
@@ -3932,6 +3941,24 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
       setHeader((h) => (h.cliente ? h : { ...h, cliente: clientesUsuario[0] }));
     }
   }, [esCliente, clientesUsuario.join("|")]);
+  // (2026-09-30, a pedido de Fredy) "Pasar a Preorden" desde una referencia
+  // ya Aprobada en Cápsulas -- llega acá con la cápsula/referencia de
+  // origen ya conocidas (filaPrefill), así que arranca con esa fila ya
+  // agregada (Curva/Cantidad/Tipo en blanco para completar) en vez de
+  // obligar a repetir la búsqueda que ya se hizo desde Cápsulas.
+  useEffect(() => {
+    if (!filaPrefill) return;
+    const { cap, ref } = filaPrefill;
+    setHeader((h) => (h.cliente ? h : { ...h, cliente: cap.cliente || h.cliente }));
+    setFilas((fs) => (fs.length ? fs : [{
+      capsulaId: cap.id, refId: ref.id, reference: ref.reference, name: ref.name || ref.reference, image: ref.image || null,
+      categoria: ref.categoria || "", silueta: ref.silueta || "", rango: ref.rango || "",
+      tipoTela: ref.tipoTela || "", consumo: "", _tipo: "",
+      _colombiaCurva: "", _colombiaCantidad: "",
+      _venezuelaCurva: "", _venezuelaCantidad: "",
+      _precio: ref.precioCotizacion != null ? String(ref.precioCotizacion) : "", _observacionesCliente: "",
+    }]));
+  }, []);
   const [filas, setFilas] = useState([]);
   const [referencia, setReferencia] = useState("");
   const [buscando, setBuscando] = useState(false);
@@ -5529,8 +5556,15 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
     </div>
   );
 }
-function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onCrearEntregaTela, onAsignarEntregaTela }) {
+function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, canAccessBodega, canAccessContabilidad, canAccessDiseno, entregasTela, onAddCapsula, onAddRef, onCrearPreorden, onVincularPedido, onAprobarPreorden, onDesaprobarPreorden, onActualizarPreorden, onEliminarPreorden, onActualizarItemPreorden, onCrearEntregaTela, onAsignarEntregaTela, prefillDesdeCapsula, onConsumirPrefillDesdeCapsula, onMarcarRefEnviadaAPreorden }) {
   const [modo, setModo] = useState("lista");
+  // (2026-09-30, a pedido de Fredy) "Pasar a Preorden" desde una referencia
+  // ya Aprobada en Cápsulas llega acá con prefillDesdeCapsula {cap, ref} ya
+  // listo -- basta con forzar el modo "Nueva Orden" (NuevaReprogramacionView
+  // arranca con esa fila ya agregada, ver filaPrefill).
+  useEffect(() => {
+    if (prefillDesdeCapsula) setModo("orden_nueva");
+  }, [prefillDesdeCapsula]);
   const [subTab, setSubTab] = useState("pendientes");
   const [estadoFiltro, setEstadoFiltro] = useState("todas");
   const [vinculando, setVinculando] = useState(null);
@@ -5810,10 +5844,18 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         config={config}
         currentUser={currentUser}
         esOrdenNueva={modo === "orden_nueva"}
+        filaPrefill={prefillDesdeCapsula}
         onAddCapsula={onAddCapsula}
         onAddRef={onAddRef}
-        onGuardar={async (header, items) => { await onCrearPreorden(header, items); setModo("lista"); }}
-        onCancelar={() => setModo("lista")}
+        onGuardar={async (header, items) => {
+          await onCrearPreorden(header, items);
+          if (prefillDesdeCapsula) {
+            onMarcarRefEnviadaAPreorden(prefillDesdeCapsula.cap.id, prefillDesdeCapsula.ref.id);
+            onConsumirPrefillDesdeCapsula();
+          }
+          setModo("lista");
+        }}
+        onCancelar={() => { if (prefillDesdeCapsula) onConsumirPrefillDesdeCapsula(); setModo("lista"); }}
       />
     );
   }
@@ -13968,6 +14010,14 @@ function AppInner() {
   const [showCambiarClave, setShowCambiarClave] = useState(false);
   const [promoteProto, setPromoteProto] = useState(null);
   const [newRefCap, setNewRefCap] = useState(null);
+  // (2026-09-30, a pedido de Fredy) "Pasar a Preorden" desde una referencia
+  // de Cápsula ya Aprobada -- guarda {cap, ref} de origen y salta directo a
+  // Preórdenes en modo "Nueva Orden" con esa fila ya agregada.
+  const [prefillPreordenDesde, setPrefillPreordenDesde] = useState(null);
+  function pasarAPreorden(cap, ref) {
+    setPrefillPreordenDesde({ cap, ref });
+    setView("preordenes");
+  }
   const [toasts, setToasts] = useState([]);
   const [loginError, setLoginError] = useState("");
   useEffect(() => {
@@ -15285,6 +15335,7 @@ function AppInner() {
                 onSendObsCapsula={sendObservacionCapsula}
                 onMarkDoneObsCapsula={markDoneObservacionCapsula}
                 onCrearEnvio={crearEnvioBitacora}
+                onPasarAPreorden={pasarAPreorden}
               />
             )}
             {view === "bitacora" && (
@@ -15337,6 +15388,7 @@ function AppInner() {
               <DetailView item={selRef} kind="ref" role={role} perms={perms} capsulas={capsulas} capsula={selCap} protos={protos}
                 onBack={() => setView("capsulas")}
                 onUpdateItem={(p) => updateRef(selCap.id, selRef.id, p)}
+                onPasarAPreorden={(ref) => pasarAPreorden(selCap, ref)}
                 onLogHistorial={logHistorial}
                 notify={notify} stages={config.stages} currentUser={currentUser.name} config={config}
                 cronogramaMuestras={cronogramaMuestras} onSendTaller={addCronogramaMuestra} onUpdateTaller={updateCronogramaMuestra}
@@ -15380,6 +15432,9 @@ function AppInner() {
                 onActualizarPreorden={actualizarPreorden}
                 onEliminarPreorden={deleteBitacoraPreorden}
                 onActualizarItemPreorden={actualizarItemPreorden}
+                prefillDesdeCapsula={prefillPreordenDesde}
+                onConsumirPrefillDesdeCapsula={() => setPrefillPreordenDesde(null)}
+                onMarcarRefEnviadaAPreorden={(capId, refId) => updateRef(capId, refId, { enviadoAPreorden: { en: nowISO(), por: currentUser?.name || "" } })}
               />
             )}
             {view === "produccion" && (
