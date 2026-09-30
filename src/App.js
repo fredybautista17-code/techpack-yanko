@@ -1310,8 +1310,17 @@ function Modal({ title, onClose, children, width = 560 }) {
   const [size, setSize] = useState({ width, height: null });
   const dragState = useRef(null);
   const resizeState = useRef(null);
+  // (2026-09-30, a pedido de Fredy) Si sueltas el mouse afuera del cuadro
+  // justo después de arrastrar (para moverlo o para agrandarlo), el
+  // navegador dispara un "click" sobre el fondo oscuro -- y ese fondo cierra
+  // el cuadro al hacerle clic. suppressClose evita que ese clic "fantasma"
+  // cierre el cuadro justo después de soltar un arrastre; se limpia
+  // enseguida (siguiente tick) para no bloquear un cierre real por clic en
+  // el fondo.
+  const suppressClose = useRef(false);
   function onHeaderMouseDown(e) {
     if (e.target.closest("button")) return;
+    suppressClose.current = true;
     dragState.current = { startX: e.clientX, startY: e.clientY, origX: pos.x, origY: pos.y };
     function onMove(ev) {
       if (!dragState.current) return;
@@ -1322,6 +1331,7 @@ function Modal({ title, onClose, children, width = 560 }) {
       dragState.current = null;
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      setTimeout(() => { suppressClose.current = false; }, 0);
     }
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -1329,6 +1339,7 @@ function Modal({ title, onClose, children, width = 560 }) {
   function onResizeMouseDown(e) {
     e.stopPropagation();
     e.preventDefault();
+    suppressClose.current = true;
     const box = e.currentTarget.parentElement;
     resizeState.current = { startX: e.clientX, startY: e.clientY, origW: size.width, origH: size.height || box.offsetHeight };
     function onMove(ev) {
@@ -1340,9 +1351,18 @@ function Modal({ title, onClose, children, width = 560 }) {
       resizeState.current = null;
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      setTimeout(() => { suppressClose.current = false; }, 0);
     }
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+  }
+  // (2026-09-30, a pedido de Fredy) Botón de agrandar de un solo clic --
+  // antes solo se podía agrandar arrastrando la esquinita, fácil de fallar
+  // (y de cerrar el cuadro sin querer, ver suppressClose arriba). Deja el
+  // cuadro casi del tamaño de la pantalla, sin desplazarlo de su lugar.
+  function maximizar() {
+    setPos({ x: 0, y: 0 });
+    setSize({ width: Math.min(window.innerWidth - 60, 1400), height: window.innerHeight - 80 });
   }
   // (2026-09-23, a pedido de Fredy) Portal a document.body -- si no, un
   // cuadro abierto desde ADENTRO de otro (ej. "Registrar entrega" encima de
@@ -1353,7 +1373,7 @@ function Modal({ title, onClose, children, width = 560 }) {
   // los cuadros -- estén anidados o no -- se dibujan siempre directo sobre
   // toda la pantalla, cada uno de forma independiente.
   return createPortal(
-    <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={onClose}>
+    <div style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => { if (suppressClose.current) { suppressClose.current = false; return; } onClose(); }}>
       <div
         style={{
           position: "relative",
@@ -1374,6 +1394,13 @@ function Modal({ title, onClose, children, width = 560 }) {
         <div onMouseDown={onHeaderMouseDown} style={{ padding: "18px 24px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, cursor: "move", userSelect: "none" }}>
           <span style={{ fontWeight: 800, fontSize: 16, color: T.ink }}>{title}</span>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button
+              onClick={maximizar}
+              title="Agrandar (tamaño máximo)"
+              style={{ background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 6, padding: "3px 8px", fontSize: 12, fontWeight: 700, color: T.slate, cursor: "pointer" }}
+            >
+              ⤢
+            </button>
             {(pos.x !== 0 || pos.y !== 0 || size.height !== null) && (
               <button
                 onClick={() => { setPos({ x: 0, y: 0 }); setSize({ width, height: null }); }}
