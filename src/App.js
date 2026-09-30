@@ -6753,7 +6753,11 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         // (2026-09-16, a pedido de Fredy) Aprobada = bloqueada para todo el
         // mundo menos el administrador, que siempre puede seguir editando.
         const bloqueada = estadoActual === "aprobada" && !currentUser?.isAdmin;
-        const puedeAprobar = currentUser?.role === "Cliente" && !currentUser?.soloLecturaCliente && clientesDeUsuario(currentUser).includes(p.cliente) && estadoActual !== "aprobada";
+        // (2026-09-30, a pedido de Fredy) El administrador también puede
+        // aprobar desde acá, como respaldo -- por ejemplo si el Cliente no
+        // puede entrar en ese momento. El resto sigue igual: solo el
+        // Cliente dueño de la preorden (o el admin) puede hacerlo.
+        const puedeAprobar = estadoActual !== "aprobada" && (currentUser?.isAdmin || (currentUser?.role === "Cliente" && !currentUser?.soloLecturaCliente && clientesDeUsuario(currentUser).includes(p.cliente)));
         const puedeEliminar = currentUser?.isAdmin || (currentUser?.role !== "Cliente" && !bloqueada);
         const faltaCartaColores = !(p.items || []).length || (p.items || []).some((it) => !cartaColoresLista(it).length);
         const buscarItem = buscarItemPorPreorden[p.id] || "";
