@@ -4351,8 +4351,14 @@ function TabuladorAsistenciaView({ areasNomina, trabajadores, areaLider, turnos,
   }
   function estadoDeFila(t) {
     const ausencia = ausenciaDe(t);
-    if (ausencia) return { badge: `🗓️ Con permiso (${ausencia.motivo})`, color: C.violet, bg: C.violetBg };
     const f = filas[t.id];
+    // (2026-09-30, a pedido de Fredy) Antes, si había un permiso ese día la
+    // fila quedaba SIEMPRE bloqueada en "Con permiso", sin dejar marcar
+    // Asistió/Faltó -- pero a veces la realidad es distinta a lo
+    // registrado (ej. la cita fue más corta y sí alcanzó a venir). Ahora el
+    // permiso solo se muestra mientras nadie la haya marcado a mano; en
+    // cuanto el líder la marca, esa marca manual manda sobre el permiso.
+    if (ausencia && !f?.tocado) return { badge: `🗓️ Con permiso (${ausencia.motivo})`, color: C.violet, bg: C.violetBg };
     if (!f?.tocado) return { badge: "⏳ Sin marcar todavía", color: C.slate, bg: C.canvas };
     if (!f.asistio) return { badge: "❌ Falta sin justificar", color: C.red, bg: C.redBg };
     const turno = resolverTurnoDeTrabajador(t, areasNomina, turnos);
@@ -4361,17 +4367,20 @@ function TabuladorAsistenciaView({ areasNomina, trabajadores, areaLider, turnos,
     return { badge: "✅ A tiempo", color: C.green, bg: C.greenBg };
   }
 
-  const sinPermiso = trabajadoresMostrados.filter((t) => !ausenciaDe(t));
-  const conPermiso = trabajadoresMostrados.length - sinPermiso.length;
-  const asistieron = sinPermiso.filter((t) => filas[t.id]?.tocado && filas[t.id]?.asistio).length;
-  const faltaron = sinPermiso.filter((t) => filas[t.id]?.tocado && !filas[t.id]?.asistio).length;
-  const sinMarcar = sinPermiso.filter((t) => !filas[t.id]?.tocado).length;
+  // (2026-09-30, a pedido de Fredy) Ya no hay un grupo "sinPermiso" aparte
+  // -- cualquiera se puede marcar, tenga o no permiso. "Con permiso" ahora
+  // cuenta solo a quienes tienen permiso Y todavía nadie los marcó a mano
+  // (ver estadoDeFila arriba, mismo criterio).
+  const conPermiso = trabajadoresMostrados.filter((t) => ausenciaDe(t) && !filas[t.id]?.tocado).length;
+  const asistieron = trabajadoresMostrados.filter((t) => filas[t.id]?.tocado && filas[t.id]?.asistio).length;
+  const faltaron = trabajadoresMostrados.filter((t) => filas[t.id]?.tocado && !filas[t.id]?.asistio).length;
+  const sinMarcar = trabajadoresMostrados.filter((t) => !ausenciaDe(t) && !filas[t.id]?.tocado).length;
 
   async function guardar() {
     setGuardando(true);
     try {
       const filasAGuardar = trabajadoresMostrados
-        .filter((t) => !ausenciaDe(t) && filas[t.id]?.tocado)
+        .filter((t) => filas[t.id]?.tocado)
         .map((t) => {
           const f = filas[t.id];
           const turno = resolverTurnoDeTrabajador(t, areasNomina, turnos);
@@ -4441,32 +4450,31 @@ function TabuladorAsistenciaView({ areasNomina, trabajadores, areaLider, turnos,
                       <td style={{ padding: "8px 12px" }}>
                         <div style={{ fontWeight: 600 }}>{t.nombre}</div>
                         <div style={{ fontSize: 10.5, color: C.slate }}>{t.zona || t.cargo || ""}</div>
-                      </td>
-                      <td style={{ padding: "8px 12px", textAlign: "center" }}>
-                        {ausencia ? (
-                          <span style={{ fontSize: 11, color: C.slate }}>—</span>
-                        ) : (
-                          <div style={{ display: "inline-flex", gap: 6 }}>
-                            <button
-                              onClick={() => marcar(t.id, true)}
-                              style={{ padding: "5px 10px", borderRadius: 7, border: `1.5px solid ${f.tocado && f.asistio ? C.green : C.border}`, background: f.tocado && f.asistio ? C.greenBg : C.white, color: f.tocado && f.asistio ? C.green : C.slate, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
-                            >
-                              ✅ Asistió
-                            </button>
-                            <button
-                              onClick={() => marcar(t.id, false)}
-                              style={{ padding: "5px 10px", borderRadius: 7, border: `1.5px solid ${f.tocado && !f.asistio ? C.red : C.border}`, background: f.tocado && !f.asistio ? C.redBg : C.white, color: f.tocado && !f.asistio ? C.red : C.slate, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
-                            >
-                              ❌ Faltó
-                            </button>
-                          </div>
+                        {ausencia && (
+                          <div style={{ fontSize: 10, color: C.violet, fontWeight: 700, marginTop: 2 }}>🗓️ Permiso: {ausencia.motivo}</div>
                         )}
                       </td>
                       <td style={{ padding: "8px 12px", textAlign: "center" }}>
-                        <input type="time" value={f.entrada || ""} onChange={(e) => setHora(t.id, "entrada", e.target.value)} disabled={ausencia || !f.tocado || !f.asistio} style={{ width: 92, padding: "5px 8px", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit", background: (ausencia || !f.tocado || !f.asistio) ? C.canvas : C.white, color: C.ink }} />
+                        <div style={{ display: "inline-flex", gap: 6 }}>
+                          <button
+                            onClick={() => marcar(t.id, true)}
+                            style={{ padding: "5px 10px", borderRadius: 7, border: `1.5px solid ${f.tocado && f.asistio ? C.green : C.border}`, background: f.tocado && f.asistio ? C.greenBg : C.white, color: f.tocado && f.asistio ? C.green : C.slate, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+                          >
+                            ✅ Asistió
+                          </button>
+                          <button
+                            onClick={() => marcar(t.id, false)}
+                            style={{ padding: "5px 10px", borderRadius: 7, border: `1.5px solid ${f.tocado && !f.asistio ? C.red : C.border}`, background: f.tocado && !f.asistio ? C.redBg : C.white, color: f.tocado && !f.asistio ? C.red : C.slate, fontWeight: 700, fontSize: 11, cursor: "pointer" }}
+                          >
+                            ❌ Faltó
+                          </button>
+                        </div>
                       </td>
                       <td style={{ padding: "8px 12px", textAlign: "center" }}>
-                        <input type="time" value={f.salida || ""} onChange={(e) => setHora(t.id, "salida", e.target.value)} disabled={ausencia || !f.tocado || !f.asistio} style={{ width: 92, padding: "5px 8px", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit", background: (ausencia || !f.tocado || !f.asistio) ? C.canvas : C.white, color: C.ink }} />
+                        <input type="time" value={f.entrada || ""} onChange={(e) => setHora(t.id, "entrada", e.target.value)} disabled={!f.tocado || !f.asistio} style={{ width: 92, padding: "5px 8px", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit", background: (!f.tocado || !f.asistio) ? C.canvas : C.white, color: C.ink }} />
+                      </td>
+                      <td style={{ padding: "8px 12px", textAlign: "center" }}>
+                        <input type="time" value={f.salida || ""} onChange={(e) => setHora(t.id, "salida", e.target.value)} disabled={!f.tocado || !f.asistio} style={{ width: 92, padding: "5px 8px", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 12, fontFamily: "inherit", background: (!f.tocado || !f.asistio) ? C.canvas : C.white, color: C.ink }} />
                       </td>
                       <td style={{ padding: "8px 12px", textAlign: "center" }}>
                         <span style={{ display: "inline-block", padding: "3px 9px", borderRadius: 20, fontSize: 10.5, fontWeight: 700, color: estado.color, background: estado.bg, whiteSpace: "nowrap" }}>{estado.badge}</span>
