@@ -6412,7 +6412,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   async function buscarPatchBusint(it) {
     const llamarRef = httpsCallable(functionsClient, "probarReferenciaBusint");
     const respRef = await llamarRef({ ref: it.referencia });
-    if (!respRef.data?.encontrada) return { encontrada: false, patch: {} };
+    if (!respRef.data?.encontrada) return { encontrada: false, patch: {}, debug: null };
     const b = respRef.data.referencia || {};
     const grupo = (config?.lineaGrupoMap || {})[b.linea] || "";
     // (2026-09-30, a pedido de Fredy) "precioPM" es el precio matriculado
@@ -6421,7 +6421,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
     // Viene en el mismo registro crudo que ya trae probarReferenciaBusint,
     // no hace falta tocar Firebase Functions para esto.
     const precioBusint = Number(b.precioPM) || 0;
-    let tela = "", consumo = "";
+    let tela = "", consumo = "", consumoCrudo = null, unidadCruda = "", anchoEncontrado = null, errorTela = null;
     try {
       const llamarTela = httpsCallable(functionsClient, "getComposicionTelasBusintBD");
       const respTela = await llamarTela();
@@ -6429,6 +6429,9 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
       const filaTela = (respTela.data?.porReferencia || []).find((r) => normalizarRefComparacion(r.ref) === normBuscada);
       const slot0 = filaTela?.slots?.[0];
       tela = slot0?.nombre || "";
+      consumoCrudo = slot0?.consumo != null && slot0?.consumo !== "" ? slot0.consumo : null;
+      unidadCruda = slot0?.unidad != null ? String(slot0.unidad) : "";
+      if (tela) anchoEncontrado = await obtenerAnchoTelaPorNombre(tela);
       if (slot0?.consumo != null && slot0?.consumo !== "") {
         // (2026-09-30, a pedido de Fredy) La tabla "telas" de Busint trae el
         // consumo en distintas unidades según el código crudo de "Unid" --
@@ -6440,8 +6443,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         // inventar un número -- Fredy pidió solo el valor ya convertido,
         // sin mostrar el m² original al lado.
         if (String(slot0.unidad) === "4") {
-          const ancho = await obtenerAnchoTelaPorNombre(tela);
-          consumo = ancho ? `${Math.round((slot0.consumo / ancho) * 100) / 100} Mt` : `${slot0.consumo} m2`;
+          consumo = anchoEncontrado ? `${Math.round((slot0.consumo / anchoEncontrado) * 100) / 100} Mt` : `${slot0.consumo} m2`;
         } else if (!slot0.unidad) {
           // (2026-09-30, a pedido de Fredy) Busint no tiene NINGUN codigo de
           // unidad para esta tela -- no hay forma de saber en que unidad
@@ -6453,8 +6455,12 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
           consumo = `${slot0.consumo} ${slot0.unidad}`;
         }
       }
-    } catch {
-      // Tela/Consumo son "best effort", igual que en NuevaReprogramacionView.buscar().
+    } catch (err) {
+      // (2026-10-02, a pedido de Fredy) Tela/Consumo siguen siendo "best
+      // effort" (no se interrumpe el resto del patch si esto falla), pero
+      // ahora el error se guarda para mostrarlo en el diagnostico de
+      // refrescarBusint en vez de desaparecer en silencio.
+      errorTela = err?.message || String(err);
     }
     const patch = {};
     if (consumo && (!it.consumo || esConsumoCrudoSinConvertir(it.consumo))) patch.consumo = consumo;
@@ -6465,22 +6471,40 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
     if (!it.tela && tela) patch.tela = tela;
     if (!it.precio && precioBusint) patch.precio = precioBusint;
     if (!it.lineaBusint && b.linea) patch.lineaBusint = b.linea;
-    return { encontrada: true, patch };
+    // (2026-10-02, a pedido de Fredy) Diagnostico para el boton individual
+    // "Actualizar" (refrescarBusint) -- antes esto quedaba sin ningun
+    // aviso cuando algo fallaba a medias (ej. precioPM vacio en Busint, o
+    // la tela sin ancho registrado en Corte), y Fredy terminaba adivinando
+    // que habia pasado. Con esto el boton SIEMPRE muestra lo que encontro.
+    const debug = { precioPMCrudo: b.precioPM ?? null, tela, consumoCrudo, unidadCruda, anchoEncontrado, consumoFinal: consumo, errorTela };
+    return { encontrada: true, patch, debug };
   }
   async function refrescarBusint(preordenId, it) {
     const key = `${preordenId}::${it.itemId}`;
     setRefrescando(key);
     try {
-      const { encontrada, patch } = await buscarPatchBusint(it);
+      const { encontrada, patch, debug } = await buscarPatchBusint(it);
       if (!encontrada) {
         alert(`La referencia ${it.referencia} no se encontró en Busint.`);
         return;
       }
-      if (!Object.keys(patch).length) {
-        alert("No había campos vacíos para completar (o Busint no tiene datos nuevos para esta referencia).");
-        return;
+      if (Object.keys(patch).length) {
+        await onActualizarItemPreorden(preordenId, it.itemId, patch);
       }
-      await onActualizarItemPreorden(preordenId, it.itemId, patch);
+      // (2026-10-02, a pedido de Fredy) Mensaje de diagnostico que SIEMPRE
+      // aparece (haya actualizado algo o no), para ver exactamente que
+      // trajo Busint para esta referencia sin tener que adivinar.
+      const lineasDebug = [
+        `Busint — ${it.referencia}:`,
+        `• Precio matriculado (precioPM): ${(debug.precioPMCrudo || debug.precioPMCrudo === 0) ? debug.precioPMCrudo : "vacío en Busint"}`,
+        `• Tela: ${debug.tela || "no encontrada en la tabla de telas de Busint"}`,
+        `• Consumo crudo: ${debug.consumoCrudo != null ? `${debug.consumoCrudo} (unidad: ${debug.unidadCruda || "sin código"})` : "sin dato"}`,
+        `• Ancho de esa tela: ${debug.anchoEncontrado || "no encontrado en inventario de Corte"}`,
+        `• Consumo convertido: ${debug.consumoFinal || "no se pudo calcular"}`,
+        debug.errorTela ? `• Error consultando tela/consumo: ${debug.errorTela}` : null,
+        `• Campos actualizados ahora: ${Object.keys(patch).length ? Object.keys(patch).join(", ") : "ninguno (ya estaban llenos o Busint no tiene nada nuevo)"}`,
+      ].filter(Boolean).join("\n");
+      alert(lineasDebug);
     } catch (err) {
       alert(err?.message || "No se pudo consultar Busint.");
     } finally {
