@@ -5539,16 +5539,64 @@ function RegistrarEntregaTelaModal({ config, referenciasDisponibles, onClose, on
 // asignadas, y le agrega a Diseño una salida rápida para cuando la tela de
 // una referencia ya la tenemos en inventario (sin factura ni entrega
 // nueva de por medio).
+// (2026-10-01, a pedido de Fredy) "Tela Programada" -- para cuando la tela
+// de una referencia ya se le pidio al proveedor pero todavia no ha
+// llegado a la fabrica (a diferencia de "Tela de Inventario", que es
+// cuando ya esta fisicamente acá). Solo pide lo minimo (Proveedor y
+// Fecha esperada) ya que no hay factura ni rollos recibidos todavia.
+function TelaProgramadaModal({ referencia, onClose, onGuardar }) {
+  const [proveedor, setProveedor] = useState("");
+  const [fechaEsperada, setFechaEsperada] = useState("");
+  const [observaciones, setObservaciones] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const puedeGuardar = proveedor.trim() && fechaEsperada;
+  async function guardar() {
+    setGuardando(true);
+    try {
+      await onGuardar({ proveedor: proveedor.trim(), fechaEsperada, observaciones: observaciones.trim() });
+      onClose();
+    } finally {
+      setGuardando(false);
+    }
+  }
+  return (
+    <Modal title={`📅 Tela Programada — ${referencia}`} onClose={onClose} width={460}>
+      <Field label="Proveedor"><FInput value={proveedor} onChange={setProveedor} placeholder="Nombre del proveedor" /></Field>
+      <Field label="Fecha esperada de llegada"><FInput type="date" value={fechaEsperada} onChange={setFechaEsperada} /></Field>
+      <Field label="Observaciones (opcional)"><FInput value={observaciones} onChange={setObservaciones} /></Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
+        <Btn onClick={guardar} disabled={!puedeGuardar || guardando}>{guardando ? "Guardando..." : "Guardar"}</Btn>
+      </div>
+    </Modal>
+  );
+}
 function IngresoTelasPreordenModal({ preorden, entregas, currentUser, puedeConfirmarTela, onClose, onActualizarItemPreorden }) {
   const entregasDeEsta = entregas.filter((e) => e.preordenId === preorden.id).sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || ""));
-  const pendientes = (preorden.items || []).filter((it) => !it.telaComprada);
+  // (2026-10-01, a pedido de Fredy) "Tela Programada" -- ya se le pidió al
+  // proveedor pero todavía no llegó. Se guarda directo en el item (igual
+  // que telaComprada), así que estas referencias ya NO cuentan como
+  // "pendientes" -- quedan en su propia sección aparte, para que se note
+  // que ya están gestionadas pero sin confundirlas con tela que ya llegó.
+  const programadas = (preorden.items || []).filter((it) => it.telaProgramada && !it.telaComprada);
+  const pendientes = (preorden.items || []).filter((it) => !it.telaComprada && !it.telaProgramada);
+  const [programando, setProgramando] = useState(null); // null | item
   function marcarInventario(it) {
     if (window.confirm(`¿Marcar la referencia "${it.referencia}" como que ya tiene tela en inventario?`)) {
       onActualizarItemPreorden(preorden.id, it.itemId, { telaComprada: true, telaCompradaEn: nowISO(), telaCompradaPor: currentUser?.name || "" });
     }
   }
+  async function guardarProgramada(datos) {
+    await onActualizarItemPreorden(preorden.id, programando.itemId, {
+      telaProgramada: true, telaProgramadaInfo: datos,
+      telaProgramadaEn: nowISO(), telaProgramadaPor: currentUser?.name || "",
+    });
+  }
   return (
     <Modal title={`🧵 Tela de la Orden — ${preorden.cliente || "(Sin cliente)"}${preorden.numPedido ? ` · Pedido ${preorden.numPedido}` : ""}`} onClose={onClose} width={760}>
+      {programando && (
+        <TelaProgramadaModal referencia={programando.referencia} onClose={() => setProgramando(null)} onGuardar={guardarProgramada} />
+      )}
       <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Entregas asignadas a esta orden</div>
       {!entregasDeEsta.length ? (
         <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13, marginBottom: 8 }}>Todavía no se le ha asignado ninguna entrega de tela a esta orden.</div>
@@ -5576,17 +5624,33 @@ function IngresoTelasPreordenModal({ preorden, entregas, currentUser, puedeConfi
           ))}
         </div>
       )}
+      {!!programadas.length && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Tela programada (en camino)</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {programadas.map((it) => (
+              <div key={it.itemId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 12 }}>
+                <span><b>{it.referencia}</b>{it.telaProgramadaInfo?.proveedor ? ` · ${it.telaProgramadaInfo.proveedor}` : ""}</span>
+                <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.amberBg, color: T.amber, whiteSpace: "nowrap" }}>📅 Programada — esperada {it.telaProgramadaInfo?.fechaEsperada || "—"}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {puedeConfirmarTela && (
         <div>
           <div style={{ fontSize: 11, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Referencias pendientes de tela</div>
           {!pendientes.length ? (
-            <div style={{ padding: 12, textAlign: "center", color: T.slate, fontSize: 13, fontStyle: "italic" }}>Todas las referencias de esta orden ya tienen tela confirmada.</div>
+            <div style={{ padding: 12, textAlign: "center", color: T.slate, fontSize: 13, fontStyle: "italic" }}>Todas las referencias de esta orden ya tienen tela confirmada o programada.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {pendientes.map((it) => (
                 <div key={it.itemId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", borderRadius: 6, border: `1px solid ${T.border}`, fontSize: 12 }}>
                   <span><b>{it.referencia}</b>{it.nombre ? ` · ${it.nombre}` : ""}</span>
-                  <button onClick={() => marcarInventario(it)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.denim}`, background: T.denimBg, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>📦 Tela de Inventario</button>
+                  <span style={{ display: "flex", gap: 6 }}>
+                    <button onClick={() => setProgramando(it)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.amber}`, background: T.amberBg, color: T.amber, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>📅 Tela Programada</button>
+                    <button onClick={() => marcarInventario(it)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.denim}`, background: T.denimBg, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>📦 Tela de Inventario</button>
+                  </span>
                 </div>
               ))}
             </div>
