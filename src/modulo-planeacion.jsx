@@ -3806,11 +3806,14 @@ function calcularCausadoDestajoCC(trabajador, netoProduccion, totalHoras, propor
 function sumaHorasExtraTrabajadorCC(horasExtras, trabajadorId, desde, hasta) {
   return (horasExtras || []).filter((h) => h.trabajadorId === trabajadorId && h.fecha >= desde && h.fecha <= hasta).reduce((s, h) => s + (Number(h.total) || 0), 0);
 }
-// (2026-10-01, a pedido de Fredy) Igual que sumaHorasExtraTrabajadorCC
-// (arriba) pero suma la CANTIDAD de horas trabajadas (campo "horas"), no el
-// valor en pesos -- para la columna "Horas adicionales" de Centro de Costo.
-function sumaHorasExtraCantidadTrabajadorCC(horasExtras, trabajadorId, desde, hasta) {
-  return (horasExtras || []).filter((h) => h.trabajadorId === trabajadorId && h.fecha >= desde && h.fecha <= hasta).reduce((s, h) => s + (Number(h.horas) || 0), 0);
+// (2026-10-01, a pedido de Fredy; corregido el mismo dia -- la primera
+// version sumaba Horas Extra, y Fredy aclaro que queria Horas Trabajadas
+// normales, no las extra) Suma la CANTIDAD de horas (campo "horas", no el
+// valor en pesos) de una coleccion de horas (nomina_horas, "horas
+// sueltas") para un trabajador en un rango de fechas -- para la columna
+// "Horas trabajadas" de Centro de Costo.
+function sumaCantidadHorasCC(registrosHoras, trabajadorId, desde, hasta) {
+  return (registrosHoras || []).filter((h) => h.trabajadorId === trabajadorId && h.fecha >= desde && h.fecha <= hasta).reduce((s, h) => s + (Number(h.horas) || 0), 0);
 }
 function valorBonificacionCC(bonificaciones, trabajadorId, periodoId) {
   const base = `${trabajadorId}__${periodoId}`;
@@ -4265,14 +4268,14 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
         let valorRealDestajo = 0;
         let costoRealDestajo = 0;
         let sueldoEsperadoDestajo = 0;
-        let horasExtraCantidad = 0;
+        let horasTrabajadasCantidad = 0;
         let liquidacionesEnPeriodo = 0;
         let huboCausado = false;
         if (esDestajoReal) {
           periodosDestajoSeleccionados.forEach((pid) => {
             const [anioPid, mesPid, qLabelPid] = pid.split("-");
             const { inicio: iniPid, fin: finPid } = rangoQuincenaCC(anioPid, mesPid, qLabelPid.replace("Q", ""));
-            horasExtraCantidad += sumaHorasExtraCantidadTrabajadorCC(horasExtrasCC, t.id, iniPid, finPid);
+            horasTrabajadasCantidad += sumaCantidadHorasCC(horasCC, t.id, iniPid, finPid);
             const liq = (liquidacionesDestajo || []).find((l) => l.trabajadorId === t.id && l.periodoId === pid);
             if (liq) {
               liquidacionesEnPeriodo++;
@@ -4301,11 +4304,11 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
           // solo tiene sentido para el flujo de Destajo (que ya prorratea por
           // dias habiles); los demas tipos de nomina no pasan por aca.
           sueldoEsperado: esDestajoReal ? sueldoEsperadoDestajo : null,
-          // (2026-10-01, a pedido de Fredy) "Horas adicionales" -- cantidad
-          // de horas extra registradas (Registrar Horas Extra), sumadas
-          // directo de su propia coleccion (no depende de si la quincena de
-          // Destajo ya se confirmo o no).
-          horasExtra: esDestajoReal ? horasExtraCantidad : null,
+          // (2026-10-01, a pedido de Fredy) "Horas trabajadas" -- cantidad de
+          // horas sueltas registradas (Registrar Horas, NO Horas Extra),
+          // sumadas directo de su propia coleccion (no depende de si la
+          // quincena de Destajo ya se confirmo o no).
+          horasTrabajadas: esDestajoReal ? horasTrabajadasCantidad : null,
           sinSueldo: esDestajoReal ? false : !t.sueldo,
           esDestajoReal,
           liquidacionesEnPeriodo,
@@ -4558,11 +4561,11 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     { key: "area", label: "Área Interna" },
     { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
     { key: "valorProducido", label: "Valor producido", align: "right", render: (f) => fmtMoney(f.valorProducido) },
-    // (2026-10-01, a pedido de Fredy) Cantidad de horas extra trabajadas en
-    // el periodo -- reemplaza aqui a "Costo nómina", que se quita de esta
-    // tabla (sigue calculandose para los KPI de arriba, solo no se muestra
-    // mas en esta tabla).
-    { key: "horasExtra", label: "Horas adicionales", align: "right", render: (f) => (f.horasExtra == null ? "—" : fmtNum(f.horasExtra)) },
+    // (2026-10-01, a pedido de Fredy) Cantidad de horas trabajadas (horas
+    // sueltas, NO horas extra) en el periodo -- reemplaza aqui a "Costo
+    // nómina", que se quita de esta tabla (sigue calculandose para los KPI
+    // de arriba, solo no se muestra mas en esta tabla).
+    { key: "horasTrabajadas", label: "Horas trabajadas", align: "right", render: (f) => (f.horasTrabajadas == null ? "—" : fmtNum(f.horasTrabajadas)) },
     // (2026-10-01, a pedido de Fredy) Sueldo+auxilio de ficha prorrateado por
     // los dias habiles reales (festivos + sabado de reposicion incluidos)
     // que ya pasaron de la quincena en curso -- referencia de cuanto deberia
