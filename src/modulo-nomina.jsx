@@ -3676,7 +3676,7 @@ const MOTIVOS_AUSENCIA = [
   "Vacaciones", "Incapacidad", "Licencia Remunerada", "Licencia No Remunerada",
   "Licencia Maternidad/Paternidad", "Permiso", "Luto", "Suspensión de Contrato", "Otro",
 ];
-function AusenciaModal({ ausencia, trabajadores, motivosDisponibles = MOTIVOS_AUSENCIA, onSave, onClose, trabajadorIdSugerido, fechaInicioSugerida, onDelete }) {
+function AusenciaModal({ ausencia, trabajadores, motivosDisponibles = MOTIVOS_AUSENCIA, onSave, onClose, trabajadorIdSugerido, fechaInicioSugerida, onDelete, mostrarContarComoTrabajado }) {
   const [form, setForm] = useState({
     trabajadorId: ausencia?.trabajadorId || trabajadorIdSugerido || "",
     nombreLibre: ausencia?.nombreLibre || "",
@@ -3689,6 +3689,12 @@ function AusenciaModal({ ausencia, trabajadores, motivosDisponibles = MOTIVOS_AU
     horaInicio: ausencia?.horaInicio || "",
     horaFin: ausencia?.horaFin || "",
     observaciones: ausencia?.observaciones || "",
+    // (2026-10-01, a pedido de Fredy) Solo aplica cuando se justifica una
+    // falta desde "Dias sin justificar" (ver mostrarContarComoTrabajado) --
+    // marca que la persona SI vino a trabajar ese dia (solo no marco en el
+    // huellero), para que tambien cuente como dia trabajado en el pago
+    // "Por Dia".
+    contarComoTrabajado: ausencia?.contarComoTrabajado || false,
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const trabajadorSeleccionado = trabajadores.find((t) => t.id === form.trabajadorId);
@@ -3704,6 +3710,7 @@ function AusenciaModal({ ausencia, trabajadores, motivosDisponibles = MOTIVOS_AU
       horaInicio: form.horaInicio || "",
       horaFin: form.horaFin || "",
       observaciones: form.observaciones.trim(),
+      ...(mostrarContarComoTrabajado ? { contarComoTrabajado: !!form.contarComoTrabajado } : {}),
     });
     onClose();
   }
@@ -3730,6 +3737,12 @@ function AusenciaModal({ ausencia, trabajadores, motivosDisponibles = MOTIVOS_AU
         <div style={{ flex: 1 }}><Field label="Hora Fin (opcional)"><FInput type="time" value={form.horaFin} onChange={set("horaFin")} /></Field></div>
       </div>
       <Field label="Observaciones (opcional)"><FInput value={form.observaciones} onChange={set("observaciones")} /></Field>
+      {mostrarContarComoTrabajado && (
+        <div style={{ fontSize: 12.5, color: C.ink, margin: "4px 0 14px", display: "flex", alignItems: "flex-start", gap: 8 }}>
+          <input type="checkbox" id="contarComoTrabajado" style={{ marginTop: 2 }} checked={!!form.contarComoTrabajado} onChange={(e) => set("contarComoTrabajado")(e.target.checked)} />
+          <label htmlFor="contarComoTrabajado">Sí vino a trabajar ese día (solo no marcó en el huellero) — que cuente como día trabajado para el pago "Por Día"</label>
+        </div>
+      )}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         {onDelete && (
           <div style={{ marginRight: "auto" }}>
@@ -5868,6 +5881,7 @@ function DetalleDiasSinJustificarModal({ trabajador, fechas, ausencias, trabajad
           motivosDisponibles={motivosDisponibles}
           trabajadorIdSugerido={trabajador.id}
           fechaInicioSugerida={fechaEnEdicion}
+          mostrarContarComoTrabajado
           onSave={(data) => { onJustificar(data, fechaEnEdicion); setFechaEnEdicion(null); }}
           onClose={() => setFechaEnEdicion(null)}
         />
@@ -8063,7 +8077,10 @@ function NominaDestajoView({ trabajadores, produccion, faltas, ausencias, motivo
       // despues contra lo reportado por el Estado. NO se usa para descontar
       // nada de netoAPagar (Destajo se paga por produccion, sin cambios).
       const faltasDetalle = faltas.filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= inicio && f.fecha <= fin);
-      const diasInasistencia = faltasDetalle.length;
+      // (2026-10-01, a pedido de Fredy) Un dia ya justificado no cuenta como
+      // falta sin justificar -- mismo criterio que ya aplican Nomina
+      // Fiscal/Fiscal Destajo (ver estaJustificada).
+      const diasInasistencia = faltasDetalle.filter((f) => !estaJustificada(ausencias, t.id, f.fecha)).length;
       const horasDetalle = (horas || []).filter((h) => h.trabajadorId === t.id && h.fecha >= inicio && h.fecha <= fin);
       const totalHorasQuincena = horasDetalle.reduce((s, h) => s + (Number(h.total) || 0), 0);
       const horasCant = horasDetalle.reduce((s, h) => s + (Number(h.horas) || 0), 0);
@@ -13248,8 +13265,23 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
   // asi deja de contar de inmediato, sin tener que volver a subir el
   // huellero.
   async function justificarFaltaDesdeNomina(data, nombreNorm, fecha) {
-    await guardarAusencia({ id: uid(), ...data, registradoPor: currentUser?.name || currentUser?.username || "", registradoEn: new Date().toISOString() });
+    const { contarComoTrabajado, ...ausenciaData } = data;
+    await guardarAusencia({ id: uid(), ...ausenciaData, registradoPor: currentUser?.name || currentUser?.username || "", registradoEn: new Date().toISOString() });
     await fsDelete("nomina_faltas_sin_justificar", `${nombreNorm}__${fecha}`);
+    // (2026-10-01, a pedido de Fredy) Si marco "Si vino a trabajar ese dia"
+    // (solo no marco en el huellero), ademas de justificar la falta tambien
+    // debe contar como dia trabajado para el pago "Por Dia" -- mismo patron
+    // que ya usa ajustarAnomaliaHuellero.
+    if (contarComoTrabajado) {
+      await fsSave("nomina_dias_trabajados", `${nombreNorm}__${fecha}`, {
+        nombre: ausenciaData.nombre || "",
+        nombreNorm,
+        trabajadorId: ausenciaData.trabajadorId || null,
+        fecha,
+        origen: "justificacion_nomina",
+        cargadoEn: new Date().toISOString(),
+      });
+    }
   }
   // Cuando la falta YA tenia una ausencia que la cubria (se registro
   // despues de guardar el huellero) -- solo limpia el registro de falta,
