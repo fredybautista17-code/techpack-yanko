@@ -4320,8 +4320,14 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   const totalUnidades = filas.reduce((s, f) => s + f.unidades, 0);
   const totalValor = filas.reduce((s, f) => s + f.valorProducido, 0);
   const totalCosto = filas.reduce((s, f) => s + (f.sinSueldo ? 0 : f.costo), 0);
-  const balance = totalValor - totalCosto;
-  const pctCobertura = totalCosto > 0 ? (totalValor / totalCosto) * 100 : 0;
+  // (2026-10-01, a pedido de Fredy) El KPI "Balance" ya NO compara contra
+  // el Costo nómina completo (que trae sumadas las provisiones de
+  // cesantias/prima/vacaciones) -- ahora compara Valor producido contra el
+  // Sueldo esperado (hasta hoy), igual que la columna de la tabla. El KPI
+  // "Costo nómina" sigue mostrandose aparte, sin cambios, como referencia.
+  const totalSueldoEsperado = filas.reduce((s, f) => s + (f.sueldoEsperado || 0), 0);
+  const balance = totalValor - totalSueldoEsperado;
+  const pctCobertura = totalSueldoEsperado > 0 ? (totalValor / totalSueldoEsperado) * 100 : 0;
   const algunoSinSueldo = trabajadoresArea.some((t) => t.tipoNomina !== "Destajo" && !t.sueldo);
   // ── Modo apoyo: unidades movidas (Busint) en los procesos del área ──────
   const movimientosArea = useMemo(() => {
@@ -5050,7 +5056,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                 {presupuestoPeriodoArea > 0 && (
                   <KPI icon={dentroPresupuesto ? "✅" : "⚠️"} label="Presupuesto nómina" value={`${pctPresupuesto.toFixed(0)}%`} color={dentroPresupuesto ? C.green : C.red} bg={dentroPresupuesto ? C.greenBg : C.redBg} sub={dentroPresupuesto ? "✓ Dentro del presupuesto" : "⚠ Se pasó del presupuesto"} />
                 )}
-                <KPI icon={balance >= 0 ? "✅" : "⚠️"} label="Balance" value={fmtMoney(balance)} color={balance >= 0 ? C.green : C.red} bg={balance >= 0 ? C.greenBg : C.redBg} sub={totalCosto > 0 ? `${pctCobertura.toFixed(0)}% cubierto` : undefined} />
+                <KPI icon={balance >= 0 ? "✅" : "⚠️"} label="Balance" value={fmtMoney(balance)} color={balance >= 0 ? C.green : C.red} bg={balance >= 0 ? C.greenBg : C.redBg} sub={totalSueldoEsperado > 0 ? `${pctCobertura.toFixed(0)}% cubierto` : undefined} />
                 <KPI icon="🆘" label="Total ayudado" value={fmtMoney(totalAyuda)} color={C.red} bg={C.redBg} sub="trabajadores que no llegaron a su sueldo con destajo" />
                 <KPI icon="📈" label="Total excedente" value={fmtMoney(totalExcedente)} color={C.green} bg={C.greenBg} sub="trabajadores que superaron su sueldo con destajo" />
               </div>
