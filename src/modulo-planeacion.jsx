@@ -3703,6 +3703,53 @@ function rangoQuincenaCC(anio, mes, quincena) {
   const ultimoDia = new Date(Number(anio), Number(mes), 0).getDate();
   return { inicio: `${anio}-${mm}-16`, fin: `${anio}-${mm}-${String(ultimoDia).padStart(2, "0")}` };
 }
+// Festivos de Colombia 2026 -- duplicado a proposito de src/modulo-nomina.jsx
+// (mismo patron del resto de este archivo, ver nota de costoMensualCompletoCC
+// arriba: no se importa entre modulos, se mantiene igual si cambia alla). Hay
+// que agregar los del anio que sigue cuando se sepan.
+const FESTIVOS_COLOMBIA_2026_CC = [
+  "2026-01-01", "2026-01-12", "2026-03-23", "2026-04-02", "2026-04-03",
+  "2026-05-01", "2026-05-18", "2026-06-08", "2026-06-15", "2026-06-29",
+  "2026-07-13", "2026-07-20", "2026-08-07", "2026-08-17", "2026-10-12",
+  "2026-11-02", "2026-11-16", "2026-12-08", "2026-12-25",
+];
+function esFestivoColombiaCC(iso) {
+  return FESTIVOS_COLOMBIA_2026_CC.includes(iso);
+}
+function lunesDeLaSemanaCC(iso) {
+  const d = new Date(iso + "T00:00:00");
+  const dow = d.getDay(); // 0=domingo..6=sabado
+  const diff = dow === 0 ? -6 : 1 - dow;
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+function semanaTuvoFestivoCC(iso) {
+  const lunes = new Date(lunesDeLaSemanaCC(iso) + "T00:00:00");
+  for (let i = 0; i < 6; i++) { // lunes a sabado
+    const d = new Date(lunes);
+    d.setDate(lunes.getDate() + i);
+    if (esFestivoColombiaCC(d.toISOString().slice(0, 10))) return true;
+  }
+  return false;
+}
+// (2026-10-01, a pedido de Fredy) Dia esperado de trabajo con el horario
+// completo por defecto -- lunes a viernes siempre (excepto festivo), sabado
+// SOLO si esa semana tuvo un festivo entre semana (para reponer), domingo
+// nunca. Misma regla confirmada y ya usada en modulo-nomina.jsx para el
+// Reporte de Asistencia (diaEsperado) -- a diferencia de alla, Centro de
+// Costo no trae el Turno de cada trabajador, asi que siempre usa el
+// horario completo por defecto.
+function diaEsperadoCC(iso) {
+  const dow = new Date(iso + "T00:00:00").getDay(); // 0=domingo..6=sabado
+  if (dow === 0) return false;
+  if (esFestivoColombiaCC(iso)) return false;
+  if (dow === 6) return semanaTuvoFestivoCC(iso);
+  return true;
+}
+// (2026-09-22, a pedido de Fredy; corregido 2026-10-01 para usar festivos
+// reales en vez de solo lunes-viernes -- ver diaEsperadoCC arriba) Dias
+// habiles reales en un rango de fechas, usados para prorratear el Salario
+// Minimo Garantizado y el nuevo "Sueldo esperado (hasta hoy)".
 function diasHabilesEnRangoCC(fechaInicioISO, fechaFinISO) {
   const ini = new Date(`${fechaInicioISO}T00:00:00`);
   const fin = new Date(`${fechaFinISO}T00:00:00`);
@@ -3710,8 +3757,7 @@ function diasHabilesEnRangoCC(fechaInicioISO, fechaFinISO) {
   let dias = 0;
   const d = new Date(ini);
   while (d <= fin) {
-    const dow = d.getDay();
-    if (dow !== 0 && dow !== 6) dias++;
+    if (diaEsperadoCC(d.toISOString().slice(0, 10))) dias++;
     d.setDate(d.getDate() + 1);
   }
   return dias;
@@ -3721,7 +3767,7 @@ function calcularCausadoDestajoCC(trabajador, netoProduccion, totalHoras, propor
     // Los "Por dia" dependen del huellero de la quincena, que Centro de
     // Costo no trae -- se deja en $0 causado hasta que se confirme en
     // Nomina -> Destajo (caso poco comun, no es el de Zona Calor/Maquila).
-    return { netoBase: 0, salarioMinimoGarantizado: false, ayudaSalarioMinimo: 0, produccionReal: 0, cesantiasPeriodo: 0, primaPeriodo: 0, vacacionesPeriodo: 0 };
+    return { netoBase: 0, salarioMinimoGarantizado: false, ayudaSalarioMinimo: 0, produccionReal: 0, cesantiasPeriodo: 0, primaPeriodo: 0, vacacionesPeriodo: 0, sueldoEsperado: 0 };
   }
   const sueldo = Number(trabajador.sueldo) || 0;
   const auxilio = Number(trabajador.auxilioTransporte) || 0;
@@ -3747,7 +3793,15 @@ function calcularCausadoDestajoCC(trabajador, netoProduccion, totalHoras, propor
     ayudaSalarioMinimo = Math.max(0, pagoFijo - totalBruto);
     netoBase = pagoFijo;
   }
-  return { netoBase, salarioMinimoGarantizado, ayudaSalarioMinimo, produccionReal: netoProduccion, cesantiasPeriodo, primaPeriodo, vacacionesPeriodo };
+  // (2026-10-01, a pedido de Fredy) "Sueldo esperado hasta hoy" -- a
+  // diferencia de ayudaSalarioMinimo/pagoFijo (que solo aplica si el
+  // trabajador tiene marcado Salario minimo garantizado), esto se calcula
+  // para TODOS los trabajadores de Destajo con sueldo cargado, como
+  // referencia de cuanto deberia llevar devengado segun su sueldo+auxilio
+  // de ficha, prorrateado por los dias habiles reales ya transcurridos de
+  // la quincena en curso (proporcionMinimo).
+  const sueldoEsperado = baseConAuxilio * proporcionMinimo;
+  return { netoBase, salarioMinimoGarantizado, ayudaSalarioMinimo, produccionReal: netoProduccion, cesantiasPeriodo, primaPeriodo, vacacionesPeriodo, sueldoEsperado };
 }
 function sumaHorasExtraTrabajadorCC(horasExtras, trabajadorId, desde, hasta) {
   return (horasExtras || []).filter((h) => h.trabajadorId === trabajadorId && h.fecha >= desde && h.fecha <= hasta).reduce((s, h) => s + (Number(h.total) || 0), 0);
@@ -3801,7 +3855,7 @@ function causadoDestajoEnPeriodoCC(t, periodoId, hoy, produccion, causacionManua
   const ajusteDoc = (ajustesDestajoCC || []).find((a) => a.id === `${t.id}__${periodoId}`);
   const ajusteValor = (!base.salarioMinimoGarantizado && ajusteDoc) ? (Number(ajusteDoc.valor) || 0) : 0;
   const netoAPagar = base.netoBase - descuentoCobros + totalHorasExtra + bonificacionPuntual + ajusteValor;
-  return { valorProducido: netoProduccion, costo: netoAPagar + base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo };
+  return { valorProducido: netoProduccion, costo: netoAPagar + base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo, sueldoEsperado: base.sueldoEsperado };
 }
 function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movimientos, cargandoMovimientos, onActualizarMovimientos, reclamosCalidad, areaFija, currentUser }) {
   const hoy = today();
@@ -4204,6 +4258,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
         const esDestajoReal = t.tipoNomina === "Destajo";
         let valorRealDestajo = 0;
         let costoRealDestajo = 0;
+        let sueldoEsperadoDestajo = 0;
         let liquidacionesEnPeriodo = 0;
         let huboCausado = false;
         if (esDestajoReal) {
@@ -4213,10 +4268,14 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
               liquidacionesEnPeriodo++;
               valorRealDestajo += liq.pagoPorDia ? (Number(liq.pagoDias) || 0) : (Number(liq.produccionReal) || 0);
               costoRealDestajo += (Number(liq.netoAPagar) || 0) + (Number(liq.cesantiasPeriodo) || 0) + (Number(liq.primaPeriodo) || 0) + (Number(liq.vacacionesPeriodo) || 0);
+              // Quincena ya confirmada = ya paso completa, se toma el
+              // sueldo+auxilio completo de esa quincena (sin prorratear).
+              sueldoEsperadoDestajo += liq.pagoPorDia ? 0 : ((Number(liq.sueldoQuincena) || 0) + (Number(liq.auxilioQuincena) || 0));
             } else {
               const causado = causadoDestajoEnPeriodoCC(t, pid, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC);
               valorRealDestajo += causado.valorProducido;
               costoRealDestajo += causado.costo;
+              sueldoEsperadoDestajo += causado.sueldoEsperado;
               huboCausado = true;
             }
           });
@@ -4228,6 +4287,10 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
           unidades: datos?.unidades || 0,
           valorProducido: esDestajoReal ? valorRealDestajo : (datos?.valor || 0),
           costo: esDestajoReal ? costoRealDestajo : costoPeriodo((Number(t.sueldo) || 0) + (Number(t.auxilioTransporte) || 0)),
+          // (2026-10-01, a pedido de Fredy) "Sueldo esperado (hasta hoy)" --
+          // solo tiene sentido para el flujo de Destajo (que ya prorratea por
+          // dias habiles); los demas tipos de nomina no pasan por aca.
+          sueldoEsperado: esDestajoReal ? sueldoEsperadoDestajo : null,
           sinSueldo: esDestajoReal ? false : !t.sueldo,
           esDestajoReal,
           liquidacionesEnPeriodo,
@@ -4481,6 +4544,12 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
     { key: "valorProducido", label: "Valor producido", align: "right", render: (f) => fmtMoney(f.valorProducido) },
     { key: "costo", label: `Costo nómina (${etiquetaPeriodo})`, align: "right", render: (f) => (f.sinSueldo ? <span style={{ color: C.amber }}>⚠️ sin sueldo</span> : <span>{fmtMoney(f.costo)}{f.huboCausado && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.amberBg, color: C.amber }} title="Todavía no se confirma esa quincena en Nómina → Destajo -- este número es lo causado hasta hoy y puede cambiar">🟡 causado</span>}</span>) },
+    // (2026-10-01, a pedido de Fredy) Sueldo+auxilio de ficha prorrateado por
+    // los dias habiles reales (festivos + sabado de reposicion incluidos)
+    // que ya pasaron de la quincena en curso -- referencia de cuanto deberia
+    // llevar devengado la persona hasta hoy, aplique o no Salario minimo
+    // garantizado.
+    { key: "sueldoEsperado", label: "Sueldo esperado (hasta hoy)", align: "right", render: (f) => (f.sueldoEsperado == null ? "—" : fmtMoney(f.sueldoEsperado)) },
     { key: "balance", label: "Balance", align: "right", render: (f) => <span style={{ color: f.valorProducido - f.costo >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtMoney(f.valorProducido - f.costo)}</span> },
   ];
   const columnasApoyo = [
