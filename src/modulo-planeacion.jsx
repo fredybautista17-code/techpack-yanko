@@ -3834,6 +3834,13 @@ function sumaHorasExtraTrabajadorCC(horasExtras, trabajadorId, desde, hasta) {
 function sumaCantidadHorasCC(registrosHoras, trabajadorId, desde, hasta) {
   return (registrosHoras || []).filter((h) => h.trabajadorId === trabajadorId && h.fecha >= desde && h.fecha <= hasta).reduce((s, h) => s + (Number(h.horas) || 0), 0);
 }
+// (2026-10-02, a pedido de Fredy) Etiqueta legible de un periodoId de
+// quincena ("YYYY-MM-QN") para el desglose por quincena de Ayuda / Costo
+// indirecto -- ej. "2026-09-Q1" -> "Q1 Sep 2026".
+function labelQuincenaCC(periodoId) {
+  const [anio, mes, qLabel] = periodoId.split("-");
+  return `${qLabel} ${MESES_CORTOS[Number(mes) - 1]} ${anio}`;
+}
 function valorBonificacionCC(bonificaciones, trabajadorId, periodoId) {
   const base = `${trabajadorId}__${periodoId}`;
   return (bonificaciones || []).filter((b) => b.id === base || b.id.startsWith(`${base}__`)).reduce((s, b) => s + (Number(b.valor) || 0), 0);
@@ -4344,6 +4351,47 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
       })
       .sort((a, b) => b.valorProducido - a.valorProducido);
   }, [trabajadoresArea, porTrabajador, periodo, fechaDia, mesSel, anioSel, fechaRangoInicio, fechaRangoFin, liquidacionesDestajo, periodosDestajoSeleccionados, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
+  // (2026-10-02, a pedido de Fredy) "Ayuda por quincena" y "Costo
+  // indirecto por quincena" -- a diferencia de "filas" de arriba (que
+  // suma las quincenas del período elegido en una sola cifra neta por
+  // trabajador), acá se calcula cada quincena POR SEPARADO: si en la
+  // Quincena 1 a alguien le faltó para su Sueldo esperado se le dio
+  // ayuda, y eso no debe desaparecer solo porque en la Quincena 2
+  // produjo de más y el "Mes" neto da parejo. Igual para Costo
+  // indirecto (valor de Horas trabajadas): se guarda detalle por
+  // quincena, sin netear, para ver cuándo se causó.
+  const detalleQuincenasDestajoCC = useMemo(() => {
+    const porQuincena = new Map();
+    trabajadoresArea.forEach((t) => {
+      if (t.tipoNomina !== "Destajo") return;
+      periodosDestajoSeleccionados.forEach((pid) => {
+        const [anioPid, mesPid, qLabelPid] = pid.split("-");
+        const { inicio: iniPid, fin: finPid } = rangoQuincenaCC(anioPid, mesPid, qLabelPid.replace("Q", ""));
+        const sueldoEsperadoQ = sueldoEsperadoPeriodoCC(t, iniPid, finPid, hoy);
+        const horasCantidadQ = sumaCantidadHorasCC(horasCC, t.id, iniPid, finPid);
+        const horasValorQ = sumaHorasExtraTrabajadorCC(horasCC, t.id, iniPid, finPid);
+        const liq = (liquidacionesDestajo || []).find((l) => l.trabajadorId === t.id && l.periodoId === pid);
+        const valorProducidoQ = liq
+          ? (liq.pagoPorDia ? (Number(liq.pagoDias) || 0) : (Number(liq.produccionReal) || 0))
+          : causadoDestajoEnPeriodoCC(t, pid, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC).valorProducido;
+        const valorTotalQ = valorProducidoQ + horasValorQ;
+        const diferenciaQ = valorTotalQ - sueldoEsperadoQ;
+        if (!porQuincena.has(pid)) porQuincena.set(pid, { pid, label: labelQuincenaCC(pid), ayudaTotal: 0, costoIndirectoTotal: 0, ayudaDetalle: [], costoIndirectoDetalle: [] });
+        const acc = porQuincena.get(pid);
+        if (diferenciaQ < 0) {
+          acc.ayudaTotal += -diferenciaQ;
+          acc.ayudaDetalle.push({ id: t.id, nombre: t.nombre, sueldoEsperado: sueldoEsperadoQ, valorTotal: valorTotalQ, diferencia: diferenciaQ });
+        }
+        if (horasValorQ > 0) {
+          acc.costoIndirectoTotal += horasValorQ;
+          acc.costoIndirectoDetalle.push({ id: t.id, nombre: t.nombre, horas: horasCantidadQ, valor: horasValorQ });
+        }
+      });
+    });
+    return [...porQuincena.values()].sort((a, b) => a.pid.localeCompare(b.pid));
+  }, [trabajadoresArea, periodosDestajoSeleccionados, liquidacionesDestajo, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC, hoy]);
+  const totalAyudaQuincenas = detalleQuincenasDestajoCC.reduce((s, q) => s + q.ayudaTotal, 0);
+  const totalCostoIndirectoQuincenas = detalleQuincenasDestajoCC.reduce((s, q) => s + q.costoIndirectoTotal, 0);
   const totalUnidades = filas.reduce((s, f) => s + f.unidades, 0);
   const totalValor = filas.reduce((s, f) => s + f.valorProducido, 0);
   const totalCosto = filas.reduce((s, f) => s + (f.sinSueldo ? 0 : f.costo), 0);
@@ -5094,7 +5142,68 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
                 <KPI icon={balance >= 0 ? "✅" : "⚠️"} label="Balance" value={fmtMoney(balance)} color={balance >= 0 ? C.green : C.red} bg={balance >= 0 ? C.greenBg : C.redBg} sub={totalSueldoEsperado > 0 ? `${pctCobertura.toFixed(0)}% cubierto` : undefined} />
                 <KPI icon="🆘" label="Total ayudado" value={fmtMoney(totalAyuda)} color={C.red} bg={C.redBg} sub="trabajadores que no llegaron a su sueldo con destajo" />
                 <KPI icon="📈" label="Total excedente" value={fmtMoney(totalExcedente)} color={C.green} bg={C.greenBg} sub="trabajadores que superaron su sueldo con destajo" />
+                <KPI icon="⏱️" label="Costo indirecto" value={fmtMoney(totalCostoIndirectoQuincenas)} color={C.amber} bg={C.amberBg} sub="horas trabajadas causadas -- no es costo del producto, ver detalle abajo" />
+                <KPI icon="🩹" label="Ayuda por quincena" value={fmtMoney(totalAyudaQuincenas)} color={C.red} bg={C.redBg} sub="sin netear entre quincenas -- ver detalle abajo" />
               </div>
+              {detalleQuincenasDestajoCC.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+                  <details style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12 }}>
+                    <summary style={{ cursor: "pointer", padding: "12px 16px", fontWeight: 800, fontSize: 13, color: C.ink }}>
+                      🩹 Ayuda por quincena ({fmtMoney(totalAyudaQuincenas)}) — clic para ver quién recibió ayuda en cada quincena
+                    </summary>
+                    <div style={{ padding: "0 16px 16px" }}>
+                      {detalleQuincenasDestajoCC.every((q) => q.ayudaDetalle.length === 0) ? (
+                        <div style={{ fontSize: 12, color: C.slate, padding: "8px 0" }}>Ninguna quincena de este período necesitó ayuda.</div>
+                      ) : (
+                        detalleQuincenasDestajoCC.map((q) => (
+                          <div key={q.pid} style={{ marginTop: 10 }}>
+                            <div style={{ fontSize: 11.5, fontWeight: 700, color: C.slate, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                              {q.label} — Ayuda {fmtMoney(q.ayudaTotal)}
+                            </div>
+                            <TablaSuave
+                              vacio="Nadie necesitó ayuda esta quincena."
+                              columnas={[
+                                { key: "nombre", label: "Trabajador" },
+                                { key: "sueldoEsperado", label: "Sueldo esperado", align: "right", render: (f) => fmtMoney(f.sueldoEsperado) },
+                                { key: "valorTotal", label: "Valor total", align: "right", render: (f) => fmtMoney(f.valorTotal) },
+                                { key: "diferencia", label: "Diferencia", align: "right", render: (f) => <span style={{ color: C.red, fontWeight: 700 }}>{fmtMoney(f.diferencia)}</span> },
+                              ]}
+                              filas={q.ayudaDetalle}
+                            />
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </details>
+                  <details style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12 }}>
+                    <summary style={{ cursor: "pointer", padding: "12px 16px", fontWeight: 800, fontSize: 13, color: C.ink }}>
+                      ⏱️ Costo indirecto por quincena ({fmtMoney(totalCostoIndirectoQuincenas)}) — clic para ver las horas trabajadas causadas en cada quincena
+                    </summary>
+                    <div style={{ padding: "0 16px 16px" }}>
+                      {detalleQuincenasDestajoCC.every((q) => q.costoIndirectoDetalle.length === 0) ? (
+                        <div style={{ fontSize: 12, color: C.slate, padding: "8px 0" }}>No hay horas trabajadas causadas en este período.</div>
+                      ) : (
+                        detalleQuincenasDestajoCC.map((q) => (
+                          <div key={q.pid} style={{ marginTop: 10 }}>
+                            <div style={{ fontSize: 11.5, fontWeight: 700, color: C.slate, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                              {q.label} — {fmtMoney(q.costoIndirectoTotal)}
+                            </div>
+                            <TablaSuave
+                              vacio="Sin horas trabajadas esta quincena."
+                              columnas={[
+                                { key: "nombre", label: "Trabajador" },
+                                { key: "horas", label: "Horas", align: "right", render: (f) => fmtNum(f.horas) },
+                                { key: "valor", label: "Valor", align: "right", render: (f) => fmtMoney(f.valor) },
+                              ]}
+                              filas={q.costoIndirectoDetalle}
+                            />
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </details>
+                </div>
+              )}
               {filas.length > 0 && (
                 <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
                   <Btn variant="ghost" onClick={exportarCentroCostoExcel}>📥 Descargar Excel</Btn>
