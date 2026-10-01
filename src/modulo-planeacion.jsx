@@ -3767,7 +3767,7 @@ function calcularCausadoDestajoCC(trabajador, netoProduccion, totalHoras, propor
     // Los "Por dia" dependen del huellero de la quincena, que Centro de
     // Costo no trae -- se deja en $0 causado hasta que se confirme en
     // Nomina -> Destajo (caso poco comun, no es el de Zona Calor/Maquila).
-    return { netoBase: 0, salarioMinimoGarantizado: false, ayudaSalarioMinimo: 0, produccionReal: 0, cesantiasPeriodo: 0, primaPeriodo: 0, vacacionesPeriodo: 0, sueldoEsperado: 0 };
+    return { netoBase: 0, salarioMinimoGarantizado: false, ayudaSalarioMinimo: 0, produccionReal: 0, cesantiasPeriodo: 0, primaPeriodo: 0, vacacionesPeriodo: 0 };
   }
   const sueldo = Number(trabajador.sueldo) || 0;
   const auxilio = Number(trabajador.auxilioTransporte) || 0;
@@ -3793,15 +3793,34 @@ function calcularCausadoDestajoCC(trabajador, netoProduccion, totalHoras, propor
     ayudaSalarioMinimo = Math.max(0, pagoFijo - totalBruto);
     netoBase = pagoFijo;
   }
-  // (2026-10-01, a pedido de Fredy) "Sueldo esperado hasta hoy" -- a
-  // diferencia de ayudaSalarioMinimo/pagoFijo (que solo aplica si el
-  // trabajador tiene marcado Salario minimo garantizado), esto se calcula
-  // para TODOS los trabajadores de Destajo con sueldo cargado, como
-  // referencia de cuanto deberia llevar devengado segun su sueldo+auxilio
-  // de ficha, prorrateado por los dias habiles reales ya transcurridos de
-  // la quincena en curso (proporcionMinimo).
-  const sueldoEsperado = baseConAuxilio * proporcionMinimo;
-  return { netoBase, salarioMinimoGarantizado, ayudaSalarioMinimo, produccionReal: netoProduccion, cesantiasPeriodo, primaPeriodo, vacacionesPeriodo, sueldoEsperado };
+  return { netoBase, salarioMinimoGarantizado, ayudaSalarioMinimo, produccionReal: netoProduccion, cesantiasPeriodo, primaPeriodo, vacacionesPeriodo };
+}
+// (2026-10-02, a pedido de Fredy -- corrige bug real) "Sueldo esperado
+// (hasta hoy)" NO se puede sacar ni de calcularCausadoDestajoCC/
+// causadoDestajoEnPeriodoCC (ESTIMADO en vivo) ni de la liquidacion ya
+// confirmada en Nomina -> Destajo: la liquidacion confirmada solo guarda
+// "sueldoFijoQuincena"/"auxilioFijoQuincena" (el SMMLV legal, NO el campo
+// "Sueldo" de la ficha), y ademas SOLO cuando el trabajador tiene marcado
+// Salario minimo garantizado -- para los demas queda en 0 en el documento
+// guardado. Eso causaba que, en una quincena YA CONFIRMADA, "Sueldo
+// esperado" saliera en $0 para cualquiera sin esa casilla marcada (bug
+// real detectado por Fredy comparando Quincena 1 ya confirmada vs
+// Quincena 2 todavia en curso -- Quincena 1 daba $0).
+// Se calcula entonces SIEMPRE igual, directo del sueldo/auxilio ACTUAL de
+// la ficha del trabajador, prorrateado por dias habiles reales --
+// independiente de si esa quincena puntual ya se confirmo o no (por eso
+// ya no hace falta mirar ni "liq" ni "causado" para este numero).
+function sueldoEsperadoPeriodoCC(trabajador, inicio, fin, hoy) {
+  if (trabajador.pagoPorDia) return 0;
+  const diasHabilesTotales = diasHabilesEnRangoCC(inicio, fin);
+  let proporcionMinimo = 1;
+  if (diasHabilesTotales > 0) {
+    if (hoy < inicio) proporcionMinimo = 0;
+    else if (hoy < fin) proporcionMinimo = Math.min(1, diasHabilesEnRangoCC(inicio, hoy) / diasHabilesTotales);
+  }
+  const sueldoQuincena = (Number(trabajador.sueldo) || 0) / 2;
+  const auxilioQuincena = (Number(trabajador.auxilioTransporte) || 0) / 2;
+  return (sueldoQuincena + auxilioQuincena) * proporcionMinimo;
 }
 function sumaHorasExtraTrabajadorCC(horasExtras, trabajadorId, desde, hasta) {
   return (horasExtras || []).filter((h) => h.trabajadorId === trabajadorId && h.fecha >= desde && h.fecha <= hasta).reduce((s, h) => s + (Number(h.total) || 0), 0);
@@ -3864,7 +3883,7 @@ function causadoDestajoEnPeriodoCC(t, periodoId, hoy, produccion, causacionManua
   const ajusteDoc = (ajustesDestajoCC || []).find((a) => a.id === `${t.id}__${periodoId}`);
   const ajusteValor = (!base.salarioMinimoGarantizado && ajusteDoc) ? (Number(ajusteDoc.valor) || 0) : 0;
   const netoAPagar = base.netoBase - descuentoCobros + totalHorasExtra + bonificacionPuntual + ajusteValor;
-  return { valorProducido: netoProduccion, costo: netoAPagar + base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo, sueldoEsperado: base.sueldoEsperado };
+  return { valorProducido: netoProduccion, costo: netoAPagar + base.cesantiasPeriodo + base.primaPeriodo + base.vacacionesPeriodo };
 }
 function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movimientos, cargandoMovimientos, onActualizarMovimientos, reclamosCalidad, areaFija, currentUser }) {
   const hoy = today();
@@ -4278,19 +4297,19 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
             const { inicio: iniPid, fin: finPid } = rangoQuincenaCC(anioPid, mesPid, qLabelPid.replace("Q", ""));
             horasTrabajadasCantidad += sumaCantidadHorasCC(horasCC, t.id, iniPid, finPid);
             horasTrabajadasValor += sumaHorasExtraTrabajadorCC(horasCC, t.id, iniPid, finPid);
+            // "Sueldo esperado" siempre se calcula igual (ficha actual,
+            // prorrateado por dias habiles) -- independiente de si esta
+            // quincena puntual ya se confirmo en Nomina -> Destajo o no.
+            sueldoEsperadoDestajo += sueldoEsperadoPeriodoCC(t, iniPid, finPid, hoy);
             const liq = (liquidacionesDestajo || []).find((l) => l.trabajadorId === t.id && l.periodoId === pid);
             if (liq) {
               liquidacionesEnPeriodo++;
               valorRealDestajo += liq.pagoPorDia ? (Number(liq.pagoDias) || 0) : (Number(liq.produccionReal) || 0);
               costoRealDestajo += (Number(liq.netoAPagar) || 0) + (Number(liq.cesantiasPeriodo) || 0) + (Number(liq.primaPeriodo) || 0) + (Number(liq.vacacionesPeriodo) || 0);
-              // Quincena ya confirmada = ya paso completa, se toma el
-              // sueldo+auxilio completo de esa quincena (sin prorratear).
-              sueldoEsperadoDestajo += liq.pagoPorDia ? 0 : ((Number(liq.sueldoQuincena) || 0) + (Number(liq.auxilioQuincena) || 0));
             } else {
               const causado = causadoDestajoEnPeriodoCC(t, pid, hoy, produccion, causacionManualCC, horasCC, horasExtrasCC, bonificacionesCC, ajustesDestajoCC, lotesConCobrosTotalCC);
               valorRealDestajo += causado.valorProducido;
               costoRealDestajo += causado.costo;
-              sueldoEsperadoDestajo += causado.sueldoEsperado;
               huboCausado = true;
             }
           });
