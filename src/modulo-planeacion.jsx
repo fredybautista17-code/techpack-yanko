@@ -3806,6 +3806,12 @@ function calcularCausadoDestajoCC(trabajador, netoProduccion, totalHoras, propor
 function sumaHorasExtraTrabajadorCC(horasExtras, trabajadorId, desde, hasta) {
   return (horasExtras || []).filter((h) => h.trabajadorId === trabajadorId && h.fecha >= desde && h.fecha <= hasta).reduce((s, h) => s + (Number(h.total) || 0), 0);
 }
+// (2026-10-01, a pedido de Fredy) Igual que sumaHorasExtraTrabajadorCC
+// (arriba) pero suma la CANTIDAD de horas trabajadas (campo "horas"), no el
+// valor en pesos -- para la columna "Horas adicionales" de Centro de Costo.
+function sumaHorasExtraCantidadTrabajadorCC(horasExtras, trabajadorId, desde, hasta) {
+  return (horasExtras || []).filter((h) => h.trabajadorId === trabajadorId && h.fecha >= desde && h.fecha <= hasta).reduce((s, h) => s + (Number(h.horas) || 0), 0);
+}
 function valorBonificacionCC(bonificaciones, trabajadorId, periodoId) {
   const base = `${trabajadorId}__${periodoId}`;
   return (bonificaciones || []).filter((b) => b.id === base || b.id.startsWith(`${base}__`)).reduce((s, b) => s + (Number(b.valor) || 0), 0);
@@ -4259,10 +4265,14 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
         let valorRealDestajo = 0;
         let costoRealDestajo = 0;
         let sueldoEsperadoDestajo = 0;
+        let horasExtraCantidad = 0;
         let liquidacionesEnPeriodo = 0;
         let huboCausado = false;
         if (esDestajoReal) {
           periodosDestajoSeleccionados.forEach((pid) => {
+            const [anioPid, mesPid, qLabelPid] = pid.split("-");
+            const { inicio: iniPid, fin: finPid } = rangoQuincenaCC(anioPid, mesPid, qLabelPid.replace("Q", ""));
+            horasExtraCantidad += sumaHorasExtraCantidadTrabajadorCC(horasExtrasCC, t.id, iniPid, finPid);
             const liq = (liquidacionesDestajo || []).find((l) => l.trabajadorId === t.id && l.periodoId === pid);
             if (liq) {
               liquidacionesEnPeriodo++;
@@ -4291,6 +4301,11 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
           // solo tiene sentido para el flujo de Destajo (que ya prorratea por
           // dias habiles); los demas tipos de nomina no pasan por aca.
           sueldoEsperado: esDestajoReal ? sueldoEsperadoDestajo : null,
+          // (2026-10-01, a pedido de Fredy) "Horas adicionales" -- cantidad
+          // de horas extra registradas (Registrar Horas Extra), sumadas
+          // directo de su propia coleccion (no depende de si la quincena de
+          // Destajo ya se confirmo o no).
+          horasExtra: esDestajoReal ? horasExtraCantidad : null,
           sinSueldo: esDestajoReal ? false : !t.sueldo,
           esDestajoReal,
           liquidacionesEnPeriodo,
@@ -4543,14 +4558,17 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     { key: "area", label: "Área Interna" },
     { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
     { key: "valorProducido", label: "Valor producido", align: "right", render: (f) => fmtMoney(f.valorProducido) },
-    { key: "costo", label: `Costo nómina (${etiquetaPeriodo})`, align: "right", render: (f) => (f.sinSueldo ? <span style={{ color: C.amber }}>⚠️ sin sueldo</span> : <span>{fmtMoney(f.costo)}{f.huboCausado && <span style={{ marginLeft: 6, padding: "1px 7px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: C.amberBg, color: C.amber }} title="Todavía no se confirma esa quincena en Nómina → Destajo -- este número es lo causado hasta hoy y puede cambiar">🟡 causado</span>}</span>) },
+    // (2026-10-01, a pedido de Fredy) Cantidad de horas extra trabajadas en
+    // el periodo -- reemplaza aqui a "Costo nómina", que se quita de esta
+    // tabla (sigue calculandose para los KPI de arriba, solo no se muestra
+    // mas en esta tabla).
+    { key: "horasExtra", label: "Horas adicionales", align: "right", render: (f) => (f.horasExtra == null ? "—" : fmtNum(f.horasExtra)) },
     // (2026-10-01, a pedido de Fredy) Sueldo+auxilio de ficha prorrateado por
     // los dias habiles reales (festivos + sabado de reposicion incluidos)
     // que ya pasaron de la quincena en curso -- referencia de cuanto deberia
     // llevar devengado la persona hasta hoy, aplique o no Salario minimo
     // garantizado.
     { key: "sueldoEsperado", label: "Sueldo esperado (hasta hoy)", align: "right", render: (f) => (f.sueldoEsperado == null ? "—" : fmtMoney(f.sueldoEsperado)) },
-    { key: "balance", label: "Balance", align: "right", render: (f) => <span style={{ color: f.valorProducido - f.costo >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtMoney(f.valorProducido - f.costo)}</span> },
     // (2026-10-01, a pedido de Fredy) Columna adicional al final: compara
     // Valor producido contra el Sueldo esperado (no contra el Costo nómina,
     // que ya incluye provisiones) -- lo que produjo menos lo que deberia
