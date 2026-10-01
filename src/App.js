@@ -6430,7 +6430,17 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
       const slot0 = filaTela?.slots?.[0];
       tela = slot0?.nombre || "";
       consumoCrudo = slot0?.consumo != null && slot0?.consumo !== "" ? slot0.consumo : null;
-      unidadCruda = slot0?.unidad != null ? String(slot0.unidad) : "";
+      // (2026-10-02, a pedido de Fredy) Se encontró un caso real (ref
+      // 98-879, tela AMORELA) donde Busint no trae el código de unidad
+      // vacío de verdad, sino con un espacio en blanco metido por error --
+      // eso no calzaba ni con "4" (m², dispara la conversión) ni con "vacío
+      // de verdad" (dispara el aviso "revisar a mano"), así que el número
+      // crudo quedaba pegado tal cual (con el espacio invisible al final),
+      // pareciendo un consumo ya bueno cuando en realidad nunca se
+      // convirtió. Se recorta (trim) ANTES de comparar para que un espacio
+      // en blanco se trate igual que vacío.
+      const unidadTela = String(slot0?.unidad ?? "").trim();
+      unidadCruda = unidadTela;
       if (tela) anchoEncontrado = await obtenerAnchoTelaPorNombre(tela);
       if (slot0?.consumo != null && slot0?.consumo !== "") {
         // (2026-09-30, a pedido de Fredy) La tabla "telas" de Busint trae el
@@ -6442,9 +6452,9 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         // el ancho de esa tela ahí, se deja tal cual en m² en vez de
         // inventar un número -- Fredy pidió solo el valor ya convertido,
         // sin mostrar el m² original al lado.
-        if (String(slot0.unidad) === "4") {
+        if (unidadTela === "4") {
           consumo = anchoEncontrado ? `${Math.round((slot0.consumo / anchoEncontrado) * 100) / 100} Mt` : `${slot0.consumo} m2`;
-        } else if (!slot0.unidad) {
+        } else if (!unidadTela) {
           // (2026-09-30, a pedido de Fredy) Busint no tiene NINGUN codigo de
           // unidad para esta tela -- no hay forma de saber en que unidad
           // viene el numero, asi que se deja el valor crudo pero marcado
@@ -6452,7 +6462,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
           // mano directamente en Busint.
           consumo = `${slot0.consumo} (sin unidad)`;
         } else {
-          consumo = `${slot0.consumo} ${slot0.unidad}`;
+          consumo = `${slot0.consumo} ${unidadTela}`;
         }
       }
     } catch (err) {
