@@ -4269,6 +4269,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
         let costoRealDestajo = 0;
         let sueldoEsperadoDestajo = 0;
         let horasTrabajadasCantidad = 0;
+        let horasTrabajadasValor = 0;
         let liquidacionesEnPeriodo = 0;
         let huboCausado = false;
         if (esDestajoReal) {
@@ -4276,6 +4277,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
             const [anioPid, mesPid, qLabelPid] = pid.split("-");
             const { inicio: iniPid, fin: finPid } = rangoQuincenaCC(anioPid, mesPid, qLabelPid.replace("Q", ""));
             horasTrabajadasCantidad += sumaCantidadHorasCC(horasCC, t.id, iniPid, finPid);
+            horasTrabajadasValor += sumaHorasExtraTrabajadorCC(horasCC, t.id, iniPid, finPid);
             const liq = (liquidacionesDestajo || []).find((l) => l.trabajadorId === t.id && l.periodoId === pid);
             if (liq) {
               liquidacionesEnPeriodo++;
@@ -4309,6 +4311,12 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
           // sumadas directo de su propia coleccion (no depende de si la
           // quincena de Destajo ya se confirmo o no).
           horasTrabajadas: esDestajoReal ? horasTrabajadasCantidad : null,
+          // (2026-10-01, a pedido de Fredy) Valor en pesos de esas horas
+          // trabajadas -- SOLO se usa para sumarlo al "Valor producido" que
+          // se ve en esta tabla (ver columnas mas abajo); los KPI de arriba
+          // (Valor producido, Balance, etc.) siguen usando "valorProducido"
+          // tal cual, sin las horas, a pedido explicito de Fredy.
+          horasTrabajadasValor: esDestajoReal ? horasTrabajadasValor : null,
           sinSueldo: esDestajoReal ? false : !t.sueldo,
           esDestajoReal,
           liquidacionesEnPeriodo,
@@ -4566,12 +4574,20 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     { key: "nombre", label: "Trabajador" },
     { key: "area", label: "Área Interna" },
     { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
-    { key: "valorProducido", label: "Valor producido", align: "right", render: (f) => fmtMoney(f.valorProducido) },
+    // (2026-10-01, a pedido de Fredy) En ESTA TABLA (no en los KPI de
+    // arriba) "Valor producido" incluye tambien el valor de las Horas
+    // Trabajadas (f.horasTrabajadasValor) -- el mismo total combinado se
+    // reusa abajo en la columna de Balance.
+    { key: "valorProducido", label: "Valor producido", align: "right", render: (f) => fmtMoney(f.valorProducido + (f.horasTrabajadasValor || 0)) },
     // (2026-10-01, a pedido de Fredy) Cantidad de horas trabajadas (horas
     // sueltas, NO horas extra) en el periodo -- reemplaza aqui a "Costo
     // nómina", que se quita de esta tabla (sigue calculandose para los KPI
     // de arriba, solo no se muestra mas en esta tabla).
     { key: "horasTrabajadas", label: "Horas trabajadas", align: "right", render: (f) => (f.horasTrabajadas == null ? "—" : fmtNum(f.horasTrabajadas)) },
+    // (2026-10-01, a pedido de Fredy) Valor en pesos de esas horas
+    // trabajadas, para que se vea de donde sale el ajuste de "Valor
+    // producido" de esta tabla.
+    { key: "horasTrabajadasValor", label: "Valor horas trabajadas", align: "right", render: (f) => (f.horasTrabajadasValor == null ? "—" : fmtMoney(f.horasTrabajadasValor)) },
     // (2026-10-01, a pedido de Fredy) Sueldo+auxilio de ficha prorrateado por
     // los dias habiles reales (festivos + sabado de reposicion incluidos)
     // que ya pasaron de la quincena en curso -- referencia de cuanto deberia
@@ -4587,7 +4603,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
       label: "Balance (Sueldo esperado vs Producido)",
       align: "right",
       render: (f) => (f.sueldoEsperado == null ? "—" : (() => {
-        const diff = f.valorProducido - f.sueldoEsperado;
+        const diff = (f.valorProducido + (f.horasTrabajadasValor || 0)) - f.sueldoEsperado;
         return <span style={{ color: diff >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtMoney(diff)}</span>;
       })()),
     },
