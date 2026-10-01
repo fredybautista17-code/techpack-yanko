@@ -4551,6 +4551,19 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
     // garantizado.
     { key: "sueldoEsperado", label: "Sueldo esperado (hasta hoy)", align: "right", render: (f) => (f.sueldoEsperado == null ? "—" : fmtMoney(f.sueldoEsperado)) },
     { key: "balance", label: "Balance", align: "right", render: (f) => <span style={{ color: f.valorProducido - f.costo >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtMoney(f.valorProducido - f.costo)}</span> },
+    // (2026-10-01, a pedido de Fredy) Columna adicional al final: compara
+    // Valor producido contra el Sueldo esperado (no contra el Costo nómina,
+    // que ya incluye provisiones) -- lo que produjo menos lo que deberia
+    // llevar devengado hasta hoy.
+    {
+      key: "balanceSueldoEsperado",
+      label: "Balance (Sueldo esperado vs Producido)",
+      align: "right",
+      render: (f) => (f.sueldoEsperado == null ? "—" : (() => {
+        const diff = f.valorProducido - f.sueldoEsperado;
+        return <span style={{ color: diff >= 0 ? C.green : C.red, fontWeight: 700 }}>{fmtMoney(diff)}</span>;
+      })()),
+    },
   ];
   const columnasApoyo = [
     { key: "numLote", label: "Lote" },
