@@ -6483,6 +6483,37 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   // esten vacios (sin tocar el item ni mostrar ningun alert), para que lo
   // puedan usar tanto el boton individual (refrescarBusint) como el masivo
   // (actualizarDatosPendientesBusint) sin duplicar la logica de consulta.
+  // (2026-10-02, a pedido de Fredy) Una referencia puede traer VARIAS telas
+  // en Busint (hasta 10 "slots": Tela1..Tela10 -- ej. tela principal, forro,
+  // elastico), cada una con su propio consumo. Convierte CADA slot (mismo
+  // criterio de siempre: codigo "4" o sin codigo = m2, se divide por el
+  // ancho de esa tela; cualquier otro codigo se deja tal cual) y devuelve
+  // la lista completa en el mismo orden de Busint -- el llamador decide
+  // cual usar como "principal" (hoy: la primera, por compatibilidad con el
+  // resto de la pantalla, que solo maneja una tela por item).
+  async function construirTelasDesdeFila(filaTela) {
+    const slots = filaTela?.slots || [];
+    const lista = [];
+    for (const slot of slots) {
+      const nombre = slot?.nombre || "";
+      if (!nombre) continue;
+      // (2026-10-02, a pedido de Fredy) Mismo cuidado que ya existia para
+      // la tela principal: un espacio en blanco en el codigo de unidad no
+      // debe tratarse como si tuviera un codigo real.
+      const unidadSlot = String(slot?.unidad ?? "").trim();
+      const anchoSlot = await obtenerAnchoTelaPorNombre(nombre);
+      let consumoTexto = "";
+      if (slot?.consumo != null && slot?.consumo !== "") {
+        if (unidadSlot === "4" || !unidadSlot) {
+          consumoTexto = anchoSlot ? `${Math.round((slot.consumo / anchoSlot) * 100) / 100} Mt` : `${slot.consumo} m2`;
+        } else {
+          consumoTexto = `${slot.consumo} ${unidadSlot}`;
+        }
+      }
+      lista.push({ nombre, consumo: consumoTexto, consumoCrudo: slot?.consumo ?? null, unidad: unidadSlot, ancho: anchoSlot });
+    }
+    return lista;
+  }
   async function buscarPatchBusint(it) {
     const llamarRef = httpsCallable(functionsClient, "probarReferenciaBusint");
     const respRef = await llamarRef({ ref: it.referencia });
@@ -6495,48 +6526,25 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
     // Viene en el mismo registro crudo que ya trae probarReferenciaBusint,
     // no hace falta tocar Firebase Functions para esto.
     const precioBusint = Number(b.precioPM) || 0;
-    let tela = "", consumo = "", consumoCrudo = null, unidadCruda = "", anchoEncontrado = null, errorTela = null;
+    let tela = "", consumo = "", consumoCrudo = null, unidadCruda = "", anchoEncontrado = null, errorTela = null, telasExtra = [];
     try {
       const llamarTela = httpsCallable(functionsClient, "getComposicionTelasBusintBD");
       const respTela = await llamarTela();
       const normBuscada = normalizarRefComparacion(it.referencia);
       const filaTela = (respTela.data?.porReferencia || []).find((r) => normalizarRefComparacion(r.ref) === normBuscada);
-      const slot0 = filaTela?.slots?.[0];
-      tela = slot0?.nombre || "";
-      consumoCrudo = slot0?.consumo != null && slot0?.consumo !== "" ? slot0.consumo : null;
-      // (2026-10-02, a pedido de Fredy) Se encontró un caso real (ref
-      // 98-879, tela AMORELA) donde Busint no trae el código de unidad
-      // vacío de verdad, sino con un espacio en blanco metido por error --
-      // eso no calzaba ni con "4" (m², dispara la conversión) ni con "vacío
-      // de verdad" (dispara el aviso "revisar a mano"), así que el número
-      // crudo quedaba pegado tal cual (con el espacio invisible al final),
-      // pareciendo un consumo ya bueno cuando en realidad nunca se
-      // convirtió. Se recorta (trim) ANTES de comparar para que un espacio
-      // en blanco se trate igual que vacío.
-      const unidadTela = String(slot0?.unidad ?? "").trim();
-      unidadCruda = unidadTela;
-      if (tela) anchoEncontrado = await obtenerAnchoTelaPorNombre(tela);
-      if (slot0?.consumo != null && slot0?.consumo !== "") {
-        // (2026-09-30, a pedido de Fredy) La tabla "telas" de Busint trae el
-        // consumo en distintas unidades según el código crudo de "Unid" --
-        // el código "4" es metro cuadrado (confirmado por Fredy). Eso no
-        // sirve para planear corte, así que se convierte a metros lineales
-        // dividiendo por el ancho de esa misma tela (buscado en el
-        // inventario de Corte, que sí tiene el ancho). Si no se encuentra
-        // el ancho de esa tela ahí, se deja tal cual en m² en vez de
-        // inventar un número -- Fredy pidió solo el valor ya convertido,
-        // sin mostrar el m² original al lado.
-        if (unidadTela === "4" || !unidadTela) {
-          // (2026-10-02, a pedido de Fredy) Confirmado: cuando Busint no
-          // trae NINGUN codigo de unidad para una tela, el numero tambien
-          // viene siempre en metros cuadrados -- se trata igual que el
-          // codigo "4" (antes se dejaba marcado "(sin unidad)" sin
-          // convertir, por si acaso, pero ya no hace falta esa cautela).
-          consumo = anchoEncontrado ? `${Math.round((slot0.consumo / anchoEncontrado) * 100) / 100} Mt` : `${slot0.consumo} m2`;
-        } else {
-          consumo = `${slot0.consumo} ${unidadTela}`;
-        }
-      }
+      // (2026-10-02, a pedido de Fredy) Antes solo se tomaba slots[0] -- si
+      // la referencia traia 2 o mas telas, las demas se perdian en
+      // silencio aunque Busint si las tuviera. Ahora se procesan TODAS: la
+      // primera sigue llenando tela/consumo de siempre, y el resto queda en
+      // "telasExtra" para mostrarse aparte en la tabla.
+      const todasLasTelas = await construirTelasDesdeFila(filaTela);
+      const [principal, ...resto] = todasLasTelas;
+      tela = principal?.nombre || "";
+      consumoCrudo = principal?.consumoCrudo ?? null;
+      unidadCruda = principal?.unidad || "";
+      anchoEncontrado = principal?.ancho ?? null;
+      consumo = principal?.consumo || "";
+      telasExtra = resto;
     } catch (err) {
       // (2026-10-02, a pedido de Fredy) Tela/Consumo siguen siendo "best
       // effort" (no se interrumpe el resto del patch si esto falla), pero
@@ -6553,12 +6561,17 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
     if (!it.tela && tela) patch.tela = tela;
     if (!it.precio && precioBusint) patch.precio = precioBusint;
     if (!it.lineaBusint && b.linea) patch.lineaBusint = b.linea;
+    // (2026-10-02, a pedido de Fredy) A diferencia de tela/consumo (que solo
+    // se llenan si el item los tenia vacios, para no pisar un valor
+    // corregido a mano), "telasExtra" es puramente informativo -- se
+    // refresca siempre con lo ultimo que traiga Busint.
+    if (telasExtra.length) patch.telasExtra = telasExtra.map((t) => ({ nombre: t.nombre, consumo: t.consumo }));
     // (2026-10-02, a pedido de Fredy) Diagnostico para el boton individual
     // "Actualizar" (refrescarBusint) -- antes esto quedaba sin ningun
     // aviso cuando algo fallaba a medias (ej. precioPM vacio en Busint, o
     // la tela sin ancho registrado en Corte), y Fredy terminaba adivinando
     // que habia pasado. Con esto el boton SIEMPRE muestra lo que encontro.
-    const debug = { precioPMCrudo: b.precioPM ?? null, tela, consumoCrudo, unidadCruda, anchoEncontrado, consumoFinal: consumo, errorTela };
+    const debug = { precioPMCrudo: b.precioPM ?? null, tela, consumoCrudo, unidadCruda, anchoEncontrado, consumoFinal: consumo, errorTela, telasExtra };
     return { encontrada: true, patch, debug };
   }
   async function refrescarBusint(preordenId, it) {
@@ -6583,6 +6596,12 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         `• Consumo crudo: ${debug.consumoCrudo != null ? `${debug.consumoCrudo} (unidad: ${debug.unidadCruda || "sin código"})` : "sin dato"}`,
         `• Ancho de esa tela: ${debug.anchoEncontrado || "no encontrado en inventario de Corte"}`,
         `• Consumo convertido: ${debug.consumoFinal || "no se pudo calcular"}`,
+        // (2026-10-02, a pedido de Fredy) Una referencia puede traer varias
+        // telas (ver construirTelasDesdeFila) -- se listan aparte para que
+        // quede claro que SÍ se encontraron y se guardaron en el item.
+        (debug.telasExtra || []).length
+          ? `• Telas adicionales encontradas (${debug.telasExtra.length}): ${debug.telasExtra.map((t) => `${t.nombre} (${t.consumo || "sin consumo"})`).join(", ")}`
+          : `• Telas adicionales encontradas: ninguna`,
         debug.errorTela ? `• Error consultando tela/consumo: ${debug.errorTela}` : null,
         `• Campos actualizados ahora: ${Object.keys(patch).length ? Object.keys(patch).join(", ") : "ninguno (ya estaban llenos o Busint no tiene nada nuevo)"}`,
       ].filter(Boolean).join("\n");
@@ -7311,12 +7330,25 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                               <td style={{ padding: "6px 10px", fontWeight: 700 }}>{it.referencia}</td>
                               <td style={{ padding: "6px 10px" }}>{it.nombre}</td>
                               <td style={{ padding: "6px 10px" }}>{refReal ? <Badge status={refReal.status} /> : <span style={{ color: T.slate, fontStyle: "italic" }}>—</span>}</td>
-                              <td style={{ padding: "6px 10px" }}>{it.consumo || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>
+                                {/* (2026-10-02, a pedido de Fredy) Si la referencia tiene varias
+                                    telas, se apilan en el mismo orden en Tela y en Consumo -- la
+                                    primera linea sigue siendo it.consumo de siempre. */}
+                                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                                  <span>{it.consumo || "—"}</span>
+                                  {(it.telasExtra || []).map((t, ti) => <span key={ti} style={{ color: T.slate }}>{t.consumo || "—"}</span>)}
+                                </div>
+                              </td>
                               <td style={{ padding: "6px 10px" }}>{it.lineaBusint || it.tipo || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.categoria || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.silueta || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.rango || "—"}</td>
-                              <td style={{ padding: "6px 10px" }}>{it.tela || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>
+                                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                                  <span>{it.tela || "—"}</span>
+                                  {(it.telasExtra || []).map((t, ti) => <span key={ti} style={{ color: T.slate }}>{t.nombre || "—"}</span>)}
+                                </div>
+                              </td>
                               {!esCliente && <td style={{ padding: "6px 10px" }}>{celdaTela(it)}</td>}
                               <td style={{ padding: "6px 10px" }}>{it.colombiaCurva || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.colombiaCantidad || "—"}</td>
