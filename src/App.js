@@ -7333,23 +7333,29 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                               <td style={{ padding: "6px 10px", fontWeight: 700 }}>{it.referencia}</td>
                               <td style={{ padding: "6px 10px" }}>{it.nombre}</td>
                               <td style={{ padding: "6px 10px" }}>{refReal ? <Badge status={refReal.status} /> : <span style={{ color: T.slate, fontStyle: "italic" }}>—</span>}</td>
-                              <td style={{ padding: "6px 10px" }}>
-                                {/* (2026-10-02, a pedido de Fredy) Si la referencia tiene varias
-                                    telas, se apilan en el mismo orden en Tela y en Consumo -- la
-                                    primera linea sigue siendo it.consumo de siempre. */}
-                                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                                  <span>{it.consumo || "—"}</span>
-                                  {(it.telasExtra || []).map((t, ti) => <span key={ti} style={{ color: T.slate }}>{t.consumo || "—"}</span>)}
-                                </div>
-                              </td>
+                              <td style={{ padding: "6px 10px" }}>{it.consumo || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.lineaBusint || it.tipo || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.categoria || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.silueta || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.rango || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>
+                                {/* (2026-10-02, a pedido de Fredy) Antes Tela y Consumo se apilaban
+                                    en dos columnas separadas -- si el nombre de una tela era largo
+                                    y se partia en varias lineas, se desalineaba con la columna de
+                                    Consumo y ya no se sabia cual consumo era de cual tela. Ahora
+                                    cada tela va junto a SU propio consumo en la misma linea, todo
+                                    dentro de esta columna -- no se puede desalinear. La columna
+                                    "Consumo" de al lado queda solo con el valor principal, igual
+                                    que siempre (la usa el resto de la pantalla para calcular
+                                    totales, no se toca). Los datos de nombre+consumo por tela
+                                    (it.tela/it.consumo y cada it.telasExtra[].nombre/.consumo)
+                                    siguen guardados tal cual -- quedan listos para cuando se arme
+                                    el consolidado de metros por tela. */}
                                 <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                                  <span>{it.tela || "—"}</span>
-                                  {(it.telasExtra || []).map((t, ti) => <span key={ti} style={{ color: T.slate }}>{t.nombre || "—"}</span>)}
+                                  <span>{it.tela || "—"}{it.consumo ? ` — ${it.consumo}` : ""}</span>
+                                  {(it.telasExtra || []).map((t, ti) => (
+                                    <span key={ti} style={{ color: T.slate }}>{t.nombre || "—"}{t.consumo ? ` — ${t.consumo}` : " — sin consumo"}</span>
+                                  ))}
                                 </div>
                               </td>
                               {!esCliente && <td style={{ padding: "6px 10px" }}>{celdaTela(it)}</td>}
