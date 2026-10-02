@@ -5451,13 +5451,19 @@ function sumaHorasExtraTrabajador(horasExtras, trabajadorId, desde, hasta) {
 // (2026-09-22, a pedido de Fredy) Admite DOS tipos independientes por
 // trabajador+quincena -- "meta" y "otra" (concepto libre) -- que se
 // SUMAN entre sí al pagar (antes era un solo valor que se reemplazaba).
-// También suma el documento "viejo" sin sufijo de tipo (de antes de este
-// cambio) por si todavía no se ha migrado -- ver guardar() en
-// RegistrarBonificacionView, que lo migra solo al volver a guardar.
+// (2026-10-02) Antes se buscaba por un patron en el "id" del documento
+// (trabajador+periodo). Eso dejo de funcionar el 2026-09-29: desde ese
+// cambio cada bonificacion nueva se guarda con un id al azar (para poder
+// tener varias de Metas en la misma quincena), asi que el patron ya no
+// aparecia nunca y las bonificaciones registradas desde esa fecha no se
+// sumaban al pago (aunque SI quedaban guardadas con sus datos correctos).
+// Ahora se busca por los campos reales trabajadorId/periodoId, que
+// siempre se han guardado en el documento desde la primera version de
+// esta pantalla -- funciona igual para documentos viejos y nuevos, y
+// suma todos los tipos (Metas y Otra) como ya se hacia antes.
 function valorBonificacion(bonificaciones, trabajadorId, periodoId) {
-  const base = `${trabajadorId}__${periodoId}`;
   return (bonificaciones || [])
-    .filter((b) => b.id === base || b.id.startsWith(`${base}__`))
+    .filter((b) => b.trabajadorId === trabajadorId && b.periodoId === periodoId)
     .reduce((s, b) => s + (Number(b.valor) || 0), 0);
 }
 // (2026-09-10, "Design B" confirmado por Fredy) Cada Cobro que Bodega
