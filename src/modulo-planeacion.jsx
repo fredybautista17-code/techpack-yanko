@@ -6555,6 +6555,7 @@ function TuboProductivoView() {
   const [errorDocs, setErrorDocs] = useState("");
   const [soloPendientesBPT, setSoloPendientesBPT] = useState(false);
   const [fechaInicioConsultaBPT, setFechaInicioConsultaBPT] = useState(null);
+  const [filtroCliente, setFiltroCliente] = useState("");
 
   async function cargar() {
     setCargando(true);
@@ -6575,8 +6576,21 @@ function TuboProductivoView() {
     cargar();
   }, []);
 
+  // (2026-10-02) Filtro de cliente -- pedido de Fredy: saber de un cliente
+  // puntual, cuánto tiene en cada etapa. Usa el mismo campo "clienteAgrupado
+  // || nombreCliente" que ya usa BuscarPorLineaView, para que un mismo
+  // cliente con variantes de nombre en Busint se vea como uno solo.
+  const clientesDisponibles = useMemo(
+    () => [...new Set(lotes.map((l) => l.clienteAgrupado || l.nombreCliente).filter(Boolean))].sort(),
+    [lotes]
+  );
+  const lotesFiltrados = useMemo(() => {
+    if (!filtroCliente) return lotes;
+    return lotes.filter((l) => (l.clienteAgrupado || l.nombreCliente) === filtroCliente);
+  }, [lotes, filtroCliente]);
+
   const etapas = useMemo(() => {
-    const sum = (campo) => lotes.reduce((s, l) => s + (Number(l[campo]) || 0), 0);
+    const sum = (campo) => lotesFiltrados.reduce((s, l) => s + (Number(l[campo]) || 0), 0);
     return [
       { id: "cortado", label: "Cortado (total)", icon: "✂️", color: C.violet, bg: C.violetBg, campo: "cantCortada", valor: sum("cantCortada") },
       { id: "bmp", label: "Bodega Materia Prima", icon: "🧶", color: C.amber, bg: C.amberBg, campo: "invBMP", valor: sum("invBMP") },
@@ -6585,7 +6599,7 @@ function TuboProductivoView() {
       { id: "semiterminado", label: "Semiterminado", icon: "🧵", color: C.amber, bg: C.amberBg, campo: "invSemiterminado", valor: sum("invSemiterminado") },
       { id: "bpt", label: "Bodega Producto Terminado", icon: "📦", color: C.green, bg: C.greenBg, campo: "invBPT", valor: sum("invBPT") },
     ];
-  }, [lotes]);
+  }, [lotesFiltrados]);
 
   const etapaActiva = etapas.find((e) => e.id === etapaAbierta) || null;
 
@@ -6598,7 +6612,7 @@ function TuboProductivoView() {
   // para no pedirle a Busint un rango más ancho de lo necesario.
   useEffect(() => {
     if (etapaAbierta !== "bpt") return;
-    const lotesBPT = lotes.filter((l) => Number(l.invBPT) > 0);
+    const lotesBPT = lotesFiltrados.filter((l) => Number(l.invBPT) > 0);
     if (!lotesBPT.length) {
       setDocsPorPedido({});
       return;
@@ -6646,11 +6660,11 @@ function TuboProductivoView() {
     return () => {
       cancelado = true;
     };
-  }, [etapaAbierta, lotes]);
+  }, [etapaAbierta, lotesFiltrados]);
 
   const filasDetalle = useMemo(() => {
     if (!etapaActiva) return [];
-    let filas = lotes
+    let filas = lotesFiltrados
       .filter((l) => Number(l[etapaActiva.campo]) > 0)
       .sort((a, b) => Number(b[etapaActiva.campo]) - Number(a[etapaActiva.campo]));
     if (etapaActiva.id === "bpt") {
@@ -6668,18 +6682,18 @@ function TuboProductivoView() {
       if (soloPendientesBPT) filas = filas.filter((l) => !l._facturado && !l._fueraDeRango);
     }
     return filas;
-  }, [lotes, etapaActiva, docsPorPedido, soloPendientesBPT]);
+  }, [lotesFiltrados, etapaActiva, docsPorPedido, soloPendientesBPT]);
 
   const pendientesBPT = useMemo(() => {
     if (etapaActiva?.id !== "bpt") return 0;
-    const lotesBPT = lotes.filter((l) => Number(l.invBPT) > 0);
+    const lotesBPT = lotesFiltrados.filter((l) => Number(l.invBPT) > 0);
     return lotesBPT.filter((l) => {
       const fueraDeRango = fechaInicioConsultaBPT && l.fechaEntBPTISO && l.fechaEntBPTISO < fechaInicioConsultaBPT;
       if (fueraDeRango) return false; // no verificado, no cuenta como "pendiente confirmado"
       const docs = docsPorPedido[String(l.numPedido || "").trim()] || [];
       return !docs.some((d) => d.tipo === "FAC" || d.tipo === "TCO" || d.tipo === "TEX");
     }).length;
-  }, [lotes, etapaActiva, docsPorPedido, fechaInicioConsultaBPT]);
+  }, [lotesFiltrados, etapaActiva, docsPorPedido, fechaInicioConsultaBPT]);
 
   return (
     <div>
@@ -6689,9 +6703,20 @@ function TuboProductivoView() {
           {cargando ? "Actualizando..." : "🔄 Actualizar"}
         </Btn>
       </div>
-      <div style={{ fontSize: 13, color: C.slate, marginBottom: 20 }}>
+      <div style={{ fontSize: 13, color: C.slate, marginBottom: 16 }}>
         En vivo desde Busint: cuánto hay en cada etapa de producción ahora mismo. Clic en una tarjeta para ver el detalle, sin salir de esta pantalla.
         {actualizadoEn && <span> · Actualizado {actualizadoEn.toLocaleTimeString()}</span>}
+      </div>
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, marginBottom: 4, textTransform: "uppercase" }}>Cliente</div>
+        <select
+          value={filtroCliente}
+          onChange={(e) => setFiltroCliente(e.target.value)}
+          style={{ fontSize: 13, padding: "8px 10px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.ink, minWidth: 260 }}
+        >
+          <option value="">Todos los clientes</option>
+          {clientesDisponibles.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
       </div>
       {error && (
         <div style={{ padding: 12, borderRadius: 8, background: C.redBg, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>
@@ -6711,7 +6736,7 @@ function TuboProductivoView() {
                 value={`${fmtNum(e.valor)} und.`}
                 color={e.color}
                 bg={etapaAbierta === e.id ? e.color + "22" : e.bg}
-                sub={`${lotes.filter((l) => Number(l[e.campo]) > 0).length} lotes`}
+                sub={`${lotesFiltrados.filter((l) => Number(l[e.campo]) > 0).length} lotes`}
                 onClick={() => { setEtapaAbierta(etapaAbierta === e.id ? null : e.id); setSoloPendientesBPT(false); }}
               />
             ))}
