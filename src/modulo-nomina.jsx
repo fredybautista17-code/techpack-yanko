@@ -11216,8 +11216,14 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
           const faltasDetalle = (faltas || []).filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= desde && f.fecha <= hasta);
           const diasInasistencia = faltasDetalle.length;
           const turno = (turnos || []).find((tu) => tu.id === t.turnoId);
-          const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, desde, hasta);
-          const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, desde, hasta);
+          // (2026-10-02, a pedido de Fredy) Días antes de la Fecha de
+          // Ingreso -- mismo criterio que ya aplican Nómina Fiscal / Fiscal
+          // Destajo (ver diasAntesDeIngreso), para que Cierre de Quincena
+          // prorratee igual a alguien que ingresó a mitad de la quincena en
+          // vez de cobrarle la quincena completa.
+          const diasIngresoTardio = diasAntesDeIngreso(t.fechaIngreso, desde, hasta);
+          const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, desde, hasta) + diasIngresoTardio;
+          const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, desde, hasta) + diasIngresoTardio;
           const base = tipo === "Fiscal"
             ? calcularLiquidacionFiscal(t, diasInasistencia, diasSinAuxilio, diasSinSueldo)
             : calcularLiquidacionFiscalDestajo(t, diasInasistencia, diasSinAuxilio, diasSinSueldo);
