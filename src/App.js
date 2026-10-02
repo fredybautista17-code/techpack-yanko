@@ -6466,7 +6466,17 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   // escrito a mano (que nunca va a calzar con este patrón tan específico).
   function esConsumoCrudoSinConvertir(v) {
     const txt = String(v || "").trim();
-    return txt !== "" && !/[a-zA-Z]/.test(txt);
+    if (txt === "") return false;
+    if (!/[a-zA-Z]/.test(txt)) return true;
+    // (2026-10-02, a pedido de Fredy) "X (sin unidad)" -- formato que se
+    // guardaba antes de confirmar que, cuando Busint no trae NINGUN codigo
+    // de unidad para una tela, el numero siempre viene en metros cuadrados
+    // igual que el codigo "4" (ver mas abajo). Debe poder recalcularse
+    // igual que el consumo crudo viejo, para que el boton Actualizar (o el
+    // masivo) lo convierta a metro lineal sin que Fredy tenga que borrarlo
+    // a mano primero.
+    if (/\(sin unidad\)$/.test(txt)) return true;
+    return false;
   }
   // (2026-09-30, a pedido de Fredy) Nucleo compartido de refrescarBusint --
   // consulta Busint para UNA referencia y arma el patch de los campos que
@@ -6516,15 +6526,13 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         // el ancho de esa tela ahí, se deja tal cual en m² en vez de
         // inventar un número -- Fredy pidió solo el valor ya convertido,
         // sin mostrar el m² original al lado.
-        if (unidadTela === "4") {
+        if (unidadTela === "4" || !unidadTela) {
+          // (2026-10-02, a pedido de Fredy) Confirmado: cuando Busint no
+          // trae NINGUN codigo de unidad para una tela, el numero tambien
+          // viene siempre en metros cuadrados -- se trata igual que el
+          // codigo "4" (antes se dejaba marcado "(sin unidad)" sin
+          // convertir, por si acaso, pero ya no hace falta esa cautela).
           consumo = anchoEncontrado ? `${Math.round((slot0.consumo / anchoEncontrado) * 100) / 100} Mt` : `${slot0.consumo} m2`;
-        } else if (!unidadTela) {
-          // (2026-09-30, a pedido de Fredy) Busint no tiene NINGUN codigo de
-          // unidad para esta tela -- no hay forma de saber en que unidad
-          // viene el numero, asi que se deja el valor crudo pero marcado
-          // para poder detectar facil cuales referencias hay que revisar a
-          // mano directamente en Busint.
-          consumo = `${slot0.consumo} (sin unidad)`;
         } else {
           consumo = `${slot0.consumo} ${unidadTela}`;
         }
