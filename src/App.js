@@ -2605,17 +2605,18 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
                 {noFinalState && st !== "enviado_cotizacion" && st !== "enviar_cliente" && st !== "preparada_para_enviar" && st !== "enviado" && (
                   <Btn variant="ghost" onClick={handleMarcarCotizacion}>📤 Cotización</Btn>
                 )}
-                {st !== "enviado" && (
-                  item.precioCotizacion != null ? (
-                    <button
-                      onClick={() => setShowPrecioCotizacion(true)}
-                      style={{ padding: "9px 18px", background: T.violetBg, color: T.violet, border: `1.5px solid ${T.violet}`, borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}
-                    >
-                      💲 {fmtCOP(item.precioCotizacion)}
-                    </button>
-                  ) : (
-                    <Btn variant="ghost" onClick={() => setShowPrecioCotizacion(true)}>💲 Precio</Btn>
-                  )
+                {/* El precio se puede editar en cualquier estado, incluso
+                    después de "Enviado" — antes se ocultaba al llegar a ese
+                    estado, pero Fredy pidió poder corregirlo siempre. */}
+                {item.precioCotizacion != null ? (
+                  <button
+                    onClick={() => setShowPrecioCotizacion(true)}
+                    style={{ padding: "9px 18px", background: T.violetBg, color: T.violet, border: `1.5px solid ${T.violet}`, borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}
+                  >
+                    💲 {fmtCOP(item.precioCotizacion)}
+                  </button>
+                ) : (
+                  <Btn variant="ghost" onClick={() => setShowPrecioCotizacion(true)}>💲 Precio</Btn>
                 )}
                 {st === "enviado_cotizacion" && <button onClick={() => changeStatus("enviar_cliente")} style={{ padding: "9px 18px", background: "#ECFEFF", color: "#0E7490", border: "1.5px solid #0E7490", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>✈ Enviar al Cliente</button>}
                 {/* Un prototipo suelto sigue enviándose solo (abre el modal de
