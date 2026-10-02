@@ -11214,7 +11214,10 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
           const t = g.trabajador;
           const nombreNorm = normalizarNombreHuellero(t.nombre);
           const faltasDetalle = (faltas || []).filter((f) => coincideHuellero(f, t, nombreNorm) && f.fecha >= desde && f.fecha <= hasta);
-          const diasInasistencia = faltasDetalle.length;
+          // (2026-10-02, a pedido de Fredy) Un dia ya justificado (ver
+          // estaJustificada) no cuenta como falta sin justificar -- mismo
+          // criterio que ya aplican Nomina Fiscal/Fiscal Destajo/Destajo.
+          const diasInasistencia = faltasDetalle.filter((f) => !estaJustificada(ausencias, t.id, f.fecha)).length;
           const turno = (turnos || []).find((tu) => tu.id === t.turnoId);
           // (2026-10-02, a pedido de Fredy) Días antes de la Fecha de
           // Ingreso -- mismo criterio que ya aplican Nómina Fiscal / Fiscal
