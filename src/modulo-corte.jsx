@@ -8388,6 +8388,9 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin }) {
   const [fechaDia, setFechaDia] = useState(hoy);
   const [mesSel, setMesSel] = useState(new Date().getMonth() + 1);
   const [anioSel, setAnioSel] = useState(new Date().getFullYear());
+  // (2026-10-02, a pedido de Fredy) Sub-pestaña "Auditoría vs Busint" --
+  // ver AuditoriaCorteBusintView más abajo (después de este componente).
+  const [subTabCC, setSubTabCC] = useState("costo");
   const norm = (s) => String(s || "").trim().toUpperCase();
   // Franja de cumplimiento diario — de un vistazo, últimos 30 días: verde =
   // el ingreso de corte cubrió la nómina estimada de ese día, rojo = no la
@@ -8505,6 +8508,31 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin }) {
   );
   return (
     <div>
+      {/* (2026-10-02, a pedido de Fredy) Compara, lote por lote, lo que
+          quedó registrado en ATLAS (cortesRealizados) contra lo que Busint
+          reporta como realmente cortado (cantCortada de
+          ApiGen_PanelControlFlujoOperacional) -- para encontrar corte sin
+          registrar en ATLAS, de más, o que ni siquiera aparece en Busint,
+          sin tener que revisar lote por lote a mano. Ver
+          AuditoriaCorteBusintView más abajo. */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+        <button
+          onClick={() => setSubTabCC("costo")}
+          style={{ padding: "9px 16px", borderRadius: 10, border: `1px solid ${subTabCC === "costo" ? C.ink : C.border}`, background: subTabCC === "costo" ? C.ink : C.white, color: subTabCC === "costo" ? C.seam : C.slate, fontWeight: 800, fontSize: 13, cursor: "pointer" }}
+        >
+          💰 Centro de Costo
+        </button>
+        <button
+          onClick={() => setSubTabCC("auditoria")}
+          style={{ padding: "9px 16px", borderRadius: 10, border: `1px solid ${subTabCC === "auditoria" ? C.ink : C.border}`, background: subTabCC === "auditoria" ? C.ink : C.white, color: subTabCC === "auditoria" ? C.seam : C.slate, fontWeight: 800, fontSize: 13, cursor: "pointer" }}
+        >
+          🔍 Auditoría vs Busint
+        </button>
+      </div>
+      {subTabCC === "auditoria" ? (
+        <AuditoriaCorteBusintView pedidos={pedidos} periodo={periodo} fechaDia={fechaDia} mesSel={mesSel} anioSel={anioSel} enPeriodo={enPeriodo} etiquetaPeriodo={etiquetaPeriodo} />
+      ) : (
+      <>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
           💰 Centro de Costo — Corte
@@ -8721,6 +8749,219 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin }) {
             })}
           </tbody>
         </table>
+      )}
+      </>
+      )}
+    </div>
+  );
+}
+
+// (2026-10-02, a pedido de Fredy) "Auditoría vs Busint" -- compara, lote por
+// lote (numLote), lo que ATLAS tiene registrado en cortesRealizados contra
+// lo que Busint reporta en vivo (cantCortada de
+// ApiGen_PanelControlFlujoOperacional, mismo endpoint que ya usan Tubo
+// Productivo/Buscar por Línea en Planeación). Tres casos reales (ver caso
+// real referencia 975048/pedido 1616 que motivó esto): (1) el lote cuadra
+// exacto, (2) el lote está en ATLAS pero con unidades distintas a Busint
+// (falta registrar más, o se registró de más), (3) Busint reporta un lote
+// cortado de un pedido que SÍ existe en ATLAS pero nadie registró ese corte
+// acá todavía (caso real: lote 7420, "unido a lote 7407", nunca se
+// registró aparte en ATLAS). El número de lote en ATLAS es un campo que el
+// patronista escribe a mano (puede quedar vacío hasta completarse después
+// en "Cortes Aprobados") -- los cortes sin lote asignado no se pueden
+// cruzar contra Busint, así que se listan aparte en vez de adivinar a cuál
+// lote pertenecen.
+function AuditoriaCorteBusintView({ pedidos, periodo, fechaDia, mesSel, anioSel, enPeriodo, etiquetaPeriodo }) {
+  const [lotesBusint, setLotesBusint] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelado = false;
+    setCargando(true);
+    setError("");
+    (async () => {
+      try {
+        const llamar = httpsCallable(functionsClient, "getCargaPlaneacionDesdeBusintGen");
+        const resp = await llamar();
+        if (!cancelado) setLotesBusint(resp.data?.lotes || []);
+      } catch (err) {
+        if (!cancelado) setError(err?.message || "No se pudo consultar Busint.");
+      } finally {
+        if (!cancelado) setCargando(false);
+      }
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, []);
+
+  const numerosPedidoAtlas = new Set(
+    (pedidos || []).map((p) => String(p.numero || "").trim()).filter(Boolean)
+  );
+
+  // Lado ATLAS: cortes del periodo elegido CON lote asignado, agrupados por
+  // número de lote (puede haber más de un registro del mismo lote si se
+  // completó en partes).
+  const atlasPorLote = new Map();
+  // Cortes del periodo SIN lote asignado -- no se pueden cruzar, se listan
+  // aparte.
+  const cortesSinLote = [];
+  (pedidos || []).forEach((p) => {
+    (p.cortesRealizados || []).forEach((c) => {
+      if (!enPeriodo(c.fecha)) return;
+      const loteKey = String(c.lote || "").trim();
+      const refsTexto = (c.refs || []).map((r) => r.ref).filter(Boolean).join(" + ") || "—";
+      if (!loteKey) {
+        cortesSinLote.push({ pedidoNumero: p.numero, referencias: refsTexto, cortador: c.cortador || "(Sin cortador)", fecha: c.fecha, unidades: c.totalUnidades || 0 });
+        return;
+      }
+      if (!atlasPorLote.has(loteKey)) {
+        atlasPorLote.set(loteKey, { lote: loteKey, pedidoNumero: p.numero, unidades: 0, cortador: c.cortador || "", referencias: new Set(), fecha: c.fecha });
+      }
+      const acc = atlasPorLote.get(loteKey);
+      acc.unidades += c.totalUnidades || 0;
+      (c.refs || []).forEach((r) => { if (r.ref) acc.referencias.add(r.ref); });
+      if (!acc.cortador && c.cortador) acc.cortador = c.cortador;
+    });
+  });
+
+  // Lado Busint: solo lotes de pedidos que SÍ existen en ATLAS (si no, no
+  // hay con qué cruzar) y cuya fecha de corte cae en el periodo elegido.
+  const busintPorLote = new Map();
+  (lotesBusint || []).forEach((l) => {
+    const loteKey = String(l.numLote || "").trim();
+    if (!loteKey) return;
+    if (!numerosPedidoAtlas.has(String(l.numPedido || "").trim())) return;
+    if (!enPeriodo(l.fechaCorteISO)) return;
+    busintPorLote.set(loteKey, l);
+  });
+
+  const lotesKeys = [...new Set([...atlasPorLote.keys(), ...busintPorLote.keys()])];
+  const filas = lotesKeys.map((loteKey) => {
+    const a = atlasPorLote.get(loteKey) || null;
+    const b = busintPorLote.get(loteKey) || null;
+    const unidadesAtlas = a?.unidades || 0;
+    const unidadesBusint = Number(b?.cantCortada) || 0;
+    const diferencia = unidadesAtlas - unidadesBusint;
+    let estado = "ok";
+    let etiqueta = "✓ Cuadra";
+    if (!a && b) {
+      estado = "falta_atlas";
+      etiqueta = "⚠ Falta registrar en ATLAS";
+    } else if (a && !b) {
+      estado = "no_busint";
+      etiqueta = "⚠ No aparece en Busint";
+    } else if (diferencia !== 0) {
+      estado = "diferencia";
+      etiqueta = diferencia > 0 ? "⚠ ATLAS tiene de más" : "⚠ Falta registrar en ATLAS";
+    }
+    return {
+      lote: loteKey,
+      pedidoNumero: a?.pedidoNumero || b?.numPedido || "—",
+      referencia: a ? [...a.referencias].join(" + ") || "—" : (b?.referencia || "—"),
+      cortador: a?.cortador || "—",
+      unidadesAtlas,
+      unidadesBusint,
+      diferencia,
+      estado,
+      etiqueta,
+    };
+  }).sort((x, y) => {
+    if (x.estado === "ok" && y.estado !== "ok") return 1;
+    if (x.estado !== "ok" && y.estado === "ok") return -1;
+    return String(x.lote).localeCompare(String(y.lote));
+  });
+
+  const conDiferencia = filas.filter((f) => f.estado !== "ok").length;
+  const cuadranExacto = filas.filter((f) => f.estado === "ok").length;
+
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 6px", fontSize: 20, fontWeight: 800, color: C.ink }}>
+        🔍 Auditoría de Corte vs Busint
+      </h2>
+      <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 680 }}>
+        Compara, lote por lote, lo que quedó registrado en ATLAS contra lo que Busint reporta como realmente cortado — mostrando: <strong style={{ color: C.ink }}>{etiquetaPeriodo}</strong>.
+      </p>
+      {error && (
+        <div style={{ padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>⚠ {error}</div>
+      )}
+      {cargando ? (
+        <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>Consultando Busint...</div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 20 }}>
+            <KPICard icon="📦" label="Lotes comparados" value={fmtNum(filas.length)} color={C.blue} bg={C.blueBg} />
+            <KPICard icon="⚠" label="Con diferencia" value={fmtNum(conDiferencia)} color={C.red} bg={C.redBg} />
+            <KPICard icon="✓" label="Cuadran exacto" value={fmtNum(cuadranExacto)} color={C.green} bg={C.greenBg} />
+            <KPICard icon="⚪" label="Sin lote asignado (no comparables)" value={fmtNum(cortesSinLote.length)} color={C.amber} bg={C.amberBg} />
+          </div>
+          {!filas.length ? (
+            <div style={{ textAlign: "center", padding: 48, color: C.slate, fontSize: 14 }}>
+              Sin lotes para comparar en este periodo.
+            </div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginBottom: 24 }}>
+              <thead>
+                <tr style={{ borderBottom: `2px solid ${C.border}` }}>
+                  <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Lote</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Pedido</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Referencia</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Cortador (ATLAS)</th>
+                  <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>ATLAS</th>
+                  <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Busint</th>
+                  <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Diferencia</th>
+                  <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filas.map((f) => (
+                  <tr key={f.lote} style={{ borderBottom: `1px solid ${C.border}`, background: f.estado !== "ok" ? C.redBg : "transparent" }}>
+                    <td style={{ padding: "10px", fontWeight: 700, color: C.ink }}>{f.lote}</td>
+                    <td style={{ padding: "10px" }}>{f.pedidoNumero}</td>
+                    <td style={{ padding: "10px" }}>{f.referencia}</td>
+                    <td style={{ padding: "10px" }}>{f.cortador}</td>
+                    <td style={{ padding: "10px", textAlign: "right" }}>{fmtNum(f.unidadesAtlas)}</td>
+                    <td style={{ padding: "10px", textAlign: "right" }}>{fmtNum(f.unidadesBusint)}</td>
+                    <td style={{ padding: "10px", textAlign: "right", fontWeight: 800, color: f.diferencia === 0 ? C.green : C.red }}>{f.diferencia > 0 ? `+${fmtNum(f.diferencia)}` : fmtNum(f.diferencia)}</td>
+                    <td style={{ padding: "10px", fontSize: 11, fontWeight: 700, color: f.estado === "ok" ? C.green : C.red, whiteSpace: "nowrap" }}>{f.etiqueta}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {cortesSinLote.length > 0 && (
+            <>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.ink, marginBottom: 4 }}>⚪ Cortes registrados en ATLAS sin lote asignado ({cortesSinLote.length})</div>
+              <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 10, maxWidth: 680 }}>
+                Estos no se pueden comparar contra Busint porque todavía no tienen número de lote escrito en ATLAS — hay que completarlo en "Cortes Aprobados" antes de que entren a la auditoría.
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ borderBottom: `2px solid ${C.border}` }}>
+                    <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Pedido</th>
+                    <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Referencia</th>
+                    <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Cortador</th>
+                    <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Fecha</th>
+                    <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>Unidades (ATLAS)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cortesSinLote.map((c, i) => (
+                    <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
+                      <td style={{ padding: "10px" }}>{c.pedidoNumero}</td>
+                      <td style={{ padding: "10px" }}>{c.referencias}</td>
+                      <td style={{ padding: "10px" }}>{c.cortador}</td>
+                      <td style={{ padding: "10px" }}>{fmtFechaISO(c.fecha)}</td>
+                      <td style={{ padding: "10px", textAlign: "right" }}>{fmtNum(c.unidades)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+        </>
       )}
     </div>
   );
