@@ -1556,7 +1556,7 @@ function ImageUploader({ image, onImage, readonly, compact }) {
   );
 }
 
-function ChatPanel({ observations, currentUser, role, onSend, onMarkDone }) {
+function ChatPanel({ observations, currentUser, role, perms, onSend, onMarkDone }) {
   const [text, setText] = useState("");
   function send() { if (!text.trim()) return; onSend(text.trim()); setText(""); }
   const pending = observations.filter((o) => !o.done).length;
@@ -1579,10 +1579,12 @@ function ChatPanel({ observations, currentUser, role, onSend, onMarkDone }) {
                 <div style={{ padding: "9px 13px", borderRadius: 10, background: mine ? T.ink : T.canvas, color: mine ? T.white : T.ink, fontSize: 13, lineHeight: 1.5, borderTopRightRadius: mine ? 2 : 10, borderTopLeftRadius: mine ? 10 : 2, textDecoration: o.done ? "line-through" : "none" }}>{o.text}</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4, flexDirection: mine ? "row-reverse" : "row" }}>
                   <span style={{ fontSize: 10, color: T.slate }}>{new Date(o.date).toLocaleString("es-CO", { dateStyle: "short", timeStyle: "short" })}</span>
-                  {/* (2026-09-30, a pedido de Fredy) Solo un usuario con rol
-                      Diseñador puede marcar una observación como hecha -- antes
-                      cualquiera que viera el chat (incluido un Cliente) podía. */}
-                  {!o.done && role === "Diseñador" && <button onClick={() => onMarkDone(o.id)} style={{ background: T.jadeBg, border: `1px solid ${T.jade}`, borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, color: T.jade, cursor: "pointer" }}>✓ Marcar hecha</button>}
+                  {/* (2026-09-30, a pedido de Fredy) Marcar una observación como
+                      hecha requiere el permiso "marcar_observaciones" (se activa
+                      por rol en Administración > Roles) -- antes cualquiera que
+                      viera el chat (incluido un Cliente) podía. Actualizado
+                      2026-10-02: ya no depende del nombre del rol. */}
+                  {!o.done && perms?.marcarObservaciones && <button onClick={() => onMarkDone(o.id)} style={{ background: T.jadeBg, border: `1px solid ${T.jade}`, borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, color: T.jade, cursor: "pointer" }}>✓ Marcar hecha</button>}
                 </div>
               </div>
             </div>
@@ -2313,10 +2315,10 @@ function PrecioCotizacionModal({ item, onSave, onClose }) {
 // aquí el ida y vuelta de aprobación de la ilustración/concepto completo —
 // separado de la Hoja de Vida de las referencias individuales. Reutiliza el
 // mismo ChatPanel que ya se usa para observaciones de Prototipos/Referencias.
-function ObservacionesCapsulaModal({ capsula, currentUser, role, onSend, onMarkDone, onClose }) {
+function ObservacionesCapsulaModal({ capsula, currentUser, role, perms, onSend, onMarkDone, onClose }) {
   return (
     <Modal title={`Observaciones de Ilustración — ${capsula.name}`} onClose={onClose} width={520}>
-      <ChatPanel observations={capsula.observacionesIlustracion || []} currentUser={currentUser} role={role}
+      <ChatPanel observations={capsula.observacionesIlustracion || []} currentUser={currentUser} role={role} perms={perms}
         onSend={(texto) => onSend(capsula.id, texto)}
         onMarkDone={(obsId) => onMarkDone(capsula.id, obsId)}
       />
@@ -2801,7 +2803,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
           </div>
         )}
         {tab === "especificaciones" && <EspecificacionesPanel item={item} canEdit={canEdit} onPatch={patch} kind={kind} capsulaName={capsula?.name} />}
-        {tab === "chat" && <ChatPanel observations={item.observations.filter((o) => o.type !== "update" && o.user !== "Sistema")} currentUser={currentUser} role={role} onSend={sendObs} onMarkDone={markDone} />}
+        {tab === "chat" && <ChatPanel observations={item.observations.filter((o) => o.type !== "update" && o.user !== "Sistema")} currentUser={currentUser} role={role} perms={perms} onSend={sendObs} onMarkDone={markDone} />}
       </div>
     </div>
   );
@@ -3297,6 +3299,7 @@ function CapsulasView({ capsulas, role, perms, currentUser, onSelectRef, onNewCa
           capsula={capsulas.find((c) => c.id === obsCapsula.id) || obsCapsula}
           currentUser={currentUser}
           role={role}
+          perms={perms}
           onSend={onSendObsCapsula}
           onMarkDone={onMarkDoneObsCapsula}
           onClose={() => setObsCapsula(null)}
@@ -9240,14 +9243,16 @@ function DashboardView({ protos, capsulas, pedidos, onGoProtos, onGoCapsulas, on
 // Ilustración de Cápsula) en un solo lugar, con su propio botón en el menú
 // de Diseño -- antes solo se podían revisar abriendo cada ítem uno por uno,
 // lo que hacía muy lento auditar pendientes con muchas cápsulas/referencias.
-// "Marcar hecha" solo se ofrece a rol Diseñador, igual que en ChatPanel
+// (2026-10-02) "Marcar hecha" ya no depende del nombre del rol -- se
+// controla con el permiso de flujo de trabajo "marcar_observaciones",
+// activable por rol en Administración > Roles. Igual que en ChatPanel
 // dentro del detalle de cada ítem.
-function ObservacionesView({ protos, capsulas, role, onSelectProto, onSelectRef, onMarcarHechaProto, onMarcarHechaRef, onMarcarHechaCapsula }) {
+function ObservacionesView({ protos, capsulas, role, perms, onSelectProto, onSelectRef, onMarcarHechaProto, onMarcarHechaRef, onMarcarHechaCapsula }) {
   const [tab, setTab] = useState("pendientes");
   const [busqueda, setBusqueda] = useState("");
   const [capsulaFiltro, setCapsulaFiltro] = useState("todas");
   const [disenadorFiltro, setDisenadorFiltro] = useState("todos");
-  const puedeMarcarHecha = role === "Diseñador";
+  const puedeMarcarHecha = perms?.marcarObservaciones ?? false;
 
   // Normaliza un valor que "debería" ser texto plano (nombre de persona,
   // rol, texto de la observación) a string real -- por si algún registro
@@ -12051,7 +12056,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
                       <div style={{ fontWeight: 700, fontSize: 14, color: T.ink }}>{r.name}</div>
                       <div style={{ fontSize: 10, fontWeight: 700, color: T.slate, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 10, marginBottom: 4 }}>Permisos de flujo de trabajo</div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte", "aprobar_despacho", "control_despacho", "editar_kpis"].map((perm) => (
+                        {["editar", "aprobar", "declinar", "admin", "corte", "ilustracion", "aprobar_corte", "aprobar_despacho", "control_despacho", "editar_kpis", "marcar_observaciones"].map((perm) => (
                           <span key={perm} onClick={() => onUpdateConfig({ roles: config.roles.map((x) => (x.id !== r.id ? x : { ...x, perms: x.perms.includes(perm) ? x.perms.filter((p) => p !== perm) : [...x.perms, perm] })) })}
                             style={{ padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, cursor: "pointer", background: r.perms.includes(perm) ? T.jadeBg : "#EDEDF2", color: r.perms.includes(perm) ? T.jade : T.slate, border: `1px solid ${r.perms.includes(perm) ? T.jade : T.border}` }}
                           >{perm}</span>
@@ -16132,6 +16137,7 @@ function AppInner() {
     // catálogo de KPIs — crear/editar/borrar/trasladar) sin darle a la
     // persona el resto de permisos de administrador general.
     editarKpis: !esClienteSoloLectura && (userRoleData?.perms?.includes("editar_kpis") ?? false),
+    marcarObservaciones: !esClienteSoloLectura && (userRoleData?.perms?.includes("marcar_observaciones") ?? false),
   };
   // Visibilidad de módulos, decidida sección por sección con moduloVisible en
   // vez de reutilizar directamente perms.corte / perms.admin — así cada
@@ -16722,7 +16728,7 @@ function AppInner() {
             )}
             {view === "stats" && <EstadisticasView protos={protosVisibles} capsulas={capsulasVisibles} stages={config.stages} config={config} />}
             {view === "observaciones" && (
-              <ObservacionesView protos={protosVisibles} capsulas={capsulasVisibles} role={role}
+              <ObservacionesView protos={protosVisibles} capsulas={capsulasVisibles} role={role} perms={perms}
                 onSelectProto={(id) => { setSelProtoId(id); setView("proto-detail"); }}
                 onSelectRef={(capId, refId) => { setSelCapId(capId); setSelRefId(refId); setView("ref-detail"); }}
                 onMarcarHechaProto={marcarObservacionHechaProto}
