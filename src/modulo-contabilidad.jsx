@@ -3053,6 +3053,60 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
   const [busquedaDadoPorCumplido, setBusquedaDadoPorCumplido] = useState("");
   const [subVistaPendientes, setSubVistaPendientes] = useState("conFactura");
   const [vaciandoHistorico, setVaciandoHistorico] = useState(false);
+  // (2026-10-02, a pedido de Fredy) Antes de aprobar un lote, valida que
+  // Zona Calor y Control de Calidad no tengan ningun pendiente con ese
+  // numero de lote (produccion sin registrar frente a Busint, entrada de
+  // Busint sin registrar en Nomina, etc.) -- la misma auditoria que ya
+  // corre sola todos los dias a las 7am (ver AuditoriaBusintNominaPanel en
+  // modulo-planeacion.jsx), reutilizada aqui. Por defecto se muestra el
+  // ultimo resultado guardado (de la corrida de las 7am, o de una corrida
+  // manual de cualquier pantalla); el boton "🔍 Revisar" de cada lote
+  // recalcula EN VIVO solo para ese lote, sin mandar ningun correo.
+  const [auditoriaHistorial, setAuditoriaHistorial] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "centro_costo_auditoria_busint"), (snap) => {
+      setAuditoriaHistorial(snap.docs.map((d) => d.data()));
+    });
+    return () => unsub();
+  }, []);
+  const AREAS_AUDITORIA_DADO_POR_CUMPLIDO = ["ZONA CALOR", "CONTROL DE CALIDAD"];
+  const ultimaAuditoriaPorArea = AREAS_AUDITORIA_DADO_POR_CUMPLIDO.map((area) =>
+    auditoriaHistorial.filter((h) => h.area === area).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))[0] || null
+  ).filter(Boolean);
+  // revisionesLote: resultado de darle "🔍 Revisar" a un lote puntual --
+  // mientras no se use el boton, se usa lo que ya haya guardado la ultima
+  // corrida (diaria o manual, de cualquier pantalla); al usarlo, se
+  // reemplaza por el resultado fresco de ESE momento para ese lote.
+  const [revisionesLote, setRevisionesLote] = useState({});
+  const [revisandoLoteId, setRevisandoLoteId] = useState(null);
+  function discrepanciasDeLote(l) {
+    const manual = revisionesLote[l.id];
+    if (manual) return manual.discrepancias;
+    const numLoteStr = String(l.numLote || "").trim();
+    if (!numLoteStr) return [];
+    return ultimaAuditoriaPorArea.flatMap((a) =>
+      (a.discrepancias || []).filter((d) => d.numLote === numLoteStr).map((d) => ({ ...d, area: a.area }))
+    );
+  }
+  async function revisarLote(l) {
+    setRevisandoLoteId(l.id);
+    try {
+      const llamar = httpsCallable(functionsClient, "revisarAuditoriaLoteDadoPorCumplido");
+      const resp = await llamar({ numLote: l.numLote });
+      setRevisionesLote((r) => ({ ...r, [l.id]: { discrepancias: resp.data?.discrepanciasLote || [], revisadoEn: new Date().toISOString() } }));
+    } catch (err) {
+      alert(`No se pudo revisar el lote: ${err?.message || String(err)}`);
+    } finally {
+      setRevisandoLoteId(null);
+    }
+  }
+  const ETIQUETAS_DISCREPANCIA_DADO_POR_CUMPLIDO = {
+    falta_registrar: "Falta registrar en Nómina",
+    sobre_registrado: "Registrado de más en Nómina",
+    sin_entrada_busint: "Pagado en Nómina pero sin entrada en Busint",
+    diferencia_valor: "La cantidad coincide pero el valor pagado no",
+    fecha_no_coincide: "La fecha registrada no coincide con Busint",
+  };
   // (2026-09-19, a pedido de Fredy) Un lote marcado "Con factura" puede ser
   // por una factura real de Busint, O por un Traslado en Consignación/
   // Externo (TCO/TEX) -- Busint todavía no emite la factura real hasta que
@@ -3489,7 +3543,10 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
                   costoDefinitivoManual: l.costoDefinitivoManual ? l.costoDefinitivo : null,
                 });
                 const sinFactura = l.tieneFactura === false;
-                const listoParaAprobar = Number(l.costoRealTotal) > 0 && !!l.categoriaBaseId && !sinFactura;
+                const discrepanciasLote = discrepanciasDeLote(l);
+                const tienePendienteAuditoria = discrepanciasLote.length > 0;
+                const revisionLote = revisionesLote[l.id];
+                const listoParaAprobar = Number(l.costoRealTotal) > 0 && !!l.categoriaBaseId && !sinFactura && !tienePendienteAuditoria;
                 // (2026-09-19, a pedido de Fredy) "Con factura" en este
                 // sistema junta 2 casos que en Busint son MUY distintos:
                 // una factura real (FAC), o un Traslado en Consignación/
@@ -3566,6 +3623,35 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
                         ⚠ Cant. Despachada ({fmtNum(despachadaMostrada)}) es mayor que Cant. Cortada ({fmtNum(l.cantCortada)}) — puede que Busint haya juntado varios lotes en una sola factura. Corrígela arriba, o espera a que Bodega la registre en Despachos Generales.
                       </div>
                     )}
+                    {/* (2026-10-02, a pedido de Fredy) Valida contra la auditoría de Zona
+                        Calor/Control de Calidad antes de dejar aprobar el lote -- si hay
+                        algún pendiente, bloquea "Aprobar" (ver listoParaAprobar arriba) hasta
+                        que se resuelva o se vuelva a revisar y ya no aparezca. */}
+                    <div style={{ marginBottom: 10, padding: "10px 12px", borderRadius: 8, background: tienePendienteAuditoria ? C.redBg : C.greenBg, display: "flex", flexDirection: "column", gap: 6 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: tienePendienteAuditoria ? C.red : C.green }}>
+                          {tienePendienteAuditoria
+                            ? `🚫 Zona Calor/Control de Calidad tienen ${discrepanciasLote.length} pendiente(s) con este lote — no se puede aprobar hasta resolverlo.`
+                            : "✅ Zona Calor y Control de Calidad sin pendientes con este lote."}
+                        </span>
+                        <Btn small variant="ghost" onClick={() => revisarLote(l)} disabled={revisandoLoteId === l.id}>
+                          {revisandoLoteId === l.id ? "Revisando..." : "🔍 Revisar ahora"}
+                        </Btn>
+                      </div>
+                      {revisionLote && (
+                        <div style={{ fontSize: 10, color: C.slate }}>Última revisión en vivo: {new Date(revisionLote.revisadoEn).toLocaleString("es-CO")}</div>
+                      )}
+                      {tienePendienteAuditoria && (
+                        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, color: C.ink }}>
+                          {discrepanciasLote.map((d, di) => (
+                            <li key={di}>
+                              <strong>{d.area}</strong> — {d.proceso}: {ETIQUETAS_DISCREPANCIA_DADO_POR_CUMPLIDO[d.tipo] || d.tipo}
+                              {d.tipo !== "fecha_no_coincide" ? ` (Busint: ${fmtNum(d.entradaBusint)}, Nómina: ${fmtNum(d.registradoNomina)})` : ` (${d.ultimaEntrada})`}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
                     <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "end", marginBottom: 12 }}>
                       <Field label="Costo Real Total (de Busint)">
                         <FInput type="number" value={l.costoRealTotal ?? ""} onChange={(v) => guardarCampo(l.id, "costoRealTotal", parseFloat(v) || null)} placeholder="Ej: 4841270" />

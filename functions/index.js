@@ -3391,7 +3391,13 @@ exports.getMovimientosProcesoBusintBD = onCall(
 const AREAS_AUDITORIA_BUSINT = ["ZONA CALOR", "CONTROL DE CALIDAD"];
 const CODPLANTAS_PROPIAS = new Set([1002, 1021]);
 
-async function correrAuditoriaBusintVsNomina({ inmediato = false } = {}) {
+// (2026-10-02, a pedido de Fredy) "sinNotificar": para el botón de revisar
+// UN lote puntual desde Contabilidad -> Dado por Cumplido -- recalcula y
+// guarda el resultado igual que siempre (asi las demas pantallas que leen
+// "centro_costo_auditoria_busint" tambien ven el dato mas fresco), pero
+// NUNCA manda correo ni cola de notificacion. El correo automatico de las
+// 7am (onSchedule, abajo) sigue funcionando exactamente igual, sin tocar.
+async function correrAuditoriaBusintVsNomina({ inmediato = false, sinNotificar = false } = {}) {
   const hoy = fechaHoyBogota();
   const mesActualISO = hoy.slice(0, 7); // "2026-09" -- lo que lleva del mes en curso (Bogota)
 
@@ -3562,9 +3568,15 @@ async function correrAuditoriaBusintVsNomina({ inmediato = false } = {}) {
       totalDiscrepancias: discrepancias.length,
       discrepancias,
     });
-    resultados.push({ area: nombreArea, totalDiscrepancias: discrepancias.length });
+    // (2026-10-02) Se agrega "discrepancias" al resultado que se devuelve a
+    // quien llamo la funcion -- antes solo quedaba guardado en Firestore y
+    // habia que esperar a que el onSnapshot del frontend lo recogiera. El
+    // boton de revisar un lote puntual necesita el dato YA, en la misma
+    // respuesta, para decidir si bloquea "Aprobar" sin depender del tiempo
+    // que tarde en propagarse el snapshot.
+    resultados.push({ area: nombreArea, totalDiscrepancias: discrepancias.length, discrepancias });
 
-    if (discrepancias.length > 0) {
+    if (!sinNotificar && discrepancias.length > 0) {
       let destinatarios = usuarios.filter((u) => u.areaNomina === nombreArea && u.email).map((u) => u.email);
       if (!destinatarios.length) {
         destinatarios = usuarios.filter((u) => u.isAdmin && u.email).map((u) => u.email);
@@ -6120,6 +6132,37 @@ exports.correrAuditoriaBusintVsNominaAhora = onCall(
   async (request) => {
     await verificarLlamadorEsAdmin(request);
     return await correrAuditoriaBusintVsNomina({ inmediato: true });
+  }
+);
+
+// (2026-10-02, a pedido de Fredy) Boton "🔍 Revisar" por lote dentro de
+// Contabilidad -> Dado por Cumplido: antes de aprobar un lote, recalcula EN
+// VIVO si Zona Calor y/o Control de Calidad tienen algun pendiente
+// (produccion sin registrar, entrada de Busint sin registrar, etc.) para
+// ESE numero de lote -- bloqueante, a diferencia del resto de avisos de
+// Busint en el sistema (que solo avisan). Reutiliza el mismo calculo de
+// siempre (correrAuditoriaBusintVsNomina) con sinNotificar=true para no
+// mandar correo cada vez que alguien revise un lote -- el correo
+// automatico de las 7am sigue intacto. Requiere admin, igual que el boton
+// general "Correr auditoría ahora" (confirmado por Fredy: la usuaria de
+// Contabilidad que aprueba Dado por Cumplido tiene rol Administradora).
+exports.revisarAuditoriaLoteDadoPorCumplido = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, EMAIL_USER, EMAIL_APP_PASSWORD],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const numLote = String(request.data?.numLote || "").trim();
+    if (!numLote) throw new HttpsError("invalid-argument", "Falta el número de lote a revisar.");
+    const { resultados } = await correrAuditoriaBusintVsNomina({ inmediato: false, sinNotificar: true });
+    // Filtra, de las 2 áreas auditadas, solo las discrepancias de ESTE lote
+    // -- el resto del calculo (que es pesado, recorre toda la informacion
+    // de Busint del mes) no sirve de nada mostrarlo aqui.
+    const discrepanciasLote = resultados
+      .flatMap((r) => (r.discrepancias || []).filter((d) => d.numLote === numLote).map((d) => ({ ...d, area: r.area })));
+    return { numLote, discrepanciasLote };
   }
 );
 
