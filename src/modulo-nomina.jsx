@@ -5550,6 +5550,19 @@ function diasAntesDeIngreso(fechaIngreso, inicio, fin) {
   if (!fechaIngreso || fechaIngreso <= inicio || fechaIngreso > fin) return 0;
   return diasEntre360(inicio, fechaIngreso) - 1;
 }
+// (2026-10-02, a pedido de Fredy) Gemela de diasAntesDeIngreso, para cuando
+// alguien SALE de una ficha a mitad de quincena (ej. cambia de tipo de
+// contrato y se crea una ficha nueva aparte, caso real: Yesica Tatiana
+// Correa Penaranda) -- cuenta los dias de CALENDARIO despues de la Fecha de
+// Retiro dentro de [inicio, fin], sin saltarse domingos/festivos (a
+// diferencia de Licencia No Remunerada, que si los salta a proposito). Se
+// usa junto con el cambio en "personas" de Nomina Fiscal/Fiscal Destajo que
+// deja ver, solo por esa ultima quincena, a quien se retira justo en medio
+// de ella.
+function diasDespuesDeRetiro(fechaRetiro, inicio, fin) {
+  if (!fechaRetiro || fechaRetiro < inicio || fechaRetiro >= fin) return 0;
+  return diasEntre360(fechaRetiro, fin) - 1;
+}
 // (2026-09-13, a pedido de Fredy) Liquidacion de prestaciones sociales al
 // retiro de un trabajador -- ver LiquidacionRetiroView mas abajo. Cuenta,
 // dentro de [desde, hasta], los dias de CALENDARIO (no solo habiles: un
@@ -5941,7 +5954,14 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
   const [areaFiltro, setAreaFiltro] = useState("");
   const [empresaFiltro, setEmpresaFiltro] = useState("");
   const [busqueda, setBusqueda] = useState("");
-  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal" && t.activo !== false && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro) && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  const { inicio: inicioPeriodo, fin: finPeriodo } = rangoQuincena(anio, mes, quincena);
+  // (2026-10-02, a pedido de Fredy) Si alguien se retira justo DENTRO de
+  // esta quincena, lo dejamos aparecer una ultima vez (aunque ya haya
+  // quedado Inactivo) para poder calcularle y confirmarle esa quincena
+  // final -- ver diasDespuesDeRetiro mas abajo. En las quincenas
+  // siguientes, su Fecha de Retiro ya no cae en el rango y deja de
+  // aparecer, igual que antes.
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal" && (t.activo !== false || (t.fechaRetiro && t.fechaRetiro >= inicioPeriodo && t.fechaRetiro <= finPeriodo)) && (!areaFiltro || (t.area || "Sin asignar") === areaFiltro) && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   // (2026-09-22, a pedido de Fredy) yaLiquidado y la recarga de "lo ya
   // guardado" deben respetar los mismos filtros (Área/Empresa) que
@@ -5994,8 +6014,13 @@ function NominaFiscalView({ trabajadores, faltas, ausencias, motivosDisponibles,
       const diasTrabajadosCount = diasTrabajados.filter((d) => coincideHuellero(d, t, nombreNorm) && d.fecha >= inicio && d.fecha <= fin).length;
       const turno = (turnos || []).find((tu) => tu.id === t.turnoId);
       const diasIngresoTardio = diasAntesDeIngreso(t.fechaIngreso, inicio, fin);
-      const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, inicio, fin) + diasIngresoTardio;
-      const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin) + diasIngresoTardio;
+      // (2026-10-02, a pedido de Fredy) Dias despues de la Fecha de Retiro
+      // -- ver diasDespuesDeRetiro. Solo aplica algo distinto de 0 en la
+      // quincena exacta en la que cae el retiro (ver cambio en "personas"
+      // mas arriba).
+      const diasRetiroTemprano = diasDespuesDeRetiro(t.fechaRetiro, inicio, fin);
+      const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
+      const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
       const causacionDoc = (causacionManual || []).find((c) => c.id === `${t.id}__${periodoId}`);
       const base = calcularLiquidacionFiscal(t, dias, diasSinAuxilio, diasSinSueldo, causacionDoc ? causacionDoc.valor : null);
       // (2026-09-18, a pedido de Fredy) Horas Sueltas (Registrar
@@ -6877,7 +6902,11 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
 
   const [empresaFiltro, setEmpresaFiltro] = useState("");
   const [busqueda, setBusqueda] = useState("");
-  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal Destajo" && t.activo !== false && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  const { inicio: inicioPeriodo, fin: finPeriodo } = rangoQuincena(anio, mes, quincena);
+  // (2026-10-02, a pedido de Fredy) Ver el mismo comentario en
+  // NominaFiscalView -- deja aparecer, solo en la quincena exacta de su
+  // retiro, a quien ya quedo Inactivo.
+  const personas = trabajadores.filter((t) => t.tipoNomina === "Fiscal Destajo" && (t.activo !== false || (t.fechaRetiro && t.fechaRetiro >= inicioPeriodo && t.fechaRetiro <= finPeriodo)) && (!empresaFiltro || t.empleador === empresaFiltro)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const periodoId = `${anio}-${mes}-Q${quincena}`;
   // (2026-09-22, a pedido de Fredy) yaLiquidado y la recarga de "lo ya
   // guardado" deben respetar los mismos filtros (Área/Empresa) que
@@ -6932,8 +6961,9 @@ function NominaFiscalDestajoView({ trabajadores, faltas, ausencias, motivosDispo
       const diasTrabajadosCount = diasTrabajados.filter((d) => coincideHuellero(d, t, nombreNorm) && d.fecha >= inicio && d.fecha <= fin).length;
       const turno = (turnos || []).find((tu) => tu.id === t.turnoId);
       const diasIngresoTardio = diasAntesDeIngreso(t.fechaIngreso, inicio, fin);
-      const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, inicio, fin) + diasIngresoTardio;
-      const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin) + diasIngresoTardio;
+      const diasRetiroTemprano = diasDespuesDeRetiro(t.fechaRetiro, inicio, fin);
+      const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
+      const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, inicio, fin) + diasIngresoTardio + diasRetiroTemprano;
       const causacionDoc = (causacionManual || []).find((c) => c.id === `${t.id}__${periodoId}`);
       const base = calcularLiquidacionFiscalDestajo(t, dias, diasSinAuxilio, diasSinSueldo, causacionDoc ? causacionDoc.valor : null);
       // (2026-09-18, a pedido de Fredy) Horas Sueltas de la quincena --
@@ -11267,8 +11297,14 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
           // prorratee igual a alguien que ingresó a mitad de la quincena en
           // vez de cobrarle la quincena completa.
           const diasIngresoTardio = diasAntesDeIngreso(t.fechaIngreso, desde, hasta);
-          const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, desde, hasta) + diasIngresoTardio;
-          const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, desde, hasta) + diasIngresoTardio;
+          // (2026-10-02, a pedido de Fredy) Dias despues de la Fecha de
+          // Retiro -- mismo criterio que ya aplican Nomina Fiscal/Fiscal
+          // Destajo (ver diasDespuesDeRetiro), para que Cierre de Quincena
+          // tambien cierre exacto la ultima quincena parcial de alguien que
+          // se retira a mitad de periodo.
+          const diasRetiroTemprano = diasDespuesDeRetiro(t.fechaRetiro, desde, hasta);
+          const diasSinAuxilio = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_AUXILIO_TRANSPORTE, t, turno, desde, hasta) + diasIngresoTardio + diasRetiroTemprano;
+          const diasSinSueldo = diasHabilesDeAusencias(ausencias, MOTIVOS_SIN_SUELDO, t, turno, desde, hasta) + diasIngresoTardio + diasRetiroTemprano;
           const base = tipo === "Fiscal"
             ? calcularLiquidacionFiscal(t, diasInasistencia, diasSinAuxilio, diasSinSueldo)
             : calcularLiquidacionFiscalDestajo(t, diasInasistencia, diasSinAuxilio, diasSinSueldo);
