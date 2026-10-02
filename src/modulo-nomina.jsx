@@ -11223,7 +11223,18 @@ function ResumenSemanalView({ trabajadores, produccion, horas, isAdmin, areasNom
   function calcularPorTipo(tipo) {
     const tipoEsFiscal = tipo === "Fiscal" || tipo === "Fiscal Destajo";
     const tipoEsPrestacion = tipo === "Prestación de Servicios";
-    const trabajadoresTipo = trabajadores.filter((t) => t.tipoNomina === tipo).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+    // (2026-10-02, a pedido de Fredy) Esta pantalla nunca filtraba por
+    // activo/inactivo -- un trabajador ya retirado, sin ninguna ausencia
+    // registrada hacia adelante, podia seguir saliendo con sueldo/pago
+    // completo para siempre en quincenas futuras (Fiscal/Fiscal Destajo por
+    // el sueldo fijo prorrateado, Prestacion de Servicios por su valor fijo
+    // por quincena). Ahora se excluye a quien ya este Inactivo y cuya Fecha
+    // de Retiro sea ANTERIOR al inicio de esta quincena -- se le sigue
+    // dejando aparecer en la quincena exacta de su retiro (igual que ya
+    // hacen Nomina Fiscal/Fiscal Destajo), y si no tiene Fecha de Retiro
+    // registrada se le sigue mostrando como antes (no hay como saber cuando
+    // paro).
+    const trabajadoresTipo = trabajadores.filter((t) => t.tipoNomina === tipo && (t.activo !== false || !t.fechaRetiro || t.fechaRetiro >= desde)).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
     const idsTipo = new Set(trabajadoresTipo.map((t) => t.id));
     const mapa = new Map();
     trabajadoresTipo.forEach((t) => {
@@ -13121,6 +13132,11 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "prestamos", icon: "💵", label: "Préstamos" },
           ] },
         { group: "Reporte de Nómina", icon: "📊", items: [
+            // (2026-10-02, a pedido de Fredy) "Resumen" (Cierre de Quincena)
+            // se quedo por fuera del menu de administrador cuando se
+            // reorganizo en grupos el 25/08/2026 -- solo seguia visible en
+            // el menu plano de un lider de area. Se restaura aqui.
+            { id: "resumen", icon: "💰", label: "Resumen" },
             { id: "historial_lote", icon: "📦", label: "Historial de Lote" },
             { id: "historial_trabajador", icon: "🧑‍🏭", label: "Historial de Trabajador" },
             { id: "historial_quincenas", icon: "🗂️", label: "Historial de Quincenas" },
