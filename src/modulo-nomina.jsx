@@ -9223,6 +9223,32 @@ function HistorialQuincenasView({ liquidacionesF, liquidacionesFD, liquidaciones
     .filter((f) => !areaFiltro || f.area === areaFiltro)
     .sort((a, b) => (b.periodoId || "").localeCompare(a.periodoId || "") || (a.nombre || "").localeCompare(b.nombre || "", "es"));
   const totalNeto = filas.reduce((s, f) => s + f.netoAPagar, 0);
+  // (2026-10-02, a pedido de Fredy) Combinados por persona -- cuando la
+  // MISMA cedula tiene mas de una ficha (trabajadorId distinto) con
+  // liquidacion confirmada en el MISMO periodo (caso real: alguien que
+  // cambia de rol/tipo de contrato a mitad de quincena y queda con una
+  // ficha nueva, ver Yesica Tatiana Correa Penaranda), se arma un
+  // subtotal por persona para no tener que sumar a mano. Se calcula sobre
+  // TODAS las filas del periodo (sin los filtros de Tipo/Area, para que el
+  // combinado no cambie si alguien filtra), pero respeta el filtro de
+  // Periodo si esta puesto.
+  const filasParaCombinados = filasBase.filter((f) => !periodoFiltro || f.periodoId === periodoFiltro);
+  const combinadosMapa = new Map();
+  filasParaCombinados.forEach((f) => {
+    const cedula = normalizarCedula(f.trabajador?.cedula);
+    if (!cedula) return;
+    const key = `${cedula}__${f.periodoId}`;
+    if (!combinadosMapa.has(key)) {
+      combinadosMapa.set(key, { cedula, periodoId: f.periodoId, nombre: f.nombre, trabajadorIds: new Set(), fichas: [], totalNeto: 0 });
+    }
+    const g = combinadosMapa.get(key);
+    g.trabajadorIds.add(f.trabajador?.id || f.liquidacion.trabajadorId);
+    g.fichas.push(f);
+    g.totalNeto += f.netoAPagar;
+  });
+  const combinados = [...combinadosMapa.values()]
+    .filter((g) => g.trabajadorIds.size > 1)
+    .sort((a, b) => (b.periodoId || "").localeCompare(a.periodoId || "") || a.nombre.localeCompare(b.nombre, "es"));
   function descargarRecibo(f) {
     exportReciboLiquidacionHTML({ tipoNomina: f.tipoNomina, trabajador: f.trabajador, liquidacion: f.liquidacion });
   }
@@ -9259,6 +9285,22 @@ function HistorialQuincenasView({ liquidacionesF, liquidacionesFD, liquidaciones
             <KPI icon="👷" label="Registros" value={filas.length} color={C.blue} bg={C.blueBg} />
             <KPI icon="💵" label="Neto a Pagar (total)" value={fmtMoney(totalNeto)} color={C.green} bg={C.greenBg} />
           </div>
+          {!!combinados.length && (
+            <div style={{ marginBottom: 18, padding: 14, background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 8, maxWidth: 780 }}>
+              <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 4 }}>👥 Personas con más de una ficha en el período</div>
+              <div style={{ fontSize: 12, color: C.slate, marginBottom: 10 }}>
+                Misma cédula, dos (o más) fichas distintas con liquidación confirmada en la misma quincena -- total combinado para saber cuánto pagarle en total a esa persona, sin tener que sumar a mano.
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {combinados.map((g) => (
+                  <div key={`${g.cedula}__${g.periodoId}`} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", borderRadius: 6, background: "#fff", border: `1px solid ${C.border}`, fontSize: 12.5 }}>
+                    <span><b>{g.nombre}</b> · CC {g.cedula} · {g.periodoId} · {g.fichas.length} fichas ({g.fichas.map((f) => f.tipoNomina).join(" + ")})</span>
+                    <span style={{ fontWeight: 800, color: C.green }}>{fmtMoney(g.totalNeto)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <Tabla
             vacio="Sin resultados."
             columnas={[
