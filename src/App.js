@@ -2358,17 +2358,23 @@ function TelaAComprarModal({ preorden, onClose }) {
           )}
           {avisosSinConvertir.length > 0 && (
             <div style={{ padding: "10px 12px", background: T.amberBg, borderRadius: 8, marginBottom: avisosSinDato.length ? 10 : 0 }}>
-              <div style={{ fontSize: 11.5, fontWeight: 700, color: T.amber, marginBottom: 4 }}>⚠ Sin ancho registrado — no se pudieron convertir a metros (no se suman al total):</div>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: T.amber, marginBottom: 6 }}>⚠ Sin ancho registrado — no se pudieron convertir a metros (no se suman al total):</div>
               {avisosSinConvertir.map((a) => (
-                <div key={a.nombre} style={{ fontSize: 12, color: T.ink }}>{a.nombre} <span style={{ color: T.slate }}>— {a.numRefs} ref</span></div>
+                <div key={a.nombre} style={{ fontSize: 12, color: T.ink, marginBottom: 3 }}>
+                  <span style={{ fontWeight: 700 }}>{a.nombre}</span> <span style={{ color: T.slate }}>— {a.numRefs} ref</span>
+                  <div style={{ color: T.slate, fontSize: 11 }}>{a.refs.join(", ")}</div>
+                </div>
               ))}
             </div>
           )}
           {avisosSinDato.length > 0 && (
             <div style={{ padding: "10px 12px", background: T.amberBg, borderRadius: 8 }}>
-              <div style={{ fontSize: 11.5, fontWeight: 700, color: T.amber, marginBottom: 4 }}>⚠ Sin consumo registrado, o con un formato que no se reconoce — revisa "Actualizar" en esa referencia:</div>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: T.amber, marginBottom: 6 }}>⚠ Sin consumo registrado, o con un formato que no se reconoce — revisa "Actualizar" en esa referencia:</div>
               {avisosSinDato.map((a) => (
-                <div key={a.nombre} style={{ fontSize: 12, color: T.ink }}>{a.nombre} <span style={{ color: T.slate }}>— {a.numRefs} ref</span></div>
+                <div key={a.nombre} style={{ fontSize: 12, color: T.ink, marginBottom: 3 }}>
+                  <span style={{ fontWeight: 700 }}>{a.nombre}</span> <span style={{ color: T.slate }}>— {a.numRefs} ref</span>
+                  <div style={{ color: T.slate, fontSize: 11 }}>{a.refs.join(", ")}</div>
+                </div>
               ))}
             </div>
           )}
@@ -4134,8 +4140,12 @@ function calcularTelaAComprar(items) {
   const filas = [...porTela.entries()]
     .map(([nombre, v]) => ({ nombre, metros: v.metros, numRefs: v.refs.size }))
     .sort((a, b) => b.metros - a.metros);
-  const avisosSinConvertir = [...sinConvertir.entries()].map(([nombre, v]) => ({ nombre, numRefs: v.refs.size }));
-  const avisosSinDato = [...sinDato.entries()].map(([nombre, v]) => ({ nombre, numRefs: v.refs.size }));
+  // (2026-10-03, a pedido de Fredy) Para los dos avisos, ademas del conteo
+  // se devuelve la lista de referencias puntuales (ordenada) -- antes solo
+  // se mostraba "7 ref" sin decir CUALES, y Fredy necesita saber
+  // exactamente que referencia ir a actualizar.
+  const avisosSinConvertir = [...sinConvertir.entries()].map(([nombre, v]) => ({ nombre, numRefs: v.refs.size, refs: [...v.refs].sort() }));
+  const avisosSinDato = [...sinDato.entries()].map(([nombre, v]) => ({ nombre, numRefs: v.refs.size, refs: [...v.refs].sort() }));
   const totalMetros = filas.reduce((s, f) => s + f.metros, 0);
   return { filas, avisosSinConvertir, avisosSinDato, totalMetros };
 }
