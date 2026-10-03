@@ -2324,7 +2324,7 @@ function TelaAComprarModal({ preorden, onClose }) {
   const th = { textAlign: "left", padding: "7px 10px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.02em", color: T.slate, borderBottom: `2px solid ${T.border}` };
   const td = { padding: "8px 10px", fontSize: 12.5, borderBottom: `1px solid ${T.border}` };
   return (
-    <Modal title={`🧵 Tela a comprar${preorden.numeroOrden ? ` — Orden #${preorden.numeroOrden}` : ""}`} onClose={onClose} width={620}>
+    <Modal title={`🧵 Tela a comprar${etiquetaNumeroOrden(preorden) ? ` — ${etiquetaNumeroOrden(preorden)}` : ""}`} onClose={onClose} width={620}>
       <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>
         {preorden.cliente || "Sin cliente"} · {(preorden.items || []).length} referencia{(preorden.items || []).length !== 1 ? "s" : ""} — metros necesarios para toda la orden, sumando el consumo de cada referencia × su cantidad total (Colombia + Venezuela).
       </div>
@@ -4148,6 +4148,17 @@ function calcularTelaAComprar(items) {
   const avisosSinDato = [...sinDato.entries()].map(([nombre, v]) => ({ nombre, numRefs: v.refs.size, refs: [...v.refs].sort() }));
   const totalMetros = filas.reduce((s, f) => s + f.metros, 0);
   return { filas, avisosSinConvertir, avisosSinDato, totalMetros };
+}
+// (2026-10-03, a pedido de Fredy) El numero de cada preorden ahora cuenta
+// aparte segun de donde salio -- una "Orden N°-01" y una "Reprogramación
+// N°-01" pueden existir al mismo tiempo, cada una con su propio conteo
+// (ver crearPreorden, donde se calcula asi desde que se crea). Esta funcion
+// solo arma el texto a mostrar; se usa igual en Preórdenes, Órdenes y el
+// título de "Tela a comprar" para que los tres lugares digan lo mismo.
+function etiquetaNumeroOrden(p) {
+  if (!p?.numeroOrden) return null;
+  const num = String(p.numeroOrden).padStart(2, "0");
+  return p.origenPantalla === "reprogramacion" ? `Reprogramación N°-${num}` : `Orden N°-${num}`;
 }
 function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, currentUser, onAddCapsula, onAddRef, onGuardar, onCancelar, historial }) {
   const [header, setHeader] = useState({ cliente: "", numPedido: "", nombre: "" });
@@ -6579,7 +6590,7 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
                   <span style={{ fontSize: 20 }}>{abierto ? "📂" : "📁"}</span>
                   <div>
                     <div style={{ fontWeight: 800, fontSize: 15, color: T.ink }}>
-                      {p.numeroOrden ? <span style={{ color: T.seamDark, fontWeight: 800 }}>Orden #{p.numeroOrden} — </span> : null}
+                      {etiquetaNumeroOrden(p) ? <span style={{ color: T.seamDark, fontWeight: 800 }}>{etiquetaNumeroOrden(p)} — </span> : null}
                       {p.nombre ? `${p.nombre} — ${p.cliente || "(Sin cliente)"}` : (p.cliente || "(Sin cliente)")}{p.numPedido ? ` · Pedido ${p.numPedido}` : ""}
                     </div>
                     <div style={{ fontSize: 12, color: T.slate }}>{items.length} ref · {fmtNum(totalUnidades)} unid.{valorTotalOrden > 0 ? ` · ${fmtCOP(valorTotalOrden)}` : ""} · Creada {p.fechaCreado}</div>
@@ -6760,6 +6771,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   const [aplicandoLimpieza, setAplicandoLimpieza] = useState(false);
   const [reparando, setReparando] = useState(false);
   const [migrandoOtras, setMigrandoOtras] = useState(false);
+  const [renumerando, setRenumerando] = useState(false);
   const [buscarLista, setBuscarLista] = useState("");
   // (2026-09-21, a pedido de Fredy) Buscador DENTRO de cada preorden ya
   // abierta -- para encontrar una referencia puntual sin desplazarse por
@@ -7215,6 +7227,40 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         : "No había ninguna preorden en \"Otras\" para mover."
     );
   }
+  // (2026-10-03, a pedido de Fredy) Antes, "Orden N°" era un solo conteo
+  // compartido entre Nueva Orden y Reprogramación. Ahora cada tipo cuenta
+  // aparte (ver crearPreorden) -- esta función renumera de una sola vez
+  // TODAS las que ya existen para que queden acomodadas en su propio
+  // conteo, del 01 en adelante, respetando el orden en que se crearon
+  // (fechaCreado). Es segura de correr más de una vez: si ya están bien
+  // numeradas no cambia nada. Las preordenes en "Otras" (sin
+  // origenPantalla) no entran aquí -- primero hay que moverlas con el botón
+  // de arriba para que tengan un tipo y puedan numerarse.
+  async function renumerarPorTipo() {
+    setRenumerando(true);
+    const porTipo = { orden: [], reprogramacion: [] };
+    for (const p of preordenes || []) {
+      if (p.origenPantalla === "orden" || p.origenPantalla === "reprogramacion") porTipo[p.origenPantalla].push(p);
+    }
+    let actualizadas = 0;
+    for (const tipo of ["orden", "reprogramacion"]) {
+      const lista = porTipo[tipo].slice().sort((a, b) => (a.fechaCreado || "").localeCompare(b.fechaCreado || ""));
+      let n = 0;
+      for (const p of lista) {
+        n++;
+        if (Number(p.numeroOrden) !== n) {
+          await onActualizarPreorden(p.id, { numeroOrden: n });
+          actualizadas++;
+        }
+      }
+    }
+    setRenumerando(false);
+    alert(
+      actualizadas
+        ? `Listo: se renumeraron ${actualizadas} orden(es)/reprogramación(es). Cada tipo quedó contando aparte desde el 01.`
+        : "Ya estaban todas bien numeradas -- no había nada que cambiar."
+    );
+  }
   // (2026-09-30, a pedido de Fredy) Cada pantalla tiene su propio historial,
   // aunque comparten la misma colección de Firestore -- se distinguen por el
   // campo `pantalla` de cada registro (los registros viejos, de antes de
@@ -7452,6 +7498,13 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                           style={{ padding: "10px 16px", fontSize: 12, fontWeight: 700, color: T.ink, borderBottom: `1px solid ${T.border}`, cursor: "pointer" }}
                         >{migrandoOtras ? "📦 Moviendo..." : "📦 Mover \"Otras\" a Reprogramación"}</div>
                       )}
+                      <div
+                        onClick={() => {
+                          setShowMasMenu(false);
+                          if (window.confirm("Esto renumera TODAS las Órdenes Nuevas y Reprogramaciones que ya existen, cada tipo contando aparte desde el 01 (según la fecha en que se crearon). ¿Continuar?")) renumerarPorTipo();
+                        }}
+                        style={{ padding: "10px 16px", fontSize: 12, fontWeight: 700, color: T.ink, cursor: "pointer" }}
+                      >{renumerando ? "🔢 Renumerando..." : "🔢 Renumerar por tipo"}</div>
                     </>
                   )}
                   {(puedeIngresarTela || puedeConfirmarTela) && (
@@ -7604,7 +7657,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                 <div>
                   <div style={{ fontWeight: 800, fontSize: 15, color: T.ink, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <span>
-                      {p.numeroOrden ? <span style={{ color: T.seamDark, fontWeight: 800 }}>Orden #{p.numeroOrden} — </span> : null}
+                      {etiquetaNumeroOrden(p) ? <span style={{ color: T.seamDark, fontWeight: 800 }}>{etiquetaNumeroOrden(p)} — </span> : null}
                       {p.nombre ? `${p.nombre} — ${p.cliente || "(Sin cliente)"}` : (p.cliente || "(Sin cliente)")}{p.numPedido ? ` · Pedido ${p.numPedido}` : ""}
                     </span>
                     {estadoActual === "aprobada" ? (
@@ -16100,7 +16153,13 @@ function AppInner() {
     // cargada y se sigue desde el numero mas alto encontrado, nunca se
     // reinicia. Las preordenes creadas ANTES de este cambio quedan sin
     // numero (no se les asigna uno retroactivo).
-    const numeroOrden = Math.max(0, ...bitacoraPreordenes.map((p) => Number(p.numeroOrden) || 0)) + 1;
+    // (2026-10-03, a pedido de Fredy) El conteo ahora es APARTE por tipo --
+    // "Orden N°-01" y "Reprogramación N°-01" cuentan cada una desde su
+    // propio cero, en vez de compartir un solo numero entre las dos. Por
+    // eso el escaneo de "el mas alto encontrado" se filtra a preordenes del
+    // MISMO origenPantalla que la que se esta creando ahora.
+    const tipoPreorden = origenPantalla || "orden";
+    const numeroOrden = Math.max(0, ...bitacoraPreordenes.filter((p) => p.origenPantalla === tipoPreorden).map((p) => Number(p.numeroOrden) || 0)) + 1;
     const preorden = {
       id: uid(),
       numeroOrden,
