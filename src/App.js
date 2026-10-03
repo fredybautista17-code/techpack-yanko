@@ -6310,6 +6310,7 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
                       <tr style={{ background: T.ink }}>
                         <th style={{ padding: "8px 12px", color: T.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Referencia</th>
                         <th style={{ padding: "8px 12px", color: T.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Categoría</th>
+                        <th style={{ padding: "8px 12px", color: T.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Línea</th>
                         <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>En preórdenes</th>
                         <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>En Órdenes</th>
                         <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Sin cortar</th>
@@ -6323,6 +6324,7 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
                         <tr key={f.referencia} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
                           <td style={{ padding: "7px 12px", fontWeight: 700, color: T.ink }}>{f.referencia}</td>
                           <td style={{ padding: "7px 12px" }}><span style={{ fontSize: 10, fontWeight: 700, color: T.slate, background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 20, padding: "2px 8px" }}>{f.categoria || "(Sin categoría)"}</span></td>
+                          <td style={{ padding: "7px 12px" }}><span style={{ fontSize: 10, fontWeight: 700, color: T.slate, background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 20, padding: "2px 8px", whiteSpace: "nowrap" }}>{f.linea || "(Sin línea)"}</span></td>
                           <td style={{ padding: "7px 12px", textAlign: "right", color: T.seamDark, fontWeight: 700 }}>{f.enPreorden === null ? "—" : fmtNum(f.enPreorden)}</td>
                           <td style={{ padding: "7px 12px", textAlign: "right", color: T.coral, fontWeight: 700 }}>{f.enOrdenes === null ? "—" : fmtNum(f.enOrdenes)}</td>
                           <td style={{ padding: "7px 12px", textAlign: "right", color: T.amber, fontWeight: 700 }}>{f.sinCortar === null ? "—" : fmtNum(f.sinCortar)}</td>
