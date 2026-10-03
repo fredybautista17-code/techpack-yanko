@@ -2311,6 +2311,75 @@ function PrecioCotizacionModal({ item, onSave, onClose }) {
     </Modal>
   );
 }
+// (2026-10-03, a pedido de Fredy) Pantalla aparte (no automatica -- se abre
+// con el boton "🧵 Tela a comprar" de cada orden) con el consolidado de
+// metros de tela que hace falta comprar para ESA orden completa. Ver
+// calcularTelaAComprar para como se agrupan/separan los datos.
+function TelaAComprarModal({ preorden, onClose }) {
+  const { filas, avisosSinConvertir, avisosSinDato, totalMetros } = useMemo(
+    () => calcularTelaAComprar(preorden.items),
+    [preorden.items]
+  );
+  const sinNada = !filas.length && !avisosSinConvertir.length && !avisosSinDato.length;
+  const th = { textAlign: "left", padding: "7px 10px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.02em", color: T.slate, borderBottom: `2px solid ${T.border}` };
+  const td = { padding: "8px 10px", fontSize: 12.5, borderBottom: `1px solid ${T.border}` };
+  return (
+    <Modal title={`🧵 Tela a comprar${preorden.numeroOrden ? ` — Orden #${preorden.numeroOrden}` : ""}`} onClose={onClose} width={620}>
+      <div style={{ fontSize: 12, color: T.slate, marginBottom: 16 }}>
+        {preorden.cliente || "Sin cliente"} · {(preorden.items || []).length} referencia{(preorden.items || []).length !== 1 ? "s" : ""} — metros necesarios para toda la orden, sumando el consumo de cada referencia × su cantidad total (Colombia + Venezuela).
+      </div>
+      {sinNada ? (
+        <div style={{ textAlign: "center", padding: 24, color: T.slate, fontSize: 13 }}>No hay datos de tela/consumo en esta orden todavía.</div>
+      ) : (
+        <>
+          {filas.length > 0 && (
+            <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: (avisosSinConvertir.length || avisosSinDato.length) ? 16 : 0 }}>
+              <thead>
+                <tr>
+                  <th style={th}>Tela</th>
+                  <th style={th}>Usada en</th>
+                  <th style={{ ...th, textAlign: "right" }}>Metros necesarios</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filas.map((f) => (
+                  <tr key={f.nombre}>
+                    <td style={td}>{f.nombre}</td>
+                    <td style={{ ...td, color: T.slate }}>{f.numRefs} ref</td>
+                    <td style={{ ...td, textAlign: "right", fontWeight: 800, color: T.denim, fontVariantNumeric: "tabular-nums" }}>{fmtNum(Math.round(f.metros * 100) / 100)} Mt</td>
+                  </tr>
+                ))}
+                <tr>
+                  <td colSpan={2} style={{ padding: "10px 10px 0", fontWeight: 800, fontSize: 12.5, borderTop: `2px solid ${T.border}` }}>Total a comprar (telas convertidas)</td>
+                  <td style={{ padding: "10px 10px 0", fontWeight: 800, fontSize: 12.5, textAlign: "right", color: T.denim, borderTop: `2px solid ${T.border}`, fontVariantNumeric: "tabular-nums" }}>{fmtNum(Math.round(totalMetros * 100) / 100)} Mt</td>
+                </tr>
+              </tbody>
+            </table>
+          )}
+          {avisosSinConvertir.length > 0 && (
+            <div style={{ padding: "10px 12px", background: T.amberBg, borderRadius: 8, marginBottom: avisosSinDato.length ? 10 : 0 }}>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: T.amber, marginBottom: 4 }}>⚠ Sin ancho registrado — no se pudieron convertir a metros (no se suman al total):</div>
+              {avisosSinConvertir.map((a) => (
+                <div key={a.nombre} style={{ fontSize: 12, color: T.ink }}>{a.nombre} <span style={{ color: T.slate }}>— {a.numRefs} ref</span></div>
+              ))}
+            </div>
+          )}
+          {avisosSinDato.length > 0 && (
+            <div style={{ padding: "10px 12px", background: T.amberBg, borderRadius: 8 }}>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: T.amber, marginBottom: 4 }}>⚠ Sin consumo registrado, o con un formato que no se reconoce — revisa "Actualizar" en esa referencia:</div>
+              {avisosSinDato.map((a) => (
+                <div key={a.nombre} style={{ fontSize: 12, color: T.ink }}>{a.nombre} <span style={{ color: T.slate }}>— {a.numRefs} ref</span></div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20 }}>
+        <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
+      </div>
+    </Modal>
+  );
+}
 // Hilo de Observaciones propio de la Cápsula (no de cada referencia): queda
 // aquí el ida y vuelta de aprobación de la ilustración/concepto completo —
 // separado de la Hoja de Vida de las referencias individuales. Reutiliza el
@@ -4009,6 +4078,66 @@ function resumenPreordenPorCategoria(items, filtroGrupo, filtroPais) {
       mapa.set(cat, actual);
     });
   return [...mapa.values()].sort((a, b) => b.unidades - a.unidades);
+}
+// (2026-10-03, a pedido de Fredy) Suma, para TODA una orden (preorden), los
+// metros de cada tela que hace falta comprar -- consumo por unidad (ya en
+// metros lineales, ver construirTelasDesdeFila) x cantidad total de esa
+// referencia (Colombia + Venezuela), agrupado por NOMBRE de tela para que
+// si varias referencias de la misma orden comparten una tela, salga un solo
+// total conjunto en vez de repartido por referencia.
+// El consumo guardado (it.consumo / it.telasExtra[].consumo) viene siempre
+// como texto "<numero> Mt" o "<numero> m2" (ver construirTelasDesdeFila) --
+// aqui se separan en 3 grupos para no mezclar cosas que no se pueden sumar
+// entre si:
+//   - filas: consumo en "Mt" (metros lineales) -- estas SI se suman al total.
+//   - avisosSinConvertir: consumo en "m2" (no se pudo pasar a metros porque
+//     esa tela no tiene ancho registrado) -- se muestran aparte, no se suman.
+//   - avisosSinDato: sin consumo guardado, o con un formato que no se
+//     reconoce (ej. una referencia vieja que todavia no se ha "Actualizado"
+//     desde Busint) -- tambien aparte, para que Fredy sepa que falta revisar
+//     esa referencia antes de confiar en el total.
+function calcularTelaAComprar(items) {
+  const porTela = new Map();
+  const sinConvertir = new Map();
+  const sinDato = new Map();
+  (items || []).forEach((it) => {
+    const unidades = (Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0);
+    if (!unidades) return;
+    const telas = [
+      { nombre: it.tela, consumo: it.consumo },
+      ...((it.telasExtra || []).map((t) => ({ nombre: t.nombre, consumo: t.consumo }))),
+    ];
+    telas.forEach((t) => {
+      const nombre = (t.nombre || "").trim();
+      if (!nombre) return;
+      const consumoTxt = String(t.consumo || "").trim();
+      const match = consumoTxt.match(/^(-?\d+(?:[.,]\d+)?)\s*(Mt|m2)$/i);
+      if (!consumoTxt || consumoTxt === "—" || !match) {
+        const acc = sinDato.get(nombre) || { refs: new Set() };
+        acc.refs.add(it.referencia);
+        sinDato.set(nombre, acc);
+        return;
+      }
+      const valor = parseFloat(match[1].replace(",", "."));
+      if (match[2].toLowerCase() === "m2") {
+        const acc = sinConvertir.get(nombre) || { refs: new Set() };
+        acc.refs.add(it.referencia);
+        sinConvertir.set(nombre, acc);
+        return;
+      }
+      const acc = porTela.get(nombre) || { metros: 0, refs: new Set() };
+      acc.metros += valor * unidades;
+      acc.refs.add(it.referencia);
+      porTela.set(nombre, acc);
+    });
+  });
+  const filas = [...porTela.entries()]
+    .map(([nombre, v]) => ({ nombre, metros: v.metros, numRefs: v.refs.size }))
+    .sort((a, b) => b.metros - a.metros);
+  const avisosSinConvertir = [...sinConvertir.entries()].map(([nombre, v]) => ({ nombre, numRefs: v.refs.size }));
+  const avisosSinDato = [...sinDato.entries()].map(([nombre, v]) => ({ nombre, numRefs: v.refs.size }));
+  const totalMetros = filas.reduce((s, f) => s + f.metros, 0);
+  return { filas, avisosSinConvertir, avisosSinDato, totalMetros };
 }
 function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, currentUser, onAddCapsula, onAddRef, onGuardar, onCancelar, historial }) {
   const [header, setHeader] = useState({ cliente: "", numPedido: "", nombre: "" });
@@ -6378,6 +6507,10 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   // de Telas" está abierto (o null si está cerrado) -- y si está abierto el
   // panel global de compras de tela sin orden asignada todavía.
   const [viendoIngresoTelas, setViendoIngresoTelas] = useState(null);
+  // (2026-10-03, a pedido de Fredy) Guarda el id de la orden cuya ventana
+  // "🧵 Tela a comprar" esta abierta (null = ninguna). El calculo no se hace
+  // solo con abrir/expandir la orden -- hay que darle clic al boton.
+  const [viendoTelaComprar, setViendoTelaComprar] = useState(null);
   const [viendoComprasSinOrden, setViendoComprasSinOrden] = useState(false);
   // (2026-09-23, a pedido de Fredy) La columna de tela (ingreso + confirmación
   // de recepción) es de uso interno -- Bodega/Contabilidad la ingresan y
@@ -6954,6 +7087,11 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
           />
         );
       })()}
+      {viendoTelaComprar && (() => {
+        const preordenVista = preordenesConEstado.find((pp) => pp.id === viendoTelaComprar);
+        if (!preordenVista) return null;
+        return <TelaAComprarModal preorden={preordenVista} onClose={() => setViendoTelaComprar(null)} />;
+      })()}
       {viendoComprasSinOrden && (
         <ComprasSinOrdenModal
           entregas={entregasTela || []}
@@ -7192,7 +7330,10 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                 <span style={{ fontSize: 20 }}>{abierto ? "📂" : "📁"}</span>
                 <div>
                   <div style={{ fontWeight: 800, fontSize: 15, color: T.ink, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <span>{p.nombre ? `${p.nombre} — ${p.cliente || "(Sin cliente)"}` : (p.cliente || "(Sin cliente)")}{p.numPedido ? ` · Pedido ${p.numPedido}` : ""}</span>
+                    <span>
+                      {p.numeroOrden ? <span style={{ color: T.seamDark, fontWeight: 800 }}>Orden #{p.numeroOrden} — </span> : null}
+                      {p.nombre ? `${p.nombre} — ${p.cliente || "(Sin cliente)"}` : (p.cliente || "(Sin cliente)")}{p.numPedido ? ` · Pedido ${p.numPedido}` : ""}
+                    </span>
                     {estadoActual === "aprobada" ? (
                       <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✅ Aprobada</span>
                     ) : (
@@ -7229,6 +7370,14 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                 ) : (
                   <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.jadeBg, color: T.jade }}>✓ Todo convertido a pedido</span>
                 )}
+                {/* (2026-10-03, a pedido de Fredy) No calcula nada solo con
+                    abrir la orden -- el consolidado de metros de tela se
+                    pide a propósito con este botón, que abre una pantalla
+                    aparte (TelaAComprarModal). */}
+                <button
+                  onClick={(e) => { e.stopPropagation(); setViendoTelaComprar(p.id); }}
+                  style={{ padding: "5px 10px", borderRadius: 8, border: `1.5px solid ${T.denim}`, background: T.denimBg, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}
+                >🧵 Tela a comprar</button>
                 {puedeEliminar && (
                   <button
                     onClick={(e) => {
@@ -15670,8 +15819,18 @@ function AppInner() {
   // las preórdenes según de dónde salieron. Las preórdenes creadas antes de
   // este cambio no traen este campo.
   async function crearPreorden(header, items, origenPantalla) {
+    // (2026-10-03, a pedido de Fredy) Numero de orden propio de la preorden
+    // -- antes no tenia ninguno (solo se distinguia por cliente+fecha, dificil
+    // de nombrar en una conversacion). Se asigna solo, de forma consecutiva,
+    // igual criterio que ya se usa para el consecutivo de referencias
+    // (buscarEntradaCodigoReferencia): se escanea TODA la bitacora ya
+    // cargada y se sigue desde el numero mas alto encontrado, nunca se
+    // reinicia. Las preordenes creadas ANTES de este cambio quedan sin
+    // numero (no se les asigna uno retroactivo).
+    const numeroOrden = Math.max(0, ...bitacoraPreordenes.map((p) => Number(p.numeroOrden) || 0)) + 1;
     const preorden = {
       id: uid(),
+      numeroOrden,
       cliente: header.cliente || "",
       numPedido: header.numPedido || "",
       // (2026-09-30, a pedido de Fredy) Nombre libre y opcional para
