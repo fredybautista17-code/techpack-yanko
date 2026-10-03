@@ -7352,10 +7352,16 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                                     (it.tela/it.consumo y cada it.telasExtra[].nombre/.consumo)
                                     siguen guardados tal cual -- quedan listos para cuando se arme
                                     el consolidado de metros por tela. */}
-                                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                                  <span>{it.tela || "—"}{it.consumo ? ` — ${it.consumo}` : ""}</span>
+                                <div style={{ display: "flex", flexDirection: "column" }}>
+                                  <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, padding: "2px 0 2px 8px", borderLeft: `3px solid ${T.violet}` }}>
+                                    <span style={{ fontWeight: 700, color: T.ink, fontSize: 12.5 }}>{it.tela || "—"}</span>
+                                    <span style={{ fontWeight: 700, color: T.violet, fontSize: 12, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{it.consumo || "—"}</span>
+                                  </div>
                                   {(it.telasExtra || []).map((t, ti) => (
-                                    <span key={ti} style={{ color: T.slate }}>{t.nombre || "—"}{t.consumo ? ` — ${t.consumo}` : " — sin consumo"}</span>
+                                    <div key={ti} style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, padding: "2px 0 2px 8px", borderLeft: `3px solid ${T.border}` }}>
+                                      <span style={{ color: "#30342f", fontSize: 12.5 }}>{t.nombre || "—"}</span>
+                                      <span style={{ color: T.slate, fontSize: 12, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{t.consumo || "sin consumo"}</span>
+                                    </div>
                                   ))}
                                 </div>
                               </td>
