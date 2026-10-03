@@ -5958,7 +5958,11 @@ function ComprasSinOrdenModal({ entregas, preordenes, config, puedeIngresarTela,
 // dejan siempre visibles en "(Sin categoría)" sin importar el filtro --
 // desaparecerlas sería esconder pedido pendiente real.
 function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesCliente, campo, filtroLinea, columnaPreorden) {
-  const sinEtiqueta = campo === "linea" ? "(Sin línea)" : "(Sin categoría)";
+  // (2026-10-03, a pedido de Fredy) Antes decia "(Sin categoria)", que
+  // sonaba a error o a dato faltante por descuido -- se le puso este nombre
+  // mas claro porque en realidad es pedido real (ver nota de "campo" arriba)
+  // que Busint todavia no alcanzo a clasificar con lote de corte.
+  const sinEtiqueta = campo === "linea" ? "(Sin línea)" : "⏳ Pendiente de clasificar en Busint";
   const porReferencia = new Map();
   const tieneDatosPedido = Array.isArray(pedidosCliente);
   // (2026-09-25, a pedido de Fredy) "En Preórdenes": etapa ANTES de "En
@@ -6323,7 +6327,7 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
                       {filasBuscadasProduccion.map((f, i) => (
                         <tr key={f.referencia} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
                           <td style={{ padding: "7px 12px", fontWeight: 700, color: T.ink }}>{f.referencia}</td>
-                          <td style={{ padding: "7px 12px" }}><span style={{ fontSize: 10, fontWeight: 700, color: T.slate, background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 20, padding: "2px 8px" }}>{f.categoria || "(Sin categoría)"}</span></td>
+                          <td style={{ padding: "7px 12px" }}><span style={{ fontSize: 10, fontWeight: 700, color: T.slate, background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 20, padding: "2px 8px", whiteSpace: "nowrap" }}>{f.categoria || "⏳ Pendiente de clasificar en Busint"}</span></td>
                           <td style={{ padding: "7px 12px" }}><span style={{ fontSize: 10, fontWeight: 700, color: T.slate, background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 20, padding: "2px 8px", whiteSpace: "nowrap" }}>{f.linea || "(Sin línea)"}</span></td>
                           <td style={{ padding: "7px 12px", textAlign: "right", color: T.seamDark, fontWeight: 700 }}>{f.enPreorden === null ? "—" : fmtNum(f.enPreorden)}</td>
                           <td style={{ padding: "7px 12px", textAlign: "right", color: T.coral, fontWeight: 700 }}>{f.enOrdenes === null ? "—" : fmtNum(f.enOrdenes)}</td>
@@ -6440,6 +6444,10 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
   const [vinculando, setVinculando] = useState(null);
   const [buscaPedido, setBuscaPedido] = useState("");
   const [numeroPedidoManual, setNumeroPedidoManual] = useState("");
+  // (2026-10-03, a pedido de Fredy) Buscador de la lista de órdenes -- mismo
+  // criterio que ya usa Preórdenes: por cliente, N° de pedido, nombre de la
+  // orden, o cualquier referencia contenida en ella (con o sin guion).
+  const [buscarOrdenes, setBuscarOrdenes] = useState("");
   // (2026-09-30, a pedido de Fredy) Igual que en Preórdenes: la tarjeta
   // arranca recogida y se expande con un clic, mostrando ahí mismo el
   // "Resumen por categoría" (mismo componente/lógica que ya existe en
@@ -6602,12 +6610,34 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
     setNumeroPedidoManual("");
   }
   const totalRefs = tarjetas.reduce((s, t) => s + t.items.length, 0);
+  const bqOrdenes = foldTexto(buscarOrdenes);
+  const bqOrdenesRef = normalizarRefComparacion(buscarOrdenes);
+  const tarjetasBuscadas = !bqOrdenes ? tarjetas : tarjetas.filter(({ preorden: p, items }) =>
+    foldTexto(p.cliente).includes(bqOrdenes) ||
+    foldTexto(p.numPedido).includes(bqOrdenes) ||
+    foldTexto(p.nombre).includes(bqOrdenes) ||
+    items.some((it) =>
+      foldTexto(it.referencia).includes(bqOrdenes) ||
+      foldTexto(it.nombre).includes(bqOrdenes) ||
+      (bqOrdenesRef && normalizarRefComparacion(it.referencia).includes(bqOrdenesRef))
+    )
+  );
   return (
     <div>
       <div style={{ marginBottom: 20 }}>
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>🧵 Órdenes</h2>
         <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Referencias ya aprobadas con tela confirmada, en lo que llega su Pedido real{tarjetas.length > 0 ? ` -- ${totalRefs} referencia${totalRefs !== 1 ? "s" : ""} en ${tarjetas.length} orden${tarjetas.length !== 1 ? "es" : ""}` : ""}.</p>
       </div>
+      {tarjetas.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <input
+            value={buscarOrdenes}
+            onChange={(e) => setBuscarOrdenes(e.target.value)}
+            placeholder="🔍 Buscar por cliente, N° de pedido o referencia..."
+            style={{ padding: "7px 12px", border: `1.5px solid ${buscarOrdenes ? T.denim : T.border}`, borderRadius: 8, fontSize: 13, minWidth: 280, outline: "none", fontFamily: "inherit" }}
+          />
+        </div>
+      )}
       {vinculando && (
         <Modal title="Vincular a pedido" onClose={() => { setVinculando(null); setBuscaPedido(""); setNumeroPedidoManual(""); }} width={480}>
           <p style={{ margin: "0 0 12px", fontSize: 13, color: T.slate }}>
@@ -6669,8 +6699,10 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
       )}
       {!tarjetas.length ? (
         <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Todavía no hay ninguna referencia en Órdenes -- aparecen acá apenas se les confirme la tela en una preorden aprobada.</div>
+      ) : !tarjetasBuscadas.length ? (
+        <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Ninguna orden coincide con esa búsqueda.</div>
       ) : (
-        tarjetas.map(({ preorden: p, items }) => {
+        tarjetasBuscadas.map(({ preorden: p, items }) => {
           const abierto = expandido === p.id;
           const resumen = resumenPreordenPorCategoria(items);
           const totalUnidades = resumen.reduce((s, r) => s + r.unidades, 0);
