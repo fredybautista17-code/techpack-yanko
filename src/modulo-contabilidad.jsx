@@ -51,6 +51,14 @@ const C = {
 function uid() {
   return Math.random().toString(36).slice(2, 9);
 }
+// (2026-10-03, a pedido de Fredy) Para que los buscadores de esta pantalla
+// encuentren una referencia sin importar si se escribe con guion o sin
+// guion ("978002" o "97-8002") -- mismo criterio que normalizarRefComparacion
+// ya usa en App.js para esto mismo, copiado aca porque este archivo no
+// comparte helpers con App.js.
+function normalizarRefComparacion(v) {
+  return String(v || "").trim().toUpperCase().replace(/-/g, "");
+}
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -3419,11 +3427,15 @@ function DadoPorCumplidoView({ currentUser, puedeAdministrarBases, puedeSincroni
   const pendientes = lotes.filter((l) => l.estado !== "aprobado" && l.enBpt !== false).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
   const aprobados = lotes.filter((l) => l.estado === "aprobado" && !l.eliminado).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
   const filtroDadoPorCumplido = busquedaDadoPorCumplido.trim().toLowerCase();
+  // (2026-10-03, a pedido de Fredy) La referencia tambien se compara sin
+  // guiones, para que "978002" y "97-8002" encuentren lo mismo.
+  const filtroDadoPorCumplidoRefNorm = normalizarRefComparacion(busquedaDadoPorCumplido);
   const coincideBusquedaDadoPorCumplido = (l) =>
     !filtroDadoPorCumplido ||
     String(l.numLote || "").toLowerCase().includes(filtroDadoPorCumplido) ||
     String(l.referencia || "").toLowerCase().includes(filtroDadoPorCumplido) ||
-    String(l.cliente || "").toLowerCase().includes(filtroDadoPorCumplido);
+    String(l.cliente || "").toLowerCase().includes(filtroDadoPorCumplido) ||
+    (filtroDadoPorCumplidoRefNorm && normalizarRefComparacion(l.referencia).includes(filtroDadoPorCumplidoRefNorm));
   const pendientesFiltrados = pendientes.filter(coincideBusquedaDadoPorCumplido);
   const aprobadosFiltrados = aprobados.filter(coincideBusquedaDadoPorCumplido);
   const pendientesConFactura = pendientesFiltrados.filter((l) => l.tieneFactura !== false);
