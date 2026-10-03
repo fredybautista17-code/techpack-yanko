@@ -51,6 +51,14 @@ const C = {
 function uid() {
   return Math.random().toString(36).slice(2, 9);
 }
+// (2026-10-03, a pedido de Fredy) Para que los buscadores de esta pantalla
+// encuentren una referencia sin importar si se escribe con guion o sin
+// guion ("978002" o "97-8002") -- mismo criterio que normalizarRefComparacion
+// ya usa en App.js para esto mismo, copiado aca porque este archivo no
+// comparte helpers con App.js.
+function normalizarRefComparacion(v) {
+  return String(v || "").trim().toUpperCase().replace(/-/g, "");
+}
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -1548,8 +1556,18 @@ function HistorialView({ despachos, currentUser, isAdmin, esContabilidad, esBode
   // "numero" (3556, 3309...) y otra parte con una fecha como "numero" — al
   // mezclarse, ordenar por numero salía en un orden sin sentido. La fecha sí
   // es confiable en todos los despachos, de cualquier destino.
+  // (2026-10-03, a pedido de Fredy) La referencia tambien se compara sin
+  // guiones, para que "978002" y "97-8002" encuentren lo mismo.
+  const filtroRefNorm = normalizarRefComparacion(filtro);
   const visibles = base
-    .filter((d) => !filtro.trim() || String(d.numero).includes(filtro.trim()) || (d.lineas || []).some((l) => (l.referencia || "").toUpperCase().includes(filtro.trim().toUpperCase())))
+    .filter((d) =>
+      !filtro.trim() ||
+      String(d.numero).includes(filtro.trim()) ||
+      (d.lineas || []).some((l) =>
+        (l.referencia || "").toUpperCase().includes(filtro.trim().toUpperCase()) ||
+        (filtroRefNorm && normalizarRefComparacion(l.referencia).includes(filtroRefNorm))
+      )
+    )
     .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "") || parseFloat(b.numero) - parseFloat(a.numero));
   const totalGeneral = visibles.reduce((s, d) => s + (d.totalDespacho || 0), 0);
   // "¿Cuándo fue la última vez que se despachó la referencia X?" — busca
@@ -3319,7 +3337,12 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
       const q = histBusqueda.trim().toLowerCase();
       const enLote = String(l.numLote || "").toLowerCase().includes(q);
       const enCliente = (l.cliente || "").toLowerCase().includes(q);
-      if (!enLote && !enCliente) return false;
+      const enReferencia = (l.referencia || "").toLowerCase().includes(q);
+      // (2026-10-03, a pedido de Fredy) La referencia tambien se compara
+      // sin guiones, para que "978002" y "97-8002" encuentren lo mismo.
+      const qRefNorm = normalizarRefComparacion(histBusqueda);
+      const enReferenciaSinGuion = qRefNorm && normalizarRefComparacion(l.referencia).includes(qRefNorm);
+      if (!enLote && !enCliente && !enReferencia && !enReferenciaSinGuion) return false;
     }
     return true;
   });
@@ -4067,7 +4090,7 @@ function EstadoDespachoView({ onVolver, onLogout, puedeRevertirDespacho }) {
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 10, padding: "12px 14px", border: `1px solid ${C.border}`, borderRadius: 10, background: C.white, marginBottom: 12 }}>
               <div style={{ flex: 1, minWidth: 160 }}>
                 <Field label="Buscar">
-                  <FInput value={histBusqueda} onChange={(v) => { setHistBusqueda(v); setHistVisibles(50); }} placeholder="Número de lote o cliente..." />
+                  <FInput value={histBusqueda} onChange={(v) => { setHistBusqueda(v); setHistVisibles(50); }} placeholder="Número de lote, cliente o referencia..." />
                 </Field>
               </div>
               <div style={{ width: 150 }}>
