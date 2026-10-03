@@ -58,6 +58,14 @@ const C = {
 function uid() {
   return Math.random().toString(36).slice(2, 9);
 }
+// (2026-10-03, a pedido de Fredy) Para que los buscadores de esta pantalla
+// encuentren una referencia sin importar si se escribe con guion o sin
+// guion ("978002" o "97-8002") -- mismo criterio que normalizarRefComparacion
+// ya usa en App.js para esto mismo, copiado aca porque este archivo no
+// comparte helpers con App.js.
+function normalizarRefComparacion(v) {
+  return String(v || "").trim().toUpperCase().replace(/-/g, "");
+}
 // (2026-09-02, a pedido de Fredy) Para comparar el "Insumo" que trae
 // Busint (tabla "insumos dig") contra "MDEO - CORTE" -- el nombre puede
 // venir con o sin guion y con espacios distintos, así que se normaliza
@@ -2689,7 +2697,12 @@ function ProgramacionMesonPanel({ grupo, plantas, cortadores, telas, telasBusint
                       .filter((g) => {
                         const q = busquedaVinculo.trim().toLowerCase();
                         if (!q) return true;
-                        return `${g.cliente} ${g.numero} ${g.ref}`.toLowerCase().includes(q);
+                        if (`${g.cliente} ${g.numero} ${g.ref}`.toLowerCase().includes(q)) return true;
+                        // (2026-10-03, a pedido de Fredy) La referencia tambien
+                        // se compara sin guiones, para que "978002" y
+                        // "97-8002" encuentren lo mismo.
+                        const qRefNorm = normalizarRefComparacion(busquedaVinculo);
+                        return !!qRefNorm && normalizarRefComparacion(g.ref).includes(qRefNorm);
                       })
                       .map((g) => (
                         <div
