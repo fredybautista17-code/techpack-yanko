@@ -6296,7 +6296,18 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
 // mismo, con el mismo "Vincular" de siempre, o automático cuando llega el
 // pedido real de Busint con la misma referencia/cliente), esa referencia
 // deja de aparecer acá.
-function OrdenesView({ preordenes, pedidos, currentUser, onVincularPedido }) {
+// (2026-10-03, a pedido de Fredy) La tarjeta de cada orden y la tabla de
+// referencias ahora son iguales a Preórdenes (mismo título "Orden #N",
+// mismas columnas, mismas acciones de Actualizar/Editar) -- la única
+// diferencia a propósito es que acá NO se muestran los badges de origen
+// (Reprogramación/Nueva Orden, porque en Órdenes ya no se crea nada nuevo)
+// ni el botón "Tela a comprar" (la tela de estas referencias ya se compró).
+// Las funciones de Busint (obtenerAnchoTelaPorNombre/construirTelasDesdeFila/
+// buscarPatchBusint/esConsumoCrudoSinConvertir) están duplicadas de
+// Preórdenes a propósito en vez de compartirlas -- son casi 150 líneas que
+// ya funcionan ahí todos los días, y tocar ese archivo para "compartirlas"
+// es un riesgo que no vale la pena solo para no repetir código.
+function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVincularPedido, onActualizarItemPreorden }) {
   const [vinculando, setVinculando] = useState(null);
   const [buscaPedido, setBuscaPedido] = useState("");
   const [numeroPedidoManual, setNumeroPedidoManual] = useState("");
@@ -6305,6 +6316,131 @@ function OrdenesView({ preordenes, pedidos, currentUser, onVincularPedido }) {
   // "Resumen por categoría" (mismo componente/lógica que ya existe en
   // Preórdenes, aplicado solo a las referencias que están en Órdenes).
   const [expandido, setExpandido] = useState(null);
+  const esCliente = currentUser?.role === "Cliente";
+  const columnasOrden = ["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", ...(esCliente ? [] : ["Recepción de Tela"]), "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Total", "Carta Colores", "Pedido", "Acciones"];
+  // --- Edición a mano de una referencia (igual que en Preórdenes) ---
+  const [editando, setEditando] = useState(null);
+  const [formEdit, setFormEdit] = useState(null);
+  function abrirEditar(preordenId, it) {
+    setEditando({ preordenId, itemId: it.itemId, referencia: it.referencia });
+    setFormEdit({
+      consumo: it.consumo || "", tipo: it.tipo || "", categoria: it.categoria || "", silueta: it.silueta || "",
+      rango: it.rango || "", tela: it.tela || "", colombiaCurva: it.colombiaCurva || "", colombiaCantidad: it.colombiaCantidad || "",
+      venezuelaCurva: it.venezuelaCurva || "", venezuelaCantidad: it.venezuelaCantidad || "", precio: it.precio || "",
+      observacionesCliente: it.observacionesCliente || "",
+    });
+  }
+  async function guardarEditar() {
+    if (!editando || !formEdit) return;
+    await onActualizarItemPreorden(editando.preordenId, editando.itemId, formEdit);
+    setEditando(null);
+    setFormEdit(null);
+  }
+  // --- Actualizar desde Busint (mismo criterio que Preórdenes) ---
+  const [refrescando, setRefrescando] = useState(null);
+  const telasStockCacheRef = useRef(null);
+  async function obtenerAnchoTelaPorNombre(nombreTela) {
+    const nombreBuscado = String(nombreTela || "").trim().toUpperCase();
+    if (!nombreBuscado) return null;
+    if (!telasStockCacheRef.current) {
+      telasStockCacheRef.current = httpsCallable(functionsClient, "getTelasStockBusintBD")()
+        .then((resp) => resp.data?.telas || [])
+        .catch(() => []);
+    }
+    const stock = await telasStockCacheRef.current;
+    const fila = stock.find((t) => t.activo !== false && t.ancho > 0 && String(t.componente || "").trim().toUpperCase() === nombreBuscado);
+    return fila ? fila.ancho : null;
+  }
+  async function construirTelasDesdeFila(filaTela) {
+    const slots = filaTela?.slots || [];
+    const lista = [];
+    for (const slot of slots) {
+      const nombre = slot?.nombre || "";
+      if (!nombre) continue;
+      const unidadSlot = String(slot?.unidad ?? "").trim();
+      const anchoSlot = await obtenerAnchoTelaPorNombre(nombre);
+      let consumoTexto = "";
+      if (slot?.consumo != null && slot?.consumo !== "") {
+        consumoTexto = anchoSlot ? `${Math.round((slot.consumo / anchoSlot) * 100) / 100} Mt` : `${slot.consumo} m2`;
+      }
+      lista.push({ nombre, consumo: consumoTexto, consumoCrudo: slot?.consumo ?? null, unidad: unidadSlot, ancho: anchoSlot });
+    }
+    return lista;
+  }
+  function esConsumoCrudoSinConvertir(v) {
+    const txt = String(v || "").trim();
+    if (txt === "") return false;
+    return !/[a-zA-Z]/.test(txt);
+  }
+  async function buscarPatchBusint(it) {
+    const llamarRef = httpsCallable(functionsClient, "probarReferenciaBusint");
+    const respRef = await llamarRef({ ref: it.referencia });
+    if (!respRef.data?.encontrada) return { encontrada: false, patch: {}, debug: null };
+    const b = respRef.data.referencia || {};
+    const grupo = (config?.lineaGrupoMap || {})[b.linea] || "";
+    const precioBusint = Number(b.precioPM) || 0;
+    let tela = "", consumo = "", consumoCrudo = null, unidadCruda = "", anchoEncontrado = null, errorTela = null, telasExtra = [];
+    try {
+      const llamarTela = httpsCallable(functionsClient, "getComposicionTelasBusintBD");
+      const respTela = await llamarTela();
+      const normBuscada = normalizarRefComparacion(it.referencia);
+      const filaTela = (respTela.data?.porReferencia || []).find((r) => normalizarRefComparacion(r.ref) === normBuscada);
+      const todasLasTelas = await construirTelasDesdeFila(filaTela);
+      const [principal, ...resto] = todasLasTelas;
+      tela = principal?.nombre || "";
+      consumoCrudo = principal?.consumoCrudo ?? null;
+      unidadCruda = principal?.unidad || "";
+      anchoEncontrado = principal?.ancho ?? null;
+      consumo = principal?.consumo || "";
+      telasExtra = resto;
+    } catch (err) {
+      errorTela = err?.message || String(err);
+    }
+    const patch = {};
+    if (consumo && (!it.consumo || esConsumoCrudoSinConvertir(it.consumo))) patch.consumo = consumo;
+    if (!it.tipo && grupo) patch.tipo = grupo;
+    if (!it.categoria && b.categoria) patch.categoria = b.categoria;
+    if (!it.silueta && b.tipoConfeccion) patch.silueta = b.tipoConfeccion;
+    if (!it.rango && b.tallas) patch.rango = String(b.tallas);
+    if (!it.tela && tela) patch.tela = tela;
+    if (!it.precio && precioBusint) patch.precio = precioBusint;
+    if (!it.lineaBusint && b.linea) patch.lineaBusint = b.linea;
+    if (telasExtra.length) patch.telasExtra = telasExtra.map((t) => ({ nombre: t.nombre, consumo: t.consumo }));
+    const debug = { precioPMCrudo: b.precioPM ?? null, tela, consumoCrudo, unidadCruda, anchoEncontrado, consumoFinal: consumo, errorTela, telasExtra };
+    return { encontrada: true, patch, debug };
+  }
+  async function refrescarBusint(preordenId, it) {
+    const key = `${preordenId}::${it.itemId}`;
+    setRefrescando(key);
+    try {
+      const { encontrada, patch, debug } = await buscarPatchBusint(it);
+      if (!encontrada) {
+        alert(`La referencia ${it.referencia} no se encontró en Busint.`);
+        return;
+      }
+      if (Object.keys(patch).length) {
+        await onActualizarItemPreorden(preordenId, it.itemId, patch);
+      }
+      const lineasDebug = [
+        `Busint — ${it.referencia}:`,
+        `• Precio matriculado (precioPM): ${(debug.precioPMCrudo || debug.precioPMCrudo === 0) ? debug.precioPMCrudo : "vacío en Busint"}`,
+        `• Tela: ${debug.tela || "no encontrada en la tabla de telas de Busint"}`,
+        `• Consumo crudo: ${debug.consumoCrudo != null ? `${debug.consumoCrudo} (unidad: ${debug.unidadCruda || "sin código"})` : "sin dato"}`,
+        `• Ancho de esa tela: ${debug.anchoEncontrado || "no encontrado en inventario de Corte"}`,
+        `• Consumo convertido: ${debug.consumoFinal || "no se pudo calcular"}`,
+        (debug.telasExtra || []).length
+          ? `• Telas adicionales encontradas (${debug.telasExtra.length}): ${debug.telasExtra.map((t) => `${t.nombre} (${t.consumo || "sin consumo"})`).join(", ")}`
+          : `• Telas adicionales encontradas: ninguna`,
+        debug.errorTela ? `• Error consultando tela/consumo: ${debug.errorTela}` : null,
+        `• Campos actualizados ahora: ${Object.keys(patch).length ? Object.keys(patch).join(", ") : "ninguno (ya estaban llenos o Busint no tiene nada nuevo)"}`,
+      ].filter(Boolean).join("\n");
+      alert(lineasDebug);
+    } catch (err) {
+      alert(err?.message || "No se pudo consultar Busint.");
+    } finally {
+      setRefrescando(null);
+    }
+  }
   function pedidosCandidatosConversion(cliente, fechaPreorden) {
     const clienteNorm = foldTexto(cliente || "");
     const fechaRef = fechaPreorden || "";
@@ -6341,7 +6477,7 @@ function OrdenesView({ preordenes, pedidos, currentUser, onVincularPedido }) {
     <div>
       <div style={{ marginBottom: 20 }}>
         <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: T.ink }}>🧵 Órdenes</h2>
-        <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Referencias ya aprobadas con tela confirmada, en lo que llega su Pedido real{tarjetas.length > 0 ? ` -- ${totalRefs} referencia${totalRefs !== 1 ? "s" : ""} en ${tarjetas.length} preorden${tarjetas.length !== 1 ? "es" : ""}` : ""}.</p>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: T.slate }}>Referencias ya aprobadas con tela confirmada, en lo que llega su Pedido real{tarjetas.length > 0 ? ` -- ${totalRefs} referencia${totalRefs !== 1 ? "s" : ""} en ${tarjetas.length} orden${tarjetas.length !== 1 ? "es" : ""}` : ""}.</p>
       </div>
       {vinculando && (
         <Modal title="Vincular a pedido" onClose={() => { setVinculando(null); setBuscaPedido(""); setNumeroPedidoManual(""); }} width={480}>
@@ -6380,6 +6516,28 @@ function OrdenesView({ preordenes, pedidos, currentUser, onVincularPedido }) {
           </div>
         </Modal>
       )}
+      {editando && formEdit && (
+        <Modal title={`Editar — ${editando.referencia}`} onClose={() => { setEditando(null); setFormEdit(null); }} width={520}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+            <Field label="Consumo"><FInput value={formEdit.consumo} onChange={(v) => setFormEdit((f) => ({ ...f, consumo: v }))} /></Field>
+            <Field label="Tipo"><FInput value={formEdit.tipo} onChange={(v) => setFormEdit((f) => ({ ...f, tipo: v }))} /></Field>
+            <Field label="Categoría"><FInput value={formEdit.categoria} onChange={(v) => setFormEdit((f) => ({ ...f, categoria: v }))} /></Field>
+            <Field label="Silueta"><FInput value={formEdit.silueta} onChange={(v) => setFormEdit((f) => ({ ...f, silueta: v }))} /></Field>
+            <Field label="Rango"><FInput value={formEdit.rango} onChange={(v) => setFormEdit((f) => ({ ...f, rango: v }))} /></Field>
+            <Field label="Tela"><FInput value={formEdit.tela} onChange={(v) => setFormEdit((f) => ({ ...f, tela: v }))} /></Field>
+            <Field label="Curva Colombia"><FInput value={formEdit.colombiaCurva} onChange={(v) => setFormEdit((f) => ({ ...f, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+            <Field label="Cantidad Colombia"><FInput value={formEdit.colombiaCantidad} onChange={(v) => setFormEdit((f) => ({ ...f, colombiaCantidad: v }))} /></Field>
+            <Field label="Curva Venezuela"><FInput value={formEdit.venezuelaCurva} onChange={(v) => setFormEdit((f) => ({ ...f, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+            <Field label="Cantidad Venezuela"><FInput value={formEdit.venezuelaCantidad} onChange={(v) => setFormEdit((f) => ({ ...f, venezuelaCantidad: v }))} /></Field>
+            <Field label="Precio"><FInput value={formEdit.precio} onChange={(v) => setFormEdit((f) => ({ ...f, precio: v }))} /></Field>
+          </div>
+          <Field label="Observaciones Cliente"><FInput value={formEdit.observacionesCliente} onChange={(v) => setFormEdit((f) => ({ ...f, observacionesCliente: v }))} /></Field>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+            <Btn variant="secondary" onClick={() => { setEditando(null); setFormEdit(null); }}>Cancelar</Btn>
+            <Btn onClick={guardarEditar}>Guardar</Btn>
+          </div>
+        </Modal>
+      )}
       {!tarjetas.length ? (
         <div style={{ textAlign: "center", padding: 48, color: T.slate, fontSize: 14 }}>Todavía no hay ninguna referencia en Órdenes -- aparecen acá apenas se les confirme la tela en una preorden aprobada.</div>
       ) : (
@@ -6387,35 +6545,133 @@ function OrdenesView({ preordenes, pedidos, currentUser, onVincularPedido }) {
           const abierto = expandido === p.id;
           const resumen = resumenPreordenPorCategoria(items);
           const totalUnidades = resumen.reduce((s, r) => s + r.unidades, 0);
+          const valorTotalOrden = items.reduce((s, it) => s + (Number(it.precio) || 0) * ((Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0)), 0);
+          // (2026-10-03, a pedido de Fredy) En Órdenes el estado de la
+          // preorden siempre es "aprobada" (ver filtro de "tarjetas" arriba)
+          // -- así que, igual que en Preórdenes, solo el administrador
+          // puede seguir editando/vinculando desde acá.
+          const bloqueada = !currentUser?.isAdmin;
+          function devolverTelaPendiente(it) {
+            if (window.confirm(`¿Devolver la referencia "${it.referencia}" a pendiente de confirmación?`)) {
+              onActualizarItemPreorden(p.id, it.itemId, { telaComprada: false, telaCompradaEn: null, telaCompradaPor: null });
+            }
+          }
+          // (2026-10-03, a pedido de Fredy) Versión simplificada de la celda
+          // de "Recepción de Tela" de Preórdenes -- acá SIEMPRE está
+          // confirmada (es el único estado con el que una referencia entra
+          // a Órdenes), así que no hace falta el resto de las ramas
+          // (pendiente/cargada) que sí tiene esa pantalla.
+          function celdaTelaConfirmada(it) {
+            const infoTela = it.telaInfo ? [it.telaInfo.proveedor, it.telaInfo.lote ? `Lote ${it.telaInfo.lote}` : "", it.telaInfo.composicion].filter(Boolean).join(" · ") : "";
+            return (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <span title={infoTela} style={{ padding: "3px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.jadeBg, color: T.jade, whiteSpace: "nowrap" }}>✅ Confirmada por Diseño</span>
+                {currentUser?.isAdmin && (
+                  <button onClick={() => devolverTelaPendiente(it)} title="Devolver a pendiente de confirmación" style={{ padding: "2px 6px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.coral, fontWeight: 700, fontSize: 10, cursor: "pointer", whiteSpace: "nowrap" }}>↩️ Devolver</button>
+                )}
+              </div>
+            );
+          }
           return (
-            <div key={p.id} style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, marginBottom: 14, overflow: "hidden" }}>
+            <div key={p.id} style={{ background: T.white, borderRadius: 14, border: `1px solid ${T.border}`, marginBottom: 16, overflow: "hidden" }}>
               <div onClick={() => setExpandido(abierto ? null : p.id)} style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", background: T.canvas, cursor: "pointer", flexWrap: "wrap", gap: 10 }}>
-                <div style={{ fontWeight: 800, fontSize: 14, color: T.ink, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span>{abierto ? "📂" : "📁"} {p.nombre ? `${p.nombre} — ${p.cliente || "(Sin cliente)"}` : (p.cliente || "(Sin cliente)")}{p.numPedido ? ` · Pedido ${p.numPedido}` : ""}</span>
-                  {p.origenPantalla === "reprogramacion" && (
-                    <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.violetBg, color: T.violet }}>🔁 Reprogramación</span>
-                  )}
-                  {p.origenPantalla === "orden" && (
-                    <span style={{ padding: "1px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, background: T.denimBg, color: T.denim }}>🆕 Nueva Orden</span>
-                  )}
-                </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, background: T.coralBg, color: T.coral }}>🧵 {items.length} referencia{items.length !== 1 ? "s" : ""} · {fmtNum(totalUnidades)} unid.</span>
-                  <span style={{ color: T.slate }}>{abierto ? "▲" : "▼"}</span>
+                  <span style={{ fontSize: 20 }}>{abierto ? "📂" : "📁"}</span>
+                  <div>
+                    <div style={{ fontWeight: 800, fontSize: 15, color: T.ink }}>
+                      {p.numeroOrden ? <span style={{ color: T.seamDark, fontWeight: 800 }}>Orden #{p.numeroOrden} — </span> : null}
+                      {p.nombre ? `${p.nombre} — ${p.cliente || "(Sin cliente)"}` : (p.cliente || "(Sin cliente)")}{p.numPedido ? ` · Pedido ${p.numPedido}` : ""}
+                    </div>
+                    <div style={{ fontSize: 12, color: T.slate }}>{items.length} ref · {fmtNum(totalUnidades)} unid.{valorTotalOrden > 0 ? ` · ${fmtCOP(valorTotalOrden)}` : ""} · Creada {p.fechaCreado}</div>
+                  </div>
                 </div>
+                <span style={{ color: T.slate }}>{abierto ? "▲" : "▼"}</span>
               </div>
               {abierto && (
                 <div style={{ padding: 20 }}>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    {items.map((it) => (
-                      <div key={it.itemId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 12px", borderRadius: 8, border: `1px solid ${T.border}`, background: T.coralBg, fontSize: 12.5 }}>
-                        <span><b>{it.referencia}</b>{it.nombre ? <span style={{ color: T.slate }}> · {it.nombre}</span> : null}{it.tela ? <span style={{ color: T.slate }}> · {it.tela}</span> : null}</span>
-                        <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                          {it.telaCompradaEn && <span style={{ fontSize: 11, color: T.slate }}>Confirmada {it.telaCompradaEn.slice(0, 10)}</span>}
-                          <button onClick={(e) => { e.stopPropagation(); setVinculando({ preordenId: p.id, itemId: it.itemId }); }} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Vincular</button>
-                        </span>
-                      </div>
-                    ))}
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ background: T.ink }}>
+                          {columnasOrden.map((h) => (
+                            <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {items.map((it, i) => {
+                          const cap = (capsulas || []).find((c) => c.id === it.capsulaId);
+                          const refReal = cap?.referencias?.find((r) => r.id === it.itemId);
+                          return (
+                            <tr key={it.itemId} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
+                              <td style={{ padding: "6px 10px" }}>{it.foto ? <img src={it.foto} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 4 }} /> : "—"}</td>
+                              <td style={{ padding: "6px 10px", fontWeight: 700 }}>{it.referencia}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.nombre}</td>
+                              <td style={{ padding: "6px 10px" }}>{refReal ? <Badge status={refReal.status} /> : <span style={{ color: T.slate, fontStyle: "italic" }}>—</span>}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.consumo || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.lineaBusint || it.tipo || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.categoria || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.silueta || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.rango || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>
+                                <div style={{ display: "flex", flexDirection: "column" }}>
+                                  <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, padding: "2px 0 2px 8px", borderLeft: `3px solid ${T.violet}` }}>
+                                    <span style={{ fontWeight: 700, color: T.ink, fontSize: 12.5 }}>{it.tela || "—"}</span>
+                                    <span style={{ fontWeight: 700, color: T.violet, fontSize: 12, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{it.consumo || "—"}</span>
+                                  </div>
+                                  {(it.telasExtra || []).map((t, ti) => (
+                                    <div key={ti} style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, padding: "2px 0 2px 8px", borderLeft: `3px solid ${T.border}` }}>
+                                      <span style={{ color: "#30342f", fontSize: 12.5 }}>{t.nombre || "—"}</span>
+                                      <span style={{ color: T.slate, fontSize: 12, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{t.consumo || "sin consumo"}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </td>
+                              {!esCliente && <td style={{ padding: "6px 10px" }}>{celdaTelaConfirmada(it)}</td>}
+                              <td style={{ padding: "6px 10px" }}>{it.colombiaCurva || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.colombiaCantidad || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.venezuelaCurva || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.venezuelaCantidad || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{it.precio || "—"}</td>
+                              <td style={{ padding: "6px 10px", fontWeight: 700 }}>
+                                {it.precio ? fmtCOP((Number(it.precio) || 0) * ((Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0))) : "—"}
+                              </td>
+                              <td style={{ padding: "6px 10px" }}>
+                                <ImageListUploader
+                                  images={cartaColoresLista(it)}
+                                  onChange={(imgs) => onActualizarItemPreorden(p.id, it.itemId, { cartaColores: imgs })}
+                                  readonly={bloqueada}
+                                />
+                              </td>
+                              <td style={{ padding: "6px 10px" }}>
+                                {bloqueada ? (
+                                  <span style={{ color: T.slate, fontSize: 11, fontStyle: "italic" }}>🔒 Bloqueada</span>
+                                ) : (
+                                  <button onClick={() => setVinculando({ preordenId: p.id, itemId: it.itemId })} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Vincular</button>
+                                )}
+                              </td>
+                              <td style={{ padding: "6px 10px" }}>
+                                {!bloqueada && (
+                                  <div style={{ display: "flex", gap: 4 }}>
+                                    <button
+                                      onClick={() => refrescarBusint(p.id, it)}
+                                      disabled={refrescando === `${p.id}::${it.itemId}`}
+                                      title="Volver a consultar Busint para llenar los campos vacíos"
+                                      style={{ padding: "4px 7px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.denim, fontWeight: 700, fontSize: 12, cursor: refrescando === `${p.id}::${it.itemId}` ? "not-allowed" : "pointer", opacity: refrescando === `${p.id}::${it.itemId}` ? 0.5 : 1 }}
+                                    >{refrescando === `${p.id}::${it.itemId}` ? "…" : "🔄"}</button>
+                                    <button
+                                      onClick={() => abrirEditar(p.id, it)}
+                                      title="Editar esta referencia a mano"
+                                      style={{ padding: "4px 7px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.white, color: T.ink, fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+                                    >✏️</button>
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                   <div style={{ marginTop: 20 }}>
                     <div style={{ fontWeight: 700, fontSize: 13, color: T.ink, marginBottom: 8 }}>Resumen por categoría</div>
@@ -6432,6 +6688,13 @@ function OrdenesView({ preordenes, pedidos, currentUser, onVincularPedido }) {
                         <div style={{ fontSize: 18, fontWeight: 800, color: T.coral }}>{fmtNum(totalUnidades)}</div>
                         <div style={{ fontSize: 11, color: T.coral }}>{items.length} ref{items.length !== 1 ? "s" : ""}</div>
                       </div>
+                      {valorTotalOrden > 0 && (
+                        <div style={{ padding: "10px 12px", borderRadius: 10, border: `1.5px solid ${T.jade}`, background: T.jadeBg }}>
+                          <div style={{ fontSize: 11, color: T.jade, fontWeight: 700 }}>Valor total</div>
+                          <div style={{ fontSize: 18, fontWeight: 800, color: T.jade }}>{fmtCOP(valorTotalOrden)}</div>
+                          <div style={{ fontSize: 11, color: T.jade }}>Precio × cantidad</div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -16926,8 +17189,11 @@ function AppInner() {
               <OrdenesView
                 preordenes={preordenesVisibles}
                 pedidos={pedidosVisibles}
+                capsulas={capsulas}
+                config={config}
                 currentUser={currentUser}
                 onVincularPedido={vincularPreordenAPedido}
+                onActualizarItemPreorden={actualizarItemPreorden}
               />
             )}
             {view === "produccion" && (
