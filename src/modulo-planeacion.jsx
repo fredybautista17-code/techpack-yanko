@@ -2112,14 +2112,19 @@ function InformesView({
     }
   }
   const busquedaLoteNorm = busquedaLote.trim().toLowerCase();
+  // (2026-10-03, a pedido de Fredy) La referencia tambien se compara sin
+  // guiones (normalizarRef, ya definido mas arriba en este archivo), para
+  // que "978002" y "97-8002" encuentren lo mismo.
+  const busquedaLoteRefNorm = normalizarRef(busquedaLote);
   const lotesBuscados = useMemo(() => {
     if (!busquedaLoteNorm) return lotes;
     return lotes.filter(
       (l) =>
         String(l.numLote ?? "").toLowerCase().includes(busquedaLoteNorm) ||
-        (l.referencia || "").toLowerCase().includes(busquedaLoteNorm)
+        (l.referencia || "").toLowerCase().includes(busquedaLoteNorm) ||
+        (busquedaLoteRefNorm && normalizarRef(l.referencia).includes(busquedaLoteRefNorm))
     );
-  }, [lotes, busquedaLoteNorm]);
+  }, [lotes, busquedaLoteNorm, busquedaLoteRefNorm]);
   const reporteSemiterminado = useMemo(() => generarSeguimientoSemiterminado(lotesBuscados), [lotesBuscados]);
   const reportePlanta = useMemo(() => generarAgrupadoPlanta(lotesBuscados, "nombrePlanta"), [lotesBuscados]);
   const reporteCliente = useMemo(() => generarAgrupadoPlanta(lotes, "nombreCliente"), [lotes]);
