@@ -6432,11 +6432,21 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   // cualquier referencia contenida en la preorden (útil cuando hay varias
   // preórdenes del mismo cliente).
   const bqLista = foldTexto(buscarLista);
+  // (2026-10-03, a pedido de Fredy) Para que una referencia encuentre lo
+  // mismo la escriban con o sin guion ("978002" o "97-8002"), se compara
+  // ADEMAS con la version normalizada (sin guiones) de la referencia --
+  // igual criterio que normalizarRefComparacion ya usa en el resto de la
+  // app para esto mismo.
+  const bqListaRef = normalizarRefComparacion(buscarLista);
   const visiblesBuscadas = !bqLista ? visibles : visibles.filter((p) =>
     foldTexto(p.cliente).includes(bqLista) ||
     foldTexto(p.numPedido).includes(bqLista) ||
     foldTexto(p.nombre).includes(bqLista) ||
-    (p.items || []).some((it) => foldTexto(it.referencia).includes(bqLista) || foldTexto(it.nombre).includes(bqLista))
+    (p.items || []).some((it) =>
+      foldTexto(it.referencia).includes(bqLista) ||
+      foldTexto(it.nombre).includes(bqLista) ||
+      (bqListaRef && normalizarRefComparacion(it.referencia).includes(bqListaRef))
+    )
   );
   const bq = buscaPedido.trim().toLowerCase();
   const pedidosEncontrados = bq
@@ -7116,9 +7126,17 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         // (2026-09-25, a pedido de Fredy) El selector de Línea/País de arriba
         // ahora también filtra esta tabla (igual que el buscador de texto),
         // no solo el "Resumen por categoría" de más abajo.
+        // (2026-10-03, a pedido de Fredy) Mismo criterio que el buscador de
+        // la lista de preórdenes: la referencia también se compara sin
+        // guiones, para que "978002" y "97-8002" encuentren lo mismo.
+        const bqItemRef = normalizarRefComparacion(buscarItem);
         const itemsFiltrados = (p.items || []).filter((it) => {
           if (bqItem) {
-            const coincide = foldTexto(it.referencia).includes(bqItem) || foldTexto(it.nombre).includes(bqItem) || foldTexto(it.tela).includes(bqItem);
+            const coincide =
+              foldTexto(it.referencia).includes(bqItem) ||
+              foldTexto(it.nombre).includes(bqItem) ||
+              foldTexto(it.tela).includes(bqItem) ||
+              (bqItemRef && normalizarRefComparacion(it.referencia).includes(bqItemRef));
             if (!coincide) return false;
           }
           if (filtroGrupo && (it.lineaBusint || it.tipo) !== filtroGrupo) return false;
@@ -8939,6 +8957,9 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
     );
   }
   const busquedaNorm = busqueda.trim().toLowerCase();
+  // (2026-10-03, a pedido de Fredy) La referencia también se compara sin
+  // guiones, para que "978002" y "97-8002" encuentren lo mismo.
+  const busquedaRefNorm = normalizarRefComparacion(busqueda);
   const filtradoResultado = historial.filter((h) => {
     if (resultado !== "todos" && h.resultado !== resultado) return false;
     if (tipoFiltro !== "todos" && h.tipo !== tipoFiltro) return false;
@@ -8948,7 +8969,8 @@ function HistorialDisenoView({ historial, protos, capsulas, pedidos, role, perms
         (h.nombre || "").toLowerCase().includes(busquedaNorm) ||
         (h.referencia || "").toLowerCase().includes(busquedaNorm) ||
         (h.cliente || "").toLowerCase().includes(busquedaNorm) ||
-        (h.capsulaName || "").toLowerCase().includes(busquedaNorm);
+        (h.capsulaName || "").toLowerCase().includes(busquedaNorm) ||
+        (busquedaRefNorm && normalizarRefComparacion(h.referencia).includes(busquedaRefNorm));
       if (!calza) return false;
     }
     return true;
