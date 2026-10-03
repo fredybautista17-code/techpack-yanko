@@ -2315,6 +2315,39 @@ function PrecioCotizacionModal({ item, onSave, onClose }) {
 // con el boton "🧵 Tela a comprar" de cada orden) con el consolidado de
 // metros de tela que hace falta comprar para ESA orden completa. Ver
 // calcularTelaAComprar para como se agrupan/separan los datos.
+// (2026-10-03, a pedido de Fredy) Descarga en Excel lo mismo que se ve en
+// el modal de "Tela a comprar" -- mismo criterio de exportar que ya usa el
+// resto de la app (import dinamico de "xlsx", una hoja armada con aoa_to_sheet).
+// Las telas sin ancho/sin consumo (los dos avisos) van debajo del total, cada
+// una con sus referencias, para que quien compra tela tenga todo en un solo
+// archivo sin tener que volver a la app.
+async function exportarTelaAComprarExcel(preorden, filas, avisosSinConvertir, avisosSinDato, totalMetros) {
+  const XLSX = await import("xlsx");
+  const aoa = [
+    ["TELA", "USADA EN", "METROS NECESARIOS"],
+    ...filas.map((f) => [f.nombre, `${f.numRefs} ref`, Math.round(f.metros * 100) / 100]),
+    ["TOTAL A COMPRAR (TELAS CONVERTIDAS)", "", Math.round(totalMetros * 100) / 100],
+  ];
+  if (avisosSinConvertir.length) {
+    aoa.push([]);
+    aoa.push(["SIN ANCHO REGISTRADO -- NO SE PUDIERON CONVERTIR A METROS (NO SUMAN AL TOTAL)"]);
+    aoa.push(["TELA", "REFERENCIAS"]);
+    avisosSinConvertir.forEach((a) => aoa.push([a.nombre, a.refs.join(", ")]));
+  }
+  if (avisosSinDato.length) {
+    aoa.push([]);
+    aoa.push(["SIN CONSUMO REGISTRADO, O CON FORMATO NO RECONOCIDO"]);
+    aoa.push(["TELA", "REFERENCIAS"]);
+    avisosSinDato.forEach((a) => aoa.push([a.nombre, a.refs.join(", ")]));
+  }
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"] = [{ wch: 28 }, { wch: 50 }, { wch: 18 }];
+  XLSX.utils.book_append_sheet(wb, ws, "Tela a comprar");
+  const etiqueta = etiquetaNumeroOrden(preorden) || preorden.cliente || "Orden";
+  const nombreArchivo = `Tela_a_comprar_${etiqueta.replace(/[^a-zA-Z0-9]+/g, "_")}_${today()}.xlsx`;
+  XLSX.writeFile(wb, nombreArchivo);
+}
 function TelaAComprarModal({ preorden, onClose }) {
   const { filas, avisosSinConvertir, avisosSinDato, totalMetros } = useMemo(
     () => calcularTelaAComprar(preorden.items),
@@ -2381,6 +2414,9 @@ function TelaAComprarModal({ preorden, onClose }) {
         </>
       )}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 20 }}>
+        {!sinNada && (
+          <Btn variant="secondary" onClick={() => exportarTelaAComprarExcel(preorden, filas, avisosSinConvertir, avisosSinDato, totalMetros)}>⬇ Descargar Excel</Btn>
+        )}
         <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
       </div>
     </Modal>
