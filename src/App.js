@@ -6154,7 +6154,16 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
   // Busint en este momento -- igual que en BuscarPorLineaView
   // (modulo-planeacion.jsx), para no inventar una lista fija de líneas que
   // luego no calce con lo que Busint reporte.
-  const lineasDisponibles = useMemo(() => [...new Set(lotes.map((l) => l.linea).filter(Boolean))].sort(), [lotes]);
+  // (2026-10-03, a pedido de Fredy) Antes esta lista solo miraba "lotes"
+  // (lo que YA se cortó en Busint) -- una referencia que sigue nada más "En
+  // Preórdenes" (todavía sin cortar nada) no tiene lote todavía, así que su
+  // línea nunca aparecía para poder filtrar por ella, aunque esa referencia
+  // sí se vea en la pantalla. Ahora se arma igual que "Por línea" (mismo
+  // agruparProduccionPorCampo, que ya combina lotes + Preórdenes/Pedidos) y
+  // se toman los grupos resultantes -- así una línea aparece en cuanto algo
+  // está montado, aunque todavía no se haya cortado nada de ella.
+  const categoriasPorLinea = useMemo(() => agruparProduccionPorCampo(lotes, pedidosParaCruce, preordenesParaCruce, "linea", null, columnaPreordenAdmin), [lotes, pedidosParaCruce, preordenesParaCruce, columnaPreordenAdmin]);
+  const lineasDisponibles = useMemo(() => categoriasPorLinea.map((c) => c.grupo).filter((g) => g !== "(Sin línea)").sort(), [categoriasPorLinea]);
   const categorias = useMemo(() => agruparProduccionPorCampo(lotes, pedidosParaCruce, preordenesParaCruce, agruparPor, agruparPor === "categoria" ? filtroLinea : null, columnaPreordenAdmin), [lotes, pedidosParaCruce, preordenesParaCruce, agruparPor, filtroLinea, columnaPreordenAdmin]);
   // (2026-10-03, a pedido de Fredy) Mientras haya algo escrito en el
   // buscador, se muestra esto en vez de la lista agrupada -- cada
