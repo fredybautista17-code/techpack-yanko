@@ -6954,6 +6954,34 @@ exports.enviarResumenDiarioNotificaciones = onSchedule(
   }
 );
 
+// Festivos de Colombia -- misma lista que FESTIVOS_COLOMBIA_2026 en
+// src/modulo-nomina.jsx (Ley Emiliani). Se duplica acá porque functions/
+// es un runtime aparte del frontend; si se agrega un festivo hay que
+// actualizar los dos lados. Se usa solo para decidir si un sábado es "de
+// reposición" (ver enviarAsistenciaDiaria más abajo).
+const FESTIVOS_COLOMBIA_2026_ASISTENCIA = [
+  "2026-01-01", "2026-01-12", "2026-03-23", "2026-04-02", "2026-04-03",
+  "2026-05-01", "2026-05-18", "2026-06-08", "2026-06-15", "2026-06-29",
+  "2026-07-13", "2026-07-20", "2026-08-07", "2026-08-17", "2026-10-12",
+  "2026-11-02", "2026-11-16", "2026-12-08", "2026-12-25",
+];
+function lunesDeLaSemanaAsistencia(iso) {
+  const d = new Date(iso + "T00:00:00");
+  const dow = d.getDay(); // 0=domingo..6=sábado
+  const diff = dow === 0 ? -6 : 1 - dow;
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+function semanaTuvoFestivoAsistencia(iso) {
+  const lunes = new Date(lunesDeLaSemanaAsistencia(iso) + "T00:00:00");
+  for (let i = 0; i < 6; i++) { // lunes a sábado
+    const d = new Date(lunes);
+    d.setDate(lunes.getDate() + i);
+    if (FESTIVOS_COLOMBIA_2026_ASISTENCIA.includes(d.toISOString().slice(0, 10))) return true;
+  }
+  return false;
+}
+
 // (2026-09-14, a pedido de Fredy) Reporte diario de asistencia: todos los
 // días a las 9am (media hora después de que se sube y guarda el huellero a
 // las 8am), cruza "nomina_dias_trabajados" de HOY contra los trabajadores
@@ -6965,9 +6993,16 @@ exports.enviarResumenDiarioNotificaciones = onSchedule(
 // agregarSeccionNotificacion ni por el resumen consolidado de las 7pm,
 // porque es información de la mañana y de otro tema (asistencia, no
 // despachos/auditoría/vencidos).
+// (2026-10-03, a pedido de Fredy) Ya no se trabaja los sábados normales --
+// el correo sigue disparándose todos los sábados por el cron (Cloud
+// Scheduler no sabe de festivos), pero la función misma se sale de
+// inmediato si es sábado y esa semana no tuvo ningún festivo entre semana
+// (mismo criterio que "días esperados" en Historial de Asistencia). Los
+// sábados de reposición (cuando sí hubo festivo esa semana) siguen
+// mandando el correo normal.
 exports.enviarAsistenciaDiaria = onSchedule(
   {
-    schedule: "0 9 * * 1-6", // lunes a sábado (a pedido de Fredy, sin domingo)
+    schedule: "0 9 * * 1-6", // lunes a sábado (el filtro de sábado normal vs. de reposición queda adentro, ver comentario arriba)
     timeZone: "America/Bogota",
     secrets: [EMAIL_USER, EMAIL_APP_PASSWORD],
     timeoutSeconds: 300,
@@ -6975,6 +7010,11 @@ exports.enviarAsistenciaDiaria = onSchedule(
   },
   async () => {
     const fecha = fechaHoyBogota();
+    const esSabado = new Date(fecha + "T00:00:00").getDay() === 6;
+    if (esSabado && !semanaTuvoFestivoAsistencia(fecha)) {
+      logger.info("enviarAsistenciaDiaria: sábado sin festivo esa semana, no se trabaja -- no se manda correo", { fecha });
+      return;
+    }
     const primerDiaMes = `${fecha.slice(0, 7)}-01`;
     const [areasSnap, trabajadoresSnap, diasTrabajadosSnap, usersSnap, configSnap, anomaliasSnap, ausenciasSnap, retardosMesSnap] = await Promise.all([
       db.collection("nomina_areas").get(),
