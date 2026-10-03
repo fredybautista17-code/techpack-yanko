@@ -5384,8 +5384,48 @@ function areaDeRegistro(registro, trabajadores) {
   const t = trabajadores.find((tt) => tt.id === registro.trabajadorId);
   return (t && t.area) || registro.area || "Sin asignar";
 }
+// (2026-10-03, a pedido de Fredy -- "esta muy pobre el informe... nombre de
+// las personas") El comparativo por área sirve para ver el patrón, pero no
+// quién específicamente lo genera. claveYNombrePersona()/personasDelArea()
+// agrupan los mismos registros (permisos del mes, faltas del mes, retardos
+// del mes) por persona en vez de por área, para el detalle que se abre al
+// hacer clic en una fila. Si el registro tiene trabajadorId se agrupa por
+// ese id (nombre/cédula actuales del trabajador); si no (registros viejos
+// del huellero sin trabajadorId, los que caen en "Sin asignar"), se agrupa
+// por el nombre tal como quedó guardado, para poder identificar a quién
+// corresponde.
+function claveYNombrePersona(registro, trabajadores) {
+  if (registro.trabajadorId) {
+    const t = trabajadores.find((tt) => tt.id === registro.trabajadorId);
+    return { key: `t:${registro.trabajadorId}`, nombre: (t && t.nombre) || registro.nombre || "(sin nombre)", cedula: (t && t.cedula) || "" };
+  }
+  const libre = registro.nombreNorm || registro.nombreLibre || registro.nombre || "(sin identificar)";
+  return { key: `l:${libre}`, nombre: registro.nombre || registro.nombreLibre || libre, cedula: "" };
+}
+function personasDelArea(area, permisosDelMes, faltasDelMes, retardosDelMes, trabajadores) {
+  const porPersona = new Map();
+  function registrar(registro, campo) {
+    if (areaDeRegistro(registro, trabajadores) !== area) return;
+    const { key, nombre, cedula } = claveYNombrePersona(registro, trabajadores);
+    if (!porPersona.has(key)) porPersona.set(key, { id: key, nombre, cedula, permisos: 0, retardos: 0, faltas: 0, motivos: new Map() });
+    const p = porPersona.get(key);
+    p[campo]++;
+    if (campo === "permisos" && registro.motivo) p.motivos.set(registro.motivo, (p.motivos.get(registro.motivo) || 0) + 1);
+  }
+  permisosDelMes.forEach((a) => registrar(a, "permisos"));
+  faltasDelMes.forEach((f) => registrar(f, "faltas"));
+  retardosDelMes.forEach((r) => registrar(r, "retardos"));
+  return [...porPersona.values()]
+    .map((p) => {
+      let motivoTop = null, motivoTopCount = 0;
+      p.motivos.forEach((count, motivo) => { if (count > motivoTopCount) { motivoTopCount = count; motivoTop = motivo; } });
+      return { ...p, motivoTop, motivoTopCount };
+    })
+    .sort((a, b) => (b.permisos + b.retardos + b.faltas) - (a.permisos + a.retardos + a.faltas) || a.nombre.localeCompare(b.nombre));
+}
 function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas, retardos }) {
   const [mes, setMes] = useState(today().slice(0, 7));
+  const [areaDetalle, setAreaDetalle] = useState(null); // nombre del área cuya fila se hizo clic, o null
   const permisosDelMes = (ausencias || []).filter((a) => a.motivo === MOTIVO_CON_TOPE_MENSUAL && (a.fechaInicio || "").slice(0, 7) === mes);
   const ausenciasDelMes = (ausencias || []).filter((a) => (a.fechaInicio || "").slice(0, 7) === mes);
   const faltasDelMes = (faltas || []).filter((f) => (f.fecha || "").slice(0, 7) === mes);
@@ -5453,7 +5493,38 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
           { key: "motivoTop", label: "Motivo más frecuente", render: (f) => f.motivoTop ? `${f.motivoTop} (${f.motivoTopCount})` : "—" },
         ]}
         filas={filas.sort((a, b) => a.area.localeCompare(b.area))}
+        onRowClick={(f) => setAreaDetalle(f.area)}
       />
+      <div style={{ fontSize: 11, color: C.slate, marginTop: 8 }}>Haz clic en una fila para ver el detalle persona por persona.</div>
+      {areaDetalle && (
+        <Modal title={`${areaDetalle} -- detalle por persona (${mes})`} onClose={() => setAreaDetalle(null)} width={760}>
+          <Tabla
+            vacio="Sin registros de esta área en el mes elegido."
+            columnas={[
+              {
+                key: "nombre",
+                label: "Nombre",
+                render: (p) => (
+                  <div>
+                    <div style={{ fontWeight: 700 }}>{p.nombre}</div>
+                    {p.cedula && <div style={{ fontSize: 10, color: C.slate }}>C.C. {p.cedula}</div>}
+                  </div>
+                ),
+              },
+              { key: "permisos", label: "Permisos", align: "right" },
+              { key: "retardos", label: "Retardos", align: "right" },
+              { key: "faltas", label: "Días sin justificar", align: "right" },
+              { key: "motivoTop", label: "Motivo más usado", render: (p) => p.motivoTop ? `${p.motivoTop} (${p.motivoTopCount})` : "—" },
+            ]}
+            filas={personasDelArea(areaDetalle, permisosDelMes, faltasDelMes, retardosDelMes, trabajadores)}
+          />
+          {areaDetalle === "Sin asignar" && (
+            <div style={{ marginTop: 14, fontSize: 11.5, color: C.slate, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 10, padding: 12 }}>
+              💡 Estos registros vienen de cargas antiguas del huellero y no quedaron ligados a ningún trabajador actual (no tienen trabajadorId). El nombre que ves es el que trajo el huellero -- te sirve para identificar a quién corresponde cada uno.
+            </div>
+          )}
+        </Modal>
+      )}
     </div>
   );
 }
