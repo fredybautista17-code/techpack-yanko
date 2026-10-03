@@ -3676,7 +3676,24 @@ const MOTIVOS_AUSENCIA = [
   "Vacaciones", "Incapacidad", "Licencia Remunerada", "Licencia No Remunerada",
   "Licencia Maternidad/Paternidad", "Permiso", "Luto", "Suspensión de Contrato", "Otro",
 ];
-function AusenciaModal({ ausencia, trabajadores, motivosDisponibles = MOTIVOS_AUSENCIA, onSave, onClose, trabajadorIdSugerido, fechaInicioSugerida, onDelete, mostrarContarComoTrabajado }) {
+// (2026-10-03, a pedido de Fredy) Tope de 3 permisos (motivo exacto
+// "Permiso" -- cita medica, entrega de boletines, etc.) por trabajador por
+// mes calendario. Vacaciones, Incapacidad, Licencia Remunerada, Licencia
+// No Remunerada, Licencia Maternidad/Paternidad, Luto y Suspension de
+// Contrato NO cuentan para este limite -- son motivos aparte, no "permisos"
+// en el sentido que le da Fredy. Se cuenta por el mes de la fecha de
+// inicio que se esta guardando/editando.
+const MOTIVO_CON_TOPE_MENSUAL = "Permiso";
+const TOPE_PERMISOS_POR_MES = 3;
+function contarPermisosDelMes(ausencias, { trabajadorId, nombreLibre, mes, idAExcluir }) {
+  return (ausencias || []).filter((a) =>
+    a.motivo === MOTIVO_CON_TOPE_MENSUAL &&
+    a.id !== idAExcluir &&
+    (a.fechaInicio || "").slice(0, 7) === mes &&
+    (trabajadorId ? a.trabajadorId === trabajadorId : !a.trabajadorId && a.nombreLibre === nombreLibre)
+  ).length;
+}
+function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles = MOTIVOS_AUSENCIA, onSave, onClose, trabajadorIdSugerido, fechaInicioSugerida, onDelete, mostrarContarComoTrabajado }) {
   const [form, setForm] = useState({
     trabajadorId: ausencia?.trabajadorId || trabajadorIdSugerido || "",
     nombreLibre: ausencia?.nombreLibre || "",
@@ -3698,8 +3715,13 @@ function AusenciaModal({ ausencia, trabajadores, motivosDisponibles = MOTIVOS_AU
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const trabajadorSeleccionado = trabajadores.find((t) => t.id === form.trabajadorId);
+  const permisosEsteMes = form.motivo === MOTIVO_CON_TOPE_MENSUAL
+    ? contarPermisosDelMes(ausencias, { trabajadorId: form.trabajadorId || null, nombreLibre: form.nombreLibre.trim(), mes: (form.fechaInicio || "").slice(0, 7), idAExcluir: ausencia?.id })
+    : 0;
+  const bloqueadoPorTope = permisosEsteMes >= TOPE_PERMISOS_POR_MES;
   function guardar() {
     if (!form.motivo || (!form.trabajadorId && !form.nombreLibre.trim())) return;
+    if (bloqueadoPorTope) return;
     onSave({
       trabajadorId: form.trabajadorId || null,
       nombreLibre: form.trabajadorId ? "" : form.nombreLibre.trim(),
@@ -3727,6 +3749,13 @@ function AusenciaModal({ ausencia, trabajadores, motivosDisponibles = MOTIVOS_AU
       <Field label="Motivo">
         <FSel value={form.motivo} onChange={set("motivo")} options={motivosDisponibles} placeholder="Selecciona..." />
       </Field>
+      {form.motivo === MOTIVO_CON_TOPE_MENSUAL && (form.trabajadorId || form.nombreLibre.trim()) && (
+        <div style={{ fontSize: 11.5, fontWeight: 700, color: bloqueadoPorTope ? C.red : C.slate, margin: "-6px 0 10px" }}>
+          {bloqueadoPorTope
+            ? `🚫 Ya tiene ${permisosEsteMes} permisos este mes -- no se puede registrar otro (tope de ${TOPE_PERMISOS_POR_MES}). Vacaciones, Incapacidad, Licencias, Luto y Suspensión no cuentan para este tope.`
+            : `Permisos usados este mes: ${permisosEsteMes}/${TOPE_PERMISOS_POR_MES}.`}
+        </div>
+      )}
       <Field label="Fecha Inicio"><FInput type="date" value={form.fechaInicio} onChange={set("fechaInicio")} /></Field>
       <Field label="Fecha Fin"><FInput type="date" value={form.fechaFin} onChange={set("fechaFin")} /></Field>
       <div style={{ fontSize: 11, color: C.slate, marginTop: -6, marginBottom: 10 }}>
@@ -3750,7 +3779,7 @@ function AusenciaModal({ ausencia, trabajadores, motivosDisponibles = MOTIVOS_AU
           </div>
         )}
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
-        <Btn onClick={guardar} disabled={!form.motivo || (!form.trabajadorId && !form.nombreLibre.trim())}>Guardar</Btn>
+        <Btn onClick={guardar} disabled={!form.motivo || (!form.trabajadorId && !form.nombreLibre.trim()) || bloqueadoPorTope}>Guardar</Btn>
       </div>
     </Modal>
   );
@@ -3771,6 +3800,7 @@ function AusenciasView({ ausencias, trabajadores, currentUser, motivosDisponible
         <AusenciaModal
           ausencia={modal === "nuevo" ? null : modal}
           trabajadores={trabajadores}
+          ausencias={ausencias}
           motivosDisponibles={motivosDisponibles}
           onSave={(data) => onSave(modal === "nuevo" ? { id: uid(), ...data, registradoPor: currentUser?.name || currentUser?.username || "", registradoEn: new Date().toISOString() } : { id: modal.id, ...data })}
           onClose={() => setModal(null)}
@@ -4016,6 +4046,7 @@ function PermisosCalendarioView({ trabajadores, produccion, horas, ausencias, cu
         <AusenciaModal
           ausencia={modal.nuevo ? null : modal}
           trabajadores={trabajadores}
+          ausencias={ausencias}
           motivosDisponibles={motivosDisponibles}
           trabajadorIdSugerido={modal.nuevo ? modal.trabajadorId : null}
           fechaInicioSugerida={modal.nuevo ? modal.fechaInicio : null}
@@ -5336,6 +5367,96 @@ function HistorialAsistenciaAreaView({ areasNomina, trabajadores, areaLider, dia
     </div>
   );
 }
+// ─── ESTADÍSTICAS DE PERMISOS (comparativo entre áreas) ──────────────────
+// (2026-10-03, a pedido de Fredy) Quiere ver, por mes, qué área pide más
+// permisos, cuál tiene más retardos, cuál tiene más días sin justificar, y
+// cuál es el motivo de ausencia que más se repite en cada área -- para
+// detectar patrones por área, no solo por persona. Reutiliza las mismas
+// colecciones que ya alimentan Historial de Asistencia / Tabulador de
+// Asistencia (nomina_ausencias, nomina_faltas_sin_justificar,
+// nomina_retardos), nada nuevo que cargar. "Permisos" cuenta SOLO el
+// motivo exacto "Permiso" (cita médica, entrega de boletines, etc.) --
+// Vacaciones/Incapacidad/Licencias/Luto/Suspensión quedan fuera de ese
+// conteo a propósito (mismo criterio que el tope de 3 al mes en
+// AusenciaModal), aunque sí entran en "motivo más frecuente" porque ahí
+// Fredy quiere ver el panorama completo de por qué falta cada área.
+function areaDeRegistro(registro, trabajadores) {
+  const t = trabajadores.find((tt) => tt.id === registro.trabajadorId);
+  return (t && t.area) || registro.area || "Sin asignar";
+}
+function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas, retardos }) {
+  const [mes, setMes] = useState(today().slice(0, 7));
+  const permisosDelMes = (ausencias || []).filter((a) => a.motivo === MOTIVO_CON_TOPE_MENSUAL && (a.fechaInicio || "").slice(0, 7) === mes);
+  const ausenciasDelMes = (ausencias || []).filter((a) => (a.fechaInicio || "").slice(0, 7) === mes);
+  const faltasDelMes = (faltas || []).filter((f) => (f.fecha || "").slice(0, 7) === mes);
+  const retardosDelMes = (retardos || []).filter((r) => (r.fecha || "").slice(0, 7) === mes);
+  function contarPorArea(lista) {
+    const porArea = new Map();
+    lista.forEach((item) => {
+      const area = areaDeRegistro(item, trabajadores);
+      porArea.set(area, (porArea.get(area) || 0) + 1);
+    });
+    return porArea;
+  }
+  const permisosPorArea = contarPorArea(permisosDelMes);
+  const retardosPorArea = contarPorArea(retardosDelMes);
+  const faltasPorArea = contarPorArea(faltasDelMes);
+  const motivoPorArea = new Map(); // area -> Map(motivo -> count)
+  ausenciasDelMes.forEach((a) => {
+    const area = areaDeRegistro(a, trabajadores);
+    if (!motivoPorArea.has(area)) motivoPorArea.set(area, new Map());
+    const m = motivoPorArea.get(area);
+    m.set(a.motivo, (m.get(a.motivo) || 0) + 1);
+  });
+  const areasConDato = new Set([...permisosPorArea.keys(), ...retardosPorArea.keys(), ...faltasPorArea.keys(), ...motivoPorArea.keys()]);
+  const nombresAreas = [...new Set([...(areasNomina || []).map((a) => a.nombre), ...areasConDato])].sort();
+  const filas = nombresAreas.map((area) => {
+    const motivos = motivoPorArea.get(area);
+    let motivoTop = null, motivoTopCount = 0;
+    if (motivos) motivos.forEach((count, motivo) => { if (count > motivoTopCount) { motivoTopCount = count; motivoTop = motivo; } });
+    return {
+      area,
+      permisos: permisosPorArea.get(area) || 0,
+      retardos: retardosPorArea.get(area) || 0,
+      faltas: faltasPorArea.get(area) || 0,
+      motivoTop,
+      motivoTopCount,
+    };
+  }).filter((f) => f.permisos || f.retardos || f.faltas);
+  function lider(campo) {
+    const ordenado = [...filas].sort((a, b) => b[campo] - a[campo]);
+    return ordenado[0] && ordenado[0][campo] > 0 ? ordenado[0] : null;
+  }
+  const liderPermisos = lider("permisos");
+  const liderRetardos = lider("retardos");
+  const liderFaltas = lider("faltas");
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
+        Comparativo por área del mes elegido -- "Permisos" cuenta solo el motivo "Permiso" (cita médica, entrega de boletines, etc.); Vacaciones, Incapacidad, Licencias, Luto y Suspensión no cuentan ahí, pero sí entran en "Motivo más frecuente". "Días sin justificar" son los que hoy ves en Días No Justificados.
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <input type="month" value={mes} onChange={(e) => setMes(e.target.value)} style={{ padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
+      </div>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
+        <KPI icon="🗓️" label="Área con más permisos" value={liderPermisos ? `${liderPermisos.area} (${liderPermisos.permisos})` : "—"} color={C.amber} bg={C.amberBg} />
+        <KPI icon="🕒" label="Área con más retardos" value={liderRetardos ? `${liderRetardos.area} (${liderRetardos.retardos})` : "—"} color={C.blue} bg={C.blueBg} />
+        <KPI icon="❌" label="Área con más ausencias" value={liderFaltas ? `${liderFaltas.area} (${liderFaltas.faltas})` : "—"} color={C.red} bg={C.redBg} />
+      </div>
+      <Tabla
+        vacio="Sin datos para este mes."
+        columnas={[
+          { key: "area", label: "Área" },
+          { key: "permisos", label: "Permisos", align: "right" },
+          { key: "retardos", label: "Retardos", align: "right" },
+          { key: "faltas", label: "Días sin justificar", align: "right" },
+          { key: "motivoTop", label: "Motivo más frecuente", render: (f) => f.motivoTop ? `${f.motivoTop} (${f.motivoTopCount})` : "—" },
+        ]}
+        filas={filas.sort((a, b) => a.area.localeCompare(b.area))}
+      />
+    </div>
+  );
+}
 // ─── NÓMINA FISCAL DESTAJO (sueldo fijo hospedado en Atlas — sin seguridad
 // social, con parafiscales) ─────────────────────────────────────────────
 // Reglas confirmadas con el usuario (25/08/2026):
@@ -5897,6 +6018,7 @@ function DetalleDiasSinJustificarModal({ trabajador, fechas, ausencias, trabajad
       {fechaEnEdicion && (
         <AusenciaModal
           trabajadores={trabajadores}
+          ausencias={ausencias}
           motivosDisponibles={motivosDisponibles}
           trabajadorIdSugerido={trabajador.id}
           fechaInicioSugerida={fechaEnEdicion}
@@ -13124,6 +13246,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
             { id: "tabulador_asistencia", icon: "📋", label: "Tabulador de Asistencia" },
             ...(puedeVerAnomaliasHuellero ? [{ id: "anomalias_huellero", icon: "⚠️", label: "Anomalías Huellero" }] : []),
             { id: "historial_asistencia_area", icon: "🗓️", label: "Historial de Asistencia" },
+            { id: "estadisticas_permisos", icon: "📊", label: "Estadísticas de Permisos" },
             { id: "novedades_quincena", icon: "🧾", label: "Listado de Novedades (quincena)" },
             { id: "deducciones", icon: "🧾", label: "Deducciones" },
             { id: "causacion_manual", icon: "🖊️", label: "Causación Manual" },
@@ -13790,6 +13913,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "anomalias_huellero" && puedeVerAnomaliasHuellero && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
           {subView === "historial_asistencia_area" && <HistorialAsistenciaAreaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausenciasVisibles} anomalias={anomaliasVisibles} retardos={retardosVisibles} turnos={turnos} />}
+          {subView === "estadisticas_permisos" && !areaLider && !soloNovedades && <EstadisticasPermisosView areasNomina={areasNomina} trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} retardos={retardosHuellero} />}
           {subView === "tabulador_asistencia" && <TabuladorAsistenciaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} turnos={turnos} ausencias={ausenciasVisibles} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} onGuardar={guardarAsistenciaManual} />}
           {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} onEliminarLiquidacion={eliminarLiquidacionF} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}

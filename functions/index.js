@@ -7118,10 +7118,14 @@ exports.enviarAsistenciaDiaria = onSchedule(
       const filas = conPermiso
         .map((a) => {
           const t = personas.find((tt) => tt.id === a.trabajadorId);
-          return `<tr><td>${t?.nombre || "(sin nombre)"}</td><td>${a.motivo || "—"}</td><td>${a.fechaInicio} a ${a.fechaFin}</td></tr>`;
+          // (2026-10-03, a pedido de Fredy) Mostrar la hora del permiso si
+          // se registro (ej. cita medica de 2 horas) -- el dato ya existia
+          // en Ausencias (horaInicio/horaFin), solo faltaba en este correo.
+          const hora = (a.horaInicio && a.horaFin) ? `${a.horaInicio} a ${a.horaFin}` : "Día completo";
+          return `<tr><td>${t?.nombre || "(sin nombre)"}</td><td>${a.motivo || "—"}</td><td>${a.fechaInicio} a ${a.fechaFin}</td><td>${hora}</td></tr>`;
         })
         .join("");
-      return `<h3 style="margin:18px 0 6px;color:#1d4ed8;">🗓️ Con permiso hoy</h3><table border="1" cellpadding="6" style="border-collapse:collapse;width:100%"><tr><th>Nombre</th><th>Motivo</th><th>Vigencia</th></tr>${filas}</table>`;
+      return `<h3 style="margin:18px 0 6px;color:#1d4ed8;">🗓️ Con permiso hoy</h3><table border="1" cellpadding="6" style="border-collapse:collapse;width:100%"><tr><th>Nombre</th><th>Motivo</th><th>Vigencia</th><th>Hora</th></tr>${filas}</table>`;
     };
 
     // (2026-09-15, a pedido de Fredy) Bloque con la estadística de llegadas
