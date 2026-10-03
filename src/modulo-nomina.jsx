@@ -5442,13 +5442,46 @@ function personasDelArea(area, permisosDelMes, faltasDelMes, retardosDelMes, tra
     })
     .sort((a, b) => (b.permisos + b.retardos + b.faltas) - (a.permisos + a.retardos + a.faltas) || a.nombre.localeCompare(b.nombre));
 }
-function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas, retardos }) {
-  const [mes, setMes] = useState(today().slice(0, 7));
-  const [areaDetalle, setAreaDetalle] = useState(null); // nombre del área cuya fila se hizo clic, o null
-  const permisosDelMes = (ausencias || []).filter((a) => esMotivoPermiso(a.motivo) && (a.fechaInicio || "").slice(0, 7) === mes);
-  const ausenciasDelMes = (ausencias || []).filter((a) => (a.fechaInicio || "").slice(0, 7) === mes);
-  const faltasDelMes = (faltas || []).filter((f) => (f.fecha || "").slice(0, 7) === mes);
-  const retardosDelMes = (retardos || []).filter((r) => (r.fecha || "").slice(0, 7) === mes);
+// (2026-10-03, a pedido de Fredy -- "si quiero todo, como se veria") Seis
+// mejoras al comparativo, todas reutilizando la misma agregacion por area:
+// tasa (permisos por cada 10 trabajadores, para comparar areas de distinto
+// tamano), tendencia contra el mes anterior, ranking COMPLETO de motivos
+// por area (no solo el top 1), alertas automaticas, exportar a Excel, y
+// acumulado del ano por persona (toggle Este mes / Acumulado <ano> dentro
+// del detalle). calcularStatsDelPeriodo() corre la misma agregacion que ya
+// existia, pero recibe el PREFIJO de fecha ("YYYY-MM" para un mes o "YYYY"
+// para el ano completo) en vez de asumir siempre mes -- asi sirve para las
+// tres consultas que hace la pantalla (mes actual, mes anterior, ano
+// completo) sin repetir la logica tres veces.
+function mesAnterior(mes) {
+  const [y, m] = mes.split("-").map(Number);
+  const d = new Date(y, m - 2, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function fmtMesLabel(mesStr) {
+  return new Date(`${mesStr}-01T00:00:00`).toLocaleDateString("es-CO", { month: "long", year: "numeric" });
+}
+function contarTrabajadoresPorArea(trabajadores) {
+  const porArea = new Map();
+  (trabajadores || []).filter((t) => t.activo !== false).forEach((t) => {
+    const area = t.area || "Sin asignar";
+    porArea.set(area, (porArea.get(area) || 0) + 1);
+  });
+  return porArea;
+}
+function calcularTendencia(actual, anterior) {
+  if (!anterior) return actual ? { dir: "up", texto: "▲ nuevo" } : { dir: "flat", texto: "— igual" };
+  const pct = Math.round(((actual - anterior) / anterior) * 100);
+  if (pct > 0) return { dir: "up", texto: `▲ +${pct}%` };
+  if (pct < 0) return { dir: "down", texto: `▼ ${pct}%` };
+  return { dir: "flat", texto: "— igual" };
+}
+function calcularStatsDelPeriodo(prefijoFecha, { ausencias, faltas, retardos, trabajadores, areasNomina }) {
+  const esDelPeriodo = (fecha) => (fecha || "").startsWith(prefijoFecha);
+  const permisosDelPeriodo = (ausencias || []).filter((a) => esMotivoPermiso(a.motivo) && esDelPeriodo(a.fechaInicio));
+  const ausenciasDelPeriodo = (ausencias || []).filter((a) => esDelPeriodo(a.fechaInicio));
+  const faltasDelPeriodo = (faltas || []).filter((f) => esDelPeriodo(f.fecha));
+  const retardosDelPeriodo = (retardos || []).filter((r) => esDelPeriodo(r.fecha));
   function contarPorArea(lista) {
     const porArea = new Map();
     lista.forEach((item) => {
@@ -5457,11 +5490,11 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
     });
     return porArea;
   }
-  const permisosPorArea = contarPorArea(permisosDelMes);
-  const retardosPorArea = contarPorArea(retardosDelMes);
-  const faltasPorArea = contarPorArea(faltasDelMes);
+  const permisosPorArea = contarPorArea(permisosDelPeriodo);
+  const retardosPorArea = contarPorArea(retardosDelPeriodo);
+  const faltasPorArea = contarPorArea(faltasDelPeriodo);
   const motivoPorArea = new Map(); // area -> Map(motivo -> count)
-  ausenciasDelMes.forEach((a) => {
+  ausenciasDelPeriodo.forEach((a) => {
     const area = areaDeRegistro(a, trabajadores);
     if (!motivoPorArea.has(area)) motivoPorArea.set(area, new Map());
     const m = motivoPorArea.get(area);
@@ -5469,19 +5502,75 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
   });
   const areasConDato = new Set([...permisosPorArea.keys(), ...retardosPorArea.keys(), ...faltasPorArea.keys(), ...motivoPorArea.keys()]);
   const nombresAreas = [...new Set([...(areasNomina || []).map((a) => a.nombre), ...areasConDato])].sort();
-  const filas = nombresAreas.map((area) => {
-    const motivos = motivoPorArea.get(area);
-    let motivoTop = null, motivoTopCount = 0;
-    if (motivos) motivos.forEach((count, motivo) => { if (count > motivoTopCount) { motivoTopCount = count; motivoTop = motivo; } });
-    return {
-      area,
-      permisos: permisosPorArea.get(area) || 0,
-      retardos: retardosPorArea.get(area) || 0,
-      faltas: faltasPorArea.get(area) || 0,
-      motivoTop,
-      motivoTopCount,
-    };
-  }).filter((f) => f.permisos || f.retardos || f.faltas);
+  const filas = nombresAreas
+    .map((area) => {
+      const motivos = motivoPorArea.get(area) || new Map();
+      const motivosOrdenados = [...motivos.entries()].sort((a, b) => b[1] - a[1]).map(([motivo, cantidad]) => ({ motivo, cantidad }));
+      return {
+        area,
+        permisos: permisosPorArea.get(area) || 0,
+        retardos: retardosPorArea.get(area) || 0,
+        faltas: faltasPorArea.get(area) || 0,
+        motivoTop: motivosOrdenados[0]?.motivo || null,
+        motivoTopCount: motivosOrdenados[0]?.cantidad || 0,
+        motivosOrdenados,
+      };
+    })
+    .filter((f) => f.permisos || f.retardos || f.faltas);
+  return { permisosDelPeriodo, faltasDelPeriodo, retardosDelPeriodo, filas };
+}
+async function exportarFilasAreaExcel(filas, mes) {
+  const XLSX = await import("xlsx");
+  const rows = filas.map((f) => ({
+    Área: f.area,
+    Permisos: f.permisos,
+    "Tasa (x 10 trabajadores)": f.tasa ?? "",
+    Retardos: f.retardos,
+    "Días sin justificar": f.faltas,
+    Tendencia: f.tendencia ? f.tendencia.texto : "",
+    "Motivo más usado": f.motivoTop ? `${f.motivoTop} (${f.motivoTopCount})` : "",
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Estadísticas");
+  XLSX.writeFile(wb, `Estadisticas_Permisos_${mes}.xlsx`);
+}
+async function exportarPersonasAreaExcel(personas, area, etiquetaPeriodo) {
+  const XLSX = await import("xlsx");
+  const rows = personas.map((p) => ({
+    Nombre: p.nombre,
+    Cédula: p.cedula || "",
+    Permisos: p.permisos,
+    Retardos: p.retardos,
+    "Días sin justificar": p.faltas,
+    "Motivo más usado": p.motivoTop ? `${p.motivoTop} (${p.motivoTopCount})` : "",
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, area.slice(0, 31));
+  XLSX.writeFile(wb, `${area.replace(/\s+/g, "_")}_${etiquetaPeriodo}.xlsx`);
+}
+function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas, retardos }) {
+  const [mes, setMes] = useState(today().slice(0, 7));
+  const [areaDetalle, setAreaDetalle] = useState(null); // nombre del área cuya fila se hizo clic, o null
+  const [periodoDetalle, setPeriodoDetalle] = useState("mes"); // "mes" | "anio" -- dentro del detalle
+
+  const anio = mes.slice(0, 4);
+  const mesAnt = mesAnterior(mes);
+  const statsMes = calcularStatsDelPeriodo(mes, { ausencias, faltas, retardos, trabajadores, areasNomina });
+  const statsMesAnterior = calcularStatsDelPeriodo(mesAnt, { ausencias, faltas, retardos, trabajadores, areasNomina });
+  const statsAnio = calcularStatsDelPeriodo(anio, { ausencias, faltas, retardos, trabajadores, areasNomina });
+  const headcountPorArea = contarTrabajadoresPorArea(trabajadores);
+  const permisosAnteriorPorArea = new Map(statsMesAnterior.filas.map((f) => [f.area, f.permisos]));
+
+  const filas = statsMes.filas.map((f) => {
+    const headcount = headcountPorArea.get(f.area) || 0;
+    const tasaCruda = headcount > 0 ? (f.permisos / headcount) * 10 : null;
+    const tasa = tasaCruda != null ? Math.round(tasaCruda * 10) / 10 : null;
+    const permisosAnterior = permisosAnteriorPorArea.get(f.area) || 0;
+    return { ...f, headcount, tasa, tendencia: calcularTendencia(f.permisos, permisosAnterior) };
+  });
+
   function lider(campo) {
     const ordenado = [...filas].sort((a, b) => b[campo] - a[campo]);
     return ordenado[0] && ordenado[0][campo] > 0 ? ordenado[0] : null;
@@ -5489,36 +5578,142 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
   const liderPermisos = lider("permisos");
   const liderRetardos = lider("retardos");
   const liderFaltas = lider("faltas");
+  const liderTasa = [...filas].filter((f) => f.tasa != null && f.tasa > 0).sort((a, b) => b.tasa - a.tasa)[0] || null;
+
+  const totalPermisosMes = statsMes.permisosDelPeriodo.length;
+  const totalPermisosAnterior = statsMesAnterior.permisosDelPeriodo.length;
+  const tendenciaGeneral = calcularTendencia(totalPermisosMes, totalPermisosAnterior);
+
+  // (2026-10-03, a pedido de Fredy) Alertas automáticas -- dos tipos, para
+  // no tener que entrar a revisar: (1) un área cuyos permisos se
+  // dispararon frente al mes anterior (al menos se duplicaron, y al menos
+  // 3 para no alertar por "1 a 2"); (2) una persona que ya lleva 2 de los
+  // 3 permisos del mes (le queda 1 antes del tope de AusenciaModal).
+  const alertasArea = filas.filter((f) => {
+    const anterior = permisosAnteriorPorArea.get(f.area) || 0;
+    return f.permisos >= 3 && anterior > 0 && f.permisos >= anterior * 2;
+  });
+  const personasPermisosMes = new Map();
+  statsMes.permisosDelPeriodo.forEach((a) => {
+    const { key, nombre, cedula } = claveYNombrePersona(a, trabajadores);
+    const existente = personasPermisosMes.get(key);
+    personasPermisosMes.set(key, { nombre, cedula, count: (existente?.count || 0) + 1 });
+  });
+  const alertasPersona = [...personasPermisosMes.values()].filter((p) => p.count === TOPE_PERMISOS_POR_MES - 1);
+  const hayAlertas = alertasArea.length > 0 || alertasPersona.length > 0;
+
+  const statsDetalle = periodoDetalle === "anio" ? statsAnio : statsMes;
+  const filaDetalle = areaDetalle ? statsDetalle.filas.find((f) => f.area === areaDetalle) : null;
+  const personasDetalle = areaDetalle
+    ? personasDelArea(areaDetalle, statsDetalle.permisosDelPeriodo, statsDetalle.faltasDelPeriodo, statsDetalle.retardosDelPeriodo, trabajadores)
+    : [];
+
   return (
     <div>
-      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
-        Comparativo por área del mes elegido -- "Permisos" cuenta cualquier motivo de ausencia (cita médica, entrega de boletines, etc.) EXCEPTO Vacaciones, Incapacidad, Licencias, Luto y Suspensión -- esos no cuentan acá, pero sí entran en "Motivo más frecuente". "Días sin justificar" son los que hoy ves en Días No Justificados.
+      <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 820 }}>
+        Comparativo por área del mes elegido -- "Permisos" cuenta cualquier motivo de ausencia (cita médica, entrega de boletines, etc.) EXCEPTO Vacaciones, Incapacidad, Licencias, Luto y Suspensión -- esos no cuentan acá, pero sí entran en "Motivo más frecuente". "Días sin justificar" son los que hoy ves en Días No Justificados. La "Tasa" es por cada 10 trabajadores activos del área, para poder comparar áreas de distinto tamaño.
       </div>
-      <div style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
         <input type="month" value={mes} onChange={(e) => setMes(e.target.value)} style={{ padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
+        <Btn variant="success" small onClick={() => exportarFilasAreaExcel(filas, mes)}>📥 Exportar a Excel</Btn>
       </div>
+
+      {hayAlertas && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
+          {alertasArea.map((f) => (
+            <div key={`area_${f.area}`} style={{ background: C.redBg, borderLeft: `4px solid ${C.red}`, borderRadius: 8, padding: "10px 14px", fontSize: 12.5, color: C.ink }}>
+              🚨 <strong>{f.area}</strong> se disparó en permisos frente a {fmtMesLabel(mesAnt)}: {permisosAnteriorPorArea.get(f.area) || 0} → <strong>{f.permisos}</strong> este mes.
+            </div>
+          ))}
+          {alertasPersona.map((p) => (
+            <div key={`persona_${p.nombre}_${p.cedula || ""}`} style={{ background: C.amberBg, borderLeft: `4px solid ${C.amber}`, borderRadius: 8, padding: "10px 14px", fontSize: 12.5, color: C.ink }}>
+              ⚠️ <strong>{p.nombre}</strong> ya tiene {p.count} de {TOPE_PERMISOS_POR_MES} permisos este mes -- le queda 1 antes del tope.
+            </div>
+          ))}
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
-        <KPI icon="🗓️" label="Área con más permisos" value={liderPermisos ? `${liderPermisos.area} (${liderPermisos.permisos})` : "—"} color={C.amber} bg={C.amberBg} />
+        <KPI icon="🗓️" label="Área con más permisos (total)" value={liderPermisos ? `${liderPermisos.area} (${liderPermisos.permisos})` : "—"} color={C.amber} bg={C.amberBg} />
+        <KPI icon="📐" label="Más permisos en proporción" value={liderTasa ? liderTasa.area : "—"} sub={liderTasa ? `${liderTasa.tasa} por cada 10 trabajadores` : undefined} color={C.violet} bg={C.violetBg} />
         <KPI icon="🕒" label="Área con más retardos" value={liderRetardos ? `${liderRetardos.area} (${liderRetardos.retardos})` : "—"} color={C.blue} bg={C.blueBg} />
         <KPI icon="❌" label="Área con más ausencias" value={liderFaltas ? `${liderFaltas.area} (${liderFaltas.faltas})` : "—"} color={C.red} bg={C.redBg} />
+        <KPI
+          icon="📈"
+          label="Tendencia general de permisos"
+          value={tendenciaGeneral.texto}
+          sub={`${totalPermisosMes} este mes vs ${totalPermisosAnterior} en ${fmtMesLabel(mesAnt)}`}
+          color={tendenciaGeneral.dir === "up" ? C.red : tendenciaGeneral.dir === "down" ? C.green : C.slate}
+          bg={tendenciaGeneral.dir === "up" ? C.redBg : tendenciaGeneral.dir === "down" ? C.greenBg : C.canvas}
+        />
       </div>
+
       <Tabla
         vacio="Sin datos para este mes."
         columnas={[
           { key: "area", label: "Área" },
-          { key: "permisos", label: "Permisos", align: "right" },
+          {
+            key: "permisos", label: "Permisos", align: "right",
+            render: (f) => (
+              <div>
+                <div>{f.permisos}</div>
+                {f.tasa != null && <div style={{ fontSize: 10, color: C.slate }}>{f.tasa} / 10 trab.</div>}
+              </div>
+            ),
+          },
           { key: "retardos", label: "Retardos", align: "right" },
           { key: "faltas", label: "Días sin justificar", align: "right" },
+          {
+            key: "tendencia", label: "Tendencia", align: "right",
+            render: (f) => f.tendencia.texto,
+            color: (f) => (f.tendencia.dir === "up" ? C.red : f.tendencia.dir === "down" ? C.green : C.slate),
+          },
           { key: "motivoTop", label: "Motivo más frecuente", render: (f) => f.motivoTop ? `${f.motivoTop} (${f.motivoTopCount})` : "—" },
         ]}
         filas={filas.sort((a, b) => a.area.localeCompare(b.area))}
-        onRowClick={(f) => setAreaDetalle(f.area)}
+        onRowClick={(f) => { setAreaDetalle(f.area); setPeriodoDetalle("mes"); }}
       />
-      <div style={{ fontSize: 11, color: C.slate, marginTop: 8 }}>Haz clic en una fila para ver el detalle persona por persona.</div>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: 8 }}>Haz clic en una fila para ver los motivos, las personas y el acumulado del año de esa área.</div>
+
       {areaDetalle && (
-        <Modal title={`${areaDetalle} -- detalle por persona (${mes})`} onClose={() => setAreaDetalle(null)} width={760}>
+        <Modal title={`${areaDetalle} -- detalle (${periodoDetalle === "anio" ? anio : mes})`} onClose={() => setAreaDetalle(null)} width={880}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 18 }}>
+            <div style={{ display: "inline-flex", background: C.canvas, borderRadius: 8, padding: 3, gap: 2 }}>
+              <button
+                onClick={() => setPeriodoDetalle("mes")}
+                style={{ border: "none", background: periodoDetalle === "mes" ? C.white : "transparent", color: periodoDetalle === "mes" ? C.blue : C.slate, fontWeight: 700, fontSize: 12, padding: "6px 12px", borderRadius: 6, cursor: "pointer", boxShadow: periodoDetalle === "mes" ? "0 1px 2px rgba(0,0,0,0.12)" : "none" }}
+              >
+                Este mes
+              </button>
+              <button
+                onClick={() => setPeriodoDetalle("anio")}
+                style={{ border: "none", background: periodoDetalle === "anio" ? C.white : "transparent", color: periodoDetalle === "anio" ? C.blue : C.slate, fontWeight: 700, fontSize: 12, padding: "6px 12px", borderRadius: 6, cursor: "pointer", boxShadow: periodoDetalle === "anio" ? "0 1px 2px rgba(0,0,0,0.12)" : "none" }}
+              >
+                Acumulado {anio}
+              </button>
+            </div>
+            <Btn variant="success" small onClick={() => exportarPersonasAreaExcel(personasDetalle, areaDetalle, periodoDetalle === "anio" ? anio : mes)}>📥 Exportar esta área</Btn>
+          </div>
+
+          {filaDetalle && filaDetalle.motivosOrdenados.length > 0 && (
+            <div style={{ marginBottom: 22 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 10 }}>
+                Motivos de permiso en esta área ({periodoDetalle === "anio" ? `acumulado ${anio}` : mes})
+              </div>
+              {filaDetalle.motivosOrdenados.map(({ motivo, cantidad }) => (
+                <div key={motivo} style={{ display: "grid", gridTemplateColumns: "190px 1fr 32px", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{motivo}</div>
+                  <div style={{ background: C.canvas, borderRadius: 4, height: 12 }}>
+                    <div style={{ width: `${(cantidad / filaDetalle.motivosOrdenados[0].cantidad) * 100}%`, background: C.blue, height: "100%", borderRadius: 4 }} />
+                  </div>
+                  <div style={{ fontSize: 12, fontWeight: 700, textAlign: "right" }}>{cantidad}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
           <Tabla
-            vacio="Sin registros de esta área en el mes elegido."
+            vacio="Sin registros de esta área en el periodo elegido."
             columnas={[
               {
                 key: "nombre",
@@ -5535,7 +5730,7 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
               { key: "faltas", label: "Días sin justificar", align: "right" },
               { key: "motivoTop", label: "Motivo más usado", render: (p) => p.motivoTop ? `${p.motivoTop} (${p.motivoTopCount})` : "—" },
             ]}
-            filas={personasDelArea(areaDetalle, permisosDelMes, faltasDelMes, retardosDelMes, trabajadores)}
+            filas={personasDetalle}
           />
           {areaDetalle === "Sin asignar" && (
             <div style={{ marginTop: 14, fontSize: 11.5, color: C.slate, background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 10, padding: 12 }}>
