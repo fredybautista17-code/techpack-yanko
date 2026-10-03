@@ -6095,6 +6095,11 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
   const [categoriaAbierta, setCategoriaAbierta] = useState(null);
   const [agruparPor, setAgruparPor] = useState("categoria");
   const [filtroLinea, setFiltroLinea] = useState(null);
+  // (2026-10-03, a pedido de Fredy) Buscador por referencia -- para no tener
+  // que adivinar en que categoria/linea esta ni abrir una por una. Acepta
+  // con o sin guion, igual criterio que normalizarRefComparacion ya usa en
+  // el resto de la app.
+  const [busquedaRefProduccion, setBusquedaRefProduccion] = useState("");
 
   useEffect(() => { setClienteIdCliente(gruposUsuario[0] || ""); }, [currentUser?.id]);
 
@@ -6151,6 +6156,15 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
   // luego no calce con lo que Busint reporte.
   const lineasDisponibles = useMemo(() => [...new Set(lotes.map((l) => l.linea).filter(Boolean))].sort(), [lotes]);
   const categorias = useMemo(() => agruparProduccionPorCampo(lotes, pedidosParaCruce, preordenesParaCruce, agruparPor, agruparPor === "categoria" ? filtroLinea : null, columnaPreordenAdmin), [lotes, pedidosParaCruce, preordenesParaCruce, agruparPor, filtroLinea, columnaPreordenAdmin]);
+  // (2026-10-03, a pedido de Fredy) Mientras haya algo escrito en el
+  // buscador, se muestra esto en vez de la lista agrupada -- cada
+  // referencia ya es unica dentro de "categorias" (agruparProduccionPorCampo
+  // la mete en un solo grupo), asi que alcanza con aplanar las filas de
+  // todas las tarjetas y filtrar por referencia.
+  const bqRefProduccion = normalizarRefComparacion(busquedaRefProduccion);
+  const filasBuscadasProduccion = bqRefProduccion
+    ? categorias.flatMap((c) => c.filas).filter((f) => normalizarRefComparacion(f.referencia).includes(bqRefProduccion))
+    : null;
 
   if (!clienteIdEfectivo) {
     return (
@@ -6198,9 +6212,18 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
           🔒 {grupoEfectivo.label}
         </div>
       )}
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
         <Btn small variant={agruparPor === "categoria" ? "primary" : "secondary"} onClick={() => setAgruparPor("categoria")}>Por categoría</Btn>
         <Btn small variant={agruparPor === "linea" ? "primary" : "secondary"} onClick={() => setAgruparPor("linea")}>Por línea</Btn>
+        <div style={{ position: "relative", minWidth: 260 }}>
+          <span style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)", color: T.slate, fontSize: 13, pointerEvents: "none" }}>🔍</span>
+          <input
+            value={busquedaRefProduccion}
+            onChange={(e) => setBusquedaRefProduccion(e.target.value)}
+            placeholder="Buscar por referencia..."
+            style={{ width: "100%", boxSizing: "border-box", padding: "8px 12px 8px 32px", border: `1.5px solid ${T.border}`, borderRadius: 8, fontSize: 13, color: T.ink, outline: "none", fontFamily: "inherit" }}
+          />
+        </div>
       </div>
       {agruparPor === "categoria" && lineasDisponibles.length > 0 && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
@@ -6222,6 +6245,90 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
       )}
       {cargando ? (
         <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>Consultando Busint...</div>
+      ) : filasBuscadasProduccion !== null ? (
+        // (2026-10-03, a pedido de Fredy) Resultados de la búsqueda por
+        // referencia -- reemplaza la lista agrupada mientras haya algo
+        // escrito, para no tener que adivinar en qué categoría/línea está.
+        filasBuscadasProduccion.length === 0 ? (
+          <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>No se encontró ninguna referencia con eso.</div>
+        ) : (
+          (() => {
+            function sumaCampoBuscado(campo) {
+              const valores = filasBuscadasProduccion.map((f) => f[campo]);
+              if (valores.every((v) => v === null)) return null;
+              return valores.reduce((s, v) => s + (v || 0), 0);
+            }
+            const totalEnPreorden = sumaCampoBuscado("enPreorden");
+            const totalEnOrdenes = sumaCampoBuscado("enOrdenes");
+            const totalSinCortar = sumaCampoBuscado("sinCortar");
+            const totalPlanta = sumaCampoBuscado("planta");
+            const totalSemiterminado = sumaCampoBuscado("semiterminado");
+            const totalBpt = sumaCampoBuscado("bpt");
+            return (
+              <div style={{ background: T.white, border: `1px solid ${T.border}`, borderRadius: 14, overflow: "hidden" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, padding: "12px 16px", background: T.canvas }}>
+                  <div style={{ fontWeight: 800, fontSize: 14, color: T.ink }}>Resultados para "{busquedaRefProduccion}"</div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <div style={{ background: T.border, color: T.seamDark, borderRadius: 9, padding: "6px 12px", minWidth: 100 }}>
+                      <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>En preórdenes</div>
+                      <div style={{ fontSize: 15, fontWeight: 800 }}>{totalEnPreorden === null ? "—" : fmtNum(totalEnPreorden)}</div>
+                    </div>
+                    <div style={{ background: T.coralBg, color: T.coral, borderRadius: 9, padding: "6px 12px", minWidth: 100 }}>
+                      <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>En Órdenes</div>
+                      <div style={{ fontSize: 15, fontWeight: 800 }}>{totalEnOrdenes === null ? "—" : fmtNum(totalEnOrdenes)}</div>
+                    </div>
+                    <div style={{ background: T.amberBg, color: T.amber, borderRadius: 9, padding: "6px 12px", minWidth: 100 }}>
+                      <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>Sin cortar</div>
+                      <div style={{ fontSize: 15, fontWeight: 800 }}>{totalSinCortar === null ? "—" : fmtNum(totalSinCortar)}</div>
+                    </div>
+                    <div style={{ background: T.denimBg, color: T.denim, borderRadius: 9, padding: "6px 12px", minWidth: 100 }}>
+                      <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>En planta</div>
+                      <div style={{ fontSize: 15, fontWeight: 800 }}>{fmtNum(totalPlanta)}</div>
+                    </div>
+                    <div style={{ background: T.violetBg, color: T.violet, borderRadius: 9, padding: "6px 12px", minWidth: 100 }}>
+                      <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>Semiterminado</div>
+                      <div style={{ fontSize: 15, fontWeight: 800 }}>{fmtNum(totalSemiterminado)}</div>
+                    </div>
+                    <div style={{ background: T.jadeBg, color: T.jade, borderRadius: 9, padding: "6px 12px", minWidth: 100 }}>
+                      <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>En BPT</div>
+                      <div style={{ fontSize: 15, fontWeight: 800 }}>{fmtNum(totalBpt)}</div>
+                    </div>
+                  </div>
+                </div>
+                <div style={{ padding: "0 16px 16px" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, marginTop: 10 }}>
+                    <thead>
+                      <tr style={{ background: T.ink }}>
+                        <th style={{ padding: "8px 12px", color: T.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Referencia</th>
+                        <th style={{ padding: "8px 12px", color: T.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Categoría</th>
+                        <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>En preórdenes</th>
+                        <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>En Órdenes</th>
+                        <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Sin cortar</th>
+                        <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Planta</th>
+                        <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Semiterminado</th>
+                        <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>BPT</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filasBuscadasProduccion.map((f, i) => (
+                        <tr key={f.referencia} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
+                          <td style={{ padding: "7px 12px", fontWeight: 700, color: T.ink }}>{f.referencia}</td>
+                          <td style={{ padding: "7px 12px" }}><span style={{ fontSize: 10, fontWeight: 700, color: T.slate, background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 20, padding: "2px 8px" }}>{f.categoria || "(Sin categoría)"}</span></td>
+                          <td style={{ padding: "7px 12px", textAlign: "right", color: T.seamDark, fontWeight: 700 }}>{f.enPreorden === null ? "—" : fmtNum(f.enPreorden)}</td>
+                          <td style={{ padding: "7px 12px", textAlign: "right", color: T.coral, fontWeight: 700 }}>{f.enOrdenes === null ? "—" : fmtNum(f.enOrdenes)}</td>
+                          <td style={{ padding: "7px 12px", textAlign: "right", color: T.amber, fontWeight: 700 }}>{f.sinCortar === null ? "—" : fmtNum(f.sinCortar)}</td>
+                          <td style={{ padding: "7px 12px", textAlign: "right", color: T.denim, fontWeight: 700 }}>{fmtNum(f.planta)}</td>
+                          <td style={{ padding: "7px 12px", textAlign: "right", color: T.violet, fontWeight: 700 }}>{fmtNum(f.semiterminado)}</td>
+                          <td style={{ padding: "7px 12px", textAlign: "right", color: T.jade, fontWeight: 700 }}>{fmtNum(f.bpt)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()
+        )
       ) : categorias.length === 0 ? (
         <div style={{ padding: 24, textAlign: "center", color: T.slate, fontSize: 13 }}>No hay nada en producción en este momento.</div>
       ) : (
