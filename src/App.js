@@ -6489,30 +6489,33 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   // (actualizarDatosPendientesBusint) sin duplicar la logica de consulta.
   // (2026-10-02, a pedido de Fredy) Una referencia puede traer VARIAS telas
   // en Busint (hasta 10 "slots": Tela1..Tela10 -- ej. tela principal, forro,
-  // elastico), cada una con su propio consumo. Convierte CADA slot (mismo
-  // criterio de siempre: codigo "4" o sin codigo = m2, se divide por el
-  // ancho de esa tela; cualquier otro codigo se deja tal cual) y devuelve
-  // la lista completa en el mismo orden de Busint -- el llamador decide
-  // cual usar como "principal" (hoy: la primera, por compatibilidad con el
-  // resto de la pantalla, que solo maneja una tela por item).
+  // elastico), cada una con su propio consumo. Convierte CADA slot y
+  // devuelve la lista completa en el mismo orden de Busint -- el llamador
+  // decide cual usar como "principal" (hoy: la primera, por compatibilidad
+  // con el resto de la pantalla, que solo maneja una tela por item).
+  //
+  // (2026-10-03, a pedido de Fredy) El "codigo de unidad" que manda Busint
+  // (campo Unid1..Unid10) resulto no ser confiable -- para telas con
+  // codigo distinto de "4" (ej. "2", "0") el consumo crudo que llega es
+  // IGUAL de m2 que cuando el codigo es "4" (confirmado comparando contra
+  // la hoja de costeo real: consumo_crudo / ancho == "ml" de la hoja, para
+  // TODOS los codigos probados). Antes, cualquier codigo distinto de "4"
+  // se mostraba tal cual pegado al numero (ej. "0.96 2", "0.39 0") en vez
+  // de convertirse -- ahora se convierte SIEMPRE que se conozca el ancho
+  // de esa tela, sin importar el codigo; si no se conoce el ancho, se deja
+  // en m2 (igual que ya pasaba para el codigo "4" sin ancho) en vez de
+  // pegar un codigo sin traducir.
   async function construirTelasDesdeFila(filaTela) {
     const slots = filaTela?.slots || [];
     const lista = [];
     for (const slot of slots) {
       const nombre = slot?.nombre || "";
       if (!nombre) continue;
-      // (2026-10-02, a pedido de Fredy) Mismo cuidado que ya existia para
-      // la tela principal: un espacio en blanco en el codigo de unidad no
-      // debe tratarse como si tuviera un codigo real.
       const unidadSlot = String(slot?.unidad ?? "").trim();
       const anchoSlot = await obtenerAnchoTelaPorNombre(nombre);
       let consumoTexto = "";
       if (slot?.consumo != null && slot?.consumo !== "") {
-        if (unidadSlot === "4" || !unidadSlot) {
-          consumoTexto = anchoSlot ? `${Math.round((slot.consumo / anchoSlot) * 100) / 100} Mt` : `${slot.consumo} m2`;
-        } else {
-          consumoTexto = `${slot.consumo} ${unidadSlot}`;
-        }
+        consumoTexto = anchoSlot ? `${Math.round((slot.consumo / anchoSlot) * 100) / 100} Mt` : `${slot.consumo} m2`;
       }
       lista.push({ nombre, consumo: consumoTexto, consumoCrudo: slot?.consumo ?? null, unidad: unidadSlot, ancho: anchoSlot });
     }
