@@ -3676,18 +3676,37 @@ const MOTIVOS_AUSENCIA = [
   "Vacaciones", "Incapacidad", "Licencia Remunerada", "Licencia No Remunerada",
   "Licencia Maternidad/Paternidad", "Permiso", "Luto", "Suspensión de Contrato", "Otro",
 ];
-// (2026-10-03, a pedido de Fredy) Tope de 3 permisos (motivo exacto
-// "Permiso" -- cita medica, entrega de boletines, etc.) por trabajador por
-// mes calendario. Vacaciones, Incapacidad, Licencia Remunerada, Licencia
-// No Remunerada, Licencia Maternidad/Paternidad, Luto y Suspension de
+// (2026-10-03, a pedido de Fredy) Tope de 3 permisos por trabajador por mes
+// calendario. Vacaciones, Incapacidad, Licencia Remunerada, Licencia No
+// Remunerada, Licencia Maternidad/Paternidad, Luto y Suspension de
 // Contrato NO cuentan para este limite -- son motivos aparte, no "permisos"
 // en el sentido que le da Fredy. Se cuenta por el mes de la fecha de
 // inicio que se esta guardando/editando.
-const MOTIVO_CON_TOPE_MENSUAL = "Permiso";
+//
+// (2026-10-03, corregido -- "seguimos sin medir adecuadamente... de pronto
+// que saliendo los motivos mas usados") Desde que "Motivos de Ausencia" es
+// un catalogo editable por el admin (2026-09-01, ver MotivosAusenciaView),
+// el equipo viene creando motivos especificos de permiso -- "Cita medica",
+// "Colegio hijos (as)", "Inconveniente de salud personal / familiar" -- en
+// vez de usar siempre la palabra generica "Permiso". Contar SOLO el motivo
+// exacto "Permiso" dejaba esos registros fuera del tope y de Estadisticas
+// de Permisos (el caso real: Control de Calidad mostraba "Permisos: 0"
+// pero "Motivo mas frecuente: Cita medica (6)" -- esas 6 nunca contaban).
+// Ahora se cuenta por EXCLUSION: cualquier motivo cuenta como permiso
+// EXCEPTO los que estan en MOTIVOS_EXCLUIDOS_DE_PERMISO -- asi un motivo
+// nuevo que el admin cree manana (ej. "Escolaridad") cuenta automaticamente
+// sin tener que tocar este codigo otra vez.
+const MOTIVOS_EXCLUIDOS_DE_PERMISO = [
+  "Vacaciones", "Incapacidad", "Licencia Remunerada", "Licencia No Remunerada",
+  "Licencia Maternidad/Paternidad", "Luto", "Suspensión de Contrato",
+];
+function esMotivoPermiso(motivo) {
+  return !!motivo && !MOTIVOS_EXCLUIDOS_DE_PERMISO.includes(motivo);
+}
 const TOPE_PERMISOS_POR_MES = 3;
 function contarPermisosDelMes(ausencias, { trabajadorId, nombreLibre, mes, idAExcluir }) {
   return (ausencias || []).filter((a) =>
-    a.motivo === MOTIVO_CON_TOPE_MENSUAL &&
+    esMotivoPermiso(a.motivo) &&
     a.id !== idAExcluir &&
     (a.fechaInicio || "").slice(0, 7) === mes &&
     (trabajadorId ? a.trabajadorId === trabajadorId : !a.trabajadorId && a.nombreLibre === nombreLibre)
@@ -3715,7 +3734,7 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   const trabajadorSeleccionado = trabajadores.find((t) => t.id === form.trabajadorId);
-  const permisosEsteMes = form.motivo === MOTIVO_CON_TOPE_MENSUAL
+  const permisosEsteMes = esMotivoPermiso(form.motivo)
     ? contarPermisosDelMes(ausencias, { trabajadorId: form.trabajadorId || null, nombreLibre: form.nombreLibre.trim(), mes: (form.fechaInicio || "").slice(0, 7), idAExcluir: ausencia?.id })
     : 0;
   const bloqueadoPorTope = permisosEsteMes >= TOPE_PERMISOS_POR_MES;
@@ -3749,7 +3768,7 @@ function AusenciaModal({ ausencia, trabajadores, ausencias, motivosDisponibles =
       <Field label="Motivo">
         <FSel value={form.motivo} onChange={set("motivo")} options={motivosDisponibles} placeholder="Selecciona..." />
       </Field>
-      {form.motivo === MOTIVO_CON_TOPE_MENSUAL && (form.trabajadorId || form.nombreLibre.trim()) && (
+      {esMotivoPermiso(form.motivo) && (form.trabajadorId || form.nombreLibre.trim()) && (
         <div style={{ fontSize: 11.5, fontWeight: 700, color: bloqueadoPorTope ? C.red : C.slate, margin: "-6px 0 10px" }}>
           {bloqueadoPorTope
             ? `🚫 Ya tiene ${permisosEsteMes} permisos este mes -- no se puede registrar otro (tope de ${TOPE_PERMISOS_POR_MES}). Vacaciones, Incapacidad, Licencias, Luto y Suspensión no cuentan para este tope.`
@@ -5426,7 +5445,7 @@ function personasDelArea(area, permisosDelMes, faltasDelMes, retardosDelMes, tra
 function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas, retardos }) {
   const [mes, setMes] = useState(today().slice(0, 7));
   const [areaDetalle, setAreaDetalle] = useState(null); // nombre del área cuya fila se hizo clic, o null
-  const permisosDelMes = (ausencias || []).filter((a) => a.motivo === MOTIVO_CON_TOPE_MENSUAL && (a.fechaInicio || "").slice(0, 7) === mes);
+  const permisosDelMes = (ausencias || []).filter((a) => esMotivoPermiso(a.motivo) && (a.fechaInicio || "").slice(0, 7) === mes);
   const ausenciasDelMes = (ausencias || []).filter((a) => (a.fechaInicio || "").slice(0, 7) === mes);
   const faltasDelMes = (faltas || []).filter((f) => (f.fecha || "").slice(0, 7) === mes);
   const retardosDelMes = (retardos || []).filter((r) => (r.fecha || "").slice(0, 7) === mes);
@@ -5473,7 +5492,7 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
   return (
     <div>
       <div style={{ fontSize: 12, color: C.slate, marginBottom: 16, maxWidth: 780 }}>
-        Comparativo por área del mes elegido -- "Permisos" cuenta solo el motivo "Permiso" (cita médica, entrega de boletines, etc.); Vacaciones, Incapacidad, Licencias, Luto y Suspensión no cuentan ahí, pero sí entran en "Motivo más frecuente". "Días sin justificar" son los que hoy ves en Días No Justificados.
+        Comparativo por área del mes elegido -- "Permisos" cuenta cualquier motivo de ausencia (cita médica, entrega de boletines, etc.) EXCEPTO Vacaciones, Incapacidad, Licencias, Luto y Suspensión -- esos no cuentan acá, pero sí entran en "Motivo más frecuente". "Días sin justificar" son los que hoy ves en Días No Justificados.
       </div>
       <div style={{ marginBottom: 16 }}>
         <input type="month" value={mes} onChange={(e) => setMes(e.target.value)} style={{ padding: "8px 10px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13 }} />
