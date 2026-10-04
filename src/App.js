@@ -6119,6 +6119,27 @@ function agruparProduccionPorCampo(lotesCliente, pedidosCliente, preordenesClien
     .sort((a, b) => (b.planta + b.semiterminado + b.bpt + (b.sinCortar || 0) + (b.enPreorden || 0) + (b.enOrdenes || 0)) - (a.planta + a.semiterminado + a.bpt + (a.sinCortar || 0) + (a.enPreorden || 0) + (a.enOrdenes || 0)));
 }
 
+// (2026-10-04, a pedido de Fredy) "Sin cortar" es un solo numero por
+// referencia (pedido total menos lo cortado en Busint). Esto devuelve de que
+// pedidos abiertos sale ese total: cada pedido que tiene la referencia, con
+// su numero, su fecha de despacho y la cantidad que pidio. Usa el mismo
+// criterio que agruparProduccionPorCampo (pedidos no cerrados, referencia
+// comparada igual), asi la suma de las cantidades coincide con el "Pedido
+// total" de esa referencia. Lo cortado NO se puede repartir por pedido:
+// Busint lo reporta por referencia, no por pedido.
+function pedidosAbiertosDeReferencia(pedidosCliente, referencia) {
+  const ref = String(referencia || "").trim();
+  return (Array.isArray(pedidosCliente) ? pedidosCliente : [])
+    .filter((p) => p.estado !== "cerrado")
+    .map((p) => ({
+      id: p.id,
+      numero: p.numero,
+      fechaDespacho: p.fechaDespacho,
+      cantidad: (p.referencias || []).filter((r) => String(r.ref || "").trim() === ref).reduce((s, r) => s + (Number(r.total) || 0), 0),
+    }))
+    .filter((x) => x.cantidad > 0)
+    .sort((a, b) => (a.fechaDespacho || "9999").localeCompare(b.fechaDespacho || "9999"));
+}
 function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosPedidos, todasPreordenes }) {
   const esAdmin = !!currentUser?.isAdmin;
   // (2026-09-25, a pedido de Fredy) Un usuario Cliente puede tener más de un
@@ -6140,6 +6161,7 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
   // con o sin guion, igual criterio que normalizarRefComparacion ya usa en
   // el resto de la app.
   const [busquedaRefProduccion, setBusquedaRefProduccion] = useState("");
+  const [detalleSinCortar, setDetalleSinCortar] = useState(null); // fila (referencia) cuyo "Sin cortar" se hizo clic, o null
 
   useEffect(() => { setClienteIdCliente(gruposUsuario[0] || ""); }, [currentUser?.id]);
 
@@ -6214,6 +6236,25 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
   const filasBuscadasProduccion = bqRefProduccion
     ? categorias.flatMap((c) => c.filas).filter((f) => normalizarRefComparacion(f.referencia).includes(bqRefProduccion))
     : null;
+
+  // (2026-10-04, a pedido de Fredy) "Sin cortar" por referencia se puede
+  // tocar para ver de que pedidos sale -- solo cuando hay algo sin cortar y
+  // hay con que cruzar (null = admin sin pedidos para cruzar, se queda "—").
+  function celdaSinCortar(f) {
+    if (f.sinCortar === null) return <td style={{ padding: "7px 12px", textAlign: "right", color: T.amber, fontWeight: 700 }}>—</td>;
+    if (f.sinCortar <= 0) return <td style={{ padding: "7px 12px", textAlign: "right", color: T.amber, fontWeight: 700 }}>{fmtNum(f.sinCortar)}</td>;
+    return (
+      <td
+        onClick={() => setDetalleSinCortar(f)}
+        title="Ver de qué pedidos sale"
+        style={{ padding: "7px 12px", textAlign: "right", color: T.amber, fontWeight: 700, cursor: "pointer", textDecoration: "underline dotted", textUnderlineOffset: 3 }}
+      >
+        {fmtNum(f.sinCortar)}
+        <div style={{ fontSize: 9.5, fontWeight: 600, color: T.slate, textDecoration: "none" }}>ver pedidos ›</div>
+      </td>
+    );
+  }
+  const pedidosDetalleSinCortar = detalleSinCortar ? pedidosAbiertosDeReferencia(pedidosParaCruce, detalleSinCortar.referencia) : [];
 
   if (!clienteIdEfectivo) {
     return (
@@ -6367,7 +6408,7 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
                           <td style={{ padding: "7px 12px" }}><span style={{ fontSize: 10, fontWeight: 700, color: T.slate, background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 20, padding: "2px 8px", whiteSpace: "nowrap" }}>{f.linea || "(Sin línea)"}</span></td>
                           <td style={{ padding: "7px 12px", textAlign: "right", color: T.seamDark, fontWeight: 700 }}>{f.enPreorden === null ? "—" : fmtNum(f.enPreorden)}</td>
                           <td style={{ padding: "7px 12px", textAlign: "right", color: T.coral, fontWeight: 700 }}>{f.enOrdenes === null ? "—" : fmtNum(f.enOrdenes)}</td>
-                          <td style={{ padding: "7px 12px", textAlign: "right", color: T.amber, fontWeight: 700 }}>{f.sinCortar === null ? "—" : fmtNum(f.sinCortar)}</td>
+                          {celdaSinCortar(f)}
                           <td style={{ padding: "7px 12px", textAlign: "right", color: T.denim, fontWeight: 700 }}>{fmtNum(f.planta)}</td>
                           <td style={{ padding: "7px 12px", textAlign: "right", color: T.violet, fontWeight: 700 }}>{fmtNum(f.semiterminado)}</td>
                           <td style={{ padding: "7px 12px", textAlign: "right", color: T.jade, fontWeight: 700 }}>{fmtNum(f.bpt)}</td>
@@ -6438,7 +6479,7 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
                             <td style={{ padding: "7px 12px", fontWeight: 700, color: T.ink }}>{f.referencia}</td>
                             <td style={{ padding: "7px 12px", textAlign: "right", color: T.seamDark, fontWeight: 700 }}>{f.enPreorden === null ? "—" : fmtNum(f.enPreorden)}</td>
                             <td style={{ padding: "7px 12px", textAlign: "right", color: T.coral, fontWeight: 700 }}>{f.enOrdenes === null ? "—" : fmtNum(f.enOrdenes)}</td>
-                            <td style={{ padding: "7px 12px", textAlign: "right", color: T.amber, fontWeight: 700 }}>{f.sinCortar === null ? "—" : fmtNum(f.sinCortar)}</td>
+                            {celdaSinCortar(f)}
                             <td style={{ padding: "7px 12px", textAlign: "right", color: T.denim, fontWeight: 700 }}>{fmtNum(f.planta)}</td>
                             <td style={{ padding: "7px 12px", textAlign: "right", color: T.violet, fontWeight: 700 }}>{fmtNum(f.semiterminado)}</td>
                             <td style={{ padding: "7px 12px", textAlign: "right", color: T.jade, fontWeight: 700 }}>{fmtNum(f.bpt)}</td>
@@ -6452,6 +6493,52 @@ function ProduccionView({ currentUser, pedidosCliente, preordenesCliente, todosP
             );
           })}
         </div>
+      )}
+      {detalleSinCortar && (
+        <Modal title={`${detalleSinCortar.referencia} -- pedidos con unidades sin cortar`} onClose={() => setDetalleSinCortar(null)} width={620}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 18 }}>
+            <div style={{ borderRadius: 10, padding: "10px 12px", background: T.canvas, border: `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: T.slate }}>Total pedido</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: T.ink }}>{fmtNum(detalleSinCortar.pedidoTotal)}</div>
+            </div>
+            <div style={{ borderRadius: 10, padding: "10px 12px", background: T.canvas, border: `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: T.slate }}>Ya cortado (Busint)</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: T.denim }}>{fmtNum(detalleSinCortar.cortado)}</div>
+            </div>
+            <div style={{ borderRadius: 10, padding: "10px 12px", background: T.amberBg, border: `1px solid ${T.amber}33` }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: T.slate }}>Sin cortar</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: T.amber }}>{fmtNum(detalleSinCortar.sinCortar)}</div>
+            </div>
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+            <thead>
+              <tr style={{ background: T.ink }}>
+                <th style={{ padding: "8px 12px", color: T.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Pedido</th>
+                <th style={{ padding: "8px 12px", color: T.seam, textAlign: "left", fontWeight: 700, fontSize: 10 }}>Despacho</th>
+                <th style={{ padding: "8px 12px", color: T.seam, textAlign: "right", fontWeight: 700, fontSize: 10 }}>Cantidad pedida</th>
+                <th style={{ padding: "8px 12px" }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {pedidosDetalleSinCortar.map((p, i) => {
+                const sem = semaforo2(p.fechaDespacho);
+                return (
+                  <tr key={p.id} style={{ background: i % 2 === 0 ? T.canvas : T.white, borderBottom: `1px solid ${T.border}` }}>
+                    <td style={{ padding: "7px 12px", fontWeight: 800, color: T.ink }}>#{p.numero || "—"}</td>
+                    <td style={{ padding: "7px 12px" }}>{p.fechaDespacho || "—"}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right", fontWeight: 700 }}>{fmtNum(p.cantidad)}</td>
+                    <td style={{ padding: "7px 12px", textAlign: "right" }}>
+                      <span style={{ fontSize: 10, fontWeight: 800, color: sem.color, background: sem.bg, padding: "3px 9px", borderRadius: 10, whiteSpace: "nowrap" }}>📅 {sem.label}</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div style={{ marginTop: 14, fontSize: 11.5, color: T.slate, background: T.canvas, border: `1px solid ${T.border}`, borderRadius: 10, padding: "11px 13px", lineHeight: 1.5 }}>
+            <strong style={{ color: T.ink }}>Ojo:</strong> Busint reporta lo cortado por referencia, no por pedido. Por eso aquí ves cuánto se pidió en cada pedido y el total que falta por cortar de la referencia, pero no cuánto de lo cortado fue de cada pedido.
+          </div>
+        </Modal>
       )}
     </div>
   );
