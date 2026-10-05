@@ -6010,8 +6010,16 @@ async function leerRemisionesTNS(file) {
   const detalle = [...detalleMap.values()].map((d) => ({ ...d, valorSinIva: Math.round(d.valorSinIva) }));
   return { clientes, detalle, tieneDetalle: !!nombreDetalle, totalFilas: filas.length };
 }
-function CuadrePorClienteView({ currentUser }) {
+function CuadrePorClienteView({ currentUser, pedidos }) {
   const [clienteId, setClienteId] = useState(CLIENTES_CUADRE[0].id);
+  // (2026-10-05, a pedido de Fredy) Valorización del cliente (misma cuenta de
+  // "Valorización por marca") para descontarla del saldo total y ver si cuadra.
+  const [valLotes, setValLotes] = useState(null);
+  const [valPrecios, setValPrecios] = useState(null);
+  const [cargandoVal, setCargandoVal] = useState(false);
+  const [errorVal, setErrorVal] = useState("");
+  const [etapasValOff, setEtapasValOff] = useState({ sinCortar: true });
+  const [valConIva, setValConIva] = useState(false);
   const [tnsCartera, setTnsCartera] = useState({});
   const [tnsRemisiones, setTnsRemisiones] = useState({});
   const [busint, setBusint] = useState(null);
@@ -6065,6 +6073,25 @@ function CuadrePorClienteView({ currentUser }) {
   }
   useEffect(() => {
     cargarBusint();
+  }, []);
+  async function cargarValorizacion() {
+    setCargandoVal(true);
+    setErrorVal("");
+    try {
+      const [respLotes, respPrecios] = await Promise.all([
+        httpsCallable(functionsClient, "getCargaPlaneacionDesdeBusintGen", { timeout: 300000 })(),
+        httpsCallable(functionsClient, "getPreciosMatriculadosBusint", { timeout: 120000 })(),
+      ]);
+      setValLotes(respLotes.data?.lotes || []);
+      setValPrecios(respPrecios.data?.precios || {});
+    } catch (err) {
+      setErrorVal(err?.message || "No se pudo consultar Busint para la valorización.");
+    } finally {
+      setCargandoVal(false);
+    }
+  }
+  useEffect(() => {
+    cargarValorizacion();
   }, []);
   async function subirRemisiones(empresaId, file) {
     if (!file) return;
@@ -6173,6 +6200,23 @@ function CuadrePorClienteView({ currentUser }) {
   }, [tnsCartera, tnsRemisiones, busint, cli, quitadasCfg]);
   const pendientesTodas = EMPRESAS_TNS.flatMap((emp) => datos.porEmpresa[emp.id].remis?.pendientes || []);
   const extrasTodas = EMPRESAS_TNS.flatMap((emp) => datos.porEmpresa[emp.id].remis?.extras || []);
+  const valCliente = useMemo(() => {
+    if (!valLotes || !valPrecios) return null;
+    const calc = calcularValorizacion({ lotes: valLotes, precios: valPrecios, pedidos, incluirSinCortar: true });
+    const etapas = {};
+    ["sinCortar", "corte", "matPrima", "planta", "semi", "pt"].forEach((k) => { etapas[k] = { valor: 0, unid: 0 }; });
+    const nombres = [];
+    calc.clientes
+      .filter((c) => !c.esSinAsociar && coincideClienteCuadre(cli, "", c.cliente))
+      .forEach((c) => {
+        nombres.push(c.cliente);
+        Object.keys(etapas).forEach((k) => {
+          etapas[k].valor += c.etapas[k]?.valor || 0;
+          etapas[k].unid += c.etapas[k]?.unid || 0;
+        });
+      });
+    return { etapas, nombres, unidSinPrecio: calc.unidSinPrecio };
+  }, [valLotes, valPrecios, pedidos, cli]);
   const quitadasTodas = EMPRESAS_TNS.flatMap((emp) => datos.porEmpresa[emp.id].remis?.quitadas || []);
   const totalesPendientes = EMPRESAS_TNS.filter((emp) => datos.porEmpresa[emp.id].remis).map((emp) => {
     const lista = datos.porEmpresa[emp.id].remis.pendientes;
@@ -6264,6 +6308,69 @@ function CuadrePorClienteView({ currentUser }) {
           ind.remis ? `${ind.remis.pendiente.toLocaleString("es-CO")} unidades por facturar · ${fmtSaldo(ind.remis.valorPendiente / IVA_REMISIONES)} aprox. sin IVA` : "Sube las remisiones de Indutex.",
           C.amber,
           () => setDetalleAbierto({ tipo: "remis", empresa: "indutex" })
+        )}
+      </div>
+      <div style={{ background: C.white, border: `2px solid ${C.blue}`, borderRadius: 14, padding: "16px 18px", marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
+          <div style={{ fontSize: 14, fontWeight: 800 }}>💲 Valorización de {cli.nombre}</div>
+          <Btn small variant="secondary" onClick={cargarValorizacion} disabled={cargandoVal}>{cargandoVal ? "Consultando Busint..." : "🔄 Actualizar"}</Btn>
+        </div>
+        <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, lineHeight: 1.5 }}>
+          Lo que tienes hecho o en proceso para este cliente, a precio matriculado (lo mismo de Valorización por marca). Marca o desmarca las etapas que quieres descontar del saldo.
+        </div>
+        {errorVal && <div style={{ padding: 10, borderRadius: 8, background: C.redBg, color: C.red, fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>⚠ {errorVal}</div>}
+        {!valCliente ? (
+          <div style={{ fontSize: 13, color: C.slate }}>{cargandoVal ? "Consultando pedidos y precios en Busint..." : "Sin datos de valorización todavía."}</div>
+        ) : valCliente.nombres.length === 0 ? (
+          <div style={{ fontSize: 13, color: C.slate }}>No hay pedidos de {cli.nombre} con prendas hechas o en proceso.</div>
+        ) : (
+          (() => {
+            const lista = [
+              { id: "corte", label: "Corte" },
+              { id: "matPrima", label: "Mat. Prima" },
+              { id: "planta", label: "Planta" },
+              { id: "semi", label: "Semiterm." },
+              { id: "pt", label: "Prod. Terminado" },
+              { id: "sinCortar", label: "Sin cortar" },
+            ];
+            const factor = valConIva ? IVA_REMISIONES : 1;
+            const valorMarcado = lista.reduce((sum, e) => sum + (etapasValOff[e.id] ? 0 : valCliente.etapas[e.id].valor), 0) * factor;
+            const resultado = datos.total + valorMarcado;
+            return (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8, marginBottom: 12 }}>
+                  {lista.map((e) => {
+                    const off = !!etapasValOff[e.id];
+                    return (
+                      <div key={e.id} onClick={() => setEtapasValOff((prev) => ({ ...prev, [e.id]: !prev[e.id] }))} style={{ border: `1px solid ${C.border}`, borderRadius: 10, padding: "9px 11px", cursor: "pointer", opacity: off ? 0.5 : 1, background: off ? C.canvas : C.white }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: C.slate }}>
+                          <span style={{ width: 13, height: 13, borderRadius: 3, border: `1.5px solid ${off ? C.seam : C.ink}`, background: off ? C.white : C.ink, display: "inline-block" }} />
+                          {e.label}
+                        </div>
+                        <div style={{ fontSize: 15, fontWeight: 800, marginTop: 4 }}>{fmtSaldo(valCliente.etapas[e.id].valor * factor)}</div>
+                        <div style={{ fontSize: 11, color: C.slate }}>{valCliente.etapas[e.id].unid.toLocaleString("es-CO")} un.</div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: C.slate, marginBottom: 12, cursor: "pointer" }}>
+                  <input type="checkbox" checked={valConIva} onChange={(e) => setValConIva(e.target.checked)} />
+                  Sumar IVA 19% a la valorización (las remisiones del total ya van con IVA)
+                </label>
+                <div style={{ border: `2px solid ${C.ink}`, borderRadius: 12, padding: "14px 18px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "5px 0" }}><span>Saldo total de {cli.nombre}</span><b>{fmtSaldo(datos.total)}</b></div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "5px 0" }}><span>+ Valorización (etapas marcadas{valConIva ? ", con IVA" : ", sin IVA"})</span><b>{fmtSaldo(valorMarcado)}</b></div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, fontWeight: 800, borderTop: `2px solid ${C.ink}`, marginTop: 6, paddingTop: 10 }}>
+                    <span>{resultado < 0 ? "Queda a favor del cliente sin producir" : "El cliente debe (producido de más)"}</span>
+                    <b style={{ color: colorSaldo(resultado) }}>{fmtSaldo(resultado)}</b>
+                  </div>
+                </div>
+                <div style={{ fontSize: 11, color: C.slate, marginTop: 8, lineHeight: 1.5 }}>
+                  Pedidos incluidos: {valCliente.nombres.join(" + ")}.{valCliente.unidSinPrecio > 0 ? ` Ojo: ${valCliente.unidSinPrecio.toLocaleString("es-CO")} prendas del total no tienen precio matriculado y no suman.` : ""}
+                </div>
+              </>
+            );
+          })()
         )}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 10, marginBottom: 12 }}>
@@ -7050,7 +7157,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
           {subView === "facturacion_clientes" && <FacturacionClientesView />}
           {subView === "valorizacion_marca" && <ValorizacionPorMarcaView pedidos={pedidos} />}
           {subView === "saldos_clientes" && <SaldosClientesView currentUser={currentUser} />}
-          {subView === "cuadre_cliente" && <CuadrePorClienteView currentUser={currentUser} />}
+          {subView === "cuadre_cliente" && <CuadrePorClienteView currentUser={currentUser} pedidos={pedidos} />}
           {subView === "dado_por_cumplido" && <DadoPorCumplidoView currentUser={currentUser} puedeAdministrarBases={puedeAdministrarBasesDadoPorCumplido} puedeSincronizar={puedeSincronizarDadoPorCumplido} />}
           {subView === "cxp" && (
             <CuentasPorPagarView
