@@ -6935,25 +6935,63 @@ function hojaPorNombre(wb, nombre) {
   const clave = wb.SheetNames.find((k) => normalizarNombreParaComparar(k) === normalizarNombreParaComparar(nombre));
   return clave ? wb.Sheets[clave] : null;
 }
-function analizarNovedadesHistoricas(filasHoja, trabajadores, motivosDisponibles) {
-  const validas = [];
+// (2026-10-05, a pedido de Fredy) Las fechas del archivo pueden venir como
+// texto AAAA-MM-DD o como fecha real de Excel (numero de serie, que es lo
+// que lee XLSX con raw:true). Antes solo se aceptaba el texto y un archivo
+// con fechas reales de Excel fallaba entero con "Fechas invalidas".
+function fechaHistoricoAISO(v) {
+  if (v instanceof Date && !Number.isNaN(v.getTime())) return v.toISOString().slice(0, 10);
+  if (typeof v === "number" && Number.isFinite(v) && v > 20000 && v < 80000) {
+    return new Date(Math.round((v - 25569) * 86400000)).toISOString().slice(0, 10);
+  }
+  const t = String(v ?? "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+  const m = t.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (m) return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  return "";
+}
+function analizarNovedadesHistoricas(filasHoja, trabajadores, motivosDisponibles, ausenciasExistentes = []) {
+  const candidatas = [];
   const errores = [];
   for (let r = 1; r < filasHoja.length; r++) {
     const fila = filasHoja[r] || [];
     const cedula = String(fila[0] ?? "").trim();
     if (!cedula) continue;
     const motivoTexto = String(fila[2] ?? "").trim();
-    const fechaInicio = String(fila[3] ?? "").trim();
-    const fechaFin = String(fila[4] ?? "").trim();
+    const fechaInicio = fechaHistoricoAISO(fila[3]);
+    const fechaFin = fechaHistoricoAISO(fila[4]);
     const trabajador = trabajadores.find((t) => normalizarCedula(t.cedula) === normalizarCedula(cedula));
     if (!trabajador) { errores.push({ fila: r + 1, error: `Cédula "${cedula}" no corresponde a ningún trabajador` }); continue; }
     const motivo = motivosDisponibles.find((m) => normalizarNombreParaComparar(m) === normalizarNombreParaComparar(motivoTexto));
     if (!motivo) { errores.push({ fila: r + 1, error: `Motivo "${motivoTexto}" no existe en el catálogo (fila de ${trabajador.nombre})` }); continue; }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaInicio) || !/^\d{4}-\d{2}-\d{2}$/.test(fechaFin)) { errores.push({ fila: r + 1, error: `Fechas inválidas (fila de ${trabajador.nombre}) -- usa AAAA-MM-DD` }); continue; }
+    if (!fechaInicio || !fechaFin) { errores.push({ fila: r + 1, error: `Fechas inválidas (fila de ${trabajador.nombre}) -- usa AAAA-MM-DD o una fecha de Excel` }); continue; }
     if (fechaFin < fechaInicio) { errores.push({ fila: r + 1, error: `Fecha Fin es anterior a Fecha Inicio (fila de ${trabajador.nombre})` }); continue; }
-    validas.push({ trabajadorId: trabajador.id, nombre: trabajador.nombre, motivo, fechaInicio, fechaFin });
+    candidatas.push({ fila: r + 1, trabajadorId: trabajador.id, nombre: trabajador.nombre, motivo, fechaInicio, fechaFin });
   }
-  return { validas, errores };
+  // Duplicados y cruces: el mismo dia no puede quedar dos veces para la
+  // misma persona (se descontaria doble en la liquidacion). Se omite la fila
+  // repetida (o ya cargada antes en Ausencias); si una licencia queda
+  // dentro de unas vacaciones, se omite la licencia y se deja la vacacion.
+  const esVacacion = (m) => normalizarNombreParaComparar(m) === normalizarNombreParaComparar("Vacaciones");
+  const cruzan = (a, b) => a.fechaInicio <= b.fechaFin && b.fechaInicio <= a.fechaFin;
+  const mismas = (a, b) => a.trabajadorId === b.trabajadorId && a.motivo === b.motivo && a.fechaInicio === b.fechaInicio && a.fechaFin === b.fechaFin;
+  const validas = [];
+  const avisos = [];
+  candidatas.forEach((c, i) => {
+    const yaCargada = (ausenciasExistentes || []).some((a) => a.trabajadorId === c.trabajadorId && a.motivo === c.motivo && a.fechaInicio === c.fechaInicio && a.fechaFin === c.fechaFin);
+    if (yaCargada) { avisos.push({ fila: c.fila, aviso: `${c.nombre}: ${c.motivo} ${c.fechaInicio} a ${c.fechaFin} ya existe en Ausencias -- se omite` }); return; }
+    const repetida = candidatas.slice(0, i).some((o) => mismas(o, c));
+    if (repetida) { avisos.push({ fila: c.fila, aviso: `${c.nombre}: ${c.motivo} ${c.fechaInicio} a ${c.fechaFin} está repetida en el archivo -- se omite` }); return; }
+    if (!esVacacion(c.motivo)) {
+      const vac = candidatas.find((o) => o !== c && o.trabajadorId === c.trabajadorId && esVacacion(o.motivo) && o.fechaInicio <= c.fechaInicio && o.fechaFin >= c.fechaFin);
+      const vacExistente = (ausenciasExistentes || []).find((a) => a.trabajadorId === c.trabajadorId && esVacacion(a.motivo) && a.fechaInicio <= c.fechaInicio && a.fechaFin >= c.fechaFin);
+      if (vac || vacExistente) { avisos.push({ fila: c.fila, aviso: `${c.nombre}: ${c.motivo} ${c.fechaInicio} a ${c.fechaFin} cae dentro de unas vacaciones -- se omite y se deja la vacación` }); return; }
+    }
+    const otro = candidatas.slice(0, i).find((o) => o.trabajadorId === c.trabajadorId && cruzan(o, c));
+    if (otro) avisos.push({ fila: c.fila, aviso: `${c.nombre}: ${c.motivo} ${c.fechaInicio} a ${c.fechaFin} se cruza con ${otro.motivo} ${otro.fechaInicio} a ${otro.fechaFin} -- se carga igual, revísalo` });
+    validas.push({ trabajadorId: c.trabajadorId, nombre: c.nombre, motivo: c.motivo, fechaInicio: c.fechaInicio, fechaFin: c.fechaFin });
+  });
+  return { validas, errores, avisos };
 }
 function analizarPrestamosHistoricos(filasHoja, trabajadores) {
   const validas = [];
@@ -6997,7 +7035,7 @@ function NovedadesQuincenaView({ trabajadores, faltas, ausencias, turnos, motivo
         const filasNovedades = hojaNovedades ? XLSX.utils.sheet_to_json(hojaNovedades, { header: 1, raw: true, defval: "" }) : [];
         const filasPrestamos = hojaPrestamos ? XLSX.utils.sheet_to_json(hojaPrestamos, { header: 1, raw: true, defval: "" }) : [];
         setPreviewHistorico({
-          novedades: analizarNovedadesHistoricas(filasNovedades, trabajadores, motivosDisponibles),
+          novedades: analizarNovedadesHistoricas(filasNovedades, trabajadores, motivosDisponibles, ausencias),
           prestamos: analizarPrestamosHistoricos(filasPrestamos, trabajadores),
         });
       }
@@ -7145,6 +7183,13 @@ function NovedadesQuincenaView({ trabajadores, faltas, ausencias, turnos, motivo
               <div style={{ fontSize: 11.5, color: C.red, marginBottom: 10, maxHeight: 160, overflowY: "auto" }}>
                 {[...previewHistorico.novedades.errores, ...previewHistorico.prestamos.errores].map((e, i) => (
                   <div key={i}>Fila {e.fila}: {e.error}</div>
+                ))}
+              </div>
+            )}
+            {(previewHistorico.novedades.avisos || []).length > 0 && (
+              <div style={{ fontSize: 11.5, color: C.amber, marginBottom: 10, maxHeight: 160, overflowY: "auto" }}>
+                {previewHistorico.novedades.avisos.map((v, i) => (
+                  <div key={i}>⚠ Fila {v.fila}: {v.aviso}</div>
                 ))}
               </div>
             )}
