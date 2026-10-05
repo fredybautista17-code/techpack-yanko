@@ -5903,6 +5903,371 @@ function SaldosClientesView({ currentUser }) {
   );
 }
 
+// ─── CUADRE POR CLIENTE (saldo + remisionado, por empresa) ───────────────────
+// (2026-10-05, a pedido de Fredy) Para los clientes con cuadres especiales
+// (Conbot, Surtiexport, Kamila): por cada empresa (Industrias Yanko e Indutex)
+// el saldo de cartera de TNS (mismo Excel que "Saldos de clientes", colección
+// contabilidad_saldos_tns) y lo remisionado / facturado / pendiente de TNS
+// (Excel "Remisiones", colección contabilidad_remisiones_tns, uno por empresa),
+// más el saldo de cartera de Busint. Total del cliente = saldo Yanko + saldo
+// Indutex + valor de lo remisionado sin facturar (con IVA, como sale en TNS);
+// positivo = el cliente debe, negativo = saldo a favor del cliente. El saldo de
+// Busint se muestra aparte y NO entra en el total (para no duplicar lo que ya
+// está en TNS). Un cliente que no aparece en el corte de cartera de TNS se
+// muestra con $0 (el reporte solo lista lo pendiente).
+const CLIENTES_CUADRE = [
+  { id: "conbot", nombre: "Inversiones Conbot", nits: ["901441148-1"], palabras: ["CONBOT"] },
+  { id: "surtiexport", nombre: "Surtiexport", nits: ["9013935922-2"], palabras: ["SURTIEXPORT"] },
+  { id: "kamila", nombre: "Kamila Group", nits: [], palabras: ["KAMILA"] },
+];
+const IVA_REMISIONES = 1.19;
+function coincideClienteCuadre(cli, nit, nombre) {
+  const n = normalizarNombreCliente(nombre);
+  return cli.nits.includes(String(nit || "").trim()) || cli.palabras.some((p) => n.includes(p));
+}
+function fechaTNSaISO(v) {
+  if (v === null || v === undefined || v === "") return null;
+  if (typeof v === "number") return new Date(Math.round((v - 25569) * 86400000)).toISOString().slice(0, 10);
+  const m = String(v).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  return m ? `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}` : null;
+}
+function fmtFechaISO(iso) {
+  return iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : "—";
+}
+async function leerRemisionesTNS(file) {
+  const XLSX = await import("xlsx");
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array" });
+  const nombreResumen = wb.SheetNames.find((n) => !/no facturadas/i.test(n));
+  const nombreDetalle = wb.SheetNames.find((n) => /no facturadas/i.test(n));
+  const filas = XLSX.utils.sheet_to_json(wb.Sheets[nombreResumen], { defval: null });
+  const cols = filas.length ? Object.keys(filas[0]) : [];
+  if (!["PREFIJO", "NUMERO", "CLIENTE", "REMISIONADO", "PENDIENTE"].every((c) => cols.includes(c))) {
+    throw new Error('No parece el reporte "Remisiones" de TNS (faltan columnas como PREFIJO, NUMERO, CLIENTE, REMISIONADO, PENDIENTE).');
+  }
+  const num = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const porCliente = new Map();
+  filas.forEach((f) => {
+    const nit = String(f["CODIGO"] || "").trim();
+    const nombre = String(f["CLIENTE"] || "").trim();
+    const clave = nit || nombre;
+    if (!clave) return;
+    if (!porCliente.has(clave)) porCliente.set(clave, { nit: nit || clave, nombre, nRemisiones: 0, remisionado: 0, facturado: 0, pendiente: 0, valorPendiente: 0, pendientes: [] });
+    const c = porCliente.get(clave);
+    const remisionado = num(f["REMISIONADO"]);
+    const pendiente = num(f["PENDIENTE"]);
+    const neto = num(f["NETO"]);
+    c.nRemisiones += 1;
+    c.remisionado += remisionado;
+    c.facturado += num(f["FACTURADO"]);
+    c.pendiente += pendiente;
+    if (pendiente > 0) {
+      const valorPend = remisionado > 0 ? (neto * pendiente) / remisionado : neto;
+      c.valorPendiente += valorPend;
+      c.pendientes.push({
+        ref: `${String(f["PREFIJO"] ?? "").padStart(2, "0")}-${String(f["NUMERO"] ?? "").padStart(3, "0")}`,
+        fecha: fechaTNSaISO(f["FECHA"]),
+        remisionado,
+        pendiente,
+        neto: Math.round(neto),
+        valorPend: Math.round(valorPend),
+      });
+    }
+  });
+  const detalleMap = new Map();
+  if (nombreDetalle) {
+    XLSX.utils.sheet_to_json(wb.Sheets[nombreDetalle], { defval: null }).forEach((f) => {
+      const remision = String(f["N° REMISIÓN"] || "").trim();
+      if (!remision) return;
+      if (!detalleMap.has(remision)) detalleMap.set(remision, { remision, nit: String(f["CÓDIGO"] || "").trim(), nombre: String(f["NOMBRE"] || "").trim(), fecha: fechaTNSaISO(f["FECHA"]), pendiente: 0, valorSinIva: 0 });
+      const d = detalleMap.get(remision);
+      d.pendiente += num(f["PENDIENTE"]);
+      d.valorSinIva += num(f["TOTAL PRECIO DE VENTA"]);
+    });
+  }
+  const clientes = [...porCliente.values()].map((c) => ({ ...c, valorPendiente: Math.round(c.valorPendiente) }));
+  const detalle = [...detalleMap.values()].map((d) => ({ ...d, valorSinIva: Math.round(d.valorSinIva) }));
+  return { clientes, detalle, tieneDetalle: !!nombreDetalle, totalFilas: filas.length };
+}
+function CuadrePorClienteView({ currentUser }) {
+  const [clienteId, setClienteId] = useState(CLIENTES_CUADRE[0].id);
+  const [tnsCartera, setTnsCartera] = useState({});
+  const [tnsRemisiones, setTnsRemisiones] = useState({});
+  const [busint, setBusint] = useState(null);
+  const [cargandoBusint, setCargandoBusint] = useState(false);
+  const [subiendo, setSubiendo] = useState("");
+  const [error, setError] = useState("");
+  const [mensaje, setMensaje] = useState("");
+  useEffect(() => {
+    const u1 = onSnapshot(collection(db, "contabilidad_saldos_tns"), (snap) => {
+      const m = {};
+      snap.docs.forEach((d) => { m[d.id] = d.data(); });
+      setTnsCartera(m);
+    });
+    const u2 = onSnapshot(collection(db, "contabilidad_remisiones_tns"), (snap) => {
+      const m = {};
+      snap.docs.forEach((d) => { m[d.id] = d.data(); });
+      setTnsRemisiones(m);
+    });
+    return () => { u1(); u2(); };
+  }, []);
+  async function cargarBusint() {
+    setCargandoBusint(true);
+    try {
+      const resp = await httpsCallable(functionsClient, "getResumenCarteraClientesBusintBD", { timeout: 300000 })({});
+      setBusint(resp.data?.clientes || []);
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar la cartera de Busint.");
+    } finally {
+      setCargandoBusint(false);
+    }
+  }
+  useEffect(() => {
+    cargarBusint();
+  }, []);
+  async function subirRemisiones(empresaId, file) {
+    if (!file) return;
+    setSubiendo(empresaId);
+    setError("");
+    setMensaje("");
+    try {
+      const { clientes, detalle, tieneDetalle, totalFilas } = await leerRemisionesTNS(file);
+      await fsSave("contabilidad_remisiones_tns", empresaId, {
+        empresa: empresaId,
+        nombreArchivo: file.name,
+        corte: corteDesdeNombreArchivo(file.name),
+        cargadoEn: new Date().toISOString(),
+        cargadoPor: currentUser?.email || currentUser?.nombre || currentUser?.name || "",
+        totalFilas,
+        tieneDetalle,
+        clientes,
+        detalle,
+      });
+      setMensaje(`Se cargaron las remisiones de TNS (${EMPRESAS_TNS.find((e) => e.id === empresaId)?.nombre}): ${totalFilas} remisiones, ${clientes.length} clientes.`);
+    } catch (err) {
+      setError(err?.message || "No se pudo leer el Excel de remisiones.");
+    } finally {
+      setSubiendo("");
+    }
+  }
+  const cli = CLIENTES_CUADRE.find((c) => c.id === clienteId) || CLIENTES_CUADRE[0];
+  const datos = useMemo(() => {
+    const porEmpresa = {};
+    const avisos = [];
+    EMPRESAS_TNS.forEach((emp) => {
+      const dc = tnsCartera[emp.id];
+      const dr = tnsRemisiones[emp.id];
+      const cartera = dc ? { saldo: (dc.clientes || []).filter((t) => coincideClienteCuadre(cli, t.nit, t.nombre)).reduce((s, t) => s + (Number(t.saldo) || 0), 0) } : null;
+      let remis = null;
+      if (dr) {
+        const mios = (dr.clientes || []).filter((t) => coincideClienteCuadre(cli, t.nit, t.nombre));
+        remis = { nRemisiones: 0, remisionado: 0, facturado: 0, pendiente: 0, valorPendiente: 0, pendientes: [], extras: [] };
+        mios.forEach((t) => {
+          remis.nRemisiones += t.nRemisiones || 0;
+          remis.remisionado += t.remisionado || 0;
+          remis.facturado += t.facturado || 0;
+          remis.pendiente += t.pendiente || 0;
+          remis.valorPendiente += t.valorPendiente || 0;
+          (t.pendientes || []).forEach((p) => remis.pendientes.push({ ...p }));
+        });
+        const grupos = {};
+        remis.pendientes.forEach((p) => {
+          const k = `${p.fecha}|${p.remisionado}|${p.neto}`;
+          (grupos[k] = grupos[k] || []).push(p);
+        });
+        const enDetalle = new Set();
+        (dr.detalle || []).forEach((d) => {
+          const m = String(d.remision).match(/^RS(\d{2})(\d+)$/);
+          if (m) enDetalle.add(`${m[1]}-${m[2]}`);
+        });
+        remis.pendientes.forEach((p) => {
+          p.empresa = emp.id;
+          const g = grupos[`${p.fecha}|${p.remisionado}|${p.neto}`];
+          const otras = g.filter((x) => x.ref !== p.ref).map((x) => x.ref);
+          const flags = [];
+          if (otras.length) flags.push(`Posible duplicada de ${otras.join(", ")}`);
+          if (dr.tieneDetalle && !enDetalle.has(p.ref)) flags.push("No aparece en el detalle por referencia");
+          p.flags = flags;
+        });
+        const refsPend = new Set(remis.pendientes.map((p) => p.ref));
+        (dr.detalle || []).filter((d) => d.pendiente > 0 && coincideClienteCuadre(cli, d.nit, d.nombre)).forEach((d) => {
+          const m = String(d.remision).match(/^RS(\d{2})(\d+)$/);
+          if (m && refsPend.has(`${m[1]}-${m[2]}`)) return;
+          remis.extras.push({ ...d, empresa: emp.id });
+        });
+      }
+      porEmpresa[emp.id] = { cartera, remis };
+    });
+    Object.values(porEmpresa).forEach((x) => {
+      (x.remis?.pendientes || []).forEach((p) => p.flags.forEach((f) => avisos.push(`${p.ref}: ${f}`)));
+      (x.remis?.extras || []).forEach((e) => avisos.push(`${e.remision}: pendiente en el detalle pero no en el resumen de remisiones (suele ser de un periodo anterior al del reporte)`));
+    });
+    const bus = busint ? busint.filter((b) => cli.palabras.some((p) => normalizarNombreCliente(b.nombre).includes(p))) : null;
+    const saldoBusint = bus ? bus.reduce((s, b) => s + (Number(b.total) || 0), 0) : null;
+    const total = EMPRESAS_TNS.reduce((s, emp) => s + (porEmpresa[emp.id].cartera?.saldo || 0) + (porEmpresa[emp.id].remis?.valorPendiente || 0), 0);
+    return { porEmpresa, avisos, saldoBusint, nombresBusint: bus ? bus.map((b) => b.nombre) : [], total };
+  }, [tnsCartera, tnsRemisiones, busint, cli]);
+  const pendientesTodas = EMPRESAS_TNS.flatMap((emp) => datos.porEmpresa[emp.id].remis?.pendientes || []);
+  const extrasTodas = EMPRESAS_TNS.flatMap((emp) => datos.porEmpresa[emp.id].remis?.extras || []);
+  const nombreEmpresa = (id) => EMPRESAS_TNS.find((e) => e.id === id)?.nombre || id;
+  const thStyle = { background: C.ink, color: C.seam, fontSize: 10, fontWeight: 700, padding: "9px 12px", textAlign: "right", whiteSpace: "nowrap" };
+  const tdStyle = { padding: "9px 12px", textAlign: "right", borderBottom: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums", fontSize: 12.5 };
+  const colorSaldo = (v) => (v < 0 ? C.violet : C.ink);
+  const sinDato = <span style={{ color: "#b9b0a4" }}>Sin Excel cargado</span>;
+  const caja = (titulo, valor, detalle, color) => (
+    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "13px 15px" }}>
+      <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: C.slate }}>{titulo}</div>
+      <div style={{ fontSize: 20, fontWeight: 800, marginTop: 3, color: color || C.ink }}>{valor}</div>
+      <div style={{ fontSize: 11.5, color: C.slate, marginTop: 3, lineHeight: 1.45 }}>{detalle}</div>
+    </div>
+  );
+  const fila = (etq, val) => (
+    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "6px 0", borderBottom: `1px solid ${C.border}`, gap: 10 }}>
+      <span>{etq}</span>
+      <b style={{ fontVariantNumeric: "tabular-nums" }}>{val}</b>
+    </div>
+  );
+  const pillAviso = { fontSize: 10, fontWeight: 800, padding: "2px 8px", borderRadius: 10, background: C.amberBg, color: C.amber, whiteSpace: "nowrap" };
+  const ind = datos.porEmpresa.indutex;
+  const yan = datos.porEmpresa.yanko;
+  return (
+    <div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, marginBottom: 4 }}>⚖️ Cuadre por cliente</div>
+      <div style={{ fontSize: 13, color: C.slate, marginBottom: 16, maxWidth: 840, lineHeight: 1.55 }}>
+        Para cada cliente con cuadre especial: cuánto te debe (saldo de cartera) y cuánto está remisionado sin facturar, por cada empresa, y el total que juntan. La cartera de TNS se sube en <b>Saldos de clientes</b>; las remisiones se suben aquí abajo.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 10, marginBottom: 14 }}>
+        {EMPRESAS_TNS.map((emp) => {
+          const d = tnsRemisiones[emp.id];
+          return (
+            <div key={emp.id} style={{ background: d ? C.white : C.amberBg, border: `1px solid ${d ? C.border : "#f0ddbb"}`, borderLeft: `4px solid ${d ? C.green : C.amber}`, borderRadius: 12, padding: "12px 14px" }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: C.slate }}>Remisiones TNS · {emp.nombre}</div>
+              <div style={{ fontSize: 14, fontWeight: 800, margin: "3px 0" }}>{d ? (d.corte ? `Corte ${d.corte}` : "Excel cargado") : "Sin cargar"}</div>
+              <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 6 }}>
+                {d ? `${d.totalFilas} remisiones · ${d.nombreArchivo || ""}` : `Sube el Excel "Remisiones" de ${emp.nombre}`}
+                {` · Cartera: ${tnsCartera[emp.id] ? (tnsCartera[emp.id].corte ? `corte ${tnsCartera[emp.id].corte}` : "cargada") : "sin cargar"}`}
+              </div>
+              <label style={{ display: "inline-block", background: d ? C.canvas : C.ink, color: d ? C.ink : C.white, border: d ? `1px solid ${C.border}` : "none", borderRadius: 8, padding: "5px 10px", fontWeight: 700, fontSize: 12, cursor: subiendo ? "not-allowed" : "pointer" }}>
+                {subiendo === emp.id ? "Cargando..." : d ? "📤 Subir otro corte" : "📤 Subir Excel"}
+                <input type="file" accept=".xlsx,.xls" disabled={!!subiendo} style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; subirRemisiones(emp.id, f); }} />
+              </label>
+            </div>
+          );
+        })}
+      </div>
+      {error && <div style={{ padding: 12, borderRadius: 8, background: C.redBg, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 14 }}>⚠ {error}</div>}
+      {mensaje && <div style={{ padding: 12, borderRadius: 8, background: C.greenBg, color: C.green, fontSize: 13, fontWeight: 600, marginBottom: 14 }}>✓ {mensaje}</div>}
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        {CLIENTES_CUADRE.map((c) => (
+          <span key={c.id} onClick={() => setClienteId(c.id)} style={{ padding: "8px 16px", borderRadius: 999, fontSize: 13, fontWeight: 700, cursor: "pointer", background: c.id === clienteId ? C.ink : C.white, color: c.id === clienteId ? C.white : C.slate, border: `1px solid ${c.id === clienteId ? C.ink : C.border}` }}>{c.nombre}</span>
+        ))}
+      </div>
+      {datos.avisos.length > 0 && (
+        <div style={{ background: C.redBg, border: "1px solid #f4cfc9", borderLeft: `4px solid ${C.red}`, borderRadius: 10, padding: "11px 14px", fontSize: 12.5, marginBottom: 14, lineHeight: 1.6, color: C.ink }}>
+          ⚠️ <b>Conviene revisar estas remisiones en TNS antes de dar por bueno el pendiente:</b>
+          {datos.avisos.map((a, i) => <div key={i}>• {a}</div>)}
+        </div>
+      )}
+      <div style={{ background: C.ink, color: C.white, borderRadius: 14, padding: "18px 22px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 14, marginBottom: 12 }}>
+        <div>
+          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: C.seam, fontWeight: 700 }}>Saldo total de {cli.nombre} (+ debe · − a favor del cliente)</div>
+          <div style={{ fontSize: 30, fontWeight: 800, marginTop: 2 }}>{fmtSaldo(datos.total)}</div>
+        </div>
+        <div style={{ fontSize: 12, color: C.seam, maxWidth: 360, textAlign: "right", lineHeight: 1.5 }}>
+          = saldo Industrias Yanko + saldo Indutex + remisionado sin facturar (con IVA). El saldo de Busint se muestra aparte y no entra en este total.
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 10, marginBottom: 12 }}>
+        {caja("Saldo Industrias Yanko (TNS)", yan.cartera ? fmtSaldo(yan.cartera.saldo) : sinDato, yan.cartera ? (yan.cartera.saldo === 0 ? "No aparece en el corte de cartera." : `Corte ${tnsCartera.yanko?.corte || ""}`) : "Sube la cartera en Saldos de clientes.", yan.cartera ? colorSaldo(yan.cartera.saldo) : undefined)}
+        {caja("Saldo Indutex (TNS)", ind.cartera ? fmtSaldo(ind.cartera.saldo) : sinDato, ind.cartera ? (ind.cartera.saldo === 0 ? "No aparece en el corte de cartera." : `Corte ${tnsCartera.indutex?.corte || ""}`) : "Sube la cartera en Saldos de clientes.", ind.cartera ? colorSaldo(ind.cartera.saldo) : undefined)}
+        {caja(
+          "Por facturar: remisionado (TNS)",
+          yan.remis || ind.remis ? fmtSaldo((yan.remis?.valorPendiente || 0) + (ind.remis?.valorPendiente || 0)) : sinDato,
+          yan.remis || ind.remis ? `${fmtSaldo(((yan.remis?.valorPendiente || 0) + (ind.remis?.valorPendiente || 0)) / IVA_REMISIONES)} aprox. sin IVA (19%) · ${(yan.remis?.pendiente || 0) + (ind.remis?.pendiente || 0)} unidades.` : "Sube las remisiones de cada empresa.",
+          C.amber
+        )}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 10, marginBottom: 12 }}>
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "15px 17px" }}>
+          <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 10 }}>🏭 Lado Industrias Yanko</div>
+          {fila("Saldo de cartera (TNS)", yan.cartera ? fmtSaldo(yan.cartera.saldo) : sinDato)}
+          {fila("Unidades remisionadas (TNS)", yan.remis ? yan.remis.remisionado.toLocaleString("es-CO") : sinDato)}
+          {fila("Unidades pendientes por facturar", yan.remis ? yan.remis.pendiente.toLocaleString("es-CO") : sinDato)}
+          {fila("Saldo en Busint", cargandoBusint ? "Consultando..." : datos.saldoBusint === null ? "—" : fmtSaldo(datos.saldoBusint))}
+          {datos.nombresBusint.length > 0 && <div style={{ fontSize: 10.5, color: C.slate, marginTop: 6 }}>Busint: {datos.nombresBusint.join(" / ")}</div>}
+        </div>
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "15px 17px" }}>
+          <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 10 }}>🧵 Lado Indutex</div>
+          {fila("Saldo de cartera (TNS)", ind.cartera ? fmtSaldo(ind.cartera.saldo) : sinDato)}
+          {fila("Unidades remisionadas", ind.remis ? ind.remis.remisionado.toLocaleString("es-CO") : sinDato)}
+          {fila("Unidades facturadas", ind.remis ? ind.remis.facturado.toLocaleString("es-CO") : sinDato)}
+          {fila("Unidades pendientes por facturar", ind.remis ? <span style={{ color: C.amber }}>{ind.remis.pendiente.toLocaleString("es-CO")}</span> : sinDato)}
+          {ind.remis && ind.remis.remisionado > 0 && (
+            <>
+              <div style={{ height: 9, background: C.border, borderRadius: 5, overflow: "hidden", margin: "10px 0 4px" }}>
+                <div style={{ width: `${Math.min(100, (ind.remis.facturado / ind.remis.remisionado) * 100)}%`, height: "100%", background: C.green }} />
+              </div>
+              <div style={{ fontSize: 11, color: C.slate }}>{((ind.remis.facturado / ind.remis.remisionado) * 100).toFixed(1)}% de lo remisionado ya está facturado · {ind.remis.nRemisiones} remisiones</div>
+            </>
+          )}
+        </div>
+      </div>
+      <div style={{ fontSize: 11.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: C.slate, margin: "20px 0 10px" }}>Remisiones pendientes de facturar</div>
+      {pendientesTodas.length === 0 && extrasTodas.length === 0 ? (
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, fontSize: 13, color: C.slate }}>
+          {tnsRemisiones.yanko || tnsRemisiones.indutex ? "No hay remisiones pendientes de facturar para este cliente." : "Sube el Excel de remisiones para ver el detalle."}
+        </div>
+      ) : (
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, overflow: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th style={{ ...thStyle, textAlign: "left" }}>Remisión</th>
+                <th style={{ ...thStyle, textAlign: "left" }}>Empresa</th>
+                <th style={thStyle}>Fecha</th>
+                <th style={thStyle}>Unidades</th>
+                <th style={thStyle}>Valor (con IVA)</th>
+                <th style={thStyle}>Valor (sin IVA)</th>
+                <th style={{ ...thStyle, textAlign: "left" }}>Aviso</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pendientesTodas.map((p) => (
+                <tr key={`${p.empresa}-${p.ref}`}>
+                  <td style={{ ...tdStyle, textAlign: "left", fontWeight: 800 }}>{p.ref}</td>
+                  <td style={{ ...tdStyle, textAlign: "left" }}>{nombreEmpresa(p.empresa)}</td>
+                  <td style={tdStyle}>{fmtFechaISO(p.fecha)}</td>
+                  <td style={tdStyle}>{p.pendiente.toLocaleString("es-CO")}</td>
+                  <td style={tdStyle}>{fmtSaldo(p.valorPend)}</td>
+                  <td style={tdStyle}>{fmtSaldo(p.valorPend / IVA_REMISIONES)}</td>
+                  <td style={{ ...tdStyle, textAlign: "left" }}>{p.flags.map((f) => <span key={f} style={{ ...pillAviso, marginRight: 4 }}>{f}</span>)}</td>
+                </tr>
+              ))}
+              {extrasTodas.map((e) => (
+                <tr key={`x-${e.empresa}-${e.remision}`}>
+                  <td style={{ ...tdStyle, textAlign: "left", fontWeight: 800 }}>{e.remision}</td>
+                  <td style={{ ...tdStyle, textAlign: "left" }}>{nombreEmpresa(e.empresa)}</td>
+                  <td style={tdStyle}>{fmtFechaISO(e.fecha)}</td>
+                  <td style={tdStyle}>{e.pendiente.toLocaleString("es-CO")}</td>
+                  <td style={tdStyle}>—</td>
+                  <td style={tdStyle}>{fmtSaldo(e.valorSinIva)}</td>
+                  <td style={{ ...tdStyle, textAlign: "left" }}><span style={pillAviso}>Solo en el detalle · no suma al total</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div style={{ fontSize: 11.5, color: C.slate, marginTop: 8, lineHeight: 1.5 }}>
+        Los avisos de remisiones sospechosas se calculan solos: dos remisiones idénticas el mismo día, una pendiente que no aparece en el detalle por referencia, o una pendiente solo en el detalle (fuera del periodo del reporte). Lo despachado en Busint (traslados y consignación) todavía no está en esta pantalla.
+      </div>
+    </div>
+  );
+}
+
 export default function ModuloContabilidad({ currentUser, onVolver, onLogout, puedeAdministrarBasesDadoPorCumplido, puedeSincronizarDadoPorCumplido, pedidos }) {
   const [subView, setSubView] = useState("home");
   const [movimientos, setMovimientos] = useState([]);
@@ -6232,6 +6597,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
     { id: "facturacion_clientes", icon: "🧾", label: "Facturación Clientes" },
     { id: "valorizacion_marca", icon: "💲", label: "Valorización por marca" },
     { id: "saldos_clientes", icon: "💳", label: "Saldos de clientes" },
+    { id: "cuadre_cliente", icon: "⚖️", label: "Cuadre por cliente" },
     { id: "dado_por_cumplido", icon: "✅", label: "Dado por Cumplido" },
     { id: "cxp", icon: "🧾", label: "Cuentas por Pagar" },
     { id: "administracion", icon: "🗂️", label: "Administración" },
@@ -6449,6 +6815,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
           {subView === "facturacion_clientes" && <FacturacionClientesView />}
           {subView === "valorizacion_marca" && <ValorizacionPorMarcaView pedidos={pedidos} />}
           {subView === "saldos_clientes" && <SaldosClientesView currentUser={currentUser} />}
+          {subView === "cuadre_cliente" && <CuadrePorClienteView currentUser={currentUser} />}
           {subView === "dado_por_cumplido" && <DadoPorCumplidoView currentUser={currentUser} puedeAdministrarBases={puedeAdministrarBasesDadoPorCumplido} puedeSincronizar={puedeSincronizarDadoPorCumplido} />}
           {subView === "cxp" && (
             <CuentasPorPagarView
