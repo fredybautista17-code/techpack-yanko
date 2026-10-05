@@ -5614,6 +5614,7 @@ async function leerCarteraTNS(file) {
     return Number.isFinite(n) ? n : 0;
   };
   const porCliente = new Map();
+  const detalle = [];
   filas.forEach((f) => {
     const nit = String(f["NIT Tercero"] || f["Código Tercero"] || "").trim();
     const nombre = String(f["Nombre"] || "").trim();
@@ -5623,11 +5624,27 @@ async function leerCarteraTNS(file) {
     const c = porCliente.get(clave);
     const saldoFila = columnasEdades.length ? columnasEdades.reduce((s, k) => s + num(f[k]), 0) : num(f["Saldo"]);
     c.saldo += saldoFila;
+    // (2026-10-05, a pedido de Fredy) Detalle por factura/anticipo, solo de los
+    // clientes de "Cuadre por cliente" (para no guardar toda la cartera en
+    // Firestore): alimenta las ventanas "ver detalle" de esa pantalla.
+    if (CLIENTES_CUADRE.some((cl) => coincideClienteCuadre(cl, nit, nombre))) {
+      detalle.push({
+        nit: nit || clave,
+        nombre,
+        numero: String(f["Número"] ?? "").trim(),
+        emision: fechaTNSaISO(f["Fecha Emisión"]),
+        vence: fechaTNSaISO(f["Fecha Vencimiento"]),
+        dias: f["Días Vencimiento"] === null || f["Días Vencimiento"] === undefined || f["Días Vencimiento"] === "" ? null : num(f["Días Vencimiento"]),
+        valorInicial: num(f["Valor Inicial"]),
+        abonado: num(f["Valor Abonado"]),
+        saldo: Math.round(saldoFila * 100) / 100,
+      });
+    }
     if (columnasEdades.length) c.vencido += columnasEdades.filter((k) => k !== "Por vencer").reduce((s, k) => s + num(f[k]), 0);
     c.filas += 1;
   });
   const clientes = [...porCliente.values()].map((c) => ({ ...c, saldo: Math.round(c.saldo * 100) / 100, vencido: Math.round(c.vencido * 100) / 100 }));
-  return { clientes, totalFilas: filas.length };
+  return { clientes, detalle, totalFilas: filas.length };
 }
 function estadoSaldoCliente(donde, busint, tnsTotal, hayTns) {
   const cero = (n) => Math.abs(Number(n) || 0) < 1;
@@ -5694,7 +5711,7 @@ function SaldosClientesView({ currentUser }) {
     setError("");
     setMensaje("");
     try {
-      const { clientes, totalFilas } = await leerCarteraTNS(file);
+      const { clientes, detalle, totalFilas } = await leerCarteraTNS(file);
       await fsSave("contabilidad_saldos_tns", empresaId, {
         empresa: empresaId,
         nombreArchivo: file.name,
@@ -5703,6 +5720,7 @@ function SaldosClientesView({ currentUser }) {
         cargadoPor: currentUser?.email || currentUser?.nombre || currentUser?.name || "",
         totalFilas,
         clientes,
+        detalle,
       });
       setMensaje(`Se cargó el corte de TNS (${EMPRESAS_TNS.find((e) => e.id === empresaId)?.nombre}): ${clientes.length} clientes, ${totalFilas} filas.`);
     } catch (err) {
@@ -6001,6 +6019,7 @@ function CuadrePorClienteView({ currentUser }) {
   const [subiendo, setSubiendo] = useState("");
   const [error, setError] = useState("");
   const [mensaje, setMensaje] = useState("");
+  const [detalleAbierto, setDetalleAbierto] = useState(null);
   useEffect(() => {
     const u1 = onSnapshot(collection(db, "contabilidad_saldos_tns"), (snap) => {
       const m = {};
@@ -6060,7 +6079,13 @@ function CuadrePorClienteView({ currentUser }) {
     EMPRESAS_TNS.forEach((emp) => {
       const dc = tnsCartera[emp.id];
       const dr = tnsRemisiones[emp.id];
-      const cartera = dc ? { saldo: (dc.clientes || []).filter((t) => coincideClienteCuadre(cli, t.nit, t.nombre)).reduce((s, t) => s + (Number(t.saldo) || 0), 0) } : null;
+      const cartera = dc
+        ? {
+            saldo: (dc.clientes || []).filter((t) => coincideClienteCuadre(cli, t.nit, t.nombre)).reduce((s, t) => s + (Number(t.saldo) || 0), 0),
+            tieneDetalle: Array.isArray(dc.detalle),
+            detalle: (dc.detalle || []).filter((t) => coincideClienteCuadre(cli, t.nit, t.nombre)).sort((a, b) => String(a.emision || "").localeCompare(String(b.emision || ""))),
+          }
+        : null;
       let remis = null;
       if (dr) {
         const mios = (dr.clientes || []).filter((t) => coincideClienteCuadre(cli, t.nit, t.nombre));
@@ -6117,11 +6142,12 @@ function CuadrePorClienteView({ currentUser }) {
   const tdStyle = { padding: "9px 12px", textAlign: "right", borderBottom: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums", fontSize: 12.5 };
   const colorSaldo = (v) => (v < 0 ? C.violet : C.ink);
   const sinDato = <span style={{ color: "#b9b0a4" }}>Sin Excel cargado</span>;
-  const caja = (titulo, valor, detalle, color) => (
-    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "13px 15px" }}>
+  const caja = (titulo, valor, detalle, color, onClick) => (
+    <div onClick={onClick} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "13px 15px", cursor: onClick ? "pointer" : "default" }}>
       <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: C.slate }}>{titulo}</div>
       <div style={{ fontSize: 20, fontWeight: 800, marginTop: 3, color: color || C.ink }}>{valor}</div>
       <div style={{ fontSize: 11.5, color: C.slate, marginTop: 3, lineHeight: 1.45 }}>{detalle}</div>
+      {onClick && <div style={{ fontSize: 11, color: C.blue, fontWeight: 700, marginTop: 6 }}>ver detalle ›</div>}
     </div>
   );
   const fila = (etq, val) => (
@@ -6177,17 +6203,25 @@ function CuadrePorClienteView({ currentUser }) {
           <div style={{ fontSize: 30, fontWeight: 800, marginTop: 2 }}>{fmtSaldo(datos.total)}</div>
         </div>
         <div style={{ fontSize: 12, color: C.seam, maxWidth: 360, textAlign: "right", lineHeight: 1.5 }}>
-          = saldo Industrias Yanko + saldo Indutex + remisionado sin facturar (con IVA). El saldo de Busint se muestra aparte y no entra en este total.
+          = saldo Industrias Yanko + saldo Indutex + remisiones de las dos empresas sin facturar (con IVA). El saldo de Busint se muestra aparte y no entra en este total.
         </div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 10, marginBottom: 12 }}>
-        {caja("Saldo Industrias Yanko (TNS)", yan.cartera ? fmtSaldo(yan.cartera.saldo) : sinDato, yan.cartera ? (yan.cartera.saldo === 0 ? "No aparece en el corte de cartera." : `Corte ${tnsCartera.yanko?.corte || ""}`) : "Sube la cartera en Saldos de clientes.", yan.cartera ? colorSaldo(yan.cartera.saldo) : undefined)}
-        {caja("Saldo Indutex (TNS)", ind.cartera ? fmtSaldo(ind.cartera.saldo) : sinDato, ind.cartera ? (ind.cartera.saldo === 0 ? "No aparece en el corte de cartera." : `Corte ${tnsCartera.indutex?.corte || ""}`) : "Sube la cartera en Saldos de clientes.", ind.cartera ? colorSaldo(ind.cartera.saldo) : undefined)}
+        {caja("Saldo Industrias Yanko (TNS)", yan.cartera ? fmtSaldo(yan.cartera.saldo) : sinDato, yan.cartera ? (yan.cartera.saldo === 0 ? "No aparece en el corte de cartera." : `Corte ${tnsCartera.yanko?.corte || ""}`) : "Sube la cartera en Saldos de clientes.", yan.cartera ? colorSaldo(yan.cartera.saldo) : undefined, () => setDetalleAbierto({ tipo: "saldo", empresa: "yanko" }))}
+        {caja("Saldo Indutex (TNS)", ind.cartera ? fmtSaldo(ind.cartera.saldo) : sinDato, ind.cartera ? (ind.cartera.saldo === 0 ? "No aparece en el corte de cartera." : `Corte ${tnsCartera.indutex?.corte || ""}`) : "Sube la cartera en Saldos de clientes.", ind.cartera ? colorSaldo(ind.cartera.saldo) : undefined, () => setDetalleAbierto({ tipo: "saldo", empresa: "indutex" }))}
         {caja(
-          "Por facturar: remisionado (TNS)",
-          yan.remis || ind.remis ? fmtSaldo((yan.remis?.valorPendiente || 0) + (ind.remis?.valorPendiente || 0)) : sinDato,
-          yan.remis || ind.remis ? `${fmtSaldo(((yan.remis?.valorPendiente || 0) + (ind.remis?.valorPendiente || 0)) / IVA_REMISIONES)} aprox. sin IVA (19%) · ${(yan.remis?.pendiente || 0) + (ind.remis?.pendiente || 0)} unidades.` : "Sube las remisiones de cada empresa.",
-          C.amber
+          "Remisiones Industrias Yanko",
+          yan.remis ? fmtSaldo(yan.remis.valorPendiente) : sinDato,
+          yan.remis ? `${yan.remis.pendiente.toLocaleString("es-CO")} unidades por facturar · ${fmtSaldo(yan.remis.valorPendiente / IVA_REMISIONES)} aprox. sin IVA` : "Sube las remisiones de Industrias Yanko.",
+          C.amber,
+          () => setDetalleAbierto({ tipo: "remis", empresa: "yanko" })
+        )}
+        {caja(
+          "Remisiones Indutex",
+          ind.remis ? fmtSaldo(ind.remis.valorPendiente) : sinDato,
+          ind.remis ? `${ind.remis.pendiente.toLocaleString("es-CO")} unidades por facturar · ${fmtSaldo(ind.remis.valorPendiente / IVA_REMISIONES)} aprox. sin IVA` : "Sube las remisiones de Indutex.",
+          C.amber,
+          () => setDetalleAbierto({ tipo: "remis", empresa: "indutex" })
         )}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 10, marginBottom: 12 }}>
@@ -6264,6 +6298,127 @@ function CuadrePorClienteView({ currentUser }) {
       <div style={{ fontSize: 11.5, color: C.slate, marginTop: 8, lineHeight: 1.5 }}>
         Los avisos de remisiones sospechosas se calculan solos: dos remisiones idénticas el mismo día, una pendiente que no aparece en el detalle por referencia, o una pendiente solo en el detalle (fuera del periodo del reporte). Lo despachado en Busint (traslados y consignación) todavía no está en esta pantalla.
       </div>
+      {detalleAbierto && (() => {
+        const emp = detalleAbierto.empresa;
+        const nomEmp = nombreEmpresa(emp);
+        const resBox = (etq, val, color) => (
+          <div style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 9, padding: "7px 11px" }}>
+            <div style={{ fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", color: C.slate }}>{etq}</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: color || C.ink }}>{val}</div>
+          </div>
+        );
+        if (detalleAbierto.tipo === "saldo") {
+          const cart = datos.porEmpresa[emp].cartera;
+          const filasDet = cart?.detalle || [];
+          const esAnticipo = (f) => /anticipo/i.test(f.numero) || (f.valorInicial === 0 && f.saldo < 0);
+          const sumFact = filasDet.filter((f) => !esAnticipo(f)).reduce((s, f) => s + f.saldo, 0);
+          const sumAnt = filasDet.filter(esAnticipo).reduce((s, f) => s + f.saldo, 0);
+          return (
+            <Modal title={`Saldo ${nomEmp} — ${cli.nombre}`} onClose={() => setDetalleAbierto(null)} width={820}>
+              {!cart ? (
+                <div style={{ fontSize: 13, color: C.slate }}>Todavía no hay cartera de TNS cargada para {nomEmp}. Súbela en Saldos de clientes.</div>
+              ) : !cart.tieneDetalle ? (
+                <div style={{ fontSize: 13, color: C.slate, lineHeight: 1.5 }}>Este corte se subió antes de que existiera el detalle por factura. Vuelve a subir el Excel de cartera de {nomEmp} en <b>Saldos de clientes</b> para verlo aquí.</div>
+              ) : filasDet.length === 0 ? (
+                <div style={{ fontSize: 13, color: C.slate }}>{cli.nombre} no aparece en el corte de cartera de {nomEmp} (saldo $0).</div>
+              ) : (
+                <>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+                    {resBox("Saldo", fmtSaldo(cart.saldo), colorSaldo(cart.saldo))}
+                    {resBox("Facturas", fmtSaldo(sumFact))}
+                    {resBox("Anticipos / a favor", fmtSaldo(sumAnt), C.violet)}
+                  </div>
+                  <div style={{ overflow: "auto", maxHeight: "55vh" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ ...thStyle, textAlign: "left" }}>Documento</th>
+                          <th style={thStyle}>Emisión</th>
+                          <th style={thStyle}>Vence</th>
+                          <th style={thStyle}>Días</th>
+                          <th style={thStyle}>Valor</th>
+                          <th style={thStyle}>Abonado</th>
+                          <th style={thStyle}>Saldo</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filasDet.map((f, i) => (
+                          <tr key={`${f.numero}-${i}`}>
+                            <td style={{ ...tdStyle, textAlign: "left", fontWeight: 800 }}>{f.numero || "—"}</td>
+                            <td style={tdStyle}>{fmtFechaISO(f.emision)}</td>
+                            <td style={tdStyle}>{fmtFechaISO(f.vence)}</td>
+                            <td style={tdStyle}>{f.dias === null ? "—" : f.dias}</td>
+                            <td style={tdStyle}>{f.valorInicial ? fmtSaldo(f.valorInicial) : "—"}</td>
+                            <td style={tdStyle}>{f.abonado ? fmtSaldo(f.abonado) : "—"}</td>
+                            <td style={{ ...tdStyle, fontWeight: 800, color: colorSaldo(f.saldo) }}>{fmtSaldo(f.saldo)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+            </Modal>
+          );
+        }
+        const rem = datos.porEmpresa[emp].remis;
+        return (
+          <Modal title={`Remisiones ${nomEmp} — ${cli.nombre}`} onClose={() => setDetalleAbierto(null)} width={820}>
+            {!rem ? (
+              <div style={{ fontSize: 13, color: C.slate }}>Todavía no hay remisiones de TNS cargadas para {nomEmp}. Súbelas con el botón de arriba.</div>
+            ) : (
+              <>
+                <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+                  {resBox("Remisionadas", `${rem.remisionado.toLocaleString("es-CO")} un.`)}
+                  {resBox("Facturadas", `${rem.facturado.toLocaleString("es-CO")} un.`)}
+                  {resBox("Pendientes", `${rem.pendiente.toLocaleString("es-CO")} un.`, C.amber)}
+                  {resBox("Valor pendiente", fmtSaldo(rem.valorPendiente), C.amber)}
+                </div>
+                {rem.pendientes.length === 0 && rem.extras.length === 0 ? (
+                  <div style={{ fontSize: 13, color: C.slate }}>No hay remisiones pendientes de facturar para este cliente en {nomEmp}.</div>
+                ) : (
+                  <div style={{ overflow: "auto", maxHeight: "50vh" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ ...thStyle, textAlign: "left" }}>Remisión</th>
+                          <th style={thStyle}>Fecha</th>
+                          <th style={thStyle}>Unidades</th>
+                          <th style={thStyle}>Con IVA</th>
+                          <th style={thStyle}>Sin IVA</th>
+                          <th style={{ ...thStyle, textAlign: "left" }}>Aviso</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rem.pendientes.map((p) => (
+                          <tr key={p.ref}>
+                            <td style={{ ...tdStyle, textAlign: "left", fontWeight: 800 }}>{p.ref}</td>
+                            <td style={tdStyle}>{fmtFechaISO(p.fecha)}</td>
+                            <td style={tdStyle}>{p.pendiente.toLocaleString("es-CO")}</td>
+                            <td style={tdStyle}>{fmtSaldo(p.valorPend)}</td>
+                            <td style={tdStyle}>{fmtSaldo(p.valorPend / IVA_REMISIONES)}</td>
+                            <td style={{ ...tdStyle, textAlign: "left" }}>{p.flags.map((f) => <span key={f} style={{ ...pillAviso, marginRight: 4 }}>{f}</span>)}</td>
+                          </tr>
+                        ))}
+                        {rem.extras.map((e) => (
+                          <tr key={`x-${e.remision}`}>
+                            <td style={{ ...tdStyle, textAlign: "left", fontWeight: 800 }}>{e.remision}</td>
+                            <td style={tdStyle}>{fmtFechaISO(e.fecha)}</td>
+                            <td style={tdStyle}>{e.pendiente.toLocaleString("es-CO")}</td>
+                            <td style={tdStyle}>—</td>
+                            <td style={tdStyle}>{fmtSaldo(e.valorSinIva)}</td>
+                            <td style={{ ...tdStyle, textAlign: "left" }}><span style={pillAviso}>Solo en el detalle · no suma al total</span></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            )}
+          </Modal>
+        );
+      })()}
     </div>
   );
 }
