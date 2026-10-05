@@ -1163,10 +1163,73 @@ function BloqueAgrupado({ titulo, primeraColLabel, data, mostrarFechaEntrega }) 
     </div>
   );
 }
+// (2026-10-05, a pedido de Fredy) En las ventanas de lotes por proceso se
+// muestra si el lote esta programado en el Programador de Procesos
+// (coleccion planeacion_programacion_procesos: numLote + proceso + fecha +
+// hora + operario + cantidad) y para cuando. Si la fecha programada ya paso
+// y el lote sigue en ese proceso, se marca ATRASADA en rojo. La fecha de
+// hoy se toma en hora de Bogota (today() usa UTC y despues de las 7 pm
+// ya cuenta como el dia siguiente).
+function normProcesoProg(s) {
+  return String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toUpperCase();
+}
+function hoyBogotaISO() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+}
+function programacionesDeLote(programaciones, numLote, proceso) {
+  const np = normProcesoProg(proceso);
+  return (programaciones || [])
+    .filter((p) => String(p.numLote) === String(numLote) && normProcesoProg(p.proceso) === np)
+    .sort((a, b) => (a.fechaProgramada || "").localeCompare(b.fechaProgramada || "") || (a.horaInicio || "").localeCompare(b.horaInicio || ""));
+}
+function textoProgramacionExcel(progs) {
+  if (!progs.length) return { estado: "Sin programar", fecha: "" };
+  const hoy = hoyBogotaISO();
+  const atrasada = progs.some((p) => (p.fechaProgramada || "") < hoy);
+  return {
+    estado: `${atrasada ? "ATRASADA" : "Sí"} - ${progs.map((p) => `${p.trabajadorNombre || "—"}${p.cantidad != null ? ` (${p.cantidad} u)` : ""}`).join(", ")}`,
+    fecha: progs.map((p) => `${fmtFechaISO(p.fechaProgramada)}${p.horaInicio ? " " + p.horaInicio : ""}`).join(", "),
+  };
+}
+function CeldaProgramado({ progs }) {
+  if (!progs.length) {
+    return <span style={{ background: C.amberBg, color: C.amber, padding: "3px 9px", borderRadius: 99, fontSize: 11, fontWeight: 700 }}>Sin programar</span>;
+  }
+  const hoy = hoyBogotaISO();
+  const atrasada = progs.some((p) => (p.fechaProgramada || "") < hoy);
+  return (
+    <div>
+      <span style={{ background: atrasada ? C.redBg : C.greenBg, color: atrasada ? C.red : C.green, padding: "3px 9px", borderRadius: 99, fontSize: 11, fontWeight: 700 }}>
+        {atrasada ? "Atrasada" : "Sí"}
+      </span>
+      {progs.map((p, i) => (
+        <div key={p.id || i} style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+          {p.trabajadorNombre || "—"}{p.cantidad != null ? ` · ${fmtNum(p.cantidad)} u` : ""}
+        </div>
+      ))}
+    </div>
+  );
+}
+function CeldaFechaProgramacion({ progs }) {
+  if (!progs.length) return <span style={{ color: C.slate }}>—</span>;
+  const hoy = hoyBogotaISO();
+  return (
+    <div>
+      {progs.map((p, i) => {
+        const tarde = (p.fechaProgramada || "") < hoy;
+        return (
+          <div key={p.id || i} style={{ color: tarde ? C.red : C.ink, fontWeight: tarde ? 700 : 400, marginTop: i === 0 ? 0 : 2 }}>
+            {fmtFechaISO(p.fechaProgramada)}{p.horaInicio ? ` · ${p.horaInicio}` : ""}{tarde ? " · ATRASADA" : ""}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 // Dashboard de "Informe de Seguimiento": KPIs + resumen por proceso (con %
 // de unidades) + detalle de lotes agrupado por proceso, en vez de la tabla
 // plana que tenía antes el reporte de Semiterminado.
-function BloqueSeguimientoSemiterminado({ data }) {
+function BloqueSeguimientoSemiterminado({ data, programaciones = [] }) {
   const { filas, resumen, resumenPorCliente, totalLotes, totalUnidades, procesosDistintos } = data;
   const [subTab, setSubTab] = useState("proceso");
   // Ventana de detalle: clic en una fila de "Resumen por Proceso" o de
@@ -1194,9 +1257,13 @@ function BloqueSeguimientoSemiterminado({ data }) {
   return (
     <div>
       {detalleAbierto && (
-        <Modal title={detalleAbierto.titulo} onClose={() => setDetalleAbierto(null)} width={720}>
+        <Modal title={detalleAbierto.titulo} onClose={() => setDetalleAbierto(null)} width={1000}>
           <div style={{ marginBottom: 12, fontSize: 12, color: C.slate }}>
             {fmtNum(detalleAbierto.filas.length)} lote{detalleAbierto.filas.length !== 1 ? "s" : ""} · {fmtNum(detalleAbierto.filas.reduce((s, f) => s + f.unidades, 0))} unidades
+            {(() => {
+              const prog = detalleAbierto.filas.filter((f) => programacionesDeLote(programaciones, f.numLote, f.procesoDondeQuedo).length > 0).length;
+              return ` · ${fmtNum(prog)} programado${prog !== 1 ? "s" : ""} · ${fmtNum(detalleAbierto.filas.length - prog)} sin programar`;
+            })()}
           </div>
           <Tabla
             vacio="Sin lotes."
@@ -1207,6 +1274,8 @@ function BloqueSeguimientoSemiterminado({ data }) {
               { key: "categoria", label: "Categoría" },
               { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
               { key: "ultimaSalida", label: "Última Salida (sin entrega)" },
+              { key: "programado", label: "Programado", render: (f) => <CeldaProgramado progs={programacionesDeLote(programaciones, f.numLote, f.procesoDondeQuedo)} /> },
+              { key: "fechaProgramacion", label: "Fecha programación", render: (f) => <CeldaFechaProgramacion progs={programacionesDeLote(programaciones, f.numLote, f.procesoDondeQuedo)} /> },
             ]}
             filas={detalleAbierto.filas}
           />
@@ -1370,6 +1439,8 @@ function BloqueSeguimientoSemiterminado({ data }) {
           { key: "categoria", label: "Categoría" },
           { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(f.unidades) },
           { key: "ultimaSalida", label: "Última Salida (sin entrega)" },
+          { key: "programado", label: "Programado", render: (f) => <CeldaProgramado progs={programacionesDeLote(programaciones, f.numLote, f.procesoDondeQuedo)} /> },
+          { key: "fechaProgramacion", label: "Fecha programación", render: (f) => <CeldaFechaProgramacion progs={programacionesDeLote(programaciones, f.numLote, f.procesoDondeQuedo)} /> },
         ]}
         filas={filasFiltradas}
       />
@@ -1980,6 +2051,13 @@ function InformesView({
   const [showUpload, setShowUpload] = useState(false);
   const [cargaId, setCargaId] = useState(null);
   const [tab, setTab] = useState("en_planta");
+  const [programacionesProcesos, setProgramacionesProcesos] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_programacion_procesos"), (snap) => {
+      setProgramacionesProcesos(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
   const [actualizandoDesdeBusint, setActualizandoDesdeBusint] = useState(false);
   const [resultadoDesdeBusint, setResultadoDesdeBusint] = useState(null);
   // (2026-08-21) Genera una carga NUEVA completa desde
@@ -2158,14 +2236,17 @@ function InformesView({
         ["TOTAL", segTotalLotes, segTotalUnidades, "100%"],
       ];
       const detalleRows = [
-        ["Proceso Donde Quedó", "Num Lote", "Referencia", "Categoría", "Unidades", "Última Salida"],
-        ...segFilas.map((f) => [f.procesoDondeQuedo, f.numLote, f.referencia, f.categoria, f.unidades, f.ultimaSalida]),
+        ["Proceso Donde Quedó", "Num Lote", "Referencia", "Categoría", "Unidades", "Última Salida", "Programado", "Fecha programación"],
+        ...segFilas.map((f) => {
+          const prog = textoProgramacionExcel(programacionesDeLote(programacionesProcesos, f.numLote, f.procesoDondeQuedo));
+          return [f.procesoDondeQuedo, f.numLote, f.referencia, f.categoria, f.unidades, f.ultimaSalida, prog.estado, prog.fecha];
+        }),
       ];
       const maxRows = Math.max(resumenRows.length, detalleRows.length);
       const combined = [];
       for (let i = 0; i < maxRows; i++) {
         const left = resumenRows[i] || ["", "", "", ""];
-        const right = detalleRows[i] || ["", "", "", "", "", ""];
+        const right = detalleRows[i] || ["", "", "", "", "", "", "", ""];
         combined.push([...left, "", ...right]);
       }
       XLSX.utils.book_append_sheet(
@@ -2526,7 +2607,7 @@ function InformesView({
               </button>
             ))}
           </div>
-          {tab === "semiterminado" && <BloqueSeguimientoSemiterminado data={reporteSemiterminado} />}
+          {tab === "semiterminado" && <BloqueSeguimientoSemiterminado data={reporteSemiterminado} programaciones={programacionesProcesos} />}
           {tab === "bpt" && <BloqueBPT data={reporteBPT} />}
           {tab === "en_planta" && <BloqueAgrupado titulo="Planta" primeraColLabel="Nombre Planta" data={reportePlanta} mostrarFechaEntrega />}
           {tab === "por_cliente" && <BloqueAgrupado titulo="Cliente" primeraColLabel="Nombre Cliente" data={reporteCliente} />}
