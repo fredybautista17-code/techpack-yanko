@@ -4799,7 +4799,7 @@ exports.getPreciosMatriculadosBusint = onCall(
 // a usuarios Cliente (mismo criterio que getPreciosMatriculadosBusint).
 exports.getResumenCarteraClientesBusintBD = onCall(
   {
-    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 300,
     memory: "512MiB",
   },
@@ -4819,14 +4819,15 @@ exports.getResumenCarteraClientesBusintBD = onCall(
       throw new HttpsError("permission-denied", "No tienes permiso para ver cartera.");
     }
 
-    const tabla = String(request.data?.tabla || "ia_carteracxc_data").trim();
-    let filas;
-    try {
-      filas = await consultarTablaBusintBDCompleta(tabla);
-    } catch (err) {
-      logger.error("Error consultando Busint BD (getResumenCarteraClientesBusintBD)", { tabla, error: String(err) });
-      throw new HttpsError("unavailable", `No se pudo consultar la tabla "${tabla}": ${err?.message || String(err)}`);
-    }
+    // (2026-10-05, a pedido de Fredy) Fuente por defecto: la consulta EN VIVO de
+    // la API gen "ApiGen_CarteraFacturacionBusint" (1 fila por documento con su
+    // saldo en `total`; negativo = a favor del cliente). La tabla "BD"
+    // ia_carteracxc_data resultó desactualizada (cortada ~2026-02-05: faltaban
+    // anticipos y facturas posteriores, ej. Indutex FB SAS salía -559 M en vez de
+    // -1.136 M). Esa tabla ahora solo se usa para traer el NOMBRE del cliente
+    // (la consulta gen solo trae codigoCliente) y cuando se pide una tabla
+    // explícita con `tabla` (pestaña "Busint (prueba)").
+    const tablaPedida = String(request.data?.tabla || "").trim();
     const num = (v) => Number(v) || 0;
     const aISO = (f) => {
       if (!f) return null;
@@ -4834,6 +4835,101 @@ exports.getResumenCarteraClientesBusintBD = onCall(
       if (f.year && f.month && f.day) return `${f.year}-${String(f.month).padStart(2, "0")}-${String(f.day).padStart(2, "0")}`;
       return null;
     };
+    const redondear = (v) => Math.round(v * 100) / 100;
+    if (!tablaPedida) {
+      const fechaConsulta = new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+      let filasGen;
+      try {
+        filasGen = await consultarCatalogoBusint("ApiGen_CarteraFacturacionBusint", { FechaConsulta: fechaConsulta });
+      } catch (err) {
+        logger.error("Error consultando ApiGen_CarteraFacturacionBusint (getResumenCarteraClientesBusintBD)", { error: String(err) });
+        throw new HttpsError("unavailable", `No se pudo consultar la cartera en Busint: ${err?.message || String(err)}`);
+      }
+      // Nombres: de la tabla BD (si falla, se sigue con "Cliente <codigo>").
+      const nombrePorCodigo = new Map();
+      try {
+        const filasNombres = await consultarTablaBusintBDCompleta("ia_carteracxc_data");
+        for (const f of filasNombres) {
+          const cod = String(f.codigo_interno_de_cliente ?? "");
+          const nom = String(f.Nombre_del_cliente || "").trim();
+          if (cod && nom && !nombrePorCodigo.has(cod)) nombrePorCodigo.set(cod, nom);
+        }
+      } catch (err) {
+        logger.warn("No se pudieron traer los nombres de clientes (ia_carteracxc_data)", { error: String(err) });
+      }
+      const porCodigo = new Map();
+      for (const f of filasGen) {
+        const codigo = f.codigoCliente;
+        if (codigo === undefined || codigo === null || codigo === "") continue;
+        const clave = String(codigo);
+        if (!porCodigo.has(clave)) {
+          const nombre = nombrePorCodigo.get(clave) || "";
+          porCodigo.set(clave, {
+            codigo,
+            nombre: nombre || `Cliente ${clave}`,
+            sinNombre: !nombre,
+            filas: 0,
+            facturasConSaldo: 0,
+            total: 0,
+            aFavorDelCliente: 0,
+            porCobrar: 0,
+            porVencer: 0,
+            vencido30: 0,
+            vencido60: 0,
+            vencido90: 0,
+            vencidoMas90: 0,
+            facturaMasReciente: null,
+          });
+        }
+        const c = porCodigo.get(clave);
+        const total = num(f.total);
+        c.filas++;
+        c.total += total;
+        if (total > 0) c.porCobrar += total;
+        else if (total < 0) c.aFavorDelCliente += total;
+        if (Math.abs(total) >= 0.5) c.facturasConSaldo++;
+        if (total > 0) {
+          const dias = num(f.diasVencimiento);
+          if (dias <= 0) c.porVencer += total;
+          else if (dias <= 30) c.vencido30 += total;
+          else if (dias <= 60) c.vencido60 += total;
+          else if (dias <= 90) c.vencido90 += total;
+          else c.vencidoMas90 += total;
+        }
+        const iso = aISO(f.fechaini);
+        if (iso && (!c.facturaMasReciente || iso > c.facturaMasReciente)) c.facturaMasReciente = iso;
+      }
+      const clientesGen = [...porCodigo.values()].map((c) => ({
+        ...c,
+        total: redondear(c.total),
+        aFavorDelCliente: redondear(c.aFavorDelCliente),
+        porCobrar: redondear(c.porCobrar),
+        porVencer: redondear(c.porVencer),
+        vencido30: redondear(c.vencido30),
+        vencido60: redondear(c.vencido60),
+        vencido90: redondear(c.vencido90),
+        vencidoMas90: redondear(c.vencidoMas90),
+      }));
+      clientesGen.sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
+      return {
+        fuente: "ApiGen_CarteraFacturacionBusint",
+        fechaConsulta,
+        tabla: "ApiGen_CarteraFacturacionBusint",
+        totalFilas: filasGen.length,
+        totalClientes: clientesGen.length,
+        columnas: filasGen.length ? Object.keys(filasGen[0]) : [],
+        clientes: clientesGen,
+      };
+    }
+
+    const tabla = tablaPedida;
+    let filas;
+    try {
+      filas = await consultarTablaBusintBDCompleta(tabla);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getResumenCarteraClientesBusintBD)", { tabla, error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar la tabla "${tabla}": ${err?.message || String(err)}`);
+    }
     const porCliente = new Map();
     for (const f of filas) {
       const codigo = f.codigo_interno_de_cliente;
