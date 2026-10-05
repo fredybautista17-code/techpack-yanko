@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Fragment } from "react";
+import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import {
   getFirestore,
@@ -5162,7 +5162,403 @@ function HomeContabilidad({ onGoModulo }) {
   );
 }
 // ─── ROOT MÓDULO CONTABILIDAD ─────────────────────────────────────────────────
-export default function ModuloContabilidad({ currentUser, onVolver, onLogout, puedeAdministrarBasesDadoPorCumplido, puedeSincronizarDadoPorCumplido }) {
+// ─── VALORIZACIÓN POR MARCA ──────────────────────────────────────────────────
+// (2026-10-05, a pedido de Fredy) Cuánto vale lo que hay hoy en el tubo
+// productivo, por marca (= cliente): prendas de cada etapa × precio
+// matriculado (precioPM) de cada referencia en Busint. Etapas: Inventario en
+// Corte, Bodega Materia Prima, En Planta, Semiterminado y Producto
+// Terminado. NO se usa "Cortado total" (cantCortada) como etapa porque es un
+// acumulado histórico -- sumarlo duplicaría lo que ya está en las demás
+// etapas. Opcional (botón, apagado por defecto): "Sin cortar" = lo que los
+// pedidos abiertos de Atlas piden menos lo ya cortado en Busint, misma
+// cuenta que la pantalla Producción.
+const ETAPAS_VALORIZACION = [
+  { id: "corte", label: "Inventario en Corte", corto: "Corte", color: C.red, bg: C.redBg },
+  { id: "matPrima", label: "Bodega Materia Prima", corto: "Mat. Prima", color: C.amber, bg: C.amberBg },
+  { id: "planta", label: "En Planta", corto: "Planta", color: C.blue, bg: C.blueBg },
+  { id: "semi", label: "Semiterminado", corto: "Semiterm.", color: C.violet, bg: C.violetBg },
+  { id: "pt", label: "Producto Terminado", corto: "Prod. Terminado", color: C.green, bg: C.greenBg },
+];
+const CLIENTE_SIN_ASOCIAR = "__SIN_CLIENTE_ASOCIADO__";
+function agruparClienteBusintValorizacion(nombre) {
+  // Misma regla de Kamila que usa Planeación (clienteAgrupado).
+  return nombre === "KAMILA GROUP SAS-KAMILA COLOMBIA" || nombre === "KAMILA VENEZUELA-KAMILA VENEZUELA"
+    ? "KAMILA (COLOMBIA + VENEZUELA)"
+    : nombre;
+}
+function normalizarNombreCliente(s) {
+  return String(s || "")
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^A-Z0-9]+/g, " ")
+    .split(" ")
+    .filter((t) => t && !["SAS", "LTDA", "SA", "CIA", "LIMITADA", "S", "A"].includes(t))
+    .join(" ");
+}
+// Empareja el nombre de cliente de un pedido de Atlas con UNO de los nombres
+// crudos de Busint: igual > el más corto que lo contiene > el más largo que
+// está contenido en él. Siempre devuelve a lo sumo uno (así un pedido nunca
+// se cuenta dos veces) o null si no hay con qué emparejar.
+function emparejarClientePedido(nombrePedido, nombresBusint) {
+  const a = normalizarNombreCliente(nombrePedido);
+  if (a.length < 3) return null;
+  const candidatos = nombresBusint.map((n) => ({ n, b: normalizarNombreCliente(n) })).filter((x) => x.b.length >= 3);
+  const igual = candidatos.find((x) => x.b === a);
+  if (igual) return igual.n;
+  const contienen = candidatos.filter((x) => x.b.includes(a)).sort((x, y) => x.b.length - y.b.length || x.n.localeCompare(y.n));
+  if (contienen.length) return contienen[0].n;
+  const contenidos = candidatos.filter((x) => a.includes(x.b)).sort((x, y) => y.b.length - x.b.length || x.n.localeCompare(y.n));
+  return contenidos.length ? contenidos[0].n : null;
+}
+function calcularValorizacion({ lotes, precios, pedidos, incluirSinCortar }) {
+  const clientes = new Map();
+  const precioDe = (ref) => Number(precios?.[normalizarRefComparacion(ref)]) || 0;
+  function getCliente(nombre) {
+    if (!clientes.has(nombre)) clientes.set(nombre, { cliente: nombre, filas: new Map() });
+    return clientes.get(nombre);
+  }
+  function getFila(c, ref, categoria) {
+    if (!c.filas.has(ref)) {
+      c.filas.set(ref, { ref, categoria: "", precio: precioDe(ref), unid: { corte: 0, matPrima: 0, planta: 0, semi: 0, pt: 0 }, cortado: 0, pedidoTotal: 0, sinCortar: 0 });
+    }
+    const f = c.filas.get(ref);
+    if (!f.categoria && categoria) f.categoria = categoria;
+    return f;
+  }
+  const nombresBusint = [];
+  (lotes || []).forEach((l) => {
+    const ref = String(l.referencia || "").trim().toUpperCase();
+    if (!ref) return;
+    const crudo = String(l.nombreCliente || "(Sin cliente)");
+    if (!nombresBusint.includes(crudo)) nombresBusint.push(crudo);
+    const c = getCliente(agruparClienteBusintValorizacion(crudo));
+    const f = getFila(c, ref, l.categoria);
+    f.cortado += Number(l.cantCortada) || 0;
+    f.unid.corte += Number(l.invCorte) || 0;
+    f.unid.matPrima += Number(l.invBMP) || 0;
+    f.unid.planta += Number(l.invPlanta) || 0;
+    // Mismo criterio que construirLotesDesdeBusintGen (Planeación): Semiterminado
+    // = bodega de semiterminado + inventario en proceso; si ambos números son
+    // idénticos se cuenta una sola vez (Busint reporta el mismo trabajo dos veces).
+    const semiRaw = Number(l.invSemiterminado) || 0;
+    const procRaw = Number(l.invProceso) || 0;
+    f.unid.semi += semiRaw === procRaw ? semiRaw : semiRaw + procRaw;
+    f.unid.pt += Number(l.invBPT) || 0;
+  });
+  const nombresSinAsociar = new Set();
+  if (incluirSinCortar) {
+    (pedidos || []).filter((p) => p && p.estado !== "cerrado").forEach((p) => {
+      const crudo = emparejarClientePedido(p.cliente, nombresBusint);
+      const nombre = crudo ? agruparClienteBusintValorizacion(crudo) : CLIENTE_SIN_ASOCIAR;
+      if (!crudo && p.cliente) nombresSinAsociar.add(String(p.cliente));
+      const c = getCliente(nombre);
+      (p.referencias || []).forEach((r) => {
+        const ref = String(r.ref || "").trim().toUpperCase();
+        if (!ref) return;
+        getFila(c, ref, "").pedidoTotal += Number(r.total) || 0;
+      });
+    });
+    clientes.forEach((c) => {
+      c.filas.forEach((f) => {
+        // Sin cliente asociado no se puede restar lo cortado: se cuenta el pedido completo.
+        f.sinCortar = Math.max(0, f.pedidoTotal - f.cortado);
+      });
+    });
+  }
+  const totalEtapa = () => ({ valor: 0, unid: 0 });
+  const totales = { sinCortar: totalEtapa(), corte: totalEtapa(), matPrima: totalEtapa(), planta: totalEtapa(), semi: totalEtapa(), pt: totalEtapa(), valor: 0, unid: 0, unidValoradas: 0 };
+  const sinPrecio = new Map();
+  const lista = [];
+  clientes.forEach((c) => {
+    const r = { cliente: c.cliente, esSinAsociar: c.cliente === CLIENTE_SIN_ASOCIAR, etapas: { sinCortar: totalEtapa(), corte: totalEtapa(), matPrima: totalEtapa(), planta: totalEtapa(), semi: totalEtapa(), pt: totalEtapa() }, valor: 0, unid: 0, filas: [] };
+    c.filas.forEach((f) => {
+      const u = { ...f.unid, sinCortar: f.sinCortar };
+      let unidFila = 0;
+      Object.keys(u).forEach((k) => {
+        const n = u[k] || 0;
+        if (!n) return;
+        unidFila += n;
+        const valor = f.precio > 0 ? n * f.precio : 0;
+        r.etapas[k].unid += n;
+        r.etapas[k].valor += valor;
+        totales[k].unid += n;
+        totales[k].valor += valor;
+      });
+      if (!unidFila) return;
+      const valorFila = f.precio > 0 ? unidFila * f.precio : 0;
+      r.valor += valorFila;
+      r.unid += unidFila;
+      totales.valor += valorFila;
+      totales.unid += unidFila;
+      if (f.precio > 0) totales.unidValoradas += unidFila;
+      else {
+        const sp = sinPrecio.get(f.ref) || { ref: f.ref, categoria: f.categoria, unid: 0, clientes: new Set() };
+        sp.unid += unidFila;
+        if (!sp.categoria && f.categoria) sp.categoria = f.categoria;
+        sp.clientes.add(r.esSinAsociar ? "Pedidos sin cliente asociado" : c.cliente);
+        sinPrecio.set(f.ref, sp);
+      }
+      r.filas.push({ ref: f.ref, categoria: f.categoria, precio: f.precio, unid: unidFila, valor: valorFila, etapas: u });
+    });
+    if (r.unid > 0) {
+      r.filas.sort((x, y) => y.valor - x.valor || y.unid - x.unid);
+      lista.push(r);
+    }
+  });
+  lista.sort((a, b) => (a.esSinAsociar ? 1 : 0) - (b.esSinAsociar ? 1 : 0) || b.valor - a.valor || b.unid - a.unid);
+  const listaSinPrecio = [...sinPrecio.values()].sort((a, b) => b.unid - a.unid);
+  const unidSinPrecio = listaSinPrecio.reduce((s, x) => s + x.unid, 0);
+  return { clientes: lista, totales, listaSinPrecio, unidSinPrecio, nombresSinAsociar: [...nombresSinAsociar].sort() };
+}
+function ValorizacionPorMarcaView({ pedidos }) {
+  const [lotes, setLotes] = useState(null);
+  const [precios, setPrecios] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState("");
+  const [actualizadoEn, setActualizadoEn] = useState(null);
+  const [incluirSinCortar, setIncluirSinCortar] = useState(false);
+  const [clienteAbierto, setClienteAbierto] = useState(null);
+  const [verSinPrecio, setVerSinPrecio] = useState(false);
+  async function cargar() {
+    setCargando(true);
+    setError("");
+    try {
+      const [respLotes, respPrecios] = await Promise.all([
+        httpsCallable(functionsClient, "getCargaPlaneacionDesdeBusintGen", { timeout: 300000 })(),
+        httpsCallable(functionsClient, "getPreciosMatriculadosBusint", { timeout: 120000 })(),
+      ]);
+      setLotes(respLotes.data?.lotes || []);
+      setPrecios(respPrecios.data?.precios || {});
+      setActualizadoEn(new Date());
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar Busint.");
+    } finally {
+      setCargando(false);
+    }
+  }
+  useEffect(() => {
+    cargar();
+  }, []);
+  const datos = useMemo(
+    () => (lotes && precios ? calcularValorizacion({ lotes, precios, pedidos, incluirSinCortar }) : null),
+    [lotes, precios, pedidos, incluirSinCortar]
+  );
+  const etapasVisibles = incluirSinCortar
+    ? [{ id: "sinCortar", label: "Pedidos sin cortar", corto: "Sin cortar", color: C.ink, bg: C.canvas }, ...ETAPAS_VALORIZACION]
+    : ETAPAS_VALORIZACION;
+  const nombreVisible = (r) => (r.esSinAsociar ? "Pedidos sin cliente asociado" : r.cliente);
+  const clienteDetalle = datos && clienteAbierto ? datos.clientes.find((c) => c.cliente === clienteAbierto) : null;
+  async function exportarExcel() {
+    if (!datos) return;
+    const XLSX = await import("xlsx");
+    const porCliente = datos.clientes.map((r) => {
+      const fila = { Cliente: nombreVisible(r) };
+      etapasVisibles.forEach((e) => {
+        fila[`${e.corto} ($)`] = Math.round(r.etapas[e.id].valor);
+        fila[`${e.corto} (prendas)`] = r.etapas[e.id].unid;
+      });
+      fila["Total ($)"] = Math.round(r.valor);
+      fila["Total (prendas)"] = r.unid;
+      fila["% del total"] = datos.totales.valor > 0 ? Math.round((r.valor / datos.totales.valor) * 1000) / 10 : 0;
+      return fila;
+    });
+    const detalle = [];
+    datos.clientes.forEach((r) =>
+      r.filas.forEach((f) => {
+        const fila = { Cliente: nombreVisible(r), Referencia: f.ref, Categoría: f.categoria, "Precio matriculado": f.precio > 0 ? f.precio : "SIN PRECIO EN BUSINT" };
+        etapasVisibles.forEach((e) => {
+          fila[`${e.corto} (prendas)`] = f.etapas[e.id] || 0;
+        });
+        fila["Total prendas"] = f.unid;
+        fila["Valor ($)"] = f.precio > 0 ? Math.round(f.valor) : "no valorizada";
+        detalle.push(fila);
+      })
+    );
+    const sinPrecio = datos.listaSinPrecio.map((x) => ({ Referencia: x.ref, Categoría: x.categoria, Prendas: x.unid, Clientes: [...x.clientes].join(", ") }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(porCliente), "Por cliente");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detalle), "Detalle por referencia");
+    if (sinPrecio.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sinPrecio), "Sin precio en Busint");
+    XLSX.writeFile(wb, `valorizacion_por_marca_${today()}${incluirSinCortar ? "_con_sin_cortar" : ""}.xlsx`);
+  }
+  const celdaValor = (e) => (
+    <>
+      {fmtCOP(e.valor)}
+      <span style={{ display: "block", fontSize: 10, color: C.slate, fontWeight: 600 }}>{fmtNum(e.unid)} un.</span>
+    </>
+  );
+  const thStyle = { background: C.ink, color: C.seam, fontSize: 10, fontWeight: 700, padding: "9px 12px", textAlign: "right", whiteSpace: "nowrap" };
+  const tdStyle = { padding: "9px 12px", textAlign: "right", borderBottom: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums", fontSize: 12.5 };
+  return (
+    <div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, marginBottom: 4 }}>💲 Valorización por marca</div>
+      <div style={{ fontSize: 13, color: C.slate, marginBottom: 16, maxWidth: 820, lineHeight: 1.55 }}>
+        Cada cliente con lo que tiene hoy en el tubo productivo (Corte, Bodega de Materia Prima, Planta, Semiterminado y Producto Terminado), multiplicado por el precio matriculado de cada referencia en Busint.
+      </div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+        <span style={{ fontSize: 12, color: C.slate }}>
+          {cargando ? "Consultando Busint..." : actualizadoEn ? `En vivo desde Busint · Actualizado ${actualizadoEn.toLocaleTimeString("es-CO")}` : ""}
+        </span>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Btn small variant={incluirSinCortar ? "primary" : "secondary"} onClick={() => { setIncluirSinCortar((v) => !v); setClienteAbierto(null); }}>
+            {incluirSinCortar ? "✔ Incluyendo lo que falta por cortar" : "Incluir lo que falta por cortar"}
+          </Btn>
+          <Btn small variant="success" onClick={exportarExcel} disabled={!datos}>📥 Exportar a Excel</Btn>
+          <Btn small variant="secondary" onClick={cargar} disabled={cargando}>🔄 Actualizar</Btn>
+        </div>
+      </div>
+      {error && (
+        <div style={{ padding: 12, borderRadius: 8, background: C.redBg, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 16 }}>⚠ {error}</div>
+      )}
+      {cargando && !datos && <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>Consultando Busint...</div>}
+      {datos && (
+        <>
+          <div style={{ background: C.ink, color: C.white, borderRadius: 14, padding: "18px 22px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 14, marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: C.seam, fontWeight: 700 }}>
+                Total valorizado del tubo productivo{incluirSinCortar ? " + pedidos sin cortar" : ""}
+              </div>
+              <div style={{ fontSize: 30, fontWeight: 800, marginTop: 2 }}>{fmtCOP(datos.totales.valor)}</div>
+            </div>
+            <div style={{ fontSize: 12, color: C.seam, textAlign: "right" }}>
+              {fmtNum(datos.totales.unid)} prendas · {fmtNum(datos.totales.unidValoradas)} valorizadas · {datos.clientes.filter((c) => !c.esSinAsociar).length} clientes
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+            {etapasVisibles.map((e) => (
+              <div key={e.id} style={{ flex: 1, minWidth: 150, borderRadius: 11, padding: "11px 14px", background: e.bg, color: e.color, border: e.id === "sinCortar" ? `1px solid ${C.border}` : "none" }}>
+                <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase" }}>{e.label}</div>
+                <div style={{ fontSize: 17, fontWeight: 800, marginTop: 2 }}>{fmtCOP(datos.totales[e.id].valor)}</div>
+                <div style={{ fontSize: 10.5, opacity: 0.8, fontWeight: 600 }}>{fmtNum(datos.totales[e.id].unid)} prendas</div>
+              </div>
+            ))}
+          </div>
+          {datos.listaSinPrecio.length > 0 && (
+            <div style={{ background: C.amberBg, border: "1px solid #f0ddbb", borderLeft: `4px solid ${C.amber}`, borderRadius: 10, padding: "11px 14px", fontSize: 12.5, marginBottom: 14, lineHeight: 1.5, color: C.ink }}>
+              ⚠️ <b>{fmtNum(datos.listaSinPrecio.length)} referencias no tienen precio matriculado en Busint</b> — {fmtNum(datos.unidSinPrecio)} prendas quedaron sin valorizar (no se contaron como $0 en silencio).{" "}
+              <span style={{ cursor: "pointer", color: C.amber, fontWeight: 700, textDecoration: "underline" }} onClick={() => setVerSinPrecio(true)}>Ver cuáles ›</span>
+            </div>
+          )}
+          {incluirSinCortar && datos.nombresSinAsociar.length > 0 && (
+            <div style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 10, padding: "11px 14px", fontSize: 12, marginBottom: 14, lineHeight: 1.5, color: C.slate }}>
+              <b style={{ color: C.ink }}>Pedidos sin cliente asociado:</b> no se pudo emparejar con un cliente de Busint el nombre {datos.nombresSinAsociar.map((n) => `"${n}"`).join(", ")}. Su valor aparece en una fila aparte y cuenta el pedido completo (no se pudo restar lo ya cortado).
+            </div>
+          )}
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, overflow: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={{ ...thStyle, textAlign: "left" }}>Marca (cliente)</th>
+                  {etapasVisibles.map((e) => <th key={e.id} style={thStyle}>{e.corto}</th>)}
+                  <th style={thStyle}>Total</th>
+                  <th style={thStyle}>% del total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {datos.clientes.map((r, i) => {
+                  const pct = datos.totales.valor > 0 ? (r.valor / datos.totales.valor) * 100 : 0;
+                  const sel = clienteAbierto === r.cliente;
+                  return (
+                    <tr key={r.cliente} onClick={() => setClienteAbierto(sel ? null : r.cliente)} style={{ cursor: "pointer", background: sel ? "#e9eef6" : i % 2 ? C.white : C.canvas }}>
+                      <td style={{ ...tdStyle, textAlign: "left", fontWeight: 800, color: r.esSinAsociar ? C.amber : C.ink }}>{nombreVisible(r)}</td>
+                      {etapasVisibles.map((e) => <td key={e.id} style={tdStyle}>{celdaValor(r.etapas[e.id])}</td>)}
+                      <td style={{ ...tdStyle, fontWeight: 800 }}>{fmtCOP(r.valor)}<span style={{ display: "block", fontSize: 10, color: C.slate, fontWeight: 600 }}>{fmtNum(r.unid)} un.</span></td>
+                      <td style={tdStyle}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-end" }}>
+                          {pct.toFixed(1)}%
+                          <div style={{ width: 70, height: 8, background: C.border, borderRadius: 4, overflow: "hidden" }}>
+                            <div style={{ width: `${Math.min(100, pct)}%`, height: "100%", background: C.blue, borderRadius: 4 }} />
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td style={{ ...tdStyle, textAlign: "left", fontWeight: 800, background: "#efe9e1" }}>Total</td>
+                  {etapasVisibles.map((e) => <td key={e.id} style={{ ...tdStyle, fontWeight: 800, background: "#efe9e1" }}>{fmtCOP(datos.totales[e.id].valor)}</td>)}
+                  <td style={{ ...tdStyle, fontWeight: 800, background: "#efe9e1" }}>{fmtCOP(datos.totales.valor)}</td>
+                  <td style={{ ...tdStyle, fontWeight: 800, background: "#efe9e1" }}>100%</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <div style={{ fontSize: 11.5, color: C.slate, marginTop: 8, lineHeight: 1.5 }}>
+            Cada cifra = prendas × precio matriculado de esa referencia, sumado. Debajo, en gris, las prendas. Clic en un cliente para ver el detalle por referencia.
+          </div>
+          {clienteDetalle && (
+            <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, marginTop: 12, overflow: "hidden" }}>
+              <div style={{ padding: "12px 16px", background: C.canvas, fontWeight: 800, fontSize: 14, borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", color: C.ink }}>
+                <span>{nombreVisible(clienteDetalle)} — detalle por referencia</span>
+                <span style={{ color: C.slate, fontWeight: 600, fontSize: 12 }}>{fmtCOP(clienteDetalle.valor)}</span>
+              </div>
+              <div style={{ overflow: "auto", maxHeight: 460 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...thStyle, textAlign: "left" }}>Referencia</th>
+                      <th style={{ ...thStyle, textAlign: "left" }}>Categoría</th>
+                      <th style={thStyle}>Precio matric.</th>
+                      <th style={thStyle}>Prendas</th>
+                      <th style={thStyle}>Valor</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {clienteDetalle.filas.map((f) => (
+                      <tr key={f.ref}>
+                        <td style={{ ...tdStyle, textAlign: "left", fontWeight: 800 }}>{f.ref}</td>
+                        <td style={{ ...tdStyle, textAlign: "left", fontWeight: 600 }}>{f.categoria || "—"}</td>
+                        <td style={tdStyle}>
+                          {f.precio > 0 ? fmtCOP(f.precio) : <span style={{ background: C.amberBg, color: C.amber, fontWeight: 800, fontSize: 10, padding: "2px 8px", borderRadius: 10 }}>sin precio en Busint</span>}
+                        </td>
+                        <td style={tdStyle}>{fmtNum(f.unid)}</td>
+                        <td style={{ ...tdStyle, fontWeight: 800, color: f.precio > 0 ? C.ink : C.amber }}>{f.precio > 0 ? fmtCOP(f.valor) : "no valorizada"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+      {verSinPrecio && datos && (
+        <Modal title="Referencias sin precio matriculado en Busint" onClose={() => setVerSinPrecio(false)} width={640}>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 10, lineHeight: 1.5 }}>
+            Completa el precio matriculado de estas referencias en Busint y pulsa “Actualizar”. Mientras tanto no suman al valor total.
+          </div>
+          <div style={{ overflow: "auto", maxHeight: "55vh" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={{ ...thStyle, textAlign: "left" }}>Referencia</th>
+                  <th style={{ ...thStyle, textAlign: "left" }}>Categoría</th>
+                  <th style={thStyle}>Prendas</th>
+                  <th style={{ ...thStyle, textAlign: "left" }}>Cliente(s)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {datos.listaSinPrecio.map((x) => (
+                  <tr key={x.ref}>
+                    <td style={{ ...tdStyle, textAlign: "left", fontWeight: 800 }}>{x.ref}</td>
+                    <td style={{ ...tdStyle, textAlign: "left" }}>{x.categoria || "—"}</td>
+                    <td style={tdStyle}>{fmtNum(x.unid)}</td>
+                    <td style={{ ...tdStyle, textAlign: "left", fontSize: 11.5 }}>{[...x.clientes].join(", ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+export default function ModuloContabilidad({ currentUser, onVolver, onLogout, puedeAdministrarBasesDadoPorCumplido, puedeSincronizarDadoPorCumplido, pedidos }) {
   const [subView, setSubView] = useState("home");
   const [movimientos, setMovimientos] = useState([]);
   const [compras, setCompras] = useState([]);
@@ -5489,6 +5885,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
     { id: "flujo_caja", icon: "💰", label: "Flujo de Caja" },
     { id: "comparativo", icon: "📊", label: "Comparativo por Concepto" },
     { id: "facturacion_clientes", icon: "🧾", label: "Facturación Clientes" },
+    { id: "valorizacion_marca", icon: "💲", label: "Valorización por marca" },
     { id: "dado_por_cumplido", icon: "✅", label: "Dado por Cumplido" },
     { id: "cxp", icon: "🧾", label: "Cuentas por Pagar" },
     { id: "administracion", icon: "🗂️", label: "Administración" },
@@ -5704,6 +6101,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
             />
           )}
           {subView === "facturacion_clientes" && <FacturacionClientesView />}
+          {subView === "valorizacion_marca" && <ValorizacionPorMarcaView pedidos={pedidos} />}
           {subView === "dado_por_cumplido" && <DadoPorCumplidoView currentUser={currentUser} puedeAdministrarBases={puedeAdministrarBasesDadoPorCumplido} puedeSincronizar={puedeSincronizarDadoPorCumplido} />}
           {subView === "cxp" && (
             <CuentasPorPagarView

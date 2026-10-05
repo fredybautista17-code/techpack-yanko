@@ -17207,13 +17207,13 @@ function AppInner() {
     return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} puedeAprobarCorte={perms.aprobarCorte} />;
   }
   if (isContabilidadPura) {
-    return <ModuloContabilidad currentUser={currentUser} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloContabilidad currentUser={currentUser} pedidos={pedidos} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (canAccessCorte && moduloActivo === "corte") {
     return <ModuloCorte currentUser={currentUser} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} onVolver={() => setModuloActivo("diseno")} puedeAprobarCorte={perms.aprobarCorte} />;
   }
   if (moduloActivo === "contabilidad") {
-    return <ModuloContabilidad currentUser={currentUser} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
+    return <ModuloContabilidad currentUser={currentUser} pedidos={pedidos} puedeAdministrarBasesDadoPorCumplido={puedeAdministrarBasesDadoPorCumplido} puedeSincronizarDadoPorCumplido={puedeSincronizarDadoPorCumplido} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
   }
   if (moduloActivo === "planeacion") {
     return <ModuloPlaneacion currentUser={currentUser} onVolver={() => setModuloActivo("diseno")} onLogout={() => { setCurrentUser(null); setAppState("login"); signOut(auth).catch(() => {}); }} />;
