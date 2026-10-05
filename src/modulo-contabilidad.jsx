@@ -6301,16 +6301,18 @@ function CuadrePorClienteView({ currentUser, pedidos }) {
     const etapas = {};
     ["sinCortar", "corte", "matPrima", "planta", "semi", "pt"].forEach((k) => { etapas[k] = { valor: 0, unid: 0 }; });
     const nombres = [];
+    const sinPrecio = [];
     calc.clientes
       .filter((c) => !c.esSinAsociar && coincideClienteCuadre(cli, "", c.cliente))
       .forEach((c) => {
         nombres.push(c.cliente);
+        c.filas.filter((f) => !(f.precio > 0)).forEach((f) => sinPrecio.push({ ref: f.ref, etapas: f.etapas }));
         Object.keys(etapas).forEach((k) => {
           etapas[k].valor += c.etapas[k]?.valor || 0;
           etapas[k].unid += c.etapas[k]?.unid || 0;
         });
       });
-    return { etapas, nombres, unidSinPrecio: calc.unidSinPrecio };
+    return { etapas, nombres, sinPrecio };
   }, [valLotes, valPrecios, pedidos, cli]);
   const quitadasTodas = EMPRESAS_TNS.flatMap((emp) => datos.porEmpresa[emp.id].remis?.quitadas || []);
   const totalesPendientes = EMPRESAS_TNS.filter((emp) => datos.porEmpresa[emp.id].remis).map((emp) => {
@@ -6431,6 +6433,8 @@ function CuadrePorClienteView({ currentUser, pedidos }) {
             const factor = valConIva ? IVA_REMISIONES : 1;
             const valorMarcado = lista.reduce((sum, e) => sum + (etapasValOff[e.id] ? 0 : valCliente.etapas[e.id].valor), 0) * factor;
             const resultado = datos.total + valorMarcado;
+            const unidSinPrecio = valCliente.sinPrecio.reduce((a, f) => a + lista.reduce((x, e) => x + (etapasValOff[e.id] ? 0 : f.etapas[e.id] || 0), 0), 0);
+            const refsSinPrecio = valCliente.sinPrecio.filter((f) => lista.some((e) => !etapasValOff[e.id] && (f.etapas[e.id] || 0) > 0)).length;
             return (
               <>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8, marginBottom: 12 }}>
@@ -6461,7 +6465,7 @@ function CuadrePorClienteView({ currentUser, pedidos }) {
                   </div>
                 </div>
                 <div style={{ fontSize: 11, color: C.slate, marginTop: 8, lineHeight: 1.5 }}>
-                  Pedidos incluidos: {valCliente.nombres.join(" + ")}.{valCliente.unidSinPrecio > 0 ? ` Ojo: ${valCliente.unidSinPrecio.toLocaleString("es-CO")} prendas del total no tienen precio matriculado y no suman.` : ""}
+                  Pedidos incluidos: {valCliente.nombres.join(" + ")}.{unidSinPrecio > 0 ? ` Ojo: ${unidSinPrecio.toLocaleString("es-CO")} prendas de este cliente (${refsSinPrecio} referencias, en las etapas marcadas) no tienen precio matriculado y no suman.` : ""}
                 </div>
               </>
             );
