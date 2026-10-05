@@ -3148,6 +3148,15 @@ function ProgramadorProcesosView({
   // fecha.
   const [horaInicioForm, setHoraInicioForm] = useState("06:00");
   const [trabajadorForm, setTrabajadorForm] = useState("");
+  // (2026-10-05, a pedido de Fredy) Quien hace POSTURA DIJE siempre hace
+  // tambien TERMINACION (el cordon no, ese va aparte). Al programar un dije
+  // se ofrece, ya marcado, programar de una vez la TERMINACION del mismo
+  // lote para la misma persona y la misma cantidad. fechaTermForm/
+  // horaTermForm vacios = igual que la del dije; si Anny los cambia, se
+  // respeta lo que ponga.
+  const [tambienTerminacion, setTambienTerminacion] = useState(true);
+  const [fechaTermForm, setFechaTermForm] = useState("");
+  const [horaTermForm, setHoraTermForm] = useState("");
   // (2026-09-02, a pedido de Fredy) Cantidad a programarle a ESTE
   // trabajador -- para poder repartir un mismo lote+proceso entre 2 o
   // más operadores, cada uno con su propia parte.
@@ -3318,6 +3327,9 @@ function ProgramadorProcesosView({
     setFechaForm(today());
     setHoraInicioForm("06:00");
     setTrabajadorForm("");
+    setTambienTerminacion(true);
+    setFechaTermForm("");
+    setHoraTermForm("");
     const clave = `${fila.numLote}||${fila.proceso}`;
     const asignado = asignadoPorLoteProceso.get(clave) || 0;
     const restante = asignado === Infinity ? 0 : Math.max(0, fila.inventario - asignado);
@@ -3338,6 +3350,19 @@ function ProgramadorProcesosView({
         trabajadorNombre: trabajador?.name || trabajador?.nombre || "",
         cantidad: Number(cantidadForm),
       });
+      if (ofreceTerminacion && tambienTerminacion) {
+        await onProgramar({
+          numLote: modalProgramar.numLote,
+          referencia: modalProgramar.referencia,
+          proceso: procesoTerminacion,
+          fechaProgramada: fechaTermForm || fechaForm,
+          horaInicio: horaTermForm || horaInicioForm,
+          trabajadorId: trabajadorForm,
+          trabajadorNombre: trabajador?.name || trabajador?.nombre || "",
+          cantidad: Number(cantidadForm),
+          origen: "dije_terminacion",
+        });
+      }
       setModalProgramar(null);
     } finally {
       setGuardando(false);
@@ -3354,6 +3379,12 @@ function ProgramadorProcesosView({
   const yaAsignadoModal = hayProgramacionSinCantidadModal
     ? (modalProgramar?.inventario || 0)
     : otrosProgramadosModal.reduce((s, p) => s + (Number(p.cantidad) || 0), 0);
+  const procesoTerminacion = misProcesos.find((n) => normProcesoProg(n) === "TERMINACION") || "";
+  const ofreceTerminacion = !!(modalProgramar && procesoTerminacion && normProcesoProg(modalProgramar.proceso) === "POSTURA DIJE");
+  const trabajadorModalNombre = (() => {
+    const t = trabajadoresEquipo.find((x) => x.id === trabajadorForm);
+    return t ? (t.name || t.nombre) : "";
+  })();
   const excedeCantidadModal = !!(modalProgramar && Number(cantidadForm) > 0 && (yaAsignadoModal + Number(cantidadForm)) > modalProgramar.inventario);
   const columnasPendientes = [
     { key: "numLote", label: "Lote" },
@@ -3461,6 +3492,31 @@ function ProgramadorProcesosView({
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 6, textTransform: "uppercase" }}>Cantidad a programarle</label>
             <input type="number" min="1" value={cantidadForm} onChange={(e) => setCantidadForm(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit" }} />
           </div>
+          {ofreceTerminacion && (
+            <div style={{ border: `1.5px solid ${tambienTerminacion ? C.green : C.border}`, background: tambienTerminacion ? C.greenBg : C.white, borderRadius: 10, padding: "12px 14px", marginBottom: 14 }}>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, fontWeight: 700, color: C.ink, cursor: "pointer" }}>
+                <input type="checkbox" checked={tambienTerminacion} onChange={(e) => setTambienTerminacion(e.target.checked)} />
+                Programar también {procesoTerminacion} {trabajadorModalNombre ? `a ${trabajadorModalNombre}` : "a esta misma persona"}
+              </label>
+              {tambienTerminacion && (
+                <>
+                  <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+                    <div style={{ flex: 1 }}>
+                      <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 4, textTransform: "uppercase" }}>Fecha terminación</label>
+                      <input type="date" value={fechaTermForm || fechaForm} onChange={(e) => setFechaTermForm(e.target.value)} style={{ width: "100%", padding: "7px 10px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, display: "block", marginBottom: 4, textTransform: "uppercase" }}>Hora</label>
+                      <input type="time" value={horaTermForm || horaInicioForm} onChange={(e) => setHoraTermForm(e.target.value)} style={{ width: "100%", padding: "7px 10px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }} />
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: C.slate, marginTop: 8 }}>
+                    Misma cantidad ({fmtNum(Number(cantidadForm) || 0)}). Puedes cambiar la fecha y la hora, o quitar la marca.
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           {otrosProgramadosModal.length > 0 && (
             <div style={{ background: C.blueBg, border: `1px solid ${C.blue}`, borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: C.ink, marginBottom: 14 }}>
               Este lote+proceso ya tiene programado:
