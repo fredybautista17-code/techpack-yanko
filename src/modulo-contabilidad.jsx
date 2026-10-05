@@ -5558,6 +5558,351 @@ function ValorizacionPorMarcaView({ pedidos }) {
   );
 }
 
+// ─── SALDOS DE CLIENTES (Busint + TNS Industrias Yanko + TNS Indutex) ────────
+// (2026-10-05, a pedido de Fredy) Junta lado a lado el saldo de cada cliente
+// en tres fuentes: la cartera de Busint (en vivo, tabla ia_carteracxc_data, ver
+// getResumenCarteraClientesBusintBD en functions/index.js) y el reporte
+// "Cartera pendiente por edades" de TNS, uno por empresa (Industrias Yanko e
+// Indutex), que se sube como Excel y se guarda en Firestore
+// (contabilidad_saldos_tns/{yanko|indutex}). Por cliente se elige dónde debe
+// vivir su saldo (Solo TNS / Solo Busint / Ambos) -- guardado en
+// contabilidad_saldos_config/main -- y de ahí sale el estado: un cliente "Solo
+// TNS" debe tener Busint en cero (si no, alerta), uno "Solo Busint" (ej. Gilcar,
+// traslado externo que nunca se factura por TNS) no debe tener saldo en TNS.
+// OJO con el Excel de TNS: el anticipo viene con "Saldo" = 0 y el valor real
+// (negativo) en las columnas de edades ("Por vencer", "0 - 30"...), así que el
+// saldo de un cliente = suma de TODAS las columnas de edades, NO la columna "Saldo".
+const EMPRESAS_TNS = [
+  { id: "yanko", nombre: "Industrias Yanko" },
+  { id: "indutex", nombre: "Indutex" },
+];
+const COLUMNAS_EDADES_TNS = ["Por vencer", "0 - 30", "31 - 60", "61 - 90", "91 - 120", "121 - 180", "181 - 360", "360+"];
+const DONDE_SALDO = [
+  { id: "definir", label: "Por definir" },
+  { id: "tns", label: "Solo TNS" },
+  { id: "busint", label: "Solo Busint" },
+  { id: "ambos", label: "Ambos" },
+];
+const SIN_PAREJA_BUSINT = "NINGUNO";
+function fmtSaldo(n) {
+  const v = Math.round(Number(n) || 0);
+  return `${v < 0 ? "-" : ""}$${Math.abs(v).toLocaleString("es-CO")}`;
+}
+function claveCampoSaldos(s) {
+  return String(s || "").replace(/[./\s]/g, "_");
+}
+function corteDesdeNombreArchivo(nombre) {
+  const m = String(nombre || "").match(/(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?/);
+  if (!m) return null;
+  return `${m[1]}-${m[2]}-${m[3]}${m[4] ? ` ${m[4]}:${m[5] || "00"}` : ""}`;
+}
+async function leerCarteraTNS(file) {
+  const XLSX = await import("xlsx");
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array" });
+  const hoja = wb.Sheets[wb.SheetNames[0]];
+  const filas = XLSX.utils.sheet_to_json(hoja, { defval: null });
+  if (!filas.length) throw new Error("El archivo está vacío.");
+  const cols = Object.keys(filas[0]);
+  const faltan = ["Nombre"].concat(cols.includes("NIT Tercero") ? [] : cols.includes("Código Tercero") ? [] : ["NIT Tercero"]).filter((c) => !cols.includes(c));
+  const columnasEdades = COLUMNAS_EDADES_TNS.filter((c) => cols.includes(c));
+  if (faltan.length || (!columnasEdades.length && !cols.includes("Saldo"))) {
+    throw new Error('No parece el reporte "Cartera pendiente por edades" de TNS (faltan columnas como Nombre, NIT Tercero o las de edades).');
+  }
+  const num = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const porCliente = new Map();
+  filas.forEach((f) => {
+    const nit = String(f["NIT Tercero"] || f["Código Tercero"] || "").trim();
+    const nombre = String(f["Nombre"] || "").trim();
+    const clave = nit || nombre;
+    if (!clave) return;
+    if (!porCliente.has(clave)) porCliente.set(clave, { nit: nit || clave, nombre, saldo: 0, vencido: 0, filas: 0 });
+    const c = porCliente.get(clave);
+    const saldoFila = columnasEdades.length ? columnasEdades.reduce((s, k) => s + num(f[k]), 0) : num(f["Saldo"]);
+    c.saldo += saldoFila;
+    if (columnasEdades.length) c.vencido += columnasEdades.filter((k) => k !== "Por vencer").reduce((s, k) => s + num(f[k]), 0);
+    c.filas += 1;
+  });
+  const clientes = [...porCliente.values()].map((c) => ({ ...c, saldo: Math.round(c.saldo * 100) / 100, vencido: Math.round(c.vencido * 100) / 100 }));
+  return { clientes, totalFilas: filas.length };
+}
+function estadoSaldoCliente(donde, busint, tnsTotal, hayTns) {
+  const cero = (n) => Math.abs(Number(n) || 0) < 1;
+  if (donde === "tns") {
+    return cero(busint)
+      ? { tipo: "ok", texto: "✓ Cuadra: Busint en cero" }
+      : { tipo: "alerta", texto: "⚠ Busint debería estar en cero" };
+  }
+  if (donde === "busint") {
+    if (hayTns && !cero(tnsTotal)) return { tipo: "alerta", texto: "⚠ Tiene saldo en TNS" };
+    return cero(busint) ? { tipo: "pend", texto: "Sin saldo en Busint" } : { tipo: "ok", texto: "✓ Saldo en Busint" };
+  }
+  if (donde === "ambos") return { tipo: "pend", texto: "Por revisar" };
+  return { tipo: "pend", texto: "Por definir" };
+}
+function SaldosClientesView({ currentUser }) {
+  const [busint, setBusint] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState("");
+  const [actualizadoEn, setActualizadoEn] = useState(null);
+  const [tns, setTns] = useState({});
+  const [config, setConfig] = useState({ donde: {}, enlaces: {} });
+  const [subiendo, setSubiendo] = useState("");
+  const [mensaje, setMensaje] = useState("");
+  const [filtro, setFiltro] = useState("");
+  const [soloConSaldo, setSoloConSaldo] = useState(true);
+  const [enlazarFila, setEnlazarFila] = useState(null);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "contabilidad_saldos_tns"), (snap) => {
+      const m = {};
+      snap.docs.forEach((d) => {
+        m[d.id] = d.data();
+      });
+      setTns(m);
+    });
+    return () => unsub();
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "contabilidad_saldos_config", "main"), (snap) => {
+      const d = snap.exists() ? snap.data() : {};
+      setConfig({ donde: d.donde || {}, enlaces: d.enlaces || {} });
+    });
+    return () => unsub();
+  }, []);
+  async function cargarBusint() {
+    setCargando(true);
+    setError("");
+    try {
+      const resp = await httpsCallable(functionsClient, "getResumenCarteraClientesBusintBD", { timeout: 300000 })({});
+      setBusint(resp.data?.clientes || []);
+      setActualizadoEn(new Date());
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar la cartera de Busint.");
+    } finally {
+      setCargando(false);
+    }
+  }
+  useEffect(() => {
+    cargarBusint();
+  }, []);
+  async function subirExcel(empresaId, file) {
+    if (!file) return;
+    setSubiendo(empresaId);
+    setError("");
+    setMensaje("");
+    try {
+      const { clientes, totalFilas } = await leerCarteraTNS(file);
+      await fsSave("contabilidad_saldos_tns", empresaId, {
+        empresa: empresaId,
+        nombreArchivo: file.name,
+        corte: corteDesdeNombreArchivo(file.name),
+        cargadoEn: new Date().toISOString(),
+        cargadoPor: currentUser?.email || currentUser?.nombre || currentUser?.name || "",
+        totalFilas,
+        clientes,
+      });
+      setMensaje(`Se cargó el corte de TNS (${EMPRESAS_TNS.find((e) => e.id === empresaId)?.nombre}): ${clientes.length} clientes, ${totalFilas} filas.`);
+    } catch (err) {
+      setError(err?.message || "No se pudo leer el Excel de TNS.");
+    } finally {
+      setSubiendo("");
+    }
+  }
+  async function guardarDonde(clave, valor) {
+    await fsSave("contabilidad_saldos_config", "main", { donde: { [claveCampoSaldos(clave)]: valor } });
+  }
+  async function guardarEnlace(nit, valor) {
+    await fsSave("contabilidad_saldos_config", "main", { enlaces: { [claveCampoSaldos(nit)]: valor } });
+  }
+  const filas = useMemo(() => {
+    if (!busint) return null;
+    const porCodigo = new Map();
+    const nombresBusint = [];
+    const codigoPorNombre = {};
+    busint.forEach((c) => {
+      const nombre = String(c.nombre || "").trim();
+      porCodigo.set(String(c.codigo), { clave: `b:${c.codigo}`, nombre, codigo: c.codigo, busint: c.total, tnsPorEmpresa: { yanko: null, indutex: null }, tnsItems: [], facturaMasReciente: c.facturaMasReciente });
+      if (nombre && !(nombre in codigoPorNombre)) {
+        codigoPorNombre[nombre] = String(c.codigo);
+        nombresBusint.push(nombre);
+      }
+    });
+    const solas = [];
+    EMPRESAS_TNS.forEach((emp) => {
+      (tns[emp.id]?.clientes || []).forEach((t) => {
+        const manual = config.enlaces[claveCampoSaldos(t.nit)];
+        let codigo = null;
+        if (manual !== undefined) codigo = manual === SIN_PAREJA_BUSINT ? null : String(manual);
+        else {
+          const n = emparejarClientePedido(t.nombre, nombresBusint);
+          codigo = n ? codigoPorNombre[n] : null;
+        }
+        let fila = codigo ? porCodigo.get(codigo) : null;
+        if (!fila) {
+          fila = solas.find((x) => x.clave === `t:${t.nit}`);
+          if (!fila) {
+            fila = { clave: `t:${t.nit}`, nombre: t.nombre, codigo: null, busint: null, tnsPorEmpresa: { yanko: null, indutex: null }, tnsItems: [], facturaMasReciente: null };
+            solas.push(fila);
+          }
+        }
+        fila.tnsPorEmpresa[emp.id] = (fila.tnsPorEmpresa[emp.id] || 0) + t.saldo;
+        fila.tnsItems.push({ empresa: emp.id, nit: t.nit, nombre: t.nombre, manual: manual !== undefined });
+      });
+    });
+    return [...porCodigo.values(), ...solas].map((f) => {
+      const donde = config.donde[claveCampoSaldos(f.clave)] || "definir";
+      const tnsTotal = (f.tnsPorEmpresa.yanko || 0) + (f.tnsPorEmpresa.indutex || 0);
+      const hayTns = f.tnsPorEmpresa.yanko !== null || f.tnsPorEmpresa.indutex !== null;
+      return { ...f, donde, estado: estadoSaldoCliente(donde, f.busint, tnsTotal, hayTns), magnitud: Math.max(Math.abs(f.busint || 0), Math.abs(f.tnsPorEmpresa.yanko || 0), Math.abs(f.tnsPorEmpresa.indutex || 0)) };
+    });
+  }, [busint, tns, config]);
+  const visibles = (filas || [])
+    .filter((f) => {
+      if (soloConSaldo && f.magnitud < 1 && f.donde === "definir") return false;
+      const q = filtro.trim().toLowerCase();
+      if (!q) return true;
+      return f.nombre.toLowerCase().includes(q) || f.tnsItems.some((t) => t.nombre.toLowerCase().includes(q));
+    })
+    .sort((a, b) => b.magnitud - a.magnitud);
+  const alertas = (filas || []).filter((f) => f.estado.tipo === "alerta").length;
+  const sinPareja = (filas || []).filter((f) => f.codigo === null).length;
+  const thStyle = { background: C.ink, color: C.seam, fontSize: 10, fontWeight: 700, padding: "9px 12px", textAlign: "right", whiteSpace: "nowrap" };
+  const tdStyle = { padding: "9px 12px", textAlign: "right", borderBottom: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums", fontSize: 12.5 };
+  const colorEstado = { ok: [C.greenBg, C.green], alerta: [C.redBg, C.red], pend: [C.amberBg, C.amber] };
+  const celdaSaldo = (v) =>
+    v === null || v === undefined ? <span style={{ color: "#b9b0a4" }}>—</span> : <span style={{ color: v < 0 ? C.violet : C.ink, fontWeight: v < 0 ? 700 : 400 }}>{fmtSaldo(v)}</span>;
+  return (
+    <div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, marginBottom: 4 }}>💳 Saldos de clientes</div>
+      <div style={{ fontSize: 13, color: C.slate, marginBottom: 16, maxWidth: 840, lineHeight: 1.55 }}>
+        Cada cliente con su saldo en tres fuentes: Busint (en vivo), TNS Industrias Yanko y TNS Indutex. Un valor negativo (morado) es saldo a favor del cliente. Por cada cliente eliges dónde debe vivir su saldo y la pantalla te avisa si no cuadra.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 10, marginBottom: 14 }}>
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderLeft: `4px solid ${busint ? C.green : C.amber}`, borderRadius: 12, padding: "12px 14px" }}>
+          <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: C.slate }}>Busint · Industrias Yanko</div>
+          <div style={{ fontSize: 14, fontWeight: 800, margin: "3px 0" }}>{cargando ? "Consultando..." : busint ? "En vivo" : "Sin datos"}</div>
+          <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 6 }}>{actualizadoEn ? `Actualizado ${actualizadoEn.toLocaleTimeString("es-CO")}` : ""}</div>
+          <Btn small variant="secondary" onClick={cargarBusint} disabled={cargando}>🔄 Actualizar</Btn>
+        </div>
+        {EMPRESAS_TNS.map((emp) => {
+          const d = tns[emp.id];
+          return (
+            <div key={emp.id} style={{ background: d ? C.white : C.amberBg, border: `1px solid ${d ? C.border : "#f0ddbb"}`, borderLeft: `4px solid ${d ? C.green : C.amber}`, borderRadius: 12, padding: "12px 14px" }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: C.slate }}>TNS · {emp.nombre}</div>
+              <div style={{ fontSize: 14, fontWeight: 800, margin: "3px 0" }}>{d ? (d.corte ? `Corte ${d.corte}` : "Excel cargado") : "Sin cargar"}</div>
+              <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 6 }}>
+                {d ? `${(d.clientes || []).length} clientes · ${d.nombreArchivo || ""}` : `Sube el Excel de cartera de ${emp.nombre}`}
+              </div>
+              <label style={{ display: "inline-block", background: d ? C.canvas : C.ink, color: d ? C.ink : C.white, border: d ? `1px solid ${C.border}` : "none", borderRadius: 8, padding: "5px 10px", fontWeight: 700, fontSize: 12, cursor: subiendo ? "not-allowed" : "pointer" }}>
+                {subiendo === emp.id ? "Cargando..." : d ? "📤 Subir otro corte" : "📤 Subir Excel"}
+                <input type="file" accept=".xlsx,.xls" disabled={!!subiendo} style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; subirExcel(emp.id, f); }} />
+              </label>
+            </div>
+          );
+        })}
+      </div>
+      {error && <div style={{ padding: 12, borderRadius: 8, background: C.redBg, color: C.red, fontSize: 13, fontWeight: 600, marginBottom: 14 }}>⚠ {error}</div>}
+      {mensaje && <div style={{ padding: 12, borderRadius: 8, background: C.greenBg, color: C.green, fontSize: 13, fontWeight: 600, marginBottom: 14 }}>✓ {mensaje}</div>}
+      {cargando && !busint && <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>Consultando la cartera de Busint...</div>}
+      {filas && (
+        <>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ width: 280 }}>
+              <FInput value={filtro} onChange={setFiltro} placeholder="Buscar cliente..." />
+            </div>
+            <label style={{ fontSize: 12.5, color: C.slate, display: "flex", gap: 6, alignItems: "center", marginBottom: 14, cursor: "pointer" }}>
+              <input type="checkbox" checked={soloConSaldo} onChange={(e) => setSoloConSaldo(e.target.checked)} />
+              Solo clientes con saldo (o ya clasificados)
+            </label>
+            <span style={{ fontSize: 12, color: C.slate, marginBottom: 14 }}>
+              {visibles.length} de {filas.length} clientes{alertas ? ` · ${alertas} con alerta` : ""}{sinPareja && (tns.yanko || tns.indutex) ? ` · ${filas.filter((f) => f.codigo === null).length} de TNS sin pareja en Busint` : ""}
+            </span>
+          </div>
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, overflow: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={{ ...thStyle, textAlign: "left" }}>Cliente</th>
+                  <th style={thStyle}>¿Dónde debe estar el saldo?</th>
+                  <th style={thStyle}>Saldo Busint</th>
+                  <th style={thStyle}>Saldo TNS Yanko</th>
+                  <th style={thStyle}>Saldo TNS Indutex</th>
+                  <th style={thStyle}>Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibles.map((f, i) => {
+                  const [bg, fg] = colorEstado[f.estado.tipo];
+                  return (
+                    <tr key={f.clave} style={{ background: i % 2 ? C.white : C.canvas }}>
+                      <td style={{ ...tdStyle, textAlign: "left" }}>
+                        <div style={{ fontWeight: 800, color: C.ink }}>{f.nombre}</div>
+                        {f.tnsItems.some((t) => normalizarNombreCliente(t.nombre) !== normalizarNombreCliente(f.nombre)) && (
+                          <div style={{ fontSize: 10.5, color: C.slate, fontWeight: 600 }}>TNS: {[...new Set(f.tnsItems.map((t) => t.nombre))].join(" / ")}</div>
+                        )}
+                        {f.codigo === null && <div style={{ fontSize: 10.5, color: C.amber, fontWeight: 700 }}>Sin pareja en Busint</div>}
+                        {f.tnsItems.length > 0 && (
+                          <span style={{ fontSize: 10.5, color: C.blue, fontWeight: 700, cursor: "pointer", textDecoration: "underline" }} onClick={() => setEnlazarFila(f)}>enlazar con Busint ›</span>
+                        )}
+                      </td>
+                      <td style={tdStyle}>
+                        <select value={f.donde} onChange={(e) => guardarDonde(f.clave, e.target.value)} style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 6, padding: "3px 6px", fontSize: 11, fontWeight: 700, color: C.ink }}>
+                          {DONDE_SALDO.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+                        </select>
+                      </td>
+                      <td style={tdStyle}>{celdaSaldo(f.busint)}</td>
+                      <td style={tdStyle}>{celdaSaldo(f.tnsPorEmpresa.yanko)}</td>
+                      <td style={tdStyle}>{celdaSaldo(f.tnsPorEmpresa.indutex)}</td>
+                      <td style={tdStyle}><span style={{ background: bg, color: fg, fontSize: 10.5, fontWeight: 800, padding: "3px 9px", borderRadius: 10, whiteSpace: "nowrap" }}>{f.estado.texto}</span></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontSize: 11.5, color: C.slate, marginTop: 8, lineHeight: 1.5 }}>
+            <b>Solo TNS</b>: Busint debe estar en cero, si no sale alerta. <b>Solo Busint</b>: el saldo vive en Busint (ej. traslado externo que nunca se factura por TNS) y no debe haber saldo en TNS. <b>Ambos</b>: se muestran los dos para revisarlos. El saldo de TNS es la suma de todas las columnas de edades del reporte (incluye anticipos a favor).
+          </div>
+        </>
+      )}
+      {enlazarFila && (
+        <Modal title={`Enlazar con Busint — ${enlazarFila.nombre}`} onClose={() => setEnlazarFila(null)} width={560}>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 12, lineHeight: 1.5 }}>
+            Elige a qué cliente de Busint corresponde cada cliente de TNS. Queda guardado para los próximos cortes.
+          </div>
+          {enlazarFila.tnsItems.map((t) => {
+            const actual = config.enlaces[claveCampoSaldos(t.nit)];
+            return (
+              <div key={`${t.empresa}-${t.nit}`} style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 4 }}>
+                  {t.nombre} <span style={{ color: C.slate, fontWeight: 600 }}>· {EMPRESAS_TNS.find((e) => e.id === t.empresa)?.nombre} · {t.nit}</span>
+                </div>
+                <select
+                  value={actual === undefined ? "__auto__" : String(actual)}
+                  onChange={(e) => {
+                    guardarEnlace(t.nit, e.target.value);
+                    setEnlazarFila(null);
+                  }}
+                  style={{ width: "100%", padding: "7px 8px", borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 12.5 }}
+                >
+                  <option value="__auto__" disabled>Automático por nombre</option>
+                  <option value={SIN_PAREJA_BUSINT}>Sin cliente en Busint (solo existe en TNS)</option>
+                  {[...(busint || [])].sort((a, b) => String(a.nombre).localeCompare(String(b.nombre))).map((c) => (
+                    <option key={c.codigo} value={String(c.codigo)}>{c.nombre} ({c.codigo})</option>
+                  ))}
+                </select>
+              </div>
+            );
+          })}
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 export default function ModuloContabilidad({ currentUser, onVolver, onLogout, puedeAdministrarBasesDadoPorCumplido, puedeSincronizarDadoPorCumplido, pedidos }) {
   const [subView, setSubView] = useState("home");
   const [movimientos, setMovimientos] = useState([]);
@@ -5886,6 +6231,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
     { id: "comparativo", icon: "📊", label: "Comparativo por Concepto" },
     { id: "facturacion_clientes", icon: "🧾", label: "Facturación Clientes" },
     { id: "valorizacion_marca", icon: "💲", label: "Valorización por marca" },
+    { id: "saldos_clientes", icon: "💳", label: "Saldos de clientes" },
     { id: "dado_por_cumplido", icon: "✅", label: "Dado por Cumplido" },
     { id: "cxp", icon: "🧾", label: "Cuentas por Pagar" },
     { id: "administracion", icon: "🗂️", label: "Administración" },
@@ -6102,6 +6448,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
           )}
           {subView === "facturacion_clientes" && <FacturacionClientesView />}
           {subView === "valorizacion_marca" && <ValorizacionPorMarcaView pedidos={pedidos} />}
+          {subView === "saldos_clientes" && <SaldosClientesView currentUser={currentUser} />}
           {subView === "dado_por_cumplido" && <DadoPorCumplidoView currentUser={currentUser} puedeAdministrarBases={puedeAdministrarBasesDadoPorCumplido} puedeSincronizar={puedeSincronizarDadoPorCumplido} />}
           {subView === "cxp" && (
             <CuentasPorPagarView
