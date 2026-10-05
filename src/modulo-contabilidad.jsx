@@ -5018,6 +5018,51 @@ function CuentasPorPagarView({ cortes, manuales, calendario, nombresConcepto, no
   );
 }
 // ─── HOME CONTABILIDAD ────────────────────────────────────────────────────────
+// (2026-10-05, a pedido de Fredy) Un solo botón del menú, "Cartera Clientes", que
+// agrupa Saldos de clientes, Cuadre por cliente y Valorización por marca.
+// Cada pestaña se monta la primera vez que se abre y luego se queda oculta (no
+// vuelve a consultar Busint al cambiar de pestaña).
+const PESTANAS_CARTERA = [
+  { id: "saldos", icon: "💳", label: "Saldos de clientes" },
+  { id: "cuadre", icon: "⚖️", label: "Cuadre por cliente" },
+  { id: "valorizacion", icon: "💲", label: "Valorización por marca" },
+];
+const CLAVE_PESTANA_CARTERA = "contabilidad_cartera_clientes_pestana";
+function CarteraClientesView({ currentUser, pedidos }) {
+  const [pestana, setPestana] = useState(() => {
+    try {
+      const guardada = window.localStorage.getItem(CLAVE_PESTANA_CARTERA);
+      return PESTANAS_CARTERA.some((t) => t.id === guardada) ? guardada : PESTANAS_CARTERA[0].id;
+    } catch (e) {
+      return PESTANAS_CARTERA[0].id;
+    }
+  });
+  const [visitadas, setVisitadas] = useState(() => ({ [pestana]: true }));
+  function elegir(id) {
+    setPestana(id);
+    setVisitadas((v) => ({ ...v, [id]: true }));
+    try {
+      window.localStorage.setItem(CLAVE_PESTANA_CARTERA, id);
+    } catch (e) {
+      // sin almacenamiento: solo no se recuerda la pestaña
+    }
+  }
+  return (
+    <div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: C.ink, marginBottom: 12 }}>🏷️ Cartera Clientes</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
+        {PESTANAS_CARTERA.map((t) => (
+          <span key={t.id} onClick={() => elegir(t.id)} style={{ padding: "8px 16px", borderRadius: 999, fontSize: 13, fontWeight: 700, cursor: "pointer", background: t.id === pestana ? C.ink : C.white, color: t.id === pestana ? C.white : C.slate, border: `1px solid ${t.id === pestana ? C.ink : C.border}` }}>
+            {t.icon} {t.label}
+          </span>
+        ))}
+      </div>
+      {visitadas.saldos && <div style={{ display: pestana === "saldos" ? "block" : "none" }}><SaldosClientesView currentUser={currentUser} /></div>}
+      {visitadas.cuadre && <div style={{ display: pestana === "cuadre" ? "block" : "none" }}><CuadrePorClienteView currentUser={currentUser} pedidos={pedidos} /></div>}
+      {visitadas.valorizacion && <div style={{ display: pestana === "valorizacion" ? "block" : "none" }}><ValorizacionPorMarcaView pedidos={pedidos} /></div>}
+    </div>
+  );
+}
 function HomeContabilidad({ onGoModulo }) {
   const MODULOS = [
     {
@@ -6987,9 +7032,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
     { id: "flujo_caja", icon: "💰", label: "Flujo de Caja" },
     { id: "comparativo", icon: "📊", label: "Comparativo por Concepto" },
     { id: "facturacion_clientes", icon: "🧾", label: "Facturación Clientes" },
-    { id: "valorizacion_marca", icon: "💲", label: "Valorización por marca" },
-    { id: "saldos_clientes", icon: "💳", label: "Saldos de clientes" },
-    { id: "cuadre_cliente", icon: "⚖️", label: "Cuadre por cliente" },
+    { id: "cartera_clientes", icon: "🏷️", label: "Cartera Clientes" },
     { id: "dado_por_cumplido", icon: "✅", label: "Dado por Cumplido" },
     { id: "cxp", icon: "🧾", label: "Cuentas por Pagar" },
     { id: "administracion", icon: "🗂️", label: "Administración" },
@@ -7205,9 +7248,7 @@ export default function ModuloContabilidad({ currentUser, onVolver, onLogout, pu
             />
           )}
           {subView === "facturacion_clientes" && <FacturacionClientesView />}
-          {subView === "valorizacion_marca" && <ValorizacionPorMarcaView pedidos={pedidos} />}
-          {subView === "saldos_clientes" && <SaldosClientesView currentUser={currentUser} />}
-          {subView === "cuadre_cliente" && <CuadrePorClienteView currentUser={currentUser} pedidos={pedidos} />}
+          {subView === "cartera_clientes" && <CarteraClientesView currentUser={currentUser} pedidos={pedidos} />}
           {subView === "dado_por_cumplido" && <DadoPorCumplidoView currentUser={currentUser} puedeAdministrarBases={puedeAdministrarBasesDadoPorCumplido} puedeSincronizar={puedeSincronizarDadoPorCumplido} />}
           {subView === "cxp" && (
             <CuentasPorPagarView
