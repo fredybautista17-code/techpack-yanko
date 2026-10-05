@@ -6020,6 +6020,25 @@ function CuadrePorClienteView({ currentUser }) {
   const [error, setError] = useState("");
   const [mensaje, setMensaje] = useState("");
   const [detalleAbierto, setDetalleAbierto] = useState(null);
+  // (2026-10-05, a pedido de Fredy) Remisiones "quitadas" a mano (ej. una
+  // duplicada): no se borran de TNS, solo dejan de contarse en esta pantalla.
+  // Se guardan por empresa + número de remisión (contabilidad_cuadre_config/main,
+  // campo quitadas: { "yanko__09-002": true|false }) para que sigan quitadas
+  // aunque se suba un Excel nuevo. false = restaurada.
+  const [quitadasCfg, setQuitadasCfg] = useState({});
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, "contabilidad_cuadre_config", "main"), (snap) => {
+      setQuitadasCfg(snap.exists() ? snap.data().quitadas || {} : {});
+    });
+    return () => unsub();
+  }, []);
+  async function cambiarQuitada(clave, quitada) {
+    try {
+      await fsSave("contabilidad_cuadre_config", "main", { quitadas: { [clave]: quitada } });
+    } catch (err) {
+      setError(err?.message || "No se pudo guardar el cambio.");
+    }
+  }
   useEffect(() => {
     const u1 = onSnapshot(collection(db, "contabilidad_saldos_tns"), (snap) => {
       const m = {};
@@ -6089,7 +6108,7 @@ function CuadrePorClienteView({ currentUser }) {
       let remis = null;
       if (dr) {
         const mios = (dr.clientes || []).filter((t) => coincideClienteCuadre(cli, t.nit, t.nombre));
-        remis = { nRemisiones: 0, remisionado: 0, facturado: 0, pendiente: 0, valorPendiente: 0, pendientes: [], extras: [] };
+        remis = { nRemisiones: 0, remisionado: 0, facturado: 0, pendiente: 0, valorPendiente: 0, pendientes: [], quitadas: [], extras: [] };
         mios.forEach((t) => {
           remis.nRemisiones += t.nRemisiones || 0;
           remis.remisionado += t.remisionado || 0;
@@ -6097,6 +6116,23 @@ function CuadrePorClienteView({ currentUser }) {
           remis.pendiente += t.pendiente || 0;
           remis.valorPendiente += t.valorPendiente || 0;
           (t.pendientes || []).forEach((p) => remis.pendientes.push({ ...p }));
+        });
+        // Las quitadas a mano salen de los números (y de la comparación de duplicadas).
+        const todasPend = remis.pendientes;
+        remis.pendientes = [];
+        todasPend.forEach((p) => {
+          p.clave = `${emp.id}__${p.ref}`;
+          p.empresa = emp.id;
+          if (quitadasCfg[p.clave]) {
+            remis.quitadas.push(p);
+            remis.nRemisiones -= 1;
+            remis.remisionado -= p.remisionado;
+            remis.facturado -= p.remisionado - p.pendiente;
+            remis.pendiente -= p.pendiente;
+            remis.valorPendiente -= p.valorPend;
+          } else {
+            remis.pendientes.push(p);
+          }
         });
         const grupos = {};
         remis.pendientes.forEach((p) => {
@@ -6117,7 +6153,7 @@ function CuadrePorClienteView({ currentUser }) {
           if (dr.tieneDetalle && !enDetalle.has(p.ref)) flags.push("No aparece en el detalle por referencia");
           p.flags = flags;
         });
-        const refsPend = new Set(remis.pendientes.map((p) => p.ref));
+        const refsPend = new Set(remis.pendientes.concat(remis.quitadas).map((p) => p.ref));
         (dr.detalle || []).filter((d) => d.pendiente > 0 && coincideClienteCuadre(cli, d.nit, d.nombre)).forEach((d) => {
           const m = String(d.remision).match(/^RS(\d{2})(\d+)$/);
           if (m && refsPend.has(`${m[1]}-${m[2]}`)) return;
@@ -6134,9 +6170,15 @@ function CuadrePorClienteView({ currentUser }) {
     const saldoBusint = bus ? bus.reduce((s, b) => s + (Number(b.total) || 0), 0) : null;
     const total = EMPRESAS_TNS.reduce((s, emp) => s + (porEmpresa[emp.id].cartera?.saldo || 0) + (porEmpresa[emp.id].remis?.valorPendiente || 0), 0);
     return { porEmpresa, avisos, saldoBusint, nombresBusint: bus ? bus.map((b) => b.nombre) : [], total };
-  }, [tnsCartera, tnsRemisiones, busint, cli]);
+  }, [tnsCartera, tnsRemisiones, busint, cli, quitadasCfg]);
   const pendientesTodas = EMPRESAS_TNS.flatMap((emp) => datos.porEmpresa[emp.id].remis?.pendientes || []);
   const extrasTodas = EMPRESAS_TNS.flatMap((emp) => datos.porEmpresa[emp.id].remis?.extras || []);
+  const quitadasTodas = EMPRESAS_TNS.flatMap((emp) => datos.porEmpresa[emp.id].remis?.quitadas || []);
+  const totalesPendientes = EMPRESAS_TNS.filter((emp) => datos.porEmpresa[emp.id].remis).map((emp) => {
+    const lista = datos.porEmpresa[emp.id].remis.pendientes;
+    return { id: emp.id, nombre: emp.nombre, n: lista.length, unidades: lista.reduce((s, p) => s + p.pendiente, 0), conIva: lista.reduce((s, p) => s + p.valorPend, 0) };
+  });
+  const totalGeneral = totalesPendientes.reduce((a, t) => ({ n: a.n + t.n, unidades: a.unidades + t.unidades, conIva: a.conIva + t.conIva }), { n: 0, unidades: 0, conIva: 0 });
   const nombreEmpresa = (id) => EMPRESAS_TNS.find((e) => e.id === id)?.nombre || id;
   const thStyle = { background: C.ink, color: C.seam, fontSize: 10, fontWeight: 700, padding: "9px 12px", textAlign: "right", whiteSpace: "nowrap" };
   const tdStyle = { padding: "9px 12px", textAlign: "right", borderBottom: `1px solid ${C.border}`, fontVariantNumeric: "tabular-nums", fontSize: 12.5 };
@@ -6266,6 +6308,7 @@ function CuadrePorClienteView({ currentUser }) {
                 <th style={thStyle}>Valor (con IVA)</th>
                 <th style={thStyle}>Valor (sin IVA)</th>
                 <th style={{ ...thStyle, textAlign: "left" }}>Aviso</th>
+                <th style={thStyle}></th>
               </tr>
             </thead>
             <tbody>
@@ -6278,6 +6321,7 @@ function CuadrePorClienteView({ currentUser }) {
                   <td style={tdStyle}>{fmtSaldo(p.valorPend)}</td>
                   <td style={tdStyle}>{fmtSaldo(p.valorPend / IVA_REMISIONES)}</td>
                   <td style={{ ...tdStyle, textAlign: "left" }}>{p.flags.map((f) => <span key={f} style={{ ...pillAviso, marginRight: 4 }}>{f}</span>)}</td>
+                  <td style={tdStyle}><Btn small variant="secondary" onClick={() => cambiarQuitada(p.clave, true)}>Quitar</Btn></td>
                 </tr>
               ))}
               {extrasTodas.map((e) => (
@@ -6289,10 +6333,46 @@ function CuadrePorClienteView({ currentUser }) {
                   <td style={tdStyle}>—</td>
                   <td style={tdStyle}>{fmtSaldo(e.valorSinIva)}</td>
                   <td style={{ ...tdStyle, textAlign: "left" }}><span style={pillAviso}>Solo en el detalle · no suma al total</span></td>
+                  <td style={tdStyle}></td>
                 </tr>
               ))}
             </tbody>
+            {totalesPendientes.length > 0 && (
+              <tfoot>
+                {totalesPendientes.map((t) => (
+                  <tr key={`tot-${t.id}`}>
+                    <td colSpan={3} style={{ ...tdStyle, textAlign: "left", fontWeight: 800, background: "#efe9e1" }}>Total {t.nombre} ({t.n} remisiones)</td>
+                    <td style={{ ...tdStyle, fontWeight: 800, background: "#efe9e1" }}>{t.unidades.toLocaleString("es-CO")}</td>
+                    <td style={{ ...tdStyle, fontWeight: 800, background: "#efe9e1" }}>{fmtSaldo(t.conIva)}</td>
+                    <td style={{ ...tdStyle, fontWeight: 800, background: "#efe9e1" }}>{fmtSaldo(t.conIva / IVA_REMISIONES)}</td>
+                    <td colSpan={2} style={{ ...tdStyle, background: "#efe9e1" }}></td>
+                  </tr>
+                ))}
+                {totalesPendientes.length > 1 && (
+                  <tr>
+                    <td colSpan={3} style={{ ...tdStyle, textAlign: "left", fontWeight: 800, background: C.ink, color: C.white }}>Total general ({totalGeneral.n} remisiones)</td>
+                    <td style={{ ...tdStyle, fontWeight: 800, background: C.ink, color: C.white }}>{totalGeneral.unidades.toLocaleString("es-CO")}</td>
+                    <td style={{ ...tdStyle, fontWeight: 800, background: C.ink, color: C.white }}>{fmtSaldo(totalGeneral.conIva)}</td>
+                    <td style={{ ...tdStyle, fontWeight: 800, background: C.ink, color: C.white }}>{fmtSaldo(totalGeneral.conIva / IVA_REMISIONES)}</td>
+                    <td colSpan={2} style={{ ...tdStyle, background: C.ink }}></td>
+                  </tr>
+                )}
+              </tfoot>
+            )}
           </table>
+        </div>
+      )}
+      {quitadasTodas.length > 0 && (
+        <div style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 12, padding: "11px 14px", marginTop: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.slate, marginBottom: 6 }}>Quitadas ({quitadasTodas.length}) — no suman en ningún total</div>
+          {quitadasTodas.map((p) => (
+            <div key={p.clave} style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 12.5, padding: "4px 0", flexWrap: "wrap" }}>
+              <span style={{ textDecoration: "line-through", color: C.slate }}>
+                <b>{p.ref}</b> · {nombreEmpresa(p.empresa)} · {fmtFechaISO(p.fecha)} · {p.pendiente.toLocaleString("es-CO")} un. · {fmtSaldo(p.valorPend)}
+              </span>
+              <Btn small variant="ghost" onClick={() => cambiarQuitada(p.clave, false)}>Restaurar</Btn>
+            </div>
+          ))}
         </div>
       )}
       <div style={{ fontSize: 11.5, color: C.slate, marginTop: 8, lineHeight: 1.5 }}>
