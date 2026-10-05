@@ -13243,6 +13243,28 @@ function BusintCatalogoTestView() {
   // por nombre de columna, que es lo que ya hace el Barrido TOTAL de
   // arriba). Sirve para encontrar una tabla cuando no se sabe el nombre
   // exacto, en vez de ir adivinando "traslado X"/"trasladoX Y" uno por uno.
+  // (2026-10-05, a pedido de Fredy) Prueba de realidad de la cartera de
+  // clientes de Busint (tabla ia_carteracxc_data): suma por cliente para
+  // comparar contra lo que Fredy sabe (Conbot/Surtiexport/Mary Bautista en
+  // cero; Gilcar y Kamila con saldo). Solo lectura.
+  const [carteraTabla, setCarteraTabla] = useState("ia_carteracxc_data");
+  const [carteraFiltro, setCarteraFiltro] = useState("");
+  const [cargandoCartera, setCargandoCartera] = useState(false);
+  const [carteraResultado, setCarteraResultado] = useState(null);
+  async function verResumenCartera() {
+    setCargandoCartera(true);
+    setError("");
+    setCarteraResultado(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "getResumenCarteraClientesBusintBD", { timeout: 300000 });
+      const resp = await llamar({ tabla: carteraTabla.trim() || "ia_carteracxc_data" });
+      setCarteraResultado(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo traer la cartera de Busint.");
+    } finally {
+      setCargandoCartera(false);
+    }
+  }
   const [keywordsTablaNombre, setKeywordsTablaNombre] = useState("");
   const [cargandoTablaNombre, setCargandoTablaNombre] = useState(false);
   const [tablaNombreResultado, setTablaNombreResultado] = useState(null);
@@ -13856,6 +13878,65 @@ function BusintCatalogoTestView() {
                 {t}
               </span>
             ))}
+          </div>
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Cartera de clientes en Busint — suma por cliente (prueba de realidad)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Trae completa la tabla de cartera de clientes y suma el saldo por cliente. Un total negativo es saldo a favor del cliente. Sirve para comprobar si cuadra con lo que ya sabes (Conbot, Surtiexport y Mary Bautista en cero; Gilcar y Kamila con saldo) antes de armar la pantalla de Contabilidad.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Tabla">
+          <FInput value={carteraTabla} onChange={setCarteraTabla} placeholder="ia_carteracxc_data" />
+        </Field>
+        <div style={{ marginBottom: 14 }}>
+          <Btn onClick={verResumenCartera} disabled={cargandoCartera}>{cargandoCartera ? "Sumando cartera..." : "📒 Sumar cartera por cliente"}</Btn>
+        </div>
+      </div>
+      {carteraResultado && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ fontSize: 13, color: T.slate, marginBottom: 10 }}>
+            Tabla "{carteraResultado.tabla}": {carteraResultado.totalFilas} filas, {carteraResultado.totalClientes} clientes.
+          </div>
+          <div style={{ marginBottom: 10, maxWidth: 320 }}>
+            <FInput value={carteraFiltro} onChange={setCarteraFiltro} placeholder="Filtrar por nombre de cliente..." />
+          </div>
+          <div style={{ overflow: "auto", maxHeight: 520, background: T.white, borderRadius: 8, border: `1px solid ${T.border}` }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr>
+                  {["Cód.", "Cliente", "Filas", "Con saldo", "Total por pagar", "Debe (+)", "A favor (−)", "Por vencer", "≤30", "≤60", "≤90", ">90", "Factura más reciente"].map((h) => (
+                    <th key={h} style={{ background: T.ink, color: T.seam, fontSize: 10, fontWeight: 700, padding: "8px 10px", textAlign: "right", whiteSpace: "nowrap", position: "sticky", top: 0 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(carteraResultado.clientes || [])
+                  .filter((c) => !carteraFiltro.trim() || c.nombre.toLowerCase().includes(carteraFiltro.trim().toLowerCase()))
+                  .map((c) => {
+                    const m = (n) => `$${Number(Math.round(n || 0)).toLocaleString("es-CO")}`;
+                    const td = { padding: "7px 10px", textAlign: "right", borderBottom: `1px solid ${T.border}`, whiteSpace: "nowrap" };
+                    return (
+                      <tr key={`${c.codigo}-${c.nombre}`}>
+                        <td style={td}>{c.codigo ?? "—"}</td>
+                        <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>{c.nombre || "(sin nombre)"}</td>
+                        <td style={td}>{c.filas}</td>
+                        <td style={td}>{c.facturasConSaldo}</td>
+                        <td style={{ ...td, fontWeight: 800, color: c.total < 0 ? T.violet : T.ink }}>{m(c.total)}</td>
+                        <td style={td}>{m(c.porCobrar)}</td>
+                        <td style={td}>{m(c.aFavorDelCliente)}</td>
+                        <td style={td}>{m(c.porVencer)}</td>
+                        <td style={td}>{m(c.vencido30)}</td>
+                        <td style={td}>{m(c.vencido60)}</td>
+                        <td style={td}>{m(c.vencido90)}</td>
+                        <td style={td}>{m(c.vencidoMas90)}</td>
+                        <td style={td}>{c.facturaMasReciente || "—"}</td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

@@ -4787,6 +4787,101 @@ exports.getPreciosMatriculadosBusint = onCall(
   }
 );
 
+// (2026-10-05, a pedido de Fredy) PRUEBA DE REALIDAD de la cartera de
+// clientes de Busint: la tabla "ia_carteracxc_data" (API BD) trae una fila por
+// factura/anticipo de cada cliente, con el saldo repartido por edades
+// (valor_por_vencer, vencido <=30/60/90 y >90) y "Total_por_pagar" (negativo =
+// saldo a favor del cliente). Antes de construir la pantalla de Contabilidad
+// hay que comprobar contra clientes conocidos (Conbot/Surtiexport/Mary
+// Bautista en cero; Gilcar y Kamila con saldo) que esta tabla de verdad esta
+// al dia. Esto la trae completa, suma por cliente (codigo interno) y devuelve
+// el resumen. Solo lectura: no escribe nada. Exige sesion iniciada y rechaza
+// a usuarios Cliente (mismo criterio que getPreciosMatriculadosBusint).
+exports.getResumenCarteraClientesBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+  },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    }
+    const snapUser = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+    if (snapUser.empty) {
+      throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+    }
+    const userData = snapUser.docs[0].data();
+    const esUsuarioCliente =
+      !userData.isAdmin &&
+      ((Array.isArray(userData.clientesProduccion) && userData.clientesProduccion.length > 0) || !!userData.clienteProduccion);
+    if (esUsuarioCliente) {
+      throw new HttpsError("permission-denied", "No tienes permiso para ver cartera.");
+    }
+
+    const tabla = String(request.data?.tabla || "ia_carteracxc_data").trim();
+    let filas;
+    try {
+      filas = await consultarTablaBusintBDCompleta(tabla);
+    } catch (err) {
+      logger.error("Error consultando Busint BD (getResumenCarteraClientesBusintBD)", { tabla, error: String(err) });
+      throw new HttpsError("unavailable", `No se pudo consultar la tabla "${tabla}": ${err?.message || String(err)}`);
+    }
+    const num = (v) => Number(v) || 0;
+    const aISO = (f) => {
+      if (!f) return null;
+      if (typeof f === "string") return f.slice(0, 10);
+      if (f.year && f.month && f.day) return `${f.year}-${String(f.month).padStart(2, "0")}-${String(f.day).padStart(2, "0")}`;
+      return null;
+    };
+    const porCliente = new Map();
+    for (const f of filas) {
+      const codigo = f.codigo_interno_de_cliente;
+      const clave = String(codigo ?? f.Nombre_del_cliente ?? "");
+      if (!clave) continue;
+      if (!porCliente.has(clave)) {
+        porCliente.set(clave, {
+          codigo: codigo ?? null,
+          nombre: String(f.Nombre_del_cliente || "").trim(),
+          filas: 0,
+          facturasConSaldo: 0,
+          total: 0,
+          aFavorDelCliente: 0,
+          porCobrar: 0,
+          porVencer: 0,
+          vencido30: 0,
+          vencido60: 0,
+          vencido90: 0,
+          vencidoMas90: 0,
+          facturaMasReciente: null,
+        });
+      }
+      const c = porCliente.get(clave);
+      const total = num(f.Total_por_pagar);
+      c.filas++;
+      c.total += total;
+      if (total > 0) c.porCobrar += total;
+      else if (total < 0) c.aFavorDelCliente += total;
+      if (total !== 0) c.facturasConSaldo++;
+      c.porVencer += num(f.valor_por_vencer);
+      c.vencido30 += num(f.valor_vencido_menor_o_igual_a_30_dias);
+      c.vencido60 += num(f.valor_vencido_menor_o_igual_a_60_dias);
+      c.vencido90 += num(f.valor_vencido_menor_o_igual_a_90_dias);
+      c.vencidoMas90 += num(f.valor_vencido_a_mas_de_90_dias);
+      const iso = aISO(f.Fecha_de_factura);
+      if (iso && (!c.facturaMasReciente || iso > c.facturaMasReciente)) c.facturaMasReciente = iso;
+    }
+    const clientes = [...porCliente.values()].sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
+    return {
+      tabla,
+      totalFilas: filas.length,
+      totalClientes: clientes.length,
+      columnas: filas.length ? Object.keys(filas[0]) : [],
+      clientes,
+    };
+  }
+);
+
 // (2026-08-27) EXPLORATORIO — en vez de adivinar nombres de "ApiGen_X" uno
 // por uno (como se hizo con PanelControlFlujoOperacional e InventarioBusint,
 // por ensayo y error), esto lee el swagger público de la API "gen"
