@@ -5319,7 +5319,14 @@ function ValorizacionPorMarcaView({ pedidos }) {
   const [actualizadoEn, setActualizadoEn] = useState(null);
   const [incluirSinCortar, setIncluirSinCortar] = useState(false);
   const [clienteAbierto, setClienteAbierto] = useState(null);
+  const [detalleGrande, setDetalleGrande] = useState(false);
   const [verSinPrecio, setVerSinPrecio] = useState(false);
+  useEffect(() => {
+    if (!clienteAbierto) return undefined;
+    const alTeclear = (ev) => { if (ev.key === "Escape") setClienteAbierto(null); };
+    window.addEventListener("keydown", alTeclear);
+    return () => window.removeEventListener("keydown", alTeclear);
+  }, [clienteAbierto]);
   async function cargar() {
     setCargando(true);
     setError("");
@@ -5381,6 +5388,29 @@ function ValorizacionPorMarcaView({ pedidos }) {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detalle), "Detalle por referencia");
     if (sinPrecio.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sinPrecio), "Sin precio en Busint");
     XLSX.writeFile(wb, `valorizacion_por_marca_${today()}${incluirSinCortar ? "_con_sin_cortar" : ""}.xlsx`);
+  }
+  async function exportarDetalleCliente(r) {
+    const XLSX = await import("xlsx");
+    const filas = r.filas.map((f) => {
+      const fila = { Referencia: f.ref, Categoría: f.categoria || "", "Precio matriculado": f.precio > 0 ? f.precio : "SIN PRECIO EN BUSINT" };
+      etapasVisibles.forEach((e) => {
+        fila[`${e.corto} (prendas)`] = f.etapas[e.id] || 0;
+      });
+      fila["Total prendas"] = f.unid;
+      fila["Valor ($)"] = f.precio > 0 ? Math.round(f.valor) : "no valorizada";
+      return fila;
+    });
+    const total = { Referencia: "TOTAL", Categoría: "", "Precio matriculado": "" };
+    etapasVisibles.forEach((e) => {
+      total[`${e.corto} (prendas)`] = r.etapas[e.id].unid;
+    });
+    total["Total prendas"] = r.unid;
+    total["Valor ($)"] = Math.round(r.valor);
+    filas.push(total);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(filas), "Detalle");
+    const nombreArchivo = nombreVisible(r).replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toLowerCase();
+    XLSX.writeFile(wb, `valorizacion_${nombreArchivo}_${today()}${incluirSinCortar ? "_con_sin_cortar" : ""}.xlsx`);
   }
   const celdaValor = (e) => (
     <>
@@ -5487,42 +5517,62 @@ function ValorizacionPorMarcaView({ pedidos }) {
             </table>
           </div>
           <div style={{ fontSize: 11.5, color: C.slate, marginTop: 8, lineHeight: 1.5 }}>
-            Cada cifra = prendas × precio matriculado de esa referencia, sumado. Debajo, en gris, las prendas. Clic en un cliente para ver el detalle por referencia.
+            Cada cifra = prendas × precio matriculado de esa referencia, sumado. Debajo, en gris, las prendas. Clic en un cliente para abrir su detalle por referencia en una ventana.
           </div>
-          {clienteDetalle && (
-            <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, marginTop: 12, overflow: "hidden" }}>
-              <div style={{ padding: "12px 16px", background: C.canvas, fontWeight: 800, fontSize: 14, borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", color: C.ink }}>
-                <span>{nombreVisible(clienteDetalle)} — detalle por referencia</span>
-                <span style={{ color: C.slate, fontWeight: 600, fontSize: 12 }}>{fmtCOP(clienteDetalle.valor)}</span>
+          {clienteDetalle && (() => {
+            const filasOrdenadas = [...clienteDetalle.filas].sort((a, b) => (a.precio > 0 ? 1 : 0) - (b.precio > 0 ? 1 : 0));
+            const nSinPrecio = clienteDetalle.filas.filter((f) => !(f.precio > 0)).length;
+            return (
+              <div
+                onClick={() => setClienteAbierto(null)}
+                style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,0.55)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: detalleGrande ? 8 : 20 }}
+              >
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  style={{ background: C.white, borderRadius: 14, width: "100%", maxWidth: detalleGrande ? "none" : 880, height: detalleGrande ? "100%" : "auto", maxHeight: detalleGrande ? "100%" : "88vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 24px 80px rgba(26,26,46,0.18)" }}
+                >
+                  <div style={{ padding: "12px 16px", background: C.canvas, borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", color: C.ink }}>
+                    <div style={{ flex: 1, minWidth: 220 }}>
+                      <div style={{ fontWeight: 800, fontSize: 14 }}>{nombreVisible(clienteDetalle)} — detalle por referencia</div>
+                      <div style={{ color: C.slate, fontWeight: 600, fontSize: 12, marginTop: 2 }}>
+                        {fmtCOP(clienteDetalle.valor)} · {fmtNum(clienteDetalle.unid)} prendas · {clienteDetalle.filas.length} referencias
+                        {nSinPrecio > 0 && <span style={{ marginLeft: 8, background: C.amberBg, color: C.amber, fontWeight: 800, fontSize: 10.5, padding: "2px 8px", borderRadius: 10 }}>{nSinPrecio} sin precio</span>}
+                      </div>
+                    </div>
+                    <Btn small variant="secondary" onClick={() => exportarDetalleCliente(clienteDetalle)}>📥 Descargar Excel</Btn>
+                    <Btn small variant="secondary" onClick={() => setDetalleGrande((g) => !g)}>{detalleGrande ? "⤡ Reducir" : "⤢ Agrandar"}</Btn>
+                    <Btn small variant="secondary" onClick={() => setClienteAbierto(null)}>✕ Cerrar</Btn>
+                  </div>
+                  <div style={{ overflow: "auto", flex: 1 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ ...thStyle, textAlign: "left", position: "sticky", top: 0 }}>Referencia</th>
+                          <th style={{ ...thStyle, textAlign: "left", position: "sticky", top: 0 }}>Categoría</th>
+                          <th style={{ ...thStyle, position: "sticky", top: 0 }}>Precio matric.</th>
+                          <th style={{ ...thStyle, position: "sticky", top: 0 }}>Prendas</th>
+                          <th style={{ ...thStyle, position: "sticky", top: 0 }}>Valor</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filasOrdenadas.map((f) => (
+                          <tr key={f.ref} style={{ background: f.precio > 0 ? undefined : C.amberBg }}>
+                            <td style={{ ...tdStyle, textAlign: "left", fontWeight: 800 }}>{f.ref}</td>
+                            <td style={{ ...tdStyle, textAlign: "left", fontWeight: 600 }}>{f.categoria || "—"}</td>
+                            <td style={tdStyle}>
+                              {f.precio > 0 ? fmtCOP(f.precio) : <span style={{ background: C.white, color: C.amber, fontWeight: 800, fontSize: 10, padding: "2px 8px", borderRadius: 10 }}>sin precio en Busint</span>}
+                            </td>
+                            <td style={tdStyle}>{fmtNum(f.unid)}</td>
+                            <td style={{ ...tdStyle, fontWeight: 800, color: f.precio > 0 ? C.ink : C.amber }}>{f.precio > 0 ? fmtCOP(f.valor) : "no valorizada"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               </div>
-              <div style={{ overflow: "auto", maxHeight: 460 }}>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr>
-                      <th style={{ ...thStyle, textAlign: "left" }}>Referencia</th>
-                      <th style={{ ...thStyle, textAlign: "left" }}>Categoría</th>
-                      <th style={thStyle}>Precio matric.</th>
-                      <th style={thStyle}>Prendas</th>
-                      <th style={thStyle}>Valor</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {clienteDetalle.filas.map((f) => (
-                      <tr key={f.ref}>
-                        <td style={{ ...tdStyle, textAlign: "left", fontWeight: 800 }}>{f.ref}</td>
-                        <td style={{ ...tdStyle, textAlign: "left", fontWeight: 600 }}>{f.categoria || "—"}</td>
-                        <td style={tdStyle}>
-                          {f.precio > 0 ? fmtCOP(f.precio) : <span style={{ background: C.amberBg, color: C.amber, fontWeight: 800, fontSize: 10, padding: "2px 8px", borderRadius: 10 }}>sin precio en Busint</span>}
-                        </td>
-                        <td style={tdStyle}>{fmtNum(f.unid)}</td>
-                        <td style={{ ...tdStyle, fontWeight: 800, color: f.precio > 0 ? C.ink : C.amber }}>{f.precio > 0 ? fmtCOP(f.valor) : "no valorizada"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+            );
+          })()}
         </>
       )}
       {verSinPrecio && datos && (
