@@ -4734,6 +4734,59 @@ exports.buscarReferenciaBusint = onCall(
   }
 );
 
+// (2026-10-05, a pedido de Fredy) Pantalla "Valorización por marca" en
+// Contabilidad: necesita el precio matriculado (precioPM) de TODAS las
+// referencias de una sola vez, para multiplicarlo por las cantidades que hay
+// en el tubo productivo. buscarReferenciaBusint solo trae una referencia por
+// llamada, así que esto lee ApiGen_Referencias completo y devuelve un mapa
+// referencia normalizada -> precioPM (sin guiones, mayúsculas -- misma
+// normalización de normalizarRefComparacion). Si una referencia sale repetida
+// en Busint, se queda con el primer precio mayor a 0. Una referencia sin
+// precio (0/nulo) se devuelve con 0 para que la pantalla la marque como "sin
+// precio en Busint" en vez de contarla como $0 en silencio. Los precios son
+// información financiera: exige sesión iniciada y rechaza a los usuarios
+// Cliente (los que tienen clienteProduccion/clientesProduccion).
+exports.getPreciosMatriculadosBusint = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Debes iniciar sesión.");
+    }
+    const snapUser = await db.collection("users").where("authUid", "==", request.auth.uid).limit(1).get();
+    if (snapUser.empty) {
+      throw new HttpsError("permission-denied", "No tienes permiso para hacer esto.");
+    }
+    const userData = snapUser.docs[0].data();
+    const esUsuarioCliente =
+      !userData.isAdmin &&
+      ((Array.isArray(userData.clientesProduccion) && userData.clientesProduccion.length > 0) || !!userData.clienteProduccion);
+    if (esUsuarioCliente) {
+      throw new HttpsError("permission-denied", "No tienes permiso para ver precios.");
+    }
+
+    let referencias;
+    try {
+      referencias = await consultarCatalogoBusint("ApiGen_Referencias");
+    } catch (err) {
+      logger.error("Error consultando Busint (getPreciosMatriculadosBusint)", { error: String(err) });
+      throw new HttpsError("unavailable", "No se pudo consultar la API de Busint. Intenta de nuevo en unos minutos.");
+    }
+
+    const precios = {};
+    for (const r of referencias) {
+      const ref = normalizarRefComparacion(r.ref);
+      if (!ref) continue;
+      const precio = Number(r.precioPM) || 0;
+      if (!(ref in precios) || (!precios[ref] && precio > 0)) precios[ref] = precio;
+    }
+    return { total: Object.keys(precios).length, precios, generadoEn: new Date().toISOString() };
+  }
+);
+
 // (2026-08-27) EXPLORATORIO — en vez de adivinar nombres de "ApiGen_X" uno
 // por uno (como se hizo con PanelControlFlujoOperacional e InventarioBusint,
 // por ensayo y error), esto lee el swagger público de la API "gen"
