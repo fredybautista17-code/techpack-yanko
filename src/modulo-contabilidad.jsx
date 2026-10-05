@@ -5365,6 +5365,7 @@ function ValorizacionPorMarcaView({ pedidos }) {
   const [incluirSinCortar, setIncluirSinCortar] = useState(false);
   const [clienteAbierto, setClienteAbierto] = useState(null);
   const [detalleGrande, setDetalleGrande] = useState(false);
+  const [refAbierta, setRefAbierta] = useState(null);
   const [verSinPrecio, setVerSinPrecio] = useState(false);
   useEffect(() => {
     if (!clienteAbierto) return undefined;
@@ -5600,17 +5601,42 @@ function ValorizacionPorMarcaView({ pedidos }) {
                         </tr>
                       </thead>
                       <tbody>
-                        {filasOrdenadas.map((f) => (
-                          <tr key={f.ref} style={{ background: f.precio > 0 ? undefined : C.amberBg }}>
-                            <td style={{ ...tdStyle, textAlign: "left", fontWeight: 800 }}>{f.ref}</td>
-                            <td style={{ ...tdStyle, textAlign: "left", fontWeight: 600 }}>{f.categoria || "—"}</td>
-                            <td style={tdStyle}>
-                              {f.precio > 0 ? fmtCOP(f.precio) : <span style={{ background: C.white, color: C.amber, fontWeight: 800, fontSize: 10, padding: "2px 8px", borderRadius: 10 }}>sin precio en Busint</span>}
-                            </td>
-                            <td style={tdStyle}>{fmtNum(f.unid)}</td>
-                            <td style={{ ...tdStyle, fontWeight: 800, color: f.precio > 0 ? C.ink : C.amber }}>{f.precio > 0 ? fmtCOP(f.valor) : "no valorizada"}</td>
-                          </tr>
-                        ))}
+                        {filasOrdenadas.map((f) => {
+                          const claveRef = `${clienteDetalle.cliente}|${f.ref}`;
+                          const abierta = refAbierta === claveRef;
+                          return (
+                            <Fragment key={f.ref}>
+                              <tr onClick={() => setRefAbierta(abierta ? null : claveRef)} style={{ cursor: "pointer", background: abierta ? "#e9eef6" : f.precio > 0 ? undefined : C.amberBg }}>
+                                <td style={{ ...tdStyle, textAlign: "left", fontWeight: 800 }}><span style={{ color: C.blue, marginRight: 6 }}>{abierta ? "▾" : "▸"}</span>{f.ref}</td>
+                                <td style={{ ...tdStyle, textAlign: "left", fontWeight: 600 }}>{f.categoria || "—"}</td>
+                                <td style={tdStyle}>
+                                  {f.precio > 0 ? fmtCOP(f.precio) : <span style={{ background: C.white, color: C.amber, fontWeight: 800, fontSize: 10, padding: "2px 8px", borderRadius: 10 }}>sin precio en Busint</span>}
+                                </td>
+                                <td style={tdStyle}>{fmtNum(f.unid)}</td>
+                                <td style={{ ...tdStyle, fontWeight: 800, color: f.precio > 0 ? C.ink : C.amber }}>{f.precio > 0 ? fmtCOP(f.valor) : "no valorizada"}</td>
+                              </tr>
+                              {abierta && (
+                                <tr>
+                                  <td colSpan={5} style={{ background: C.canvas, padding: "12px 16px", borderBottom: `1px solid ${C.border}` }}>
+                                    <div style={{ fontSize: 11, color: C.slate, marginBottom: 8, fontWeight: 700, textTransform: "uppercase" }}>¿Dónde está {f.ref}? ({fmtNum(f.unid)} prendas)</div>
+                                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                      {etapasVisibles.map((e) => {
+                                        const n = f.etapas[e.id] || 0;
+                                        return (
+                                          <div key={e.id} style={{ minWidth: 118, borderRadius: 10, padding: "8px 12px", background: n > 0 ? C.violetBg : C.white, border: n > 0 ? `2px solid ${C.violet}` : `1px solid ${C.border}`, opacity: n > 0 ? 1 : 0.45 }}>
+                                            <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", color: C.slate }}>{e.corto}</div>
+                                            <div style={{ fontSize: 15, fontWeight: 800, marginTop: 2 }}>{fmtNum(n)} un.</div>
+                                            <div style={{ fontSize: 11, color: C.slate }}>{f.precio > 0 ? fmtCOP(n * f.precio) : "sin precio"}</div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
