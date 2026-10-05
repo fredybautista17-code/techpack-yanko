@@ -1869,6 +1869,7 @@ function TrabajadorModal({ trabajador, valoresIniciales, onSave, onClose, areasN
     tipoNomina: base?.tipoNomina || "",
     tipoContrato: trabajador ? (trabajador.tipoContrato || "") : "Término Fijo",
     sueldo: base?.sueldo ?? "",
+    sueldoHorasExtra: base?.sueldoHorasExtra ?? "",
     auxilioTransporte: base?.auxilioTransporte ?? "",
     fechaIngreso: base?.fechaIngreso || "",
     fechaRetiro: base?.fechaRetiro || "",
@@ -1963,6 +1964,7 @@ function TrabajadorModal({ trabajador, valoresIniciales, onSave, onClose, areasN
       tipoNomina: form.tipoNomina || "",
       tipoContrato: form.tipoContrato || "",
       sueldo: Number(form.sueldo) || 0,
+      sueldoHorasExtra: Number(form.sueldoHorasExtra) || 0,
       auxilioTransporte: Number(form.auxilioTransporte) || 0,
       fechaIngreso: form.fechaIngreso || "",
       fechaRetiro: form.fechaRetiro || "",
@@ -2105,6 +2107,10 @@ function TrabajadorModal({ trabajador, valoresIniciales, onSave, onClose, areasN
           </div>
         </>
       )}
+      <Field label="Sueldo para horas extras (opcional)"><FInput type="number" value={form.sueldoHorasExtra} onChange={set("sueldoHorasExtra")} placeholder="Ej: 2207184 (sueldo + bonificación)" /></Field>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: -8, marginBottom: 8 }}>
+        (2026-10-05, a pedido de Fredy) Para quien se le paga el mínimo y el resto como bonificación: aquí se pone el sueldo COMPLETO (mínimo + bonificación) y solo se usa para calcular las Horas Extras (diurna, nocturna, dominical y festiva). Vacío = se usa el Sueldo de arriba, como siempre.
+      </div>
       <Field label="Tarifa por hora (para tareas sueltas)"><FInput type="number" value={form.tarifaHora} onChange={set("tarifaHora")} /></Field>
       <Field label="Código TNS (si ya tiene contrato creado en TNS)">
         <FInput value={form.tnsCodigo} onChange={set("tnsCodigo")} placeholder="Ej: 1004866225" />
@@ -5833,6 +5839,14 @@ const RECARGOS_HORA_EXTRA = {
 // (campo "sueldo" en Trabajadores) -- a pedido explícito de Fredy, nunca
 // con la Tarifa/Hora manual que ya usa "Registrar Horas" (Horas Sueltas),
 // que es un concepto aparte y no cambia con esto.
+// (2026-10-05, a pedido de Fredy) Si el trabajador tiene "Sueldo para horas
+// extras" en su ficha (ej. cortadores: en la ficha va el mínimo y el resto se
+// paga como bonificación), las horas extras se calculan con ESE sueldo; si
+// no, con el Sueldo normal de la ficha.
+function sueldoParaHorasExtra(t) {
+  const especial = Number(t?.sueldoHorasExtra) || 0;
+  return especial > 0 ? especial : Number(t?.sueldo) || 0;
+}
 function calcularHoraExtra(sueldo, tipo, horasCant) {
   const valorHoraOrdinaria = (Number(sueldo) || 0) / DIVISOR_HORAS_MES_EXTRA;
   const factor = RECARGOS_HORA_EXTRA[tipo]?.factor || 0;
@@ -11029,7 +11043,7 @@ function RegistrarHorasExtrasView({ trabajadores, horasExtras, currentUser, onGu
   const [guardandoEdicion, setGuardandoEdicion] = useState(false);
   const trabajadoresActivos = trabajadores.filter((t) => t.activo);
   const trabajadorSel = trabajadores.find((t) => t.id === trabajadorId);
-  const calculo = calcularHoraExtra(trabajadorSel?.sueldo, tipo, horasCant);
+  const calculo = calcularHoraExtra(sueldoParaHorasExtra(trabajadorSel), tipo, horasCant);
   const puedeGuardar = trabajadorId && Number(horasCant) > 0 && !guardando;
   async function guardar() {
     if (!puedeGuardar) return;
@@ -11042,7 +11056,7 @@ function RegistrarHorasExtrasView({ trabajadores, horasExtras, currentUser, onGu
         fecha,
         tipo,
         horas: Number(horasCant) || 0,
-        sueldoBase: Number(trabajadorSel?.sueldo) || 0,
+        sueldoBase: sueldoParaHorasExtra(trabajadorSel),
         valorHoraOrdinaria: calculo.valorHoraOrdinaria,
         factor: calculo.factor,
         valorHora: calculo.valorHora,
@@ -11071,7 +11085,7 @@ function RegistrarHorasExtrasView({ trabajadores, horasExtras, currentUser, onGu
     if (window.confirm(`¿Borrar esta hora extra de ${f.trabajadorNombre || "este trabajador"} (${fmtFechaISO(f.fecha)})? Esto no se puede deshacer.`)) onBorrar(f.id);
   }
   const trabajadorSelEdit = trabajadores.find((t) => t.id === formEditar?.trabajadorId);
-  const calculoEdit = calcularHoraExtra(trabajadorSelEdit?.sueldo, formEditar?.tipo, formEditar?.horasCant);
+  const calculoEdit = calcularHoraExtra(sueldoParaHorasExtra(trabajadorSelEdit), formEditar?.tipo, formEditar?.horasCant);
   const puedeGuardarEdicion = !!(formEditar && formEditar.trabajadorId && Number(formEditar.horasCant) > 0 && !guardandoEdicion);
   async function guardarEdicion() {
     if (!puedeGuardarEdicion || !modalEditar) return;
@@ -11084,7 +11098,7 @@ function RegistrarHorasExtrasView({ trabajadores, horasExtras, currentUser, onGu
         fecha: formEditar.fecha,
         tipo: formEditar.tipo,
         horas: Number(formEditar.horasCant) || 0,
-        sueldoBase: Number(trabajadorSelEdit?.sueldo) || 0,
+        sueldoBase: sueldoParaHorasExtra(trabajadorSelEdit),
         valorHoraOrdinaria: calculoEdit.valorHoraOrdinaria,
         factor: calculoEdit.factor,
         valorHora: calculoEdit.valorHora,
@@ -11108,7 +11122,7 @@ function RegistrarHorasExtrasView({ trabajadores, horasExtras, currentUser, onGu
       <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 20, marginBottom: 24, maxWidth: 620 }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           <Field label="Trabajador">
-            <FSel value={trabajadorId} onChange={setTrabajadorId} options={trabajadoresActivos.map((t) => ({ value: t.id, label: `${t.nombre}${t.sueldo ? ` (${fmtMoney(t.sueldo)}/mes)` : ""}` }))} />
+            <FSel value={trabajadorId} onChange={setTrabajadorId} options={trabajadoresActivos.map((t) => ({ value: t.id, label: `${t.nombre}${sueldoParaHorasExtra(t) ? ` (${fmtMoney(sueldoParaHorasExtra(t))}/mes${Number(t.sueldoHorasExtra) > 0 ? " · base horas extra" : ""})` : ""}` }))} />
           </Field>
           <Field label="Fecha"><FInput type="date" value={fecha} onChange={setFecha} /></Field>
         </div>
@@ -11123,10 +11137,11 @@ function RegistrarHorasExtrasView({ trabajadores, horasExtras, currentUser, onGu
           </div>
         </div>
         <Field label="Observación (opcional)"><FInput value={observacion} onChange={setObservacion} placeholder="Ej: cierre de pedido urgente" /></Field>
-        {trabajadorSel && !trabajadorSel.sueldo && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>Este trabajador no tiene Sueldo configurado en su ficha -- el total va a salir en $0. Complétalo en "Trabajadores".</div>}
-        {trabajadorSel && Number(trabajadorSel.sueldo) > 0 && Number(horasCant) > 0 && (
+        {trabajadorSel && !sueldoParaHorasExtra(trabajadorSel) && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>Este trabajador no tiene Sueldo configurado en su ficha -- el total va a salir en $0. Complétalo en "Trabajadores".</div>}
+        {trabajadorSel && sueldoParaHorasExtra(trabajadorSel) > 0 && Number(horasCant) > 0 && (
           <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>
             Hora ordinaria: {fmtMoney(calculo.valorHoraOrdinaria)} × {calculo.factor} = {fmtMoney(calculo.valorHora)}/hora
+            {Number(trabajadorSel.sueldoHorasExtra) > 0 && <span style={{ color: C.green, fontWeight: 700 }}> · sobre el sueldo para horas extras ({fmtMoney(trabajadorSel.sueldoHorasExtra)})</span>}
           </div>
         )}
         <Btn onClick={guardar} disabled={!puedeGuardar}>{guardando ? "Guardando..." : "Registrar Hora Extra"}</Btn>
