@@ -6686,7 +6686,72 @@ export function AreasStandalone({ currentUser, onVolver, onLogout, puedeCentroCo
 // crea una "carga" nueva en Firestore, es una consulta en vivo aparte. El
 // clic en una tarjeta despliega el detalle DEBAJO, en la misma pantalla
 // (pedido explícito: sin cambiar de pantalla).
+// (2026-10-05, a pedido de Fredy) En el detalle de Semiterminado se ve en
+// que proceso esta cada lote y QUIEN lo tiene: la planta/taller (dato por
+// proceso de Busint -- importa sobre todo en BAJADA DE VINILO y ESTAMPACION)
+// y, si esta programado en ese proceso, el operario y la fecha. Si el lote
+// esta repartido en varios procesos salen todos, con sus unidades.
+function procesosConUnidadesLote(l) {
+  const conInv = (l.procesos || []).filter((p) => Number(p.inventario) > 0).map((p) => ({ nombre: p.nombre, planta: p.planta || "", unidades: Number(p.inventario) }));
+  if (conInv.length) return conInv;
+  if (l.procesoDondeQuedo) return [{ nombre: l.procesoDondeQuedo, planta: l.procesoDondeQuedoPlanta || "", unidades: Number(l.invSemiterminado) || 0 }];
+  return [];
+}
+function CeldaDondeEstaLote({ lote }) {
+  const procs = procesosConUnidadesLote(lote);
+  if (!procs.length) return <span style={{ color: C.slate }}>Bodega de semiterminado</span>;
+  return (
+    <div>
+      {procs.map((p, i) => (
+        <div key={i} style={{ minHeight: procs.length > 1 ? 34 : undefined, marginTop: i === 0 ? 0 : 4, fontWeight: 700 }}>
+          {p.nombre || "(sin nombre)"}
+          {procs.length > 1 && <div style={{ fontSize: 11, fontWeight: 400, color: C.slate }}>{fmtNum(p.unidades)} und.</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+function CeldaQuienLoTieneLote({ lote, programaciones }) {
+  const procs = procesosConUnidadesLote(lote);
+  if (!procs.length) return <span style={{ color: C.slate }}>—</span>;
+  const hoy = hoyBogotaISO();
+  return (
+    <div>
+      {procs.map((p, i) => {
+        const progs = programacionesDeLote(programaciones, lote.numLote, p.nombre);
+        const esEstampacion = normProcesoProg(p.nombre) === "ESTAMPACION";
+        return (
+          <div key={i} style={{ minHeight: procs.length > 1 ? 34 : undefined, marginTop: i === 0 ? 0 : 4 }}>
+            {p.planta ? (
+              <span>
+                {p.planta}
+                <span style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 99, background: plantaProcesoEsPropia(p.planta) ? C.greenBg : C.amberBg, color: plantaProcesoEsPropia(p.planta) ? C.green : C.amber }}>
+                  {plantaProcesoEsPropia(p.planta) ? "Interna" : "Externa"}
+                </span>
+              </span>
+            ) : <span style={{ color: C.slate }}>Sin planta en Busint</span>}
+            {progs.length > 0 ? progs.map((g, j) => {
+              const tarde = (g.fechaProgramada || "") < hoy;
+              return (
+                <div key={g.id || j} style={{ fontSize: 11, color: tarde ? C.red : C.slate, fontWeight: tarde ? 700 : 400 }}>
+                  Programado: {g.trabajadorNombre || "—"} · {fmtFechaISO(g.fechaProgramada)}{tarde ? " · ATRASADA" : ""}
+                </div>
+              );
+            }) : (!esEstampacion && <div style={{ fontSize: 11, color: C.slate }}>Sin programar</div>)}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 function TuboProductivoView() {
+  const [programacionesProcesos, setProgramacionesProcesos] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "planeacion_programacion_procesos"), (snap) => {
+      setProgramacionesProcesos(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
   const [lotes, setLotes] = useState([]);
@@ -6928,6 +6993,12 @@ function TuboProductivoView() {
                   { key: "linea", label: "Línea", render: (f) => f.linea || "—" },
                   { key: "referencia", label: "Referencia" },
                   { key: "unidades", label: "Unidades", align: "right", render: (f) => fmtNum(Number(f[etapaActiva.campo]) || 0) },
+                  ...(etapaActiva.id === "semiterminado"
+                    ? [
+                        { key: "dondeEsta", label: "Dónde está", render: (f) => <CeldaDondeEstaLote lote={f} /> },
+                        { key: "quienLoTiene", label: "Quién lo tiene", render: (f) => <CeldaQuienLoTieneLote lote={f} programaciones={programacionesProcesos} /> },
+                      ]
+                    : []),
                   ...(etapaActiva.id === "bpt"
                     ? [{
                         key: "documento",
