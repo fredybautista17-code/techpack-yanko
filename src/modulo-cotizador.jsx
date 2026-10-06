@@ -121,6 +121,16 @@ function Seccion({ titulo, sub, children, derecha, abierta = true, plegable }) {
   );
 }
 
+// Descarga con el formato de la hoja de Fredy (ver cotizador-excel.js).
+async function descargarExcel(lista, nombre, imagen, notify) {
+  try {
+    const avisos = await descargarCotizacionesExcel(lista, nombre, { imagen });
+    notify?.(avisos && avisos.length ? avisos.join(" ") : "Excel descargado");
+  } catch (e) {
+    notify?.("No se pudo generar el Excel: " + (e.message || e));
+  }
+}
+
 // ─── EDITOR DE UNA COTIZACIÓN ────────────────────────────────────────────────
 function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onGuardar, onVolver, onEliminar, onAplicar, notify }) {
   const [cot, setCot] = useState(inicial);
@@ -200,6 +210,14 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
   );
   const tasasEdit = Object.keys(ETIQUETAS_TASAS);
   const vinculoActual = cot.vinculo;
+  // Foto del prototipo / referencia vinculada: va en el Excel, como en la hoja original.
+  function imagenVinculada() {
+    const vi = cot.vinculo;
+    if (!vi) return null;
+    if (vi.kind === "proto") return (protos || []).find((p) => p.id === vi.id)?.image || null;
+    const cap = (capsulas || []).find((c) => c.id === vi.capsulaId);
+    return cap?.referencias?.find((r) => r.id === vi.id)?.image || null;
+  }
 
   return (
     <div>
@@ -209,7 +227,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
         {sucio && <Pastilla bg={C.amberBg} color={C.amber}>Cambios sin guardar</Pastilla>}
         <div style={{ flex: 1 }} />
         {cot.id && inicial.existe && <button onClick={() => { if (window.confirm("¿Eliminar esta cotización con todas sus versiones?")) onEliminar(cot); }} style={btn(C.white, C.red, C.red)}>Eliminar</button>}
-        <button onClick={() => descargarCotizacionesExcel([cot], `Cotizacion ${String(cot.referencia || "nueva").replace(/[\\/:*?"<>|]/g, "-")}.xlsx`).catch((e) => notify?.("No se pudo generar el Excel: " + (e.message || e)))} style={btn(C.white, C.blue, C.blue)}>📥 Descargar Excel</button>
+        <button onClick={() => descargarExcel([cot], `Cotizacion ${String(cot.referencia || "nueva").replace(/[\\/:*?"<>|]/g, "-")}.xlsx`, imagenVinculada(), notify)} style={btn(C.white, C.blue, C.blue)}>📥 Descargar Excel</button>
         <button onClick={guardar} style={btn(C.green, C.white)}>💾 Guardar versión</button>
       </div>
 
@@ -791,7 +809,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
             <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar por referencia, nombre o cliente…" style={{ ...inp, maxWidth: 340 }} />
             <div style={{ flex: 1 }} />
             <button onClick={() => setImportar(true)} style={btn(C.white, C.blue, C.blue)}>📥 Importar Excel</button>
-            <button disabled={!filtradas.length} onClick={() => descargarCotizacionesExcel(filtradas, `Cotizaciones ${hoyISO()}.xlsx`).catch((e) => notify?.("No se pudo generar el Excel: " + (e.message || e)))} style={{ ...btn(C.white, C.blue, C.blue), opacity: filtradas.length ? 1 : 0.4 }}>📤 Descargar Excel ({filtradas.length})</button>
+            <button disabled={!filtradas.length} onClick={() => descargarExcel(filtradas, `Cotizaciones ${hoyISO()}.xlsx`, null, notify)} style={{ ...btn(C.white, C.blue, C.blue), opacity: filtradas.length ? 1 : 0.4 }}>📤 Descargar Excel ({filtradas.length})</button>
             <button onClick={() => setEdit(cotNueva())} style={btn(C.green, C.white)}>+ Nueva cotización</button>
           </div>
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflowX: "auto" }}>

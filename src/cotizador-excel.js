@@ -1,207 +1,233 @@
-// ─── COTIZADOR: DESCARGA A EXCEL (con fórmulas) ──────────────────────────────
-// (2026-10-06, a pedido de Fredy) Genera un .xlsx con UNA HOJA POR VERSIÓN y
-// una hoja "Resumen". Las hojas llevan las MISMAS fórmulas que calcula
-// ATLAS (cotizador-calculo.js), escritas como fórmulas de Excel: si se cambia
-// un precio, un consumo, un parámetro o el margen en el Excel, todo se
-// recalcula solo. Los parámetros (tasas y costos fijos) van en las columnas
-// I:J de cada hoja; los costos en A:G.
-import { TASAS_BASE, ETIQUETAS_TASAS, FIJOS_BASE, ETIQUETAS_FIJOS, num } from "./cotizador-calculo";
+// ─── COTIZADOR: DESCARGA A EXCEL CON EL FORMATO DE LA HOJA DE FREDY ──────────
+// (2026-10-06, a pedido de Fredy) Llena la MISMA hoja de costos que él usa
+// ("975093 ULTACT 30.09.2026.xlsx", hoja V3) con los datos de cada versión de
+// la cotización: mismo diseño, colores, cuadros de "Gestión de precios" y
+// fórmulas. Una hoja por versión (V1, V2, V3...) más una hoja "Resumen".
+// La plantilla vive en public/plantilla-cotizacion.xlsx (su hoja V3 sin los
+// datos de la referencia 975093 ni sus fotos). Las tasas (ICA, retención...)
+// en su hoja están escritas DENTRO de las fórmulas, así que aquí se reescriben
+// esas fórmulas con las tasas de la versión (ficha del cliente).
+import { TASAS_BASE, FIJOS_BASE, num } from "./cotizador-calculo";
 
-const FMT_DINERO = "#,##0.00";
-const FMT_ENTERO = "#,##0";
-const FMT_PCT = "0.00%";
+// Posiciones de la hoja de Fredy (las mismas que lee el importador).
+const FILAS_TELA = [6, 7, 8, 9]; // consumo de cada tela: fila + 5
+const FILAS_INSUMOS = Array.from({ length: 20 }, (_, i) => 19 + i); // 19..38
+const FILAS_PROCESOS = [42, 43, 44, 45, 46, 47, 48, 49, 50, 52, 53, 54, 55]; // la 51 es "10% termo imprevistos"
+const FILAS_FIJOS = { bodega: 67, diseno: 68, administrativa: 69, termofijacion: 70, empaque: 71, transporte: 72, servicios: 73 };
 
+function aFecha(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ""));
+  return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null;
+}
 function nombreHojaUnico(base, usados) {
-  let n = String(base || "Hoja").replace(/[:\\/?*[\]]/g, "-").slice(0, 28).trim() || "Hoja";
-  let k = 2;
+  const n = String(base || "Hoja").replace(/[:\\/?*[\]]/g, "-").slice(0, 28).trim() || "Hoja";
   let candidato = n;
-  while (usados.has(candidato.toLowerCase())) { candidato = `${n.slice(0, 25)} (${k})`; k += 1; }
+  let k = 2;
+  while (usados.has(candidato.toLowerCase())) { candidato = `${n.slice(0, 24)} (${k})`; k += 1; }
   usados.add(candidato.toLowerCase());
   return candidato;
 }
 
-function construirHoja(cot, ver) {
+// Llena una hoja (copia de la plantilla) con una versión. Devuelve avisos.
+function llenarHoja(ws, cot, ver) {
+  const avisos = [];
   const v = ver.v || {};
   const tasas = { ...TASAS_BASE, ...(v.tasas || {}) };
   const fijos = { ...FIJOS_BASE, ...(v.fijos || {}) };
-  const ws = {};
-  let maxRow = 1;
-  const put = (col, row, valor, opts = {}) => {
-    const cell = {};
-    if (opts.f) { cell.t = "n"; cell.f = opts.f; }
-    else if (typeof valor === "number") { cell.t = "n"; cell.v = valor; }
-    else if (valor === "" || valor === null || valor === undefined) { cell.t = "z"; }
-    else { cell.t = "s"; cell.v = String(valor); }
-    if (opts.z) cell.z = opts.z;
-    ws[col + row] = cell;
-    if (row > maxRow) maxRow = row;
-  };
-  const titulo = (row, texto) => put("A", row, texto);
+  const t = (k) => num(tasas[k]);
+  const val = (addr, valor) => { ws.getCell(addr).value = valor; };
+  const fx = (addr, formula) => { ws.getCell(addr).value = { formula }; };
+  const limpiar = (col, ini, fin) => { for (let r = ini; r <= fin; r++) ws.getCell(col + r).value = null; };
 
   // Encabezado
-  put("A", 1, "COTIZACIÓN");
-  put("A", 2, "Referencia"); put("B", 2, cot.referencia || "");
-  put("A", 3, "Nombre"); put("B", 3, cot.nombre || "");
-  put("A", 4, "Cliente"); put("B", 4, cot.cliente || "General");
-  put("A", 5, "Versión"); put("B", 5, `V${ver.numero}`);
-  put("A", 6, "Fecha"); put("B", 6, ver.fecha || "");
-  put("A", 7, "Nota"); put("B", 7, ver.nota || "");
+  val("B1", aFecha(ver.fecha));
+  const ref = String(cot.referencia || "").trim();
+  val("D2", /^\d+$/.test(ref) ? Number(ref) : ref);
+  val("C3", `Cliente: ${cot.cliente || "General"} · Versión V${ver.numero}${cot.nombre ? " · " + cot.nombre : ""}`);
 
-  // Parámetros: columnas I:J (posiciones fijas, para referenciarlos desde las fórmulas)
-  put("I", 9, "PARÁMETROS (editables)");
-  const filaTasa = {};
-  Object.keys(ETIQUETAS_TASAS).forEach((k, i) => {
-    const row = 10 + i;
-    filaTasa[k] = row;
-    put("I", row, ETIQUETAS_TASAS[k]);
-    put("J", row, num(tasas[k]), { z: k === "baseUtilidad" ? "0.00000" : "0.00%" });
+  // Telas (filas 6-9) y su consumo (filas 11-14)
+  ["B", "C", "D", "E", "G", "J", "K", "L", "M", "N", "O", "P", "Q", "R"].forEach((c) => limpiar(c, 6, 9));
+  limpiar("D", 11, 14); limpiar("G", 11, 14);
+  const telas = (v.telas || []).filter((x) => x.material || num(x.precioKg) || num(x.consumo));
+  if (telas.length > FILAS_TELA.length) avisos.push(`La plantilla solo tiene ${FILAS_TELA.length} filas de tela: se incluyeron las primeras ${FILAS_TELA.length}.`);
+  telas.slice(0, FILAS_TELA.length).forEach((tela, i) => {
+    const r = FILAS_TELA[i]; const k = r + 5;
+    val(`C${r}`, tela.material || "");
+    val(`D${r}`, num(tela.precioKg));
+    val(`E${r}`, num(tela.rendimiento) || 1);
+    fx(`F${r}`, `D${r}/E${r}`);
+    if (num(tela.ancho)) val(`G${r}`, num(tela.ancho));
+    fx(`B${k}`, `IF(B${r}="","",B${r})`); fx(`C${k}`, `C${r}`);
+    val(`D${k}`, num(tela.consumo));
+    fx(`E${k}`, `D${k}*G${r}`);
+    fx(`F${k}`, `D${k}*F${r}`);
+    fx(`H${k}`, `F${k}/$D$74`); fx(`I${k}`, `F${k}/$D$74`);
   });
-  const filaFijosIni = 10 + Object.keys(ETIQUETAS_TASAS).length + 2;
-  put("I", filaFijosIni - 1, "COSTOS FIJOS POR PRENDA ($)");
-  const clavesFijos = Object.keys(ETIQUETAS_FIJOS);
-  clavesFijos.forEach((k, i) => {
-    put("I", filaFijosIni + i, ETIQUETAS_FIJOS[k]);
-    put("J", filaFijosIni + i, num(fijos[k]), { z: FMT_DINERO });
+  fx("F15", "SUM(F11:F14)");
+
+  // Insumos (filas 19-38)
+  ["B", "C", "D", "E", "J", "K", "L", "M", "N", "O", "P", "Q", "R"].forEach((c) => limpiar(c, 19, 38));
+  const insumos = v.insumos || [];
+  if (insumos.length > FILAS_INSUMOS.length) avisos.push(`La plantilla solo tiene ${FILAS_INSUMOS.length} filas de insumos: se incluyeron los primeros ${FILAS_INSUMOS.length}.`);
+  const filasTermo = [];
+  FILAS_INSUMOS.forEach((r, i) => {
+    const it = insumos[i];
+    if (it) {
+      val(`C${r}`, it.nombre || "");
+      val(`D${r}`, num(it.precio));
+      val(`E${r}`, num(it.consumo));
+      if (it.termo) filasTermo.push(r);
+    }
+    fx(`F${r}`, `D${r}*E${r}`);
+    fx(`H${r}`, `F${r}/$F$59`); fx(`I${r}`, `F${r}/$D$74`);
   });
-  const filaFijosTotal = filaFijosIni + clavesFijos.length;
-  put("I", filaFijosTotal, "Total costos fijos");
-  put("J", filaFijosTotal, null, { f: `SUM(J${filaFijosIni}:J${filaFijosTotal - 1})`, z: FMT_DINERO });
-  const T = (k) => `$J$${filaTasa[k]}`;
+  fx("F39", "SUM(F19:F38)");
 
-  // 1 · TELAS
-  let r = 9;
-  titulo(r, "1 · TELAS"); r += 1;
-  ["Material", "$ / kg", "Rend. m/kg", "Ancho", "Consumo m", "$ / m", "$ prenda"].forEach((h, i) => put("ABCDEFG"[i], r, h));
-  r += 1;
-  const telas = (v.telas && v.telas.length ? v.telas : [{}]);
-  const t0 = r;
-  telas.forEach((t) => {
-    put("A", r, t.material || "");
-    put("B", r, num(t.precioKg), { z: FMT_DINERO });
-    put("C", r, num(t.rendimiento) || 1);
-    put("D", r, num(t.ancho));
-    put("E", r, num(t.consumo));
-    put("F", r, null, { f: `IF(C${r}=0,B${r},B${r}/C${r})`, z: FMT_DINERO });
-    put("G", r, null, { f: `E${r}*F${r}`, z: FMT_DINERO });
-    r += 1;
+  // Procesos (filas 42-55, la 51 es el 10% de imprevistos)
+  FILAS_PROCESOS.forEach((r) => { val(`C${r}`, null); val(`F${r}`, null); });
+  const procesos = (v.procesos || []).filter((p) => p.nombre || num(p.valor));
+  if (procesos.length > FILAS_PROCESOS.length) avisos.push(`La plantilla solo tiene ${FILAS_PROCESOS.length} filas de procesos: se incluyeron los primeros ${FILAS_PROCESOS.length}.`);
+  const filasImp = [];
+  procesos.slice(0, FILAS_PROCESOS.length).forEach((p, i) => {
+    const r = FILAS_PROCESOS[i];
+    val(`C${r}`, p.nombre || "");
+    val(`F${r}`, num(p.valor));
+    if (p.imp) filasImp.push(r);
   });
-  const t1 = r - 1;
-  put("A", r, "Total telas"); put("G", r, null, { f: `SUM(G${t0}:G${t1})`, z: FMT_DINERO });
-  const filaTelas = r; r += 2;
+  FILAS_PROCESOS.concat([51]).forEach((r) => { fx(`H${r}`, `F${r}/$F$59`); fx(`I${r}`, `F${r}/$D$74`); });
+  val("C51", `${Math.round(t("imprevistos") * 10000) / 100}% termo imprevistos`);
+  const baseImp = filasTermo.concat(filasImp).map((r) => `F${r}`);
+  fx("F51", baseImp.length ? `(${baseImp.join("+")})*${t("imprevistos")}` : "0");
+  fx("F56", "SUM(F42:F55)");
 
-  // 2 · INSUMOS
-  titulo(r, "2 · INSUMOS (Imprevistos = SI en los de termofijación / vinilo / DTF)"); r += 1;
-  ["Insumo", "Precio", "Consumo", "Imprevistos", "$ prenda"].forEach((h, i) => put("ABCDE"[i], r, h));
-  r += 1;
-  const insumos = (v.insumos && v.insumos.length ? v.insumos : [{}]);
-  const i0 = r;
-  insumos.forEach((it) => {
-    put("A", r, it.nombre || "");
-    put("B", r, num(it.precio), { z: FMT_DINERO });
-    put("C", r, num(it.consumo));
-    put("D", r, it.termo ? "SI" : "");
-    put("E", r, null, { f: `B${r}*C${r}`, z: FMT_DINERO });
-    r += 1;
-  });
-  const i1 = r - 1;
-  put("A", r, "Total insumos"); put("E", r, null, { f: `SUM(E${i0}:E${i1})`, z: FMT_DINERO });
-  const filaInsumos = r; r += 2;
+  // Impuestos y administrativos (las tasas van dentro de las fórmulas de su hoja)
+  fx("F59", "F15+F39+F56");
+  fx("F60", `(F59*${t("danos")})+F59`);
+  fx("F61", `F60*${t("ica")}`);
+  fx("F62", `F60*${t("bancarios")}`);
+  fx("F63", `F60*${t("retencion")}`);
+  fx("F64", `F60*${t("autorenta")}`);
+  fx("F65", `F60*${t("renta")}`);
+  Object.entries(FILAS_FIJOS).forEach(([k, r]) => val(`F${r}`, num(fijos[k])));
+  fx("D74", "SUM(F60:F65)+SUM(F67:F73)");
+  val("F76", t("baseUtilidad"));
+  fx("F79", `+F78*${t("iva")}`);
+  const iva = 1 + t("iva");
 
-  // 3 · PROCESOS
-  titulo(r, "3 · PROCESOS (Imp. = SI entra en la base de imprevistos)"); r += 1;
-  ["Proceso", "Valor / prenda", "Imp."].forEach((h, i) => put("ABC"[i], r, h));
-  r += 1;
-  const procesos = (v.procesos && v.procesos.length ? v.procesos : [{}]);
-  const p0 = r;
-  procesos.forEach((p) => {
-    put("A", r, p.nombre || "");
-    put("B", r, num(p.valor), { z: FMT_DINERO });
-    put("C", r, p.imp ? "SI" : "");
-    r += 1;
-  });
-  const p1 = r - 1;
-  put("A", r, "Procesos"); put("B", r, null, { f: `SUM(B${p0}:B${p1})`, z: FMT_DINERO });
-  const filaProcBase = r; r += 1;
-  put("A", r, "Base de imprevistos"); put("B", r, null, { f: `SUMIF(D${i0}:D${i1},"SI",E${i0}:E${i1})+SUMIF(C${p0}:C${p1},"SI",B${p0}:B${p1})`, z: FMT_DINERO });
-  const filaBaseImp = r; r += 1;
-  put("A", r, "Imprevistos"); put("B", r, null, { f: `B${filaBaseImp}*${T("imprevistos")}`, z: FMT_DINERO });
-  const filaImp = r; r += 1;
-  put("A", r, "Total procesos"); put("B", r, null, { f: `B${filaProcBase}+B${filaImp}`, z: FMT_DINERO });
-  const filaProcTotal = r; r += 2;
+  // Gastos financieros sobre el precio (N87:N91, Q92)
+  fx("N87", `$F$78*${t("ica")}`);
+  fx("N88", `$F$78*${t("bancarios")}`);
+  fx("N89", `$F$78*${t("renta")}`);
+  fx("N90", `+F78*${t("retencion")}`);
+  fx("N91", `+F78*${t("autorenta")}`);
 
-  // 4 · RESULTADOS
-  titulo(r, "4 · COSTO Y PRECIO"); r += 1;
-  const lin = (etiqueta, f, z = FMT_DINERO) => { put("A", r, etiqueta); put("B", r, null, { f, z }); const fila = r; r += 1; return fila; };
-  const entrada = (etiqueta, valor, z) => { put("A", r, etiqueta + " (editable)"); put("B", r, valor, { z }); const fila = r; r += 1; return fila; };
-  const cd = lin("Costo definitivo (telas + insumos + procesos)", `G${filaTelas}+E${filaInsumos}+B${filaProcTotal}`);
-  const cmd = lin("Costo + daños de fabricación", `B${cd}*(1+${T("danos")})`);
-  const ica = lin("ICA", `B${cmd}*${T("ica")}`);
-  lin("Gastos bancarios", `B${cmd}*${T("bancarios")}`);
-  lin("Retención en la fuente", `B${cmd}*${T("retencion")}`);
-  lin("Autorenta", `B${cmd}*${T("autorenta")}`);
-  const renta = lin("Renta", `B${cmd}*${T("renta")}`);
-  const impTot = lin("Total impuestos y financieros", `SUM(B${ica}:B${renta})`);
-  const fijosT = lin("Costos fijos", `J${filaFijosTotal}`);
-  const total = lin("COSTO TOTAL SIN IVA", `B${cmd}+B${impTot}+B${fijosT}`);
-  const pBase = lin("Precio tradicional sin IVA (costo ÷ base de utilidad)", `B${total}/${T("baseUtilidad")}`);
-  const gSobre = lin("Gastos financieros calculados sobre el precio", `B${pBase}*(${T("ica")}+${T("bancarios")}+${T("renta")}+${T("retencion")}+${T("autorenta")})`);
-  const ajuste = lin("Ajuste de gastos financieros", `B${gSobre}-B${impTot}`);
-  const full = lin("COSTO FULL", `B${total}+B${ajuste}`);
-  r += 1;
-  const margen = entrada("% Margen esperado", num(v.margen), FMT_PCT);
-  const sinIva = lin("PRECIO DE VENTA sin IVA", `IF(B${margen}<1,B${full}/(1-B${margen}),0)`);
-  const conIva = lin("PRECIO DE VENTA con IVA", `B${sinIva}*(1+${T("iva")})`);
-  const aplicar = lin("Precio que se aplica al prototipo / cápsula (con IVA)", `ROUND(B${conIva},0)`, FMT_ENTERO);
-  const utilidad = lin("Utilidad por prenda", `B${sinIva}-B${full}`);
-  if (typeof ver.excelPrecio === "number") {
-    put("A", r, "Precio sin IVA del Excel original"); put("B", r, ver.excelPrecio, { z: FMT_DINERO }); r += 1;
-  }
-  r += 1;
-  titulo(r, "OTROS ESCENARIOS"); r += 1;
-  const pcli = entrada("Si el cliente ofrece (con IVA)", num(v.precioClienteIva) || "", FMT_DINERO);
-  lin("   Utilidad con ese precio", `IF(B${pcli}>0,B${pcli}/(1+${T("iva")})-B${full},"")`);
-  lin("   Margen con ese precio", `IF(B${pcli}>0,(B${pcli}/(1+${T("iva")})-B${full})/(B${pcli}/(1+${T("iva")})),"")`, FMT_PCT);
-  r += 1;
-  const ufija = entrada("Utilidad fija por prenda ($)", num(v.utilidadFija), FMT_DINERO);
-  const pFijo = lin("   Precio sin IVA con utilidad fija", `B${full}+B${ufija}`);
-  lin("   Precio con IVA con utilidad fija", `B${pFijo}*(1+${T("iva")})`);
-
-  ws["!ref"] = `A1:J${Math.max(maxRow, filaFijosTotal)}`;
-  ws["!cols"] = [{ wch: 52 }, { wch: 16 }, { wch: 13 }, { wch: 13 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 3 }, { wch: 34 }, { wch: 14 }];
-  return { ws, refs: { sinIva, conIva, full, utilidad, aplicar } };
+  // Escenarios: K = margen esperado · N = precio que ofrece el cliente · Q = utilidad fija
+  val("K76", num(v.margen));
+  fx("K75", `K73*${iva}`);
+  const pCli = num(v.precioClienteIva);
+  fx("N73", pCli > 0 ? `${pCli}/${iva}` : "0");
+  fx("N62", "IF(N73>0,N61-N60,0)");
+  fx("N63", "IF(N61>0,N62/N61,0)");
+  fx("N74", "IF(N73>0,N73-N72,0)");
+  fx("N75", `N73*${iva}`);
+  fx("N76", "IF(N73>0,N74/N73,0)");
+  fx("N80", "IF(N73>0,1-((N73-D74)/N73),0)");
+  val("Q74", num(v.utilidadFija));
+  fx("Q75", `Q73*${iva}`);
+  // Quita los resultados guardados de la plantilla (son de OTRA referencia):
+  // así Excel recalcula todo con los datos nuevos al abrir el archivo.
+  ws.eachRow({ includeEmpty: false }, (row) => row.eachCell({ includeEmpty: false }, (cell) => {
+    const f = cell.formula;
+    if (f) cell.value = { formula: f };
+  }));
+  return avisos;
 }
 
-// lista = arreglo de cotizaciones (con .versiones). Descarga un solo .xlsx.
-export async function descargarCotizacionesExcel(lista, nombreArchivo) {
-  const XLSX = await import("xlsx");
-  const wb = XLSX.utils.book_new();
+// Arma el libro. ExcelJS y la plantilla se pasan de afuera para poder probarlo.
+export async function generarLibroCotizaciones(ExcelJS, plantilla, lista, opciones = {}) {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(plantilla);
+  const molde = wb.worksheets[0];
+  const modelo = molde.model;
+  const rs = wb.addWorksheet("Resumen", { views: [{ state: "frozen", ySplit: 1 }] }); // primera hoja; se llena al final
   const usados = new Set(["resumen"]);
-  const filas = [];
+  const avisos = [];
   const hojas = [];
-  (lista || []).forEach((cot) => {
-    (cot.versiones || []).forEach((ver) => {
-      const base = lista.length === 1 ? `V${ver.numero}` : `${cot.referencia || "cot"} V${ver.numero}`;
-      const nombre = nombreHojaUnico(base, usados);
-      const { ws, refs } = construirHoja(cot, ver);
-      hojas.push([nombre, ws]);
-      filas.push({ cot, ver, nombre, refs });
+  (lista || []).forEach((cot) => (cot.versiones || []).forEach((ver) => {
+    const nombre = nombreHojaUnico(lista.length === 1 ? `V${ver.numero}` : `${cot.referencia || "cot"} V${ver.numero}`, usados);
+    const ws = wb.addWorksheet(nombre);
+    ws.model = Object.assign(structuredClone(modelo), { mergeCells: modelo.merges, name: nombre });
+    const av = llenarHoja(ws, cot, ver);
+    av.forEach((a) => { if (!avisos.includes(a)) avisos.push(a); });
+    if (opciones.imagen && cot === opciones.imagen.cot) {
+      const idImg = wb.addImage({ base64: opciones.imagen.base64, extension: opciones.imagen.extension });
+      const w = 560;
+      ws.addImage(idImg, { tl: { col: 13.1, row: 0.5 }, ext: { width: w, height: Math.round(w * (opciones.imagen.alto / opciones.imagen.ancho)) } });
+    }
+    hojas.push({ cot, ver, nombre });
+  }));
+  wb.removeWorksheet(molde.id);
+
+  // Hoja Resumen (primera): una fila por versión, con fórmulas hacia cada hoja.
+  rs.columns = [
+    { header: "Referencia", width: 14 }, { header: "Cliente", width: 18 }, { header: "Versión", width: 9 }, { header: "Fecha", width: 12 },
+    { header: "Nota", width: 40 }, { header: "Costo FULL", width: 15 }, { header: "Precio sin IVA", width: 16 },
+    { header: "Precio con IVA", width: 16 }, { header: "Precio a aplicar", width: 17 }, { header: "Utilidad por prenda", width: 19 },
+  ];
+  const cab = rs.getRow(1);
+  cab.font = { bold: true, color: { argb: "FFFFFFFF" } };
+  cab.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1A1A2E" } };
+  hojas.forEach((h, i) => {
+    const r = i + 2;
+    const q = `'${h.nombre.replace(/'/g, "''")}'!`;
+    rs.getCell(`A${r}`).value = h.cot.referencia || "";
+    rs.getCell(`B${r}`).value = h.cot.cliente || "General";
+    rs.getCell(`C${r}`).value = `V${h.ver.numero}`;
+    rs.getCell(`D${r}`).value = aFecha(h.ver.fecha);
+    rs.getCell(`D${r}`).numFmt = "dd/mm/yyyy";
+    rs.getCell(`E${r}`).value = h.ver.nota || "";
+    [["F", "K72"], ["G", "K73"], ["H", "K75"], ["I", "ROUND(" + q + "K75,0)"], ["J", "K74"]].forEach(([c, ref2]) => {
+      rs.getCell(`${c}${r}`).value = { formula: c === "I" ? ref2 : q + ref2 };
+      rs.getCell(`${c}${r}`).numFmt = "$#,##0";
     });
   });
-  // Hoja Resumen (primero), con fórmulas que apuntan a cada versión.
-  const rs = {};
-  const enc = ["Referencia", "Cliente", "Versión", "Fecha", "Nota", "Costo FULL", "Precio sin IVA", "Precio con IVA", "Precio a aplicar", "Utilidad por prenda"];
-  enc.forEach((h, i) => { rs[XLSX.utils.encode_cell({ r: 0, c: i })] = { t: "s", v: h }; });
-  filas.forEach((f, i) => {
-    const row = i + 2;
-    const q = `'${f.nombre.replace(/'/g, "''")}'!`;
-    const txt = (c, valor) => { rs[c + row] = valor === "" ? { t: "z" } : { t: "s", v: String(valor) }; };
-    txt("A", f.cot.referencia || ""); txt("B", f.cot.cliente || "General"); txt("C", `V${f.ver.numero}`); txt("D", f.ver.fecha || ""); txt("E", f.ver.nota || "");
-    const fm = (c, celda, z) => { rs[c + row] = { t: "n", f: `${q}B${celda}`, z }; };
-    fm("F", f.refs.full, FMT_DINERO); fm("G", f.refs.sinIva, FMT_DINERO); fm("H", f.refs.conIva, FMT_DINERO); fm("I", f.refs.aplicar, FMT_ENTERO); fm("J", f.refs.utilidad, FMT_DINERO);
+  wb.calcProperties = { fullCalcOnLoad: true };
+  return { wb, avisos };
+}
+
+function medirImagen(dataUrl) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve({ ancho: img.naturalWidth || 1, alto: img.naturalHeight || 1 });
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
   });
-  rs["!ref"] = `A1:J${Math.max(filas.length + 1, 2)}`;
-  rs["!cols"] = [{ wch: 14 }, { wch: 18 }, { wch: 9 }, { wch: 12 }, { wch: 40 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 18 }];
-  XLSX.utils.book_append_sheet(wb, rs, "Resumen");
-  hojas.forEach(([nombre, ws]) => XLSX.utils.book_append_sheet(wb, ws, nombre));
-  XLSX.writeFile(wb, nombreArchivo || "Cotizaciones.xlsx");
+}
+
+// lista = cotizaciones (con .versiones). opciones.imagen = data URL de la foto
+// del prototipo / referencia vinculada (solo para lista de una sola cotización).
+export async function descargarCotizacionesExcel(lista, nombreArchivo, opciones = {}) {
+  const m = await import("exceljs/dist/exceljs.min.js");
+  const ExcelJS = m.default || m;
+  const resp = await fetch(`${process.env.PUBLIC_URL || ""}/plantilla-cotizacion.xlsx`);
+  if (!resp.ok) throw new Error("No se encontró la plantilla de cotización en el servidor");
+  const plantilla = await resp.arrayBuffer();
+  let imagen = null;
+  if (opciones.imagen && lista.length === 1) {
+    const mt = /^data:image\/(png|jpeg|jpg|gif);base64,/i.exec(opciones.imagen);
+    const medidas = mt ? await medirImagen(opciones.imagen) : null;
+    if (mt && medidas) imagen = { cot: lista[0], base64: opciones.imagen, extension: mt[1].toLowerCase() === "png" ? "png" : mt[1].toLowerCase() === "gif" ? "gif" : "jpeg", ...medidas };
+  }
+  const { wb, avisos } = await generarLibroCotizaciones(ExcelJS, plantilla, lista, { imagen });
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = nombreArchivo || "Cotizaciones.xlsx";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  return avisos;
 }
