@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import {
   TASAS_BASE, ETIQUETAS_TASAS, FIJOS_BASE, ETIQUETAS_FIJOS, PROCESOS_BASE,
   REGEX_INSUMO_TERMO, num, versionVacia, calcularCotizacion, parsearArchivoCotizacion,
@@ -27,6 +28,7 @@ const firebaseConfig = {
 };
 const fbApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
+const functionsClient = getFunctions(fbApp);
 const limpio = (o) => JSON.parse(JSON.stringify(o));
 async function fsSet(col, id, data) {
   await setDoc(doc(db, col, id), limpio(data));
@@ -35,6 +37,19 @@ async function fsDel(col, id) {
   await deleteDoc(doc(db, col, id));
 }
 
+// (2026-10-06, a pedido de Fredy -- etapa 2) Precios de telas desde Busint: se
+// usa la MISMA consulta que ya alimenta Corte ("estandar componentes prod"),
+// que trae por tela+color el costo ("Costo") y el costo promedio ("ICprom").
+// Se guarda en memoria para no repetir la consulta en cada fila.
+let telasBusintPromesa = null;
+function cargarTelasBusint(forzar) {
+  if (!telasBusintPromesa || forzar) {
+    telasBusintPromesa = httpsCallable(functionsClient, "getTelasStockBusintBD")()
+      .then((r) => r.data?.telas || [])
+      .catch((e) => { telasBusintPromesa = null; throw e; });
+  }
+  return telasBusintPromesa;
+}
 const C = {
   ink: "#1A1A2E", slate: "#5A5A7A", border: "#E8E2DB", canvas: "#F7F4F0", white: "#FFFFFF", seam: "#C8B8A2", seamDark: "#9E8870",
   green: "#2D9E6B", greenBg: "#EBF7F2", red: "#E85D4A", redBg: "#FDF0EE", blue: "#3D6B9E", blueBg: "#EBF1F7",
@@ -110,6 +125,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
   const [cot, setCot] = useState(inicial);
   const [sucio, setSucio] = useState(false);
   const [vincular, setVincular] = useState(false);
+  const [telaBusint, setTelaBusint] = useState(null); // índice de la fila de tela que busca precio
   const ver = cot.versiones[cot.activa];
   const calc = useMemo(() => calcularCotizacion(ver.v), [ver.v]);
 
@@ -236,7 +252,13 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
                 <tbody>
                   {telas.map((t, i) => (
                     <tr key={i}>
-                      <td style={td}><input value={t.material} onChange={(e) => setV((v) => { v.telas[i].material = e.target.value; })} style={{ ...inp, minWidth: 150 }} placeholder="Tela" /></td>
+                      <td style={td}>
+                        <div style={{ display: "flex", gap: 4 }}>
+                          <input value={t.material} onChange={(e) => setV((v) => { v.telas[i].material = e.target.value; })} style={{ ...inp, minWidth: 150 }} placeholder="Tela" />
+                          <button title="Traer precio desde Busint" onClick={() => setTelaBusint(i)} style={{ ...btn(C.white, C.blue, C.blue), padding: "4px 8px" }}>🔎</button>
+                        </div>
+                        {t.fuente?.origen === "busint" && <div style={{ fontSize: 10, color: C.blue, marginTop: 2 }}>Busint · {fmtDec(t.fuente.valorBusint)} ({t.fuente.unidad === "kg" ? "por kilo" : t.fuente.unidad === "ml" ? "por ml" : "por m²"}) · {fmtFecha(t.fuente.fecha)}</div>}
+                      </td>
                       <td style={td}>{celdaNum(t.precioKg, (x) => setV((v) => { v.telas[i].precioKg = x; }))}</td>
                       <td style={td}>{celdaNum(t.rendimiento, (x) => setV((v) => { v.telas[i].rendimiento = x; }), 70)}</td>
                       <td style={td}>{celdaNum(t.ancho, (x) => setV((v) => { v.telas[i].ancho = x; }), 70)}</td>
@@ -388,6 +410,10 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
         </div>
       </div>
 
+      {telaBusint !== null && telas[telaBusint] && (
+        <ModalTelaBusint inicial={telas[telaBusint].material} rendimiento={telas[telaBusint].rendimiento} onClose={() => setTelaBusint(null)}
+          onElegir={(r) => { setV((v) => { Object.assign(v.telas[telaBusint], r); }); setTelaBusint(null); }} />
+      )}
       {vincular && (
         <ModalVincular cot={cot} protos={protos} capsulas={capsulas} precio={calc.precioAplicar} onClose={() => setVincular(false)}
           onElegir={(dest) => aplicarA(dest)}
@@ -398,6 +424,66 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
   );
 }
 
+// Traer el precio de una tela desde Busint. El usuario elige de dónde sale el
+// número (Costo o Promedio) y en qué unidad viene, y ATLAS lo convierte a
+// $/kg, que es como se escribe en la hoja de costos.
+function ModalTelaBusint({ inicial, rendimiento, onElegir, onClose }) {
+  const [filas, setFilas] = useState(null);
+  const [error, setError] = useState("");
+  const [q, setQ] = useState(inicial || "");
+  const [campo, setCampo] = useState("costo");
+  const [unidad, setUnidad] = useState("kg");
+  useEffect(() => {
+    let vivo = true;
+    cargarTelasBusint().then((f) => vivo && setFilas(f)).catch((e) => vivo && setError(e?.message || "No se pudo consultar Busint"));
+    return () => { vivo = false; };
+  }, []);
+  const rend = num(rendimiento) || 1;
+  const valorDe = (t) => (campo === "prom" ? t.icProm : t.costo);
+  function aKg(t) {
+    const v = Number(valorDe(t)) || 0;
+    if (unidad === "kg") return v;
+    if (unidad === "ml") return v * rend;
+    return v * (t.ancho || 0) * rend; // por m²: m² por metro lineal = ancho
+  }
+  const palabras = normTxt(q).split(/\s+/).filter(Boolean);
+  const lista = (filas || [])
+    .filter((t) => t.activo !== false && (Number(valorDe(t)) || 0) > 0)
+    .filter((t) => { const txt = normTxt(`${t.componente} ${t.color}`); return palabras.every((w) => txt.includes(w)); })
+    .slice(0, 80);
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(26,26,46,.55)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, borderRadius: 14, width: "min(780px, 100%)", maxHeight: "88vh", display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "16px 18px", borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>🔎 Precio de tela desde Busint</div>
+          <div style={{ fontSize: 12, color: C.slate, margin: "2px 0 10px" }}>Busca la tela, revisa el número y confirma. Nada se cambia solo.</div>
+          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por nombre o color…" style={inp} />
+          <div style={{ display: "flex", gap: 14, marginTop: 10, flexWrap: "wrap", fontSize: 12, color: C.slate, alignItems: "center" }}>
+            <label>Usar el valor: <select value={campo} onChange={(e) => setCampo(e.target.value)} style={{ ...inp, width: "auto" }}><option value="costo">Costo (Busint)</option><option value="prom">Costo promedio</option></select></label>
+            <label>Ese valor viene: <select value={unidad} onChange={(e) => setUnidad(e.target.value)} style={{ ...inp, width: "auto" }}><option value="kg">por kilo</option><option value="ml">por metro lineal</option><option value="m2">por metro cuadrado</option></select></label>
+            <span>Rendimiento de esta fila: <b>{fmtDec(rend)} m/kg</b></span>
+          </div>
+        </div>
+        <div style={{ overflowY: "auto", padding: 8 }}>
+          {!filas && !error && <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>Consultando Busint…</div>}
+          {error && <div style={{ padding: 16, color: C.red, fontSize: 13 }}>{error}</div>}
+          {filas && lista.length === 0 && <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay telas con precio que coincidan.</div>}
+          {lista.map((t, i) => (
+            <div key={(t.codcomp || "") + i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderBottom: `1px solid ${C.border}` }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>{t.componente}{t.color ? ` · ${t.color}` : ""}</div>
+                <div style={{ fontSize: 11, color: C.slate }}>Costo {fmtDec(t.costo)} · Promedio {fmtDec(t.icProm)} · ancho {fmtDec(t.ancho)} · actualizado {t.ufecha ? t.ufecha.slice(0, 10) : "—"}</div>
+              </div>
+              <div style={{ textAlign: "right", fontSize: 12 }}><div style={{ color: C.slate }}>queda en</div><div style={{ fontWeight: 800 }}>{fmtCOP(aKg(t))} /kg</div></div>
+              <button onClick={() => onElegir({ material: t.componente + (t.color ? ` ${t.color}` : ""), ancho: t.ancho || "", precioKg: Math.round(aKg(t) * 100) / 100, fuente: { origen: "busint", codcomp: t.codcomp || null, campo, unidad, valorBusint: Number(valorDe(t)) || 0, fecha: hoyISO() } })} style={{ ...btn(C.green, C.white), fontSize: 12 }}>Usar</button>
+            </div>
+          ))}
+        </div>
+        <div style={{ padding: 12, borderTop: `1px solid ${C.border}`, textAlign: "right" }}><button onClick={onClose} style={btn(C.white, C.slate, C.border)}>Cancelar</button></div>
+      </div>
+    </div>
+  );
+}
 // Elegir a qué prototipo / referencia de cápsula se manda el precio.
 function ModalVincular({ cot, protos, capsulas, precio, onElegir, onSoloVincular, onClose }) {
   const [q, setQ] = useState(cot.referencia || "");
