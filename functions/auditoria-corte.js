@@ -32,12 +32,17 @@ function crearAuditoriaCorte({ db, logger, fechaHoyBogota, obtenerLotesPlaneacio
     const hoy = fechaHoyBogota();
     const mesActualISO = hoy.slice(0, 7);
 
-    const [pedidosSnap, usersSnap, configSnap, busint] = await Promise.all([
+    const [pedidosSnap, usersSnap, configSnap, serviciosSnap, busint] = await Promise.all([
       db.collection("pedidos_activos").get(),
       db.collection("users").get(),
       db.collection("config").doc("main").get(),
+      db.collection("lotes_servicio_confeccion").get(),
       obtenerLotesPlaneacionDesdeBusint(),
     ]);
+    // Lotes que Fredy marcó a mano como "servicio de confección" (se ingresan
+    // a Busint pero no se cortan en ATLAS): no cuentan como diferencia ni
+    // disparan correo -- se guardan aparte en el resultado diario.
+    const lotesServicio = new Set(serviciosSnap.docs.map((d) => String(d.id).trim()));
     const pedidos = pedidosSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
     const usuarios = usersSnap.docs.map((d) => d.data());
     const extras = ((configSnap.data() || {}).notificacionesExtras?.auditoriaCorteVsBusint || []).map((e) => e.correo).filter(Boolean);
@@ -88,6 +93,7 @@ function crearAuditoriaCorte({ db, logger, fechaHoyBogota, obtenerLotesPlaneacio
     });
 
     const discrepancias = [];
+    const servicios = [];
     let lotesRevisados = 0;
     const todos = new Set([...atlasPorLote.keys(), ...busintPorLote.keys()]);
     todos.forEach((lote) => {
@@ -118,7 +124,7 @@ function crearAuditoriaCorte({ db, logger, fechaHoyBogota, obtenerLotesPlaneacio
       else if (diferencia > 0) tipo = "falta_registrar_atlas";
       else if (diferencia < 0) tipo = "atlas_de_mas";
       else if (fechaBusint && fechasAtlas.length && !fechasAtlas.includes(fechaBusint)) tipo = "fecha_no_coincide";
-      if (tipo) discrepancias.push({ ...base, tipo });
+      if (tipo) (lotesServicio.has(lote) ? servicios : discrepancias).push({ ...base, tipo });
     });
     discrepancias.sort((x, y) => Math.abs(y.diferencia) - Math.abs(x.diferencia));
 
@@ -128,8 +134,10 @@ function crearAuditoriaCorte({ db, logger, fechaHoyBogota, obtenerLotesPlaneacio
       periodo: mesActualISO,
       generadoEn: new Date().toISOString(),
       lotesRevisados,
-      lotesCuadran: lotesRevisados - discrepancias.length,
+      lotesCuadran: lotesRevisados - discrepancias.length - servicios.length,
       totalDiscrepancias: discrepancias.length,
+      totalServicios: servicios.length,
+      servicios,
       totalSinLote: sinLote.length,
       discrepancias,
       sinLote,
@@ -164,7 +172,7 @@ function crearAuditoriaCorte({ db, logger, fechaHoyBogota, obtenerLotesPlaneacio
         logger.warn(`Auditoria Corte vs Busint: ${discrepancias.length} diferencia(s) pero no se encontro a quien avisar.`);
       }
     }
-    return { fecha: hoy, lotesRevisados, totalDiscrepancias: discrepancias.length, totalSinLote: sinLote.length };
+    return { fecha: hoy, lotesRevisados, totalDiscrepancias: discrepancias.length, totalServicios: servicios.length, totalSinLote: sinLote.length };
   }
   return { correrAuditoriaCorteVsBusint };
 }

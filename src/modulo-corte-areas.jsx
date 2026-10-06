@@ -477,7 +477,49 @@ function AuditoriaCorteBusintPanel({ currentUser }) {
     });
     return () => unsub();
   }, []);
-  const filas = useMemo(() => [...historial].sort((a, b) => (b.fecha || "").localeCompare(a.fecha || "")), [historial]);
+  // (2026-10-06, a pedido de Fredy) Lotes de servicio de confección: se
+  // ingresan a Busint pero no se cortan en ATLAS, así que no son error. Se
+  // marcan a mano con el botón "Es servicio de confección" y quedan en
+  // lotes_servicio_confeccion (id = número de lote). El filtro se aplica al
+  // MOSTRAR, sobre lo que guardó cada corrida (diferencias + servicios), así
+  // marcar o quitar un lote se refleja al instante y también en días pasados.
+  const [marcados, setMarcados] = useState([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "lotes_servicio_confeccion"), (snap) => {
+      setMarcados(snap.docs.map((d) => ({ ...d.data(), id: d.id })));
+    });
+    return () => unsub();
+  }, []);
+  const setMarcadosIds = useMemo(() => new Set(marcados.map((m) => String(m.id))), [marcados]);
+  const filas = useMemo(
+    () =>
+      [...historial]
+        .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
+        .map((f) => {
+          const todas = [...(f.discrepancias || []), ...(f.servicios || [])];
+          const difEf = todas.filter((d) => !setMarcadosIds.has(String(d.numLote)));
+          const servEf = todas.filter((d) => setMarcadosIds.has(String(d.numLote)));
+          return { ...f, difEf, servEf, cuadranEf: Math.max(0, (f.lotesRevisados || 0) - todas.length) };
+        }),
+    [historial, setMarcadosIds]
+  );
+  async function marcarServicio(d) {
+    if (!window.confirm(`¿Marcar el lote ${d.numLote} como LOTE DE SERVICIO DE CONFECCIÓN? Dejará de contar como diferencia en la auditoría (no cambia el Centro de Costo).`)) return;
+    await setDoc(doc(db, "lotes_servicio_confeccion", String(d.numLote)), {
+      numLote: String(d.numLote),
+      numPedido: d.numPedido || "",
+      referencia: d.referencia || "",
+      unidadesBusint: d.unidadesBusint || 0,
+      unidadesAtlas: d.unidadesAtlas || 0,
+      tipoAlMarcar: d.tipo || "",
+      marcadoPor: currentUser?.name || currentUser?.email || "",
+      fechaMarcado: new Date().toISOString(),
+    });
+  }
+  async function quitarServicio(m) {
+    if (!window.confirm(`¿Quitar el lote ${m.id} de los lotes de servicio de confección? Volverá a aparecer como diferencia si no cuadra con Busint.`)) return;
+    await deleteDoc(doc(db, "lotes_servicio_confeccion", String(m.id)));
+  }
   async function correrAhora() {
     setCorriendo(true);
     try {
@@ -512,15 +554,16 @@ function AuditoriaCorteBusintPanel({ currentUser }) {
       ) : (
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, background: C.white, borderRadius: 8 }}>
           <thead>
-            <tr style={{ borderBottom: `2px solid ${C.border}` }}>{th("Fecha")}{th("Lotes revisados", true)}{th("Cuadran", true)}{th("Con diferencia", true)}{th("Cortes sin lote", true)}</tr>
+            <tr style={{ borderBottom: `2px solid ${C.border}` }}>{th("Fecha")}{th("Lotes revisados", true)}{th("Cuadran", true)}{th("Con diferencia", true)}{th("Servicios de confección", true)}{th("Cortes sin lote", true)}</tr>
           </thead>
           <tbody>
             {filas.map((f) => (
               <tr key={f.id} onClick={() => setAbierto(abierto === f.id ? null : f.id)} style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: abierto === f.id ? C.blueBg : "transparent" }}>
                 <td style={{ padding: "9px 10px" }}>{f.fecha}</td>
                 <td style={{ padding: "9px 10px", textAlign: "right" }}>{fmtNum(f.lotesRevisados)}</td>
-                <td style={{ padding: "9px 10px", textAlign: "right", color: C.green, fontWeight: 700 }}>{fmtNum(f.lotesCuadran)}</td>
-                <td style={{ padding: "9px 10px", textAlign: "right", fontWeight: 800, color: (f.totalDiscrepancias || 0) > 0 ? C.red : C.green }}>{fmtNum(f.totalDiscrepancias)}</td>
+                <td style={{ padding: "9px 10px", textAlign: "right", color: C.green, fontWeight: 700 }}>{fmtNum(f.cuadranEf)}</td>
+                <td style={{ padding: "9px 10px", textAlign: "right", fontWeight: 800, color: f.difEf.length > 0 ? C.red : C.green }}>{fmtNum(f.difEf.length)}</td>
+                <td style={{ padding: "9px 10px", textAlign: "right", color: f.servEf.length > 0 ? C.violet : C.slate, fontWeight: 700 }}>{fmtNum(f.servEf.length)}</td>
                 <td style={{ padding: "9px 10px", textAlign: "right", color: (f.totalSinLote || 0) > 0 ? C.amber : C.slate }}>{fmtNum(f.totalSinLote)}</td>
               </tr>
             ))}
@@ -530,15 +573,15 @@ function AuditoriaCorteBusintPanel({ currentUser }) {
       {sel && (
         <div style={{ marginTop: 14 }}>
           <div style={{ fontWeight: 800, fontSize: 13, color: C.ink, marginBottom: 6 }}>Detalle del {sel.fecha} <span style={{ fontWeight: 600, color: C.slate, fontSize: 11 }}>· generado {sel.generadoEn ? new Date(sel.generadoEn).toLocaleString("es-CO") : ""}</span></div>
-          {(sel.discrepancias || []).length === 0 ? (
+          {sel.difEf.length === 0 ? (
             <div style={{ fontSize: 12, color: C.green, fontWeight: 700 }}>✓ Todos los lotes del mes cuadran con Busint.</div>
           ) : (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, background: C.white }}>
               <thead>
-                <tr style={{ borderBottom: `2px solid ${C.border}` }}>{th("Lote")}{th("Pedido")}{th("Referencia")}{th("Cortador (ATLAS)")}{th("Busint", true)}{th("ATLAS", true)}{th("Dif.", true)}{th("Tipo")}</tr>
+                <tr style={{ borderBottom: `2px solid ${C.border}` }}>{th("Lote")}{th("Pedido")}{th("Referencia")}{th("Cortador (ATLAS)")}{th("Busint", true)}{th("ATLAS", true)}{th("Dif.", true)}{th("Tipo")}{th("")}</tr>
               </thead>
               <tbody>
-                {sel.discrepancias.map((d, i) => {
+                {sel.difEf.map((d, i) => {
                   const t = TIPOS_AUDITORIA_CORTE[d.tipo] || { texto: d.tipo, icono: "❓", color: C.slate };
                   return (
                     <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
@@ -552,6 +595,9 @@ function AuditoriaCorteBusintPanel({ currentUser }) {
                       <td style={{ padding: "8px 10px", color: t.color, fontWeight: 700, whiteSpace: "nowrap" }}>
                         {t.icono} {t.texto}
                         {d.tipo === "fecha_no_coincide" && <div style={{ fontSize: 10.5, color: C.slate, fontWeight: 600 }}>Busint: {d.fechaBusint} · ATLAS: {(d.fechasAtlas || []).join(", ")}</div>}
+                      </td>
+                      <td style={{ padding: "8px 10px", textAlign: "right" }}>
+                        <button onClick={() => marcarServicio(d)} title="Se ingresa a Busint pero no se corta en ATLAS: no es un error" style={{ padding: "5px 10px", borderRadius: 7, border: `1px solid ${C.violet}`, background: C.white, color: C.violet, fontWeight: 800, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap" }}>🛠 Es servicio de confección</button>
                       </td>
                     </tr>
                   );
@@ -580,6 +626,34 @@ function AuditoriaCorteBusintPanel({ currentUser }) {
           )}
         </div>
       )}
+      <div style={{ marginTop: 16, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+        <div style={{ fontWeight: 800, fontSize: 13, color: C.ink }}>🛠 Lotes de servicio de confección ({marcados.length})</div>
+        <div style={{ fontSize: 11, color: C.slate, margin: "2px 0 8px", maxWidth: 720 }}>
+          Lotes que se ingresan a Busint pero no se cortan en ATLAS (servicio de confección para terceros). No cuentan como diferencia en esta auditoría ni en el correo. Si marcaste uno por error, usa “Quitar”.
+        </div>
+        {marcados.length === 0 ? (
+          <div style={{ fontSize: 12, color: C.slate }}>Todavía no has marcado ningún lote. Usa el botón “Es servicio de confección” en el detalle de una diferencia.</div>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, background: C.white }}>
+            <thead>
+              <tr style={{ borderBottom: `2px solid ${C.border}` }}>{th("Lote")}{th("Pedido")}{th("Referencia")}{th("Unidades Busint", true)}{th("Marcado por")}{th("Fecha")}{th("")}</tr>
+            </thead>
+            <tbody>
+              {[...marcados].sort((a, b) => (b.fechaMarcado || "").localeCompare(a.fechaMarcado || "")).map((m) => (
+                <tr key={m.id} style={{ borderBottom: `1px solid ${C.border}` }}>
+                  <td style={{ padding: "8px 10px", fontWeight: 700 }}>{m.numLote || m.id}</td>
+                  <td style={{ padding: "8px 10px" }}>{m.numPedido || "—"}</td>
+                  <td style={{ padding: "8px 10px" }}>{m.referencia || "—"}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right" }}>{fmtNum(m.unidadesBusint)}</td>
+                  <td style={{ padding: "8px 10px" }}>{m.marcadoPor || "—"}</td>
+                  <td style={{ padding: "8px 10px" }}>{m.fechaMarcado ? new Date(m.fechaMarcado).toLocaleDateString("es-CO") : ""}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right" }}><span onClick={() => quitarServicio(m)} style={{ cursor: "pointer", color: C.red, fontWeight: 700, fontSize: 11 }}>Quitar</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     </div>
   );
 }
