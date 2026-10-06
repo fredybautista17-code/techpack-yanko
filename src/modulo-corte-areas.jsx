@@ -188,6 +188,71 @@ export default function CentroCostoCorteEnAreas({ areaNombre }) {
   const inputSt = { padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" };
   const th = (txt, right) => <th style={{ textAlign: right ? "right" : "left", padding: "8px 10px", fontSize: 11, color: C.slate, textTransform: "uppercase" }}>{txt}</th>;
   const nombrePeriodoUnid = periodo === "dia" ? "Día" : periodo === "anio" ? "Año" : "Mes";
+  // (2026-10-06, a pedido de Fredy) Botón "Descargar Excel": baja lo cortado
+  // del periodo elegido (Día / Mes / Año) en 3 hojas -- "Por pedido" (la tabla
+  // de abajo), "Detalle de cortes" (una fila por referencia de cada corte,
+  // con el precio real de esa referencia) y "Por cortador" (la tabla de
+  // arriba). Los totales y el precio/prenda promedio van con fórmulas.
+  async function descargarExcel() {
+    const XLSX = await import("xlsx");
+    const n = (v, z) => ({ t: "n", v: Number(v) || 0, z: z || "#,##0" });
+    const fx = (f, v, z) => ({ t: "n", f, v: Number(v) || 0, z: z || "#,##0" });
+    const t = (v) => ({ t: "s", v: String(v ?? "") });
+    const hdr = (arr) => arr.map((h) => ({ t: "s", v: h, s: { font: { bold: true } } }));
+    const fechaTxt = (iso) => (iso ? fmtFechaISO(iso) : "");
+    // Hoja 1 — Por pedido
+    const aoa1 = [hdr(["Pedido", "Cliente", "Referencias", "Cortes", "Unidades", "Precio/prenda (promedio)", "Ingreso Corte"])];
+    porPedido.forEach((x, i) => {
+      const r = i + 2;
+      aoa1.push([t(`Pedido ${x.numero}`), t(x.cliente), t(x.refs.join(", ")), n(x.cortes), n(x.unidades), fx(`IF(E${r}>0,G${r}/E${r},0)`, x.unidades > 0 ? x.ingreso / x.unidades : 0), n(x.ingreso)]);
+    });
+    const f1 = porPedido.length + 2;
+    const s1c = porPedido.reduce((a, x) => a + x.cortes, 0);
+    aoa1.push([t("TOTAL"), t(""), t(""), fx(`SUM(D2:D${f1 - 1})`, s1c), fx(`SUM(E2:E${f1 - 1})`, sumPedUnid), fx(`IF(E${f1}>0,G${f1}/E${f1},0)`, sumPedUnid > 0 ? sumPedIng / sumPedUnid : 0), fx(`SUM(G2:G${f1 - 1})`, sumPedIng)]);
+    const ws1 = XLSX.utils.aoa_to_sheet(aoa1);
+    ws1["!cols"] = [{ wch: 14 }, { wch: 26 }, { wch: 60 }, { wch: 8 }, { wch: 11 }, { wch: 22 }, { wch: 16 }];
+    // Hoja 2 — Detalle de cortes (una fila por referencia de cada corte)
+    const aoa2 = [hdr(["Fecha", "Pedido", "Cliente", "Lote", "Referencia", "Cortador", "Unidades", "Precio/prenda", "Ingreso Corte"])];
+    const filasDetalle = [];
+    pedidos.forEach((p) => {
+      (p.cortesRealizados || []).filter((c) => enPeriodo(c.fecha)).forEach((c) => {
+        const refs = c.refs || [];
+        if (refs.length) {
+          refs.forEach((r) => filasDetalle.push({ fecha: c.fecha, pedido: p.numero || p.id, cliente: p.cliente || "", lote: c.lote || "", ref: r.ref || "", cortador: c.cortador || "", unidades: Number(r.total) || 0, precio: Number(r.precio) || 0 }));
+        } else {
+          const u = Number(c.totalUnidades) || 0;
+          filasDetalle.push({ fecha: c.fecha, pedido: p.numero || p.id, cliente: p.cliente || "", lote: c.lote || "", ref: "", cortador: c.cortador || "", unidades: u, precio: u > 0 ? (Number(c.ingresoCorte) || 0) / u : 0 });
+        }
+      });
+    });
+    filasDetalle.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || String(a.pedido).localeCompare(String(b.pedido)));
+    filasDetalle.forEach((d, i) => {
+      const r = i + 2;
+      aoa2.push([t(fechaTxt(d.fecha)), t(`Pedido ${d.pedido}`), t(d.cliente), t(d.lote), t(d.ref), t(d.cortador), n(d.unidades), n(d.precio), fx(`G${r}*H${r}`, d.unidades * d.precio)]);
+    });
+    const f2 = filasDetalle.length + 2;
+    aoa2.push([t("TOTAL"), t(""), t(""), t(""), t(""), t(""), fx(`SUM(G2:G${f2 - 1})`, filasDetalle.reduce((a, d) => a + d.unidades, 0)), t(""), fx(`SUM(I2:I${f2 - 1})`, filasDetalle.reduce((a, d) => a + d.unidades * d.precio, 0))]);
+    const ws2 = XLSX.utils.aoa_to_sheet(aoa2);
+    ws2["!cols"] = [{ wch: 12 }, { wch: 14 }, { wch: 26 }, { wch: 9 }, { wch: 14 }, { wch: 30 }, { wch: 11 }, { wch: 14 }, { wch: 16 }];
+    // Hoja 3 — Por cortador
+    const aoa3 = [hdr(["Cortador", "Unidades", "Ingreso Corte", "Costo Nómina", "Rentabilidad", "Observación"])];
+    filas.forEach((f, i) => {
+      const r = i + 2;
+      aoa3.push([t(f.nombre), n(f.unidades), n(f.ingreso), n(f.costo), fx(`C${r}-D${r}`, f.ingreso - f.costo), t(!f.enNomina ? "no está en nómina" : f.unidades === 0 ? "sin cortes en el periodo" : "")]);
+    });
+    const f3 = filas.length + 2;
+    aoa3.push([t("TOTAL"), fx(`SUM(B2:B${f3 - 1})`, totalUnidades), fx(`SUM(C2:C${f3 - 1})`, totalIngreso), fx(`SUM(D2:D${f3 - 1})`, totalCosto), fx(`C${f3}-D${f3}`, totalIngreso - totalCosto), fx(`IF(D${f3}>0,C${f3}/D${f3},0)`, totalCosto > 0 ? totalIngreso / totalCosto : 0, "0.0%")]);
+    aoa3[0][5] = { t: "s", v: "Observación / % cobertura (total)", s: { font: { bold: true } } };
+    const ws3 = XLSX.utils.aoa_to_sheet(aoa3);
+    ws3["!cols"] = [{ wch: 36 }, { wch: 11 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 30 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws1, "Por pedido");
+    XLSX.utils.book_append_sheet(wb, ws2, "Detalle de cortes");
+    XLSX.utils.book_append_sheet(wb, ws3, "Por cortador");
+    wb.Workbook = { CalcPr: { fullCalcOnLoad: true } };
+    const periodoTexto = etiquetaPeriodo.replace(/[^\w-]+/g, "_");
+    XLSX.writeFile(wb, `Cortes_${periodoTexto}.xlsx`);
+  }
   return (
     <div>
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
@@ -289,7 +354,17 @@ export default function CentroCostoCorteEnAreas({ areaNombre }) {
         </table>
       )}
       <div style={{ marginTop: 34 }}>
-        <h3 style={{ margin: "0 0 4px", fontSize: 18, fontWeight: 900, color: C.ink }}>✂ Ingreso por pedido</h3>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+          <h3 style={{ margin: "0 0 4px", fontSize: 18, fontWeight: 900, color: C.ink }}>✂ Ingreso por pedido</h3>
+          <button
+            onClick={descargarExcel}
+            disabled={cargando || (!porPedido.length && !filas.length)}
+            title={`Descarga lo cortado de ${etiquetaPeriodo}: por pedido, detalle de cortes y por cortador`}
+            style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${C.blue}`, background: C.white, color: C.blue, fontWeight: 800, fontSize: 12.5, cursor: "pointer" }}
+          >
+            📥 Descargar Excel — cortado {etiquetaPeriodo}
+          </button>
+        </div>
         <p style={{ margin: "0 0 10px", fontSize: 13, color: C.slate }}>Pedidos cortados en el periodo — unidades × precio de corte por prenda (los mismos cortes de la tabla de arriba).</p>
         {!porPedido.length ? (
           <div style={{ padding: 24, color: C.slate, fontSize: 13 }}>No hay cortes registrados de ningún pedido en este periodo.</div>
