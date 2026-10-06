@@ -151,6 +151,20 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
   const setV = (fn) => mutar((n) => fn(n.versiones[n.activa].v));
   const setCab = (campo, valor) => mutar((n) => { n[campo] = valor; });
 
+  // Al cambiar el cliente de una cotización NUEVA se cargan también los parámetros
+  // (tasas y costos fijos) de ese cliente; en una ya guardada solo cambia el nombre
+  // (los parámetros se recargan con el botón "Cargar ficha").
+  function cambiarCliente(nuevo) {
+    mutar((n) => {
+      n.cliente = nuevo;
+      if (!inicial.existe) {
+        const f = buscarFicha(parametros, nuevo);
+        const v = n.versiones[n.activa].v;
+        v.tasas = { ...f.tasas };
+        v.fijos = { ...f.fijos };
+      }
+    });
+  }
   function cargarFicha() {
     const f = buscarFicha(parametros, cot.cliente);
     setV((v) => {
@@ -235,8 +249,9 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
         <Campo label="Referencia"><input value={cot.referencia} onChange={(e) => setCab("referencia", e.target.value)} style={inp} placeholder="975093" /></Campo>
         <Campo label="Nombre / descripción"><input value={cot.nombre} onChange={(e) => setCab("nombre", e.target.value)} style={inp} placeholder="Camiseta ..." /></Campo>
         <Campo label="Cliente">
-          <input list="cotizador-clientes" value={cot.cliente} onChange={(e) => setCab("cliente", e.target.value)} style={inp} placeholder="General" />
-          <datalist id="cotizador-clientes">{clientes.map((c) => <option key={c} value={c} />)}</datalist>
+          <select value={cot.cliente || "General"} onChange={(e) => cambiarCliente(e.target.value)} style={inp}>
+            {(clientes.includes(cot.cliente) || !cot.cliente ? clientes : [cot.cliente, ...clientes]).map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
         </Campo>
         <Campo label="Prototipo / cápsula vinculado">
           <button onClick={() => setVincular(true)} style={{ ...inp, textAlign: "left", cursor: "pointer", color: vinculoActual ? C.ink : C.slate }}>
@@ -578,8 +593,9 @@ function ModalImportar({ cotizaciones, parametros, clientes, onImportar, onClose
         <div style={{ fontWeight: 800, fontSize: 17, marginBottom: 4 }}>📥 Importar cotización desde Excel</div>
         <div style={{ fontSize: 12, color: C.slate, marginBottom: 14 }}>Cada hoja del archivo (V1, V2, V3…) se convierte en una versión. Las hojas de la misma referencia quedan en una sola cotización. Comparo el precio del Excel con el que calcula ATLAS para confirmar que coinciden.</div>
         <Campo label="Cliente de esta cotización">
-          <input list="cotizador-clientes-imp" value={cliente} onChange={(e) => setCliente(e.target.value)} style={inp} placeholder="Ej. Kamila" />
-          <datalist id="cotizador-clientes-imp">{clientes.map((c) => <option key={c} value={c} />)}</datalist>
+          <select value={cliente || "General"} onChange={(e) => setCliente(e.target.value)} style={inp}>
+            {clientes.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
         </Campo>
         <div style={{ height: 12 }} />
         <input type="file" accept=".xlsx,.xlsm,.xls" onChange={(e) => leer(e.target.files?.[0])} />
