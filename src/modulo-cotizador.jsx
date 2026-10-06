@@ -6,6 +6,7 @@ import {
   TASAS_BASE, ETIQUETAS_TASAS, FIJOS_BASE, ETIQUETAS_FIJOS, PROCESOS_BASE,
   REGEX_INSUMO_TERMO, num, versionVacia, calcularCotizacion, parsearArchivoCotizacion,
 } from "./cotizador-calculo";
+import { descargarCotizacionesExcel } from "./cotizador-excel";
 
 // ─── COTIZADOR ───────────────────────────────────────────────────────────────
 // (2026-10-06, a pedido de Fredy) Replica la hoja de costos de Excel
@@ -208,6 +209,7 @@ function CotizacionEditor({ inicial, parametros, clientes, protos, capsulas, onG
         {sucio && <Pastilla bg={C.amberBg} color={C.amber}>Cambios sin guardar</Pastilla>}
         <div style={{ flex: 1 }} />
         {cot.id && inicial.existe && <button onClick={() => { if (window.confirm("¿Eliminar esta cotización con todas sus versiones?")) onEliminar(cot); }} style={btn(C.white, C.red, C.red)}>Eliminar</button>}
+        <button onClick={() => descargarCotizacionesExcel([cot], `Cotizacion ${String(cot.referencia || "nueva").replace(/[\\/:*?"<>|]/g, "-")}.xlsx`).catch((e) => notify?.("No se pudo generar el Excel: " + (e.message || e)))} style={btn(C.white, C.blue, C.blue)}>📥 Descargar Excel</button>
         <button onClick={guardar} style={btn(C.green, C.white)}>💾 Guardar versión</button>
       </div>
 
@@ -789,6 +791,7 @@ export default function CotizadorView({ currentUser, config, protos, capsulas, i
             <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar por referencia, nombre o cliente…" style={{ ...inp, maxWidth: 340 }} />
             <div style={{ flex: 1 }} />
             <button onClick={() => setImportar(true)} style={btn(C.white, C.blue, C.blue)}>📥 Importar Excel</button>
+            <button disabled={!filtradas.length} onClick={() => descargarCotizacionesExcel(filtradas, `Cotizaciones ${hoyISO()}.xlsx`).catch((e) => notify?.("No se pudo generar el Excel: " + (e.message || e)))} style={{ ...btn(C.white, C.blue, C.blue), opacity: filtradas.length ? 1 : 0.4 }}>📤 Descargar Excel ({filtradas.length})</button>
             <button onClick={() => setEdit(cotNueva())} style={btn(C.green, C.white)}>+ Nueva cotización</button>
           </div>
           <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflowX: "auto" }}>
