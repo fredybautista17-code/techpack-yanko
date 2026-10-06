@@ -1426,6 +1426,14 @@ function TurnoModal({ turno, onSave, onClose }) {
     dias: turno?.dias || [...DIAS_SEMANA_TURNO],
     sabadoSiFestivo: turno?.sabadoSiFestivo ?? true,
     horarios: turno?.horarios || {},
+    // (2026-10-06, a pedido de Fredy) Descansos del turno (ej. almuerzo):
+    // se restan del tiempo trabajado al medir las horas perdidas por
+    // permisos en Estadisticas de Permisos. Aplican a todos los dias del
+    // turno; vacios = no se descuenta nada.
+    descanso1Inicio: turno?.descanso1Inicio || "",
+    descanso1Fin: turno?.descanso1Fin || "",
+    descanso2Inicio: turno?.descanso2Inicio || "",
+    descanso2Fin: turno?.descanso2Fin || "",
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function toggleDia(d) {
@@ -1436,7 +1444,11 @@ function TurnoModal({ turno, onSave, onClose }) {
   }
   function guardar() {
     if (!form.nombre.trim()) return;
-    onSave({ nombre: form.nombre.trim(), dias: form.dias, sabadoSiFestivo: !!form.sabadoSiFestivo, horarios: form.horarios });
+    onSave({
+      nombre: form.nombre.trim(), dias: form.dias, sabadoSiFestivo: !!form.sabadoSiFestivo, horarios: form.horarios,
+      descanso1Inicio: form.descanso1Inicio || "", descanso1Fin: form.descanso1Fin || "",
+      descanso2Inicio: form.descanso2Inicio || "", descanso2Fin: form.descanso2Fin || "",
+    });
     onClose();
   }
   return (
@@ -1472,6 +1484,18 @@ function TurnoModal({ turno, onSave, onClose }) {
           </div>
         </Field>
       )}
+      <Field label="Descansos del turno (opcional, se restan de las horas trabajadas)">
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {[["1", "descanso1Inicio", "descanso1Fin"], ["2", "descanso2Inicio", "descanso2Fin"]].map(([n, ki, kf]) => (
+            <div key={n} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ width: 70, fontSize: 12, fontWeight: 700, color: C.ink }}>Descanso {n}</div>
+              <input type="time" value={form[ki]} onChange={(e) => set(ki)(e.target.value)} style={{ padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }} />
+              <span style={{ fontSize: 11, color: C.slate }}>a</span>
+              <input type="time" value={form[kf]} onChange={(e) => set(kf)(e.target.value)} style={{ padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }} />
+            </div>
+          ))}
+        </div>
+      </Field>
       <Field label="Sábado">
         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.slate, cursor: "pointer" }}>
           <input type="checkbox" checked={form.sabadoSiFestivo} onChange={(e) => set("sabadoSiFestivo")(e.target.checked)} /> Le corresponde el sábado cuando esa semana tiene un festivo entre semana
@@ -1528,6 +1552,12 @@ function TurnosView({ turnos, trabajadores, isAdmin, onSave, onDelete }) {
           { key: "nombre", label: "Turno" },
           { key: "dias", label: "Días", render: (f) => (f.dias || []).map(labelDiaTurno).join(", ") || "—" },
           { key: "sabadoSiFestivo", label: "Sábado si hay festivo", render: (f) => f.sabadoSiFestivo ? "Sí" : "No" },
+          { key: "descansos", label: "Descansos", render: (f) => {
+            const d = [];
+            if (f.descanso1Inicio && f.descanso1Fin) d.push(`${f.descanso1Inicio}–${f.descanso1Fin}`);
+            if (f.descanso2Inicio && f.descanso2Fin) d.push(`${f.descanso2Inicio}–${f.descanso2Fin}`);
+            return d.length ? d.join(" y ") : "—";
+          } },
           { key: "usos", label: "Trabajadores", align: "right", render: (f) => contarTrabajadores(f.id) },
           ...(isAdmin ? [{
             key: "acciones", label: "", align: "right",
@@ -5427,14 +5457,81 @@ function claveYNombrePersona(registro, trabajadores) {
   const libre = registro.nombreNorm || registro.nombreLibre || registro.nombre || "(sin identificar)";
   return { key: `l:${libre}`, nombre: registro.nombre || registro.nombreLibre || libre, cedula: "" };
 }
-function personasDelArea(area, permisosDelMes, faltasDelMes, retardosDelMes, trabajadores) {
+// (2026-10-06, a pedido de Fredy) Horas perdidas por permisos y su costo.
+// - Permiso CON hora de inicio y fin (ej. 8 a 10): esas horas, menos lo que
+//   se cruce con un descanso del turno de la persona.
+// - Permiso de dia completo: horas del turno de ese dia (salida - entrada)
+//   menos los descansos del turno. Persona sin turno (ni propio ni del
+//   area), o turno sin horario ese dia: HORAS_DIA_SIN_TURNO.
+// - Varios dias: solo los dias que le tocan segun su turno (sin sabado,
+//   domingo ni festivo, igual que diaEsperado).
+// - Costo = horas x sueldo de la ficha / DIVISOR_HORAS_MES_EXTRA (hora
+//   ordinaria). Sin sueldo en la ficha suma horas pero no costo.
+const HORAS_DIA_SIN_TURNO = 8;
+function minutosDeHoraTurno(h) {
+  const m = String(h || "").match(/^(\d{1,2}):(\d{2})/);
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+}
+function descansosDeTurno(turno) {
+  const out = [];
+  [["descanso1Inicio", "descanso1Fin"], ["descanso2Inicio", "descanso2Fin"]].forEach(([ki, kf]) => {
+    const i = minutosDeHoraTurno(turno?.[ki]);
+    const f = minutosDeHoraTurno(turno?.[kf]);
+    if (i != null && f != null && f > i) out.push([i, f]);
+  });
+  return out;
+}
+function minutosDescansoCruzados(turno, desde, hasta) {
+  return descansosDeTurno(turno).reduce((s, [i, f]) => s + Math.max(0, Math.min(f, hasta) - Math.max(i, desde)), 0);
+}
+function horasDiaDeTurno(turno, diaCodigo) {
+  const ent = minutosDeHoraTurno(horaEntradaEsperada(turno, diaCodigo));
+  const sal = minutosDeHoraTurno(horaSalidaEsperada(turno, diaCodigo));
+  if (ent == null || sal == null || sal <= ent) return null;
+  return Math.max(0, sal - ent - minutosDescansoCruzados(turno, ent, sal)) / 60;
+}
+function medirPermisoHorasCosto(a, { trabajadores, areasNomina, turnos }) {
+  const t = a.trabajadorId ? (trabajadores || []).find((x) => x.id === a.trabajadorId) : null;
+  const turno = t ? resolverTurnoDeTrabajador(t, areasNomina, turnos) : null;
+  const desde = a.fechaInicio;
+  const hasta = a.fechaFin || a.fechaInicio;
+  const ini = minutosDeHoraTurno(a.horaInicio);
+  const fin = minutosDeHoraTurno(a.horaFin);
+  const parcial = ini != null && fin != null;
+  let horas = 0;
+  let sinTurno = false;
+  let cursor = desde;
+  let guard = 0;
+  while (cursor && hasta && cursor <= hasta && guard++ < 400) {
+    if (!esFestivoColombia(cursor) && diaEsperado(cursor, turno)) {
+      if (parcial) {
+        horas += Math.max(0, fin - ini - minutosDescansoCruzados(turno, ini, fin)) / 60;
+      } else {
+        const h = horasDiaDeTurno(turno, diaCodigoDeISO(cursor));
+        if (h == null) { horas += HORAS_DIA_SIN_TURNO; sinTurno = true; } else horas += h;
+      }
+    }
+    cursor = siguienteDiaISO(cursor);
+  }
+  const sueldo = Number(t?.sueldo) || 0;
+  return { horas, costo: sueldo > 0 ? (horas * sueldo) / DIVISOR_HORAS_MES_EXTRA : 0, sinTurno, sinSueldo: !(sueldo > 0) };
+}
+function fmtHoras(h) {
+  return `${(Math.round((Number(h) || 0) * 10) / 10).toLocaleString("es-CO")} h`;
+}
+function personasDelArea(area, permisosDelMes, faltasDelMes, retardosDelMes, trabajadores, medidas) {
   const porPersona = new Map();
   function registrar(registro, campo) {
     if (areaDeRegistro(registro, trabajadores) !== area) return;
     const { key, nombre, cedula } = claveYNombrePersona(registro, trabajadores);
-    if (!porPersona.has(key)) porPersona.set(key, { id: key, nombre, cedula, permisos: 0, retardos: 0, faltas: 0, motivos: new Map() });
+    if (!porPersona.has(key)) porPersona.set(key, { id: key, nombre, cedula, permisos: 0, retardos: 0, faltas: 0, horas: 0, costo: 0, motivos: new Map() });
     const p = porPersona.get(key);
     p[campo]++;
+    if (campo === "permisos" && medidas?.has(registro)) {
+      const m = medidas.get(registro);
+      p.horas += m.horas;
+      p.costo += m.costo;
+    }
     if (campo === "permisos" && registro.motivo) p.motivos.set(registro.motivo, (p.motivos.get(registro.motivo) || 0) + 1);
   }
   permisosDelMes.forEach((a) => registrar(a, "permisos"));
@@ -5482,7 +5579,7 @@ function calcularTendencia(actual, anterior) {
   if (pct < 0) return { dir: "down", texto: `▼ ${pct}%` };
   return { dir: "flat", texto: "— igual" };
 }
-function calcularStatsDelPeriodo(prefijoFecha, { ausencias, faltas, retardos, trabajadores, areasNomina }) {
+function calcularStatsDelPeriodo(prefijoFecha, { ausencias, faltas, retardos, trabajadores, areasNomina, turnos }) {
   const esDelPeriodo = (fecha) => (fecha || "").startsWith(prefijoFecha);
   const permisosDelPeriodo = (ausencias || []).filter((a) => esMotivoPermiso(a.motivo) && esDelPeriodo(a.fechaInicio));
   const ausenciasDelPeriodo = (ausencias || []).filter((a) => esDelPeriodo(a.fechaInicio));
@@ -5497,6 +5594,26 @@ function calcularStatsDelPeriodo(prefijoFecha, { ausencias, faltas, retardos, tr
     return porArea;
   }
   const permisosPorArea = contarPorArea(permisosDelPeriodo);
+  // Horas y costo de cada permiso (ver medirPermisoHorasCosto).
+  const medidas = new Map();
+  const horasPorArea = new Map();
+  const costoPorArea = new Map();
+  const personasSinTurno = new Set();
+  const personasSinSueldo = new Set();
+  let horasTotal = 0;
+  let costoTotal = 0;
+  permisosDelPeriodo.forEach((a) => {
+    const m = medirPermisoHorasCosto(a, { trabajadores, areasNomina, turnos });
+    medidas.set(a, m);
+    const area = areaDeRegistro(a, trabajadores);
+    horasPorArea.set(area, (horasPorArea.get(area) || 0) + m.horas);
+    costoPorArea.set(area, (costoPorArea.get(area) || 0) + m.costo);
+    horasTotal += m.horas;
+    costoTotal += m.costo;
+    const { key } = claveYNombrePersona(a, trabajadores);
+    if (m.sinTurno) personasSinTurno.add(key);
+    if (m.sinSueldo) personasSinSueldo.add(key);
+  });
   const retardosPorArea = contarPorArea(retardosDelPeriodo);
   const faltasPorArea = contarPorArea(faltasDelPeriodo);
   const motivoPorArea = new Map(); // area -> Map(motivo -> count)
@@ -5515,6 +5632,8 @@ function calcularStatsDelPeriodo(prefijoFecha, { ausencias, faltas, retardos, tr
       return {
         area,
         permisos: permisosPorArea.get(area) || 0,
+        horas: horasPorArea.get(area) || 0,
+        costo: costoPorArea.get(area) || 0,
         retardos: retardosPorArea.get(area) || 0,
         faltas: faltasPorArea.get(area) || 0,
         motivoTop: motivosOrdenados[0]?.motivo || null,
@@ -5523,13 +5642,16 @@ function calcularStatsDelPeriodo(prefijoFecha, { ausencias, faltas, retardos, tr
       };
     })
     .filter((f) => f.permisos || f.retardos || f.faltas);
-  return { permisosDelPeriodo, faltasDelPeriodo, retardosDelPeriodo, filas };
+  return { permisosDelPeriodo, faltasDelPeriodo, retardosDelPeriodo, filas, medidas, horasTotal, costoTotal, personasSinTurno: personasSinTurno.size, personasSinSueldo: personasSinSueldo.size };
 }
 async function exportarFilasAreaExcel(filas, mes) {
   const XLSX = await import("xlsx");
   const rows = filas.map((f) => ({
     Área: f.area,
     Permisos: f.permisos,
+    "Horas perdidas": Math.round((f.horas || 0) * 10) / 10,
+    "Costo horas perdidas": Math.round(f.costo || 0),
+    "Costo promedio por permiso": f.permisos ? Math.round((f.costo || 0) / f.permisos) : "",
     "Tasa (x 10 trabajadores)": f.tasa ?? "",
     Retardos: f.retardos,
     "Días sin justificar": f.faltas,
@@ -5547,6 +5669,8 @@ async function exportarPersonasAreaExcel(personas, area, etiquetaPeriodo) {
     Nombre: p.nombre,
     Cédula: p.cedula || "",
     Permisos: p.permisos,
+    "Horas perdidas": Math.round((p.horas || 0) * 10) / 10,
+    "Costo horas perdidas": Math.round(p.costo || 0),
     Retardos: p.retardos,
     "Días sin justificar": p.faltas,
     "Motivo más usado": p.motivoTop ? `${p.motivoTop} (${p.motivoTopCount})` : "",
@@ -5556,16 +5680,16 @@ async function exportarPersonasAreaExcel(personas, area, etiquetaPeriodo) {
   XLSX.utils.book_append_sheet(wb, ws, area.slice(0, 31));
   XLSX.writeFile(wb, `${area.replace(/\s+/g, "_")}_${etiquetaPeriodo}.xlsx`);
 }
-function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas, retardos }) {
+function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas, retardos, turnos }) {
   const [mes, setMes] = useState(today().slice(0, 7));
   const [areaDetalle, setAreaDetalle] = useState(null); // nombre del área cuya fila se hizo clic, o null
   const [periodoDetalle, setPeriodoDetalle] = useState("mes"); // "mes" | "anio" -- dentro del detalle
 
   const anio = mes.slice(0, 4);
   const mesAnt = mesAnterior(mes);
-  const statsMes = calcularStatsDelPeriodo(mes, { ausencias, faltas, retardos, trabajadores, areasNomina });
-  const statsMesAnterior = calcularStatsDelPeriodo(mesAnt, { ausencias, faltas, retardos, trabajadores, areasNomina });
-  const statsAnio = calcularStatsDelPeriodo(anio, { ausencias, faltas, retardos, trabajadores, areasNomina });
+  const statsMes = calcularStatsDelPeriodo(mes, { ausencias, faltas, retardos, trabajadores, areasNomina, turnos });
+  const statsMesAnterior = calcularStatsDelPeriodo(mesAnt, { ausencias, faltas, retardos, trabajadores, areasNomina, turnos });
+  const statsAnio = calcularStatsDelPeriodo(anio, { ausencias, faltas, retardos, trabajadores, areasNomina, turnos });
   const headcountPorArea = contarTrabajadoresPorArea(trabajadores);
   const permisosAnteriorPorArea = new Map(statsMesAnterior.filas.map((f) => [f.area, f.permisos]));
 
@@ -5589,6 +5713,10 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
   const totalPermisosMes = statsMes.permisosDelPeriodo.length;
   const totalPermisosAnterior = statsMesAnterior.permisosDelPeriodo.length;
   const tendenciaGeneral = calcularTendencia(totalPermisosMes, totalPermisosAnterior);
+  const trabajadoresActivos = [...headcountPorArea.values()].reduce((s, n) => s + n, 0);
+  const costoPromPermiso = totalPermisosMes > 0 ? statsMes.costoTotal / totalPermisosMes : 0;
+  const horasPromPermiso = totalPermisosMes > 0 ? statsMes.horasTotal / totalPermisosMes : 0;
+  const costoPromTrabajador = trabajadoresActivos > 0 ? statsMes.costoTotal / trabajadoresActivos : 0;
 
   // (2026-10-03, a pedido de Fredy) Alertas automáticas -- dos tipos, para
   // no tener que entrar a revisar: (1) un área cuyos permisos se
@@ -5611,7 +5739,7 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
   const statsDetalle = periodoDetalle === "anio" ? statsAnio : statsMes;
   const filaDetalle = areaDetalle ? statsDetalle.filas.find((f) => f.area === areaDetalle) : null;
   const personasDetalle = areaDetalle
-    ? personasDelArea(areaDetalle, statsDetalle.permisosDelPeriodo, statsDetalle.faltasDelPeriodo, statsDetalle.retardosDelPeriodo, trabajadores)
+    ? personasDelArea(areaDetalle, statsDetalle.permisosDelPeriodo, statsDetalle.faltasDelPeriodo, statsDetalle.retardosDelPeriodo, trabajadores, statsDetalle.medidas)
     : [];
 
   return (
@@ -5654,10 +5782,23 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
         />
       </div>
 
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 8 }}>
+        <KPI icon="⏱️" label="Horas perdidas por permisos" value={fmtHoras(statsMes.horasTotal)} sub={`${totalPermisosMes} permisos en ${fmtMesLabel(mes)}`} color={C.amber} bg={C.amberBg} />
+        <KPI icon="💸" label="Costo de esas horas" value={fmtMoney(statsMes.costoTotal)} sub="sueldo ÷ 210 × horas perdidas" color={C.red} bg={C.redBg} />
+        <KPI icon="📊" label="Costo promedio por permiso" value={fmtMoney(costoPromPermiso)} sub={`${fmtHoras(horasPromPermiso)} por permiso`} color={C.violet} bg={C.violetBg} />
+        <KPI icon="👥" label="Costo promedio por trabajador" value={fmtMoney(costoPromTrabajador)} sub={`${trabajadoresActivos} trabajadores activos`} color={C.blue} bg={C.blueBg} />
+      </div>
+      {(statsMes.personasSinTurno > 0 || statsMes.personasSinSueldo > 0) && (
+        <div style={{ fontSize: 11.5, color: C.slate, marginBottom: 16, maxWidth: 820 }}>
+          {statsMes.personasSinTurno > 0 && <div>⚠️ {statsMes.personasSinTurno} persona(s) con permiso no tienen turno con horario (ni propio ni de su área): se contaron {HORAS_DIA_SIN_TURNO} horas por día. Asígnales un turno con entrada y salida en Nómina → Turnos.</div>}
+          {statsMes.personasSinSueldo > 0 && <div>⚠️ {statsMes.personasSinSueldo} persona(s) con permiso no tienen sueldo en su ficha: suman horas pero no costo.</div>}
+        </div>
+      )}
+
       <Tabla
         vacio="Sin datos para este mes."
         columnas={[
-          { key: "area", label: "Área" },
+          { key: "area", label: "Área", render: (f) => (f.esTotal ? <strong>{f.area}</strong> : f.area) },
           {
             key: "permisos", label: "Permisos", align: "right",
             render: (f) => (
@@ -5667,17 +5808,23 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
               </div>
             ),
           },
-          { key: "retardos", label: "Retardos", align: "right" },
-          { key: "faltas", label: "Días sin justificar", align: "right" },
+          { key: "horas", label: "Horas perdidas", align: "right", render: (f) => (f.esTotal ? <strong>{fmtHoras(f.horas)}</strong> : fmtHoras(f.horas)) },
+          { key: "costo", label: "Costo", align: "right", render: (f) => (f.esTotal ? <strong>{fmtMoney(f.costo)}</strong> : fmtMoney(f.costo)) },
+          { key: "costoProm", label: "Costo prom. / permiso", align: "right", render: (f) => (f.permisos ? fmtMoney(f.costo / f.permisos) : "—") },
+          { key: "retardos", label: "Retardos", align: "right", render: (f) => (f.esTotal ? "" : f.retardos) },
+          { key: "faltas", label: "Días sin justificar", align: "right", render: (f) => (f.esTotal ? "" : f.faltas) },
           {
             key: "tendencia", label: "Tendencia", align: "right",
-            render: (f) => f.tendencia.texto,
-            color: (f) => (f.tendencia.dir === "up" ? C.red : f.tendencia.dir === "down" ? C.green : C.slate),
+            render: (f) => (f.esTotal ? "" : f.tendencia.texto),
+            color: (f) => (f.esTotal ? C.slate : f.tendencia.dir === "up" ? C.red : f.tendencia.dir === "down" ? C.green : C.slate),
           },
-          { key: "motivoTop", label: "Motivo más frecuente", render: (f) => f.motivoTop ? `${f.motivoTop} (${f.motivoTopCount})` : "—" },
+          { key: "motivoTop", label: "Motivo más frecuente", render: (f) => f.esTotal ? "" : (f.motivoTop ? `${f.motivoTop} (${f.motivoTopCount})` : "—") },
         ]}
-        filas={filas.sort((a, b) => a.area.localeCompare(b.area))}
-        onRowClick={(f) => { setAreaDetalle(f.area); setPeriodoDetalle("mes"); }}
+        filas={[
+          ...filas.sort((a, b) => a.area.localeCompare(b.area)),
+          ...(filas.length ? [{ area: "TOTAL FÁBRICA", esTotal: true, permisos: totalPermisosMes, horas: statsMes.horasTotal, costo: statsMes.costoTotal }] : []),
+        ]}
+        onRowClick={(f) => { if (f.esTotal) return; setAreaDetalle(f.area); setPeriodoDetalle("mes"); }}
       />
       <div style={{ fontSize: 11, color: C.slate, marginTop: 8 }}>Haz clic en una fila para ver los motivos, las personas y el acumulado del año de esa área.</div>
 
@@ -5732,6 +5879,8 @@ function EstadisticasPermisosView({ areasNomina, trabajadores, ausencias, faltas
                 ),
               },
               { key: "permisos", label: "Permisos", align: "right" },
+              { key: "horas", label: "Horas perdidas", align: "right", render: (p) => fmtHoras(p.horas) },
+              { key: "costo", label: "Costo", align: "right", render: (p) => fmtMoney(p.costo) },
               { key: "retardos", label: "Retardos", align: "right" },
               { key: "faltas", label: "Días sin justificar", align: "right" },
               { key: "motivoTop", label: "Motivo más usado", render: (p) => p.motivoTop ? `${p.motivoTop} (${p.motivoTopCount})` : "—" },
@@ -14258,7 +14407,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           {subView === "permisos" && <PermisosCalendarioView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} ausencias={ausenciasVisibles} currentUser={currentUser} isAdmin={isAdmin} motivosDisponibles={nombresMotivosDisponibles} motivoIcono={iconoPorMotivo} onSave={guardarAusencia} onDelete={borrarAusencia} />}
           {subView === "anomalias_huellero" && puedeVerAnomaliasHuellero && <AnomaliasHuelleroView anomalias={anomaliasVisibles} retardos={retardosVisibles} onAjustar={ajustarAnomaliaHuellero} />}
           {subView === "historial_asistencia_area" && <HistorialAsistenciaAreaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausenciasVisibles} anomalias={anomaliasVisibles} retardos={retardosVisibles} turnos={turnos} />}
-          {subView === "estadisticas_permisos" && !areaLider && !soloNovedades && <EstadisticasPermisosView areasNomina={areasNomina} trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} retardos={retardosHuellero} />}
+          {subView === "estadisticas_permisos" && !areaLider && !soloNovedades && <EstadisticasPermisosView areasNomina={areasNomina} trabajadores={trabajadores} ausencias={ausencias} faltas={faltasSinJustificar} retardos={retardosHuellero} turnos={turnos} />}
           {subView === "tabulador_asistencia" && <TabuladorAsistenciaView areasNomina={areasNomina} trabajadores={trabajadoresVisibles} areaLider={areaLider} turnos={turnos} ausencias={ausenciasVisibles} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} onGuardar={guardarAsistenciaManual} />}
           {subView === "fiscal" && !areaLider && !soloNovedades && <NominaFiscalView areasNomina={areasNomina} trabajadores={trabajadores} faltas={faltasSinJustificar} ausencias={ausencias} motivosDisponibles={nombresMotivosDisponibles} onJustificarFalta={justificarFaltaDesdeNomina} onLimpiarFaltaJustificada={limpiarFaltaYaJustificada} diasTrabajados={diasTrabajadosHuellero} liquidaciones={liquidacionesF} onGuardarTrabajador={guardarTrabajador} onGuardarLiquidacion={guardarLiquidacionF} lotesConCobros={lotesConCobrosTotal} onMarcarCobrosCobrados={marcarCobrosComoCobrados} isAdmin={isAdmin} onAbrirQuincena={abrirQuincenaParaEditar} turnos={turnos} horas={horas} deduccionesTrabajador={deduccionesTrabajador} causacionManual={causacionManual} horasExtras={horasExtras} bonificaciones={bonificaciones} onEliminarLiquidacion={eliminarLiquidacionF} />}
           {subView === "historial_fiscal" && !areaLider && !soloNovedades && <HistorialFiscalView liquidaciones={liquidacionesF} trabajadores={trabajadores} />}
