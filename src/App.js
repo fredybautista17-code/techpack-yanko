@@ -8,6 +8,7 @@ import ModuloPlanta from "./modulo-planta";
 import ModuloBodega from "./modulo-bodega";
 import ModuloNomina from "./modulo-nomina";
 import ModuloInformes from "./modulo-informes";
+import CotizadorView from "./modulo-cotizador";
 import { initializeApp } from "firebase/app";
 import {
   getFirestore,
@@ -2436,7 +2437,7 @@ function ObservacionesCapsulaModal({ capsula, currentUser, role, perms, onSend, 
     </Modal>
   );
 }
-function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, onPromote, onPasarAPreorden, notify, onLogHistorial, capsula, stages, currentUser, config, cronogramaMuestras, onSendTaller, onUpdateTaller, onCrearEnvio, protos }) {
+function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, onPromote, onPasarAPreorden, notify, onLogHistorial, capsula, stages, currentUser, config, cronogramaMuestras, onSendTaller, onUpdateTaller, onCrearEnvio, protos, onCotizar }) {
   const [tab, setTab] = useState("overview");
   const [showEdit, setShowEdit] = useState(false);
   const [showEnviado, setShowEnviado] = useState(false);
@@ -2729,6 +2730,7 @@ function DetailView({ item, kind, role, perms, capsulas, onBack, onUpdateItem, o
                 ) : (
                   <Btn variant="ghost" onClick={() => setShowPrecioCotizacion(true)}>💲 Precio</Btn>
                 )}
+                {onCotizar && <Btn variant="ghost" onClick={() => onCotizar(item, kind, capsula)}>🧮 Cotizar</Btn>}
                 {st === "enviado_cotizacion" && <button onClick={() => changeStatus("enviar_cliente")} style={{ padding: "9px 18px", background: "#ECFEFF", color: "#0E7490", border: "1.5px solid #0E7490", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>✈ Enviar al Cliente</button>}
                 {/* Un prototipo suelto sigue enviándose solo (abre el modal de
                     Registrar Envío de una vez). Una referencia DENTRO de una
@@ -12462,6 +12464,7 @@ function AdminView({ config, onUpdateConfig, users, onUpdateUsers, protos, capsu
     ["corte", "✂ Corte"],
     ["historial", "🕘 Historial"],
     ["cronograma_muestras", "🧵 Cronograma de Muestras"],
+    ["cotizador", "🧮 Cotizaciones (cotizar y aplicar precios)"],
     ["bitacora", "📜 Bitácoras"],
     ["stats", "📊 Estadísticas"],
     ["observaciones", "💬 Observaciones"],
@@ -16095,6 +16098,8 @@ function AppInner() {
   const [selProtoId, setSelProtoId] = useState(null);
   const [selCapId, setSelCapId] = useState(null);
   const [selRefId, setSelRefId] = useState(null);
+  // Datos del prototipo/referencia desde el que se abrió el Cotizador (botón "🧮 Cotizar").
+  const [cotizadorInicio, setCotizadorInicio] = useState(null);
   const [selPedidoId, setSelPedidoId] = useState(null);
   const [modal, setModal] = useState(null);
   const [showCambiarClave, setShowCambiarClave] = useState(false);
@@ -16386,6 +16391,21 @@ function AppInner() {
       tx.set(capRef, { ...real, referencias }, { merge: true });
     });
     if (patch.status === "enviado") syncCronogramaEnviado(refId);
+  }
+  // (2026-10-06, a pedido de Fredy) Cotizador: el precio CON IVA calculado se
+  // guarda en `precioCotizacion` del prototipo o de la referencia de cápsula,
+  // el mismo campo que ya usan "💲 Precio" y la Preorden.
+  async function aplicarPrecioCotizador(destino, valor) {
+    if (destino.kind === "proto") await updateProto(destino.id, { precioCotizacion: valor });
+    else await updateRef(destino.capsulaId, destino.id, { precioCotizacion: valor });
+  }
+  function abrirCotizadorDesde(item, kind, capsula) {
+    setCotizadorInicio({
+      kind, id: item.id, capsulaId: capsula?.id, reference: item.reference || "", name: item.name || "",
+      cliente: kind === "proto" ? (item.cliente || item.colores?.[0] || "") : (capsula ? capsulaCliente(capsula) || "" : ""),
+      label: `${item.reference || "s/ref"} · ${item.name || ""}`.trim() + (capsula ? ` — ${capsula.name}` : ""),
+    });
+    setView("cotizaciones");
   }
   // --- Bitácora de Envíos ---
   // Un registro de bitácora agrupa VARIAS referencias/prototipos enviados
@@ -17040,6 +17060,8 @@ function AppInner() {
   const canAccessObservaciones = moduloVisible(userRoleData, "observaciones", currentUser?.isAdmin);
   const canAccessHistorial = moduloVisible(userRoleData, "historial", currentUser?.isAdmin);
   const canAccessCronograma = moduloVisible(userRoleData, "cronograma_muestras", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "cronograma_muestras");
+  // (2026-10-06, a pedido de Fredy) Cotizador: llave propia, no implícita en "diseno".
+  const canAccessCotizador = moduloVisible(userRoleData, "cotizador", currentUser?.isAdmin);
   const canAccessBitacora = moduloVisible(userRoleData, "bitacora", currentUser?.isAdmin) && moduloVisibleParaCliente(currentUser, "bitacora");
   // (2026-09-24, a pedido de Fredy) "Producción": pantalla pensada para
   // exponerse directamente a un usuario Cliente puntual (agrupado por
@@ -17146,7 +17168,7 @@ function AppInner() {
   // KPIs ya NO cuenta para canAccessDiseno — es su propia área de nivel
   // superior en el menú (ver AREAS abajo), porque cubre toda la compañía
   // (Corte, Ventas, Contabilidad, Planeación...), no solo Diseño.
-  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessStats || canAccessHistorial || canAccessCronograma || canAccessBitacora || canAccessAdminDiseno || !!currentUser?.isAdmin;
+  const canAccessDiseno = canAccessProtos || canAccessCapsulas || canAccessStats || canAccessHistorial || canAccessCronograma || canAccessCotizador || canAccessBitacora || canAccessAdminDiseno || !!currentUser?.isAdmin;
   // Pedidos (Pedidos, Clientes, Admin Pedidos) tenía sus 3 secciones
   // dispersas dentro del menú de Diseño, mezcladas con Prototipos/Historial/
   // Bitácoras/Corte — quedaba desordenado. Ahora es su propia área de nivel
@@ -17171,6 +17193,7 @@ function AppInner() {
             ...(canAccessHistorial ? [{ id: "historial", icon: "🕘", label: "Historial" }] : []),
             ...(canAccessBitacora ? [{ id: "bitacora", icon: "📜", label: "Bitácoras" }] : []),
             ...(canAccessCronograma ? [{ id: "cronograma_muestras", icon: "🧵", label: "Cronograma de Muestras" }] : []),
+            ...(canAccessCotizador ? [{ id: "cotizaciones", icon: "🧮", label: "Cotizaciones" }] : []),
             // "Administrador General" siempre queda al final de la lista, sin
             // importar qué otras secciones estén visibles para el rol.
             ...(canAccessAdminDiseno ? [{ id: "admin", icon: "⚙", label: "Administrador General" }] : []),
@@ -17462,6 +17485,7 @@ function AppInner() {
                     else if (canAccessHistorial) setView("historial");
                     else if (canAccessBitacora) setView("bitacora");
                     else if (canAccessCronograma) setView("cronograma_muestras");
+                    else if (canAccessCotizador) setView("cotizaciones");
                     else if (canAccessCorte) setModuloActivo("corte");
                   }
                   else { setView(id); }
@@ -17532,7 +17556,7 @@ function AppInner() {
               />
             )}
             {view === "proto-detail" && selProto && (
-              <DetailView item={selProto} kind="proto" role={role} perms={perms} capsulas={capsulas}
+              <DetailView item={selProto} kind="proto" onCotizar={canAccessCotizador ? abrirCotizadorDesde : undefined} role={role} perms={perms} capsulas={capsulas}
                 onBack={() => setView("protos")}
                 onUpdateItem={(p) => updateProto(selProto.id, p)}
                 onPromote={(p) => { setPromoteProto(p); setModal("promote"); }}
@@ -17543,7 +17567,7 @@ function AppInner() {
               />
             )}
             {view === "ref-detail" && selRef && selCap && (
-              <DetailView item={selRef} kind="ref" role={role} perms={perms} capsulas={capsulas} capsula={selCap} protos={protos}
+              <DetailView item={selRef} kind="ref" onCotizar={canAccessCotizador ? abrirCotizadorDesde : undefined} role={role} perms={perms} capsulas={capsulas} capsula={selCap} protos={protos}
                 onBack={() => setView("capsulas")}
                 onUpdateItem={(p) => updateRef(selCap.id, selRef.id, p)}
                 onPasarAPreorden={(ref) => pasarAPreorden(selCap, ref)}
@@ -17644,6 +17668,12 @@ function AppInner() {
                   else if (entry.kind === "ref") { setSelCapId(entry.capsulaId); setSelRefId(entry.itemId); setView("ref-detail"); }
                 }}
               />
+            )}
+            {view === "cotizaciones" && canAccessCotizador && (
+              <CotizadorView currentUser={currentUser} config={config} protos={protosVisibles} capsulas={capsulasVisibles}
+                iniciarDesde={cotizadorInicio} onIniciarConsumido={() => setCotizadorInicio(null)}
+                onAplicarPrecio={aplicarPrecioCotizador}
+                notify={(msg) => notify({ id: uid(), icon: "🧮", title: "Cotizador", msg })} />
             )}
             {view === "admin" && (currentUser?.isAdmin || canAccessAdminDiseno) && (
               <AdminView config={config} onUpdateConfig={saveConfig} users={users} onUpdateUsers={saveUsers} protos={protos} capsulas={capsulas}
