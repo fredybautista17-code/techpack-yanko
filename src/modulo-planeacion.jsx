@@ -10,7 +10,7 @@ import {
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
-import CentroCostoCorteEnAreas from "./modulo-corte-areas";
+import CentroCostoCorteEnAreas, { CentroCostoCierreCorte } from "./modulo-corte-areas";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -6673,7 +6673,9 @@ export function AreasStandalone({ currentUser, onVolver, onLogout, puedeCentroCo
                 />
               )}
               {seccion === "cierre" && PERMISO_TAB.cierre && (
-                <CentroCostoCierreView area={areaActual?.nombre} trabajadores={trabajadores} produccion={produccion} currentUser={currentUser} />
+                String(areaActual?.nombre || "").trim().toUpperCase() === "CORTE"
+                  ? <CentroCostoCierreCorte currentUser={currentUser} />
+                  : <CentroCostoCierreView area={areaActual?.nombre} trabajadores={trabajadores} produccion={produccion} currentUser={currentUser} />
               )}
             </div>
           )}

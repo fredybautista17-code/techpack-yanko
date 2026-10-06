@@ -6424,6 +6424,54 @@ exports.auditoriaBusintVsNomina = onSchedule(
   }
 );
 
+// (2026-10-06, a pedido de Fredy) Auditoría Corte vs Busint -- ver
+// functions/auditoria-corte.js (qué compara y por qué solo el mes en curso).
+// Corre sola todos los días a las 7:30am (Zona Calor/Control de Calidad
+// corren a las 7:00am, así no chocan) y guarda el resultado en
+// centro_costo_auditoria_corte, que se ve en Áreas → Centro de Costo Cierre
+// → CORTE. Usa los secretos de Busint del panel de lotes (BUSINT_TOKEN /
+// BUSINT_BASE_URL, los mismos de getCargaPlaneacionDesdeBusintGen) y los del
+// correo.
+const { crearAuditoriaCorte } = require("./auditoria-corte");
+const { correrAuditoriaCorteVsBusint } = crearAuditoriaCorte({
+  db,
+  logger,
+  fechaHoyBogota,
+  obtenerLotesPlaneacionDesdeBusint,
+  crearTransporte,
+  mandarCorreo,
+  agregarSeccionNotificacion,
+});
+
+exports.auditoriaCorteVsBusint = onSchedule(
+  {
+    schedule: "every day 07:30",
+    timeZone: "America/Bogota",
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL, EMAIL_USER, EMAIL_APP_PASSWORD],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async () => {
+    const resultado = await correrAuditoriaCorteVsBusint({ inmediato: false });
+    logger.info("Auditoria Corte vs Busint completada", resultado);
+  }
+);
+
+// Botón "Correr auditoría ahora" (solo admin) de Centro de Costo Cierre →
+// CORTE. Recalcula y guarda el resultado de hoy, pero NO manda correo (el
+// aviso solo sale en la corrida automática de las 7:30am).
+exports.correrAuditoriaCorteVsBusintAhora = onCall(
+  {
+    secrets: [BUSINT_TOKEN, BUSINT_BASE_URL],
+    timeoutSeconds: 300,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    return await correrAuditoriaCorteVsBusint({ sinNotificar: true });
+  }
+);
+
 const RECIPIENTES_APOYO = ["Dayana", "Karen", "Yuliana"];
 
 // (2026-09-14, a pedido de Fredy) Reporte diario de asistencia -- estas 3
@@ -6620,6 +6668,22 @@ exports.obtenerResumenNotificacionesProgramadas = onCall({ timeoutSeconds: 60, m
         tipo: "correo",
         destinatariosPorArea,
         destinatariosExtra: extrasDe("auditoriaBusintVsNomina"),
+      },
+      {
+        id: "auditoriaCorteVsBusint",
+        nombre: "Auditoría Corte vs. Busint",
+        descripcion: "Cruza los cortes registrados en ATLAS contra lo que Busint reporta cortado (mes en curso); si hay diferencias, avisa a quien tenga el área CORTE asignada (o a los administradores si nadie la tiene).",
+        horario: "Se calcula 7:30 a.m. · se envía en el resumen consolidado de las 7:00 p.m.",
+        tipo: "correo",
+        destinatariosPorArea: ["CORTE"].map((nombreArea) => {
+          const asignados = usuarios.filter((u) => u.areaNomina === nombreArea && u.email);
+          return {
+            area: nombreArea,
+            usaRespaldoAdmin: asignados.length === 0,
+            destinatarios: asignados.length ? paraDestino(asignados) : paraDestino(admins),
+          };
+        }),
+        destinatariosExtra: extrasDe("auditoriaCorteVsBusint"),
       },
       {
         id: "correoDespachosDiarios",
