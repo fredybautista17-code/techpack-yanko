@@ -10,6 +10,7 @@ import {
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
+import CentroCostoCorteEnAreas from "./modulo-corte-areas";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -5063,6 +5064,13 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
       return;
     }
     await fsDelete("centro_costo_ventas", v.id);
+  }
+  // (2026-10-06, a pedido de Fredy) Para el área CORTE se muestra la misma
+  // pantalla que "Centro de Costo — Corte" del módulo de Corte (ver
+  // modulo-corte-areas.jsx). Va después de TODOS los hooks de esta vista a
+  // propósito (return temprano seguro) -- las demás áreas siguen igual.
+  if (String(areaSel || "").trim().toUpperCase() === "CORTE") {
+    return <CentroCostoCorteEnAreas areaNombre={areaSel} />;
   }
   return (
     <div>
