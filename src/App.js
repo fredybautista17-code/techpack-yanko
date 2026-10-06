@@ -4198,6 +4198,27 @@ function etiquetaNumeroOrden(p) {
   const num = String(p.numeroOrden).padStart(2, "0");
   return p.origenPantalla === "reprogramacion" ? `Reprogramación N°-${num}` : `Orden N°-${num}`;
 }
+// (2026-10-06, a pedido de Fredy) Solo Kamila maneja Colombia + Venezuela en
+// las Preórdenes/Órdenes. Cualquier otro cliente es de UN SOLO cliente: la
+// curva y la cantidad llevan el nombre del cliente (se guardan en los mismos
+// campos colombiaCurva/colombiaCantidad, sin cambiar los datos) y las columnas
+// de Venezuela quedan vacías. Sin cliente elegido todavía se muestra todo.
+function esClienteDosPaises(cliente) {
+  const c = String(cliente || "").trim();
+  return !c || /[kc]amila/i.test(c);
+}
+function etiquetasPaises(cliente) {
+  const dos = esClienteDosPaises(cliente);
+  const c = String(cliente || "").trim();
+  return { dos, curva: dos ? "Curva Colombia" : `Curva ${c}`, cantidad: dos ? "Cantidad Colombia" : `Cantidad ${c}` };
+}
+function tituloColumnaPaises(h, cliente) {
+  if (esClienteDosPaises(cliente)) return h;
+  const c = String(cliente || "").trim();
+  if (h === "Curva Col.") return `Curva ${c}`;
+  if (h === "Cant. Col.") return `Cant. ${c}`;
+  return h;
+}
 function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, currentUser, onAddCapsula, onAddRef, onGuardar, onCancelar, historial }) {
   const [header, setHeader] = useState({ cliente: "", numPedido: "", nombre: "" });
   const esCliente = currentUser?.role === "Cliente";
@@ -4435,13 +4456,13 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
             )}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
               <Field label="Tipo (Dama/Caballero/Niño)"><FInput value={manual.tipo || resultado.datosBusint.tipo} onChange={(v) => setManual((m) => ({ ...m, tipo: v }))} placeholder="Si no se clasificó" /></Field>
-              <Field label="Curva Colombia"><FInput value={manual.colombiaCurva} onChange={(v) => setManual((m) => ({ ...m, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
-              <Field label="Cantidad Colombia"><FInput value={manual.colombiaCantidad} onChange={(v) => setManual((m) => ({ ...m, colombiaCantidad: v }))} placeholder="0" /></Field>
+              <Field label={etiquetasPaises(header.cliente).curva}><FInput value={manual.colombiaCurva} onChange={(v) => setManual((m) => ({ ...m, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+              <Field label={etiquetasPaises(header.cliente).cantidad}><FInput value={manual.colombiaCantidad} onChange={(v) => setManual((m) => ({ ...m, colombiaCantidad: v }))} placeholder="0" /></Field>
               <Field label="Precio"><FInput value={manual.precio} onChange={(v) => setManual((m) => ({ ...m, precio: v }))} placeholder="0" /></Field>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr", gap: 10, marginBottom: 14 }}>
-              <Field label="Curva Venezuela"><FInput value={manual.venezuelaCurva} onChange={(v) => setManual((m) => ({ ...m, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
-              <Field label="Cantidad Venezuela"><FInput value={manual.venezuelaCantidad} onChange={(v) => setManual((m) => ({ ...m, venezuelaCantidad: v }))} placeholder="0" /></Field>
+            <div style={{ display: "grid", gridTemplateColumns: esClienteDosPaises(header.cliente) ? "1fr 1fr 2fr" : "1fr", gap: 10, marginBottom: 14 }}>
+              {esClienteDosPaises(header.cliente) && <Field label="Curva Venezuela"><FInput value={manual.venezuelaCurva} onChange={(v) => setManual((m) => ({ ...m, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>}
+              {esClienteDosPaises(header.cliente) && <Field label="Cantidad Venezuela"><FInput value={manual.venezuelaCantidad} onChange={(v) => setManual((m) => ({ ...m, venezuelaCantidad: v }))} placeholder="0" /></Field>}
               <Field label="Obs. Cliente"><FInput value={manual.observacionesCliente} onChange={(v) => setManual((m) => ({ ...m, observacionesCliente: v }))} placeholder="Opcional" /></Field>
             </div>
             <Btn onClick={agregarFila}>+ Agregar a la preorden</Btn>
@@ -4496,7 +4517,7 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
               <thead>
                 <tr style={{ background: T.ink }}>
                   {["Ref", "Nombre", "Categoría", "Consumo", "Tipo", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Cant. Total", "Precio", ""].map((h) => (
-                    <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                    <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{tituloColumnaPaises(h, header.cliente)}</th>
                   ))}
                 </tr>
               </thead>
@@ -4510,8 +4531,8 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
                     <td style={{ padding: "6px 10px" }}>{f._tipo || "—"}</td>
                     <td style={{ padding: "6px 10px" }}>{f._colombiaCurva || "—"}</td>
                     <td style={{ padding: "6px 10px" }}>{f._colombiaCantidad || "—"}</td>
-                    <td style={{ padding: "6px 10px" }}>{f._venezuelaCurva || "—"}</td>
-                    <td style={{ padding: "6px 10px" }}>{f._venezuelaCantidad || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{esClienteDosPaises(header.cliente) ? (f._venezuelaCurva || "—") : ""}</td>
+                    <td style={{ padding: "6px 10px" }}>{esClienteDosPaises(header.cliente) ? (f._venezuelaCantidad || "—") : ""}</td>
                     <td style={{ padding: "6px 10px", fontWeight: 700 }}>{(Number(f._colombiaCantidad) || 0) + (Number(f._venezuelaCantidad) || 0)}</td>
                     <td style={{ padding: "6px 10px" }}>{f._precio || "—"}</td>
                     <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
@@ -4548,13 +4569,13 @@ function NuevaReprogramacionView({ capsulas, pedidos, preordenes, config, curren
         <Modal title={`Editar — ${filas[editandoIdx]?.reference || ""}`} onClose={() => { setEditandoIdx(null); setEditForm(null); }} width={560}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
             <Field label="Tipo (Dama/Caballero/Niño)"><FInput value={editForm.tipo} onChange={(v) => setEditForm((f) => ({ ...f, tipo: v }))} placeholder="Si no se clasificó" /></Field>
-            <Field label="Curva Colombia"><FInput value={editForm.colombiaCurva} onChange={(v) => setEditForm((f) => ({ ...f, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
-            <Field label="Cantidad Colombia"><FInput value={editForm.colombiaCantidad} onChange={(v) => setEditForm((f) => ({ ...f, colombiaCantidad: v }))} placeholder="0" /></Field>
+            <Field label={etiquetasPaises(header.cliente).curva}><FInput value={editForm.colombiaCurva} onChange={(v) => setEditForm((f) => ({ ...f, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+            <Field label={etiquetasPaises(header.cliente).cantidad}><FInput value={editForm.colombiaCantidad} onChange={(v) => setEditForm((f) => ({ ...f, colombiaCantidad: v }))} placeholder="0" /></Field>
             <Field label="Precio"><FInput value={editForm.precio} onChange={(v) => setEditForm((f) => ({ ...f, precio: v }))} placeholder="0" /></Field>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr", gap: 10, marginBottom: 20 }}>
-            <Field label="Curva Venezuela"><FInput value={editForm.venezuelaCurva} onChange={(v) => setEditForm((f) => ({ ...f, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
-            <Field label="Cantidad Venezuela"><FInput value={editForm.venezuelaCantidad} onChange={(v) => setEditForm((f) => ({ ...f, venezuelaCantidad: v }))} placeholder="0" /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: esClienteDosPaises(header.cliente) ? "1fr 1fr 2fr" : "1fr", gap: 10, marginBottom: 20 }}>
+            {esClienteDosPaises(header.cliente) && <Field label="Curva Venezuela"><FInput value={editForm.venezuelaCurva} onChange={(v) => setEditForm((f) => ({ ...f, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>}
+            {esClienteDosPaises(header.cliente) && <Field label="Cantidad Venezuela"><FInput value={editForm.venezuelaCantidad} onChange={(v) => setEditForm((f) => ({ ...f, venezuelaCantidad: v }))} placeholder="0" /></Field>}
             <Field label="Obs. Cliente"><FInput value={editForm.observacionesCliente} onChange={(v) => setEditForm((f) => ({ ...f, observacionesCliente: v }))} placeholder="Opcional" /></Field>
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
@@ -4863,13 +4884,13 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
             )}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
               <Field label="Tipo (Dama/Caballero/Niño)"><FInput value={manual.tipo || resultado.datosBusint.tipo} onChange={(v) => setManual((m) => ({ ...m, tipo: v }))} placeholder="Si no se clasificó" /></Field>
-              <Field label="Curva Colombia"><FInput value={manual.colombiaCurva} onChange={(v) => setManual((m) => ({ ...m, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
-              <Field label="Cantidad Colombia"><FInput value={manual.colombiaCantidad} onChange={(v) => setManual((m) => ({ ...m, colombiaCantidad: v }))} placeholder="0" /></Field>
+              <Field label={etiquetasPaises(header.cliente).curva}><FInput value={manual.colombiaCurva} onChange={(v) => setManual((m) => ({ ...m, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+              <Field label={etiquetasPaises(header.cliente).cantidad}><FInput value={manual.colombiaCantidad} onChange={(v) => setManual((m) => ({ ...m, colombiaCantidad: v }))} placeholder="0" /></Field>
               <Field label="Precio"><FInput value={manual.precio} onChange={(v) => setManual((m) => ({ ...m, precio: v }))} placeholder="0" /></Field>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr", gap: 10, marginBottom: 14 }}>
-              <Field label="Curva Venezuela"><FInput value={manual.venezuelaCurva} onChange={(v) => setManual((m) => ({ ...m, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
-              <Field label="Cantidad Venezuela"><FInput value={manual.venezuelaCantidad} onChange={(v) => setManual((m) => ({ ...m, venezuelaCantidad: v }))} placeholder="0" /></Field>
+            <div style={{ display: "grid", gridTemplateColumns: esClienteDosPaises(header.cliente) ? "1fr 1fr 2fr" : "1fr", gap: 10, marginBottom: 14 }}>
+              {esClienteDosPaises(header.cliente) && <Field label="Curva Venezuela"><FInput value={manual.venezuelaCurva} onChange={(v) => setManual((m) => ({ ...m, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>}
+              {esClienteDosPaises(header.cliente) && <Field label="Cantidad Venezuela"><FInput value={manual.venezuelaCantidad} onChange={(v) => setManual((m) => ({ ...m, venezuelaCantidad: v }))} placeholder="0" /></Field>}
               <Field label="Obs. Cliente"><FInput value={manual.observacionesCliente} onChange={(v) => setManual((m) => ({ ...m, observacionesCliente: v }))} placeholder="Opcional" /></Field>
             </div>
             <Btn onClick={agregarFila}>+ Agregar a la preorden</Btn>
@@ -4924,7 +4945,7 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
               <thead>
                 <tr style={{ background: T.ink }}>
                   {["Foto", "Ref", "Nombre", "Categoría", "Silueta", "Rango", "Tela", "Consumo", "Tipo", "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Cant. Total", "Precio", ""].map((h) => (
-                    <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                    <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{tituloColumnaPaises(h, header.cliente)}</th>
                   ))}
                 </tr>
               </thead>
@@ -4942,8 +4963,8 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
                     <td style={{ padding: "6px 10px" }}>{f._tipo || "—"}</td>
                     <td style={{ padding: "6px 10px" }}>{f._colombiaCurva || "—"}</td>
                     <td style={{ padding: "6px 10px" }}>{f._colombiaCantidad || "—"}</td>
-                    <td style={{ padding: "6px 10px" }}>{f._venezuelaCurva || "—"}</td>
-                    <td style={{ padding: "6px 10px" }}>{f._venezuelaCantidad || "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{esClienteDosPaises(header.cliente) ? (f._venezuelaCurva || "—") : ""}</td>
+                    <td style={{ padding: "6px 10px" }}>{esClienteDosPaises(header.cliente) ? (f._venezuelaCantidad || "—") : ""}</td>
                     <td style={{ padding: "6px 10px", fontWeight: 700 }}>{(Number(f._colombiaCantidad) || 0) + (Number(f._venezuelaCantidad) || 0)}</td>
                     <td style={{ padding: "6px 10px" }}>{f._precio || "—"}</td>
                     <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
@@ -4980,13 +5001,13 @@ function NuevaOrdenView({ capsulas, pedidos, preordenes, config, currentUser, fi
         <Modal title={`Editar — ${filas[editandoIdx]?.reference || ""}`} onClose={() => { setEditandoIdx(null); setEditForm(null); }} width={560}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
             <Field label="Tipo (Dama/Caballero/Niño)"><FInput value={editForm.tipo} onChange={(v) => setEditForm((f) => ({ ...f, tipo: v }))} placeholder="Si no se clasificó" /></Field>
-            <Field label="Curva Colombia"><FInput value={editForm.colombiaCurva} onChange={(v) => setEditForm((f) => ({ ...f, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
-            <Field label="Cantidad Colombia"><FInput value={editForm.colombiaCantidad} onChange={(v) => setEditForm((f) => ({ ...f, colombiaCantidad: v }))} placeholder="0" /></Field>
+            <Field label={etiquetasPaises(header.cliente).curva}><FInput value={editForm.colombiaCurva} onChange={(v) => setEditForm((f) => ({ ...f, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+            <Field label={etiquetasPaises(header.cliente).cantidad}><FInput value={editForm.colombiaCantidad} onChange={(v) => setEditForm((f) => ({ ...f, colombiaCantidad: v }))} placeholder="0" /></Field>
             <Field label="Precio"><FInput value={editForm.precio} onChange={(v) => setEditForm((f) => ({ ...f, precio: v }))} placeholder="0" /></Field>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr", gap: 10, marginBottom: 20 }}>
-            <Field label="Curva Venezuela"><FInput value={editForm.venezuelaCurva} onChange={(v) => setEditForm((f) => ({ ...f, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
-            <Field label="Cantidad Venezuela"><FInput value={editForm.venezuelaCantidad} onChange={(v) => setEditForm((f) => ({ ...f, venezuelaCantidad: v }))} placeholder="0" /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: esClienteDosPaises(header.cliente) ? "1fr 1fr 2fr" : "1fr", gap: 10, marginBottom: 20 }}>
+            {esClienteDosPaises(header.cliente) && <Field label="Curva Venezuela"><FInput value={editForm.venezuelaCurva} onChange={(v) => setEditForm((f) => ({ ...f, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>}
+            {esClienteDosPaises(header.cliente) && <Field label="Cantidad Venezuela"><FInput value={editForm.venezuelaCantidad} onChange={(v) => setEditForm((f) => ({ ...f, venezuelaCantidad: v }))} placeholder="0" /></Field>}
             <Field label="Obs. Cliente"><FInput value={editForm.observacionesCliente} onChange={(v) => setEditForm((f) => ({ ...f, observacionesCliente: v }))} placeholder="Opcional" /></Field>
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
@@ -5250,8 +5271,8 @@ async function exportPreordenXLSX(preorden) {
   const wsData = [
     ["COLECCIÓN (NOMBRE)", titulo, "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
     ["FECHA ENVIADO", preorden.fechaCreado || "", "", "", "FECHA RECIBIDO CLIENTE", "", "", "", "", "MARCA", preorden.cliente || "", "", "", "N° PEDIDO", preorden.numPedido || "", "", ""],
-    ["FOTO", "REF", "ESTADO", "CONSUMO", "TIPO", "CATEGORIA", "SILUETA", "RANGO (TALLA)", "TELA", "COLOMBIA", "", "VENEZUELA", "", "PRECIO $", "OBSERVACIONES CLIENTE", "", "CARTA DE COLORES"],
-    ["", "", "", "", "", "", "", "", "", "CURVA ", "CANTIDAD", "CURVA", "CANTIDAD", "", "", "", ""],
+    ["FOTO", "REF", "ESTADO", "CONSUMO", "TIPO", "CATEGORIA", "SILUETA", "RANGO (TALLA)", "TELA", ...(esClienteDosPaises(preorden.cliente) ? ["COLOMBIA", "", "VENEZUELA", ""] : [String(preorden.cliente || "").toUpperCase(), "", "", ""]), "PRECIO $", "OBSERVACIONES CLIENTE", "", "CARTA DE COLORES"],
+    ["", "", "", "", "", "", "", "", "", "CURVA ", "CANTIDAD", ...(esClienteDosPaises(preorden.cliente) ? ["CURVA", "CANTIDAD"] : ["", ""]), "", "", "", ""],
     ...items.map((it, i) => [
       "",
       it.referencia || "",
@@ -5264,8 +5285,8 @@ async function exportPreordenXLSX(preorden) {
       it.tela || "",
       it.colombiaCurva || "",
       numOTexto(it.colombiaCantidad),
-      it.venezuelaCurva || "",
-      numOTexto(it.venezuelaCantidad),
+      esClienteDosPaises(preorden.cliente) ? (it.venezuelaCurva || "") : "",
+      esClienteDosPaises(preorden.cliente) ? numOTexto(it.venezuelaCantidad) : "",
       numOTexto(it.precio),
       it.observacionesCliente || "",
       "",
@@ -5456,7 +5477,7 @@ function EstadoProduccionRef({ numeroPedido, referencia }) {
 // ningun lado -- a diferencia de esa pantalla, aca siempre se puede
 // terminar agregando completamente a mano, porque la preorden ya existe
 // sin importar si se creo como "Nueva Orden" o "Nueva Reprogramacion".
-function AgregarReferenciaPreordenModal({ capsulas, pedidos, config, onClose, onAgregar }) {
+function AgregarReferenciaPreordenModal({ capsulas, pedidos, config, cliente, onClose, onAgregar }) {
   const [referencia, setReferencia] = useState("");
   const [buscando, setBuscando] = useState(false);
   const [resultado, setResultado] = useState(null);
@@ -5571,13 +5592,13 @@ function AgregarReferenciaPreordenModal({ capsulas, pedidos, config, onClose, on
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
             <Field label="Tipo (Dama/Caballero/Niño)"><FInput value={manual.tipo || resultado.datosBusint.tipo} onChange={(v) => setManual((m) => ({ ...m, tipo: v }))} placeholder="Si no se clasificó" /></Field>
-            <Field label="Curva Colombia"><FInput value={manual.colombiaCurva} onChange={(v) => setManual((m) => ({ ...m, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
-            <Field label="Cantidad Colombia"><FInput value={manual.colombiaCantidad} onChange={(v) => setManual((m) => ({ ...m, colombiaCantidad: v }))} placeholder="0" /></Field>
+            <Field label={etiquetasPaises(cliente).curva}><FInput value={manual.colombiaCurva} onChange={(v) => setManual((m) => ({ ...m, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+            <Field label={etiquetasPaises(cliente).cantidad}><FInput value={manual.colombiaCantidad} onChange={(v) => setManual((m) => ({ ...m, colombiaCantidad: v }))} placeholder="0" /></Field>
             <Field label="Precio"><FInput value={manual.precio} onChange={(v) => setManual((m) => ({ ...m, precio: v }))} placeholder="0" /></Field>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr", gap: 10, marginBottom: 6 }}>
-            <Field label="Curva Venezuela"><FInput value={manual.venezuelaCurva} onChange={(v) => setManual((m) => ({ ...m, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
-            <Field label="Cantidad Venezuela"><FInput value={manual.venezuelaCantidad} onChange={(v) => setManual((m) => ({ ...m, venezuelaCantidad: v }))} placeholder="0" /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: esClienteDosPaises(cliente) ? "1fr 1fr 2fr" : "1fr", gap: 10, marginBottom: 6 }}>
+            {esClienteDosPaises(cliente) && <Field label="Curva Venezuela"><FInput value={manual.venezuelaCurva} onChange={(v) => setManual((m) => ({ ...m, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>}
+            {esClienteDosPaises(cliente) && <Field label="Cantidad Venezuela"><FInput value={manual.venezuelaCantidad} onChange={(v) => setManual((m) => ({ ...m, venezuelaCantidad: v }))} placeholder="0" /></Field>}
             <Field label="Obs. Cliente"><FInput value={manual.observacionesCliente} onChange={(v) => setManual((m) => ({ ...m, observacionesCliente: v }))} placeholder="Opcional" /></Field>
           </div>
         </div>
@@ -6579,6 +6600,7 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
   // Preórdenes, aplicado solo a las referencias que están en Órdenes).
   const [expandido, setExpandido] = useState(null);
   const esCliente = currentUser?.role === "Cliente";
+  const clienteDePreorden = (id) => ((preordenes || []).find((x) => x.id === id) || {}).cliente || "";
   const columnasOrden = ["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", ...(esCliente ? [] : ["Recepción de Tela"]), "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Total", "Carta Colores", "Pedido", "Acciones"];
   // --- Edición a mano de una referencia (igual que en Preórdenes) ---
   const [editando, setEditando] = useState(null);
@@ -6809,10 +6831,10 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
             <Field label="Silueta"><FInput value={formEdit.silueta} onChange={(v) => setFormEdit((f) => ({ ...f, silueta: v }))} /></Field>
             <Field label="Rango"><FInput value={formEdit.rango} onChange={(v) => setFormEdit((f) => ({ ...f, rango: v }))} /></Field>
             <Field label="Tela"><FInput value={formEdit.tela} onChange={(v) => setFormEdit((f) => ({ ...f, tela: v }))} /></Field>
-            <Field label="Curva Colombia"><FInput value={formEdit.colombiaCurva} onChange={(v) => setFormEdit((f) => ({ ...f, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
-            <Field label="Cantidad Colombia"><FInput value={formEdit.colombiaCantidad} onChange={(v) => setFormEdit((f) => ({ ...f, colombiaCantidad: v }))} /></Field>
-            <Field label="Curva Venezuela"><FInput value={formEdit.venezuelaCurva} onChange={(v) => setFormEdit((f) => ({ ...f, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
-            <Field label="Cantidad Venezuela"><FInput value={formEdit.venezuelaCantidad} onChange={(v) => setFormEdit((f) => ({ ...f, venezuelaCantidad: v }))} /></Field>
+            <Field label={etiquetasPaises(clienteDePreorden(editando.preordenId)).curva}><FInput value={formEdit.colombiaCurva} onChange={(v) => setFormEdit((f) => ({ ...f, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+            <Field label={etiquetasPaises(clienteDePreorden(editando.preordenId)).cantidad}><FInput value={formEdit.colombiaCantidad} onChange={(v) => setFormEdit((f) => ({ ...f, colombiaCantidad: v }))} /></Field>
+            {esClienteDosPaises(clienteDePreorden(editando.preordenId)) && <Field label="Curva Venezuela"><FInput value={formEdit.venezuelaCurva} onChange={(v) => setFormEdit((f) => ({ ...f, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>}
+            {esClienteDosPaises(clienteDePreorden(editando.preordenId)) && <Field label="Cantidad Venezuela"><FInput value={formEdit.venezuelaCantidad} onChange={(v) => setFormEdit((f) => ({ ...f, venezuelaCantidad: v }))} /></Field>}
             <Field label="Precio"><FInput value={formEdit.precio} onChange={(v) => setFormEdit((f) => ({ ...f, precio: v }))} /></Field>
           </div>
           <Field label="Observaciones Cliente"><FInput value={formEdit.observacionesCliente} onChange={(v) => setFormEdit((f) => ({ ...f, observacionesCliente: v }))} /></Field>
@@ -6880,7 +6902,7 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
                       <thead>
                         <tr style={{ background: T.ink }}>
                           {columnasOrden.map((h) => (
-                            <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                            <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{tituloColumnaPaises(h, p.cliente)}</th>
                           ))}
                         </tr>
                       </thead>
@@ -6916,8 +6938,8 @@ function OrdenesView({ preordenes, pedidos, capsulas, config, currentUser, onVin
                               {!esCliente && <td style={{ padding: "6px 10px" }}>{celdaTelaConfirmada(it)}</td>}
                               <td style={{ padding: "6px 10px" }}>{it.colombiaCurva || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.colombiaCantidad || "—"}</td>
-                              <td style={{ padding: "6px 10px" }}>{it.venezuelaCurva || "—"}</td>
-                              <td style={{ padding: "6px 10px" }}>{it.venezuelaCantidad || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{esClienteDosPaises(p.cliente) ? (it.venezuelaCurva || "—") : ""}</td>
+                              <td style={{ padding: "6px 10px" }}>{esClienteDosPaises(p.cliente) ? (it.venezuelaCantidad || "—") : ""}</td>
                               <td style={{ padding: "6px 10px" }}>{it.precio || "—"}</td>
                               <td style={{ padding: "6px 10px", fontWeight: 700 }}>
                                 {it.precio ? fmtCOP((Number(it.precio) || 0) * ((Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0))) : "—"}
@@ -7079,6 +7101,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
   const esCliente = currentUser?.role === "Cliente";
   const puedeIngresarTela = canAccessBodega || canAccessContabilidad;
   const puedeConfirmarTela = canAccessDiseno;
+  const clienteDePreorden = (id) => ((preordenes || []).find((x) => x.id === id) || {}).cliente || "";
   const columnasPreorden = ["Foto", "Ref", "Nombre", "Estado", "Consumo", "Tipo", "Categoría", "Silueta", "Rango", "Tela", ...(esCliente ? [] : ["Recepción de Tela"]), "Curva Col.", "Cant. Col.", "Curva Ven.", "Cant. Ven.", "Precio", "Total", "Carta Colores", "Pedido", "Acciones"];
   // (2026-09-29, a pedido de Fredy) Antes esto marcaba un ítem como "ya
   // convertido a pedido" con solo encontrar la referencia en CUALQUIER
@@ -7654,10 +7677,10 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
             <Field label="Silueta"><FInput value={formEdit.silueta} onChange={(v) => setFormEdit((f) => ({ ...f, silueta: v }))} /></Field>
             <Field label="Rango"><FInput value={formEdit.rango} onChange={(v) => setFormEdit((f) => ({ ...f, rango: v }))} /></Field>
             <Field label="Tela"><FInput value={formEdit.tela} onChange={(v) => setFormEdit((f) => ({ ...f, tela: v }))} /></Field>
-            <Field label="Curva Colombia"><FInput value={formEdit.colombiaCurva} onChange={(v) => setFormEdit((f) => ({ ...f, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
-            <Field label="Cantidad Colombia"><FInput value={formEdit.colombiaCantidad} onChange={(v) => setFormEdit((f) => ({ ...f, colombiaCantidad: v }))} /></Field>
-            <Field label="Curva Venezuela"><FInput value={formEdit.venezuelaCurva} onChange={(v) => setFormEdit((f) => ({ ...f, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
-            <Field label="Cantidad Venezuela"><FInput value={formEdit.venezuelaCantidad} onChange={(v) => setFormEdit((f) => ({ ...f, venezuelaCantidad: v }))} /></Field>
+            <Field label={etiquetasPaises(clienteDePreorden(editando.preordenId)).curva}><FInput value={formEdit.colombiaCurva} onChange={(v) => setFormEdit((f) => ({ ...f, colombiaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>
+            <Field label={etiquetasPaises(clienteDePreorden(editando.preordenId)).cantidad}><FInput value={formEdit.colombiaCantidad} onChange={(v) => setFormEdit((f) => ({ ...f, colombiaCantidad: v }))} /></Field>
+            {esClienteDosPaises(clienteDePreorden(editando.preordenId)) && <Field label="Curva Venezuela"><FInput value={formEdit.venezuelaCurva} onChange={(v) => setFormEdit((f) => ({ ...f, venezuelaCurva: v }))} placeholder="Ej: 8-10-12-14" /></Field>}
+            {esClienteDosPaises(clienteDePreorden(editando.preordenId)) && <Field label="Cantidad Venezuela"><FInput value={formEdit.venezuelaCantidad} onChange={(v) => setFormEdit((f) => ({ ...f, venezuelaCantidad: v }))} /></Field>}
             <Field label="Precio"><FInput value={formEdit.precio} onChange={(v) => setFormEdit((f) => ({ ...f, precio: v }))} /></Field>
           </div>
           <Field label="Observaciones Cliente"><FInput value={formEdit.observacionesCliente} onChange={(v) => setFormEdit((f) => ({ ...f, observacionesCliente: v }))} /></Field>
@@ -7700,6 +7723,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
       )}
       {agregandoRefA && (
         <AgregarReferenciaPreordenModal
+          cliente={((preordenesConEstado || []).find((pp) => pp.id === agregandoRefA) || {}).cliente || ""}
           capsulas={capsulas}
           pedidos={pedidos}
           config={config}
@@ -8089,7 +8113,7 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                     <thead>
                       <tr style={{ background: T.ink }}>
                         {columnasPreorden.map((h) => (
-                          <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{h}</th>
+                          <th key={h} style={{ padding: "8px 10px", color: T.white, textAlign: "left", fontWeight: 700, fontSize: 10, whiteSpace: "nowrap" }}>{tituloColumnaPaises(h, p.cliente)}</th>
                         ))}
                       </tr>
                     </thead>
@@ -8139,8 +8163,8 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                               {!esCliente && <td style={{ padding: "6px 10px" }}>{celdaTela(it)}</td>}
                               <td style={{ padding: "6px 10px" }}>{it.colombiaCurva || "—"}</td>
                               <td style={{ padding: "6px 10px" }}>{it.colombiaCantidad || "—"}</td>
-                              <td style={{ padding: "6px 10px" }}>{it.venezuelaCurva || "—"}</td>
-                              <td style={{ padding: "6px 10px" }}>{it.venezuelaCantidad || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{esClienteDosPaises(p.cliente) ? (it.venezuelaCurva || "—") : ""}</td>
+                              <td style={{ padding: "6px 10px" }}>{esClienteDosPaises(p.cliente) ? (it.venezuelaCantidad || "—") : ""}</td>
                               <td style={{ padding: "6px 10px" }}>{it.precio || "—"}</td>
                               <td style={{ padding: "6px 10px", fontWeight: 700 }}>
                                 {it.precio ? fmtCOP((Number(it.precio) || 0) * ((Number(it.colombiaCantidad) || 0) + (Number(it.venezuelaCantidad) || 0))) : "—"}
