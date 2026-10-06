@@ -1434,6 +1434,8 @@ function TurnoModal({ turno, onSave, onClose }) {
     descanso1Fin: turno?.descanso1Fin || "",
     descanso2Inicio: turno?.descanso2Inicio || "",
     descanso2Fin: turno?.descanso2Fin || "",
+    descanso3Inicio: turno?.descanso3Inicio || "",
+    descanso3Fin: turno?.descanso3Fin || "",
   });
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }));
   function toggleDia(d) {
@@ -1448,6 +1450,7 @@ function TurnoModal({ turno, onSave, onClose }) {
       nombre: form.nombre.trim(), dias: form.dias, sabadoSiFestivo: !!form.sabadoSiFestivo, horarios: form.horarios,
       descanso1Inicio: form.descanso1Inicio || "", descanso1Fin: form.descanso1Fin || "",
       descanso2Inicio: form.descanso2Inicio || "", descanso2Fin: form.descanso2Fin || "",
+      descanso3Inicio: form.descanso3Inicio || "", descanso3Fin: form.descanso3Fin || "",
     });
     onClose();
   }
@@ -1486,7 +1489,7 @@ function TurnoModal({ turno, onSave, onClose }) {
       )}
       <Field label="Descansos del turno (opcional, se restan de las horas trabajadas)">
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {[["1", "descanso1Inicio", "descanso1Fin"], ["2", "descanso2Inicio", "descanso2Fin"]].map(([n, ki, kf]) => (
+          {[["1", "descanso1Inicio", "descanso1Fin"], ["2", "descanso2Inicio", "descanso2Fin"], ["3", "descanso3Inicio", "descanso3Fin"]].map(([n, ki, kf]) => (
             <div key={n} style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <div style={{ width: 70, fontSize: 12, fontWeight: 700, color: C.ink }}>Descanso {n}</div>
               <input type="time" value={form[ki]} onChange={(e) => set(ki)(e.target.value)} style={{ padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }} />
@@ -1556,7 +1559,8 @@ function TurnosView({ turnos, trabajadores, isAdmin, onSave, onDelete }) {
             const d = [];
             if (f.descanso1Inicio && f.descanso1Fin) d.push(`${f.descanso1Inicio}–${f.descanso1Fin}`);
             if (f.descanso2Inicio && f.descanso2Fin) d.push(`${f.descanso2Inicio}–${f.descanso2Fin}`);
-            return d.length ? d.join(" y ") : "—";
+            if (f.descanso3Inicio && f.descanso3Fin) d.push(`${f.descanso3Inicio}–${f.descanso3Fin}`);
+            return d.length ? d.join(" · ") : "—";
           } },
           { key: "usos", label: "Trabajadores", align: "right", render: (f) => contarTrabajadores(f.id) },
           ...(isAdmin ? [{
@@ -5474,7 +5478,7 @@ function minutosDeHoraTurno(h) {
 }
 function descansosDeTurno(turno) {
   const out = [];
-  [["descanso1Inicio", "descanso1Fin"], ["descanso2Inicio", "descanso2Fin"]].forEach(([ki, kf]) => {
+  [["descanso1Inicio", "descanso1Fin"], ["descanso2Inicio", "descanso2Fin"], ["descanso3Inicio", "descanso3Fin"]].forEach(([ki, kf]) => {
     const i = minutosDeHoraTurno(turno?.[ki]);
     const f = minutosDeHoraTurno(turno?.[kf]);
     if (i != null && f != null && f > i) out.push([i, f]);
