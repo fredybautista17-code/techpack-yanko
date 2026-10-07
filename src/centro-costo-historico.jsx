@@ -119,6 +119,8 @@ function CargarHistoricoModal({ onClose, currentUser, anioInicial }) {
   const [resultado, setResultado] = useState(null);
   const [anio, setAnio] = useState(anioInicial);
   const [areasOk, setAreasOk] = useState({});
+  // Meses de CORTE que se quedan con el Excel aunque ATLAS tenga cortes (julio fue de prueba en ATLAS).
+  const [sobreAtlas, setSobreAtlas] = useState({ 7: true });
   const [guardando, setGuardando] = useState(false);
   const [mensaje, setMensaje] = useState("");
 
@@ -176,6 +178,7 @@ function CargarHistoricoModal({ onClose, currentUser, anioInicial }) {
             valor: Number(d.valor) || 0,
             costo: Number(d.costo) || 0,
             fuente: "excel",
+            prioridad: clave === "CORTE" && !!sobreAtlas[mes],
             archivo,
             cargadoPor: quien,
             cargadoEn: ahora,
@@ -250,6 +253,17 @@ function CargarHistoricoModal({ onClose, currentUser, anioInicial }) {
                       {meses.map((m) => <td key={m} style={{ padding: "6px 8px", textAlign: "right", color: C.amber, fontWeight: 700 }}>{datos[m].costo != null ? fmtMoney(datos[m].costo) : "—"}</td>)}
                       <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 900, color: C.amber }}>{fmtMoney(totC)}</td>
                     </tr>
+                    {clave === "CORTE" && (
+                      <tr>
+                        <td style={{ padding: "6px 8px", fontWeight: 700, color: C.violet }}>Usar el Excel, no ATLAS</td>
+                        {meses.map((m) => (
+                          <td key={m} style={{ padding: "6px 8px", textAlign: "right" }}>
+                            <input type="checkbox" checked={!!sobreAtlas[m]} onChange={(e) => setSobreAtlas({ ...sobreAtlas, [m]: e.target.checked })} title={`${MESES_LARGOS[m - 1]}: usar los datos del Excel aunque ATLAS tenga cortes ese mes`} />
+                          </td>
+                        ))}
+                        <td />
+                      </tr>
+                    )}
                     {meses.some((m) => datos[m].unidades != null) && (
                       <tr>
                         <td style={{ padding: "6px 8px", fontWeight: 700, color: C.ink }}>Unidades</td>
@@ -287,7 +301,7 @@ function CargarHistoricoModal({ onClose, currentUser, anioInicial }) {
               {guardando ? "Guardando…" : `💾 Guardar ${totalDocs} meses del ${anio}`}
             </button>
             <span style={{ fontSize: 12, color: C.slate, maxWidth: 560 }}>
-              Si ya había datos cargados de esas áreas y meses, se reemplazan. Para CORTE, los meses donde ATLAS ya tiene cortes registrados se siguen mostrando con los datos de ATLAS.
+              Si ya había datos cargados de esas áreas y meses, se reemplazan. Para CORTE, los meses donde ATLAS ya tiene cortes se siguen mostrando con los datos de ATLAS, salvo los que dejes marcados en "Usar el Excel, no ATLAS" (julio viene marcado porque fue de prueba).
             </span>
           </div>
         )}
@@ -306,6 +320,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
   const [cierres, setCierres] = useState([]);
   const [pedidos, setPedidos] = useState([]);
   const [trabajadoresCorte, setTrabajadoresCorte] = useState([]);
+  const [fichas, setFichas] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [modal, setModal] = useState(false);
 
@@ -314,6 +329,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
       onSnapshot(collection(db, "centro_costo_historico_mes"), (snap) => { setHistorico(snap.docs.map((d) => ({ ...d.data(), id: d.id }))); setCargando(false); }, () => setCargando(false)),
       onSnapshot(collection(db, "centro_costo_historial_ayuda"), (snap) => setCierres(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}),
       onSnapshot(collection(db, "pedidos_activos"), (snap) => setPedidos(snap.docs.map((d) => ({ ...d.data(), id: d.id }))), () => {}),
+      onSnapshot(collection(db, "nomina_trabajadores"), (snap) => setFichas(snap.docs.map((d) => ({ id: d.id, tipoNomina: d.data().tipoNomina }))), () => {}),
       onSnapshot(collection(db, "corte_config"), (snap) => {
         const docs = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
         const cfg = docs.find((d) => d.id === "main") || docs[0];
@@ -358,7 +374,8 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
         const vivo = clave === "CORTE" ? corteVivo[m] : null;
         const h = historico.find((x) => x.clave === clave && x.anio === Number(anioSel) && x.mes === m);
         const cierre = cierresResueltos.get(`${clave}|${mk}`);
-        if (vivo && vivo.valor > 0) meses[m] = { valor: vivo.valor, costo: vivo.costo, unidades: vivo.unidades, fuente: "vivo" };
+        if (h && h.prioridad) meses[m] = { valor: Number(h.valor) || 0, costo: Number(h.costo) || 0, unidades: h.unidades, fuente: "historico" };
+        else if (vivo && vivo.valor > 0) meses[m] = { valor: vivo.valor, costo: vivo.costo, unidades: vivo.unidades, fuente: "vivo" };
         else if (h) meses[m] = { valor: Number(h.valor) || 0, costo: Number(h.costo) || 0, unidades: h.unidades, fuente: "historico" };
         else if (cierre && (cierre.valor > 0 || cierre.costo > 0)) meses[m] = { valor: cierre.valor, costo: cierre.costo, fuente: "cierre", parcial: !cierre.esMes ? cierre.dias : 0 };
       }
@@ -379,6 +396,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
 
   // Trabajadores más ayudados: se suma por trabajador lo producido y lo que costó en
   // cada mes con cierre (ayuda = costo - producido cuando es positiva).
+  const tiposDestajo = useMemo(() => new Set(fichas.filter((f) => f.tipoNomina === "Destajo" || f.tipoNomina === "Fiscal Destajo").map((f) => f.id)), [fichas]);
   const ranking = useMemo(() => {
     const m = new Map();
     let primero = "";
@@ -387,6 +405,9 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
       if (!mk.startsWith(`${anioSel}-`)) return;
       if (r.primerGuardado && (!primero || r.primerGuardado < primero)) primero = r.primerGuardado;
       r.trabajadores.forEach((t) => {
+        // Solo cuentan los de destajo (Destajo y Fiscal Destajo): los Fiscal (sueldo fijo) no se
+        // comparan. La nómina de CORTE no tiene ficha de tipo de nómina, así que entra completa.
+        if (t.area !== "CORTE" && !tiposDestajo.has(t.id)) return;
         const k = `${t.area}|${t.id}`;
         if (!m.has(k)) m.set(k, { id: t.id, nombre: t.nombre, area: t.area, ayuda: 0, excedente: 0, mesesAyudado: 0, mesesTotal: 0 });
         const acc = m.get(k);
@@ -396,7 +417,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
       });
     });
     return { lista: [...m.values()].filter((x) => x.ayuda > 0).sort((a, b) => b.ayuda - a.ayuda), desde: primero };
-  }, [cierresResueltos, anioSel]);
+  }, [cierresResueltos, anioSel, tiposDestajo]);
   const rankArea = ranking.lista.filter((x) => x.area === claveSel);
   const topArea = rankArea[0] || null;
   const topGlobal = ranking.lista[0] || null;
@@ -471,7 +492,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
             <div style={{ fontSize: 13, color: C.slate, marginTop: 6 }}>Aún no hay cierres guardados con detalle por trabajador en {anioSel}.</div>
           )}
           <div style={{ fontSize: 11, color: C.slate, marginTop: 8 }}>
-            Cuenta solo desde que ATLAS empezó a guardar cierres{ranking.desde ? ` (${ranking.desde.slice(0, 10).split("-").reverse().join("/")})` : ""}; el Excel no trae detalle por trabajador.
+            Solo trabajadores de destajo (Fiscal no entra), comparados contra su costo de nómina (sueldo + auxilio de transporte). Cuenta solo desde que ATLAS empezó a guardar cierres{ranking.desde ? ` (${ranking.desde.slice(0, 10).split("-").reverse().join("/")})` : ""}; el Excel no trae detalle por trabajador.
           </div>
         </div>
       </div>
