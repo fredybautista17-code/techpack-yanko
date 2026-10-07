@@ -498,10 +498,14 @@ function AuditoriaCorteBusintPanel({ currentUser }) {
       [...historial]
         .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""))
         .map((f) => {
-          const todas = [...(f.discrepancias || []), ...(f.servicios || [])];
-          const difEf = todas.filter((d) => !setMarcadosIds.has(String(d.numLote)));
+          // "No aparece en Busint" = el lote ya salió del panel de Busint (facturado/despachado):
+          // no es diferencia. Las corridas viejas lo guardaron como no_aparece_busint.
+          const esSalioPanel = (d) => d.tipo === "salio_panel" || d.tipo === "no_aparece_busint";
+          const todas = [...(f.discrepancias || []), ...(f.servicios || []), ...(f.salieronPanel || [])];
+          const panelEf = todas.filter((d) => esSalioPanel(d) && !setMarcadosIds.has(String(d.numLote)));
+          const difEf = todas.filter((d) => !esSalioPanel(d) && !setMarcadosIds.has(String(d.numLote)));
           const servEf = todas.filter((d) => setMarcadosIds.has(String(d.numLote)));
-          return { ...f, difEf, servEf, cuadranEf: Math.max(0, (f.lotesRevisados || 0) - todas.length) };
+          return { ...f, difEf, servEf, panelEf, cuadranEf: Math.max(0, (f.lotesRevisados || 0) - todas.length) };
         }),
     [historial, setMarcadosIds]
   );
@@ -556,7 +560,7 @@ function AuditoriaCorteBusintPanel({ currentUser }) {
       ) : (
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, background: C.white, borderRadius: 8 }}>
           <thead>
-            <tr style={{ borderBottom: `2px solid ${C.border}` }}>{th("Fecha")}{th("Lotes revisados", true)}{th("Cuadran", true)}{th("Con diferencia", true)}{th("Servicios de confección", true)}{th("Cortes sin lote", true)}</tr>
+            <tr style={{ borderBottom: `2px solid ${C.border}` }}>{th("Fecha")}{th("Lotes revisados", true)}{th("Cuadran", true)}{th("Con diferencia", true)}{th("Servicios de confección", true)}{th("Ya salieron del panel", true)}{th("Cortes sin lote", true)}</tr>
           </thead>
           <tbody>
             {filas.map((f) => (
@@ -566,6 +570,7 @@ function AuditoriaCorteBusintPanel({ currentUser }) {
                 <td style={{ padding: "9px 10px", textAlign: "right", color: C.green, fontWeight: 700 }}>{fmtNum(f.cuadranEf)}</td>
                 <td style={{ padding: "9px 10px", textAlign: "right", fontWeight: 800, color: f.difEf.length > 0 ? C.red : C.green }}>{fmtNum(f.difEf.length)}</td>
                 <td style={{ padding: "9px 10px", textAlign: "right", color: f.servEf.length > 0 ? C.violet : C.slate, fontWeight: 700 }}>{fmtNum(f.servEf.length)}</td>
+                <td style={{ padding: "9px 10px", textAlign: "right", color: C.slate }}>{fmtNum(f.panelEf.length)}</td>
                 <td style={{ padding: "9px 10px", textAlign: "right", color: (f.totalSinLote || 0) > 0 ? C.amber : C.slate }}>{fmtNum(f.totalSinLote)}</td>
               </tr>
             ))}
@@ -606,6 +611,26 @@ function AuditoriaCorteBusintPanel({ currentUser }) {
                 })}
               </tbody>
             </table>
+          )}
+          {sel.panelEf.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 800, color: C.ink, marginBottom: 2 }}>📤 Ya salieron del panel de Busint ({sel.panelEf.length}) — no comparables</div>
+              <div style={{ fontSize: 11, color: C.slate, marginBottom: 6, maxWidth: 720 }}>Busint retira un lote de su panel cuando ya se facturó o despachó, así que ya no se puede comparar. No cuentan como diferencia ni van en el correo.</div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, background: C.white }}>
+                <thead><tr style={{ borderBottom: `2px solid ${C.border}` }}>{th("Lote")}{th("Pedido")}{th("Referencia")}{th("Cortador (ATLAS)")}{th("ATLAS", true)}</tr></thead>
+                <tbody>
+                  {sel.panelEf.map((d, i) => (
+                    <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
+                      <td style={{ padding: "8px 10px", fontWeight: 700 }}>{d.numLote}</td>
+                      <td style={{ padding: "8px 10px" }}>{d.numPedido}</td>
+                      <td style={{ padding: "8px 10px" }}>{d.referencia}</td>
+                      <td style={{ padding: "8px 10px" }}>{d.cortador || "—"}</td>
+                      <td style={{ padding: "8px 10px", textAlign: "right" }}>{fmtNum(d.unidadesAtlas)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
           {(sel.sinLote || []).length > 0 && (
             <div style={{ marginTop: 12 }}>

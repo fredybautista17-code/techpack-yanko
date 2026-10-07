@@ -8818,14 +8818,22 @@ function AuditoriaCorteBusintView({ pedidos, periodo, fechaDia, mesSel, anioSel,
   // Lado ATLAS: cortes del periodo elegido CON lote asignado, agrupados por
   // número de lote (puede haber más de un registro del mismo lote si se
   // completó en partes).
+  // (2026-10-07, a pedido de Fredy) Los totales por lote se arman con TODOS
+  // los cortes de ese lote (de cualquier fecha) y el lote entra al periodo si
+  // alguno de los dos lados (ATLAS o Busint) lo ubica ahí -- igual que la
+  // auditoría diaria de Centro de Costo Cierre. Antes se filtraba la fecha de
+  // corte de Busint contra el periodo, y un lote con otra fecha en Busint
+  // salía como "No aparece en Busint" sin ser cierto.
   const atlasPorLote = new Map();
+  const lotesAtlasEnPeriodo = new Set();
   // Cortes del periodo SIN lote asignado -- no se pueden cruzar, se listan
   // aparte.
   const cortesSinLote = [];
   (pedidos || []).forEach((p) => {
     (p.cortesRealizados || []).forEach((c) => {
-      if (!enPeriodo(c.fecha)) return;
       const loteKey = String(c.lote || "").trim();
+      if (loteKey && enPeriodo(c.fecha)) lotesAtlasEnPeriodo.add(loteKey);
+      if (!loteKey && !enPeriodo(c.fecha)) return;
       const refsTexto = (c.refs || []).map((r) => r.ref).filter(Boolean).join(" + ") || "—";
       if (!loteKey) {
         cortesSinLote.push({ pedidoNumero: p.numero, referencias: refsTexto, cortador: c.cortador || "(Sin cortador)", fecha: c.fecha, unidades: c.totalUnidades || 0 });
@@ -8844,15 +8852,17 @@ function AuditoriaCorteBusintView({ pedidos, periodo, fechaDia, mesSel, anioSel,
   // Lado Busint: solo lotes de pedidos que SÍ existen en ATLAS (si no, no
   // hay con qué cruzar) y cuya fecha de corte cae en el periodo elegido.
   const busintPorLote = new Map();
+  const lotesBusintEnPeriodo = new Set();
   (lotesBusint || []).forEach((l) => {
     const loteKey = String(l.numLote || "").trim();
     if (!loteKey) return;
     if (!numerosPedidoAtlas.has(String(l.numPedido || "").trim())) return;
-    if (!enPeriodo(l.fechaCorteISO)) return;
+    if (!(Number(l.cantCortada) > 0)) return;
     busintPorLote.set(loteKey, l);
+    if (enPeriodo(l.fechaCorteISO)) lotesBusintEnPeriodo.add(loteKey);
   });
 
-  const lotesKeys = [...new Set([...atlasPorLote.keys(), ...busintPorLote.keys()])];
+  const lotesKeys = [...new Set([...atlasPorLote.keys(), ...busintPorLote.keys()])].filter((k) => lotesAtlasEnPeriodo.has(k) || lotesBusintEnPeriodo.has(k));
   const filas = lotesKeys.map((loteKey) => {
     const a = atlasPorLote.get(loteKey) || null;
     const b = busintPorLote.get(loteKey) || null;
@@ -8865,8 +8875,9 @@ function AuditoriaCorteBusintView({ pedidos, periodo, fechaDia, mesSel, anioSel,
       estado = "falta_atlas";
       etiqueta = "⚠ Falta registrar en ATLAS";
     } else if (a && !b) {
-      estado = "no_busint";
-      etiqueta = "⚠ No aparece en Busint";
+      // Busint retira el lote de su panel cuando ya se facturó/despachó: no es un error de ATLAS.
+      estado = "salio_panel";
+      etiqueta = "Ya salió del panel de Busint (no comparable)";
     } else if (diferencia !== 0) {
       estado = "diferencia";
       etiqueta = diferencia > 0 ? "⚠ ATLAS tiene de más" : "⚠ Falta registrar en ATLAS";
@@ -8883,12 +8894,13 @@ function AuditoriaCorteBusintView({ pedidos, periodo, fechaDia, mesSel, anioSel,
       etiqueta,
     };
   }).sort((x, y) => {
-    if (x.estado === "ok" && y.estado !== "ok") return 1;
-    if (x.estado !== "ok" && y.estado === "ok") return -1;
+    const peso = (e) => (e === "ok" ? 2 : e === "salio_panel" ? 1 : 0);
+    if (peso(x.estado) !== peso(y.estado)) return peso(x.estado) - peso(y.estado);
     return String(x.lote).localeCompare(String(y.lote));
   });
 
-  const conDiferencia = filas.filter((f) => f.estado !== "ok").length;
+  const salieronPanel = filas.filter((f) => f.estado === "salio_panel").length;
+  const conDiferencia = filas.filter((f) => f.estado !== "ok" && f.estado !== "salio_panel").length;
   const cuadranExacto = filas.filter((f) => f.estado === "ok").length;
 
   return (
@@ -8906,10 +8918,11 @@ function AuditoriaCorteBusintView({ pedidos, periodo, fechaDia, mesSel, anioSel,
         <div style={{ padding: 24, textAlign: "center", color: C.slate, fontSize: 13 }}>Consultando Busint...</div>
       ) : (
         <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 20 }}>
-            <KPICard icon="📦" label="Lotes comparados" value={fmtNum(filas.length)} color={C.blue} bg={C.blueBg} />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 14, marginBottom: 20 }}>
+            <KPICard icon="📦" label="Lotes comparados" value={fmtNum(filas.length - salieronPanel)} color={C.blue} bg={C.blueBg} />
             <KPICard icon="⚠" label="Con diferencia" value={fmtNum(conDiferencia)} color={C.red} bg={C.redBg} />
             <KPICard icon="✓" label="Cuadran exacto" value={fmtNum(cuadranExacto)} color={C.green} bg={C.greenBg} />
+            <KPICard icon="📤" label="Ya salieron del panel de Busint (no comparables)" value={fmtNum(salieronPanel)} color={C.slate} bg={C.canvas} />
             <KPICard icon="⚪" label="Sin lote asignado (no comparables)" value={fmtNum(cortesSinLote.length)} color={C.amber} bg={C.amberBg} />
           </div>
           {!filas.length ? (
@@ -8932,15 +8945,15 @@ function AuditoriaCorteBusintView({ pedidos, periodo, fechaDia, mesSel, anioSel,
               </thead>
               <tbody>
                 {filas.map((f) => (
-                  <tr key={f.lote} style={{ borderBottom: `1px solid ${C.border}`, background: f.estado !== "ok" ? C.redBg : "transparent" }}>
+                  <tr key={f.lote} style={{ borderBottom: `1px solid ${C.border}`, background: f.estado === "salio_panel" ? C.canvas : f.estado !== "ok" ? C.redBg : "transparent" }}>
                     <td style={{ padding: "10px", fontWeight: 700, color: C.ink }}>{f.lote}</td>
                     <td style={{ padding: "10px" }}>{f.pedidoNumero}</td>
                     <td style={{ padding: "10px" }}>{f.referencia}</td>
                     <td style={{ padding: "10px" }}>{f.cortador}</td>
                     <td style={{ padding: "10px", textAlign: "right" }}>{fmtNum(f.unidadesAtlas)}</td>
-                    <td style={{ padding: "10px", textAlign: "right" }}>{fmtNum(f.unidadesBusint)}</td>
-                    <td style={{ padding: "10px", textAlign: "right", fontWeight: 800, color: f.diferencia === 0 ? C.green : C.red }}>{f.diferencia > 0 ? `+${fmtNum(f.diferencia)}` : fmtNum(f.diferencia)}</td>
-                    <td style={{ padding: "10px", fontSize: 11, fontWeight: 700, color: f.estado === "ok" ? C.green : C.red, whiteSpace: "nowrap" }}>{f.etiqueta}</td>
+                    <td style={{ padding: "10px", textAlign: "right" }}>{f.estado === "salio_panel" ? "—" : fmtNum(f.unidadesBusint)}</td>
+                    <td style={{ padding: "10px", textAlign: "right", fontWeight: 800, color: f.estado === "salio_panel" ? C.slate : f.diferencia === 0 ? C.green : C.red }}>{f.estado === "salio_panel" ? "—" : f.diferencia > 0 ? `+${fmtNum(f.diferencia)}` : fmtNum(f.diferencia)}</td>
+                    <td style={{ padding: "10px", fontSize: 11, fontWeight: 700, color: f.estado === "ok" ? C.green : f.estado === "salio_panel" ? C.slate : C.red, whiteSpace: "nowrap" }}>{f.etiqueta}</td>
                   </tr>
                 ))}
               </tbody>

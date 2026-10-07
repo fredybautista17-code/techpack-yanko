@@ -94,6 +94,10 @@ function crearAuditoriaCorte({ db, logger, fechaHoyBogota, diasHabilesMes, idNor
 
     const discrepancias = [];
     const servicios = [];
+    // (2026-10-07, a pedido de Fredy) Lotes que ATLAS tiene cortados pero ya no
+    // están en el panel de Busint (Busint los retira al facturar/despachar):
+    // no son un error, así que no cuentan como diferencia ni disparan correo.
+    const salieronPanel = [];
     let lotesRevisados = 0;
     const todos = new Set([...atlasPorLote.keys(), ...busintPorLote.keys()]);
     todos.forEach((lote) => {
@@ -119,12 +123,13 @@ function crearAuditoriaCorte({ db, logger, fechaHoyBogota, diasHabilesMes, idNor
         fechasAtlas,
       };
       let tipo = null;
-      if (a && !b) tipo = unidadesAtlas > 0 ? "no_aparece_busint" : null;
+      if (a && !b) tipo = unidadesAtlas > 0 ? "salio_panel" : null;
       else if (!a && b) tipo = "falta_registrar_atlas";
       else if (diferencia > 0) tipo = "falta_registrar_atlas";
       else if (diferencia < 0) tipo = "atlas_de_mas";
       else if (fechaBusint && fechasAtlas.length && !fechasAtlas.includes(fechaBusint)) tipo = "fecha_no_coincide";
-      if (tipo) (lotesServicio.has(lote) ? servicios : discrepancias).push({ ...base, tipo });
+      if (tipo === "salio_panel") salieronPanel.push({ ...base, tipo });
+      else if (tipo) (lotesServicio.has(lote) ? servicios : discrepancias).push({ ...base, tipo });
     });
     discrepancias.sort((x, y) => Math.abs(y.diferencia) - Math.abs(x.diferencia));
 
@@ -134,9 +139,11 @@ function crearAuditoriaCorte({ db, logger, fechaHoyBogota, diasHabilesMes, idNor
       periodo: mesActualISO,
       generadoEn: new Date().toISOString(),
       lotesRevisados,
-      lotesCuadran: lotesRevisados - discrepancias.length - servicios.length,
+      lotesCuadran: lotesRevisados - discrepancias.length - servicios.length - salieronPanel.length,
       totalDiscrepancias: discrepancias.length,
       totalServicios: servicios.length,
+      totalSalieronPanel: salieronPanel.length,
+      salieronPanel,
       servicios,
       totalSinLote: sinLote.length,
       discrepancias,
@@ -151,7 +158,6 @@ function crearAuditoriaCorte({ db, logger, fechaHoyBogota, diasHabilesMes, idNor
         const ETIQUETAS = {
           falta_registrar_atlas: { texto: "Falta registrar en ATLAS", color: "#b91c1c" },
           atlas_de_mas: { texto: "ATLAS tiene de más", color: "#b45309" },
-          no_aparece_busint: { texto: "No aparece en Busint", color: "#7c3aed" },
           fecha_no_coincide: { texto: "Fecha no coincide", color: "#0f766e" },
         };
         const filasHtml = discrepancias
@@ -172,7 +178,7 @@ function crearAuditoriaCorte({ db, logger, fechaHoyBogota, diasHabilesMes, idNor
         logger.warn(`Auditoria Corte vs Busint: ${discrepancias.length} diferencia(s) pero no se encontro a quien avisar.`);
       }
     }
-    return { fecha: hoy, lotesRevisados, totalDiscrepancias: discrepancias.length, totalServicios: servicios.length, totalSinLote: sinLote.length };
+    return { fecha: hoy, lotesRevisados, totalDiscrepancias: discrepancias.length, totalServicios: servicios.length, totalSalieronPanel: salieronPanel.length, totalSinLote: sinLote.length };
   }
   // (2026-10-06, a pedido de Fredy) Cierre automático de CORTE -- igual que el
   // "cierreAutomaticoNocturno" de las otras áreas (index.js): todas las noches
