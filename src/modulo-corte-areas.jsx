@@ -721,7 +721,7 @@ export function CentroCostoCierreCorte({ currentUser }) {
   return (
     <div>
       <h2 style={{ margin: "0 0 6px", fontSize: 22, fontWeight: 900, color: C.ink }}>🔒 Centro de Costo Cierre</h2>
-      <p style={{ margin: "0 0 18px", fontSize: 14, color: C.slate }}>CORTE — guarda y consulta los cierres de esta área, y revisa a diario que los cortes registrados en ATLAS coincidan con Busint.</p>
+      <p style={{ margin: "0 0 18px", fontSize: 14, color: C.slate }}>CORTE — guarda y consulta los cierres de esta área (manuales y el automático de las 10pm), y revisa a diario que los cortes registrados en ATLAS coincidan con Busint.</p>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
         {btnPeriodo("dia", "Día")}
         {btnPeriodo("mes", "Mes")}
@@ -755,7 +755,7 @@ export function CentroCostoCierreCorte({ currentUser }) {
           <tbody>
             {cierres.map((h) => (
               <tr key={h.id} onClick={() => setDetalleAbierto(detalleAbierto?.id === h.id ? null : h)} style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: detalleAbierto?.id === h.id ? C.blueBg : "transparent" }}>
-                <td style={{ padding: "9px 10px" }}>{new Date(h.fechaGuardado).toLocaleString("es-CO")}</td>
+                <td style={{ padding: "9px 10px" }}>{new Date(h.fechaGuardado).toLocaleString("es-CO")}{h.origen === "automatico" && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.teal, background: C.tealBg, padding: "2px 6px", borderRadius: 10 }}>automático</span>}</td>
                 <td style={{ padding: "9px 10px" }}>{h.etiquetaPeriodo}</td>
                 <td style={{ padding: "9px 10px", textAlign: "right", color: C.red }}>{fmtMoney(h.totalAyuda)}</td>
                 <td style={{ padding: "9px 10px", textAlign: "right", color: C.green }}>{fmtMoney(h.totalExcedente)}</td>

@@ -27,7 +27,7 @@
 // más los extras de config.notificacionesExtras.auditoriaCorteVsBusint.
 const AREA_AUDITORIA_CORTE = "CORTE";
 
-function crearAuditoriaCorte({ db, logger, fechaHoyBogota, obtenerLotesPlaneacionDesdeBusint, crearTransporte, mandarCorreo, agregarSeccionNotificacion }) {
+function crearAuditoriaCorte({ db, logger, fechaHoyBogota, diasHabilesMes, idNormalizado, obtenerLotesPlaneacionDesdeBusint, crearTransporte, mandarCorreo, agregarSeccionNotificacion }) {
   async function correrAuditoriaCorteVsBusint({ inmediato = false, sinNotificar = false } = {}) {
     const hoy = fechaHoyBogota();
     const mesActualISO = hoy.slice(0, 7);
@@ -174,7 +174,82 @@ function crearAuditoriaCorte({ db, logger, fechaHoyBogota, obtenerLotesPlaneacio
     }
     return { fecha: hoy, lotesRevisados, totalDiscrepancias: discrepancias.length, totalServicios: servicios.length, totalSinLote: sinLote.length };
   }
-  return { correrAuditoriaCorteVsBusint };
+  // (2026-10-06, a pedido de Fredy) Cierre automático de CORTE -- igual que el
+  // "cierreAutomaticoNocturno" de las otras áreas (index.js): todas las noches
+  // a las 10pm (incluye sábados y domingos, como ellas) guarda el cierre del
+  // período "Día" de hoy en centro_costo_historial_ayuda, con el mismo formato
+  // que el botón manual de Áreas → Centro de Costo Cierre → CORTE
+  // (CentroCostoCierreCorte en src/modulo-corte-areas.jsx): valor producido =
+  // ingreso de los cortes registrados hoy (pedidos_activos[].cortesRealizados),
+  // costo = sueldo de la nómina de Corte (corte_config → nomina.trabajadores)
+  // ÷ días hábiles del mes -- los mismos números del Centro de Costo de CORTE.
+  // Si hoy no hubo cortes, igual guarda el cierre (en $0 de producido) para
+  // que el historial no tenga huecos. El id es fijo por día, así que correr
+  // dos veces el mismo día reemplaza el cierre en vez de duplicarlo.
+  async function correrCierreAutomaticoCorte() {
+    const hoy = fechaHoyBogota();
+    const [anioStr, mesStr, diaStr] = hoy.split("-");
+    const divisorDia = diasHabilesMes(Number(mesStr), Number(anioStr)) || 20;
+    const [pedidosSnap, cfgSnap] = await Promise.all([
+      db.collection("pedidos_activos").get(),
+      db.collection("corte_config").get(),
+    ]);
+    const cfgDocs = cfgSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
+    const cfg = cfgDocs.find((d) => d.id === "main") || cfgDocs[0] || {};
+    const trabajadores = (cfg.nomina?.trabajadores || []).filter((t) => !t.fechaSalida || hoy <= t.fechaSalida);
+    const norm = (s) => String(s || "").trim().toUpperCase();
+    const porCortador = new Map();
+    pedidosSnap.docs.forEach((d) => {
+      (d.data().cortesRealizados || []).filter((c) => c.fecha === hoy).forEach((c) => {
+        const nombre = (c.cortador || "").trim() || "(Sin cortador asignado)";
+        const k = norm(nombre);
+        if (!porCortador.has(k)) porCortador.set(k, { nombre, unidades: 0, ingreso: 0 });
+        const a = porCortador.get(k);
+        a.unidades += Number(c.totalUnidades) || 0;
+        a.ingreso += Number(c.ingresoCorte) || 0;
+      });
+    });
+    const detalle = [];
+    const usados = new Set();
+    trabajadores.forEach((t) => {
+      const k = norm(t.nombre);
+      const datos = porCortador.get(k);
+      detalle.push({
+        id: t.id || k,
+        nombre: t.nombre,
+        area: "CORTE",
+        unidades: datos?.unidades || 0,
+        valorProducido: datos?.ingreso || 0,
+        costo: (Number(t.sueldo) || 0) / divisorDia,
+        sinSueldo: !t.sueldo,
+      });
+      usados.add(k);
+    });
+    porCortador.forEach((datos, k) => {
+      if (usados.has(k)) return;
+      detalle.push({ id: k, nombre: datos.nombre, area: "CORTE", unidades: datos.unidades, valorProducido: datos.ingreso, costo: 0, sinSueldo: true });
+    });
+    const totalValor = detalle.reduce((s, f) => s + f.valorProducido, 0);
+    const totalCosto = detalle.reduce((s, f) => s + (f.sinSueldo ? 0 : f.costo), 0);
+    const totalAyuda = detalle.reduce((s, f) => (f.sinSueldo ? s : f.valorProducido - f.costo < 0 ? s + (f.costo - f.valorProducido) : s), 0);
+    const totalExcedente = detalle.reduce((s, f) => (f.sinSueldo ? s : f.valorProducido - f.costo > 0 ? s + (f.valorProducido - f.costo) : s), 0);
+    await db.collection("centro_costo_historial_ayuda").doc(`auto_${idNormalizado(AREA_AUDITORIA_CORTE)}__${hoy}`).set({
+      area: AREA_AUDITORIA_CORTE,
+      periodo: "dia",
+      etiquetaPeriodo: `${diaStr}/${mesStr}/${anioStr}`,
+      fechaGuardado: new Date().toISOString(),
+      origen: "automatico",
+      totalCosto,
+      totalValor,
+      totalAyuda,
+      totalExcedente,
+      balance: totalValor - totalCosto,
+      detalle,
+    });
+    logger.info(`Cierre automático de CORTE guardado para ${hoy}.`);
+    return { fecha: hoy, totalValor, totalCosto };
+  }
+  return { correrAuditoriaCorteVsBusint, correrCierreAutomaticoCorte };
 }
 
 module.exports = { crearAuditoriaCorte, AREA_AUDITORIA_CORTE };

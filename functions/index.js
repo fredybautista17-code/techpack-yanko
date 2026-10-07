@@ -6433,10 +6433,12 @@ exports.auditoriaBusintVsNomina = onSchedule(
 // BUSINT_BASE_URL, los mismos de getCargaPlaneacionDesdeBusintGen) y los del
 // correo.
 const { crearAuditoriaCorte } = require("./auditoria-corte");
-const { correrAuditoriaCorteVsBusint } = crearAuditoriaCorte({
+const { correrAuditoriaCorteVsBusint, correrCierreAutomaticoCorte } = crearAuditoriaCorte({
   db,
   logger,
   fechaHoyBogota,
+  diasHabilesMes,
+  idNormalizado,
   obtenerLotesPlaneacionDesdeBusint,
   crearTransporte,
   mandarCorreo,
@@ -6454,6 +6456,21 @@ exports.auditoriaCorteVsBusint = onSchedule(
   async () => {
     const resultado = await correrAuditoriaCorteVsBusint({ inmediato: false });
     logger.info("Auditoria Corte vs Busint completada", resultado);
+  }
+);
+
+// (2026-10-06, a pedido de Fredy) Cierre automático de CORTE: todas las
+// noches a las 10pm, igual que cierreAutomaticoNocturno de las otras áreas
+// (ver correrCierreAutomaticoCorte en functions/auditoria-corte.js).
+exports.cierreAutomaticoCorte = onSchedule(
+  {
+    schedule: "every day 22:00",
+    timeZone: "America/Bogota",
+    timeoutSeconds: 300,
+    memory: "256MiB",
+  },
+  async () => {
+    await correrCierreAutomaticoCorte();
   }
 );
 
@@ -6668,6 +6685,13 @@ exports.obtenerResumenNotificacionesProgramadas = onCall({ timeoutSeconds: 60, m
         tipo: "correo",
         destinatariosPorArea,
         destinatariosExtra: extrasDe("auditoriaBusintVsNomina"),
+      },
+      {
+        id: "cierreAutomaticoCorte",
+        nombre: "Cierre automático de CORTE",
+        descripcion: "Guarda el cierre del día de CORTE (ingreso de cortes registrados vs nómina de Corte).",
+        horario: "Todos los días 10:00 p.m.",
+        tipo: "sincronizacion",
       },
       {
         id: "auditoriaCorteVsBusint",
