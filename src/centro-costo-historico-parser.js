@@ -106,7 +106,7 @@ function tituloAreaDeCelda(v) {
 
 // Devuelve { areas: { CLAVE: { meses: {1:{valor,costo,unidades},…}, lecturas:[…] } },
 //            ignoradas: [{ fila, etiqueta, area }], avisos: [], anioSugerido }
-export function parsearHojaHistorico(aoa, nombreHoja) {
+function parsearHorizontal(aoa, nombreHoja) {
   const areas = {};
   const ignoradas = [];
   const avisos = [];
@@ -204,6 +204,99 @@ export function parsearHojaHistorico(aoa, nombreHoja) {
     });
   });
   return { areas, ignoradas, avisos, anioSugerido };
+}
+
+// Segundo formato (el del archivo real de Fredy): los MESES van hacia abajo en la
+// primera columna (ENERO, FEBRERO…) y cada área es un bloque de columnas con su
+// título arriba (CORTE / EMPAQUE PROCESOS / TERMOFIJACION) y debajo los nombres
+// de columna (UNIDADES, VALOR BUSINT = valor producido, VALOR NOMINA = costo de
+// nómina, DIFERENCIA = se ignora porque ATLAS la calcula).
+function parsearTransversal(aoa, nombreHoja) {
+  const areas = {};
+  const ignoradas = [];
+  const avisos = [];
+  const filas = Array.isArray(aoa) ? aoa : [];
+  // columna donde están los meses = la que más nombres de mes tiene
+  const conteo = new Map();
+  filas.forEach((fila) => (Array.isArray(fila) ? fila : []).forEach((c, col) => { if (mesDeTexto(c)) conteo.set(col, (conteo.get(col) || 0) + 1); }));
+  let colMes = -1;
+  let mejor = 0;
+  conteo.forEach((n, col) => { if (n > mejor) { mejor = n; colMes = col; } });
+  if (colMes < 0 || mejor < 3) return { areas, ignoradas, avisos, anioSugerido: null };
+  const titulos = [];
+  let cabecera = null; // { fila, cols: [{ col, tipo, etiqueta, clave }] }
+  let anioSugerido = null;
+  filas.forEach((fila, r) => {
+    const celdas = Array.isArray(fila) ? fila : [];
+    if (anioSugerido == null && r < 12) {
+      for (const c of celdas) {
+        const m = typeof c === "string" ? c.match(/\b(20\d{2})\b/) : null;
+        if (m) { anioSugerido = Number(m[1]); break; }
+      }
+    }
+    const mes = mesDeTexto(celdas[colMes]);
+    if (!mes) {
+      celdas.forEach((c, col) => {
+        const clave = tituloAreaDeCelda(c);
+        if (clave) titulos.push({ clave, fila: r, col });
+      });
+      const cols = [];
+      celdas.forEach((c, col) => {
+        if (col === colMes || typeof c !== "string") return;
+        const tipo = clasificarEtiqueta(c);
+        if (tipo) cols.push({ col, tipo, etiqueta: c.trim() });
+      });
+      if (cols.length >= 2) {
+        // Bloques de columnas: uno nuevo cada vez que se repite un tipo (UNIDADES, VALOR…).
+        // El título del área puede quedar corrido una columna, así que se busca el
+        // título que caiga dentro del bloque (o, si no, el más cercano a la izquierda).
+        const bloques = [];
+        cols.forEach((x) => {
+          let g = bloques[bloques.length - 1];
+          if (!g || g.tipos.has(x.tipo) || x.col - g.ultima > 2) { g = { tipos: new Set(), cols: [], primera: x.col, ultima: x.col }; bloques.push(g); }
+          g.tipos.add(x.tipo);
+          g.cols.push(x);
+          g.ultima = x.col;
+        });
+        bloques.forEach((g) => {
+          let t = null;
+          titulos.filter((y) => y.fila <= r && y.col >= g.primera && y.col <= g.ultima).forEach((y) => { if (!t || y.fila > t.fila) t = y; });
+          if (!t) titulos.filter((y) => y.fila <= r && y.col <= g.primera).forEach((y) => { if (!t || y.fila > t.fila || (y.fila === t.fila && y.col > t.col)) t = y; });
+          g.cols.forEach((x) => { x.clave = t?.clave || null; });
+        });
+        cabecera = { fila: r, cols };
+        cols.forEach((x) => {
+          if (!x.clave) { avisos.push(`${nombreHoja || "Hoja"}, fila ${r + 1}: la columna "${x.etiqueta}" no tiene título de área arriba (CORTE / TERMOFIJACION / EMPAQUE PROCESOS).`); return; }
+          if (x.tipo === "ignorar") return;
+          if (!areas[x.clave]) areas[x.clave] = { meses: {}, lecturas: [] };
+          if (areas[x.clave].lecturas.some((l) => l.tipo === x.tipo)) {
+            avisos.push(`${nombreHoja || "Hoja"}, fila ${r + 1}: "${x.etiqueta}" aparece otra vez para ${nombreAreaPorClave(x.clave)}; se usó la primera.`);
+            x.repetida = true;
+            return;
+          }
+          areas[x.clave].lecturas.push({ tipo: x.tipo, etiqueta: x.etiqueta, fila: r + 1 });
+        });
+      }
+      return;
+    }
+    if (!cabecera) return;
+    cabecera.cols.forEach((x) => {
+      if (!x.clave || x.tipo === "ignorar" || x.repetida) return;
+      const v = parseNumero(celdas[x.col]);
+      if (v == null) return;
+      const ar = areas[x.clave];
+      if (!ar.meses[mes]) ar.meses[mes] = {};
+      ar.meses[mes][x.tipo] = v;
+    });
+  });
+  return { areas, ignoradas, avisos, anioSugerido };
+}
+
+export function parsearHojaHistorico(aoa, nombreHoja) {
+  const h = parsearHorizontal(aoa, nombreHoja);
+  if (Object.values(h.areas).some((a) => a.lecturas.length)) return h;
+  const t = parsearTransversal(aoa, nombreHoja);
+  return Object.keys(t.areas).length ? t : h;
 }
 
 // Une el resultado de varias hojas (si el libro trae más de una).
