@@ -11,6 +11,8 @@ import {
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import CentroCostoCorteEnAreas, { CentroCostoCierreCorte } from "./modulo-corte-areas";
+import CentroCostoAnioPanel from "./centro-costo-historico";
+import { claveArea as claveAreaHistorico } from "./centro-costo-historico-parser";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -5070,7 +5072,7 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
   // modulo-corte-areas.jsx). Va después de TODOS los hooks de esta vista a
   // propósito (return temprano seguro) -- las demás áreas siguen igual.
   if (String(areaSel || "").trim().toUpperCase() === "CORTE") {
-    return <CentroCostoCorteEnAreas areaNombre={areaSel} />;
+    return <CentroCostoCorteEnAreas areaNombre={areaSel} currentUser={currentUser} />;
   }
   return (
     <div>
@@ -5152,6 +5154,9 @@ function CentroCostoPlaneacionView({ trabajadores, produccion, areasNomina, movi
           </Btn>
         )}
       </div>
+      {periodo === "anio" && ["ZONACALOR", "CONTROLCALIDAD"].includes(claveAreaHistorico(areaSel)) && (
+        <CentroCostoAnioPanel key={anioSel} areaNombre={areaSel} anioInicial={anioSel} currentUser={currentUser} puedeCargar={!!currentUser?.isAdmin} />
+      )}
       {algunoSinSueldo && (
         <div style={{ background: C.amberBg, border: `1px solid ${C.amber}`, borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: C.ink, marginBottom: 16 }}>
           ⚠️ Algunos trabajadores no tienen sueldo cargado en Nómina → Trabajadores — su costo no se suma al total, así que el costo de nómina está incompleto para ellos.

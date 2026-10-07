@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import CentroCostoAnioPanel from "./centro-costo-historico";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
   authDomain: "techpack-yanko-f37b8.firebaseapp.com",
@@ -72,7 +73,7 @@ function diasHabilesCC(mes, anio) {
   }
   return count;
 }
-export default function CentroCostoCorteEnAreas({ areaNombre }) {
+export default function CentroCostoCorteEnAreas({ areaNombre, currentUser }) {
   const hoy = today();
   const [pedidos, setPedidos] = useState([]);
   const [trabajadores, setTrabajadores] = useState([]);
@@ -287,6 +288,7 @@ export default function CentroCostoCorteEnAreas({ areaNombre }) {
         {periodo === "anio" && <input type="number" value={anioSel} onChange={(e) => setAnioSel(Number(e.target.value) || anioSel)} style={{ ...inputSt, width: 90 }} />}
         <span style={{ fontSize: 12, color: C.slate, marginLeft: 4 }}>Mostrando: <strong style={{ color: C.ink }}>{etiquetaPeriodo}</strong></span>
       </div>
+      {periodo === "anio" && <CentroCostoAnioPanel key={anioSel} areaNombre={areaNombre || "CORTE"} anioInicial={anioSel} currentUser={currentUser} puedeCargar={!!currentUser?.isAdmin} />}
       {cargando && <div style={{ padding: 24, color: C.slate, fontSize: 13 }}>Cargando cortes registrados…</div>}
       {periodo === "dia" && (
         <div style={{ marginBottom: 20 }}>

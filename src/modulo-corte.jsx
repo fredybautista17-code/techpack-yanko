@@ -11,6 +11,7 @@ import {
   onSnapshot,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import CentroCostoAnioPanel from "./centro-costo-historico";
 // ─── FIREBASE ────────────────────────────────────────────────────────────────
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -8317,7 +8318,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
 // guarda el sueldo ACTUAL de cada trabajador (no un histórico mes a mes), así
 // que para Día y Año se estima a partir de ese sueldo actual — se avisa en
 // pantalla que esa parte es una aproximación, no un dato histórico real.
-function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin }) {
+function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin, currentUser }) {
   const hoy = today();
   const [periodo, setPeriodo] = useState("mes"); // "dia" | "mes" | "anio"
   const [recalculando, setRecalculando] = useState(false);
@@ -8688,6 +8689,7 @@ function CentroCosto({ pedidos, trabajadores, preciosMap, isAdmin }) {
           </div>
         </div>
       )}
+      {periodo === "anio" && <CentroCostoAnioPanel key={anioSel} areaNombre="CORTE" anioInicial={anioSel} currentUser={currentUser} puedeCargar={!!isAdmin} />}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 20 }}>
         <KPICard icon="✂" label={`Unidades ${periodo === "dia" ? "Día" : periodo === "anio" ? "Año" : "Mes"}`} value={fmtNum(totalUnidades)} color={C.blue} bg={C.blueBg} />
         <KPICard icon="💵" label="Ingreso Corte" value={fmtCOP(totalIngreso)} color={C.green} bg={C.greenBg} />
@@ -10277,6 +10279,7 @@ export default function ModuloCorte({ currentUser, onLogout, onVolver, puedeApro
               trabajadores={corteConfig.nomina?.trabajadores || []}
               preciosMap={preciosMap}
               isAdmin={puedeEditarCorte}
+              currentUser={currentUser}
             />
           )}
           {view === "admin" && isAdmin && (
