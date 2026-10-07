@@ -5727,6 +5727,7 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
   // Qué corte real está expandido en "Históricos" (id del corte dentro de
   // cortesRealizados) — null si ninguno.
   const [historicoAbierto, setHistoricoAbierto] = useState(null);
+  const [busquedaHistorico, setBusquedaHistorico] = useState("");
   // Qué corte real está expandido en "Cortes Aprobados" — el patronista
   // primero hace clic para ver el detalle completo (tendido, corte, tallas)
   // y ahí adentro pone el lote, en vez de un input suelto en la fila.
@@ -7849,6 +7850,15 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
             const todosLosCortes = pedidos
               .flatMap((p) => (p.cortesRealizados || []).filter((c) => c.lote).map((c) => ({ ...c, cliente: p.cliente, numeroPedido: p.numero, pedidoId: p.id })))
               .sort((a, b) => (b.creadoEn || b.fecha || "").localeCompare(a.creadoEn || a.fecha || ""));
+            // Búsqueda por cliente y lote (sin tildes ni mayúsculas; varias palabras = todas deben coincidir)
+            const limpiarBusq = (v) => String(v || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+            const palabrasBusq = limpiarBusq(busquedaHistorico).split(/\s+/).filter(Boolean);
+            const cortesFiltrados = palabrasBusq.length
+              ? todosLosCortes.filter((c) => {
+                  const hay = limpiarBusq(`${c.cliente || ""} ${c.lote || ""}`);
+                  return palabrasBusq.every((w) => hay.includes(w));
+                })
+              : todosLosCortes;
             return (
               <div>
                 <p style={{ margin: "0 0 16px", fontSize: 13, color: C.slate, maxWidth: 660 }}>
@@ -7860,8 +7870,38 @@ function ProgramacionCorteView({ pedidos, vpRefMap, lotesCortadoMap, preciosMap,
                   </div>
                 )}
                 {!!todosLosCortes.length && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+                    <div style={{ position: "relative", width: 340, maxWidth: "100%" }}>
+                      <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, pointerEvents: "none" }}>🔍</span>
+                      <input
+                        value={busquedaHistorico}
+                        onChange={(e) => setBusquedaHistorico(e.target.value)}
+                        placeholder="Buscar por cliente o lote…"
+                        style={{ width: "100%", boxSizing: "border-box", padding: "9px 34px 9px 36px", borderRadius: 10, border: `1.5px solid ${C.border}`, fontSize: 13, color: C.ink, outline: "none", fontFamily: "inherit", background: C.white }}
+                      />
+                      {!!busquedaHistorico && (
+                        <button
+                          onClick={() => setBusquedaHistorico("")}
+                          title="Limpiar búsqueda"
+                          style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: C.slate, fontSize: 14, fontWeight: 700 }}
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                    <span style={{ fontSize: 12, color: C.slate }}>
+                      Mostrando {cortesFiltrados.length} de {todosLosCortes.length} cortes
+                    </span>
+                  </div>
+                )}
+                {!!todosLosCortes.length && !cortesFiltrados.length && (
+                  <div style={{ textAlign: "center", padding: 36, color: C.slate, fontSize: 14, border: `1.5px dashed ${C.border}`, borderRadius: 10 }}>
+                    No hay cortes que coincidan con tu búsqueda.
+                  </div>
+                )}
+                {!!cortesFiltrados.length && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {todosLosCortes.map((c) => {
+                    {cortesFiltrados.map((c) => {
                       const abierto = historicoAbierto === c.id;
                       const refsTxt = (c.refs || []).map((r) => r.ref).join(", ");
                       return (
