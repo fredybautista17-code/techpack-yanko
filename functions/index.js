@@ -2025,6 +2025,75 @@ const TABLAS_CANDIDATAS_NOMINA_DEFAULT = [
   "rutaprocesos",
   "unir procesos",
 ];
+// (2026-10-08, a pedido de Fredy) DIAGNOSTICO de solo lectura para armar la
+// sincronizacion diaria de "Entradas de Planta" desde Busint (hoy se sube el
+// Excel "ENTRADAS A PLANTA", hoja Hoja2/Hoja3). Ese Excel es un reporte que
+// junta varias tablas: el barrido de tablas mostro que NINGUNA trae todas las
+// columnas, y las candidatas son "prod a bodega" (cabecera: NumEnt, FechaEntra,
+// Planta, Numlote, FechaFin, Nfact, FOR, CostoFTC/CostoFTT, CostoConf...),
+// "prod a bodega detalle" (NumEnt, Ref, Color, tallas, Precio, CostoPT...) y
+// "consulta prod en bodega todos" (NumEnt, FechaEntra, Planta, Numlote, Ref,
+// Total, Nombre de la planta...), mas sus equivalentes de devolucion
+// ("proddev ..."). Dado un NumEnt (y opcionalmente un NumLote) devuelve las
+// filas CRUDAS de todas ellas para compararlas a mano contra una fila del
+// Excel y confirmar de donde sale cada columna. No escribe nada.
+exports.depurarEntradaPlantaBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    await verificarLlamadorEsAdmin(request);
+    const numEnt = String(request.data?.numEnt ?? "").trim();
+    const numLote = String(request.data?.numLote ?? "").trim();
+    if (!numEnt && !numLote) {
+      throw new HttpsError("invalid-argument", "Debes indicar el número de entrada (NumEnt) o el número de lote.");
+    }
+    const TABLAS = [
+      "prod a bodega",
+      "prod a bodega detalle",
+      "consulta prod en bodega todos",
+      "proddev a bodega",
+      "proddev a bodega detalle",
+      "consulta proddev en bodega todos",
+    ];
+    const MAX_FILAS = 30;
+    const resultados = await Promise.all(
+      TABLAS.map(async (tabla) => {
+        let filas;
+        try {
+          filas = await consultarTablaBusintBDCompleta(tabla);
+        } catch (err) {
+          return { tabla, ok: false, error: err?.message || String(err) };
+        }
+        const coinciden = filas.filter((f) => {
+          if (!f || typeof f !== "object") return false;
+          if (numEnt && String(f.NumEnt ?? "").trim() === numEnt) return true;
+          if (numLote && !numEnt && String(f.Numlote ?? f.NumLote ?? "").trim() === numLote) return true;
+          return false;
+        });
+        // Para lote: ademas de la entrada, trae las filas del mismo lote
+        // en las tablas que tienen Numlote (para ver cuantas entradas tiene).
+        const delLote = numLote && numEnt
+          ? filas.filter((f) => f && String(f.Numlote ?? f.NumLote ?? "").trim() === numLote)
+          : [];
+        return {
+          tabla,
+          ok: true,
+          totalFilasTabla: filas.length,
+          columnas: filas.length ? Object.keys(filas[0]) : [],
+          totalCoincidencias: coinciden.length,
+          filas: coinciden.slice(0, MAX_FILAS),
+          totalDelLote: delLote.length,
+          filasDelLote: delLote.slice(0, MAX_FILAS),
+        };
+      })
+    );
+    return { numEnt, numLote, resultados };
+  }
+);
+
 exports.getBarridoTablasBusintBD = onCall(
   {
     secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],

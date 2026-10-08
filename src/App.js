@@ -13370,6 +13370,31 @@ function BusintCatalogoTestView() {
       setCargandoDepurarCxp(false);
     }
   }
+  // (2026-10-08) DIAGNOSTICO -- ver depurarEntradaPlantaBusintBD en
+  // functions/index.js: dado un NumEnt (y opcional lote) muestra las filas
+  // crudas de las tablas "prod a bodega" para comparar contra el Excel de
+  // Entradas de Planta y armar la sincronizacion diaria desde Busint.
+  const [numEntDepurar, setNumEntDepurar] = useState("");
+  const [numLoteDepurarEnt, setNumLoteDepurarEnt] = useState("");
+  const [cargandoDepurarEnt, setCargandoDepurarEnt] = useState(false);
+  const [depurarEntResultado, setDepurarEntResultado] = useState(null);
+  async function depurarEntradaPlanta() {
+    const numEnt = numEntDepurar.trim();
+    const numLote = numLoteDepurarEnt.trim();
+    if (!numEnt && !numLote) return;
+    setCargandoDepurarEnt(true);
+    setError("");
+    setDepurarEntResultado(null);
+    try {
+      const llamar = httpsCallable(functionsClient, "depurarEntradaPlantaBusintBD", { timeout: 540000 });
+      const resp = await llamar({ numEnt, numLote });
+      setDepurarEntResultado(resp.data);
+    } catch (err) {
+      setError(err?.message || "No se pudo consultar la entrada.");
+    } finally {
+      setCargandoDepurarEnt(false);
+    }
+  }
   // (2026-09-04) EXPLORATORIO — dado un numero de pedido, cruza la cabecera
   // "facturas" (por Numped) con "facturas detalles" (por Nfact) y suma
   // unidades por Referencia, todo del lado del servidor -- para comparar
@@ -14074,6 +14099,41 @@ function BusintCatalogoTestView() {
               <pre style={{ background: T.white, borderRadius: 8, padding: 10, fontSize: 11, overflowX: "auto", maxHeight: 220, border: `1px solid ${T.border}` }}>
                 {JSON.stringify(filas, null, 2)}
               </pre>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ height: 1, background: T.border, margin: "24px 0" }} />
+      <div style={{ fontWeight: 700, fontSize: 15, color: T.ink, marginBottom: 6 }}>Depurar una entrada de planta (diagnóstico)</div>
+      <div style={{ fontSize: 13, color: T.slate, marginBottom: 16 }}>
+        Da el número de entrada (NumEnt, columna A del Excel "Entradas a Planta") y, si quieres, el lote: muestra las filas crudas de "prod a bodega", "prod a bodega detalle", "consulta prod en bodega todos" y sus equivalentes de devolución, para comparar contra el Excel y confirmar de dónde sale cada columna. Solo lectura.
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "end", marginBottom: 16, flexWrap: "wrap" }}>
+        <Field label="Número de entrada (NumEnt)">
+          <FInput value={numEntDepurar} onChange={setNumEntDepurar} placeholder="Ej: 7561" />
+        </Field>
+        <Field label="Lote (opcional)">
+          <FInput value={numLoteDepurarEnt} onChange={setNumLoteDepurarEnt} placeholder="Ej: 7191" />
+        </Field>
+        <div style={{ marginBottom: 14 }}>
+          <Btn onClick={depurarEntradaPlanta} disabled={cargandoDepurarEnt || (!numEntDepurar.trim() && !numLoteDepurarEnt.trim())}>{cargandoDepurarEnt ? "Consultando..." : "🔎 Ver entrada"}</Btn>
+        </div>
+      </div>
+      {depurarEntResultado && (
+        <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          {(depurarEntResultado.resultados || []).map((r) => (
+            <div key={r.tabla} style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: T.ink, marginBottom: 4 }}>
+                {r.tabla} — {r.ok ? `${r.totalCoincidencias} fila(s) de ${r.totalFilasTabla}` : `error: ${r.error}`}
+              </div>
+              {r.ok && (
+                <pre style={{ background: T.white, borderRadius: 8, padding: 10, fontSize: 11, overflowX: "auto", maxHeight: 260, border: `1px solid ${T.border}` }}>
+                  {JSON.stringify(r.filas, null, 2)}
+                </pre>
+              )}
+              {r.ok && r.totalDelLote > 0 && (
+                <div style={{ fontSize: 11, color: T.slate, marginTop: 4 }}>Filas de ese lote en esta tabla: {r.totalDelLote}</div>
+              )}
             </div>
           ))}
         </div>
