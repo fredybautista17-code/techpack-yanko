@@ -2117,7 +2117,59 @@ exports.depurarEntradaPlantaBusintBD = onCall(
         lotePanelError = err?.message || String(err);
       }
     }
-    return { numEnt, numLote, resultados, proveedor, proveedorError, loteBuscado, lotePanel, lotePanelError };
+    // (2026-10-08) "maestro de proveedores" NO trae el codigo de planta 33 de
+    // la cabecera, asi que el nombre del taller vive en otra tabla. Si
+    // llega `buscarTexto` (ej. "GONZALEZ BLANCO" o el NIT "14342673"), se
+    // revisan las tablas de Busint cuyo NOMBRE sugiere un catalogo de
+    // plantas/terceros y se devuelven las filas donde algun campo contiene
+    // ese texto (o, si es numerico, es igual a ese numero) -- para
+    // encontrar en cual tabla viven el nombre y el NIT de cada taller.
+    const buscarTexto = String(request.data?.buscarTexto ?? "").trim();
+    let busquedaTexto = null;
+    if (buscarTexto) {
+      let enumList = [];
+      try {
+        const swaggerResp = await fetch("https://api-yanko-bd.busint.info/swagger/v1/swagger.json");
+        const swagger = await swaggerResp.json();
+        enumList = swagger.paths["/api/Query"].post.parameters.find((p) => p.name === "tableName").schema.enum;
+      } catch (err) {
+        busquedaTexto = { error: `No se pudo traer la lista de tablas: ${err?.message || String(err)}`, tablas: [] };
+      }
+      if (!busquedaTexto) {
+        const KEYS = ["planta", "provee", "tercero", "maestro", "nit", "contacto", "taller", "confeccion"];
+        const candidatas = enumList.filter((t) => KEYS.some((k) => t.toLowerCase().includes(k)));
+        const buscadoLower = buscarTexto.toLowerCase();
+        const buscadoNum = Number(buscarTexto.replace(/[^0-9.]/g, ""));
+        const tablasConHallazgo = [];
+        const TAM = 6;
+        for (let i = 0; i < candidatas.length; i += TAM) {
+          const lote = candidatas.slice(i, i + TAM);
+          const out = await Promise.all(
+            lote.map(async (tabla) => {
+              let filas;
+              try {
+                filas = await consultarTablaBusintBDCompleta(tabla);
+              } catch (err) {
+                return null;
+              }
+              const hits = filas.filter((f) => {
+                if (!f || typeof f !== "object") return false;
+                return Object.values(f).some((v) => {
+                  if (typeof v === "string") return v.toLowerCase().includes(buscadoLower);
+                  if (typeof v === "number" && Number.isFinite(buscadoNum) && buscadoNum > 0) return v === buscadoNum;
+                  return false;
+                });
+              });
+              if (!hits.length) return null;
+              return { tabla, totalHallazgos: hits.length, columnas: Object.keys(hits[0]), filas: hits.slice(0, 3) };
+            })
+          );
+          out.forEach((o) => { if (o) tablasConHallazgo.push(o); });
+        }
+        busquedaTexto = { buscarTexto, tablasRevisadas: candidatas.length, tablas: tablasConHallazgo };
+      }
+    }
+    return { numEnt, numLote, resultados, proveedor, proveedorError, loteBuscado, lotePanel, lotePanelError, busquedaTexto };
   }
 );
 

@@ -13376,18 +13376,20 @@ function BusintCatalogoTestView() {
   // Entradas de Planta y armar la sincronizacion diaria desde Busint.
   const [numEntDepurar, setNumEntDepurar] = useState("");
   const [numLoteDepurarEnt, setNumLoteDepurarEnt] = useState("");
+  const [textoDepurarEnt, setTextoDepurarEnt] = useState("");
   const [cargandoDepurarEnt, setCargandoDepurarEnt] = useState(false);
   const [depurarEntResultado, setDepurarEntResultado] = useState(null);
   async function depurarEntradaPlanta() {
     const numEnt = numEntDepurar.trim();
     const numLote = numLoteDepurarEnt.trim();
-    if (!numEnt && !numLote) return;
+    const buscarTexto = textoDepurarEnt.trim();
+    if (!numEnt && !numLote && !buscarTexto) return;
     setCargandoDepurarEnt(true);
     setError("");
     setDepurarEntResultado(null);
     try {
       const llamar = httpsCallable(functionsClient, "depurarEntradaPlantaBusintBD", { timeout: 540000 });
-      const resp = await llamar({ numEnt, numLote });
+      const resp = await llamar({ numEnt, numLote, buscarTexto });
       setDepurarEntResultado(resp.data);
     } catch (err) {
       setError(err?.message || "No se pudo consultar la entrada.");
@@ -14115,8 +14117,11 @@ function BusintCatalogoTestView() {
         <Field label="Lote (opcional)">
           <FInput value={numLoteDepurarEnt} onChange={setNumLoteDepurarEnt} placeholder="Ej: 7191" />
         </Field>
+        <Field label="Buscar texto/NIT en tablas de plantas (opcional)">
+          <FInput value={textoDepurarEnt} onChange={setTextoDepurarEnt} placeholder="Ej: GONZALEZ BLANCO o 14342673" />
+        </Field>
         <div style={{ marginBottom: 14 }}>
-          <Btn onClick={depurarEntradaPlanta} disabled={cargandoDepurarEnt || (!numEntDepurar.trim() && !numLoteDepurarEnt.trim())}>{cargandoDepurarEnt ? "Consultando..." : "🔎 Ver entrada"}</Btn>
+          <Btn onClick={depurarEntradaPlanta} disabled={cargandoDepurarEnt || (!numEntDepurar.trim() && !numLoteDepurarEnt.trim() && !textoDepurarEnt.trim())}>{cargandoDepurarEnt ? "Consultando..." : "🔎 Ver entrada"}</Btn>
         </div>
       </div>
       {depurarEntResultado && (
@@ -14137,6 +14142,16 @@ function BusintCatalogoTestView() {
               {JSON.stringify(depurarEntResultado.lotePanel, null, 2)}
             </pre>
           </div>
+          {depurarEntResultado.busquedaTexto && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: T.ink, marginBottom: 4 }}>
+                Búsqueda de "{depurarEntResultado.busquedaTexto.buscarTexto}" — {depurarEntResultado.busquedaTexto.error || `${(depurarEntResultado.busquedaTexto.tablas || []).length} tabla(s) con hallazgos de ${depurarEntResultado.busquedaTexto.tablasRevisadas} revisadas`}
+              </div>
+              <pre style={{ background: T.white, borderRadius: 8, padding: 10, fontSize: 11, overflowX: "auto", maxHeight: 360, border: `1px solid ${T.border}` }}>
+                {JSON.stringify(depurarEntResultado.busquedaTexto.tablas, null, 2)}
+              </pre>
+            </div>
+          )}
           {(depurarEntResultado.resultados || []).map((r) => (
             <div key={r.tabla} style={{ marginBottom: 12 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: T.ink, marginBottom: 4 }}>
