@@ -13377,6 +13377,7 @@ function BusintCatalogoTestView() {
   const [numEntDepurar, setNumEntDepurar] = useState("");
   const [numLoteDepurarEnt, setNumLoteDepurarEnt] = useState("");
   const [textoDepurarEnt, setTextoDepurarEnt] = useState("");
+  const [clavesDepurarEnt, setClavesDepurarEnt] = useState("");
   const [cargandoDepurarEnt, setCargandoDepurarEnt] = useState(false);
   const [depurarEntResultado, setDepurarEntResultado] = useState(null);
   async function depurarEntradaPlanta() {
@@ -13389,7 +13390,7 @@ function BusintCatalogoTestView() {
     setDepurarEntResultado(null);
     try {
       const llamar = httpsCallable(functionsClient, "depurarEntradaPlantaBusintBD", { timeout: 540000 });
-      const resp = await llamar({ numEnt, numLote, buscarTexto });
+      const resp = await llamar({ numEnt, numLote, buscarTexto, tablasClaves: clavesDepurarEnt.trim() });
       setDepurarEntResultado(resp.data);
     } catch (err) {
       setError(err?.message || "No se pudo consultar la entrada.");
@@ -14120,6 +14121,9 @@ function BusintCatalogoTestView() {
         <Field label="Buscar texto/NIT en tablas de plantas (opcional)">
           <FInput value={textoDepurarEnt} onChange={setTextoDepurarEnt} placeholder="Ej: GONZALEZ BLANCO o 14342673" />
         </Field>
+        <Field label="Tablas a revisar (palabras del nombre, opcional)">
+          <FInput value={clavesDepurarEnt} onChange={setClavesDepurarEnt} placeholder="Ej: ref, product, ficha" />
+        </Field>
         <div style={{ marginBottom: 14 }}>
           <Btn onClick={depurarEntradaPlanta} disabled={cargandoDepurarEnt || (!numEntDepurar.trim() && !numLoteDepurarEnt.trim() && !textoDepurarEnt.trim())}>{cargandoDepurarEnt ? "Consultando..." : "🔎 Ver entrada"}</Btn>
         </div>
@@ -14140,6 +14144,14 @@ function BusintCatalogoTestView() {
             </div>
             <pre style={{ background: T.white, borderRadius: 8, padding: 10, fontSize: 11, overflowX: "auto", maxHeight: 260, border: `1px solid ${T.border}` }}>
               {JSON.stringify(depurarEntResultado.lotePanel, null, 2)}
+            </pre>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: T.ink, marginBottom: 4 }}>
+              "bmp - salida planta" (salidas de este lote al taller: ahí podría estar el precio teórico) — {depurarEntResultado.salidasLoteError ? `error: ${depurarEntResultado.salidasLoteError}` : `${(depurarEntResultado.salidasLote || []).length} fila(s)`}
+            </div>
+            <pre style={{ background: T.white, borderRadius: 8, padding: 10, fontSize: 11, overflowX: "auto", maxHeight: 320, border: `1px solid ${T.border}` }}>
+              {JSON.stringify(depurarEntResultado.salidasLote, null, 2)}
             </pre>
           </div>
           {depurarEntResultado.busquedaTexto && (

@@ -2110,6 +2110,21 @@ exports.depurarEntradaPlantaBusintBD = onCall(
         proveedorError = err?.message || String(err);
       }
     }
+    // (2026-10-08) El precio teorico (CostoFT del Excel) NO viene en la
+    // entrada ("prod a bodega" trae 999999999 = sin definir): se sospecha que
+    // viaja en la SALIDA del lote a la planta ("bmp - salida planta":
+    // CostoFTC/CostoFTT, Nomlote, Codplanta). Se traen las salidas de ese
+    // lote para compararlas contra el CostoFT del Excel.
+    let salidasLote = null;
+    let salidasLoteError = null;
+    if (loteBuscado) {
+      try {
+        const sal = await consultarTablaBusintBDCompleta("bmp - salida planta");
+        salidasLote = sal.filter((f) => String(f?.Nomlote ?? "").trim() === loteBuscado).slice(0, 20);
+      } catch (err) {
+        salidasLoteError = err?.message || String(err);
+      }
+    }
     let lotePanel = null;
     let lotePanelError = null;
     if (loteBuscado) {
@@ -2139,7 +2154,8 @@ exports.depurarEntradaPlantaBusintBD = onCall(
         busquedaTexto = { error: `No se pudo traer la lista de tablas: ${err?.message || String(err)}`, tablas: [] };
       }
       if (!busquedaTexto) {
-        const KEYS = ["planta", "provee", "tercero", "maestro", "nit", "contacto", "taller", "confeccion"];
+        const KEYS_PARAM = String(request.data?.tablasClaves ?? "").split(",").map((k) => k.trim().toLowerCase()).filter(Boolean);
+        const KEYS = KEYS_PARAM.length ? KEYS_PARAM : ["planta", "provee", "tercero", "maestro", "nit", "contacto", "taller", "confeccion"];
         const candidatas = enumList.filter((t) => KEYS.some((k) => t.toLowerCase().includes(k)));
         const buscadoLower = buscarTexto.toLowerCase();
         const buscadoNum = Number(buscarTexto.replace(/[^0-9.]/g, ""));
@@ -2172,7 +2188,7 @@ exports.depurarEntradaPlantaBusintBD = onCall(
         busquedaTexto = { buscarTexto, tablasRevisadas: candidatas.length, tablas: tablasConHallazgo };
       }
     }
-    return { numEnt, numLote, resultados, proveedor, proveedorError, loteBuscado, lotePanel, lotePanelError, busquedaTexto };
+    return { numEnt, numLote, resultados, proveedor, proveedorError, loteBuscado, lotePanel, lotePanelError, salidasLote, salidasLoteError, busquedaTexto };
   }
 );
 
