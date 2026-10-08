@@ -2047,8 +2047,9 @@ exports.depurarEntradaPlantaBusintBD = onCall(
     await verificarLlamadorEsAdmin(request);
     const numEnt = String(request.data?.numEnt ?? "").trim();
     const numLote = String(request.data?.numLote ?? "").trim();
-    if (!numEnt && !numLote) {
-      throw new HttpsError("invalid-argument", "Debes indicar el número de entrada (NumEnt) o el número de lote.");
+    const buscarTextoEntrada = String(request.data?.buscarTexto ?? "").trim();
+    if (!numEnt && !numLote && !buscarTextoEntrada) {
+      throw new HttpsError("invalid-argument", "Debes indicar el número de entrada (NumEnt), el número de lote o un texto/NIT a buscar.");
     }
     const TABLAS = [
       "prod a bodega",
@@ -2059,8 +2060,10 @@ exports.depurarEntradaPlantaBusintBD = onCall(
       "consulta proddev en bodega todos",
     ];
     const MAX_FILAS = 30;
+    // Si solo se pidio buscar un texto/NIT (sin entrada ni lote), no se
+    // consultan las tablas de entradas -- solo la busqueda de abajo.
     const resultados = await Promise.all(
-      TABLAS.map(async (tabla) => {
+      ((numEnt || numLote) ? TABLAS : []).map(async (tabla) => {
         let filas;
         try {
           filas = await consultarTablaBusintBDCompleta(tabla);
