@@ -7313,6 +7313,16 @@ function agruparEntradas(lista, claveFn) {
   });
   return [...m.values()].map((g) => ({ ...g, lotes: g.lotes.size }));
 }
+// Kamila maneja dos clientes (uno por país): "KAMILA GROUP SAS-KAMILA COLOMBIA"
+// y "KAMILA VENEZUELA-KAMILA VENEZUELA". Aquí NO se juntan (como hace el
+// "clienteAgrupado" de los informes) -- Fredy pidió ver Colombia y Venezuela
+// aparte.
+function etiquetaClienteEntradas(nombre) {
+  const n = String(nombre || "").toUpperCase();
+  if (n.includes("KAMILA") && n.includes("VENEZUELA")) return "KAMILA VENEZUELA";
+  if (n.includes("KAMILA") && n.includes("COLOMBIA")) return "KAMILA COLOMBIA";
+  return String(nombre || "").trim();
+}
 function BarraH({ valor, max, color }) {
   return (
     <div style={{ background: C.canvas, borderRadius: 4, height: 10, width: "100%", minWidth: 80 }}>
@@ -7333,6 +7343,7 @@ function EntradasTalleresView({ entradas, cargas }) {
   const [mes, setMes] = useState("");
   const [vistaGrupo, setVistaGrupo] = useState("categoria");
   const [periodoCat, setPeriodoCat] = useState("todo");
+  const [mercado, setMercado] = useState("todos");
   const [abierto, setAbierto] = useState(null);
   useEffect(() => {
     if (meses.length && !meses.includes(mes)) setMes(meses[0]);
@@ -7382,7 +7393,7 @@ function EntradasTalleresView({ entradas, cargas }) {
   );
 
   // ── Categorías / clientes ──
-  const periodoLista = useMemo(() => (periodoCat === "todo" ? buenas : buenas.filter((e) => e.fecha.slice(0, 7) === periodoCat)), [buenas, periodoCat]);
+  const periodoBase = useMemo(() => (periodoCat === "todo" ? buenas : buenas.filter((e) => e.fecha.slice(0, 7) === periodoCat)), [buenas, periodoCat]);
   const mapaCliente = useMemo(() => {
     const porLote = new Map();
     const porPedido = new Map();
@@ -7390,7 +7401,7 @@ function EntradasTalleresView({ entradas, cargas }) {
       .sort((a, b) => (a.creadoEn || a.fecha || "").localeCompare(b.creadoEn || b.fecha || ""))
       .forEach((c) =>
         (c.lotes || []).forEach((l) => {
-          const cli = String(l.clienteAgrupado || l.nombreCliente || "").trim();
+          const cli = etiquetaClienteEntradas(l.nombreCliente || l.clienteAgrupado);
           if (!cli) return;
           if (l.numLote !== undefined && l.numLote !== null && l.numLote !== "") porLote.set(String(l.numLote), cli);
           if (l.numPedido !== undefined && l.numPedido !== null && l.numPedido !== "") porPedido.set(String(l.numPedido), cli);
@@ -7400,14 +7411,37 @@ function EntradasTalleresView({ entradas, cargas }) {
   }, [cargas]);
   const clienteDe = (e) =>
     mapaCliente.porLote.get(String(e.numLote ?? "")) || mapaCliente.porPedido.get(String(e.nPedido ?? "")) || null;
+  const periodoLista = useMemo(() => {
+    if (mercado === "todos") return periodoBase;
+    return periodoBase.filter((e) => {
+      const c = clienteDe(e);
+      if (mercado === "kamila_co") return c === "KAMILA COLOMBIA";
+      if (mercado === "kamila_ve") return c === "KAMILA VENEZUELA";
+      if (mercado === "sin") return !c;
+      return !!c && c !== "KAMILA COLOMBIA" && c !== "KAMILA VENEZUELA"; // "otros"
+    });
+  }, [periodoBase, mercado, mapaCliente]);
+  const resumenMercados = useMemo(() => {
+    return ["KAMILA COLOMBIA", "KAMILA VENEZUELA"].map((nombre) => {
+      const delMercado = periodoBase.filter((e) => clienteDe(e) === nombre);
+      const cats = agruparEntradas(delMercado, (e) => e.categoria || "(Sin categoría)").sort((a, b) => b.unidades - a.unidades);
+      return {
+        nombre,
+        unidades: delMercado.reduce((t, e) => t + e.cantidad, 0),
+        lotes: new Set(delMercado.map((e) => String(e.numLote ?? `e${e.numEnt}`))).size,
+        top: cats.slice(0, 3),
+      };
+    });
+  }, [periodoBase, mapaCliente]);
   const grupos = useMemo(() => {
     const clave = vistaGrupo === "categoria" ? (e) => e.categoria || "(Sin categoría)" : (e) => clienteDe(e) || "(Sin cliente identificado)";
     return agruparEntradas(periodoLista, clave).sort((a, b) => b.unidades - a.unidades);
   }, [periodoLista, vistaGrupo, mapaCliente]);
   const totalUnidadesPeriodo = periodoLista.reduce((s, e) => s + e.cantidad, 0);
   const maxGrupo = Math.max(1, ...grupos.map((g) => g.unidades));
-  const unidadesConCliente = periodoLista.filter((e) => clienteDe(e)).reduce((s, e) => s + e.cantidad, 0);
-  const pctConCliente = totalUnidadesPeriodo ? Math.round((unidadesConCliente / totalUnidadesPeriodo) * 100) : 0;
+  const unidadesConCliente = periodoBase.filter((e) => clienteDe(e)).reduce((s, e) => s + e.cantidad, 0);
+  const unidadesBase = periodoBase.reduce((s, e) => s + e.cantidad, 0);
+  const pctConCliente = unidadesBase ? Math.round((unidadesConCliente / unidadesBase) * 100) : 0;
   function detalleGrupo(g) {
     const delGrupo = periodoLista.filter((e) =>
       vistaGrupo === "categoria" ? (e.categoria || "(Sin categoría)") === g.clave : (clienteDe(e) || "(Sin cliente identificado)") === g.clave
@@ -7557,6 +7591,39 @@ function EntradasTalleresView({ entradas, cargas }) {
               <option key={m} value={m}>{nombreMes(m)}</option>
             ))}
           </select>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 12, marginBottom: 12 }}>
+          {resumenMercados.map((m) => (
+            <div key={m.nombre} style={{ background: C.canvas, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px" }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: C.ink }}>{m.nombre === "KAMILA COLOMBIA" ? "🇨🇴 Kamila Colombia" : "🇻🇪 Kamila Venezuela"}</div>
+              <div style={{ fontSize: 20, fontWeight: 900, color: C.ink, marginTop: 4 }}>
+                {fmtNum(m.unidades)} <span style={{ fontSize: 12, fontWeight: 600, color: C.slate }}>und · {fmtNum(m.lotes)} lotes</span>
+              </div>
+              <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>
+                {m.top.length ? m.top.map((t) => `${t.clave} ${fmtNum(t.unidades)}`).join(" · ") : "Sin entradas identificadas en este período"}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+          {[
+            { id: "todos", label: "Todos" },
+            { id: "kamila_co", label: "🇨🇴 Kamila Colombia" },
+            { id: "kamila_ve", label: "🇻🇪 Kamila Venezuela" },
+            { id: "otros", label: "Otros clientes" },
+            { id: "sin", label: "Sin identificar" },
+          ].map((f) => (
+            <button
+              key={f.id}
+              onClick={() => { setMercado(f.id); setAbierto(null); }}
+              style={{
+                padding: "5px 12px", borderRadius: 16, fontSize: 12, fontWeight: 700, cursor: "pointer",
+                border: `1.5px solid ${mercado === f.id ? C.blue : C.border}`, background: mercado === f.id ? C.blueBg : C.white, color: mercado === f.id ? C.blue : C.ink,
+              }}
+            >
+              {f.label}
+            </button>
+          ))}
         </div>
         <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>
           {vistaGrupo === "categoria"
