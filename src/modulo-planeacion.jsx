@@ -7693,6 +7693,200 @@ function EntradasTalleresView({ entradas, cargas }) {
   );
 }
 
+// ─── LOTES POR DÍA (tabla) ───────────────────────────────────────────────────────
+// (2026-10-08, a pedido de Fredy) La misma información de "Entradas de Talleres"
+// pero día por día en una tabla fácil de leer: cuántos lotes entraron cada día,
+// cuántas unidades, de la planta propia vs. talleres y de Kamila Colombia /
+// Kamila Venezuela. Agrupada por semana con subtotal. Un lote cuenta una vez
+// por día (y una vez en el total de la semana/mes aunque entre en varios días).
+const DIAS_SEMANA_CORTO = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
+function diaSemanaISO(iso) {
+  return new Date(`${iso}T00:00:00Z`).getUTCDay(); // 0 = domingo
+}
+function LotesPorDiaView({ entradas, cargas }) {
+  const buenas = useMemo(() => entradas.filter((e) => e.cantidad > 0 && e.fecha), [entradas]);
+  const meses = useMemo(() => [...new Set(buenas.map((e) => e.fecha.slice(0, 7)))].sort().reverse(), [buenas]);
+  const [mes, setMes] = useState("");
+  useEffect(() => {
+    if (meses.length && !meses.includes(mes)) setMes(meses[0]);
+  }, [meses]);
+  const ultimaFecha = useMemo(() => buenas.reduce((m, e) => (e.fecha > m ? e.fecha : m), ""), [buenas]);
+  const mapaCliente = useMemo(() => {
+    const porLote = new Map();
+    const porPedido = new Map();
+    [...(cargas || [])]
+      .sort((a, b) => (a.creadoEn || a.fecha || "").localeCompare(b.creadoEn || b.fecha || ""))
+      .forEach((c) =>
+        (c.lotes || []).forEach((l) => {
+          const cli = etiquetaClienteEntradas(l.nombreCliente || l.clienteAgrupado);
+          if (!cli) return;
+          if (l.numLote !== undefined && l.numLote !== null && l.numLote !== "") porLote.set(String(l.numLote), cli);
+          if (l.numPedido !== undefined && l.numPedido !== null && l.numPedido !== "") porPedido.set(String(l.numPedido), cli);
+        })
+      );
+    return { porLote, porPedido };
+  }, [cargas]);
+  const clienteDe = (e) => mapaCliente.porLote.get(String(e.numLote ?? "")) || mapaCliente.porPedido.get(String(e.nPedido ?? "")) || null;
+  const idLote = (e) => String(e.numLote ?? `e${e.numEnt}`);
+
+  const { dias, semanas, total } = useMemo(() => {
+    if (!mes) return { dias: [], semanas: [], total: null };
+    const delMes = buenas.filter((e) => e.fecha.slice(0, 7) === mes);
+    const porFecha = new Map();
+    delMes.forEach((e) => {
+      if (!porFecha.has(e.fecha)) porFecha.set(e.fecha, []);
+      porFecha.get(e.fecha).push(e);
+    });
+    // todos los días hábiles (lun-vie) del mes hasta la última fecha con datos, más cualquier sábado/domingo que tenga entradas
+    const [y, m] = mes.split("-").map(Number);
+    const ultimoDiaMes = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const fechas = new Set(porFecha.keys());
+    for (let d = 1; d <= ultimoDiaMes; d++) {
+      const iso = `${mes}-${String(d).padStart(2, "0")}`;
+      const dow = diaSemanaISO(iso);
+      if (iso <= ultimaFecha && dow >= 1 && dow <= 5) fechas.add(iso);
+    }
+    const resumir = (lista) => {
+      const lotes = new Set(lista.map(idLote));
+      const conjunto = (fn) => new Set(lista.filter(fn).map(idLote)).size;
+      const cliente = (e) => clienteDe(e);
+      return {
+        lotes: lotes.size,
+        entradas: lista.length,
+        unidades: lista.reduce((s, e) => s + e.cantidad, 0),
+        propia: conjunto((e) => e.nombrePlanta === "INDUSTRIAS YANKO MODULO CENTRO"),
+        talleres: conjunto((e) => e.nombrePlanta !== "INDUSTRIAS YANKO MODULO CENTRO"),
+        colombia: conjunto((e) => cliente(e) === "KAMILA COLOMBIA"),
+        venezuela: conjunto((e) => cliente(e) === "KAMILA VENEZUELA"),
+        otros: conjunto((e) => cliente(e) !== "KAMILA COLOMBIA" && cliente(e) !== "KAMILA VENEZUELA"),
+      };
+    };
+    const dias = [...fechas].sort().map((f) => ({ fecha: f, lista: porFecha.get(f) || [], ...resumir(porFecha.get(f) || []) }));
+    const mapaSem = new Map();
+    dias.forEach((d) => {
+      const k = isoLunes(d.fecha);
+      if (!mapaSem.has(k)) mapaSem.set(k, []);
+      mapaSem.get(k).push(d);
+    });
+    const semanas = [...mapaSem.entries()].map(([lunes, ds]) => ({ lunes, dias: ds, ...resumir(ds.flatMap((d) => d.lista)) }));
+    const habiles = dias.filter((d) => d.lista.length > 0 && diaSemanaISO(d.fecha) >= 1 && diaSemanaISO(d.fecha) <= 5).length;
+    return { dias, semanas, total: { ...resumir(delMes), diasConEntradas: dias.filter((d) => d.lista.length).length, habiles } };
+  }, [buenas, mes, ultimaFecha, mapaCliente]);
+
+  const maxLotes = Math.max(1, ...dias.map((d) => d.lotes));
+  const mejor = dias.length ? dias.reduce((a, b) => (b.lotes > a.lotes ? b : a)) : null;
+  const th = { textAlign: "right", padding: "9px 10px", fontSize: 11, color: C.slate, fontWeight: 700, borderBottom: `2px solid ${C.border}`, whiteSpace: "nowrap", background: C.canvas, position: "sticky", top: 0 };
+  const td = { padding: "7px 10px", fontSize: 13, color: C.ink, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", textAlign: "right" };
+  const num = (v) => (v ? fmtNum(v) : <span style={{ color: "#C9C3BA" }}>–</span>);
+  if (!buenas.length) {
+    return (
+      <div style={{ textAlign: "center", padding: 60, color: C.slate, fontSize: 13, background: C.white, borderRadius: 14, border: `1px solid ${C.border}` }}>
+        Aún no hay Entradas de Planta cargadas. Súbelas o tráelas de Busint desde Planta → Resumen.
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Lotes por Día</h2>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
+            Cuántos lotes entran cada día de los talleres a planta. Datos hasta el {fmtFechaISO(ultimaFecha)}.
+          </p>
+        </div>
+        <select value={mes} onChange={(e) => setMes(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontWeight: 700, color: C.ink, background: C.white, fontFamily: "inherit" }}>
+          {meses.map((m) => (
+            <option key={m} value={m}>{nombreMes(m)}</option>
+          ))}
+        </select>
+      </div>
+      {total && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))", gap: 12, marginBottom: 16 }}>
+          <KPI icon="📥" label="Lotes en el mes" value={fmtNum(total.lotes)} sub={`${fmtNum(total.entradas)} entradas`} color={C.ink} bg={C.canvas} />
+          <KPI icon="📦" label="Unidades en el mes" value={fmtNum(total.unidades)} color={C.ink} bg={C.canvas} />
+          <KPI icon="📅" label="Promedio por día hábil" value={total.habiles ? (total.lotes / total.habiles).toFixed(1) : "—"} sub={`${total.habiles} días hábiles con entradas`} color={C.blue} bg={C.blueBg} />
+          <KPI icon="🏆" label="Mejor día" value={mejor && mejor.lotes ? `${mejor.lotes} lotes` : "—"} sub={mejor && mejor.lotes ? `${DIAS_SEMANA_CORTO[diaSemanaISO(mejor.fecha)]} ${fmtFechaISO(mejor.fecha).slice(0, 5)}` : ""} color={C.green} bg={C.greenBg} />
+        </div>
+      )}
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, overflow: "auto", maxHeight: "68vh" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={{ ...th, textAlign: "left" }}>Día</th>
+              <th style={{ ...th, minWidth: 130 }}>Lotes</th>
+              <th style={th}>Entradas</th>
+              <th style={th}>Unidades</th>
+              <th style={th} title="Lotes que entraron de Industrias Yanko Módulo Centro">Planta propia</th>
+              <th style={th}>Talleres</th>
+              <th style={th}>🇨🇴 Kamila Col.</th>
+              <th style={th}>🇻🇪 Kamila Ven.</th>
+              <th style={th} title="Otros clientes o lotes sin cliente identificado">Otros / sin id.</th>
+            </tr>
+          </thead>
+          <tbody>
+            {semanas.map((sem) => (
+              <Fragment key={sem.lunes}>
+                {sem.dias.map((d) => {
+                  const sinDatos = d.lista.length === 0;
+                  const finde = [0, 6].includes(diaSemanaISO(d.fecha));
+                  return (
+                    <tr key={d.fecha} style={{ background: finde ? C.amberBg : "transparent", opacity: sinDatos ? 0.55 : 1 }}>
+                      <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>
+                        <span style={{ display: "inline-block", width: 34, color: finde ? C.amber : C.slate, fontWeight: 600 }}>{DIAS_SEMANA_CORTO[diaSemanaISO(d.fecha)]}</span>
+                        {fmtFechaISO(d.fecha).slice(0, 5)}
+                      </td>
+                      <td style={td}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-end" }}>
+                          <div style={{ width: 70 }}><BarraH valor={d.lotes} max={maxLotes} color={C.blue} /></div>
+                          <strong style={{ minWidth: 22, fontSize: 14 }}>{d.lotes || <span style={{ color: "#C9C3BA", fontWeight: 400 }}>0</span>}</strong>
+                        </div>
+                      </td>
+                      <td style={td}>{num(d.entradas)}</td>
+                      <td style={td}>{num(d.unidades)}</td>
+                      <td style={td}>{num(d.propia)}</td>
+                      <td style={td}>{num(d.talleres)}</td>
+                      <td style={td}>{num(d.colombia)}</td>
+                      <td style={td}>{num(d.venezuela)}</td>
+                      <td style={td}>{num(d.otros)}</td>
+                    </tr>
+                  );
+                })}
+                <tr style={{ background: C.blueBg }}>
+                  <td style={{ ...td, textAlign: "left", fontWeight: 800, color: C.blue }}>Semana del {fmtFechaISO(sem.lunes).slice(0, 5)}</td>
+                  <td style={{ ...td, fontWeight: 800, color: C.blue }}>{fmtNum(sem.lotes)}</td>
+                  <td style={{ ...td, fontWeight: 700 }}>{fmtNum(sem.entradas)}</td>
+                  <td style={{ ...td, fontWeight: 700 }}>{fmtNum(sem.unidades)}</td>
+                  <td style={{ ...td, fontWeight: 700 }}>{fmtNum(sem.propia)}</td>
+                  <td style={{ ...td, fontWeight: 700 }}>{fmtNum(sem.talleres)}</td>
+                  <td style={{ ...td, fontWeight: 700 }}>{fmtNum(sem.colombia)}</td>
+                  <td style={{ ...td, fontWeight: 700 }}>{fmtNum(sem.venezuela)}</td>
+                  <td style={{ ...td, fontWeight: 700 }}>{fmtNum(sem.otros)}</td>
+                </tr>
+              </Fragment>
+            ))}
+            {total && (
+              <tr style={{ background: C.ink }}>
+                <td style={{ ...td, textAlign: "left", fontWeight: 800, color: C.white, borderBottom: "none" }}>TOTAL {nombreMes(mes).toUpperCase()}</td>
+                <td style={{ ...td, fontWeight: 800, color: C.white, borderBottom: "none" }}>{fmtNum(total.lotes)}</td>
+                <td style={{ ...td, color: C.white, borderBottom: "none" }}>{fmtNum(total.entradas)}</td>
+                <td style={{ ...td, color: C.white, borderBottom: "none" }}>{fmtNum(total.unidades)}</td>
+                <td style={{ ...td, color: C.white, borderBottom: "none" }}>{fmtNum(total.propia)}</td>
+                <td style={{ ...td, color: C.white, borderBottom: "none" }}>{fmtNum(total.talleres)}</td>
+                <td style={{ ...td, color: C.white, borderBottom: "none" }}>{fmtNum(total.colombia)}</td>
+                <td style={{ ...td, color: C.white, borderBottom: "none" }}>{fmtNum(total.venezuela)}</td>
+                <td style={{ ...td, color: C.white, borderBottom: "none" }}>{fmtNum(total.otros)}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: 8, lineHeight: 1.5 }}>
+        Un lote cuenta una vez por día; en los subtotales de semana y mes cuenta una sola vez aunque haya entrado en varios días, por eso la suma de los días puede ser mayor que el total. Planta propia + Talleres, y Colombia + Venezuela + Otros, suman el total de lotes. El cliente sale del lote/pedido en Planeación; los lotes que ya salieron del panel quedan en "Otros / sin id.". Los fines de semana solo aparecen si entró algo.
+      </div>
+    </div>
+  );
+}
+
 export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
   // "Mi Día" de la Planeadora ya no vive acá adentro — se movió a un acceso
   // directo de nivel superior en el menú de ATLAS (junto a "Dashboard"), ver
@@ -7877,6 +8071,7 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     { id: "centro_costo", icon: "💰", label: "Centro de Costo" },
     { id: "estadisticas", icon: "📈", label: "Estadísticas" },
     { id: "entradas_talleres", icon: "📥", label: "Entradas de Talleres" },
+    { id: "lotes_por_dia", icon: "📅", label: "Lotes por Día" },
     { id: "control_calidad", icon: "🔍", label: "Control de Calidad" },
   ];
   if (loading) {
@@ -7971,6 +8166,7 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
             />
           )}
           {subView === "entradas_talleres" && <EntradasTalleresView entradas={entradasTalleres} cargas={cargas} />}
+          {subView === "lotes_por_dia" && <LotesPorDiaView entradas={entradasTalleres} cargas={cargas} />}
           {subView === "estadisticas" && (
             <EstadisticasPlaneacionView
               programaciones={programacionesProcesosTodas}
