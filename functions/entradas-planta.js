@@ -129,9 +129,16 @@ function crearEntradasPlanta({ db, logger, consultarTablaBusintBDCompleta, fecha
     const cantEnt = sumarPorClave(detEnt, "NumEnt");
     const cantDev = sumarPorClave(detDev, "NumEnt");
 
-    function armar(cab, cantidadAbs, esDevolucion) {
+    // numEntOverride: en "proddev a bodega" NumEnt es el número propio de la
+    // devolución (ej. 329) y la columna Nlect trae la entrada ORIGINAL que se
+    // devolvió (ej. 6598). El Excel usa la original como NumEnt, así que
+    // aquí se hace igual y el número de la devolución queda en numDev.
+    // restaFacturado: entradas con cantidad negativa dentro de "prod a
+    // bodega" (el Excel las trae con Ftpla negativo).
+    function armar(cab, cantidadAbsRaw, esDevolucion, { numEntOverride = null, numDev = null, restaFacturado = false } = {}) {
+      const cantidadAbs = Math.round(cantidadAbsRaw * 100) / 100;
       const fecha = fechaISODesdeCampoBusintBD(cab?.FechaEntra);
-      const numEnt = Number(cab?.NumEnt);
+      const numEnt = numEntOverride !== null ? numEntOverride : Number(cab?.NumEnt);
       if (!fecha || !Number.isFinite(numEnt) || numEnt <= 0) return null;
       const lote = String(cab?.Numlote ?? "").trim();
       const codplanta = String(cab?.Planta ?? "").trim();
@@ -153,7 +160,7 @@ function crearEntradasPlanta({ db, logger, consultarTablaBusintBDCompleta, fecha
         cantidad,
         esDevolucion,
         // Igual que el Excel: en las devoluciones Ftpla viene en positivo.
-        facturado: Math.round(cantidadAbs * precioEntrada),
+        facturado: (restaFacturado ? -1 : 1) * Math.round(cantidadAbs * precioEntrada),
         numLote: lote ? (Number.isFinite(Number(lote)) ? Number(lote) : lote) : null,
         refN,
         refExt: String((ref && String(ref.Color || "").trim()) || refN).trim(),
@@ -161,6 +168,11 @@ function crearEntradasPlanta({ db, logger, consultarTablaBusintBDCompleta, fecha
         diasCumplimiento: fecha && fechaFin && cantidad > 0 ? diasEntre(fechaFin, fecha) : null,
         precioTeorico: teorico,
         precioEntrada,
+        usuario: String(cab?.USUARIO || "").trim() || null,
+        // Motivo escrito al devolver (ej. "SE DEVUELVE POR ERROR AL DIGITAR
+        // PRECIO") -- alimenta el Control de devoluciones de Planta.
+        observacion: esDevolucion ? String(cab?.Observacion || "").trim() || null : null,
+        numDev,
       };
     }
 
@@ -169,7 +181,7 @@ function crearEntradasPlanta({ db, logger, consultarTablaBusintBDCompleta, fecha
       const f = fechaISODesdeCampoBusintBD(c?.FechaEntra);
       if (!f || f < desdeISO) return;
       const q = cantEnt.get(String(c?.NumEnt ?? "").trim()) || (Number(c?.Primera) || 0) + (Number(c?.Segunda) || 0);
-      const e = armar(c, q, false);
+      const e = armar(c, Math.abs(q), q < 0, { restaFacturado: q < 0 });
       if (e) entradas.push(e);
     });
     cabDev.forEach((c) => {
@@ -177,7 +189,8 @@ function crearEntradasPlanta({ db, logger, consultarTablaBusintBDCompleta, fecha
       if (!f || f < desdeISO) return;
       const q = cantDev.get(String(c?.NumEnt ?? "").trim()) || (Number(c?.Primera) || 0) + (Number(c?.Segunda) || 0);
       if (!q) return;
-      const e = armar(c, q, true);
+      const nlect = Number(c?.Nlect);
+      const e = armar(c, q, true, { numEntOverride: Number.isFinite(nlect) && nlect > 0 ? nlect : null, numDev: Number(c?.NumEnt) || null });
       if (e) entradas.push(e);
     });
     entradas.sort((a, b) => a.fecha.localeCompare(b.fecha) || a.numEnt - b.numEnt);

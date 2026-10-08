@@ -526,6 +526,8 @@ async function parseEntradasPlanta(file) {
       // mismo Excel de Entradas de Planta, hoja "Hoja3".
       precioTeorico: Number(row["CostoFT"]) || 0,
       precioEntrada: Number(row["VaEnt"]) || 0,
+      usuario: String(row["USUARIO"] || "").trim() || null,
+      observacion: cantidad < 0 ? String(row["observacion"] || "").trim() || null : null,
     });
   });
   return entradas;
@@ -756,6 +758,254 @@ function TraerDeBusintModal({ onClose }) {
     </Modal>
   );
 }
+// ─── CONTROL DE DEVOLUCIONES ───────────────────────────────────────────────────
+// (2026-10-08, a pedido de Fredy) Cuántas entradas se devuelven por precio y
+// cuánto cambió el precio frente al que se envió al taller.
+//   - Precio devuelto: el de la entrada que se devolvió (VaEnt).
+//   - Precio corregido: el de la nueva entrada del mismo lote que la reemplaza
+//     (la más cercana en fecha, igual o posterior a la devolución).
+//   - Precio enviado: el precio teórico (el pactado al sacar el lote al taller).
+// Motivo: el texto que se escribe al devolver. Si no hay texto pero el mismo
+// lote vuelve a entrar con otro precio, se marca "Precio (detectado)".
+const MOTIVOS_DEV = {
+  precio: { label: "Por precio", color: C.red, bg: C.redBg },
+  detectado: { label: "Precio (detectado)", color: "#B26A00", bg: "#FFF4E0" },
+  otro: { label: "Otro motivo", color: C.blue, bg: C.blueBg },
+  sinMotivo: { label: "Sin motivo escrito", color: C.slate, bg: C.canvas },
+};
+function armarControlDevoluciones(entradas) {
+  const devs = entradas.filter((e) => e.esDevolucion);
+  const positivas = entradas.filter((e) => e.cantidad > 0);
+  return devs
+    .map((d) => {
+      const original = positivas.find((e) => e.numEnt === d.numEnt && e.fecha <= d.fecha) || null;
+      const candidatas = positivas
+        .filter((e) => e.numLote === d.numLote && e.numEnt !== d.numEnt && e.fecha >= d.fecha)
+        .sort((a, b) => a.fecha.localeCompare(b.fecha) || Math.abs(a.cantidad - Math.abs(d.cantidad)) - Math.abs(b.cantidad - Math.abs(d.cantidad)));
+      const nueva = candidatas[0] || null;
+      const precioDevuelto = d.precioEntrada || original?.precioEntrada || 0;
+      const precioCorregido = nueva ? nueva.precioEntrada : null;
+      const texto = (d.observacion || "").trim();
+      const detectado = !!nueva && precioCorregido !== precioDevuelto;
+      let motivo = "sinMotivo";
+      if (/precio/i.test(texto)) motivo = "precio";
+      else if (texto) motivo = "otro";
+      else if (detectado) motivo = "detectado";
+      const unidades = Math.abs(d.cantidad);
+      const enviado = d.precioTeorico || null;
+      const difVsEnviado = precioCorregido !== null && enviado ? precioCorregido - enviado : null;
+      return {
+        clave: `${d.numEnt}|${d.fecha}`,
+        numEnt: d.numEnt,
+        fecha: d.fecha,
+        planta: d.nombrePlanta,
+        lote: d.numLote,
+        refExt: d.refExt,
+        unidades,
+        motivo,
+        texto,
+        precioDevuelto,
+        precioCorregido,
+        enviado,
+        difVsEnviado,
+        impactoVsEnviado: difVsEnviado !== null ? difVsEnviado * unidades : null,
+        cambioPrecio: precioCorregido !== null ? precioCorregido - precioDevuelto : null,
+        digito: original?.usuario || null,
+      };
+    })
+    .sort((a, b) => b.fecha.localeCompare(a.fecha) || b.numEnt - a.numEnt);
+}
+function ControlDevolucionesView({ entradas }) {
+  const todas = useMemo(() => armarControlDevoluciones(entradas), [entradas]);
+  const meses = useMemo(() => [...new Set(todas.map((x) => x.fecha.slice(0, 7)))].sort().reverse(), [todas]);
+  const [mes, setMes] = useState("todo");
+  const [filtroMotivo, setFiltroMotivo] = useState("todos");
+  const delPeriodo = useMemo(() => (mes === "todo" ? todas : todas.filter((x) => x.fecha.slice(0, 7) === mes)), [todas, mes]);
+  const lista = useMemo(() => {
+    if (filtroMotivo === "todos") return delPeriodo;
+    if (filtroMotivo === "precioTodos") return delPeriodo.filter((x) => x.motivo === "precio" || x.motivo === "detectado");
+    return delPeriodo.filter((x) => x.motivo === filtroMotivo);
+  }, [delPeriodo, filtroMotivo]);
+  const porPrecio = delPeriodo.filter((x) => x.motivo === "precio" || x.motivo === "detectado");
+  const sobreEnviado = porPrecio.filter((x) => x.difVsEnviado !== null && x.difVsEnviado > 0);
+  const impactoSobre = sobreEnviado.reduce((s, x) => s + x.impactoVsEnviado, 0);
+  const sinMotivo = delPeriodo.filter((x) => x.motivo === "sinMotivo").length;
+  const unidadesDev = delPeriodo.reduce((s, x) => s + x.unidades, 0);
+  const porTaller = useMemo(() => {
+    const m = new Map();
+    delPeriodo.forEach((x) => {
+      if (!m.has(x.planta)) m.set(x.planta, { planta: x.planta, total: 0, precio: 0, unidades: 0 });
+      const g = m.get(x.planta);
+      g.total += 1;
+      g.unidades += x.unidades;
+      if (x.motivo === "precio" || x.motivo === "detectado") g.precio += 1;
+    });
+    return [...m.values()].sort((a, b) => b.precio - a.precio || b.total - a.total);
+  }, [delPeriodo]);
+  const porDigitador = useMemo(() => {
+    const m = new Map();
+    porPrecio.forEach((x) => {
+      const k = x.digito || "(sin dato)";
+      m.set(k, (m.get(k) || 0) + 1);
+    });
+    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  }, [porPrecio]);
+  const sinUsuario = porDigitador.length === 1 && porDigitador[0][0] === "(sin dato)";
+  const th = { textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, fontWeight: 700, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
+  const td = { padding: "8px 10px", fontSize: 12, color: C.ink, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
+  const tdn = { ...td, textAlign: "right" };
+  const money = (v) => (v === null || v === undefined ? "—" : `$${fmtNum(v)}`);
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+        <p style={{ margin: 0, fontSize: 13, color: C.slate, maxWidth: 640, lineHeight: 1.5 }}>
+          Entradas que se devolvieron y por qué. Compara el precio con el que quedó mal digitado, el precio corregido y el precio que se envió al taller (precio teórico).
+        </p>
+        <select
+          value={mes}
+          onChange={(e) => setMes(e.target.value)}
+          style={{ padding: "8px 10px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.ink, background: C.white, fontFamily: "inherit" }}
+        >
+          <option value="todo">Todo el período</option>
+          {meses.map((m) => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))", gap: 10, marginBottom: 16 }}>
+        <KPI icon="↩️" label="Devoluciones" value={fmtNum(delPeriodo.length)} sub={`${fmtNum(unidadesDev)} unidades`} color={C.ink} bg={C.canvas} />
+        <KPI
+          icon="💲"
+          label="Por precio"
+          value={fmtNum(porPrecio.length)}
+          sub={delPeriodo.length ? `${Math.round((porPrecio.length / delPeriodo.length) * 100)}% de las devoluciones` : ""}
+          color={C.red}
+          bg={C.redBg}
+        />
+        <KPI
+          icon="⬆️"
+          label="Quedaron sobre lo enviado"
+          value={fmtNum(sobreEnviado.length)}
+          sub={impactoSobre ? `${money(impactoSobre)} de más` : "sin sobrecosto"}
+          color="#B26A00"
+          bg="#FFF4E0"
+        />
+        <KPI icon="❔" label="Sin motivo escrito" value={fmtNum(sinMotivo)} color={C.slate} bg={C.canvas} />
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        {[
+          { id: "todos", label: "Todas" },
+          { id: "precioTodos", label: "Todas las de precio" },
+          { id: "precio", label: "Por precio (texto)" },
+          { id: "detectado", label: "Precio (detectado)" },
+          { id: "otro", label: "Otro motivo" },
+          { id: "sinMotivo", label: "Sin motivo" },
+        ].map((f) => (
+          <button
+            key={f.id}
+            onClick={() => setFiltroMotivo(f.id)}
+            style={{
+              padding: "6px 12px",
+              borderRadius: 18,
+              border: `1.5px solid ${filtroMotivo === f.id ? C.ink : C.border}`,
+              background: filtroMotivo === f.id ? C.ink : C.white,
+              color: filtroMotivo === f.id ? C.white : C.ink,
+              fontWeight: 700,
+              fontSize: 12,
+              cursor: "pointer",
+            }}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+      <div style={{ overflowX: "auto", background: C.white, border: `1px solid ${C.border}`, borderRadius: 12 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={th}>Fecha</th>
+              <th style={th}>Taller</th>
+              <th style={th}>Lote</th>
+              <th style={th}>Referencia</th>
+              <th style={{ ...th, textAlign: "right" }}>Und</th>
+              <th style={th}>Motivo</th>
+              <th style={{ ...th, textAlign: "right" }}>Precio devuelto</th>
+              <th style={{ ...th, textAlign: "right" }}>Precio corregido</th>
+              <th style={{ ...th, textAlign: "right" }}>Precio enviado</th>
+              <th style={{ ...th, textAlign: "right" }}>Corregido vs enviado</th>
+              <th style={{ ...th, textAlign: "right" }}>Total vs enviado</th>
+              <th style={th}>Digitó la entrada</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lista.map((x) => {
+              const mo = MOTIVOS_DEV[x.motivo];
+              const sobre = x.difVsEnviado !== null && x.difVsEnviado > 0;
+              return (
+                <tr key={x.clave}>
+                  <td style={td}>{fmtFechaISO(x.fecha)}</td>
+                  <td style={td}>{x.planta}</td>
+                  <td style={td}>{x.lote ?? "—"}</td>
+                  <td style={td}>{x.refExt || "—"}</td>
+                  <td style={tdn}>{fmtNum(x.unidades)}</td>
+                  <td style={td} title={x.texto || ""}>
+                    <span style={{ padding: "3px 8px", borderRadius: 10, background: mo.bg, color: mo.color, fontWeight: 700, fontSize: 11 }}>{mo.label}</span>
+                  </td>
+                  <td style={tdn}>{money(x.precioDevuelto)}</td>
+                  <td style={tdn}>{money(x.precioCorregido)}</td>
+                  <td style={tdn}>{money(x.enviado)}</td>
+                  <td style={{ ...tdn, color: sobre ? C.red : x.difVsEnviado !== null && x.difVsEnviado < 0 ? C.green : C.ink, fontWeight: sobre ? 800 : 500 }}>
+                    {x.difVsEnviado === null ? "—" : `${x.difVsEnviado > 0 ? "+" : ""}${fmtNum(x.difVsEnviado)}`}
+                  </td>
+                  <td style={{ ...tdn, color: sobre ? C.red : C.ink, fontWeight: sobre ? 800 : 500 }}>
+                    {x.impactoVsEnviado === null ? "—" : `${x.impactoVsEnviado > 0 ? "+" : ""}$${fmtNum(x.impactoVsEnviado)}`}
+                  </td>
+                  <td style={td}>{x.digito || "—"}</td>
+                </tr>
+              );
+            })}
+            {lista.length === 0 && (
+              <tr>
+                <td style={{ ...td, textAlign: "center", color: C.slate }} colSpan={12}>No hay devoluciones con ese filtro.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 11, color: C.slate, marginTop: 8, lineHeight: 1.5 }}>
+        "Precio corregido" es el de la nueva entrada del mismo lote; si no aparece (—) todavía no se ha vuelto a entrar. "Precio enviado" es el precio teórico: si el sistema no tenía uno distinto, coincide con el precio devuelto.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))", gap: 14, marginTop: 18 }}>
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: C.ink, marginBottom: 8 }}>Por taller</div>
+          {porTaller.map((g) => (
+            <div key={g.planta} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, padding: "4px 0", borderBottom: `1px solid ${C.border}` }}>
+              <span style={{ color: C.ink }}>{g.planta}</span>
+              <span style={{ color: C.slate, whiteSpace: "nowrap" }}>
+                {g.total} devol. · <strong style={{ color: g.precio ? C.red : C.slate }}>{g.precio} por precio</strong> · {fmtNum(g.unidades)} und
+              </span>
+            </div>
+          ))}
+        </div>
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: C.ink, marginBottom: 8 }}>Quién digitó la entrada devuelta por precio</div>
+          {sinUsuario ? (
+            <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5 }}>
+              Este dato llega al traer las entradas desde Busint (botón "Traer de Busint ahora"). Con el Excel no está disponible.
+            </div>
+          ) : (
+            porDigitador.map(([u, n]) => (
+              <div key={u} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0", borderBottom: `1px solid ${C.border}` }}>
+                <span style={{ color: C.ink }}>{u}</span>
+                <strong style={{ color: C.red }}>{n}</strong>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 // ─── DASHBOARD DE ENTREGAS ────────────────────────────────────────────────────────
 // Cumplimiento = por entrega positiva (no devolución) con fecha y fecha
 // comprometida: diasCumplimiento <= 0 significa que llegó a tiempo o antes;
@@ -855,6 +1105,7 @@ function DashboardEntregasView({ cargaActiva, onSubir, isAdmin }) {
             {[
               { id: "resumen", icon: "📊", label: "Resumen" },
               { id: "precio", icon: "🔎", label: "Verificador de Precio de Confección" },
+              { id: "devoluciones", icon: "↩️", label: "Control de devoluciones" },
             ].map((t) => (
               <button
                 key={t.id}
@@ -876,6 +1127,7 @@ function DashboardEntregasView({ cargaActiva, onSubir, isAdmin }) {
             ))}
           </div>
           {subTab === "precio" && <VerificadorPrecioConfeccionView entradas={entradas} />}
+          {subTab === "devoluciones" && <ControlDevolucionesView entradas={entradas} />}
         </>
       )}
       {cargaActiva && subTab === "resumen" && (
