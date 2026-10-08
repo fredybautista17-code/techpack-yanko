@@ -7708,10 +7708,60 @@ const DIAS_SEMANA_CORTO = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
 function diaSemanaISO(iso) {
   return new Date(`${iso}T00:00:00Z`).getUTCDay(); // 0 = domingo
 }
+const NOMBRES_DIA_LARGO = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+const PLANTA_PROPIA_NOMBRE = "INDUSTRIAS YANKO MODULO CENTRO";
+const SIN_CLIENTE = "Sin identificar";
+const MAX_COLUMNAS_CLIENTE = 6;
+const PALETA_CLIENTES = [C.blue, C.green, "#B4577A", "#8A6D3B", "#5B8FC4", "#A0522D", "#3F8F6B"];
+// "SURTIEXPORT SAS-SURTIEXPORT" -> "SURTIEXPORT" (Busint guarda "razón social-nombre comercial").
+function etiquetaClienteCorta(nombre) {
+  const n = String(nombre || "").trim();
+  const m = n.match(/^(.+?)\s*-\s*(.+)$/);
+  if (m) {
+    const a = m[1].trim().toUpperCase();
+    const b = m[2].trim().toUpperCase();
+    if (a === b || a.includes(b)) return b;
+    if (b.includes(a)) return a;
+  }
+  return n;
+}
+function normCliente(nombre) {
+  const k = etiquetaClienteEntradas(nombre);
+  return k ? etiquetaClienteCorta(k).toUpperCase() : null;
+}
+function colorFijoCliente(k) {
+  if (k === "KAMILA COLOMBIA") return C.amber;
+  if (k === "KAMILA VENEZUELA") return C.violet;
+  if (String(k).startsWith("SURTIEXPORT")) return C.teal;
+  return null;
+}
+function textoCumplimiento(d) {
+  if (d === null || d === undefined) return "";
+  if (d === 0) return "A tiempo";
+  return d < 0 ? `${Math.abs(d)} d antes` : `${d} d tarde`;
+}
+function filasDetalleEntregas(lista, clienteDe) {
+  const cab = ["Entró", "Lote", "Taller / planta", "Referencia", "Categoría", "Cliente", "Pedido", "Unidades", "Enviado", "Comprometido", "Cumplimiento", "Precio entrada", "Precio teórico"];
+  const filas = [...lista]
+    .sort((a, b) => a.fecha.localeCompare(b.fecha) || String(a.nombrePlanta).localeCompare(String(b.nombrePlanta)) || Number(a.numLote) - Number(b.numLote))
+    .map((e) => [
+      fmtFechaISO(e.fecha), e.numLote ?? "", e.nombrePlanta || "", e.refExt || e.refN || "", e.categoria || "", clienteDe(e) || SIN_CLIENTE,
+      e.nPedido ?? "", e.cantidad, e.fechaInicio ? fmtFechaISO(e.fechaInicio) : "", e.fechaFin ? fmtFechaISO(e.fechaFin) : "",
+      textoCumplimiento(e.diasCumplimiento), e.precioEntrada || "", e.precioTeorico || "",
+    ]);
+  return [cab, ...filas];
+}
+async function descargarDetalleExcel(lista, clienteDe, archivo) {
+  const XLSX = await import("xlsx");
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(filasDetalleEntregas(lista, clienteDe)), "Detalle");
+  XLSX.writeFile(wb, archivo);
+}
+
 // Ventana de detalle: qué lotes entraron y qué talleres los entregaron (con la
 // información de cada lote entregado). Se abre al hacer clic en un día, en el
 // subtotal de una semana o en el total del mes de "Lotes por Día".
-function DetalleEntregasModal({ titulo, lista, clienteDe, onClose }) {
+function DetalleEntregasModal({ titulo, lista, clienteDe, onClose, onExcel }) {
   const grupos = useMemo(() => {
     const m = new Map();
     lista.forEach((e) => {
@@ -7809,17 +7859,51 @@ function DetalleEntregasModal({ titulo, lista, clienteDe, onClose }) {
       <div style={{ fontSize: 11, color: C.slate, marginTop: 8, lineHeight: 1.5 }}>
         Cumplimiento = fecha de entrada contra la fecha comprometida con el taller. El precio de la entrada sale en rojo cuando supera el precio teórico.
       </div>
-      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+        {onExcel && <Btn variant="secondary" onClick={onExcel}>⬇ Excel</Btn>}
         <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
       </div>
     </Modal>
   );
+}
+function KpiLotes({ label, value, sub, subColor, serie, color, onClick }) {
+  const max = Math.max(1, ...(serie && serie.length ? serie : [0]));
+  return (
+    <div
+      className="lpd-kpi"
+      onClick={onClick}
+      title={onClick ? "Clic para ver el detalle" : undefined}
+      style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px", cursor: onClick ? "pointer" : "default", transition: "box-shadow .15s, transform .15s" }}
+    >
+      <div style={{ fontSize: 10.5, fontWeight: 700, color: C.slate, letterSpacing: 0.6, textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontSize: 26, fontWeight: 900, color: color || C.ink, lineHeight: 1.1, marginTop: 4 }}>{value}</div>
+      {sub !== undefined && sub !== null && <div style={{ fontSize: 12, fontWeight: 700, color: subColor || C.slate, marginTop: 3 }}>{sub}</div>}
+      {serie && serie.length > 0 && (
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 22, marginTop: 8 }}>
+          {serie.map((v, i) => (
+            <div key={i} style={{ flex: 1, height: `${Math.max(8, (v / max) * 100)}%`, background: color || C.blue, opacity: v === max && v > 0 ? 1 : 0.28, borderRadius: 2 }} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+function deltaKpi(actual, anterior) {
+  if (!anterior) return { texto: actual ? "sin datos del mes anterior" : "", color: C.slate };
+  const pct = Math.round(((actual - anterior) / anterior) * 100);
+  return { texto: `${pct > 0 ? "▲ +" : pct < 0 ? "▼ " : ""}${pct}% vs mes anterior`, color: pct > 0 ? C.green : pct < 0 ? C.red : C.slate };
 }
 function LotesPorDiaView({ entradas, cargas }) {
   const buenas = useMemo(() => entradas.filter((e) => e.cantidad > 0 && e.fecha), [entradas]);
   const meses = useMemo(() => [...new Set(buenas.map((e) => e.fecha.slice(0, 7)))].sort().reverse(), [buenas]);
   const [mes, setMes] = useState("");
   const [detalle, setDetalle] = useState(null); // { titulo, lista }
+  const [busqueda, setBusqueda] = useState("");
+  const [planta, setPlanta] = useState("todas"); // todas | propia | talleres
+  const [clientesSel, setClientesSel] = useState([]); // claves de columna
+  const [orden, setOrden] = useState(null); // { col, dir }
+  const [cerradas, setCerradas] = useState([]); // lunes de semanas contraídas
+  const [hover, setHover] = useState(null); // índice de día
   useEffect(() => {
     if (meses.length && !meses.includes(mes)) setMes(meses[0]);
   }, [meses]);
@@ -7831,7 +7915,7 @@ function LotesPorDiaView({ entradas, cargas }) {
       .sort((a, b) => (a.creadoEn || a.fecha || "").localeCompare(b.creadoEn || b.fecha || ""))
       .forEach((c) =>
         (c.lotes || []).forEach((l) => {
-          const cli = etiquetaClienteEntradas(l.nombreCliente || l.clienteAgrupado);
+          const cli = normCliente(l.nombreCliente || l.clienteAgrupado);
           if (!cli) return;
           if (l.numLote !== undefined && l.numLote !== null && l.numLote !== "") porLote.set(String(l.numLote), cli);
           if (l.numPedido !== undefined && l.numPedido !== null && l.numPedido !== "") porPedido.set(String(l.numPedido), cli);
@@ -7840,21 +7924,63 @@ function LotesPorDiaView({ entradas, cargas }) {
     return { porLote, porPedido };
   }, [cargas]);
   const clienteDe = (e) =>
-    (e.cliente ? etiquetaClienteEntradas(e.cliente) : null) ||
+    (e.cliente ? normCliente(e.cliente) : null) ||
     mapaCliente.porLote.get(String(e.numLote ?? "")) ||
     mapaCliente.porPedido.get(String(e.nPedido ?? "")) ||
     null;
   const idLote = (e) => String(e.numLote ?? `e${e.numEnt}`);
 
-  const { dias, semanas, total } = useMemo(() => {
-    if (!mes) return { dias: [], semanas: [], total: null };
-    const delMes = buenas.filter((e) => e.fecha.slice(0, 7) === mes);
+  // Entradas del mes (sin filtros) → de aquí salen las columnas, para que no "bailen" al filtrar.
+  const delMesTodo = useMemo(() => (mes ? buenas.filter((e) => e.fecha.slice(0, 7) === mes) : []), [buenas, mes]);
+  const columnas = useMemo(() => {
+    const porCli = new Map();
+    delMesTodo.forEach((e) => {
+      const k = clienteDe(e) || SIN_CLIENTE;
+      if (!porCli.has(k)) porCli.set(k, new Set());
+      porCli.get(k).add(idLote(e));
+    });
+    const conNombre = [...porCli.entries()]
+      .filter(([k]) => k !== SIN_CLIENTE)
+      .map(([k, s]) => ({ k, n: s.size }))
+      .sort((a, b) => b.n - a.n || a.k.localeCompare(b.k));
+    const top = conNombre.slice(0, MAX_COLUMNAS_CLIENTE);
+    const resto = conNombre.slice(MAX_COLUMNAS_CLIENTE);
+    let pal = 0;
+    const cols = top.map(({ k, n }) => ({ key: k, label: k, color: colorFijoCliente(k) || PALETA_CLIENTES[pal++ % PALETA_CLIENTES.length], total: n }));
+    if (resto.length) {
+      const lotesResto = new Set();
+      resto.forEach(({ k }) => porCli.get(k).forEach((id) => lotesResto.add(id)));
+      cols.push({ key: "__otros__", label: "Otros clientes", color: "#8E8A83", total: lotesResto.size, incluye: resto.map((r) => r.k) });
+    }
+    if (porCli.has(SIN_CLIENTE)) cols.push({ key: "__sin__", label: SIN_CLIENTE, color: "#B9B4AC", total: porCli.get(SIN_CLIENTE).size });
+    return { cols, top: new Set(top.map((t) => t.k)) };
+  }, [delMesTodo, mapaCliente]);
+  const colDe = (e) => {
+    const k = clienteDe(e);
+    if (!k) return "__sin__";
+    return columnas.top.has(k) ? k : "__otros__";
+  };
+  const q = busqueda.trim().toLowerCase();
+  const pasa = (e) => {
+    if (planta === "propia" && e.nombrePlanta !== PLANTA_PROPIA_NOMBRE) return false;
+    if (planta === "talleres" && e.nombrePlanta === PLANTA_PROPIA_NOMBRE) return false;
+    if (clientesSel.length && !clientesSel.includes(colDe(e))) return false;
+    if (q) {
+      const hay = [e.numLote, e.nombrePlanta, e.refExt, e.refN, e.categoria, clienteDe(e), e.nPedido].join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  };
+  const hayFiltros = planta !== "todas" || clientesSel.length > 0 || q !== "";
+
+  const { dias, semanas, total, previo } = useMemo(() => {
+    if (!mes) return { dias: [], semanas: [], total: null, previo: null };
+    const delMes = delMesTodo.filter(pasa);
     const porFecha = new Map();
     delMes.forEach((e) => {
       if (!porFecha.has(e.fecha)) porFecha.set(e.fecha, []);
       porFecha.get(e.fecha).push(e);
     });
-    // todos los días hábiles (lun-vie) del mes hasta la última fecha con datos, más cualquier sábado/domingo que tenga entradas
     const [y, m] = mes.split("-").map(Number);
     const ultimoDiaMes = new Date(Date.UTC(y, m, 0)).getUTCDate();
     const fechas = new Set(porFecha.keys());
@@ -7864,19 +7990,18 @@ function LotesPorDiaView({ entradas, cargas }) {
       if (iso <= ultimaFecha && dow >= 1 && dow <= 5) fechas.add(iso);
     }
     const resumir = (lista) => {
-      const lotes = new Set(lista.map(idLote));
-      const conjunto = (fn) => new Set(lista.filter(fn).map(idLote)).size;
-      const cliente = (e) => clienteDe(e);
-      return {
-        lotes: lotes.size,
-        entradas: lista.length,
-        unidades: lista.reduce((s, e) => s + e.cantidad, 0),
-        propia: conjunto((e) => e.nombrePlanta === "INDUSTRIAS YANKO MODULO CENTRO"),
-        talleres: conjunto((e) => e.nombrePlanta !== "INDUSTRIAS YANKO MODULO CENTRO"),
-        colombia: conjunto((e) => cliente(e) === "KAMILA COLOMBIA"),
-        venezuela: conjunto((e) => cliente(e) === "KAMILA VENEZUELA"),
-        otros: conjunto((e) => cliente(e) !== "KAMILA COLOMBIA" && cliente(e) !== "KAMILA VENEZUELA"),
-      };
+      const lotes = new Set();
+      const sets = {};
+      lista.forEach((e) => {
+        const id = idLote(e);
+        lotes.add(id);
+        const c = colDe(e);
+        if (!sets[c]) sets[c] = new Set();
+        sets[c].add(id);
+      });
+      const porCol = {};
+      Object.keys(sets).forEach((c) => { porCol[c] = sets[c].size; });
+      return { lotes: lotes.size, entradas: lista.length, unidades: lista.reduce((s, e) => s + e.cantidad, 0), porCol };
     };
     const dias = [...fechas].sort().map((f) => ({ fecha: f, lista: porFecha.get(f) || [], ...resumir(porFecha.get(f) || []) }));
     const mapaSem = new Map();
@@ -7885,16 +8010,77 @@ function LotesPorDiaView({ entradas, cargas }) {
       if (!mapaSem.has(k)) mapaSem.set(k, []);
       mapaSem.get(k).push(d);
     });
-    const semanas = [...mapaSem.entries()].map(([lunes, ds]) => ({ lunes, dias: ds, ...resumir(ds.flatMap((d) => d.lista)) }));
+    const semanas = [...mapaSem.entries()].map(([lunes, ds]) => {
+      const lista = ds.flatMap((d) => d.lista);
+      return { lunes, dias: ds, lista, ...resumir(lista) };
+    });
     const habiles = dias.filter((d) => d.lista.length > 0 && diaSemanaISO(d.fecha) >= 1 && diaSemanaISO(d.fecha) <= 5).length;
-    return { dias, semanas, total: { ...resumir(delMes), lista: delMes, diasConEntradas: dias.filter((d) => d.lista.length).length, habiles } };
-  }, [buenas, mes, ultimaFecha, mapaCliente]);
+    // mes anterior (si el mes es el actual, solo hasta el mismo día del mes)
+    const prevMes = mesAnteriorDe(mes);
+    const topeDia = mes === ultimaFecha.slice(0, 7) ? ultimaFecha.slice(8, 10) : "99";
+    const prevLista = buenas.filter((e) => e.fecha.slice(0, 7) === prevMes && e.fecha.slice(8, 10) <= topeDia && pasa(e));
+    const prev = resumir(prevLista);
+    return {
+      dias, semanas,
+      total: { ...resumir(delMes), lista: delMes, habiles },
+      previo: { lotes: prev.lotes, unidades: prev.unidades },
+    };
+  }, [buenas, delMesTodo, mes, ultimaFecha, mapaCliente, columnas, planta, clientesSel, q]);
 
   const maxLotes = Math.max(1, ...dias.map((d) => d.lotes));
   const mejor = dias.length ? dias.reduce((a, b) => (b.lotes > a.lotes ? b : a)) : null;
-  const th = { textAlign: "right", padding: "9px 10px", fontSize: 11, color: C.slate, fontWeight: 700, borderBottom: `2px solid ${C.border}`, whiteSpace: "nowrap", background: C.canvas, position: "sticky", top: 0 };
-  const td = { padding: "7px 10px", fontSize: 13, color: C.ink, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", textAlign: "right" };
-  const num = (v) => (v ? fmtNum(v) : <span style={{ color: "#C9C3BA" }}>–</span>);
+  const promedio = total && total.habiles ? total.lotes / total.habiles : 0;
+  const mejorCol = total ? columnas.cols.filter((c) => c.key !== "__sin__").reduce((a, c) => ((total.porCol[c.key] || 0) > ((a && total.porCol[a.key]) || 0) ? c : a), null) : null;
+  const abrir = (titulo, lista) => setDetalle({ titulo, lista });
+  const tituloDia = (f) => `Entregas del ${NOMBRES_DIA_LARGO[diaSemanaISO(f)]} ${fmtFechaISO(f)}`;
+  const colDeLista = (lista, key) => lista.filter((e) => colDe(e) === key);
+  const cambiarOrden = (col) => {
+    setOrden((o) => (!o || o.col !== col ? { col, dir: "desc" } : o.dir === "desc" ? { col, dir: "asc" } : null));
+  };
+  const valorOrden = (d, col) => (["lotes", "entradas", "unidades"].includes(col) ? d[col] : d.porCol[col] || 0);
+  const flecha = (col) => (orden && orden.col === col ? (orden.dir === "desc" ? " ▼" : " ▲") : "");
+  const alternarCliente = (key) => setClientesSel((s) => (s.includes(key) ? s.filter((x) => x !== key) : [...s, key]));
+  const alternarSemana = (lunes) => setCerradas((s) => (s.includes(lunes) ? s.filter((x) => x !== lunes) : [...s, lunes]));
+  const irMes = (delta) => {
+    const i = meses.indexOf(mes);
+    const n = meses[i + delta];
+    if (n) setMes(n);
+  };
+  const exportarExcel = async () => {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.utils.book_new();
+    const cab = ["Fecha", "Día", "Lotes", "Entradas", "Unidades", ...columnas.cols.map((c) => c.label)];
+    const filas = dias
+      .filter((d) => d.lista.length)
+      .map((d) => [fmtFechaISO(d.fecha), NOMBRES_DIA_LARGO[diaSemanaISO(d.fecha)], d.lotes, d.entradas, d.unidades, ...columnas.cols.map((c) => d.porCol[c.key] || 0)]);
+    filas.push(["TOTAL", nombreMes(mes), total.lotes, total.entradas, total.unidades, ...columnas.cols.map((c) => total.porCol[c.key] || 0)]);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([cab, ...filas]), "Lotes por día");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(filasDetalleEntregas(total.lista, clienteDe)), "Detalle de lotes");
+    XLSX.writeFile(wb, `Lotes_por_dia_${mes}.xlsx`);
+  };
+
+  const th = { textAlign: "right", padding: "10px 10px", fontSize: 11, color: C.slate, fontWeight: 700, borderBottom: `2px solid ${C.border}`, whiteSpace: "nowrap", background: C.canvas, position: "sticky", top: 0, zIndex: 2, cursor: "pointer", userSelect: "none" };
+  const td = { padding: "8px 10px", fontSize: 13, color: C.ink, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", textAlign: "right" };
+  const guion = <span style={{ color: "#C9C3BA" }}>–</span>;
+  const celdaLotes = (d) => {
+    const r = maxLotes ? d.lotes / maxLotes : 0;
+    const vacio = d.lotes === 0;
+    return (
+      <span style={{ display: "inline-block", minWidth: 42, textAlign: "center", padding: "4px 10px", borderRadius: 8, fontWeight: 800, fontSize: 14, background: vacio ? "#F0EEEA" : `rgba(61,107,158,${(0.1 + 0.85 * r).toFixed(2)})`, color: vacio ? "#B5B0A8" : r > 0.45 ? "#fff" : C.ink }}>
+        {d.lotes}
+      </span>
+    );
+  };
+  const celdaCliente = (n, col, lista, titulo) =>
+    n ? (
+      <span
+        onClick={(ev) => { ev.stopPropagation(); abrir(`${titulo} · ${col.label}`, colDeLista(lista, col.key)); }}
+        title={col.incluye ? `Incluye: ${col.incluye.join(", ")}` : `Ver los lotes de ${col.label}`}
+        style={{ display: "inline-block", minWidth: 34, textAlign: "center", padding: "3px 10px", borderRadius: 8, fontWeight: 700, background: `${col.color}22`, color: C.ink, cursor: "pointer" }}
+      >
+        {n}
+      </span>
+    ) : guion;
   if (!buenas.length) {
     return (
       <div style={{ textAlign: "center", padding: 60, color: C.slate, fontSize: 13, background: C.white, borderRadius: 14, border: `1px solid ${C.border}` }}>
@@ -7902,117 +8088,272 @@ function LotesPorDiaView({ entradas, cargas }) {
       </div>
     );
   }
+  const hoverDia = hover !== null ? dias[hover] : null;
+  let hoverPrev = null;
+  if (hoverDia) {
+    const f28 = isoSumarDias(hoverDia.fecha, -28);
+    hoverPrev = new Set(buenas.filter((e) => e.fecha === f28 && pasa(e)).map(idLote)).size;
+  }
+  const chip = (activo, color) => ({
+    padding: "6px 12px", borderRadius: 99, fontSize: 12, fontWeight: 700, cursor: "pointer", transition: "all .15s",
+    border: `1.5px solid ${activo ? color : C.border}`, background: activo ? color : C.white, color: activo ? "#fff" : C.ink,
+  });
+  const filaDia = (d) => {
+    const sinDatos = d.lista.length === 0;
+    const finde = [0, 6].includes(diaSemanaISO(d.fecha));
+    return (
+      <tr
+        key={d.fecha}
+        className={sinDatos ? undefined : "lpd-fila"}
+        onClick={sinDatos ? undefined : () => abrir(tituloDia(d.fecha), d.lista)}
+        title={sinDatos ? undefined : "Clic para ver los lotes y talleres de este día"}
+        style={{ background: finde ? C.amberBg : "transparent", opacity: sinDatos ? 0.5 : 1, cursor: sinDatos ? "default" : "pointer" }}
+      >
+        <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>
+          <span style={{ display: "inline-block", width: 34, color: finde ? C.amber : C.slate, fontWeight: 600 }}>{DIAS_SEMANA_CORTO[diaSemanaISO(d.fecha)]}</span>
+          {fmtFechaISO(d.fecha).slice(0, 5)}
+          {mejor && mejor.lotes > 0 && mejor.fecha === d.fecha ? <span title="Mejor día del mes"> ⭐</span> : null}
+        </td>
+        <td style={td}>{celdaLotes(d)}</td>
+        <td style={td}>{d.entradas || guion}</td>
+        <td style={td}>{d.unidades ? fmtNum(d.unidades) : guion}</td>
+        {columnas.cols.map((c) => (
+          <td key={c.key} style={td}>{celdaCliente(d.porCol[c.key] || 0, c, d.lista, tituloDia(d.fecha))}</td>
+        ))}
+      </tr>
+    );
+  };
+  const filaResumen = (key, etiqueta, r, fondo, colorTxt, onFila, abierto, alToggle, tituloBase) => (
+    <tr key={key} className="lpd-fila" style={{ background: fondo, cursor: "pointer" }} onClick={onFila} title="Clic para ver los lotes y talleres">
+      <td style={{ ...td, textAlign: "left", fontWeight: 800, color: colorTxt, borderBottom: "none" }} onClick={alToggle ? (ev) => { ev.stopPropagation(); alToggle(); } : undefined}>
+        {alToggle ? <span title="Contraer / expandir la semana" style={{ display: "inline-block", width: 18 }}>{abierto ? "▾" : "▸"}</span> : null}
+        {etiqueta}
+      </td>
+      <td style={{ ...td, fontWeight: 800, color: colorTxt, borderBottom: "none" }}>{fmtNum(r.lotes)}</td>
+      <td style={{ ...td, fontWeight: 700, color: colorTxt, borderBottom: "none" }}>{fmtNum(r.entradas)}</td>
+      <td style={{ ...td, fontWeight: 700, color: colorTxt, borderBottom: "none" }}>{fmtNum(r.unidades)}</td>
+      {columnas.cols.map((c) => (
+        <td key={c.key} style={{ ...td, fontWeight: 700, color: colorTxt, borderBottom: "none" }}>
+          {r.porCol[c.key] ? (
+            <span
+              onClick={(ev) => { ev.stopPropagation(); abrir(`${tituloBase} · ${c.label}`, colDeLista(r.lista, c.key)); }}
+              style={{ cursor: "pointer", textDecoration: "underline dotted" }}
+            >
+              {fmtNum(r.porCol[c.key])}
+            </span>
+          ) : <span style={{ opacity: 0.4 }}>–</span>}
+        </td>
+      ))}
+    </tr>
+  );
+
   return (
     <div>
+      <style>{`.lpd-fila:hover{background:#F1EDE6 !important}.lpd-kpi:hover{box-shadow:0 6px 18px rgba(26,26,46,.09);transform:translateY(-1px)}.lpd-bar{transition:filter .15s}.lpd-bar:hover{filter:brightness(1.07)}.lpd-seg{transition:flex-grow .3s}`}</style>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Lotes por Día</h2>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: C.slate }}>
-            Cuántos lotes entran cada día de los talleres a planta. Datos hasta el {fmtFechaISO(ultimaFecha)}.
+            Qué lotes entran cada día de los talleres a planta, por cliente. Datos hasta el {fmtFechaISO(ultimaFecha)}.
           </p>
         </div>
-        <select value={mes} onChange={(e) => setMes(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontWeight: 700, color: C.ink, background: C.white, fontFamily: "inherit" }}>
-          {meses.map((m) => (
-            <option key={m} value={m}>{nombreMes(m)}</option>
-          ))}
-        </select>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button onClick={() => irMes(1)} disabled={meses.indexOf(mes) >= meses.length - 1} title="Mes anterior" style={{ border: `1.5px solid ${C.border}`, background: C.white, borderRadius: 8, padding: "7px 11px", cursor: "pointer", fontSize: 14, color: C.ink }}>‹</button>
+          <select value={mes} onChange={(e) => setMes(e.target.value)} style={{ padding: "8px 12px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontWeight: 700, color: C.ink, background: C.white, fontFamily: "inherit" }}>
+            {meses.map((m) => (
+              <option key={m} value={m}>{nombreMes(m)}</option>
+            ))}
+          </select>
+          <button onClick={() => irMes(-1)} disabled={meses.indexOf(mes) <= 0} title="Mes siguiente" style={{ border: `1.5px solid ${C.border}`, background: C.white, borderRadius: 8, padding: "7px 11px", cursor: "pointer", fontSize: 14, color: C.ink }}>›</button>
+          <Btn onClick={exportarExcel} disabled={!total || !total.lotes}>⬇ Excel</Btn>
+        </div>
       </div>
-      {detalle && <DetalleEntregasModal titulo={detalle.titulo} lista={detalle.lista} clienteDe={clienteDe} onClose={() => setDetalle(null)} />}
+      {detalle && (
+        <DetalleEntregasModal
+          titulo={detalle.titulo}
+          lista={detalle.lista}
+          clienteDe={clienteDe}
+          onClose={() => setDetalle(null)}
+          onExcel={() => descargarDetalleExcel(detalle.lista, clienteDe, `Entregas_${mes}.xlsx`)}
+        />
+      )}
+
+      {/* Filtros */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+        <input
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="🔍  Buscar lote, taller, referencia, cliente o pedido…"
+          style={{ flex: "1 1 280px", maxWidth: 420, padding: "9px 14px", border: `1.5px solid ${C.border}`, borderRadius: 10, fontSize: 13, fontFamily: "inherit", color: C.ink, background: C.white }}
+        />
+        {[["todas", "Todas las plantas"], ["propia", "Planta propia"], ["talleres", "Talleres"]].map(([k, t]) => (
+          <span key={k} onClick={() => setPlanta(k)} style={chip(planta === k, C.ink)}>{t}</span>
+        ))}
+        {hayFiltros && (
+          <span onClick={() => { setPlanta("todas"); setClientesSel([]); setBusqueda(""); }} style={{ fontSize: 12, fontWeight: 700, color: C.blue, cursor: "pointer" }}>Limpiar filtros ✕</span>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", letterSpacing: 0.6 }}>Clientes</span>
+        {columnas.cols.map((c) => {
+          const activo = clientesSel.includes(c.key);
+          return (
+            <span key={c.key} onClick={() => alternarCliente(c.key)} title={c.incluye ? `Incluye: ${c.incluye.join(", ")}` : "Clic para filtrar por este cliente"} style={chip(activo, c.color)}>
+              <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: "50%", background: activo ? "#fff" : c.color, marginRight: 6 }} />
+              {c.label} · {c.total}
+            </span>
+          );
+        })}
+      </div>
+
       {total && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))", gap: 12, marginBottom: 16 }}>
-          <KPI icon="📥" label="Lotes en el mes" value={fmtNum(total.lotes)} sub={`${fmtNum(total.entradas)} entradas`} color={C.ink} bg={C.canvas} />
-          <KPI icon="📦" label="Unidades en el mes" value={fmtNum(total.unidades)} color={C.ink} bg={C.canvas} />
-          <KPI icon="📅" label="Promedio por día hábil" value={total.habiles ? (total.lotes / total.habiles).toFixed(1) : "—"} sub={`${total.habiles} días hábiles con entradas`} color={C.blue} bg={C.blueBg} />
-          <KPI icon="🏆" label="Mejor día" value={mejor && mejor.lotes ? `${mejor.lotes} lotes` : "—"} sub={mejor && mejor.lotes ? `${DIAS_SEMANA_CORTO[diaSemanaISO(mejor.fecha)]} ${fmtFechaISO(mejor.fecha).slice(0, 5)}` : ""} color={C.green} bg={C.greenBg} />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))", gap: 12, marginBottom: 16 }}>
+          <KpiLotes
+            label="Lotes en el mes" value={fmtNum(total.lotes)} color={C.ink}
+            sub={previo ? deltaKpi(total.lotes, previo.lotes).texto : ""} subColor={previo ? deltaKpi(total.lotes, previo.lotes).color : undefined}
+            serie={dias.map((d) => d.lotes)} onClick={() => abrir(`Entregas de ${nombreMes(mes)}`, total.lista)}
+          />
+          <KpiLotes
+            label="Unidades en el mes" value={fmtNum(total.unidades)} color={C.blue}
+            sub={previo ? deltaKpi(total.unidades, previo.unidades).texto : ""} subColor={previo ? deltaKpi(total.unidades, previo.unidades).color : undefined}
+            serie={dias.map((d) => d.unidades)} onClick={() => abrir(`Entregas de ${nombreMes(mes)}`, total.lista)}
+          />
+          <KpiLotes label="Promedio por día hábil" value={total.habiles ? promedio.toFixed(1) : "—"} color={C.teal} sub={`${total.habiles} días hábiles con entradas`} />
+          <KpiLotes
+            label="Mejor día" value={mejor && mejor.lotes ? `${DIAS_SEMANA_CORTO[diaSemanaISO(mejor.fecha)]} ${fmtFechaISO(mejor.fecha).slice(0, 5)}` : "—"} color={C.green}
+            sub={mejor && mejor.lotes ? `${mejor.lotes} lotes · ${fmtNum(mejor.unidades)} und` : ""}
+            onClick={mejor && mejor.lotes ? () => abrir(tituloDia(mejor.fecha), mejor.lista) : undefined}
+          />
+          <KpiLotes
+            label="Cliente con más lotes" value={mejorCol && total.porCol[mejorCol.key] ? mejorCol.label : "—"} color={mejorCol ? mejorCol.color : C.ink}
+            sub={mejorCol && total.porCol[mejorCol.key] ? `${total.porCol[mejorCol.key]} lotes · ${Math.round((total.porCol[mejorCol.key] / Math.max(1, total.lotes)) * 100)}% del mes` : ""}
+            onClick={mejorCol && total.porCol[mejorCol.key] ? () => abrir(`${nombreMes(mes)} · ${mejorCol.label}`, colDeLista(total.lista, mejorCol.key)) : undefined}
+          />
         </div>
       )}
+
+      {/* Gráfico por día */}
+      {total && (
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "16px 18px", marginBottom: 16 }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: C.ink }}>Lotes que entran cada día</div>
+          <div style={{ fontSize: 12, color: C.slate, marginBottom: 12 }}>Cada color es un cliente. Pase el mouse para ver el detalle y haga clic en una barra para abrir los lotes.</div>
+          <div style={{ position: "relative" }}>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 5, height: 170, borderBottom: `1px solid ${C.border}`, position: "relative" }}>
+              {promedio > 0 && (
+                <div style={{ position: "absolute", left: 0, right: 0, bottom: `${(promedio / maxLotes) * 100}%`, borderTop: `2px dashed ${C.red}`, opacity: 0.55, pointerEvents: "none" }}>
+                  <span style={{ position: "absolute", right: 0, top: -17, fontSize: 10.5, color: C.red, background: C.white, padding: "0 4px", fontWeight: 700 }}>promedio {promedio.toFixed(1)}</span>
+                </div>
+              )}
+              {dias.map((d, i) => {
+                const finde = [0, 6].includes(diaSemanaISO(d.fecha));
+                return (
+                  <div
+                    key={d.fecha}
+                    onMouseEnter={() => setHover(i)}
+                    onMouseLeave={() => setHover(null)}
+                    onClick={d.lista.length ? () => abrir(tituloDia(d.fecha), d.lista) : undefined}
+                    style={{ flex: 1, height: "100%", display: "flex", alignItems: "flex-end", cursor: d.lista.length ? "pointer" : "default" }}
+                  >
+                    <div
+                      className="lpd-bar"
+                      style={{ width: "100%", height: `${(d.lotes / maxLotes) * 100}%`, display: "flex", flexDirection: "column-reverse", borderRadius: "5px 5px 0 0", overflow: "hidden", opacity: finde ? 0.55 : 1, outline: hover === i ? `2px solid ${C.ink}` : "none", transition: "height .35s" }}
+                    >
+                      {columnas.cols.map((c) => (d.porCol[c.key] ? <div key={c.key} className="lpd-seg" style={{ flexGrow: d.porCol[c.key], flexBasis: 0, background: c.color, borderTop: "1px solid #fff" }} /> : null))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ display: "flex", gap: 5, marginTop: 5 }}>
+              {dias.map((d) => (
+                <span key={d.fecha} style={{ flex: 1, textAlign: "center", fontSize: 10, color: [0, 6].includes(diaSemanaISO(d.fecha)) ? C.amber : C.slate, fontWeight: 600 }}>{Number(d.fecha.slice(8))}</span>
+              ))}
+            </div>
+            {hoverDia && (
+              <div
+                style={{
+                  position: "absolute", top: 0, zIndex: 6, pointerEvents: "none", width: 250, background: C.ink, color: "#fff", borderRadius: 12, padding: "12px 14px", fontSize: 12, boxShadow: "0 10px 30px rgba(26,26,46,.3)",
+                  left: `${((hover + 0.5) / dias.length) * 100}%`,
+                  transform: hover / dias.length > 0.65 ? "translateX(-105%)" : "translateX(10%)",
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 800 }}>{NOMBRES_DIA_LARGO[diaSemanaISO(hoverDia.fecha)]} {fmtFechaISO(hoverDia.fecha)}</div>
+                <div style={{ color: "#B9B9D0", fontSize: 11, marginTop: 2 }}>{hoverDia.lotes} lotes · {fmtNum(hoverDia.unidades)} unidades</div>
+                <div style={{ borderTop: "1px solid #ffffff30", margin: "8px 0" }} />
+                {columnas.cols.filter((c) => hoverDia.porCol[c.key]).map((c) => (
+                  <div key={c.key} style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 4 }}>
+                    <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: c.color, marginRight: 6 }} />{c.label}</span>
+                    <strong>{hoverDia.porCol[c.key]}</strong>
+                  </div>
+                ))}
+                {!hoverDia.lotes && <div style={{ color: "#B9B9D0" }}>Sin entradas</div>}
+                <div style={{ borderTop: "1px solid #ffffff30", margin: "8px 0" }} />
+                <div style={{ color: "#B9B9D0" }}>
+                  Mismo día hace 4 semanas: <strong style={{ color: "#fff" }}>{hoverPrev}</strong>{" "}
+                  {hoverPrev || hoverDia.lotes ? (
+                    <strong style={{ color: hoverDia.lotes >= hoverPrev ? "#7fe0a8" : "#ff9c8f" }}>
+                      {hoverDia.lotes >= hoverPrev ? "▲ +" : "▼ "}{hoverDia.lotes - hoverPrev}
+                    </strong>
+                  ) : null}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Tabla con mapa de calor */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: C.slate }}>Clic en un día o en un número para ver los lotes · clic en un encabezado para ordenar{orden ? " (clic de nuevo: invertir / quitar)" : ""}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: C.slate }}>
+          pocos
+          {[0.15, 0.35, 0.55, 0.75, 0.95].map((a) => (
+            <span key={a} style={{ width: 24, height: 10, borderRadius: 3, background: `rgba(61,107,158,${a})` }} />
+          ))}
+          muchos
+        </div>
+      </div>
       <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, overflow: "auto", maxHeight: "68vh" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr>
-              <th style={{ ...th, textAlign: "left" }}>Día</th>
-              <th style={{ ...th, minWidth: 130 }}>Lotes</th>
-              <th style={th}>Entradas</th>
-              <th style={th}>Unidades</th>
-              <th style={th} title="Lotes que entraron de Industrias Yanko Módulo Centro">Planta propia</th>
-              <th style={th}>Talleres</th>
-              <th style={th}>🇨🇴 Kamila Col.</th>
-              <th style={th}>🇻🇪 Kamila Ven.</th>
-              <th style={th} title="Otros clientes o lotes sin cliente identificado">Otros / sin id.</th>
+              <th style={{ ...th, textAlign: "left" }} onClick={() => setOrden(null)} title="Orden cronológico">Día</th>
+              <th style={{ ...th, minWidth: 90 }} onClick={() => cambiarOrden("lotes")}>Lotes{flecha("lotes")}</th>
+              <th style={th} onClick={() => cambiarOrden("entradas")}>Entradas{flecha("entradas")}</th>
+              <th style={th} onClick={() => cambiarOrden("unidades")}>Unidades{flecha("unidades")}</th>
+              {columnas.cols.map((c) => (
+                <th key={c.key} style={th} onClick={() => cambiarOrden(c.key)} title={c.incluye ? `Incluye: ${c.incluye.join(", ")}` : c.label}>
+                  <span style={{ display: "inline-block", width: 9, height: 9, borderRadius: "50%", background: c.color, marginRight: 6 }} />
+                  {c.label}{flecha(c.key)}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
-            {semanas.map((sem) => (
-              <Fragment key={sem.lunes}>
-                {sem.dias.map((d) => {
-                  const sinDatos = d.lista.length === 0;
-                  const finde = [0, 6].includes(diaSemanaISO(d.fecha));
+            {orden
+              ? [...dias]
+                  .filter((d) => d.lista.length)
+                  .sort((a, b) => (orden.dir === "desc" ? -1 : 1) * (valorOrden(a, orden.col) - valorOrden(b, orden.col)) || a.fecha.localeCompare(b.fecha))
+                  .map((d) => filaDia(d))
+              : semanas.map((sem) => {
+                  const abierta = !cerradas.includes(sem.lunes);
                   return (
-                    <tr
-                      key={d.fecha}
-                      onClick={sinDatos ? undefined : () => setDetalle({ titulo: `Entregas del ${["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"][diaSemanaISO(d.fecha)]} ${fmtFechaISO(d.fecha)}`, lista: d.lista })}
-                      title={sinDatos ? undefined : "Clic para ver los lotes y talleres de este día"}
-                      style={{ background: finde ? C.amberBg : "transparent", opacity: sinDatos ? 0.55 : 1, cursor: sinDatos ? "default" : "pointer" }}
-                    >
-                      <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>
-                        <span style={{ display: "inline-block", width: 34, color: finde ? C.amber : C.slate, fontWeight: 600 }}>{DIAS_SEMANA_CORTO[diaSemanaISO(d.fecha)]}</span>
-                        {fmtFechaISO(d.fecha).slice(0, 5)}
-                      </td>
-                      <td style={td}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-end" }}>
-                          <div style={{ width: 70 }}><BarraH valor={d.lotes} max={maxLotes} color={C.blue} /></div>
-                          <strong style={{ minWidth: 22, fontSize: 14 }}>{d.lotes || <span style={{ color: "#C9C3BA", fontWeight: 400 }}>0</span>}</strong>
-                        </div>
-                      </td>
-                      <td style={td}>{num(d.entradas)}</td>
-                      <td style={td}>{num(d.unidades)}</td>
-                      <td style={td}>{num(d.propia)}</td>
-                      <td style={td}>{num(d.talleres)}</td>
-                      <td style={td}>{num(d.colombia)}</td>
-                      <td style={td}>{num(d.venezuela)}</td>
-                      <td style={td}>{num(d.otros)}</td>
-                    </tr>
+                    <Fragment key={sem.lunes}>
+                      {filaResumen(`s${sem.lunes}`, `Semana del ${fmtFechaISO(sem.lunes).slice(0, 5)}`, sem, C.blueBg, C.blue, () => abrir(`Entregas de la semana del ${fmtFechaISO(sem.lunes)}`, sem.lista), abierta, () => alternarSemana(sem.lunes), `Semana del ${fmtFechaISO(sem.lunes)}`)}
+                      {abierta && sem.dias.map((d) => filaDia(d))}
+                    </Fragment>
                   );
                 })}
-                <tr
-                  style={{ background: C.blueBg, cursor: "pointer" }}
-                  title="Clic para ver los lotes y talleres de la semana"
-                  onClick={() => setDetalle({ titulo: `Entregas de la semana del ${fmtFechaISO(sem.lunes)}`, lista: sem.dias.flatMap((d) => d.lista) })}
-                >
-                  <td style={{ ...td, textAlign: "left", fontWeight: 800, color: C.blue }}>Semana del {fmtFechaISO(sem.lunes).slice(0, 5)}</td>
-                  <td style={{ ...td, fontWeight: 800, color: C.blue }}>{fmtNum(sem.lotes)}</td>
-                  <td style={{ ...td, fontWeight: 700 }}>{fmtNum(sem.entradas)}</td>
-                  <td style={{ ...td, fontWeight: 700 }}>{fmtNum(sem.unidades)}</td>
-                  <td style={{ ...td, fontWeight: 700 }}>{fmtNum(sem.propia)}</td>
-                  <td style={{ ...td, fontWeight: 700 }}>{fmtNum(sem.talleres)}</td>
-                  <td style={{ ...td, fontWeight: 700 }}>{fmtNum(sem.colombia)}</td>
-                  <td style={{ ...td, fontWeight: 700 }}>{fmtNum(sem.venezuela)}</td>
-                  <td style={{ ...td, fontWeight: 700 }}>{fmtNum(sem.otros)}</td>
-                </tr>
-              </Fragment>
-            ))}
-            {total && (
-              <tr
-                style={{ background: C.ink, cursor: "pointer" }}
-                title="Clic para ver los lotes y talleres de todo el mes"
-                onClick={() => setDetalle({ titulo: `Entregas de ${nombreMes(mes)}`, lista: total.lista })}
-              >
-                <td style={{ ...td, textAlign: "left", fontWeight: 800, color: C.white, borderBottom: "none" }}>TOTAL {nombreMes(mes).toUpperCase()}</td>
-                <td style={{ ...td, fontWeight: 800, color: C.white, borderBottom: "none" }}>{fmtNum(total.lotes)}</td>
-                <td style={{ ...td, color: C.white, borderBottom: "none" }}>{fmtNum(total.entradas)}</td>
-                <td style={{ ...td, color: C.white, borderBottom: "none" }}>{fmtNum(total.unidades)}</td>
-                <td style={{ ...td, color: C.white, borderBottom: "none" }}>{fmtNum(total.propia)}</td>
-                <td style={{ ...td, color: C.white, borderBottom: "none" }}>{fmtNum(total.talleres)}</td>
-                <td style={{ ...td, color: C.white, borderBottom: "none" }}>{fmtNum(total.colombia)}</td>
-                <td style={{ ...td, color: C.white, borderBottom: "none" }}>{fmtNum(total.venezuela)}</td>
-                <td style={{ ...td, color: C.white, borderBottom: "none" }}>{fmtNum(total.otros)}</td>
-              </tr>
-            )}
+            {total && filaResumen("total", `TOTAL ${nombreMes(mes).toUpperCase()}`, total, C.ink, C.white, () => abrir(`Entregas de ${nombreMes(mes)}`, total.lista), false, null, nombreMes(mes))}
           </tbody>
         </table>
+        {total && !total.lotes && (
+          <div style={{ padding: 30, textAlign: "center", color: C.slate, fontSize: 13 }}>No hay lotes que coincidan con los filtros en {nombreMes(mes)}.</div>
+        )}
       </div>
-      <div style={{ fontSize: 11, color: C.slate, marginTop: 8, lineHeight: 1.5 }}>
-        Un lote cuenta una vez por día; en los subtotales de semana y mes cuenta una sola vez aunque haya entrado en varios días, por eso la suma de los días puede ser mayor que el total. Planta propia + Talleres, y Colombia + Venezuela + Otros, suman el total de lotes. El cliente sale del lote/pedido en Planeación; los lotes que ya salieron del panel quedan en "Otros / sin id.". Los fines de semana solo aparecen si entró algo. Haz clic en un día, una semana o el total para ver los lotes y talleres que entregaron.
+      <div style={{ fontSize: 11, color: C.slate, marginTop: 8, lineHeight: 1.6 }}>
+        Un lote cuenta una vez por día; en los subtotales de semana y mes cuenta una sola vez aunque haya entrado en varios días, por eso la suma de los días puede ser mayor que el total. Cada lote está en un solo cliente, así que la suma de las columnas de cliente da el total de lotes. El cliente sale de la orden de producción de Busint; los lotes sin cliente quedan en "{SIN_CLIENTE}" (para llenar el historial: Planta → Resumen → Traer de Busint con 300 días).
+        {columnas.cols.some((c) => c.incluye) && <> Otros clientes: {columnas.cols.find((c) => c.incluye).incluye.join(", ")}.</>}
       </div>
     </div>
   );
