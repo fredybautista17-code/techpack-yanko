@@ -32,6 +32,20 @@ const SIN_DEFINIR = 999999999;
 const TAM_MAX_DOC_BYTES = 950000; // Firestore: 1 MiB por documento
 const ID_DOC_SYNC = "sync-busint";
 
+// Nombre del cliente de un lote. Busint escribe en la Observación de la orden
+// de producción: "Pedido: 1519  OrdComp:   Cliente: KAMILA VENEZUELA - KAMILA
+// VENEZUELA   Obs: ..." (confirmado con el lote 7223, pedido 1519). Cuando el
+// cliente viene repetido ("X - X") se deja una sola vez.
+function clienteDeObservacionOrden(obs) {
+  const m = /Cliente:\s*(.+?)(?:\s+Obs:|$)/i.exec(String(obs || ""));
+  if (!m) return null;
+  const limpio = m[1].replace(/\s+/g, " ").trim();
+  if (!limpio) return null;
+  const partes = limpio.split(/\s+-\s+/);
+  if (partes.length === 2 && partes[0].toLowerCase() === partes[1].toLowerCase()) return partes[0];
+  return limpio;
+}
+
 function crearEntradasPlanta({ db, logger, consultarTablaBusintBDCompleta, fechaISODesdeCampoBusintBD, fechaHoyBogota }) {
   function sumaTallas(fila) {
     return TALLAS.reduce((s, t) => s + (Number(fila?.[t]) || 0), 0);
@@ -85,6 +99,12 @@ function crearEntradasPlanta({ db, logger, consultarTablaBusintBDCompleta, fecha
       const l = String(o?.NumLote ?? "").trim();
       const n = Number(o?.Nped);
       if (l && Number.isFinite(n) && n > 0) pedidoPorLote.set(l, n);
+    });
+    const clientePorLote = new Map();
+    ordenes.forEach((o) => {
+      const l = String(o?.NumLote ?? "").trim();
+      const c = clienteDeObservacionOrden(o?.Observacion);
+      if (l && c) clientePorLote.set(l, c);
     });
     const categoriaPorId = new Map();
     tiposPrenda.forEach((t) => categoriaPorId.set(String(t?.IdDesc ?? "").trim(), String(t?.Descripcion || "").trim()));
@@ -165,6 +185,10 @@ function crearEntradasPlanta({ db, logger, consultarTablaBusintBDCompleta, fecha
         refN,
         refExt: String((ref && String(ref.Color || "").trim()) || refN).trim(),
         nPedido: pedidoPorLote.get(lote) ?? null,
+        // Cliente del lote (de la orden de producción de Busint); sirve para
+        // separar Kamila Colombia / Kamila Venezuela y los demás clientes en
+        // Planeación aunque el lote ya haya salido del panel.
+        cliente: clientePorLote.get(lote) || null,
         diasCumplimiento: fecha && fechaFin && cantidad > 0 ? diasEntre(fechaFin, fecha) : null,
         precioTeorico: teorico,
         precioEntrada,

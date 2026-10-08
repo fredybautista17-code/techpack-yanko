@@ -7409,8 +7409,13 @@ function EntradasTalleresView({ entradas, cargas }) {
       );
     return { porLote, porPedido };
   }, [cargas]);
+  // Primero el cliente que trae la entrada desde Busint (orden de producción);
+  // si no lo trae (cargas hechas con el Excel) se busca en el panel de Planeación.
   const clienteDe = (e) =>
-    mapaCliente.porLote.get(String(e.numLote ?? "")) || mapaCliente.porPedido.get(String(e.nPedido ?? "")) || null;
+    (e.cliente ? etiquetaClienteEntradas(e.cliente) : null) ||
+    mapaCliente.porLote.get(String(e.numLote ?? "")) ||
+    mapaCliente.porPedido.get(String(e.nPedido ?? "")) ||
+    null;
   const periodoLista = useMemo(() => {
     if (mercado === "todos") return periodoBase;
     return periodoBase.filter((e) => {
@@ -7628,7 +7633,7 @@ function EntradasTalleresView({ entradas, cargas }) {
         <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>
           {vistaGrupo === "categoria"
             ? "Qué categoría haces más (unidades que ingresaron). Haz clic en una fila para ver sus referencias y plantas."
-            : `Cliente de cada entrada según el lote/pedido en Planeación. Identificado en el ${pctConCliente}% de las unidades; el resto aparece como "(Sin cliente identificado)", normalmente lotes que ya salieron del panel.`}
+            : `Cliente de cada entrada según la orden de producción de Busint (o el panel de Planeación si la carga viene del Excel). Identificado en el ${pctConCliente}% de las unidades; el resto aparece como "(Sin cliente identificado)". Para identificar el historial, trae las entradas desde Busint (Planta → Resumen → Traer de Busint ahora, 300 días).`}
         </div>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -7726,7 +7731,11 @@ function LotesPorDiaView({ entradas, cargas }) {
       );
     return { porLote, porPedido };
   }, [cargas]);
-  const clienteDe = (e) => mapaCliente.porLote.get(String(e.numLote ?? "")) || mapaCliente.porPedido.get(String(e.nPedido ?? "")) || null;
+  const clienteDe = (e) =>
+    (e.cliente ? etiquetaClienteEntradas(e.cliente) : null) ||
+    mapaCliente.porLote.get(String(e.numLote ?? "")) ||
+    mapaCliente.porPedido.get(String(e.nPedido ?? "")) ||
+    null;
   const idLote = (e) => String(e.numLote ?? `e${e.numEnt}`);
 
   const { dias, semanas, total } = useMemo(() => {
