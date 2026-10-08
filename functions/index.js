@@ -2039,7 +2039,7 @@ const TABLAS_CANDIDATAS_NOMINA_DEFAULT = [
 // Excel y confirmar de donde sale cada columna. No escribe nada.
 exports.depurarEntradaPlantaBusintBD = onCall(
   {
-    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY, BUSINT_TOKEN, BUSINT_BASE_URL],
     timeoutSeconds: 540,
     memory: "1GiB",
   },
@@ -2090,7 +2090,34 @@ exports.depurarEntradaPlantaBusintBD = onCall(
         };
       })
     );
-    return { numEnt, numLote, resultados };
+    // (2026-10-08) Para completar las columnas que NO vienen de "prod a
+    // bodega": (1) el nombre del taller -- se cruza el codigo de planta de la
+    // cabecera ("Planta") con "maestro de proveedores" (Codigo -> Nombre,
+    // Nit); (2) los datos del LOTE (pedido, categoria, linea, fechas) --
+    // se mira el mismo lote en el panel de Busint (el que ya usa Planeacion).
+    const cab = (resultados.find((r) => r.tabla === "prod a bodega")?.filas || [])[0] || null;
+    const loteBuscado = numLote || (cab ? String(cab.Numlote ?? "").trim() : "");
+    let proveedor = null;
+    let proveedorError = null;
+    if (cab && cab.Planta !== undefined && cab.Planta !== null) {
+      try {
+        const provs = await consultarTablaBusintBDCompleta("maestro de proveedores");
+        proveedor = provs.find((p) => String(p?.Codigo ?? "").trim() === String(cab.Planta).trim()) || null;
+      } catch (err) {
+        proveedorError = err?.message || String(err);
+      }
+    }
+    let lotePanel = null;
+    let lotePanelError = null;
+    if (loteBuscado) {
+      try {
+        const panel = await obtenerLotesPlaneacionDesdeBusint();
+        lotePanel = panel.lotes.find((l) => String(l.numLote) === loteBuscado) || null;
+      } catch (err) {
+        lotePanelError = err?.message || String(err);
+      }
+    }
+    return { numEnt, numLote, resultados, proveedor, proveedorError, loteBuscado, lotePanel, lotePanelError };
   }
 );
 

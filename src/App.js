@@ -14121,6 +14121,22 @@ function BusintCatalogoTestView() {
       </div>
       {depurarEntResultado && (
         <div style={{ marginBottom: 24, padding: 16, background: T.canvas, borderRadius: 10, border: `1px solid ${T.border}` }}>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: T.ink, marginBottom: 4 }}>
+              "maestro de proveedores" (taller de esa entrada) — {depurarEntResultado.proveedor ? "1 fila" : depurarEntResultado.proveedorError ? `error: ${depurarEntResultado.proveedorError}` : "no encontrado"}
+            </div>
+            <pre style={{ background: T.white, borderRadius: 8, padding: 10, fontSize: 11, overflowX: "auto", maxHeight: 200, border: `1px solid ${T.border}` }}>
+              {JSON.stringify(depurarEntResultado.proveedor, null, 2)}
+            </pre>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: T.ink, marginBottom: 4 }}>
+              Panel de Busint — lote {depurarEntResultado.loteBuscado || "—"} — {depurarEntResultado.lotePanel ? "encontrado" : depurarEntResultado.lotePanelError ? `error: ${depurarEntResultado.lotePanelError}` : "ya no está en el panel"}
+            </div>
+            <pre style={{ background: T.white, borderRadius: 8, padding: 10, fontSize: 11, overflowX: "auto", maxHeight: 260, border: `1px solid ${T.border}` }}>
+              {JSON.stringify(depurarEntResultado.lotePanel, null, 2)}
+            </pre>
+          </div>
           {(depurarEntResultado.resultados || []).map((r) => (
             <div key={r.tabla} style={{ marginBottom: 12 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: T.ink, marginBottom: 4 }}>
