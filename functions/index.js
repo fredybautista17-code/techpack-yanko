@@ -6656,6 +6656,63 @@ exports.correrAuditoriaCorteVsBusintAhora = onCall(
   }
 );
 
+// (2026-10-08, a pedido de Fredy) Planta -> Resumen: las "Entradas de Planta"
+// (lo que llega de los talleres) se traen solas de Busint en vez de subir a
+// mano el Excel "ENTRADAS A PLANTA". Toda la lógica y el mapeo de columnas
+// está documentado en functions/entradas-planta.js.
+//   - sincronizarEntradasPlantaBusintBD (solo admin), tres modos:
+//       "comparar": no guarda nada, compara Busint contra la carga actual
+//                   (Excel) campo por campo para validar las reglas.
+//       "preview":  calcula cuántas entradas nuevas/actualizadas habría.
+//       "guardar":  mezcla y guarda en planta_entradas_cargas/sync-busint.
+//   - sincronizarEntradasPlantaDiario: lo mismo en modo guardar, todos los
+//     días 6:00am (hora Colombia), con los últimos 45 días.
+const { crearEntradasPlanta } = require("./entradas-planta");
+const entradasPlanta = crearEntradasPlanta({
+  db,
+  logger,
+  consultarTablaBusintBDCompleta,
+  fechaISODesdeCampoBusintBD,
+  fechaHoyBogota,
+});
+
+exports.sincronizarEntradasPlantaBusintBD = onCall(
+  {
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (request) => {
+    const userDoc = await verificarLlamadorEsAdmin(request);
+    const modo = String(request.data?.modo || "comparar");
+    if (modo === "comparar") {
+      return await entradasPlanta.compararConCargaActiva();
+    }
+    const diasPedidos = Number(request.data?.dias);
+    const dias = Number.isFinite(diasPedidos) && diasPedidos > 0 ? Math.min(Math.floor(diasPedidos), 1000) : 60;
+    const nombre = String(userDoc.data()?.name || "").trim() || "Administrador";
+    return await entradasPlanta.sincronizar({
+      guardar: modo === "guardar",
+      dias,
+      usuario: `${nombre} (Busint)`,
+    });
+  }
+);
+
+exports.sincronizarEntradasPlantaDiario = onSchedule(
+  {
+    schedule: "every day 06:00",
+    timeZone: "America/Bogota",
+    secrets: [BUSINT_BD_BASE_URL, BUSINT_BD_API_KEY],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async () => {
+    const resultado = await entradasPlanta.sincronizar({ guardar: true, dias: 45, usuario: "Sincronización automática Busint" });
+    logger.info("Sincronización diaria de Entradas de Planta completada", resultado);
+  }
+);
+
 const RECIPIENTES_APOYO = ["Dayana", "Karen", "Yuliana"];
 
 // (2026-09-14, a pedido de Fredy) Reporte diario de asistencia -- estas 3

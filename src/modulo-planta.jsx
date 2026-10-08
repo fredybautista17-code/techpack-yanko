@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { initializeApp, getApps } from "firebase/app";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import {
   getFirestore,
   collection,
@@ -18,6 +19,7 @@ const firebaseConfig = {
 };
 const fbApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
+const functionsClient = getFunctions(fbApp);
 async function fsSave(col, id, data) {
   await setDoc(doc(db, col, id), data, { merge: true });
 }
@@ -604,6 +606,156 @@ function SubirEntradasModal({ onConfirm, onClose }) {
     </Modal>
   );
 }
+// ─── TRAER ENTRADAS DE PLANTA DESDE BUSINT ─────────────────────────────────────
+// Reemplaza (sin quitar) la subida manual del Excel: una función del servidor
+// arma las mismas entradas desde las tablas de Busint. Primero se puede
+// "Comparar con mi Excel" (no guarda nada) para validar que los datos
+// coinciden; después se ve la vista previa y se guarda. Todos los días a las
+// 6:00am el servidor lo hace solo (sincronizarEntradasPlantaDiario).
+const NOMBRES_CAMPOS_SYNC = {
+  cantidad: "Cantidad",
+  nombrePlanta: "Nombre del taller",
+  numLote: "Lote",
+  refExt: "Referencia (ext.)",
+  categoria: "Categoría",
+  nPedido: "Pedido",
+  fechaInicio: "Fecha inicio",
+  fechaFin: "Fecha comprometida",
+  precioTeorico: "Precio teórico",
+  precioEntrada: "Precio de la entrada",
+  facturado: "Facturado",
+};
+function TraerDeBusintModal({ onClose }) {
+  const [dias, setDias] = useState(60);
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState("");
+  const [comparacion, setComparacion] = useState(null);
+  const [resumen, setResumen] = useState(null);
+  async function llamar(modo) {
+    setCargando(modo);
+    setError("");
+    try {
+      const fn = httpsCallable(functionsClient, "sincronizarEntradasPlantaBusintBD", { timeout: 540000 });
+      const r = await fn({ modo, dias });
+      if (modo === "comparar") {
+        setComparacion(r.data);
+        setResumen(null);
+      } else {
+        setResumen(r.data);
+      }
+    } catch (e) {
+      setError(e?.message || "No se pudo consultar Busint.");
+    }
+    setCargando(false);
+  }
+  const fmtVal = (v) => (v === null || v === undefined || v === "" ? "—" : typeof v === "number" ? fmtNum(v) : String(v));
+  return (
+    <Modal title="Traer Entradas de Planta desde Busint" onClose={onClose} width={760}>
+      <div style={{ padding: "12px 14px", background: C.blueBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: C.blue, lineHeight: 1.5 }}>
+        Busint arma las mismas columnas del Excel (entradas, devoluciones, taller, fechas comprometidas, precio teórico, pedido, categoría). Lo que ya está cargado se conserva; lo que trae Busint se suma o se actualiza. Esto también corre solo todos los días a las 6:00am.
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <label style={{ fontSize: 13, color: C.slate }}>Traer los últimos</label>
+        <select
+          value={dias}
+          onChange={(e) => setDias(Number(e.target.value))}
+          style={{ padding: "8px 10px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
+        >
+          <option value={30}>30 días</option>
+          <option value={60}>60 días</option>
+          <option value={120}>120 días</option>
+          <option value={300}>300 días (casi todo el año)</option>
+        </select>
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+        <Btn variant="secondary" onClick={() => llamar("comparar")} disabled={!!cargando}>
+          {cargando === "comparar" ? "Comparando..." : "🔍 Comparar con mi Excel"}
+        </Btn>
+        <Btn variant="secondary" onClick={() => llamar("preview")} disabled={!!cargando}>
+          {cargando === "preview" ? "Calculando..." : "👁 Ver qué traería"}
+        </Btn>
+        <Btn onClick={() => llamar("guardar")} disabled={!!cargando}>
+          {cargando === "guardar" ? "Guardando..." : "⬇ Traer y guardar"}
+        </Btn>
+      </div>
+      {cargando && <div style={{ fontSize: 13, color: C.slate, marginBottom: 12 }}>Consultando Busint... puede tardar uno o dos minutos.</div>}
+      {error && (
+        <div style={{ marginBottom: 14, padding: "10px 14px", background: C.redBg, borderRadius: 8, fontSize: 13, color: C.red, fontWeight: 600 }}>{error}</div>
+      )}
+      {resumen && (
+        <div style={{ marginBottom: 16, padding: "12px 14px", background: resumen.guardado ? C.greenBg : C.canvas, borderRadius: 8, fontSize: 13, color: C.ink, lineHeight: 1.7 }}>
+          <strong>{resumen.guardado ? "✅ Guardado." : "Vista previa (no se guardó nada)."}</strong>
+          <div>Desde {resumen.desde} ({resumen.dias} días): Busint trae <strong>{fmtNum(resumen.traidasDeBusint)}</strong> movimientos.</div>
+          <div>
+            Nuevas: <strong>{fmtNum(resumen.nuevas)}</strong> · Actualizadas: <strong>{fmtNum(resumen.actualizadas)}</strong> · Total después de mezclar: <strong>{fmtNum(resumen.totalDespuesDeMezclar)}</strong>
+            {resumen.ultimaFecha ? ` · Última fecha: ${resumen.ultimaFecha}` : ""}
+          </div>
+          {resumen.tamanoKB ? <div style={{ color: C.slate }}>Tamaño de la carga: {fmtNum(resumen.tamanoKB)} KB (límite ~950 KB).</div> : null}
+        </div>
+      )}
+      {comparacion && !comparacion.ok && (
+        <div style={{ padding: "10px 14px", background: C.redBg, borderRadius: 8, fontSize: 13, color: C.red }}>{comparacion.mensaje}</div>
+      )}
+      {comparacion && comparacion.ok && (
+        <div style={{ maxHeight: 380, overflowY: "auto", border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, background: C.white }}>
+          <div style={{ fontSize: 13, color: C.slate, marginBottom: 10 }}>
+            Comparado contra la carga del {comparacion.cargaComparada?.fecha}
+            {comparacion.cargaComparada?.subidoPor ? ` (${comparacion.cargaComparada.subidoPor})` : ""}, desde {comparacion.desde}.
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 14 }}>
+            <KPI icon="📄" label="En tu Excel" value={fmtNum(comparacion.totalExcel)} color={C.slate} bg={C.canvas} />
+            <KPI icon="🔌" label="En Busint" value={fmtNum(comparacion.totalBusint)} color={C.blue} bg={C.blueBg} />
+            <KPI icon="✅" label="Idénticas" value={fmtNum(comparacion.coincidenExactas)} color={C.green} bg={C.greenBg} />
+            <KPI icon="⚠️" label="Con diferencias" value={fmtNum(comparacion.conDiferencias)} color={C.red} bg={C.redBg} />
+          </div>
+          <div style={{ fontSize: 13, color: C.ink, marginBottom: 10 }}>
+            Solo en el Excel: <strong>{fmtNum(comparacion.totalSoloExcel)}</strong> · Solo en Busint: <strong>{fmtNum(comparacion.totalSoloBusint)}</strong>
+          </div>
+          {Object.entries(comparacion.diferenciasPorCampo || {})
+            .filter(([, d]) => d.total > 0)
+            .map(([campo, d]) => (
+              <div key={campo} style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>
+                  {NOMBRES_CAMPOS_SYNC[campo] || campo}: {fmtNum(d.total)} diferencias
+                </div>
+                {d.ejemplos.map((x, i) => (
+                  <div key={i} style={{ fontSize: 12, color: C.slate, paddingLeft: 10 }}>
+                    Entrada {x.numEnt} ({x.fecha}) · Excel: <strong>{fmtVal(x.excel)}</strong> · Busint: <strong>{fmtVal(x.busint)}</strong>
+                  </div>
+                ))}
+              </div>
+            ))}
+          {Object.values(comparacion.diferenciasPorCampo || {}).every((d) => d.total === 0) && (
+            <div style={{ fontSize: 13, color: C.green, fontWeight: 600 }}>Ningún campo tiene diferencias en las entradas que están en ambos lados.</div>
+          )}
+          {comparacion.soloExcel?.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>Están en el Excel pero Busint no las trae (primeras {comparacion.soloExcel.length})</div>
+              {comparacion.soloExcel.map((x, i) => (
+                <div key={i} style={{ fontSize: 12, color: C.slate, paddingLeft: 10 }}>
+                  Entrada {x.numEnt} ({x.fecha}) · {fmtVal(x.cantidad)} und · {x.planta}
+                </div>
+              ))}
+            </div>
+          )}
+          {comparacion.soloBusint?.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>Las trae Busint pero no están en el Excel (primeras {comparacion.soloBusint.length})</div>
+              {comparacion.soloBusint.map((x, i) => (
+                <div key={i} style={{ fontSize: 12, color: C.slate, paddingLeft: 10 }}>
+                  Entrada {x.numEnt} ({x.fecha}) · {fmtVal(x.cantidad)} und · {x.planta}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+        <Btn variant="secondary" onClick={onClose}>Cerrar</Btn>
+      </div>
+    </Modal>
+  );
+}
 // ─── DASHBOARD DE ENTREGAS ────────────────────────────────────────────────────────
 // Cumplimiento = por entrega positiva (no devolución) con fecha y fecha
 // comprometida: diasCumplimiento <= 0 significa que llegó a tiempo o antes;
@@ -611,6 +763,7 @@ function SubirEntradasModal({ onConfirm, onClose }) {
 // Ftpla (ya verificado que coincide con "cxp" del ERP).
 function DashboardEntregasView({ cargaActiva, onSubir, isAdmin }) {
   const [subiendo, setSubiendo] = useState(false);
+  const [trayendoBusint, setTrayendoBusint] = useState(false);
   const [subTab, setSubTab] = useState("resumen");
   const entradas = cargaActiva?.entradas || [];
   const meses = useMemo(
@@ -675,6 +828,7 @@ function DashboardEntregasView({ cargaActiva, onSubir, isAdmin }) {
   return (
     <div>
       {subiendo && <SubirEntradasModal onConfirm={onSubir} onClose={() => setSubiendo(false)} />}
+      {trayendoBusint && <TraerDeBusintModal onClose={() => setTrayendoBusint(false)} />}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: C.ink }}>Dashboard de Entregas</h2>
@@ -684,7 +838,12 @@ function DashboardEntregasView({ cargaActiva, onSubir, isAdmin }) {
               : "Aún no hay ninguna carga de Entradas de Planta — sube el Excel para ver el dashboard."}
           </p>
         </div>
-        {isAdmin && <Btn onClick={() => setSubiendo(true)}>⬆ Subir Entradas de Planta</Btn>}
+        {isAdmin && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Btn onClick={() => setTrayendoBusint(true)}>🔄 Traer de Busint ahora</Btn>
+            <Btn variant="secondary" onClick={() => setSubiendo(true)}>⬆ Subir Excel (respaldo)</Btn>
+          </div>
+        )}
       </div>
       {!cargaActiva ? (
         <div style={{ textAlign: "center", padding: 60, color: C.slate, fontSize: 13, background: C.white, borderRadius: 14, border: `1px solid ${C.border}` }}>
