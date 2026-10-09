@@ -7640,17 +7640,44 @@ exports.enviarAsistenciaDiaria = onSchedule(
       ...extras,
     ]);
 
+    // (2026-10-09, a pedido de Fredy) El correo ahora respeta dos cosas que
+    // Nómina ya sabía: (1) quien tiene un permiso que cubre HOY (vacaciones,
+    // cita médica, etc.) y no marcó NO sale como "No marcó" sino con el
+    // motivo del permiso (y la hora si es por horas); (2) quien está marcado
+    // como "Exento de Huellero" en su ficha de trabajador sale "Excluido". Ni
+    // los excluidos ni los que tienen permiso y no marcaron cuentan en el
+    // "(X/Y asistió)".
+    const permisoDeHoy = (t) => permisosHoy.find((a) => a.trabajadorId === t.id) || null;
     const fmtBloqueArea = (nombreArea, personas) => {
-      const totalAsistio = personas.filter((t) => asistieronIds.has(t.id)).length;
+      const contables = personas.filter((t) => !t.exentoHuellero);
+      const conPermisoSinMarcar = contables.filter((t) => !asistieronIds.has(t.id) && permisoDeHoy(t));
+      const baseConteo = contables.length - conPermisoSinMarcar.length;
+      const totalAsistio = contables.filter((t) => asistieronIds.has(t.id)).length;
+      const excluidos = personas.length - contables.length;
       const filas = personas
         .slice()
         .sort((a, b) => String(a.nombre || "").localeCompare(String(b.nombre || "")))
         .map((t) => {
-          const asistio = asistieronIds.has(t.id);
-          return `<tr><td>${t.nombre || "(sin nombre)"}</td><td style="text-align:center;color:${asistio ? "#2D9E6B" : "#b91c1c"};font-weight:700">${asistio ? "✅ Asistió" : "❌ No marcó"}</td></tr>`;
+          const nombre = t.nombre || "(sin nombre)";
+          if (t.exentoHuellero) {
+            return `<tr><td>${nombre}</td><td style="text-align:center;color:#5A5A7A;font-weight:700">➖ Excluido</td></tr>`;
+          }
+          if (asistieronIds.has(t.id)) {
+            return `<tr><td>${nombre}</td><td style="text-align:center;color:#2D9E6B;font-weight:700">✅ Asistió</td></tr>`;
+          }
+          const permiso = permisoDeHoy(t);
+          if (permiso) {
+            const hora = permiso.horaInicio && permiso.horaFin ? ` ${permiso.horaInicio} a ${permiso.horaFin}` : "";
+            return `<tr><td>${nombre}</td><td style="text-align:center;color:#1d4ed8;font-weight:700">🗓️ ${permiso.motivo || "Permiso"}${hora}</td></tr>`;
+          }
+          return `<tr><td>${nombre}</td><td style="text-align:center;color:#b91c1c;font-weight:700">❌ No marcó</td></tr>`;
         })
         .join("");
-      return `<h3 style="margin:18px 0 6px;">${nombreArea} <span style="font-size:12px;color:#5A5A7A;font-weight:400">(${totalAsistio}/${personas.length} asistió)</span></h3><table border="1" cellpadding="6" style="border-collapse:collapse;width:100%"><tr><th>Nombre</th><th>Estado</th></tr>${filas}</table>`;
+      const extra = [
+        conPermisoSinMarcar.length ? `${conPermisoSinMarcar.length} con permiso` : "",
+        excluidos ? `${excluidos} excluido${excluidos === 1 ? "" : "s"}` : "",
+      ].filter(Boolean).join(" · ");
+      return `<h3 style="margin:18px 0 6px;">${nombreArea} <span style="font-size:12px;color:#5A5A7A;font-weight:400">(${totalAsistio}/${baseConteo} asistió${extra ? ` · ${extra}` : ""})</span></h3><table border="1" cellpadding="6" style="border-collapse:collapse;width:100%"><tr><th>Nombre</th><th>Estado</th></tr>${filas}</table>`;
     };
 
     // (2026-09-15, a pedido de Fredy) Bloque aparte con las anomalías
