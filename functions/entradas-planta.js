@@ -47,12 +47,15 @@ function clienteDeObservacionOrden(obs) {
 }
 
 // Descripción larga de la referencia (ej. "CAMISETA CUELLO R CON CORTES EN
-// POSTERIOR"). El nombre exacto de la columna en "maestro de referencias" no
-// está confirmado, por eso se prueban los nombres más probables y, si no, la
-// primera columna de texto que empiece por desc/nombre/detalle.
+// POSTERIOR"). Confirmado (2026-10-09) con el diagnóstico: en "maestro de
+// referencias" la columna es `desclarga` (la misma "desclarga" del Excel de
+// Entradas a Planta). Además `Color` = código de la familia (RefExt, ej.
+// 985600) y `Ref` = la referencia real (RefN, ej. 985634). Si algún día
+// cambia el nombre se prueban otros y, si no, la primera columna de texto que
+// empiece por desc/nombre/detalle.
 function descripcionDeReferencia(ref) {
   if (!ref) return "";
-  const preferidos = ["Descripcion", "Descripción", "DescRef", "DescLarga", "Detalle", "Nombre", "NomRef"];
+  const preferidos = ["desclarga", "DescLarga", "Descripcion", "Descripción", "DescRef", "Detalle", "Nombre", "NomRef"];
   for (const k of preferidos) {
     const v = String(ref[k] ?? "").trim();
     if (v && Number.isNaN(Number(v))) return v;
