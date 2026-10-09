@@ -46,6 +46,25 @@ function clienteDeObservacionOrden(obs) {
   return limpio;
 }
 
+// Descripción larga de la referencia (ej. "CAMISETA CUELLO R CON CORTES EN
+// POSTERIOR"). El nombre exacto de la columna en "maestro de referencias" no
+// está confirmado, por eso se prueban los nombres más probables y, si no, la
+// primera columna de texto que empiece por desc/nombre/detalle.
+function descripcionDeReferencia(ref) {
+  if (!ref) return "";
+  const preferidos = ["Descripcion", "Descripción", "DescRef", "DescLarga", "Detalle", "Nombre", "NomRef"];
+  for (const k of preferidos) {
+    const v = String(ref[k] ?? "").trim();
+    if (v && Number.isNaN(Number(v))) return v;
+  }
+  for (const k of Object.keys(ref)) {
+    if (!/^(desc|nombre|detalle)/i.test(k)) continue;
+    const v = String(ref[k] ?? "").trim();
+    if (v && Number.isNaN(Number(v))) return v;
+  }
+  return "";
+}
+
 function crearEntradasPlanta({ db, logger, consultarTablaBusintBDCompleta, fechaISODesdeCampoBusintBD, fechaHoyBogota }) {
   function sumaTallas(fila) {
     return TALLAS.reduce((s, t) => s + (Number(fila?.[t]) || 0), 0);
@@ -72,7 +91,7 @@ function crearEntradasPlanta({ db, logger, consultarTablaBusintBDCompleta, fecha
   }
 
   // Arma todas las entradas (y devoluciones) con fecha >= desdeISO.
-  async function construirEntradasPlantaBusint({ desdeISO }) {
+  async function construirEntradasPlantaBusint({ desdeISO, hastaISO = null }) {
     const [
       cabEnt, detEnt, cabDev, detDev,
       plantas, salidas, ordenes, referencias, tiposPrenda, lineas,
@@ -184,6 +203,7 @@ function crearEntradasPlanta({ db, logger, consultarTablaBusintBDCompleta, fecha
         numLote: lote ? (Number.isFinite(Number(lote)) ? Number(lote) : lote) : null,
         refN,
         refExt: String((ref && String(ref.Color || "").trim()) || refN).trim(),
+        descripcion: descripcionDeReferencia(ref),
         nPedido: pedidoPorLote.get(lote) ?? null,
         // Cliente del lote (de la orden de producción de Busint); sirve para
         // separar Kamila Colombia / Kamila Venezuela y los demás clientes en
@@ -203,14 +223,14 @@ function crearEntradasPlanta({ db, logger, consultarTablaBusintBDCompleta, fecha
     const entradas = [];
     cabEnt.forEach((c) => {
       const f = fechaISODesdeCampoBusintBD(c?.FechaEntra);
-      if (!f || f < desdeISO) return;
+      if (!f || f < desdeISO || (hastaISO && f > hastaISO)) return;
       const q = cantEnt.get(String(c?.NumEnt ?? "").trim()) || (Number(c?.Primera) || 0) + (Number(c?.Segunda) || 0);
       const e = armar(c, Math.abs(q), q < 0, { restaFacturado: q < 0 });
       if (e) entradas.push(e);
     });
     cabDev.forEach((c) => {
       const f = fechaISODesdeCampoBusintBD(c?.FechaEntra);
-      if (!f || f < desdeISO) return;
+      if (!f || f < desdeISO || (hastaISO && f > hastaISO)) return;
       const q = cantDev.get(String(c?.NumEnt ?? "").trim()) || (Number(c?.Primera) || 0) + (Number(c?.Segunda) || 0);
       if (!q) return;
       const nlect = Number(c?.Nlect);
@@ -223,11 +243,55 @@ function crearEntradasPlanta({ db, logger, consultarTablaBusintBDCompleta, fecha
 
   const claveEntrada = (e) => `${e.numEnt}|${e.fecha}|${e.esDevolucion ? "D" : "E"}`;
 
-  async function cargaMasReciente() {
-    const snap = await db.collection("planta_entradas_cargas").orderBy("creadoEn", "desc").limit(1).get();
-    if (snap.empty) return null;
-    return { ...snap.docs[0].data(), id: snap.docs[0].id };
+  // Las entradas se guardan por AÑO: planta_entradas_cargas/sync-busint-2025,
+  // sync-busint-2026... (cada documento queda muy por debajo del límite de 1 MB
+  // de Firestore). La "base" es la carga más reciente que NO es de un año
+  // (el Excel que se sube a mano o el documento viejo sync-busint); lo que
+  // traen los documentos por año se encima sobre la base. Esta misma lógica
+  // está en src/entradas-planta-util.js (la que usan las pantallas).
+  const idDocAnio = (a) => `${ID_DOC_SYNC}-${a}`;
+  function fusionarEntrada(previa, b) {
+    const fusion = { ...previa };
+    Object.keys(b).forEach((c) => {
+      const v = b[c];
+      if (v !== null && v !== undefined && v !== "" && v !== "(Sin categoría)") fusion[c] = v;
+    });
+    return fusion;
   }
+  function fusionarListas(base, extra) {
+    const mapa = new Map(base.map((e) => [claveEntrada(e), e]));
+    extra.forEach((b) => {
+      const k = claveEntrada(b);
+      const previa = mapa.get(k);
+      mapa.set(k, previa ? fusionarEntrada(previa, b) : b);
+    });
+    return [...mapa.values()].sort((a, b) => a.fecha.localeCompare(b.fecha) || a.numEnt - b.numEnt);
+  }
+  async function cargaBase() {
+    const snap = await db.collection("planta_entradas_cargas").orderBy("creadoEn", "desc").limit(15).get();
+    const doc = snap.docs.find((d) => !d.data().anio);
+    return doc ? { ...doc.data(), id: doc.id } : null;
+  }
+  async function cargasPorAnio(hoyISO) {
+    const anioActual = Number(String(hoyISO).slice(0, 4));
+    const refs = [];
+    for (let a = 2015; a <= anioActual; a++) refs.push(db.collection("planta_entradas_cargas").doc(idDocAnio(a)));
+    const docs = await db.getAll(...refs);
+    const m = new Map();
+    docs.forEach((d) => {
+      if (d.exists) m.set(String(d.data().anio), { ...d.data(), id: d.id });
+    });
+    return m;
+  }
+  async function cargaActivaCompleta(hoyISO) {
+    const [base, anios] = await Promise.all([cargaBase(), cargasPorAnio(hoyISO)]);
+    let entradas = base ? [...(base.entradas || [])] : [];
+    [...anios.keys()].sort().forEach((a) => {
+      entradas = fusionarListas(entradas, anios.get(a).entradas || []);
+    });
+    return { base, anios, entradas };
+  }
+  const cargaMasReciente = cargaBase;
 
   // Compara, campo por campo, lo que trae Busint contra la carga más reciente
   // (la del Excel) -- para validar las reglas ANTES de guardar nada.
@@ -289,62 +353,75 @@ function crearEntradasPlanta({ db, logger, consultarTablaBusintBDCompleta, fecha
     };
   }
 
-  // Trae lo nuevo de Busint (últimos `dias` días) y lo mezcla con la carga
-  // más reciente: las entradas de Busint reemplazan a las que tengan la
-  // misma clave; el resto se conserva tal cual (historia del Excel).
-  async function sincronizar({ guardar, dias = 60, usuario = "Sincronización Busint" }) {
+  // Trae de Busint los últimos `dias` días (o un año completo si viene `anio`)
+  // y lo guarda en el documento de CADA año que toque (sync-busint-AAAA),
+  // mezclando con lo que ese documento ya tenía: las entradas de Busint
+  // reemplazan a las de la misma clave; el resto se conserva.
+  async function sincronizar({ guardar, dias = 60, anio = null, usuario = "Sincronización Busint" }) {
     const hoy = fechaHoyBogota();
-    const desde = new Date(Date.parse(`${hoy}T00:00:00Z`) - dias * 86400000).toISOString().slice(0, 10);
-    const [busint, carga] = await Promise.all([construirEntradasPlantaBusint({ desdeISO: desde }), cargaMasReciente()]);
-    const existentes = carga?.entradas || [];
-    const mapa = new Map(existentes.map((e) => [claveEntrada(e), e]));
+    const anioNum = Number(anio);
+    const porAnioCompleto = Number.isInteger(anioNum) && anioNum >= 2015 && anioNum <= Number(hoy.slice(0, 4));
+    const desde = porAnioCompleto ? `${anioNum}-01-01` : new Date(Date.parse(`${hoy}T00:00:00Z`) - dias * 86400000).toISOString().slice(0, 10);
+    const hasta = porAnioCompleto ? `${anioNum}-12-31` : null;
+    const [busint, act] = await Promise.all([construirEntradasPlantaBusint({ desdeISO: desde, hastaISO: hasta }), cargaActivaCompleta(hoy)]);
+    const mapaAct = new Map(act.entradas.map((e) => [claveEntrada(e), e]));
     let nuevas = 0;
     let actualizadas = 0;
     busint.forEach((b) => {
-      const k = claveEntrada(b);
-      const previa = mapa.get(k);
+      const previa = mapaAct.get(claveEntrada(b));
       if (!previa) {
         nuevas += 1;
-        mapa.set(k, b);
         return;
       }
-      // Se conserva lo que ya había si Busint no trae el dato (ej. lote que
-      // ya salió de las tablas de ordenes).
-      const fusion = { ...previa };
-      Object.keys(b).forEach((c) => {
-        const v = b[c];
-        if (v !== null && v !== undefined && v !== "" && v !== "(Sin categoría)") fusion[c] = v;
-      });
-      if (JSON.stringify(fusion) !== JSON.stringify(previa)) actualizadas += 1;
-      mapa.set(k, fusion);
+      if (JSON.stringify(fusionarEntrada(previa, b)) !== JSON.stringify(previa)) actualizadas += 1;
     });
-    const merged = [...mapa.values()].sort((a, b) => a.fecha.localeCompare(b.fecha) || a.numEnt - b.numEnt);
+    const totalDespues = fusionarListas(act.entradas, busint);
+    const porAnio = new Map();
+    busint.forEach((b) => {
+      const a = b.fecha.slice(0, 4);
+      if (!porAnio.has(a)) porAnio.set(a, []);
+      porAnio.get(a).push(b);
+    });
     const resumen = {
       desde,
-      dias,
+      hasta,
+      dias: porAnioCompleto ? null : dias,
+      anio: porAnioCompleto ? anioNum : null,
       traidasDeBusint: busint.length,
       nuevas,
       actualizadas,
-      totalDespuesDeMezclar: merged.length,
-      ultimaFecha: merged.length ? merged[merged.length - 1].fecha : null,
+      totalDespuesDeMezclar: totalDespues.length,
+      conDescripcion: busint.filter((e) => e.descripcion).length,
+      conCliente: busint.filter((e) => e.cliente).length,
+      ultimaFecha: totalDespues.length ? totalDespues[totalDespues.length - 1].fecha : null,
       guardado: false,
     };
     if (!guardar) return resumen;
-    const tamano = JSON.stringify(merged).length;
-    if (tamano > TAM_MAX_DOC_BYTES) {
-      throw new Error(`La carga de Entradas de Planta ya pesa ${Math.round(tamano / 1024)} KB y se acerca al límite de 1 MB de Firestore -- hay que dividirla en varios documentos antes de seguir sincronizando.`);
-    }
-    const ahora = new Date().toISOString();
-    await db.collection("planta_entradas_cargas").doc(ID_DOC_SYNC).set({
-      id: ID_DOC_SYNC,
-      fecha: hoy,
-      creadoEn: ahora,
-      subidoPor: usuario,
-      origen: "busint",
-      entradas: merged,
+    // Se calcula todo antes de escribir, para no dejar un año guardado y otro no.
+    const aGuardar = [...porAnio.entries()].sort((x, y) => x[0].localeCompare(y[0])).map(([a, lista]) => {
+      const previas = act.anios.get(a)?.entradas || [];
+      const merged = fusionarListas(previas, lista);
+      const tamano = JSON.stringify(merged).length;
+      if (tamano > TAM_MAX_DOC_BYTES) {
+        throw new Error(`Las Entradas de Planta del año ${a} ya pesan ${Math.round(tamano / 1024)} KB y se acercan al límite de 1 MB de Firestore -- hay que dividirlas antes de seguir.`);
+      }
+      return { a, merged, tamano };
     });
-    logger.info("Entradas de Planta sincronizadas desde Busint", resumen);
-    return { ...resumen, guardado: true, tamanoKB: Math.round(tamano / 1024) };
+    const ahora = new Date().toISOString();
+    for (const { a, merged } of aGuardar) {
+      await db.collection("planta_entradas_cargas").doc(idDocAnio(a)).set({
+        id: idDocAnio(a),
+        anio: Number(a),
+        fecha: hoy,
+        creadoEn: ahora,
+        subidoPor: usuario,
+        origen: "busint",
+        entradas: merged,
+      });
+    }
+    const guardadoPorAnio = aGuardar.map(({ a, merged, tamano }) => ({ anio: Number(a), entradas: merged.length, tamanoKB: Math.round(tamano / 1024) }));
+    logger.info("Entradas de Planta sincronizadas desde Busint", { ...resumen, guardadoPorAnio });
+    return { ...resumen, guardado: true, guardadoPorAnio, tamanoKB: Math.max(0, ...guardadoPorAnio.map((g) => g.tamanoKB)) };
   }
 
   return { construirEntradasPlantaBusint, compararConCargaActiva, sincronizar };

@@ -6664,7 +6664,8 @@ exports.correrAuditoriaCorteVsBusintAhora = onCall(
 //       "comparar": no guarda nada, compara Busint contra la carga actual
 //                   (Excel) campo por campo para validar las reglas.
 //       "preview":  calcula cuántas entradas nuevas/actualizadas habría.
-//       "guardar":  mezcla y guarda en planta_entradas_cargas/sync-busint.
+//       "guardar":  mezcla y guarda por AÑO en planta_entradas_cargas/sync-busint-AAAA
+//                   (con "anio" trae el año completo; si no, los últimos "dias").
 //   - sincronizarEntradasPlantaDiario: lo mismo en modo guardar, todos los
 //     días 6:00am (hora Colombia), con los últimos 45 días.
 const { crearEntradasPlanta } = require("./entradas-planta");
@@ -6691,9 +6692,11 @@ exports.sincronizarEntradasPlantaBusintBD = onCall(
     const diasPedidos = Number(request.data?.dias);
     const dias = Number.isFinite(diasPedidos) && diasPedidos > 0 ? Math.min(Math.floor(diasPedidos), 1000) : 60;
     const nombre = String(userDoc.data()?.name || "").trim() || "Administrador";
+    const anioPedido = Number(request.data?.anio);
     return await entradasPlanta.sincronizar({
       guardar: modo === "guardar",
       dias,
+      anio: Number.isInteger(anioPedido) ? anioPedido : null,
       usuario: `${nombre} (Busint)`,
     });
   }

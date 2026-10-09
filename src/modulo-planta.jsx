@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { initializeApp, getApps } from "firebase/app";
 import { getFunctions, httpsCallable } from "firebase/functions";
+import { cargaEntradasActivaDe } from "./entradas-planta-util";
 import {
   getFirestore,
   collection,
@@ -527,6 +528,8 @@ async function parseEntradasPlanta(file) {
       precioTeorico: Number(row["CostoFT"]) || 0,
       precioEntrada: Number(row["VaEnt"]) || 0,
       usuario: String(row["USUARIO"] || "").trim() || null,
+      // "desclarga" = descripción de la referencia (ej. "CAMISETA CUELLO R CON CORTES...").
+      descripcion: String(row["desclarga"] || "").trim() || null,
       observacion: cantidad < 0 ? String(row["observacion"] || "").trim() || null : null,
     });
   });
@@ -629,16 +632,19 @@ const NOMBRES_CAMPOS_SYNC = {
 };
 function TraerDeBusintModal({ onClose }) {
   const [dias, setDias] = useState(60);
+  const anioActual = new Date().getFullYear();
+  const aniosOpciones = Array.from({ length: anioActual - 2021 }, (_, i) => anioActual - i); // anioActual ... 2022
+  const [anio, setAnio] = useState(anioActual);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState("");
   const [comparacion, setComparacion] = useState(null);
   const [resumen, setResumen] = useState(null);
-  async function llamar(modo) {
-    setCargando(modo);
+  async function llamar(modo, porAnio = false) {
+    setCargando(porAnio ? `${modo}-anio` : modo);
     setError("");
     try {
       const fn = httpsCallable(functionsClient, "sincronizarEntradasPlantaBusintBD", { timeout: 540000 });
-      const r = await fn({ modo, dias });
+      const r = await fn(porAnio ? { modo, anio } : { modo, dias });
       if (modo === "comparar") {
         setComparacion(r.data);
         setResumen(null);
@@ -654,7 +660,7 @@ function TraerDeBusintModal({ onClose }) {
   return (
     <Modal title="Traer Entradas de Planta desde Busint" onClose={onClose} width={760}>
       <div style={{ padding: "12px 14px", background: C.blueBg, borderRadius: 8, marginBottom: 16, fontSize: 13, color: C.blue, lineHeight: 1.5 }}>
-        Busint arma las mismas columnas del Excel (entradas, devoluciones, taller, fechas comprometidas, precio teórico, pedido, categoría). Lo que ya está cargado se conserva; lo que trae Busint se suma o se actualiza. Esto también corre solo todos los días a las 6:00am.
+        Busint arma las mismas columnas del Excel (entradas, devoluciones, taller, fechas comprometidas, precio teórico, pedido, categoría). Lo que ya está cargado se conserva; lo que trae Busint se suma o se actualiza, y se guarda por año. Esto también corre solo todos los días a las 6:00am (últimos 45 días).
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
         <label style={{ fontSize: 13, color: C.slate }}>Traer los últimos</label>
@@ -680,6 +686,27 @@ function TraerDeBusintModal({ onClose }) {
           {cargando === "guardar" ? "Guardando..." : "⬇ Traer y guardar"}
         </Btn>
       </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap", padding: "12px 14px", border: `1px solid ${C.border}`, borderRadius: 10, background: C.canvas }}>
+        <label style={{ fontSize: 13, color: C.ink, fontWeight: 700 }}>Año completo</label>
+        <select
+          value={anio}
+          onChange={(e) => setAnio(Number(e.target.value))}
+          style={{ padding: "8px 10px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.ink, background: C.white, fontFamily: "inherit" }}
+        >
+          {aniosOpciones.map((a) => (
+            <option key={a} value={a}>{a}</option>
+          ))}
+        </select>
+        <Btn variant="secondary" onClick={() => llamar("preview", true)} disabled={!!cargando}>
+          {cargando === "preview-anio" ? "Calculando..." : "👁 Ver qué traería"}
+        </Btn>
+        <Btn onClick={() => llamar("guardar", true)} disabled={!!cargando}>
+          {cargando === "guardar-anio" ? "Guardando..." : `⬇ Traer y guardar ${anio}`}
+        </Btn>
+        <div style={{ flexBasis: "100%", fontSize: 12, color: C.slate, lineHeight: 1.5 }}>
+          Cada año se guarda aparte y queda guardado: lo traes una sola vez. El año en curso se actualiza solo todos los días.
+        </div>
+      </div>
       {cargando && <div style={{ fontSize: 13, color: C.slate, marginBottom: 12 }}>Consultando Busint... puede tardar uno o dos minutos.</div>}
       {error && (
         <div style={{ marginBottom: 14, padding: "10px 14px", background: C.redBg, borderRadius: 8, fontSize: 13, color: C.red, fontWeight: 600 }}>{error}</div>
@@ -687,12 +714,17 @@ function TraerDeBusintModal({ onClose }) {
       {resumen && (
         <div style={{ marginBottom: 16, padding: "12px 14px", background: resumen.guardado ? C.greenBg : C.canvas, borderRadius: 8, fontSize: 13, color: C.ink, lineHeight: 1.7 }}>
           <strong>{resumen.guardado ? "✅ Guardado." : "Vista previa (no se guardó nada)."}</strong>
-          <div>Desde {resumen.desde} ({resumen.dias} días): Busint trae <strong>{fmtNum(resumen.traidasDeBusint)}</strong> movimientos.</div>
+          <div>
+            {resumen.anio ? `Año ${resumen.anio}` : `Desde ${resumen.desde} (${resumen.dias} días)`}: Busint trae <strong>{fmtNum(resumen.traidasDeBusint)}</strong> movimientos
+            {" "}(con cliente: {fmtNum(resumen.conCliente || 0)} · con descripción: {fmtNum(resumen.conDescripcion || 0)}).
+          </div>
           <div>
             Nuevas: <strong>{fmtNum(resumen.nuevas)}</strong> · Actualizadas: <strong>{fmtNum(resumen.actualizadas)}</strong> · Total después de mezclar: <strong>{fmtNum(resumen.totalDespuesDeMezclar)}</strong>
             {resumen.ultimaFecha ? ` · Última fecha: ${resumen.ultimaFecha}` : ""}
           </div>
-          {resumen.tamanoKB ? <div style={{ color: C.slate }}>Tamaño de la carga: {fmtNum(resumen.tamanoKB)} KB (límite ~950 KB).</div> : null}
+          {(resumen.guardadoPorAnio || []).map((g) => (
+            <div key={g.anio} style={{ color: C.slate }}>Año {g.anio} guardado: {fmtNum(g.entradas)} movimientos · {fmtNum(g.tamanoKB)} KB (límite ~950 KB).</div>
+          ))}
         </div>
       )}
       {comparacion && !comparacion.ok && (
@@ -1579,10 +1611,8 @@ export default function ModuloPlanta({ currentUser, onVolver, onLogout }) {
     const ordenadas = [...cargasPlaneacion].sort((a, b) => (b.creadoEn || b.fecha).localeCompare(a.creadoEn || a.fecha));
     return ordenadas[0] || null;
   }, [cargasPlaneacion]);
-  const cargaEntradasActiva = useMemo(() => {
-    const ordenadas = [...cargasEntradas].sort((a, b) => (b.creadoEn || b.fecha).localeCompare(a.creadoEn || a.fecha));
-    return ordenadas[0] || null;
-  }, [cargasEntradas]);
+  // Base (Excel o sync viejo) + un documento por año de Busint encima.
+  const cargaEntradasActiva = useMemo(() => cargaEntradasActivaDe(cargasEntradas), [cargasEntradas]);
   async function programarLote(lote, fechaEnviado) {
     const nuevo = {
       id: uid(),

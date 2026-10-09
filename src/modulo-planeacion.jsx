@@ -12,6 +12,7 @@ import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage";
 import CentroCostoCorteEnAreas, { CentroCostoCierreCorte } from "./modulo-corte-areas";
 import CentroCostoAnioPanel from "./centro-costo-historico";
+import { cargaEntradasActivaDe } from "./entradas-planta-util";
 import { claveArea as claveAreaHistorico } from "./centro-costo-historico-parser";
 const firebaseConfig = {
   apiKey: "AIzaSyBDNvCaem-IbP0Z87eBt1pBtDy8sZdkEqc",
@@ -7301,17 +7302,34 @@ function nombreMes(mes) {
   const [y, m] = mes.split("-").map(Number);
   return `${NOMBRE_MES[m - 1]} ${y}`;
 }
+// (2026-10-09, a pedido de Fredy) Las UNIDADES son netas: una devolución (que
+// aquí es la corrección de una entrada mal hecha o de un precio) viene con
+// unidades negativas y anula la entrada original; el lote vuelve a entrar ya
+// corregido. Así coincide con Estadísticas de Planta. Un lote cuenta como
+// lote solo si en ese grupo le queda algo neto (> 0).
+function contarLotesNetos(lista) {
+  const neto = new Map();
+  lista.forEach((e) => {
+    const id = String(e.numLote ?? `e${e.numEnt}`);
+    neto.set(id, (neto.get(id) || 0) + e.cantidad);
+  });
+  let n = 0;
+  neto.forEach((v) => {
+    if (v > 0.0001) n += 1;
+  });
+  return n;
+}
 function agruparEntradas(lista, claveFn) {
   const m = new Map();
   lista.forEach((e) => {
     const k = claveFn(e);
-    if (!m.has(k)) m.set(k, { clave: k, lotes: new Set(), unidades: 0, entradas: 0 });
+    if (!m.has(k)) m.set(k, { clave: k, lista: [], unidades: 0, entradas: 0 });
     const g = m.get(k);
-    g.lotes.add(String(e.numLote ?? `e${e.numEnt}`));
+    g.lista.push(e);
     g.unidades += e.cantidad;
     g.entradas += 1;
   });
-  return [...m.values()].map((g) => ({ ...g, lotes: g.lotes.size }));
+  return [...m.values()].map((g) => ({ clave: g.clave, unidades: g.unidades, entradas: g.entradas, lotes: contarLotesNetos(g.lista) }));
 }
 // Kamila maneja dos clientes (uno por país): "KAMILA GROUP SAS-KAMILA COLOMBIA"
 // y "KAMILA VENEZUELA-KAMILA VENEZUELA". Aquí NO se juntan (como hace el
@@ -7336,8 +7354,199 @@ function DeltaTxt({ actual, anterior, sufijo = "" }) {
   const color = pct > 0.5 ? C.green : pct < -0.5 ? C.red : C.slate;
   return <span style={{ color, fontWeight: 700 }}>{`${pct > 0 ? "+" : ""}${Math.round(pct)}%${sufijo}`}</span>;
 }
+// ─── POR REFERENCIA ────────────────────────────────────────────────────────────
+// (2026-10-09, a pedido de Fredy) Qué referencias se han hecho más y cuántas
+// veces se repiten. OJO: RefExt es el código de la FAMILIA (ej. 985600 junta 44
+// referencias distintas, una por diseño/color); la referencia real es RefN.
+// Modo "Referencia": una fila por RefN. Modo "Familia": una fila por RefExt, y
+// al abrirla se ven las referencias que contiene.
+function ReferenciasView({ lista, clienteDe }) {
+  const [modo, setModo] = useState("ref"); // ref | familia
+  const [cat, setCat] = useState("todas");
+  const [cli, setCli] = useState("todos");
+  const [q, setQ] = useState("");
+  const [abierto, setAbierto] = useState(null);
+  const [verTodas, setVerTodas] = useState(false);
+  const [detalle, setDetalle] = useState(null);
+  const sinCli = "Sin identificar";
+  const categorias = useMemo(() => [...new Set(lista.map((e) => e.categoria || "(Sin categoría)"))].sort(), [lista]);
+  const clientes = useMemo(() => {
+    const m = new Map();
+    lista.forEach((e) => {
+      const c = clienteDe(e) || sinCli;
+      m.set(c, (m.get(c) || 0) + e.cantidad);
+    });
+    return [...m.entries()].sort((a, b) => b[1] - a[1]).map((x) => x[0]);
+  }, [lista]);
+  const top = (m) => [...m.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+  const qn = q.trim().toLowerCase();
+  const filtrada = useMemo(
+    () =>
+      lista.filter((e) => {
+        if (cat !== "todas" && (e.categoria || "(Sin categoría)") !== cat) return false;
+        if (cli !== "todos" && (clienteDe(e) || sinCli) !== cli) return false;
+        if (qn && ![e.refN, e.refExt, e.descripcion, e.categoria].join(" ").toLowerCase().includes(qn)) return false;
+        return true;
+      }),
+    [lista, cat, cli, qn]
+  );
+  const filas = useMemo(() => {
+    const m = new Map();
+    filtrada.forEach((e) => {
+      const k = modo === "ref" ? String(e.refN || e.refExt || "—") : String(e.refExt || e.refN || "—");
+      if (!m.has(k)) m.set(k, { k, lista: [], desc: new Map(), cat: new Map(), cli: new Map(), pv: 0, pq: 0 });
+      const g = m.get(k);
+      g.lista.push(e);
+      if (e.descripcion) g.desc.set(e.descripcion, (g.desc.get(e.descripcion) || 0) + 1);
+      const c = e.categoria || "(Sin categoría)";
+      g.cat.set(c, (g.cat.get(c) || 0) + 1);
+      const cl = clienteDe(e) || sinCli;
+      g.cli.set(cl, (g.cli.get(cl) || 0) + Math.max(0, e.cantidad));
+      if (e.cantidad > 0 && e.precioEntrada > 0) {
+        g.pv += e.precioEntrada * e.cantidad;
+        g.pq += e.cantidad;
+      }
+    });
+    return [...m.values()]
+      .map((g) => ({
+        k: g.k,
+        lista: g.lista,
+        unidades: g.lista.reduce((s, e) => s + e.cantidad, 0),
+        lotes: contarLotesNetos(g.lista),
+        descripcion: top(g.desc),
+        categoria: top(g.cat),
+        cliente: top(g.cli),
+        variantes: new Set(g.lista.map((e) => String(e.refN || e.refExt || "—"))).size,
+        precio: g.pq ? g.pv / g.pq : 0,
+      }))
+      .filter((g) => g.unidades > 0)
+      .sort((a, b) => b.unidades - a.unidades || b.lotes - a.lotes);
+  }, [filtrada, modo]);
+  const maxU = Math.max(1, ...filas.map((f) => f.unidades));
+  const visibles = verTodas ? filas : filas.slice(0, 40);
+  const sinDescripcion = filas.length > 0 && filas.every((f) => !f.descripcion);
+  const th = { textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, fontWeight: 700, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
+  const td = { padding: "8px 10px", fontSize: 12, color: C.ink, borderBottom: `1px solid ${C.border}` };
+  const sel = { padding: "7px 10px", border: `1.5px solid ${C.border}`, borderRadius: 8, fontSize: 12, color: C.ink, background: C.white, fontFamily: "inherit", maxWidth: 220 };
+  const chip = (activo) => ({ padding: "5px 12px", borderRadius: 16, fontSize: 12, fontWeight: 700, cursor: "pointer", border: `1.5px solid ${activo ? C.ink : C.border}`, background: activo ? C.ink : C.white, color: activo ? C.white : C.ink });
+  return (
+    <div>
+      {detalle && <DetalleEntregasModal titulo={detalle.titulo} lista={detalle.lista} clienteDe={clienteDe} onClose={() => setDetalle(null)} />}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+        <span onClick={() => { setModo("ref"); setAbierto(null); }} style={chip(modo === "ref")}>Referencia exacta</span>
+        <span onClick={() => { setModo("familia"); setAbierto(null); }} style={chip(modo === "familia")}>Familia (código)</span>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 Buscar referencia o descripción…" style={{ ...sel, minWidth: 220, maxWidth: 300 }} />
+        <select value={cat} onChange={(e) => setCat(e.target.value)} style={sel}>
+          <option value="todas">Todas las categorías</option>
+          {categorias.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select value={cli} onChange={(e) => setCli(e.target.value)} style={sel}>
+          <option value="todos">Todos los clientes</option>
+          {clientes.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
+      <div style={{ fontSize: 11, color: C.slate, marginBottom: 10, lineHeight: 1.5 }}>
+        {modo === "ref"
+          ? "Cada fila es una referencia real (un diseño/color). Unidades netas: ya se restaron las correcciones. \"Lotes\" = cuántas veces se ha repetido. Clic en una fila para ver sus lotes."
+          : "Cada fila es el código de familia (RefExt), que junta varias referencias del mismo producto. Clic para ver las referencias que contiene."}
+        {sinDescripcion ? " Aún no hay descripciones guardadas: se llenan al traer el año desde Busint (Planta → Resumen → Traer de Busint → Año completo)." : ""}
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={th}>#</th>
+              <th style={th}>{modo === "ref" ? "Referencia" : "Familia"}</th>
+              <th style={th}>Descripción</th>
+              <th style={th}>Categoría</th>
+              <th style={{ ...th, minWidth: 120 }}> </th>
+              <th style={{ ...th, textAlign: "right" }}>Unidades</th>
+              <th style={{ ...th, textAlign: "right" }}>Lotes</th>
+              <th style={{ ...th, textAlign: "right" }} title="Precio de confección promedio ponderado por unidades">Precio prom.</th>
+              <th style={th}>Cliente principal</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibles.map((f, i) => {
+              const ab = abierto === f.k;
+              return (
+                <Fragment key={f.k}>
+                  <tr onClick={() => setAbierto(ab ? null : f.k)} style={{ cursor: "pointer", background: ab ? C.canvas : "transparent" }}>
+                    <td style={{ ...td, color: C.slate }}>{i + 1}</td>
+                    <td style={{ ...td, fontWeight: 800, whiteSpace: "nowrap" }}>
+                      {ab ? "▾" : "▸"} {f.k}
+                      {modo === "familia" && f.variantes > 1 ? <span style={{ color: C.slate, fontWeight: 600, fontSize: 11 }}> · {f.variantes} referencias</span> : null}
+                    </td>
+                    <td style={{ ...td, maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={f.descripcion}>{f.descripcion || <span style={{ color: C.slate }}>—</span>}</td>
+                    <td style={{ ...td, whiteSpace: "nowrap" }}>{f.categoria}</td>
+                    <td style={td}><BarraH valor={f.unidades} max={maxU} color={C.blue} /></td>
+                    <td style={{ ...td, textAlign: "right", fontWeight: 800 }}>{fmtNum(f.unidades)}</td>
+                    <td style={{ ...td, textAlign: "right" }}>{fmtNum(f.lotes)}</td>
+                    <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>{f.precio ? `$${fmtNum(Math.round(f.precio))}` : "—"}</td>
+                    <td style={{ ...td, whiteSpace: "nowrap", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" }}>{f.cliente}</td>
+                  </tr>
+                  {ab && (
+                    <tr>
+                      <td colSpan={9} style={{ padding: "10px 14px", background: C.canvas, borderBottom: `1px solid ${C.border}` }}>
+                        {modo === "familia" ? (
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 800, color: C.slate, marginBottom: 4 }}>Referencias que contiene esta familia</div>
+                            {agruparEntradas(f.lista, (e) => String(e.refN || e.refExt || "—"))
+                              .sort((a, b) => b.unidades - a.unidades)
+                              .slice(0, 15)
+                              .map((s) => {
+                                const d = f.lista.find((e) => String(e.refN || e.refExt || "—") === s.clave && e.descripcion)?.descripcion;
+                                return (
+                                  <div key={s.clave} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, padding: "3px 0" }}>
+                                    <span style={{ color: C.ink }}><strong>{s.clave}</strong>{d ? <span style={{ color: C.slate }}> · {d}</span> : null}</span>
+                                    <span style={{ color: C.slate, whiteSpace: "nowrap" }}><strong style={{ color: C.ink }}>{fmtNum(s.unidades)}</strong> und · {s.lotes} lotes</span>
+                                  </div>
+                                );
+                              })}
+                          </div>
+                        ) : (
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 800, color: C.slate, marginBottom: 4 }}>
+                              Últimas entradas de esta referencia{f.lista[0]?.refExt && String(f.lista[0].refExt) !== f.k ? ` (familia ${f.lista[0].refExt})` : ""}
+                            </div>
+                            {[...f.lista]
+                              .sort((a, b) => b.fecha.localeCompare(a.fecha))
+                              .slice(0, 12)
+                              .map((e) => (
+                                <div key={`${e.numEnt}|${e.fecha}|${e.esDevolucion ? "D" : "E"}`} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, padding: "3px 0", color: e.cantidad < 0 ? C.red : C.ink }}>
+                                  <span>{fmtFechaISO(e.fecha).slice(0, 5)} · lote <strong>{e.numLote ?? "—"}</strong> · {e.nombrePlanta} · {clienteDe(e) || "Sin identificar"}{e.cantidad < 0 ? " · corrección" : ""}</span>
+                                  <span style={{ whiteSpace: "nowrap" }}><strong>{fmtNum(e.cantidad)}</strong> und{e.precioEntrada ? ` · $${fmtNum(e.precioEntrada)}` : ""}</span>
+                                </div>
+                              ))}
+                          </div>
+                        )}
+                        <div style={{ marginTop: 8 }}>
+                          <Btn variant="secondary" small onClick={() => setDetalle({ titulo: `${modo === "ref" ? "Referencia" : "Familia"} ${f.k}`, lista: f.lista })}>Ver todos los lotes</Btn>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+            {!filas.length && (
+              <tr><td colSpan={9} style={{ ...td, textAlign: "center", color: C.slate, padding: 24 }}>No hay referencias con esos filtros.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {filas.length > 40 && (
+        <div style={{ textAlign: "center", marginTop: 10 }}>
+          <Btn variant="secondary" small onClick={() => setVerTodas(!verTodas)}>{verTodas ? "Ver solo las 40 primeras" : `Ver las ${filas.length} referencias`}</Btn>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EntradasTalleresView({ entradas, cargas }) {
-  const buenas = useMemo(() => entradas.filter((e) => e.cantidad > 0 && e.fecha), [entradas]);
+  // Todas las entradas con fecha, incluidas las correcciones (cantidad negativa): las unidades salen netas.
+  const buenas = useMemo(() => entradas.filter((e) => e.fecha), [entradas]);
   const ultimaFecha = useMemo(() => buenas.reduce((m, e) => (e.fecha > m ? e.fecha : m), ""), [buenas]);
   const meses = useMemo(() => [...new Set(buenas.map((e) => e.fecha.slice(0, 7)))].sort().reverse(), [buenas]);
   const [mes, setMes] = useState("");
@@ -7433,7 +7642,7 @@ function EntradasTalleresView({ entradas, cargas }) {
       return {
         nombre,
         unidades: delMercado.reduce((t, e) => t + e.cantidad, 0),
-        lotes: new Set(delMercado.map((e) => String(e.numLote ?? `e${e.numEnt}`))).size,
+        lotes: contarLotesNetos(delMercado),
         top: cats.slice(0, 3),
       };
     });
@@ -7451,11 +7660,21 @@ function EntradasTalleresView({ entradas, cargas }) {
     const delGrupo = periodoLista.filter((e) =>
       vistaGrupo === "categoria" ? (e.categoria || "(Sin categoría)") === g.clave : (clienteDe(e) || "(Sin cliente identificado)") === g.clave
     );
+    // Referencia REAL = RefN (un diseño/color); RefExt es el código de la familia
+    // y junta muchas referencias distintas (ej. 985600 agrupa 44).
     const sub = vistaGrupo === "categoria"
-      ? agruparEntradas(delGrupo, (e) => e.refExt || e.refN || "—").sort((a, b) => b.unidades - a.unidades).slice(0, 8)
+      ? agruparEntradas(delGrupo, (e) => String(e.refN || e.refExt || "—")).sort((a, b) => b.unidades - a.unidades).slice(0, 8)
       : agruparEntradas(delGrupo, (e) => e.categoria || "(Sin categoría)").sort((a, b) => b.unidades - a.unidades).slice(0, 8);
+    const infoRef = new Map();
+    delGrupo.forEach((e) => {
+      const k = String(e.refN || e.refExt || "—");
+      const x = infoRef.get(k) || { desc: "", fam: "" };
+      if (!x.desc && e.descripcion) x.desc = e.descripcion;
+      if (!x.fam && e.refExt && String(e.refExt) !== k) x.fam = String(e.refExt);
+      infoRef.set(k, x);
+    });
     const plantas = agruparEntradas(delGrupo, (e) => e.nombrePlanta).sort((a, b) => b.unidades - a.unidades).slice(0, 6);
-    return { sub, plantas };
+    return { sub, plantas, infoRef };
   }
   const th = { textAlign: "left", padding: "8px 10px", fontSize: 11, color: C.slate, fontWeight: 700, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
   const td = { padding: "8px 10px", fontSize: 12, color: C.ink, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
@@ -7567,7 +7786,7 @@ function EntradasTalleresView({ entradas, cargas }) {
           </table>
         </div>
         <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>
-          Un lote cuenta una vez por planta aunque tenga varias entradas. Los lotes de la planta propia y los de los talleres se muestran juntos.
+          Un lote cuenta una vez por planta aunque tenga varias entradas. Las unidades son netas: si una entrada se devolvió por error o por corrección de precio, se resta (así coincide con Estadísticas de Planta). Los lotes de la planta propia y los de los talleres se muestran juntos.
         </div>
       </div>
 
@@ -7577,6 +7796,7 @@ function EntradasTalleresView({ entradas, cargas }) {
             {[
               { id: "categoria", label: "🏷️ Por categoría" },
               { id: "cliente", label: "👤 Por cliente" },
+              { id: "referencia", label: "📋 Por referencia" },
             ].map((t) => (
               <button
                 key={t.id}
@@ -7630,12 +7850,13 @@ function EntradasTalleresView({ entradas, cargas }) {
             </button>
           ))}
         </div>
-        <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>
+        {vistaGrupo === "referencia" && <ReferenciasView lista={periodoLista} clienteDe={clienteDe} />}
+        {vistaGrupo !== "referencia" && <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>
           {vistaGrupo === "categoria"
             ? "Qué categoría haces más (unidades que ingresaron). Haz clic en una fila para ver sus referencias y plantas."
             : `Cliente de cada entrada según la orden de producción de Busint (o el panel de Planeación si la carga viene del Excel). Identificado en el ${pctConCliente}% de las unidades; el resto aparece como "(Sin cliente identificado)". Para identificar el historial, trae las entradas desde Busint (Planta → Resumen → Traer de Busint ahora, 300 días).`}
-        </div>
-        <div style={{ overflowX: "auto" }}>
+        </div>}
+        {vistaGrupo !== "referencia" && <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr>
@@ -7669,7 +7890,11 @@ function EntradasTalleresView({ entradas, cargas }) {
                               </div>
                               {det.sub.map((s) => (
                                 <div key={s.clave} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, padding: "3px 0" }}>
-                                  <span style={{ color: C.ink }}>{s.clave}</span>
+                                  <span style={{ color: C.ink }}>
+                                    {s.clave}
+                                    {vistaGrupo === "categoria" && det.infoRef.get(s.clave)?.desc ? <span style={{ color: C.slate }}> · {det.infoRef.get(s.clave).desc}</span> : null}
+                                    {vistaGrupo === "categoria" && det.infoRef.get(s.clave)?.fam ? <span style={{ color: C.slate, fontSize: 10.5 }}> (familia {det.infoRef.get(s.clave).fam})</span> : null}
+                                  </span>
                                   <span style={{ color: C.slate, whiteSpace: "nowrap" }}><strong style={{ color: C.ink }}>{fmtNum(s.unidades)}</strong> und · {s.lotes} lotes</span>
                                 </div>
                               ))}
@@ -7692,7 +7917,7 @@ function EntradasTalleresView({ entradas, cargas }) {
               })}
             </tbody>
           </table>
-        </div>
+        </div>}
       </div>
     </div>
   );
@@ -7771,13 +7996,14 @@ function DetalleEntregasModal({ titulo, lista, clienteDe, onClose, onExcel }) {
       .map(([planta, filas]) => ({
         planta,
         filas: [...filas].sort((a, b) => a.fecha.localeCompare(b.fecha) || Number(a.numLote) - Number(b.numLote)),
-        lotes: new Set(filas.map((e) => String(e.numLote ?? `e${e.numEnt}`))).size,
+        lotes: contarLotesNetos(filas),
         unidades: filas.reduce((s, e) => s + e.cantidad, 0),
       }))
       .sort((a, b) => b.unidades - a.unidades);
   }, [lista]);
-  const totalLotes = new Set(lista.map((e) => String(e.numLote ?? `e${e.numEnt}`))).size;
+  const totalLotes = contarLotesNetos(lista);
   const totalUnidades = lista.reduce((s, e) => s + e.cantidad, 0);
+  const correcciones = lista.filter((e) => e.cantidad < 0);
   const multiDia = new Set(lista.map((e) => e.fecha)).size > 1;
   const th = { textAlign: "left", padding: "7px 8px", fontSize: 10.5, color: C.slate, fontWeight: 700, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
   const td = { padding: "7px 8px", fontSize: 12, color: C.ink, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" };
@@ -7789,7 +8015,12 @@ function DetalleEntregasModal({ titulo, lista, clienteDe, onClose, onExcel }) {
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
         <span style={{ fontSize: 13, color: C.ink }}><strong>{fmtNum(totalLotes)}</strong> lotes</span>
         <span style={{ fontSize: 13, color: C.slate }}>·</span>
-        <span style={{ fontSize: 13, color: C.ink }}><strong>{fmtNum(totalUnidades)}</strong> unidades</span>
+        <span style={{ fontSize: 13, color: C.ink }}><strong>{fmtNum(totalUnidades)}</strong> unidades netas</span>
+        {correcciones.length > 0 && (
+          <span style={{ fontSize: 13, color: C.red }} title="Entradas que se devolvieron por error o por corrección de precio">
+            (incluye {fmtNum(correcciones.reduce((s, e) => s + e.cantidad, 0))} und de {correcciones.length} correcciones)
+          </span>
+        )}
         <span style={{ fontSize: 13, color: C.slate }}>·</span>
         <span style={{ fontSize: 13, color: C.ink }}><strong>{grupos.length}</strong> {grupos.length === 1 ? "planta/taller" : "plantas/talleres"}</span>
       </div>
@@ -7828,12 +8059,15 @@ function DetalleEntregasModal({ titulo, lista, clienteDe, onClose, onExcel }) {
                     return (
                       <tr key={`${e.numEnt}|${e.fecha}`}>
                         {multiDia && <td style={td}>{fmtFechaISO(e.fecha).slice(0, 5)}</td>}
-                        <td style={{ ...td, fontWeight: 800 }}>{e.numLote ?? "—"}</td>
+                        <td style={{ ...td, fontWeight: 800 }}>
+                          {e.numLote ?? "—"}
+                          {e.cantidad < 0 ? <span title={e.observacion || "Corrección de una entrada"} style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: C.red, background: C.redBg, borderRadius: 8, padding: "1px 6px" }}>↩ corrección</span> : null}
+                        </td>
                         <td style={td}>{e.refExt || e.refN || "—"}</td>
                         <td style={td}>{e.categoria || "—"}</td>
                         <td style={td}>{cli || <span style={{ color: C.slate }}>—</span>}</td>
                         <td style={td}>{e.nPedido ?? "—"}</td>
-                        <td style={{ ...td, textAlign: "right", fontWeight: 700 }}>{fmtNum(e.cantidad)}</td>
+                        <td style={{ ...td, textAlign: "right", fontWeight: 700, color: e.cantidad < 0 ? C.red : C.ink }}>{fmtNum(e.cantidad)}</td>
                         <td style={td}>{e.fechaInicio ? fmtFechaISO(e.fechaInicio).slice(0, 5) : "—"}</td>
                         <td style={td}>{e.fechaFin ? fmtFechaISO(e.fechaFin).slice(0, 5) : "—"}</td>
                         <td style={td}>
@@ -7902,7 +8136,8 @@ function deltaKpi(actual, anterior) {
   return { texto: `${pct > 0 ? "▲ +" : pct < 0 ? "▼ " : ""}${pct}% vs mes anterior`, color: pct > 0 ? C.green : pct < 0 ? C.red : C.slate };
 }
 function LotesPorDiaView({ entradas, cargas }) {
-  const buenas = useMemo(() => entradas.filter((e) => e.cantidad > 0 && e.fecha), [entradas]);
+  // Incluye las correcciones (cantidad negativa): las unidades salen netas.
+  const buenas = useMemo(() => entradas.filter((e) => e.fecha), [entradas]);
   const meses = useMemo(() => [...new Set(buenas.map((e) => e.fecha.slice(0, 7)))].sort().reverse(), [buenas]);
   const [mes, setMes] = useState("");
   const [vista, setVista] = useState("dia"); // dia | cliente
@@ -7970,17 +8205,28 @@ function LotesPorDiaView({ entradas, cargas }) {
       if (iso <= ultimaFecha && dow >= 1 && dow <= 5) fechas.add(iso);
     }
     const resumir = (lista) => {
-      const lotes = new Set();
+      const neto = new Map();
       const porCli = new Map();
       lista.forEach((e) => {
         const id = idLote(e);
-        lotes.add(id);
+        neto.set(id, (neto.get(id) || 0) + e.cantidad);
         const k = cliKey(e);
-        if (!porCli.has(k)) porCli.set(k, new Set());
-        porCli.get(k).add(id);
+        if (!porCli.has(k)) porCli.set(k, new Map());
+        const mc = porCli.get(k);
+        mc.set(id, (mc.get(id) || 0) + e.cantidad);
       });
-      const clientes = [...porCli.entries()].map(([k, s]) => ({ k, n: s.size })).sort((a, b) => b.n - a.n || a.k.localeCompare(b.k));
-      return { lotes: lotes.size, entradas: lista.length, unidades: lista.reduce((s, e) => s + e.cantidad, 0), clientes };
+      const cuenta = (mapa) => [...mapa.values()].filter((v) => v > 0.0001).length;
+      const clientes = [...porCli.entries()]
+        .map(([k, mc]) => ({ k, n: cuenta(mc) }))
+        .filter((c) => c.n > 0)
+        .sort((a, b) => b.n - a.n || a.k.localeCompare(b.k));
+      return {
+        lotes: cuenta(neto),
+        entradas: lista.length,
+        unidades: lista.reduce((s, e) => s + e.cantidad, 0),
+        correcciones: lista.filter((e) => e.cantidad < 0).reduce((s, e) => s + e.cantidad, 0),
+        clientes,
+      };
     };
     const dias = [...fechas].sort().map((f) => ({ fecha: f, lista: porFecha.get(f) || [], ...resumir(porFecha.get(f) || []) }));
     const mapaSem = new Map();
@@ -7993,7 +8239,7 @@ function LotesPorDiaView({ entradas, cargas }) {
       const lista = ds.flatMap((d) => d.lista);
       return { lunes, dias: ds, lista, ...resumir(lista) };
     });
-    const habiles = dias.filter((d) => d.lista.length > 0 && diaSemanaISO(d.fecha) >= 1 && diaSemanaISO(d.fecha) <= 5).length;
+    const habiles = dias.filter((d) => d.lotes > 0 && diaSemanaISO(d.fecha) >= 1 && diaSemanaISO(d.fecha) <= 5).length;
     // mes anterior (si el mes es el actual, solo hasta el mismo día del mes)
     const prevMes = mesAnteriorDe(mes);
     const topeDia = mes === ultimaFecha.slice(0, 7) ? ultimaFecha.slice(8, 10) : "99";
@@ -8012,21 +8258,22 @@ function LotesPorDiaView({ entradas, cargas }) {
     const m = new Map();
     total.lista.forEach((e) => {
       const k = cliKey(e);
-      if (!m.has(k)) m.set(k, { k, lista: [], lotes: new Set(), unidades: 0, dias: new Set(), ultimo: "" });
+      if (!m.has(k)) m.set(k, { k, lista: [], unidades: 0, dias: new Set(), ultimo: "" });
       const g = m.get(k);
       g.lista.push(e);
-      g.lotes.add(idLote(e));
       g.unidades += e.cantidad;
-      g.dias.add(e.fecha);
-      if (e.fecha > g.ultimo) g.ultimo = e.fecha;
+      if (e.cantidad > 0) g.dias.add(e.fecha);
+      if (e.cantidad > 0 && e.fecha > g.ultimo) g.ultimo = e.fecha;
     });
     const prev = new Map();
     previo.lista.forEach((e) => {
       const k = cliKey(e);
-      if (!prev.has(k)) prev.set(k, new Set());
-      prev.get(k).add(idLote(e));
+      if (!prev.has(k)) prev.set(k, []);
+      prev.get(k).push(e);
     });
-    return [...m.values()].map((g) => ({ k: g.k, lista: g.lista, lotes: g.lotes.size, unidades: g.unidades, dias: g.dias.size, ultimo: g.ultimo, prev: prev.has(g.k) ? prev.get(g.k).size : 0 }));
+    return [...m.values()]
+      .map((g) => ({ k: g.k, lista: g.lista, lotes: contarLotesNetos(g.lista), unidades: g.unidades, dias: g.dias.size, ultimo: g.ultimo, prev: prev.has(g.k) ? contarLotesNetos(prev.get(g.k)) : 0 }))
+      .filter((c) => c.lotes > 0 || c.unidades !== 0);
   }, [total, previo, mapaCliente]);
 
   const maxLotes = Math.max(1, ...dias.map((d) => d.lotes));
@@ -8089,7 +8336,7 @@ function LotesPorDiaView({ entradas, cargas }) {
   let hoverPrev = null;
   if (hoverDia) {
     const f28 = isoSumarDias(hoverDia.fecha, -28);
-    hoverPrev = new Set(buenas.filter((e) => e.fecha === f28 && pasa(e)).map(idLote)).size;
+    hoverPrev = contarLotesNetos(buenas.filter((e) => e.fecha === f28 && pasa(e)));
   }
   const chip = (activo, color) => ({
     padding: "6px 12px", borderRadius: 99, fontSize: 12, fontWeight: 700, cursor: "pointer", transition: "all .15s",
@@ -8169,7 +8416,7 @@ function LotesPorDiaView({ entradas, cargas }) {
         </div>
         <div style={{ maxHeight: 420, overflowY: "auto", marginTop: 6 }}>
           {dd.map(([f, l]) => {
-            const lotesDia = new Set(l.map(idLote)).size;
+            const lotesDia = contarLotesNetos(l);
             return (
               <div key={f}>
                 <div style={{ display: "flex", justifyContent: "space-between", background: "#F3EFE9", borderRadius: 8, padding: "7px 12px", margin: "10px 0 3px", fontSize: 12, fontWeight: 700, color: C.ink }}>
@@ -8181,10 +8428,10 @@ function LotesPorDiaView({ entradas, cargas }) {
                   const tarde = dc !== null && dc !== undefined && dc > 0;
                   return (
                     <div key={`${e.numEnt}|${e.fecha}`} style={{ display: "grid", gridTemplateColumns: "64px minmax(140px,1.6fr) minmax(120px,1.2fr) 70px 110px", gap: 10, padding: "6px 12px", fontSize: 12.5, borderBottom: `1px solid ${C.border}`, alignItems: "center" }}>
-                      <b>{e.numLote ?? "—"}</b>
+                      <b>{e.numLote ?? "—"}{e.cantidad < 0 ? <span style={{ marginLeft: 4, fontSize: 10, color: C.red }}>↩</span> : null}</b>
                       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.nombrePlanta}</span>
                       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: C.slate }}>{e.refExt || e.refN || "—"}{e.categoria ? ` · ${e.categoria}` : ""}</span>
-                      <span style={{ textAlign: "right", fontWeight: 700 }}>{fmtNum(e.cantidad)}</span>
+                      <span style={{ textAlign: "right", fontWeight: 700, color: e.cantidad < 0 ? C.red : C.ink }}>{fmtNum(e.cantidad)}</span>
                       <span>
                         {dc === null || dc === undefined ? <span style={{ color: C.slate }}>—</span> : (
                           <span style={{ padding: "2px 9px", borderRadius: 10, fontSize: 11, fontWeight: 700, color: tarde ? C.red : C.green, background: tarde ? C.redBg : C.greenBg }}>{textoCumplimiento(dc)}</span>
@@ -8261,8 +8508,8 @@ function LotesPorDiaView({ entradas, cargas }) {
             serie={dias.map((d) => d.lotes)} onClick={() => abrir(`Entregas de ${nombreMes(mes)}`, total.lista)}
           />
           <KpiLotes
-            label="Unidades en el mes" value={fmtNum(total.unidades)} color={C.blue}
-            sub={previo ? deltaKpi(total.unidades, previo.unidades).texto : ""} subColor={previo ? deltaKpi(total.unidades, previo.unidades).color : undefined}
+            label="Unidades netas en el mes" value={fmtNum(total.unidades)} color={C.blue}
+            sub={total.correcciones ? `incluye ${fmtNum(total.correcciones)} de correcciones` : previo ? deltaKpi(total.unidades, previo.unidades).texto : ""} subColor={total.correcciones ? C.red : previo ? deltaKpi(total.unidades, previo.unidades).color : undefined}
             serie={dias.map((d) => d.unidades)} onClick={() => abrir(`Entregas de ${nombreMes(mes)}`, total.lista)}
           />
           <KpiLotes label="Promedio por día hábil" value={total.habiles ? promedio.toFixed(1) : "—"} color={C.teal} sub={`${total.habiles} días hábiles con entradas`} />
@@ -8463,7 +8710,7 @@ function LotesPorDiaView({ entradas, cargas }) {
         </div>
       )}
       <div style={{ fontSize: 11, color: C.slate, marginTop: 10, lineHeight: 1.6 }}>
-        Un lote cuenta una vez por día; en los subtotales de semana y mes cuenta una sola vez aunque haya entrado en varios días, por eso la suma de los días puede ser mayor que el total. Cada lote pertenece a un solo cliente, así que la suma de los clientes da el total de lotes. El cliente sale de la orden de producción de Busint; los lotes sin cliente quedan en "{SIN_CLIENTE}" (para llenar el historial: Planta → Resumen → Traer de Busint con 300 días). Kamila Colombia y Kamila Venezuela se muestran como clientes separados.
+        Las unidades son netas (las entradas devueltas por error o por corrección de precio se restan, como en Estadísticas de Planta). Un lote cuenta una vez por día; en los subtotales de semana y mes cuenta una sola vez aunque haya entrado en varios días, por eso la suma de los días puede ser mayor que el total. Cada lote pertenece a un solo cliente, así que la suma de los clientes da el total de lotes. El cliente sale de la orden de producción de Busint; los lotes sin cliente quedan en "{SIN_CLIENTE}" (para llenar el historial: Planta → Resumen → Traer de Busint con 300 días). Kamila Colombia y Kamila Venezuela se muestran como clientes separados.
       </div>
     </div>
   );
@@ -8493,10 +8740,7 @@ export default function ModuloPlaneacion({ currentUser, onVolver, onLogout }) {
     });
     return () => unsub();
   }, []);
-  const cargaEntradasPlantaActiva = useMemo(() => {
-    if (!cargasEntradasPlanta.length) return null;
-    return [...cargasEntradasPlanta].sort((a, b) => (b.creadoEn || b.fecha || "").localeCompare(a.creadoEn || a.fecha || ""))[0];
-  }, [cargasEntradasPlanta]);
+  const cargaEntradasPlantaActiva = useMemo(() => cargaEntradasActivaDe(cargasEntradasPlanta), [cargasEntradasPlanta]);
   // Todas las entradas de la carga activa de "Entradas de Planta" — planta
   // propia (INDUSTRIAS YANKO MODULO CENTRO) Y talleres externos por igual.
   // Antes esto excluía la planta propia (de ahí el nombre "entradasTalleres"),
