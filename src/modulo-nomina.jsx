@@ -11142,7 +11142,17 @@ function RegistrarProduccionView({ trabajadores, precios, produccion, produccion
   );
 }
 // ─── REGISTRAR HORAS SUELTAS (tareas no vinculadas a un producto) ──────────
-function RegistrarHorasView({ trabajadores, horas, currentUser, onGuardar, onBorrar, isAdmin }) {
+// (2026-10-09, a pedido de Fredy) Editar horas sueltas -- antes solo existía
+// Borrar (y solo para admin). Ahora Editar/Borrar también para quien tenga el
+// permiso puntual "nomina_editar_horas_extra", mismo patrón que Horas Extras.
+// Al editar, si el trabajador no cambia se conserva la tarifa/hora con la que
+// se registró (el histórico no se re-precia); si cambia de trabajador, usa la
+// tarifa de la ficha del nuevo.
+function RegistrarHorasView({ trabajadores, horas, currentUser, onGuardar, onBorrar, isAdmin, puedeEditarHoras }) {
+  const puedeGestionar = isAdmin || !!puedeEditarHoras;
+  const [modalEditar, setModalEditar] = useState(null);
+  const [formEditar, setFormEditar] = useState(null);
+  const [guardandoEdicion, setGuardandoEdicion] = useState(false);
   const [trabajadorId, setTrabajadorId] = useState("");
   const [fecha, setFecha] = useState(today());
   const [concepto, setConcepto] = useState("");
@@ -11172,6 +11182,45 @@ function RegistrarHorasView({ trabajadores, horas, currentUser, onGuardar, onBor
       setHorasCant("");
     } finally {
       setGuardando(false);
+    }
+  }
+  function abrirEditar(f) {
+    setModalEditar(f);
+    setFormEditar({
+      trabajadorId: f.trabajadorId || "",
+      fecha: f.fecha || today(),
+      concepto: f.concepto || "",
+      horasCant: f.horas != null ? String(f.horas) : "",
+    });
+  }
+  function borrarConfirmando(f) {
+    if (window.confirm(`¿Borrar estas horas de ${f.trabajadorNombre || "este trabajador"} (${fmtFechaISO(f.fecha)})? Esto no se puede deshacer.`)) onBorrar(f.id);
+  }
+  const trabajadorSelEdit = trabajadores.find((t) => t.id === formEditar?.trabajadorId);
+  const mismoTrabajadorEdit = !!(modalEditar && formEditar && modalEditar.trabajadorId === formEditar.trabajadorId);
+  const tarifaEdit = mismoTrabajadorEdit ? (Number(modalEditar.tarifaHora) || 0) : (Number(trabajadorSelEdit?.tarifaHora) || 0);
+  const totalEdit = (Number(formEditar?.horasCant) || 0) * tarifaEdit;
+  const puedeGuardarEdicion = !!(formEditar && formEditar.trabajadorId && formEditar.concepto.trim() && Number(formEditar.horasCant) > 0 && !guardandoEdicion);
+  async function guardarEdicion() {
+    if (!puedeGuardarEdicion || !modalEditar) return;
+    setGuardandoEdicion(true);
+    try {
+      await onGuardar({
+        ...modalEditar,
+        trabajadorId: formEditar.trabajadorId,
+        trabajadorNombre: trabajadorSelEdit?.nombre || modalEditar.trabajadorNombre || "",
+        fecha: formEditar.fecha,
+        concepto: formEditar.concepto.trim(),
+        horas: Number(formEditar.horasCant) || 0,
+        tarifaHora: tarifaEdit,
+        total: totalEdit,
+        editadoPor: currentUser?.name || currentUser?.username || "",
+        editadoEn: new Date().toISOString(),
+      });
+      setModalEditar(null);
+      setFormEditar(null);
+    } finally {
+      setGuardandoEdicion(false);
     }
   }
   const recientes = [...horas].sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || "")).slice(0, 15);
@@ -11205,10 +11254,38 @@ function RegistrarHorasView({ trabajadores, horas, currentUser, onGuardar, onBor
           { key: "horas", label: "Horas", align: "right", render: (f) => fmtNum(f.horas) },
           { key: "tarifaHora", label: "Tarifa/Hora", align: "right", render: (f) => fmtMoney(f.tarifaHora) },
           { key: "total", label: "Total", align: "right", render: (f) => fmtMoney(f.total) },
-          ...(isAdmin ? [{ key: "acciones", label: "", align: "right", render: (f) => <span onClick={(e) => { e.stopPropagation(); onBorrar(f.id); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span> }] : []),
+          ...(puedeGestionar ? [{ key: "acciones", label: "", align: "right", render: (f) => (
+            <span style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <span onClick={(e) => { e.stopPropagation(); abrirEditar(f); }} style={{ cursor: "pointer", color: C.denim, fontWeight: 700 }}>Editar</span>
+              <span onClick={(e) => { e.stopPropagation(); borrarConfirmando(f); }} style={{ cursor: "pointer", color: C.red, fontWeight: 700 }}>Borrar</span>
+            </span>
+          ) }] : []),
         ]}
         filas={recientes}
       />
+      {modalEditar && formEditar && (
+        <Modal title="Editar horas" onClose={() => { setModalEditar(null); setFormEditar(null); }} width={480}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Trabajador">
+              <FSel value={formEditar.trabajadorId} onChange={(v) => setFormEditar((s) => ({ ...s, trabajadorId: v }))} options={[...trabajadoresActivos, ...trabajadores.filter((t) => !t.activo && t.id === modalEditar.trabajadorId)].map((t) => ({ value: t.id, label: t.nombre }))} />
+            </Field>
+            <Field label="Fecha"><FInput type="date" value={formEditar.fecha} onChange={(v) => setFormEditar((s) => ({ ...s, fecha: v }))} /></Field>
+          </div>
+          <Field label="Concepto / Tarea"><FInput value={formEditar.concepto} onChange={(v) => setFormEditar((s) => ({ ...s, concepto: v }))} /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "end" }}>
+            <Field label="Horas"><FInput type="number" value={formEditar.horasCant} onChange={(v) => setFormEditar((s) => ({ ...s, horasCant: v }))} /></Field>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: "uppercase", marginBottom: 6 }}>Total</div>
+              <div style={{ padding: "9px 12px", background: C.canvas, borderRadius: 8, fontWeight: 800, color: C.ink, fontSize: 14 }}>{fmtMoney(totalEdit)}</div>
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: C.slate, marginBottom: 10 }}>
+            Tarifa/hora: {fmtMoney(tarifaEdit)}{mismoTrabajadorEdit ? " (la del registro original)" : " (la de la ficha del trabajador)"}
+          </div>
+          {!tarifaEdit && <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, marginBottom: 10 }}>Este trabajador no tiene tarifa/hora -- el total va a salir en $0.</div>}
+          <Btn onClick={guardarEdicion} disabled={!puedeGuardarEdicion}>{guardandoEdicion ? "Guardando..." : "Guardar cambios"}</Btn>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -14379,7 +14456,7 @@ export default function ModuloNomina({ currentUser, onVolver, onLogout, soloNove
           </h1>
           {subView === "dashboard" && !areaLider && !soloNovedades && <DashboardNominaView trabajadores={trabajadores} precios={precios} produccion={produccion} horas={horas} />}
           {subView === "produccion" && !soloNovedades && <RegistrarProduccionView trabajadores={trabajadoresVisibles} precios={precios} produccion={produccionVisible} produccionCompleta={produccion} costosTeoricoProceso={costosTeoricoProceso} currentUser={currentUser} onGuardar={guardarProduccion} onBorrar={borrarProduccion} isAdmin={isAdmin} />}
-          {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} />}
+          {subView === "horas" && !soloNovedades && <RegistrarHorasView trabajadores={trabajadoresVisibles} horas={horasVisibles} currentUser={currentUser} onGuardar={guardarHoras} onBorrar={borrarHoras} isAdmin={isAdmin} puedeEditarHoras={isAdmin || !!puedeEditarHorasExtra} />}
           {subView === "horas_extras" && !soloNovedades && <RegistrarHorasExtrasView trabajadores={trabajadoresVisibles} horasExtras={horasExtras} currentUser={currentUser} onGuardar={guardarHorasExtras} onBorrar={borrarHorasExtras} isAdmin={isAdmin} puedeEditarHorasExtra={isAdmin || !!puedeEditarHorasExtra} />}
           {subView === "bonificaciones" && !soloNovedades && <RegistrarBonificacionView trabajadores={trabajadoresVisibles} bonificaciones={bonificaciones} currentUser={currentUser} onGuardar={guardarBonificacion} onBorrar={borrarBonificacion} isAdmin={isAdmin} puedeEditarBonificacion={isAdmin || !!puedeEditarBonificacion} />}
           {subView === "resumen" && !soloNovedades && <ResumenSemanalView trabajadores={trabajadoresVisibles} produccion={produccionVisible} horas={horasVisibles} isAdmin={isAdmin} areasNomina={areasNomina} puedeCerrarQuincena={isAdmin || !!puedeCerrarQuincena} cierres={cierres} onCerrar={guardarCierre} onReabrir={reabrirCierre} lotesConCobros={lotesConCobrosTotal} ajustesDestajo={ajustesDestajo} causacionManual={causacionManual} diasTrabajados={diasTrabajadosHuellero} faltas={faltasSinJustificar} ausencias={ausencias} turnos={turnos} deduccionesTrabajador={deduccionesTrabajador} horasExtras={horasExtras} bonificaciones={bonificaciones} />}
