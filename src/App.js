@@ -4193,10 +4193,52 @@ function calcularTelaAComprar(items) {
 // (ver crearPreorden, donde se calcula asi desde que se crea). Esta funcion
 // solo arma el texto a mostrar; se usa igual en Preórdenes, Órdenes y el
 // título de "Tela a comprar" para que los tres lugares digan lo mismo.
+// (2026-10-09, a pedido de Fredy) El consecutivo ahora arranca con las
+// iniciales de la MARCA (el cliente de la preorden) y cada marca lleva su
+// propio conteo, aparte por tipo: "Reprogramación SUR-01", "Orden KC-03".
+// Las preórdenes que todavía no tienen `siglasMarca` (viejas, sin renumerar,
+// o sin cliente) siguen mostrándose con el formato anterior "N°-NN".
+function normMarca(c) {
+  return String(c || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+}
+// Una sola palabra (SURTIEXPORT) -> sus 3 primeras letras (SUR). Varias
+// palabras (KAMILA COLOMBIA) -> la inicial de cada una (KC). Si choca con
+// las iniciales de OTRA marca, se alargan letras de la primera palabra
+// (KAC, KAMC...) hasta que no se repita.
+function elegirSiglasMarca(cliente, usadas) {
+  const palabras = normMarca(cliente).split(" ").filter(Boolean);
+  if (!palabras.length) return "";
+  const candidatas = [];
+  if (palabras.length === 1) {
+    const w = palabras[0];
+    for (let n = Math.min(3, w.length); n <= w.length; n++) candidatas.push(w.slice(0, n));
+  } else {
+    const resto = palabras.slice(1).map((w) => w[0]).join("");
+    for (let n = 1; n <= palabras[0].length; n++) candidatas.push(palabras[0].slice(0, n) + resto);
+  }
+  const libre = candidatas.find((c) => !usadas.has(c));
+  if (libre) return libre;
+  let i = 2;
+  while (usadas.has(`${candidatas[candidatas.length - 1]}${i}`)) i++;
+  return `${candidatas[candidatas.length - 1]}${i}`;
+}
+// Las iniciales de una marca se quedan fijas: si ya hay una preorden de ese
+// cliente con siglasMarca, se reutilizan; si no, se eligen evitando las de
+// las demás marcas.
+function siglasDeMarca(cliente, preordenes) {
+  const k = normMarca(cliente);
+  if (!k) return "";
+  const lista = preordenes || [];
+  const existente = lista.find((p) => p.siglasMarca && normMarca(p.cliente) === k);
+  if (existente) return existente.siglasMarca;
+  const usadas = new Set(lista.filter((p) => p.siglasMarca && normMarca(p.cliente) !== k).map((p) => p.siglasMarca));
+  return elegirSiglasMarca(cliente, usadas);
+}
 function etiquetaNumeroOrden(p) {
   if (!p?.numeroOrden) return null;
   const num = String(p.numeroOrden).padStart(2, "0");
-  return p.origenPantalla === "reprogramacion" ? `Reprogramación N°-${num}` : `Orden N°-${num}`;
+  const tipoTxt = p.origenPantalla === "reprogramacion" ? "Reprogramación" : "Orden";
+  return p.siglasMarca ? `${tipoTxt} ${p.siglasMarca}-${num}` : `${tipoTxt} N°-${num}`;
 }
 // (2026-10-06, a pedido de Fredy) Solo Kamila maneja Colombia + Venezuela en
 // las Preórdenes/Órdenes. Cualquier otro cliente es de UN SOLO cliente: la
@@ -7525,37 +7567,53 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
         : "No había ninguna preorden en \"Otras\" para mover."
     );
   }
-  // (2026-10-03, a pedido de Fredy) Antes, "Orden N°" era un solo conteo
-  // compartido entre Nueva Orden y Reprogramación. Ahora cada tipo cuenta
-  // aparte (ver crearPreorden) -- esta función renumera de una sola vez
-  // TODAS las que ya existen para que queden acomodadas en su propio
-  // conteo, del 01 en adelante, respetando el orden en que se crearon
-  // (fechaCreado). Es segura de correr más de una vez: si ya están bien
-  // numeradas no cambia nada. Las preordenes en "Otras" (sin
-  // origenPantalla) no entran aquí -- primero hay que moverlas con el botón
-  // de arriba para que tengan un tipo y puedan numerarse.
-  async function renumerarPorTipo() {
+  // (2026-10-09, a pedido de Fredy) Renumera de una sola vez TODAS las
+  // Órdenes Nuevas y Reprogramaciones que ya existen: cada MARCA (cliente)
+  // cuenta aparte y, dentro de la marca, cada tipo también, del 01 en
+  // adelante, respetando el orden en que se crearon (fechaCreado). Les
+  // asigna las iniciales de la marca (siglasMarca); si una marca ya tenía
+  // iniciales guardadas, las conserva. Es segura de correr más de una vez.
+  // Las preórdenes en "Otras" (sin origenPantalla) no entran aquí -- primero
+  // hay que moverlas con el botón de arriba.
+  async function renumerarPorMarca() {
     setRenumerando(true);
-    const porTipo = { orden: [], reprogramacion: [] };
-    for (const p of preordenes || []) {
-      if (p.origenPantalla === "orden" || p.origenPantalla === "reprogramacion") porTipo[p.origenPantalla].push(p);
+    const lista = (preordenes || []).filter((p) => p.origenPantalla === "orden" || p.origenPantalla === "reprogramacion");
+    const ordenadas = lista.slice().sort((a, b) => (a.fechaCreado || "").localeCompare(b.fechaCreado || "") || (a.createdAt || "").localeCompare(b.createdAt || ""));
+    const siglasPorMarca = new Map();
+    const usadas = new Set();
+    // 1) iniciales ya guardadas se respetan
+    for (const p of ordenadas) {
+      const k = normMarca(p.cliente);
+      if (k && p.siglasMarca && !siglasPorMarca.has(k) && !usadas.has(p.siglasMarca)) {
+        siglasPorMarca.set(k, p.siglasMarca);
+        usadas.add(p.siglasMarca);
+      }
     }
+    // 2) el resto de marcas, en orden de aparición
+    for (const p of ordenadas) {
+      const k = normMarca(p.cliente);
+      if (!k || siglasPorMarca.has(k)) continue;
+      const sg = elegirSiglasMarca(p.cliente, usadas);
+      siglasPorMarca.set(k, sg);
+      usadas.add(sg);
+    }
+    const contadores = new Map();
     let actualizadas = 0;
-    for (const tipo of ["orden", "reprogramacion"]) {
-      const lista = porTipo[tipo].slice().sort((a, b) => (a.fechaCreado || "").localeCompare(b.fechaCreado || ""));
-      let n = 0;
-      for (const p of lista) {
-        n++;
-        if (Number(p.numeroOrden) !== n) {
-          await onActualizarPreorden(p.id, { numeroOrden: n });
-          actualizadas++;
-        }
+    for (const p of ordenadas) {
+      const k = normMarca(p.cliente);
+      const clave = `${p.origenPantalla}|${k}`;
+      const n = (contadores.get(clave) || 0) + 1;
+      contadores.set(clave, n);
+      const sg = k ? siglasPorMarca.get(k) || "" : "";
+      if (Number(p.numeroOrden) !== n || (p.siglasMarca || "") !== sg) {
+        await onActualizarPreorden(p.id, { numeroOrden: n, siglasMarca: sg });
+        actualizadas++;
       }
     }
     setRenumerando(false);
     alert(
       actualizadas
-        ? `Listo: se renumeraron ${actualizadas} orden(es)/reprogramación(es). Cada tipo quedó contando aparte desde el 01.`
+        ? `Listo: se renumeraron ${actualizadas} orden(es)/reprogramación(es). Cada marca quedó contando aparte desde el 01 (por tipo), con sus iniciales.`
         : "Ya estaban todas bien numeradas -- no había nada que cambiar."
     );
   }
@@ -7800,10 +7858,10 @@ function PreordenesView({ preordenes, pedidos, capsulas, config, currentUser, ca
                       <div
                         onClick={() => {
                           setShowMasMenu(false);
-                          if (window.confirm("Esto renumera TODAS las Órdenes Nuevas y Reprogramaciones que ya existen, cada tipo contando aparte desde el 01 (según la fecha en que se crearon). ¿Continuar?")) renumerarPorTipo();
+                          if (window.confirm("Esto renumera TODAS las Órdenes Nuevas y Reprogramaciones que ya existen: cada marca (cliente) cuenta aparte desde el 01, separado por tipo, y el número lleva las iniciales de la marca (ej: SUR-01). Se ordena por la fecha en que se crearon. ¿Continuar?")) renumerarPorMarca();
                         }}
                         style={{ padding: "10px 16px", fontSize: 12, fontWeight: 700, color: T.ink, cursor: "pointer" }}
-                      >{renumerando ? "🔢 Renumerando..." : "🔢 Renumerar por tipo"}</div>
+                      >{renumerando ? "🔢 Renumerando..." : "🔢 Renumerar por marca"}</div>
                     </>
                   )}
                   {(puedeIngresarTela || puedeConfirmarTela) && (
@@ -16660,10 +16718,15 @@ function AppInner() {
     // eso el escaneo de "el mas alto encontrado" se filtra a preordenes del
     // MISMO origenPantalla que la que se esta creando ahora.
     const tipoPreorden = origenPantalla || "orden";
-    const numeroOrden = Math.max(0, ...bitacoraPreordenes.filter((p) => p.origenPantalla === tipoPreorden).map((p) => Number(p.numeroOrden) || 0)) + 1;
+    // (2026-10-09, a pedido de Fredy) Ahora el conteo es por MARCA (cliente) +
+    // tipo, y el número lleva las iniciales de la marca (ver siglasDeMarca).
+    const claveMarca = normMarca(header.cliente);
+    const siglasMarca = siglasDeMarca(header.cliente, bitacoraPreordenes);
+    const numeroOrden = Math.max(0, ...bitacoraPreordenes.filter((p) => p.origenPantalla === tipoPreorden && normMarca(p.cliente) === claveMarca).map((p) => Number(p.numeroOrden) || 0)) + 1;
     const preorden = {
       id: uid(),
       numeroOrden,
+      siglasMarca,
       cliente: header.cliente || "",
       numPedido: header.numPedido || "",
       // (2026-09-30, a pedido de Fredy) Nombre libre y opcional para
