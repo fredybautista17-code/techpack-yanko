@@ -154,6 +154,71 @@ function resolverCierres(cierres, incluir) {
   return out;
 }
 
+// (2026-10-09, a pedido de Fredy) Un mismo trabajador podía salir en dos filas
+// del historial: unos cierres lo guardaron con su id y otros sin id (entonces
+// resolverCierres lo identifica por su nombre), o con el nombre escrito más
+// corto ("ANDRES VEGA" vs "ANDRES ESTEBAN VEGA GONZALEZ"). Aquí se unen,
+// dentro de cada área, los que son claramente la misma persona:
+//   1) mismo nombre (sin tildes/mayúsculas), aunque tengan ids distintos;
+//   2) un nombre con 2+ palabras cuyas palabras están todas dentro de UN solo
+//      otro nombre más largo (si cabe en dos personas distintas, NO se une).
+// Después, en cada mes se suman valor y costo de las filas unidas. No toca los
+// totales del mes ni del área (solo la lista de trabajadores).
+function unificarTrabajadoresRepetidos(mapa) {
+  const nodos = new Map(); // "AREA|id" -> { area, id, nombre, tokens, padre }
+  mapa.forEach((r) => (r.trabajadores || []).forEach((t) => {
+    const k = `${t.area}|${t.id}`;
+    const nombre = String(t.nombre || "");
+    const ant = nodos.get(k);
+    if (!ant) nodos.set(k, { area: t.area, id: t.id, nombre, tokens: normTexto(nombre).split(/\s+/).filter(Boolean), padre: k });
+    else if (nombre.length > ant.nombre.length) { ant.nombre = nombre; ant.tokens = normTexto(nombre).split(/\s+/).filter(Boolean); }
+  }));
+  const raiz = (k) => { let x = k; while (nodos.get(x).padre !== x) x = nodos.get(x).padre; return x; };
+  const unir = (a, b) => { const ra = raiz(a); const rb = raiz(b); if (ra !== rb) nodos.get(rb).padre = ra; };
+  const lista = [...nodos.entries()];
+  // 1) mismo nombre
+  const porNombre = new Map();
+  lista.forEach(([k, n]) => {
+    const kn = `${n.area}|${n.tokens.join(" ")}`;
+    if (!n.tokens.length) return;
+    if (porNombre.has(kn)) unir(porNombre.get(kn), k); else porNombre.set(kn, k);
+  });
+  // 2) nombre corto contenido en UN solo nombre más largo
+  lista.forEach(([ka, a]) => {
+    if (a.tokens.length < 2) return;
+    const candidatos = new Set();
+    lista.forEach(([kb, b]) => {
+      if (kb === ka || b.area !== a.area || raiz(kb) === raiz(ka) || b.tokens.length <= a.tokens.length) return;
+      if (a.tokens.every((tk) => b.tokens.includes(tk))) candidatos.add(raiz(kb));
+    });
+    if (candidatos.size === 1) unir([...candidatos][0], ka);
+  });
+  // representante de cada grupo: el nombre más largo y, si existe, un id real (no derivado del nombre)
+  const rep = new Map();
+  lista.forEach(([k, n]) => {
+    const r = raiz(k);
+    const idReal = n.id && n.id !== normTexto(n.nombre);
+    const act = rep.get(r) || { id: n.id, nombre: n.nombre, tieneIdReal: false };
+    if (n.nombre.length > act.nombre.length) act.nombre = n.nombre;
+    if (idReal && !act.tieneIdReal) { act.id = n.id; act.tieneIdReal = true; }
+    rep.set(r, act);
+  });
+  const out = new Map();
+  mapa.forEach((r, key) => {
+    const acc = new Map();
+    (r.trabajadores || []).forEach((t) => {
+      const g = raiz(`${t.area}|${t.id}`);
+      const base = rep.get(g);
+      if (!acc.has(g)) acc.set(g, { ...t, id: base.id, nombre: base.nombre, valor: 0, costo: 0 });
+      const x = acc.get(g);
+      x.valor += Number(t.valor) || 0;
+      x.costo += Number(t.costo) || 0;
+    });
+    out.set(key, { ...r, trabajadores: [...acc.values()] });
+  });
+  return out;
+}
+
 // Etiqueta de resultado de un trabajador (o del mes): ayuda si produjo menos que su nómina, excedente si más.
 function EtiquetaResultado({ bal }) {
   if (Math.abs(bal) < 1) return <span style={{ fontSize: 11, fontWeight: 700, color: C.slate }}>Justo</span>;
@@ -510,7 +575,7 @@ export default function CentroCostoAnioPanel({ areaNombre, anioInicial, currentU
   // no se comparan. La nómina de CORTE no tiene ficha de tipo de nómina, así que entra completa.
   const tiposDestajo = useMemo(() => new Set(fichas.filter((f) => f.tipoNomina === "Destajo" || f.tipoNomina === "Fiscal Destajo").map((f) => f.id)), [fichas]);
   const incluir = useMemo(() => (t) => t.area === "CORTE" || !fichas.length || tiposDestajo.has(t.id), [fichas, tiposDestajo]);
-  const cierresResueltos = useMemo(() => resolverCierres(cierres, incluir), [cierres, incluir]);
+  const cierresResueltos = useMemo(() => unificarTrabajadoresRepetidos(resolverCierres(cierres, incluir)), [cierres, incluir]);
 
   // CORTE en vivo por mes (cortes registrados en ATLAS + sueldos de la nómina de corte)
   const corteVivo = useMemo(() => {
