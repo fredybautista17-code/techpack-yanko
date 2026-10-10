@@ -1501,8 +1501,22 @@ function TurnoModal({ turno, onSave, onClose }) {
       </Field>
       <Field label="Sábado">
         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.slate, cursor: "pointer" }}>
-          <input type="checkbox" checked={form.sabadoSiFestivo} onChange={(e) => set("sabadoSiFestivo")(e.target.checked)} /> Le corresponde el sábado cuando esa semana tiene un festivo entre semana
+          <input type="checkbox" checked={form.sabadoSiFestivo} onChange={(e) => set("sabadoSiFestivo")(e.target.checked)} /> Le corresponde el sábado cuando esa semana tiene un festivo entre semana, o cuando el lunes siguiente es festivo
         </label>
+        {/* (2026-10-10, a pedido de Fredy) Horario propio del sábado de este
+            turno (para retardos). Si se deja en blanco, en el sábado antes
+            de un lunes festivo se espera 7:00 a 1:00 p.m. */}
+        {form.sabadoSiFestivo && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10 }}>
+            <div style={{ width: 70, fontSize: 12, fontWeight: 700, color: C.ink }}>Sábado</div>
+            <input type="time" value={form.horarios.Sab?.entrada || ""} onChange={(e) => setHorario("Sab", "entrada", e.target.value)} style={{ padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }} />
+            <span style={{ fontSize: 11, color: C.slate }}>a</span>
+            <input type="time" value={form.horarios.Sab?.salida || ""} onChange={(e) => setHorario("Sab", "salida", e.target.value)} style={{ padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }} />
+          </div>
+        )}
+        {form.sabadoSiFestivo && !form.horarios.Sab?.entrada && !form.horarios.Sab?.salida && (
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>En blanco: el sábado antes de un lunes festivo se espera de 7:00 a.m. a 1:00 p.m.</div>
+        )}
       </Field>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancelar</Btn>
@@ -1554,7 +1568,7 @@ function TurnosView({ turnos, trabajadores, isAdmin, onSave, onDelete }) {
         columnas={[
           { key: "nombre", label: "Turno" },
           { key: "dias", label: "Días", render: (f) => (f.dias || []).map(labelDiaTurno).join(", ") || "—" },
-          { key: "sabadoSiFestivo", label: "Sábado si hay festivo", render: (f) => f.sabadoSiFestivo ? "Sí" : "No" },
+          { key: "sabadoSiFestivo", label: "Sábado si hay festivo", render: (f) => !f.sabadoSiFestivo ? "No" : (f.horarios?.Sab?.entrada || f.horarios?.Sab?.salida) ? `Sí (${f.horarios.Sab.entrada || "?"}–${f.horarios.Sab.salida || "?"})` : "Sí" },
           { key: "descansos", label: "Descansos", render: (f) => {
             const d = [];
             if (f.descanso1Inicio && f.descanso1Fin) d.push(`${f.descanso1Inicio}–${f.descanso1Fin}`);
