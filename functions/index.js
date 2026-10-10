@@ -7541,6 +7541,29 @@ function semanaTuvoFestivoAsistencia(iso) {
   return false;
 }
 
+// (2026-10-10, a pedido de Fredy) Regla nueva de sábado trabajado (desde
+// SABADO_PUENTE_DESDE): cuando el LUNES siguiente es festivo, el sábado
+// ANTERIOR se trabaja (7am a 1pm); el sábado de después de un lunes festivo
+// ya no. Un festivo martes-viernes sigue reponiéndose el sábado de esa
+// misma semana. Antes de esa fecha se conserva la regla vieja (cualquier
+// festivo lunes-sábado de la misma semana). Misma lógica que
+// sabadoSeTrabaja() en src/modulo-nomina.jsx -- mantener igual en los dos.
+const SABADO_PUENTE_DESDE = "2026-10-10";
+function sabadoSeTrabajaAsistencia(iso) {
+  if (iso < SABADO_PUENTE_DESDE) return semanaTuvoFestivoAsistencia(iso);
+  const sab = new Date(iso + "T00:00:00");
+  const lunesSig = new Date(sab);
+  lunesSig.setDate(sab.getDate() + 2);
+  if (FESTIVOS_COLOMBIA_2026_ASISTENCIA.includes(lunesSig.toISOString().slice(0, 10))) return true;
+  const lunes = new Date(lunesDeLaSemanaAsistencia(iso) + "T00:00:00");
+  for (let i = 1; i <= 4; i++) { // martes a viernes
+    const d = new Date(lunes);
+    d.setDate(lunes.getDate() + i);
+    if (FESTIVOS_COLOMBIA_2026_ASISTENCIA.includes(d.toISOString().slice(0, 10))) return true;
+  }
+  return false;
+}
+
 // (2026-09-14, a pedido de Fredy) Reporte diario de asistencia: todos los
 // días a las 9am (media hora después de que se sube y guarda el huellero a
 // las 8am), cruza "nomina_dias_trabajados" de HOY contra los trabajadores
@@ -7570,7 +7593,7 @@ exports.enviarAsistenciaDiaria = onSchedule(
   async () => {
     const fecha = fechaHoyBogota();
     const esSabado = new Date(fecha + "T00:00:00").getDay() === 6;
-    if (esSabado && !semanaTuvoFestivoAsistencia(fecha)) {
+    if (esSabado && !sabadoSeTrabajaAsistencia(fecha)) {
       logger.info("enviarAsistenciaDiaria: sábado sin festivo esa semana, no se trabaja -- no se manda correo", { fecha });
       return;
     }
