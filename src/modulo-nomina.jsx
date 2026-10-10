@@ -4204,11 +4204,37 @@ function diaEsperado(iso, turno) {
   if (dow === 0) return false;
   if (dow === 6) {
     const sabadoSiFestivo = turno ? !!turno.sabadoSiFestivo : true;
-    return sabadoSiFestivo && semanaTuvoFestivo(iso);
+    return sabadoSiFestivo && sabadoSeTrabaja(iso);
   }
   const diaCodigo = ["Dom", "Lun", "Mar", "Mie", "Jue", "Vie", "Sab"][dow];
   const dias = turno?.dias || DIAS_SEMANA_TURNO;
   return dias.includes(diaCodigo);
+}
+// (2026-10-10, a pedido de Fredy) Regla nueva de sábado trabajado, desde
+// SABADO_PUENTE_DESDE: cuando el LUNES siguiente es festivo, el sábado
+// ANTERIOR se trabaja (horario 7:00 a 1:00 p.m.); el sábado de después de un
+// lunes festivo ya no. Un festivo de martes a viernes sigue reponiéndose el
+// sábado de esa misma semana. Antes de esa fecha se conserva la regla vieja
+// (cualquier festivo lunes-sábado de la misma semana) para no cambiar
+// faltas/nómina ya revisadas. Misma lógica que sabadoSeTrabajaAsistencia()
+// en functions/index.js -- mantener igual en los dos lados.
+const SABADO_PUENTE_DESDE = "2026-10-10";
+function sumarDiasISO(iso, n) {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function esSabadoPuente(iso) {
+  return !!iso && iso >= SABADO_PUENTE_DESDE && new Date(iso + "T00:00:00").getDay() === 6 && esFestivoColombia(sumarDiasISO(iso, 2));
+}
+function sabadoSeTrabaja(iso) {
+  if (iso < SABADO_PUENTE_DESDE) return semanaTuvoFestivo(iso);
+  if (esSabadoPuente(iso)) return true;
+  const lunes = lunesDeLaSemana(iso);
+  for (let i = 1; i <= 4; i++) { // martes a viernes
+    if (esFestivoColombia(sumarDiasISO(lunes, i))) return true;
+  }
+  return false;
 }
 // (2026-09-15, a pedido de Fredy) Código de día de semana (Lun..Sab) para
 // una fecha ISO -- mismo criterio que diaEsperado, factorizado aparte
@@ -4218,23 +4244,31 @@ function diaCodigoDeISO(iso) {
   const dow = new Date(iso + "T00:00:00").getDay();
   return ["Dom", "Lun", "Mar", "Mie", "Jue", "Vie", "Sab"][dow];
 }
-function horaEntradaEsperada(turno, diaCodigo) {
-  return turno?.horarios?.[diaCodigo]?.entrada || null;
+// (2026-10-10) Sábado puente (lunes siguiente festivo): si el turno no trae
+// horario propio de sábado, se espera 7:00 a 1:00 p.m. Para que aplique hay
+// que pasar la fecha ISO como tercer parámetro.
+const HORARIO_SABADO_PUENTE = { entrada: "07:00", salida: "13:00" };
+function horaEntradaEsperada(turno, diaCodigo, iso) {
+  const propia = turno?.horarios?.[diaCodigo]?.entrada || null;
+  if (propia) return propia;
+  return diaCodigo === "Sab" && esSabadoPuente(iso) ? HORARIO_SABADO_PUENTE.entrada : null;
 }
 // (2026-09-17, a pedido de Fredy) Hora de salida esperada de un turno
 // para un dia puntual -- mismo criterio que horaEntradaEsperada, para
 // poder reconocer cuando una marca unica del dia en realidad fue la
 // salida (ver nota de la Parte 12 mas abajo, en anomaliasEntradaSalida).
-function horaSalidaEsperada(turno, diaCodigo) {
-  return turno?.horarios?.[diaCodigo]?.salida || null;
+function horaSalidaEsperada(turno, diaCodigo, iso) {
+  const propia = turno?.horarios?.[diaCodigo]?.salida || null;
+  if (propia) return propia;
+  return diaCodigo === "Sab" && esSabadoPuente(iso) ? HORARIO_SABADO_PUENTE.salida : null;
 }
 // (2026-09-28, a pedido de Fredy) Mismo cálculo de retardo que ya usa el
 // huellero al subir un archivo (ver retardosEntrada más abajo), factorizado
 // aparte para que el Tabulador de Asistencia manual lo pueda usar en vivo
 // mientras el líder digita la hora de entrada -- 5 minutos de tolerancia
 // (ej. entra a las 7:00, cuenta tarde desde las 7:06).
-function calcularRetardoEntrada(turno, diaCodigo, horaMarcada) {
-  const horaEsperada = horaEntradaEsperada(turno, diaCodigo);
+function calcularRetardoEntrada(turno, diaCodigo, horaMarcada, iso) {
+  const horaEsperada = horaEntradaEsperada(turno, diaCodigo, iso);
   if (!horaEsperada || !horaMarcada) return null;
   const [hE, mE] = horaEsperada.split(":").map(Number);
   const [hM, mM] = horaMarcada.split(":").map(Number);
@@ -4441,8 +4475,8 @@ function TabuladorAsistenciaView({ areasNomina, trabajadores, areaLider, turnos,
         nuevas[t.id] = {
           asistio: true,
           tocado: true,
-          entrada: horaEntradaEsperada(turno, diaCodigo) || "",
-          salida: horaSalidaEsperada(turno, diaCodigo) || "",
+          entrada: horaEntradaEsperada(turno, diaCodigo, fecha) || "",
+          salida: horaSalidaEsperada(turno, diaCodigo, fecha) || "",
         };
       });
       return nuevas;
@@ -4465,7 +4499,7 @@ function TabuladorAsistenciaView({ areasNomina, trabajadores, areaLider, turnos,
     if (!f?.tocado) return { badge: "⏳ Sin marcar todavía", color: C.slate, bg: C.canvas };
     if (!f.asistio) return { badge: "❌ Falta sin justificar", color: C.red, bg: C.redBg };
     const turno = resolverTurnoDeTrabajador(t, areasNomina, turnos);
-    const retardo = f.entrada ? calcularRetardoEntrada(turno, diaCodigoDeISO(fecha), f.entrada) : null;
+    const retardo = f.entrada ? calcularRetardoEntrada(turno, diaCodigoDeISO(fecha), f.entrada, fecha) : null;
     if (retardo) return { badge: `🕒 Retardo (${retardo.minutosTarde} min)`, color: C.amber, bg: C.amberBg };
     return { badge: "✅ A tiempo", color: C.green, bg: C.greenBg };
   }
@@ -4487,7 +4521,7 @@ function TabuladorAsistenciaView({ areasNomina, trabajadores, areaLider, turnos,
         .map((t) => {
           const f = filas[t.id];
           const turno = resolverTurnoDeTrabajador(t, areasNomina, turnos);
-          const retardo = f.asistio && f.entrada ? calcularRetardoEntrada(turno, diaCodigoDeISO(fecha), f.entrada) : null;
+          const retardo = f.asistio && f.entrada ? calcularRetardoEntrada(turno, diaCodigoDeISO(fecha), f.entrada, fecha) : null;
           return { trabajadorId: t.id, nombre: t.nombre, area: t.area || "", asistio: f.asistio, entrada: f.entrada || "", salida: f.salida || "", retardo };
         });
       await onGuardar(fecha, filasAGuardar);
@@ -4737,7 +4771,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
               const horaMarca = marcasDelDia[0].hora;
               const TOLERANCIA_CIERRE_MIN = 30;
               if (tipos.has("Entrada") && horaMarca) {
-                const horaSalidaEsp = horaSalidaEsperada(turnoDelRegistro, diaCodigoDeISO(iso));
+                const horaSalidaEsp = horaSalidaEsperada(turnoDelRegistro, diaCodigoDeISO(iso), iso);
                 if (horaSalidaEsp) {
                   const [hS, mS] = horaSalidaEsp.split(":").map(Number);
                   const [hM, mM] = horaMarca.split(":").map(Number);
@@ -4747,7 +4781,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
                 }
               }
               if (tipos.has("Salida") && horaMarca) {
-                const horaEntradaEsp = horaEntradaEsperada(turnoDelRegistro, diaCodigoDeISO(iso));
+                const horaEntradaEsp = horaEntradaEsperada(turnoDelRegistro, diaCodigoDeISO(iso), iso);
                 if (horaEntradaEsp) {
                   const [hE, mE] = horaEntradaEsp.split(":").map(Number);
                   const [hM, mM] = horaMarca.split(":").map(Number);
@@ -4784,7 +4818,7 @@ function ReporteAsistenciaView({ ausencias, trabajadores, turnos, areasNomina, a
         const retardosEntrada = diasPeriodo
           .filter((iso) => !exento && iso !== ultimoDiaPeriodo && diasConMarca.has(iso) && diaEsperado(iso, turnoDelRegistro))
           .map((iso) => {
-            const horaEsperada = horaEntradaEsperada(turnoDelRegistro, diaCodigoDeISO(iso));
+            const horaEsperada = horaEntradaEsperada(turnoDelRegistro, diaCodigoDeISO(iso), iso);
             const horaMarcada = entradaMasTempranaPorDia[iso];
             if (!horaEsperada || !horaMarcada) return null;
             const [hE, mE] = horaEsperada.split(":").map(Number);
